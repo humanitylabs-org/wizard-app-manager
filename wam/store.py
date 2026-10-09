@@ -5,8 +5,11 @@ Sources (sources.json):
   {"local": "/path/to/monorepo", "glob": "apps/*"}   every subfolder with a wizard.md
   {"git": "https://github.com/org/repo", "ref": "main", "glob": "apps/*"}
   {"topic": "wizard-ai"}                             every public GitHub repo with that topic
+  {"nostr": "wizard-os-app", "relays": [...], "authors": [npub...]}
+                                                     NIP-34 announcements with that hashtag (off by
+                                                     default; WAM_NOSTR=1 or "nostr": true adds it)
 
-A topic is how an app gets found. Only a passing wizard.md gets it into the store.
+A topic or hashtag is how an app gets found. Only a passing wizard.md gets it into the store.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import wizardmd
+from . import nostr, wizardmd
 
 DEFAULT_TOPICS = ["wizard-os-app", "wizard-ai"]  # wizard-os-app proposed 9 Oct; wizard-ai kept during transition
 
@@ -30,6 +33,7 @@ class Candidate:
     origin: str           # human label: repo slug or path
     root: Path            # directory holding wizard.md
     results: list = field(default_factory=list)
+    nostr: dict | None = None   # verified NIP-34 announcement, when found on Nostr
 
     @property
     def ok(self) -> bool:
@@ -49,6 +53,15 @@ def topic_repos(topic: str, token: str | None = None) -> list[str]:
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.load(r)
     return [f"https://github.com/{i['full_name']}" for i in data.get("items", []) if not i.get("archived")]
+
+
+def _norm(url: str) -> str:
+    return url.strip().lower().removesuffix("/").removesuffix(".git")
+
+
+def commit_of(root: Path) -> str | None:
+    r = _run(["git", "rev-parse", "HEAD"], cwd=root)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def fetch(url: str, ref: str | None, cache: Path) -> Path:
@@ -72,11 +85,12 @@ def expand(root: Path, glob: str | None) -> list[Path]:
     return sorted(p for p in root.glob(glob) if p.is_dir() and (p / "wizard.md").is_file())
 
 
-def discover(sources: list[dict], cache: Path, token: str | None = None) -> tuple[list[Candidate], list[str]]:
+def discover(sources: list[dict], cache: Path, token: str | None = None, nostr_fetch=None) -> tuple[list[Candidate], list[str]]:
     cands: list[Candidate] = []
     errors: list[str] = []
     seen: set[str] = set()
     for s in sources:
+        roots: list[tuple] = []
         try:
             if "local" in s:
                 roots = [(str(p), p) for p in expand(Path(s["local"]).expanduser(), s.get("glob"))]
@@ -84,13 +98,27 @@ def discover(sources: list[dict], cache: Path, token: str | None = None) -> tupl
                 d = fetch(s["git"], s.get("ref"), cache)
                 roots = [(s["git"] + ("/" + str(p.relative_to(d)) if p != d else ""), p) for p in expand(d, s.get("glob"))]
             elif "topic" in s:
-                roots = []
                 for url in topic_repos(s["topic"], token):
-                    if url in seen:
+                    if _norm(url) in seen:
                         continue
-                    seen.add(url)
+                    seen.add(_norm(url))
                     try:
                         roots.append((url, fetch(url, None, cache)))
+                    except Exception as e:  # noqa: BLE001
+                        errors.append(str(e))
+            elif "nostr" in s:
+                kw = {"fetch": nostr_fetch} if nostr_fetch else {}
+                anns, errs = nostr.announcements(s["nostr"], s.get("relays"), s.get("authors"), **kw)
+                errors.extend(errs)
+                for a in anns:
+                    if not a["clone"]:
+                        errors.append(f"nostr {a['npub']}/{a['d']}: announcement has no clone URL")
+                        continue
+                    if _norm(a["clone"]) in seen:   # same repo already found by topic; GitHub copy wins
+                        continue
+                    seen.add(_norm(a["clone"]))
+                    try:
+                        roots.append((f"nostr:{a['npub']}/{a['d']}", fetch(a["clone"], None, cache), a))
                     except Exception as e:  # noqa: BLE001
                         errors.append(str(e))
             else:
@@ -99,8 +127,12 @@ def discover(sources: list[dict], cache: Path, token: str | None = None) -> tupl
         except Exception as e:  # noqa: BLE001
             errors.append(f"{s}: {e}")
             continue
-        for origin, root in roots:
-            cands.append(Candidate(origin, root, wizardmd.check(root)))
+        for origin, root, *ann in roots:
+            res = wizardmd.check(root)
+            a = ann[0] if ann else None
+            if a is not None and wizardmd.passed(res):
+                res.append(nostr.publisher_rule(wizardmd.front_matter((root / "wizard.md").read_text()).get("publisher"), a))
+            cands.append(Candidate(origin, root, res, a))
     return cands, errors
 
 
@@ -115,6 +147,10 @@ def meta(c: Candidate) -> dict:
         "needs": d.get("needs") or [], "mcp": d.get("mcp"), "skill": d.get("skill"), "view": d.get("view"),
         "health": d.get("health"), "recommends": d.get("recommends"),
         "port": cfg.get("port"), "architectures": cfg.get("supported_architectures") or [],
+        "commit": commit_of(c.root),                     # installs and updates pin to this
+        "publisher": d.get("publisher"),
+        "found_via": "nostr" if c.nostr else "github",
+        "nostr": None if not c.nostr else {"npub": c.nostr["npub"], "d": c.nostr["d"], "event": c.nostr["id"], "euc": c.nostr["euc"]},
     }
 
 

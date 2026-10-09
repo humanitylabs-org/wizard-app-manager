@@ -20,7 +20,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import registry, store
+from . import nostr, registry, store
 from .runtipi import Runtipi, RuntipiError
 
 
@@ -31,6 +31,8 @@ class Config:
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
         self.sources = cfg.get("sources") or [{"topic": t} for t in store.DEFAULT_TOPICS]
+        if nostr.enabled(cfg) and not any("nostr" in s for s in self.sources):
+            self.sources = self.sources + [{"nostr": store.DEFAULT_TOPICS[0], "relays": cfg.get("nostr_relays") or nostr.DEFAULT_RELAYS}]
         self.store_name = cfg.get("store_name", "wizard")          # Runtipi store slug, max 16 chars
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "0.0.0.0"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 8790)))

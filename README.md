@@ -75,12 +75,15 @@ HTTP API (same data, for the UX and Agent Service): `GET /api/catalog`, `GET /ap
   "sources": [
     {"topic": "wizard-os-app"},
     {"git": "https://github.com/humanitylabs-org/wizard-app-store", "glob": "apps/*"},
-    {"local": "/home/me/dev/my-app"}
+    {"local": "/home/me/dev/my-app"},
+    {"nostr": "wizard-os-app", "relays": ["wss://relay.ngit.dev"], "authors": ["npub1…"]}
   ]
 }
 ```
 
 Default sources are the GitHub topics `wizard-os-app` and `wizard-ai`. A topic only makes a repo **found**. Only a passing `wizard.md` gets it **listed**.
+
+**Nostr source (off by default).** `WAM_NOSTR=1` or `"nostr": true` adds a source that reads NIP-34 repository announcements (kind 30617) tagged `t=wizard-os-app` from `nostr_relays` (default: relay.ngit.dev, gitnostr.com, relay.damus.io, nos.lol). Every event's signature is verified (stdlib BIP-340, no new dependency). If the app's `wizard.md` declares `publisher: npub1…`, the announcement must be signed by that key or list it as a maintainer; otherwise the app is skipped. A repo found on both GitHub and Nostr is listed once. `authors` restricts a source to known publishers. Each catalog row records `commit`, `found_via`, `publisher` and the announcement id. Why and when this turns on: `wizard-os/docs/ROLLOUT.md`, "Nostr path".
 
 | Env var | Default | Meaning |
 |---|---|---|
@@ -88,6 +91,7 @@ Default sources are the GitHub topics `wizard-os-app` and `wizard-ai`. A topic o
 | `RUNTIPI_ROOT` | `~/runtipi` | Runtipi install dir (reads `.env` for the API address and CLI secret) |
 | `WAM_PORT` / `WAM_BIND` | `8790` / `0.0.0.0` | HTTP API + store |
 | `GITHUB_TOKEN` | none | Raises the topic-search rate limit from 60/hour |
+| `WAM_NOSTR` | off | `1` adds the Nostr catalog source |
 
 ## How it talks to Runtipi
 

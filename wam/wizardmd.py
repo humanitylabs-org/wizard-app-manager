@@ -15,6 +15,7 @@ NEEDS = {"mic", "system-audio", "camera", "notifications", "files"}
 SPECS = {0.1, 0.2}
 SLOT = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
 ID = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
+NPUB = re.compile(r"npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}")
 
 
 def front_matter(text: str) -> dict:
@@ -97,6 +98,8 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         pv = d.get("provides")
         badp = [p for p in (pv if isinstance(pv, list) else [pv]) if not SLOT.fullmatch(str(p))]
         rule("provides are slot ids", isinstance(pv, list) and not badp, ", ".join(map(str, badp)))
+    if d.get("publisher") is not None:
+        rule("publisher is an npub", bool(NPUB.fullmatch(str(d.get("publisher")))), str(d.get("publisher")))
     if github:
         r = subprocess.run(["gh", "api", f"repos/{github}/topics", "--jq", ".names"], capture_output=True, text=True)
         rule("GitHub topic wizard-os-app or wizard-ai", ("wizard-os-app" in r.stdout or "wizard-ai" in r.stdout), r.stdout.strip() or r.stderr.strip())
