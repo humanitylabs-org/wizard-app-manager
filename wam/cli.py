@@ -35,7 +35,7 @@ class Config:
             self.sources = self.sources + [{"nostr": store.DEFAULT_TOPICS[0], "relays": cfg.get("nostr_relays") or nostr.DEFAULT_RELAYS}]
         self.store_name = cfg.get("store_name", "wizard")          # Runtipi store slug, max 16 chars
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "0.0.0.0"))
-        self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 8790)))
+        self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.out = self.home / "store"
         self.cache = self.home / "cache"
         self.cache.mkdir(parents=True, exist_ok=True)

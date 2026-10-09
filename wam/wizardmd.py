@@ -102,7 +102,8 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule("publisher is an npub", bool(NPUB.fullmatch(str(d.get("publisher")))), str(d.get("publisher")))
     if github:
         r = subprocess.run(["gh", "api", f"repos/{github}/topics", "--jq", ".names"], capture_output=True, text=True)
-        rule("GitHub topic wizard-os-app or wizard-ai", ("wizard-os-app" in r.stdout or "wizard-ai" in r.stdout), r.stdout.strip() or r.stderr.strip())
+        topics = set(re.findall(r'"([^"]+)"', r.stdout))
+        rule("GitHub topic wizard-app (or wizard-ai during the transition)", bool(topics & {"wizard-app", "wizard-ai"}), r.stdout.strip() or r.stderr.strip())
     return out
 
 

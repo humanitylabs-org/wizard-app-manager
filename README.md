@@ -3,7 +3,7 @@
 The Wizard OS layer that turns GitHub repos into installed Wizard apps, using **stock Runtipi** to run them.
 
 ```
- app repos (tagged wizard-os-app, root wizard.md)
+ app repos (tagged wizard-app, root wizard.md)
         │  wam refresh: find → check → compile
         ▼
  compiled store (a normal Runtipi app store, served as git by wam)
@@ -20,7 +20,9 @@ The Wizard OS layer that turns GitHub repos into installed Wizard apps, using **
 
 Runtipi is a component. We don't fork it and we don't edit its files or database. Everything goes through its published API and its normal app-store format, so Runtipi upgrades stay free.
 
-**Status:** reference implementation, 9 Oct 2026. Dogfooded end to end on a fresh Ubuntu VM (arm64) with stock Runtipi v4.9: refresh → Runtipi pulled the store → `wam install hello-wizard` → container running → `apps.json` written → agent-side MCP `tools/list` and `tools/call` answered. Owner from here: Miguel.
+**Status:** reference implementation, 9 Oct 2026. It runs on the same machine as Hermes, the Agent Service and the UX, next to Runtipi; there is no extra VM. The first end-to-end test used a throwaway clean Ubuntu machine (a disposable arm64 box, since deleted) so it would prove a fresh install: refresh → Runtipi pulled the store → `wam install hello-wizard` → container running → `apps.json` written → agent-side MCP `tools/list` and `tools/call` answered. On a Mac, the whole Wizard OS stack (this included) runs inside the one Try Wizard VM. Owner from here: Miguel.
+
+**Dogfood on an existing Hermes host:** `sudo bash scripts/dogfood-host-setup.sh <user>` once (Docker, stock Runtipi, and a firewall rule that keeps Runtipi's ports off the public interface), then `./install.sh` and `wam doctor` as the user.
 
 ## Where it sits
 
@@ -59,7 +61,7 @@ wam install hello-wizard
 | `wam apps [--json]` | What's installed (reads `apps.json`) |
 | `wam bootstrap` | Refresh, then install every `system: true` app |
 | `wam doctor` | Check the whole chain |
-| `wam serve` | HTTP API on :8790 and the compiled store over git smart-HTTP |
+| `wam serve` | HTTP API on :7790 and the compiled store over git smart-HTTP |
 
 HTTP API (same data, for the UX and Agent Service): `GET /api/catalog`, `GET /api/apps`, `GET /api/doctor`, `POST /api/refresh`, `POST /api/apps/<id>/install`, `DELETE /api/apps/<id>`.
 
@@ -71,9 +73,9 @@ HTTP API (same data, for the UX and Agent Service): `GET /api/catalog`, `GET /ap
 {
   "runtipi_root": "/home/me/runtipi",
   "store_name": "wizard",
-  "port": 8790,
+  "port": 7790,
   "sources": [
-    {"topic": "wizard-os-app"},
+    {"topic": "wizard-app"},
     {"git": "https://github.com/humanitylabs-org/wizard-app-store", "glob": "apps/*"},
     {"local": "/home/me/dev/my-app"},
     {"nostr": "wizard-os-app", "relays": ["wss://relay.ngit.dev"], "authors": ["npub1…"]}
@@ -81,7 +83,7 @@ HTTP API (same data, for the UX and Agent Service): `GET /api/catalog`, `GET /ap
 }
 ```
 
-Default sources are the GitHub topics `wizard-os-app` and `wizard-ai`. A topic only makes a repo **found**. Only a passing `wizard.md` gets it **listed**.
+Default sources are the GitHub topics `wizard-app` and `wizard-ai`. A topic only makes a repo **found**. Only a passing `wizard.md` gets it **listed**.
 
 **Nostr source (off by default).** `WAM_NOSTR=1` or `"nostr": true` adds a source that reads NIP-34 repository announcements (kind 30617) tagged `t=wizard-os-app` from `nostr_relays` (default: relay.ngit.dev, gitnostr.com, relay.damus.io, nos.lol). Every event's signature is verified (stdlib BIP-340, no new dependency). If the app's `wizard.md` declares `publisher: npub1…`, the announcement must be signed by that key or list it as a maintainer; otherwise the app is skipped. A repo found on both GitHub and Nostr is listed once. `authors` restricts a source to known publishers. Each catalog row records `commit`, `found_via`, `publisher` and the announcement id. Why and when this turns on: `wizard-os/docs/ROLLOUT.md`, "Nostr path".
 
@@ -89,7 +91,7 @@ Default sources are the GitHub topics `wizard-os-app` and `wizard-ai`. A topic o
 |---|---|---|
 | `WIZARD_OS_HOME` | `~/.wizard-os` | Where `apps.json`, `skills/`, the compiled `store/` and config live |
 | `RUNTIPI_ROOT` | `~/runtipi` | Runtipi install dir (reads `.env` for the API address and CLI secret) |
-| `WAM_PORT` / `WAM_BIND` | `8790` / `0.0.0.0` | HTTP API + store |
+| `WAM_PORT` / `WAM_BIND` | `7790` / `0.0.0.0` | HTTP API + store |
 | `GITHUB_TOKEN` | none | Raises the topic-search rate limit from 60/hour |
 | `WAM_NOSTR` | off | `1` adds the Nostr catalog source |
 
@@ -119,7 +121,7 @@ The Agent Service reads this file (or `GET /api/apps`). It never needs to know a
 
 ## Making an app
 
-Copy `templates/hello-wizard/`. It's the smallest complete app: `wizard.md`, stock Runtipi files, a stdlib MCP server and a skill. Check it with `python3 -m wam.wizardmd <dir>` or `wizard-os/tools/check_wizard_md.py <dir>`. Then tag the repo `wizard-os-app`.
+Copy `templates/hello-wizard/`. It's the smallest complete app: `wizard.md`, stock Runtipi files, a stdlib MCP server and a skill. Check it with `python3 -m wam.wizardmd <dir>` or `wizard-os/tools/check_wizard_md.py <dir>`. Then tag the repo `wizard-app`.
 
 ## Layout
 
