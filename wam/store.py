@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import nostr, wizardmd
 
-DEFAULT_TOPICS = ["wizard-app", "wizard-ai"]  # wizard-app proposed 9 Oct; wizard-ai kept during transition
+DEFAULT_TOPICS = ["wizard-app", "wizard-ai"]  # wizard-app approved by James 9 Oct (wizard-os DECISIONS #4); wizard-ai kept during transition
 
 
 @dataclass
