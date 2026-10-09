@@ -38,7 +38,7 @@ def build(catalog: dict, installed: list[dict], store_slug: str, host: str, skil
                 "transport": mcp.get("transport", "streamable-http"),
             },
             "skill": f"skills/{m['id']}/SKILL.md" if (skills_src / m["id"] / "SKILL.md").is_file() else None,
-            "view": None if not m.get("view") else {"route": f"/apps/{m['id']}/", "upstream": f"http://{host}:{port}{m['view'].get('path', '/')}"},
+            "view": None if not m.get("view") else {"url": f"/apps/{m['id']}/", "route": f"/apps/{m['id']}/", "upstream": f"http://{host}:{port}{m['view'].get('path', '/')}"},
             "health": f"http://{host}:{port}{m['health']}" if m.get("health") else None,
             "recommends": m.get("recommends"),
         }
