@@ -5,7 +5,7 @@ Sources (sources.json):
   {"local": "/path/to/monorepo", "glob": "apps/*"}   every subfolder with a wizard.md
   {"git": "https://github.com/org/repo", "ref": "main", "glob": "apps/*"}
   {"topic": "wizard-ai"}                             every public GitHub repo with that topic
-  {"nostr": "wizard-os-app", "relays": [...], "authors": [npub...]}
+  {"nostr": "wizard-app", "relays": [...], "authors": [npub...]}
                                                      NIP-34 announcements with that hashtag (off by
                                                      default; WAM_NOSTR=1 or "nostr": true adds it)
 

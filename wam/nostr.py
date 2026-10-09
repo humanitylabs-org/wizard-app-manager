@@ -1,7 +1,7 @@
 """Nostr catalog source (stage 2 of the Nostr path; off unless enabled).
 
 Finds Wizard apps through NIP-34 repository announcements (kind 30617) carrying
-the hashtag `t=wizard-os-app`. The code itself can stay on GitHub: the
+the hashtag `t=wizard-app`. The code itself can stay on GitHub: the
 announcement's `clone` tag points wherever the repo lives. Everything after
 discovery (wizard.md check, store compile, apps.json) is unchanged.
 

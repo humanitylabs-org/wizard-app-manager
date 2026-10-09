@@ -37,7 +37,7 @@ def _event(seckey: int, tags: list, created_at: int = 1_790_000_000, kind: int =
     return ev
 
 
-def _ann(seckey: int, d: str, clone: str, tags=("wizard-os-app",), **kw) -> dict:
+def _ann(seckey: int, d: str, clone: str, tags=("wizard-app",), **kw) -> dict:
     t = [["d", d], ["name", d], ["clone", clone], ["relays", "wss://relay.example"],
          ["r", "a" * 40, "euc"]] + [["t", x] for x in tags]
     return _event(seckey, t, **kw)
@@ -84,7 +84,7 @@ def test_announcements_verify_dedupe_and_newest_wins():
     untagged = _ann(11, "nope", "https://example.com/x.git", tags=("something-else",))
     forged = dict(_ann(13, "evil", "https://example.com/evil.git"), sig="00" * 64)
     relays = {"wss://r1": [old, other, forged], "wss://r2": [new, untagged]}
-    anns, errors = nostr.announcements("wizard-os-app", list(relays), fetch=lambda r, f: relays[r])
+    anns, errors = nostr.announcements("wizard-app", list(relays), fetch=lambda r, f: relays[r])
     got = {(a["d"], a["clone"]) for a in anns}
     assert got == {("app", "https://example.com/new.git"), ("app", "https://example.com/other.git")}
     assert any("bad signature" in e for e in errors)
@@ -94,16 +94,16 @@ def test_announcements_verify_dedupe_and_newest_wins():
 def test_relay_failure_is_an_error_not_a_crash():
     def boom(relay, filt):
         raise ConnectionError("down")
-    anns, errors = nostr.announcements("wizard-os-app", ["wss://down"], fetch=boom)
+    anns, errors = nostr.announcements("wizard-app", ["wss://down"], fetch=boom)
     assert anns == [] and errors == ["nostr wss://down: down"]
 
 
 def test_authors_filter_accepts_npub():
     seen = {}
     pub = _sign(7, b"\0" * 32)[0]
-    nostr.announcements("wizard-os-app", ["wss://r"], authors=[nostr.hex_to_npub(pub)],
+    nostr.announcements("wizard-app", ["wss://r"], authors=[nostr.hex_to_npub(pub)],
                         fetch=lambda r, f: seen.update(f) or [])
-    assert seen["authors"] == [pub] and seen["#t"] == ["wizard-os-app"] and seen["kinds"] == [30617]
+    assert seen["authors"] == [pub] and seen["#t"] == ["wizard-app"] and seen["kinds"] == [30617]
 
 
 def test_publisher_rule():
@@ -140,7 +140,7 @@ def test_discover_nostr_source_end_to_end(tmp_path):
     signer = nostr.hex_to_npub(_sign(7, b"\0" * 32)[0])
     app = _git_app(tmp_path, signer)
     ann = _ann(7, "hello-wizard", f"file://{app}")
-    cands, errors = store.discover([{"nostr": "wizard-os-app", "relays": ["wss://r"]}], tmp_path / "cache",
+    cands, errors = store.discover([{"nostr": "wizard-app", "relays": ["wss://r"]}], tmp_path / "cache",
                                    nostr_fetch=lambda r, f: [ann])
     assert not errors and len(cands) == 1 and cands[0].ok, (errors, [c.results for c in cands])
     assert cands[0].origin == f"nostr:{signer}/hello-wizard"
@@ -154,7 +154,7 @@ def test_discover_nostr_wrong_signer_is_skipped(tmp_path):
     publisher = nostr.hex_to_npub(_sign(9, b"\0" * 32)[0])      # wizard.md says key 9
     app = _git_app(tmp_path, publisher)
     ann = _ann(7, "hello-wizard", f"file://{app}")             # but key 7 announced it
-    cands, _ = store.discover([{"nostr": "wizard-os-app", "relays": ["wss://r"]}], tmp_path / "cache",
+    cands, _ = store.discover([{"nostr": "wizard-app", "relays": ["wss://r"]}], tmp_path / "cache",
                               nostr_fetch=lambda r, f: [ann])
     assert not cands[0].ok
     cat = store.compile_store(cands, tmp_path / "store")
@@ -166,7 +166,7 @@ def test_same_repo_on_github_and_nostr_listed_once(tmp_path, monkeypatch):
     url = f"file://{app}"
     monkeypatch.setattr(store, "topic_repos", lambda topic, token=None: [url])
     ann = _ann(7, "hello-wizard", url + ".git")
-    cands, _ = store.discover([{"topic": "wizard-os-app"}, {"nostr": "wizard-os-app", "relays": ["wss://r"]}],
+    cands, _ = store.discover([{"topic": "wizard-app"}, {"nostr": "wizard-app", "relays": ["wss://r"]}],
                               tmp_path / "cache", nostr_fetch=lambda r, f: [ann])
     assert len(cands) == 1 and cands[0].nostr is None
 
