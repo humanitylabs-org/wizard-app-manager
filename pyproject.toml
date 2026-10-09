@@ -1,0 +1,13 @@
+[project]
+name = "wizard-app-manager"
+version = "0.1.0"
+description = "Finds Wizard apps, checks them, compiles them into a stock Runtipi store, installs them, and writes apps.json."
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+license = {text = "MIT"}
+
+[project.scripts]
+wam = "wam.cli:main"
+
+[tool.setuptools]
+packages = ["wam"]
