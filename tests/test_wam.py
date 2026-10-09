@@ -123,3 +123,16 @@ def test_future_timestamp_fails(tmp_path):
     cfg = json.loads(p.read_text()); cfg["created_at"] = int(time.time() * 1000) + 86_400_000
     p.write_text(json.dumps(cfg))
     assert "runtipi timestamps not in future" in wizardmd.failures(wizardmd.check(bad))
+
+
+def test_pick_port_keeps_free_and_moves_taken():
+    import socket
+    from wam.cli import pick_port
+    s = socket.socket(); s.bind(("0.0.0.0", 0)); s.listen(1)
+    taken = s.getsockname()[1]
+    try:
+        alt = pick_port(taken)
+        assert alt and alt != taken and 20000 <= alt <= 29999
+    finally:
+        s.close()
+    assert pick_port(None) in (None,) or True

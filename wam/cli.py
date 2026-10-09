@@ -37,6 +37,8 @@ class Config:
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "0.0.0.0"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.out = self.home / "store"
+        tok_file = self.home / "github-token"                       # mode 600; lets the App Manager see private repos
+        self.github_token = os.environ.get("GITHUB_TOKEN") or (tok_file.read_text().strip() if tok_file.is_file() else None)
         self.cache = self.home / "cache"
         self.cache.mkdir(parents=True, exist_ok=True)
 
@@ -63,7 +65,7 @@ def catalog(c: Config) -> dict:
 
 
 def refresh(c: Config, pull: bool = True) -> dict:
-    cands, errors = store.discover(c.sources, c.cache, os.environ.get("GITHUB_TOKEN"))
+    cands, errors = store.discover(c.sources, c.cache, c.github_token)
     cat = store.compile_store(cands, c.out)
     head = store.commit_store(c.out)
     cat["errors"] = errors
@@ -82,12 +84,44 @@ def sync_registry(c: Config) -> dict:
     return reg
 
 
+def port_free(port: int) -> bool:
+    """True if nothing on this host listens on the port (any address)."""
+    import socket
+    for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        s = socket.socket(fam, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if fam == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((addr, port))
+        except OSError:
+            return False
+        finally:
+            s.close()
+    return True
+
+
+def pick_port(wanted: int | None, lo: int = 20000, hi: int = 29999) -> int | None:
+    """Keep the app's own port when it's free; otherwise the first free port in lo..hi.
+    Runtipi accepts a `port` in the install form (1024-65535), so this needs no fork."""
+    if wanted and port_free(int(wanted)):
+        return None
+    for p in range(lo, hi + 1):
+        if port_free(p):
+            return p
+    raise SystemExit("no free port in 20000-29999 for this app")
+
+
 def form_defaults(app_id: str, c: Config) -> dict:
     cfg = json.loads((c.out / "apps" / app_id / "config.json").read_text())
     form = {}
     for f in cfg.get("form_fields") or []:
         if "default" in f and f.get("env_variable"):
             form[f["env_variable"]] = f["default"]
+    alt = pick_port(cfg.get("port"))
+    if alt:
+        print(f"{app_id}: port {cfg.get('port')} is taken on this host; using {alt}", file=sys.stderr)
+        form["port"] = alt
     return form
 
 

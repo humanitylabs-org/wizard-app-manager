@@ -45,7 +45,8 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 
 
 def topic_repos(topic: str, token: str | None = None) -> list[str]:
-    """Public repos carrying a GitHub topic (unauthenticated works; 60 searches/hour)."""
+    """Repos carrying a GitHub topic. Unauthenticated: public repos, 60 searches/hour.
+    With a token: also the private repos that token can read (private beta / org apps)."""
     url = f"https://api.github.com/search/repositories?q=topic:{topic}&per_page=100"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "wizard-app-manager"})
     if token:
@@ -64,15 +65,24 @@ def commit_of(root: Path) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def fetch(url: str, ref: str | None, cache: Path) -> Path:
+def _auth(url: str, token: str | None) -> list[str]:
+    """Per-command git auth for GitHub. Never written to .git/config, never in argv-visible URLs."""
+    if not token or not url.startswith("https://github.com/"):
+        return []
+    import base64
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return ["-c", f"http.https://github.com/.extraheader=Authorization: Basic {basic}"]
+
+
+def fetch(url: str, ref: str | None, cache: Path, token: str | None = None) -> Path:
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", url.removeprefix("https://").removesuffix(".git"))
     dest = cache / slug
     if (dest / ".git").is_dir():
-        _run(["git", "fetch", "--depth", "1", "origin", ref or "HEAD"], cwd=dest)
+        _run(["git", *_auth(url, token), "fetch", "--depth", "1", "origin", ref or "HEAD"], cwd=dest)
         _run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=dest)
     else:
         shutil.rmtree(dest, ignore_errors=True)
-        cmd = ["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [url, str(dest)]
+        cmd = ["git", *_auth(url, token), "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [url, str(dest)]
         r = _run(cmd)
         if r.returncode:
             raise RuntimeError(f"clone failed: {url}: {r.stderr.strip()[:300]}")
@@ -95,7 +105,7 @@ def discover(sources: list[dict], cache: Path, token: str | None = None, nostr_f
             if "local" in s:
                 roots = [(str(p), p) for p in expand(Path(s["local"]).expanduser(), s.get("glob"))]
             elif "git" in s:
-                d = fetch(s["git"], s.get("ref"), cache)
+                d = fetch(s["git"], s.get("ref"), cache, token)
                 roots = [(s["git"] + ("/" + str(p.relative_to(d)) if p != d else ""), p) for p in expand(d, s.get("glob"))]
             elif "topic" in s:
                 for url in topic_repos(s["topic"], token):
@@ -103,7 +113,7 @@ def discover(sources: list[dict], cache: Path, token: str | None = None, nostr_f
                         continue
                     seen.add(_norm(url))
                     try:
-                        roots.append((url, fetch(url, None, cache)))
+                        roots.append((url, fetch(url, None, cache, token)))
                     except Exception as e:  # noqa: BLE001
                         errors.append(str(e))
             elif "nostr" in s:
@@ -118,7 +128,7 @@ def discover(sources: list[dict], cache: Path, token: str | None = None, nostr_f
                         continue
                     seen.add(_norm(a["clone"]))
                     try:
-                        roots.append((f"nostr:{a['npub']}/{a['d']}", fetch(a["clone"], None, cache), a))
+                        roots.append((f"nostr:{a['npub']}/{a['d']}", fetch(a["clone"], None, cache, token), a))
                     except Exception as e:  # noqa: BLE001
                         errors.append(str(e))
             else:

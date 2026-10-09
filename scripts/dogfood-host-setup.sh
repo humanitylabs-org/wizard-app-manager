@@ -49,6 +49,8 @@ if [ ! -f "$H/runtipi/.env" ]; then
 fi
 # The App Manager (running as $U) reads Runtipi's .env for the API secret. Nothing else changes.
 chgrp "$U" "$H/runtipi/.env" && chmod 640 "$H/runtipi/.env"
+# Shared Files folder: apps run as uid 1000 and must be able to write Videos/Edited etc.
+mkdir -p "$H/runtipi/media/Videos/Edited" && chown "$U:$U" "$H/runtipi/media" "$H/runtipi/media/Videos" "$H/runtipi/media/Videos/Edited"
 
 # The App Manager's own port (7790) serves the compiled store to Runtipi over the Docker
 # bridge; keep it off the public interface too.
