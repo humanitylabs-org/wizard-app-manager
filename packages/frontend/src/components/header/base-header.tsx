@@ -54,7 +54,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
             <span className="navbar-toggler-icon" />
           </button>
         )}
-        <Link to="/dashboard">
+        <Link to="/apps">
           <h1 className="navbar-brand d-none-navbar-horizontal pe-0 pe-md-3">
             <span className="wizard-brand-tile" aria-hidden="true">
               ✦

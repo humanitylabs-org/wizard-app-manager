@@ -48,7 +48,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   if (user.data?.isLoggedIn || user.data?.isGuestDashboardEnabled) {
-    return redirect('/dashboard');
+    return redirect('/apps');
   }
 
   return redirect('/login');

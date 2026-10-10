@@ -115,10 +115,13 @@ export default () => {
           <CategorySelector initialValue={category} onSelect={setCategory} />
         </ActionBar.Right>
       </ActionBar>
-      <div className="card px-3 pb-3" style={{ borderTopRightRadius: 0, borderTopLeftRadius: 0 }}>
-        <div className="row row-cards">
+      <div className="wsheet wstore">
+        <div className="lgroup">
+          <h4>
+            {category ? t(`APP_CATEGORY_${category.toUpperCase() as Uppercase<typeof category>}`) : t('HEADER_APP_STORE')} <span>{apps.length}</span>
+          </h4>
           {apps.map((app, index) => (
-            <div ref={index === apps.length - 1 ? lastElementRef : null} key={app.urn} className="cursor-pointer col-sm-6 col-lg-4 p-2 mt-4">
+            <div ref={index === apps.length - 1 ? lastElementRef : null} key={app.urn}>
               <StoreTile app={app} isLoading={isLoading} />
             </div>
           ))}

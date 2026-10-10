@@ -6,6 +6,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
+const SystemStats = lazy(() => import('@/modules/dashboard/pages/dashboard').then((module) => ({ default: module.SystemStats })));
 const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 const UserSettingsContainer = lazy(() => import('../containers/user-settings').then((module) => ({ default: module.UserSettingsContainer })));
 const SecurityContainer = lazy(() => import('../containers/security').then((module) => ({ default: module.SecurityContainer })));
@@ -17,7 +18,7 @@ export default () => {
   const [searchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const { userSettings, user } = useAppContext();
-  const [currentTab, setCurrentTab] = React.useState(tab || 'actions');
+  const [currentTab, setCurrentTab] = React.useState(tab || 'system');
 
   const handleTabChange = (newTab: string) => {
     setCurrentTab(newTab);
@@ -28,6 +29,9 @@ export default () => {
     <div className="card d-flex">
       <Tabs value={currentTab}>
         <TabsList>
+          <TabsTrigger onClick={() => handleTabChange('system')} value="system">
+            {t('SETTINGS_SYSTEM_TAB_TITLE', { defaultValue: 'System' })}
+          </TabsTrigger>
           <TabsTrigger onClick={() => handleTabChange('actions')} value="actions">
             {t('SETTINGS_ACTIONS_TAB_TITLE')}
           </TabsTrigger>
@@ -47,6 +51,13 @@ export default () => {
             </DropdownMenuContent>
           </DropdownMenu>
         </TabsList>
+        <TabsContent value="system">
+          <Suspense>
+            <div className="p-3">
+              <SystemStats />
+            </div>
+          </Suspense>
+        </TabsContent>
         <TabsContent value="actions">
           <Suspense>
             <GeneralActionsContainer />
