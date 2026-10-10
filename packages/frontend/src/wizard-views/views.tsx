@@ -18,6 +18,7 @@ import { keepPreviousData, useQuery, useSuspenseQuery } from '@tanstack/react-qu
 import clsx from 'clsx';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
+import { IconCircuitResistor, IconCpu, IconDatabase } from '@tabler/icons-react';
 import './wux.css';
 
 type Kind = 'agent' | 'interface' | 'app' | 'system' | 'other';
@@ -236,7 +237,7 @@ export const MyAppsView = () => {
   const more = (store.data ?? []).filter((a) => !mine.has(a.id)).slice(0, 5);
 
   return (
-    <Sheet search={<SearchBar value={q} onChange={setQ} placeholder="Search your apps and the App Store" />}>
+    <Sheet search={<SearchBar value={q} onChange={setQ} placeholder="Search apps" />}>
       {q.trim() ? (
         <>
           {hits.length ? (
@@ -308,7 +309,7 @@ export const AppStoreView = () => {
 
 /* ---- Resources: a group for the Settings sheet ---------------------------------------------------------------- */
 
-const ResourceRow = ({ icon, title, note, value, pct }: { icon: string; title: string; note: string; value: string; pct: number }) => (
+const ResourceRow = ({ icon, title, note, value, pct }: { icon: ReactNode; title: string; note: string; value: string; pct: number }) => (
   <div className="st-row">
     <span className="st-ic">{icon}</span>
     <span className="st-tx">
@@ -337,10 +338,10 @@ export const ResourcesView = () => {
         <div className="wux-body top">
           <div className="st-group">
             <h4>This Wizard</h4>
-            <ResourceRow icon="▤" title="Storage" note={`${data.diskUsed} of ${data.diskSize} GB used`} value={`${data.percentUsed}%`} pct={data.percentUsed} />
-            <ResourceRow icon="◔" title="Processor" note="Load right now" value={`${Math.round(data.cpuLoad)}%`} pct={data.cpuLoad} />
+            <ResourceRow icon={<IconDatabase />} title="Storage" note={`${data.diskUsed} of ${data.diskSize} GB used`} value={`${data.percentUsed}%`} pct={data.percentUsed} />
+            <ResourceRow icon={<IconCpu />} title="Processor" note="Load right now" value={`${Math.round(data.cpuLoad)}%`} pct={data.cpuLoad} />
             <ResourceRow
-              icon="◇"
+              icon={<IconCircuitResistor />}
               title="Memory"
               note={`${memUsed.toFixed(1)} of ${data.memoryTotal} GB used`}
               value={`${data.percentUsedMemory}%`}

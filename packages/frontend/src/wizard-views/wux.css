@@ -40,11 +40,9 @@
 }
 .wux-sheet.auto { height: auto; min-height: 0; }
 .wux .sheet-grip { flex: 0 0 auto; width: 40px; height: 4px; border-radius: 99px; background: rgba(205, 190, 255, .3); margin: 9px auto; }
-.wux-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 14px 10px; scrollbar-width: none; overscroll-behavior: contain; display: flex; flex-direction: column; }
+.wux-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 14px 10px; scrollbar-width: none; overscroll-behavior: contain; }
 .wux-body::-webkit-scrollbar { display: none; }
-/* added: like the launcher, short content sits at the bottom, nearest the thumb */
-.wux-body > :first-child { margin-top: auto; }
-.wux-body.top > :first-child { margin-top: 0; }
+.wux-body.top { padding-top: 14px; }
 
 /* Search (wizard-ux .search) */
 .wux .search { flex: 0 0 auto; margin: 6px 12px 12px; height: 50px; border-radius: 17px; display: flex; align-items: center; gap: 10px; padding: 0 15px; background: rgba(205, 190, 255, .08); border: 1px solid var(--line-2); }
@@ -116,3 +114,8 @@
 .wux .st-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .wux .st-actions .btn { width: 100%; min-height: 40px; padding: 6px 8px; border-radius: 14px; justify-content: center; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--ink); background: rgba(143, 99, 255, .16); border: 1px solid var(--line-2); box-shadow: none; }
 .wux .st-actions .btn:hover { background: rgba(143, 99, 255, .28); }
+
+/* Base-style resets: the Runtipi/Tabler base must not restyle these pieces. */
+.wux .search input, .wux .search input:focus { border: 0 !important; background: none !important; box-shadow: none !important; padding: 0 !important; border-radius: 0 !important; color: var(--ink) !important; }
+.wux .st-ic svg { width: 18px; height: 18px; }
+.wux .st-actions .btn svg { display: none; }
