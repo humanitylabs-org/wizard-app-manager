@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install wizard-app-manager as user services next to a stock Runtipi.
+# Install wizard-app-manager as a user service next to a stock Runtipi.
+# Apps come from the Wizard App Index (https://apps.aiwizards.com); nothing searches GitHub from this box.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
@@ -10,6 +11,7 @@ if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   sudo bash /tmp/runtipi-setup.sh
 fi
 python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+command -v git >/dev/null || sudo apt-get install -y git
 
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
 cat > "$HOME/.local/bin/wam" <<EOF
@@ -20,7 +22,7 @@ chmod +x "$HOME/.local/bin/wam"
 
 cat > "$HOME/.config/systemd/user/wizard-app-manager.service" <<EOF
 [Unit]
-Description=Wizard App Manager (API + compiled Runtipi store)
+Description=Wizard App Manager API (127.0.0.1:7790; changes need ~/.wizard-os/api-token)
 After=network-online.target
 
 [Service]
@@ -33,32 +35,12 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
-cat > "$HOME/.config/systemd/user/wizard-app-manager-refresh.service" <<EOF
-[Unit]
-Description=Wizard App Manager: find and compile apps
-
-[Service]
-Type=oneshot
-Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
-WorkingDirectory=$HERE
-ExecStart=/usr/bin/env python3 -m wam refresh
-EOF
-
-cat > "$HOME/.config/systemd/user/wizard-app-manager-refresh.timer" <<EOF
-[Unit]
-Description=Refresh the Wizard app store every 30 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=30min
-
-[Install]
-WantedBy=timers.target
-EOF
-
 loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
-systemctl --user enable --now wizard-app-manager.service wizard-app-manager-refresh.timer
+systemctl --user disable --now wizard-app-manager-refresh.timer 2>/dev/null || true   # old per-box GitHub search
+rm -f "$HOME/.config/systemd/user/wizard-app-manager-refresh."{service,timer}
+systemctl --user daemon-reload
+systemctl --user enable --now wizard-app-manager.service
+systemctl --user restart wizard-app-manager.service
 sleep 2
-systemctl --user start wizard-app-manager-refresh.service || true
 "$HOME/.local/bin/wam" doctor

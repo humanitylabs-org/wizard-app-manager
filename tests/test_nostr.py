@@ -7,7 +7,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from wam import nostr, store, wizardmd  # noqa: E402
+from wam import nostr, wizardmd  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "templates" / "hello-wizard"
@@ -134,41 +134,6 @@ def _git_app(tmp_path: Path, publisher: str | None) -> Path:
                 ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
         subprocess.run(cmd, cwd=app, check=True)
     return app
-
-
-def test_discover_nostr_source_end_to_end(tmp_path):
-    signer = nostr.hex_to_npub(_sign(7, b"\0" * 32)[0])
-    app = _git_app(tmp_path, signer)
-    ann = _ann(7, "hello-wizard", f"file://{app}")
-    cands, errors = store.discover([{"nostr": "wizard-app", "relays": ["wss://r"]}], tmp_path / "cache",
-                                   nostr_fetch=lambda r, f: [ann])
-    assert not errors and len(cands) == 1 and cands[0].ok, (errors, [c.results for c in cands])
-    assert cands[0].origin == f"nostr:{signer}/hello-wizard"
-    cat = store.compile_store(cands, tmp_path / "store")
-    m = cat["apps"][0]
-    assert m["found_via"] == "nostr" and m["publisher"] == signer and len(m["commit"]) == 40
-    assert m["nostr"]["event"] == ann["id"]
-
-
-def test_discover_nostr_wrong_signer_is_skipped(tmp_path):
-    publisher = nostr.hex_to_npub(_sign(9, b"\0" * 32)[0])      # wizard.md says key 9
-    app = _git_app(tmp_path, publisher)
-    ann = _ann(7, "hello-wizard", f"file://{app}")             # but key 7 announced it
-    cands, _ = store.discover([{"nostr": "wizard-app", "relays": ["wss://r"]}], tmp_path / "cache",
-                              nostr_fetch=lambda r, f: [ann])
-    assert not cands[0].ok
-    cat = store.compile_store(cands, tmp_path / "store")
-    assert cat["apps"] == [] and "nostr signer matches wizard.md publisher" in cat["skipped"][0]["failed"]
-
-
-def test_same_repo_on_github_and_nostr_listed_once(tmp_path, monkeypatch):
-    app = _git_app(tmp_path, None)
-    url = f"file://{app}"
-    monkeypatch.setattr(store, "topic_repos", lambda topic, token=None: [url])
-    ann = _ann(7, "hello-wizard", url + ".git")
-    cands, _ = store.discover([{"topic": "wizard-app"}, {"nostr": "wizard-app", "relays": ["wss://r"]}],
-                              tmp_path / "cache", nostr_fetch=lambda r, f: [ann])
-    assert len(cands) == 1 and cands[0].nostr is None
 
 
 def test_nostr_is_off_by_default(monkeypatch):
