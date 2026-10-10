@@ -76,6 +76,18 @@ def test_registry_reads_app_manager_files(tmp_path):
     assert "_skill_src" not in data["apps"][0]
 
 
+def test_registry_mirrors_grants_without_tokens(tmp_path):
+    rt = tmp_path / "runtipi"
+    _fake_store_app(rt)
+    installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
+    assert "grants" not in registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    (rt / "state").mkdir()
+    (rt / "state" / "wizard-grants.json").write_text(json.dumps({"schema": 1, "grants": [
+        {"from": "hermes-agent", "to": "hello-wizard", "reason": "agent", "approved": "default", "created_at": 1, "token": "x"}]}))
+    reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    assert reg["grants"] == [{"from": "hermes-agent", "to": "hello-wizard", "reason": "agent", "approved": "default", "created_at": 1}]
+
+
 def test_build_form_generates_required_passwords(tmp_path, monkeypatch):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
     c = cli.Config()

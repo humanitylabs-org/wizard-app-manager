@@ -77,8 +77,25 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
     for a in apps:
         for s in a["provides"]:
             slots.setdefault(s, []).append(a["id"])
-    return {"schema": SCHEMA, "updated_at": int(time.time()), "store": store, "apps": apps,
-            "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
+    reg = {"schema": SCHEMA, "updated_at": int(time.time()), "store": store, "apps": apps,
+           "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
+    grants = read_grants(runtipi_root)
+    if grants is not None:
+        reg["grants"] = grants
+    return reg
+
+
+def read_grants(runtipi_root: Path) -> list[dict] | None:
+    """App-to-app grants from the App Manager's state/wizard-grants.json (spec/PERMISSIONS.md). Never tokens."""
+    p = runtipi_root / "state" / "wizard-grants.json"
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    keep = ("from", "to", "reason", "approved", "created_at")
+    return [{k: g[k] for k in keep if k in g} for g in data.get("grants") or [] if isinstance(g, dict)]
 
 
 def write(reg: dict, root: Path | None = None) -> Path:
