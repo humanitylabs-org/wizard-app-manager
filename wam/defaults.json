@@ -5,7 +5,7 @@
       "name": "Shell (Wizard UX)",
       "app": "wizard-shell",
       "required": true,
-      "note": "Wizard UX. Today one app with the Agent Service (wizard-agent-service#3); being split (#33). Private until published: installs only on boxes whose GitHub login can see it.",
+      "note": "Wizard UX. Today one app with the Agent Service (wizard-agent-service#3); being split (#33). Public and in the index.",
       "repo": "humanitylabs-org/wizard-agent-service"
     },
     "agent-service": {
