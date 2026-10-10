@@ -42,7 +42,7 @@ export default () => {
       return {
         id: appName,
         name: info.name,
-        desc: info.short_desc,
+        desc: m?.summary ?? info.short_desc,
         kind,
         screen: m ? hasScreen(m.type) : !info.no_gui,
         uses: m?.uses ?? [],

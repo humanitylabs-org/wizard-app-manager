@@ -88,7 +88,7 @@ export default () => {
 
   const installed = new Map((mine?.installed ?? []).map((a) => [a.info.urn, a.app.status]));
   const toNode = (a: Parameters<typeof nodeFromIndex>[0]): GraphNode =>
-    nodeFromIndex(a, `/app-store/${STORE_SLUG}/${a.id}`, { installed: installed.has(`${a.id}:${STORE_SLUG}`) });
+    nodeFromIndex(a, `/app-store/${STORE_SLUG}/${a.id}`, installed.has(`${a.id}:${STORE_SLUG}`) ? { installed: true } : { cta: 'Install' });
 
   const bar = (
     <div className="wstorebar">

@@ -1,6 +1,6 @@
 import { IconCloudOff } from '@tabler/icons-react';
 import clsx from 'clsx';
-import { type ReactNode, useId, useLayoutEffect, useRef, useState } from 'react';
+import { type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import './app-graph.css';
 
@@ -27,6 +27,7 @@ export type GraphNode = {
   update?: boolean;
   installed?: boolean;
   ghost?: boolean;
+  cta?: string;
 };
 
 type Role = 'in' | 'main' | 'out' | 'solo';
@@ -69,6 +70,7 @@ const NodeCard = ({ n, pos, extra }: { n: GraphNode; pos: Role; extra?: ReactNod
         <span className="gkind">{n.ghost ? GHOST_LABEL : KIND[n.kind]}</span>
         <span className={clsx('gscreen', n.screen ? 'on' : 'off')}>{n.screen ? 'Screen' : 'Headless'}</span>
         {n.installed && !n.status ? <span className="gok">✓ Installed</span> : null}
+        {n.cta && !n.ghost ? <span className="gcta">{n.cta} ›</span> : null}
       </span>
       {extra ? <span className="gextra">{extra}</span> : null}
     </span>
@@ -80,7 +82,6 @@ type Wire = { d: string; ghost: boolean; live: boolean };
 const Flow = ({ main, ins, outs, animate }: { main: GraphNode; ins: GraphNode[]; outs: GraphNode[]; animate?: boolean }) => {
   const ref = useRef<HTMLDivElement>(null);
   const [wires, setWires] = useState<Wire[]>([]);
-  const gid = useId().replace(/:/g, '');
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -127,23 +128,20 @@ const Flow = ({ main, ins, outs, animate }: { main: GraphNode; ins: GraphNode[];
   }, [animate]);
 
   return (
-    <div className={clsx('gflow', `k-${main.kind}`)} ref={ref}>
+    <div className={clsx('gflow', `k-${main.kind}`, { 'no-uses': !outs.length })} ref={ref}>
+      <span className="gcolh h-in">Interface</span>
+      <span className="gcolh h-main">{KIND[main.kind]}</span>
+      <span className="gcolh h-out">Uses</span>
       <svg className="gwires" aria-hidden="true">
-        <defs>
-          <linearGradient id={`g${gid}`} x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0" stopColor="#3fe0ff" stopOpacity=".75" />
-            <stop offset="1" stopColor="#b99bff" stopOpacity=".85" />
-          </linearGradient>
-        </defs>
         {wires.map((w) => (
           <g key={w.d}>
             {!w.ghost ? <path className="gwire-glow" d={w.d} /> : null}
-            <path className={clsx('gwire', { ghost: w.ghost, live: w.live })} d={w.d} stroke={w.ghost ? undefined : `url(#g${gid})`} />
+            <path className={clsx('gwire', { ghost: w.ghost })} d={w.d} />
+            {w.live ? <path className="gwire-pulse" d={w.d} /> : null}
           </g>
         ))}
       </svg>
       <div className="gcol in">
-        <span className="gcolh">Interface</span>
         {ins.length ? (
           ins.map((n) => <NodeCard key={n.id} n={n} pos="in" />)
         ) : (
@@ -159,11 +157,9 @@ const Flow = ({ main, ins, outs, animate }: { main: GraphNode; ins: GraphNode[];
         )}
       </div>
       <div className="gcol main">
-        <span className="gcolh">{KIND[main.kind]}</span>
         <NodeCard n={main} pos="main" extra={main.desc} />
       </div>
       <div className="gcol out">
-        <span className="gcolh">Uses</span>
         {outs.length ? outs.map((n) => <NodeCard key={n.id} n={n} pos="out" />) : <span className="gnone">Needs no other apps</span>}
       </div>
     </div>
