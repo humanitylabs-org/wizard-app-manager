@@ -1,12 +1,17 @@
-"""wizard-app-manager: install Wizard apps from the Wizard App Index onto stock Runtipi.
+"""wizard-app-manager: stock Runtipi plus the Wizard App Index.
 
+Every runtipi-cli command works as-is (passed straight through; app ids may drop the ":store" suffix):
+  wam app start|stop|update|reset|uninstall|backup|restore|list-backups|delete-backup <app>
+  wam app start-all|stop-all|available-updates      wam installed
+  wam appstore add|list|remove|update               wam start|stop|restart|prepare|update|version|debug
+
+Wizard additions:
   wam search [query]            search the index (apps.aiwizards.com)
   wam install <app>             <app> = id (transcriber), repo (owner/name) or a local folder with wizard.md
         [--set KEY=VALUE ...]   install-form values; required passwords are generated and saved if not given
   wam uninstall <id>            remove through Runtipi, rewrite apps.json
-  wam apps [--json]             what is installed (apps.json)
-  wam update [<id>]             re-install at the commit the index lists now (after the owner says yes)
-  wam sync                      mirror every index app into Runtipi's "wizardapps" store (the timer runs this)
+  wam apps [--json]             what is installed, with each app's MCP address (apps.json)
+  wam sync                      mirror every index app into Runtipi's "Wizard Apps" store (the timer runs this)
   wam refresh                   re-register the local store with Runtipi and pull it
   wam doctor                    check the whole chain
   wam skin on|off               Wizard UX look for the stock Runtipi dashboard (a style layer; Runtipi is unchanged)
@@ -414,14 +419,44 @@ def _sets(pairs: list[str]) -> dict[str, str]:
     return out
 
 
+# Everything runtipi-cli does, wam does too: these commands go straight to the stock runtipi-cli, unchanged.
+RUNTIPI_COMMANDS = {"app", "appstore", "installed", "start", "stop", "restart", "prepare", "debug",
+                    "reset-password", "update", "version", "completion"}
+
+
+def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
+    """`wam app update hermes-frontend-3` -> `... hermes-frontend-3:wizardapps` when exactly one store has it."""
+    if not args or args[0] != "app":
+        return args
+    out = list(args)
+    for i, tok in enumerate(out[2:], start=2):
+        if tok.startswith("-") or ":" in tok:
+            continue
+        hits = sorted(p.parent.name for p in (runtipi_root / "apps").glob(f"*/{tok}") if p.is_dir())
+        if len(hits) == 1:
+            out[i] = f"{tok}:{hits[0]}"
+    return out
+
+
+def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
+    exe = runtipi_root / "runtipi-cli"
+    if not exe.is_file():
+        print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
+        return 1
+    import subprocess
+    return subprocess.call([str(exe), *_short_ids(runtipi_root, args)], cwd=runtipi_root)
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in RUNTIPI_COMMANDS:
+        return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
     i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
     u = sub.add_parser("uninstall"); u.add_argument("id")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
-    up = sub.add_parser("update"); up.add_argument("id", nargs="?")
     sub.add_parser("refresh"); sub.add_parser("doctor"); sub.add_parser("serve"); sub.add_parser("sync")
     sk = sub.add_parser("skin"); sk.add_argument("state", choices=["on", "off"])
     args = ap.parse_args(argv)
@@ -440,8 +475,6 @@ def main(argv: list[str] | None = None) -> int:
             reg = json.loads(p.read_text()) if p.is_file() else {"apps": []}
             print(json.dumps(reg, indent=2) if args.json else "\n".join(
                 f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
-        elif args.cmd == "update":
-            print(json.dumps(update(c, args.id), indent=2))
         elif args.cmd == "sync":
             print(json.dumps(sync(c), indent=2))
         elif args.cmd == "refresh":
