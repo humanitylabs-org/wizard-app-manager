@@ -35,12 +35,39 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
+# Every 10 minutes: mirror the Wizard App Index into Runtipi's "Wizard Apps" store, so Runtipi's own
+# App Store, Install, Update and Uninstall buttons cover every Wizard app.
+cat > "$HOME/.config/systemd/user/wizard-app-manager-sync.service" <<EOF
+[Unit]
+Description=Mirror the Wizard App Index into Runtipi's Wizard Apps store
+
+[Service]
+Type=oneshot
+Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+WorkingDirectory=$HERE
+ExecStart=/usr/bin/env python3 -m wam sync
+EOF
+
+cat > "$HOME/.config/systemd/user/wizard-app-manager-sync.timer" <<EOF
+[Unit]
+Description=Sync Wizard Apps every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user disable --now wizard-app-manager-refresh.timer 2>/dev/null || true   # old per-box GitHub search
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-refresh."{service,timer}
 systemctl --user daemon-reload
-systemctl --user enable --now wizard-app-manager.service
+systemctl --user enable --now wizard-app-manager.service wizard-app-manager-sync.timer
 systemctl --user restart wizard-app-manager.service
 sleep 2
+"$HOME/.local/bin/wam" sync >/dev/null || echo "first sync failed; run: wam sync"
+"$HOME/.local/bin/wam" skin on || true
 "$HOME/.local/bin/wam" doctor
