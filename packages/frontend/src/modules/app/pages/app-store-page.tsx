@@ -118,7 +118,7 @@ export default () => {
       <div className="wsheet wstore">
         <div className="lgroup">
           <h4>
-            {category ? t(`APP_CATEGORY_${category.toUpperCase() as Uppercase<typeof category>}`) : t('HEADER_APP_STORE')} <span>{apps.length}</span>
+            {category ? t(`APP_CATEGORY_${category.toUpperCase() as Uppercase<typeof category>}`) : t('APP_STORE_ALL_APPS', { defaultValue: 'All apps' })} <span>{apps.length}</span>
           </h4>
           {apps.map((app, index) => (
             <div ref={index === apps.length - 1 ? lastElementRef : null} key={app.urn}>

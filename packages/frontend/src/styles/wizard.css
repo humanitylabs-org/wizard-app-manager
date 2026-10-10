@@ -222,7 +222,7 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
 .wsheet {
   max-width: 760px; margin: 4px auto 0; padding: 14px 14px 18px; border-radius: 30px;
   background: linear-gradient(180deg, rgba(26, 16, 56, .86), rgba(12, 7, 28, .92));
-  border: 1px solid var(--w-line-2); box-shadow: 0 30px 80px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .06);
+  border: 1px solid var(--w-line-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .06) !important;
   backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
 }
 .wsheet .lgroup { margin: 10px 0 4px; }
@@ -267,6 +267,8 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
 
 /* Phone: navigation moves to a bottom bar in thumb reach (Wizard UX dock position) */
 @media (max-width: 767.98px) {
+  /* backdrop-filter on the header would trap the fixed bottom bar inside it */
+  header.navbar, .navbar-overlap { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: rgba(8, 5, 18, .96) !important; }
   header.navbar .navbar-toggler { display: none !important; }
   #navbar-menu {
     display: flex !important; position: fixed; left: 0; right: 0; bottom: 0; z-index: 1030; height: auto !important;
@@ -277,9 +279,15 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
   #navbar-menu > div { flex-direction: row !important; justify-content: center; }
   #navbar-menu .navbar-nav { flex-direction: row !important; justify-content: space-around; width: 100%; gap: 0 !important; margin: 0 !important; }
   #navbar-menu .nav-item { flex: 1; border: 0 !important; }
-  #navbar-menu .nav-link { flex-direction: column; justify-content: center; gap: 2px; min-height: 52px; padding: 4px 0 !important; font-size: 11px; }
+  #navbar-menu .nav-link { flex-direction: column; justify-content: center; gap: 2px; min-height: 52px; padding: 4px 0 !important; font-size: 11px; white-space: nowrap; border-radius: 14px; }
   #navbar-menu .nav-link-icon { margin: 0 !important; display: inline-block !important; }
   #navbar-menu .nav-item.active .nav-link { color: #fff !important; background: rgba(143, 99, 255, .16); }
   .page-wrapper { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
   .wsheet { border-radius: 24px; padding: 10px 10px 14px; }
 }
+
+/* Polish: one-height filters, tabs that scroll instead of wrapping, store column aligned with the title */
+.action-bar .form-select, .action-bar input.form-control, .action-bar [role="combobox"] { height: 46px !important; }
+.card-header:has(.nav-tabs) .nav-tabs, [role="tablist"] { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
+[role="tablist"] > * { white-space: nowrap; flex: 0 0 auto; }
+@media (min-width: 768px) { .wsheet, .action-bar.action-bar-sticky { margin-left: 0 !important; } }

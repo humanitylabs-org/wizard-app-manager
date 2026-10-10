@@ -667,5 +667,6 @@
   "APP_CATEGORY_APP": "Apps",
   "APP_CATEGORY_SYSTEM": "System Apps",
   "MY_APPS_OTHER": "Other apps",
-  "SETTINGS_SYSTEM_TAB_TITLE": "System"
+  "SETTINGS_SYSTEM_TAB_TITLE": "System",
+  "APP_STORE_ALL_APPS": "All apps"
 }
