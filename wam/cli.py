@@ -26,6 +26,7 @@ import os
 import platform
 import secrets
 import socket
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,7 +98,29 @@ def sync_registry(c: Config) -> dict:
     rt = c.runtipi()
     reg = registry.build(catalog(c), rt.installed(), c.store_name, c.host_ip(), c.out / "skills")
     registry.write(reg, c.out / "skills", c.home)
+    # Apps run in containers: give them a read-only copy of apps.json + skills/ (never secrets or tokens) in
+    # Runtipi's app-data, where an app's compose can mount it (${ROOT_FOLDER_HOST}/app-data/wizard-os).
+    shared = c.runtipi_root / "app-data" / "wizard-os"
+    if ensure_shared_dir(shared):
+        registry.write(json.loads(json.dumps(reg)), c.out / "skills", shared)
     return reg
+
+
+def ensure_shared_dir(path: Path) -> bool:
+    """Runtipi creates app-data/ as root; make our one subfolder owned by this user (via Docker, which wam
+    already drives) so apps.json can be shared with app containers without sudo."""
+    try:
+        path.mkdir(exist_ok=True)
+    except PermissionError:
+        uid, gid = os.getuid(), os.getgid()
+        r = subprocess.run(["docker", "run", "--rm", "-v", f"{path.parent}:/a", "alpine:3.20", "sh", "-c",
+                            f"mkdir -p /a/{path.name} && chown {uid}:{gid} /a/{path.name} && chmod 0755 /a/{path.name}"],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode:
+            print(f"note: could not create {path} ({r.stderr.strip()[:200]}); apps in containers won't see apps.json",
+                  file=sys.stderr)
+            return False
+    return os.access(path, os.W_OK)
 
 
 def port_free(port: int) -> bool:

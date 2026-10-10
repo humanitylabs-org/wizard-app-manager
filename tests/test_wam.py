@@ -210,3 +210,22 @@ def test_template_mcp_server_speaks_mcp():
         assert names == ["wizard_time", "wizard_echo"]
     finally:
         proc.terminate()
+
+
+def test_amd64_only_app_allowed_on_arm64_with_emulation(tmp_path):
+    app = {"id": "x", "architectures": ["amd64"]}
+    assert not store.matches_arch(app, "aarch64", binfmt=tmp_path)
+    (tmp_path / "rosetta").write_text("enabled\n")
+    assert store.matches_arch(app, "aarch64", binfmt=tmp_path)
+    assert store.matches_arch(app, "x86_64", binfmt=tmp_path)
+    assert not store.matches_arch({"id": "y", "architectures": ["arm64"]}, "x86_64", binfmt=tmp_path)
+
+
+def test_amd64_only_app_pinned_for_emulation(tmp_path):
+    (tmp_path / "rosetta").write_text("enabled\n")
+    cfg = {"supported_architectures": ["amd64"]}
+    assert store.needs_amd64_emulation(cfg, "aarch64", tmp_path)
+    assert not store.needs_amd64_emulation(cfg, "x86_64", tmp_path)
+    assert not store.needs_amd64_emulation({"supported_architectures": ["amd64", "arm64"]}, "aarch64", tmp_path)
+    out = yaml.safe_load(store.pin_amd64("services:\n  a:\n    image: x\n  b:\n    image: y\n"))
+    assert {s["platform"] for s in out["services"].values()} == {"linux/amd64"}

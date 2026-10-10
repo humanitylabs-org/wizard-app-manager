@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -82,6 +83,23 @@ def loopback_compose(text: str) -> str:
     return yaml.safe_dump(doc, sort_keys=False, width=1000, allow_unicode=True)
 
 
+def needs_amd64_emulation(cfg: dict, machine: str | None = None, binfmt: Path | None = None) -> bool:
+    """amd64-only app on an arm64 box that can emulate amd64 (Runtipi refuses it otherwise)."""
+    import platform as _platform
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine or _platform.machine(), machine or _platform.machine())
+    archs = cfg.get("supported_architectures") or []
+    return arch == "arm64" and "amd64" in archs and "arm64" not in archs and amd64_emulation(binfmt or BINFMT)
+
+
+def pin_amd64(text: str) -> str:
+    """Run every service of the app as linux/amd64 (through the box's Rosetta/qemu emulation)."""
+    doc = yaml.safe_load(text)
+    for svc in (doc.get("services") or {}).values():
+        if isinstance(svc, dict):
+            svc.setdefault("platform", "linux/amd64")
+    return yaml.safe_dump(doc, sort_keys=False, width=1000, allow_unicode=True)
+
+
 def add_app(out: Path, root: Path, m: dict, bump_from: str | None = None) -> None:
     """Write one app into the local store. `bump_from` is the commit this box had before: if the commit changed,
     tipi_version is raised past the old local value so Runtipi shows its own "Update available" badge even when
@@ -106,7 +124,12 @@ def add_app(out: Path, root: Path, m: dict, bump_from: str | None = None) -> Non
     if cat:
         cfg["categories"] = cat
     (dst / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
-    (dst / "docker-compose.yml").write_text(loopback_compose((root / d["runtime"]["compose"]).read_text()))
+    compose = loopback_compose((root / d["runtime"]["compose"]).read_text())
+    if needs_amd64_emulation(cfg):
+        cfg["supported_architectures"] = sorted(set(cfg.get("supported_architectures") or []) | {"arm64"})
+        (dst / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+        compose = pin_amd64(compose)
+    (dst / "docker-compose.yml").write_text(compose)
     rt_dir = (root / d["runtime"]["config"]).parent
     for cand in (rt_dir / "metadata" / "logo.jpg", rt_dir / "logo.jpg", root / "metadata" / "logo.jpg"):
         if cand.is_file():
@@ -192,9 +215,23 @@ def ensure_store_server(out: Path) -> str:
     raise RuntimeError(f"{STORE_CONTAINER} started but never answered on :{STORE_PORT}")
 
 
-def matches_arch(app: dict, arch: str) -> bool:
+BINFMT = Path("/proc/sys/fs/binfmt_misc")
+
+
+def amd64_emulation(binfmt: Path = BINFMT) -> bool:
+    """An arm64 box that runs amd64 images through Rosetta (Apple VMs) or qemu-user."""
+    return any((binfmt / n).exists() for n in ("rosetta", "qemu-x86_64"))
+
+
+def matches_arch(app: dict, arch: str, binfmt: Path = BINFMT) -> bool:
     norm = {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
-    return not app.get("architectures") or norm in app["architectures"]
+    archs = app.get("architectures") or []
+    if not archs or norm in archs:
+        return True
+    if norm == "arm64" and "amd64" in archs and amd64_emulation(binfmt):
+        print(f"note: {app.get('id')} is amd64-only; running it under amd64 emulation (slower)", file=sys.stderr)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------- Wizard UX skin for the stock dashboard
