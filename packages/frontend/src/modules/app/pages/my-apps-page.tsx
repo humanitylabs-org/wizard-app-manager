@@ -1,12 +1,10 @@
-import { Link, useNavigate } from 'react-router';
+import { Link } from 'react-router';
 import { getInstalledAppsOptions, getLinksOptions } from '@/api-client/@tanstack/react-query.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import type { CustomLink } from '@/types/app.types';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { AppTile } from '../components/app-tile/app-tile';
 import { LinkTile } from '../components/link-tile/link-tile';
-import { ButtonTile } from '../components/button-tile/button-tile';
-import { IconLayoutGridAdd, IconLinkPlus } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
@@ -46,7 +44,6 @@ export default () => {
   const { updatesAvailable } = useAppContext();
 
   const addLinkDisclosure = useDisclosure();
-  const navigate = useNavigate();
   const { t } = useTranslation();
 
   const { installed } = apps;
@@ -96,24 +93,6 @@ export default () => {
           subtitle="MY_APPS_EMPTY_SUBTITLE"
           redirectPath="/app-store"
           actionLabel="MY_APPS_EMPTY_ACTION"
-          extraContent={
-            <div className="d-flex flex-column flex-sm-row gap-2 justify-content-center">
-              <ButtonTile
-                title={t('CUSTOM_APP_ADD_TITLE')}
-                subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
-                action={() => navigate('/apps/create')}
-                icon={<IconLayoutGridAdd size={50} stroke={1.5} color="#A4A4A4" />}
-                className="col-12 col-sm-6 col-lg-6 col-lg-6"
-              />
-              <ButtonTile
-                title={t('LINKS_ADD_TITLE')}
-                subtitle={t('LINKS_ADD_SUBTITLE')}
-                action={() => addLinkDisclosure.open()}
-                icon={<IconLinkPlus size={50} stroke={1.5} color="#A4A4A4" />}
-                className="col-12 col-sm-6 col-md-6 col-lg-6"
-              />
-            </div>
-          }
         />
       ) : (
         <div className="row row-cards" data-testid="apps-list">
@@ -128,18 +107,6 @@ export default () => {
             );
           })}
           {customLinks.map(renderLink)}
-          <ButtonTile
-            title={t('CUSTOM_APP_ADD_TITLE')}
-            subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
-            action={() => navigate('/apps/create')}
-            icon={<IconLayoutGridAdd size={50} stroke={1.5} />}
-          />
-          <ButtonTile
-            title={t('LINKS_ADD_TITLE')}
-            subtitle={t('LINKS_ADD_SUBTITLE')}
-            action={() => addLinkDisclosure.open()}
-            icon={<IconLinkPlus size={50} stroke={1.5} />}
-          />
         </div>
       )}
       <AddLinkDialog isOpen={addLinkDisclosure.isOpen} onClose={() => addLinkDisclosure.close()} />

@@ -1,4 +1,3 @@
-import { LanguageSelector } from '@/components/language-selector/language-selector';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
@@ -147,10 +146,6 @@ export const UserSettingsForm = (props: IProps) => {
     }
   };
 
-  const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    window.open('/api/system/certificate');
-  };
 
   return (
     <>
@@ -169,7 +164,6 @@ export const UserSettingsForm = (props: IProps) => {
         <IconUser className="me-2" />
         <h2 className="text-2xl font-bold mb-0">{t('SETTINGS_GENERAL_USER_SETTINGS')}</h2>
       </div>
-      <LanguageSelector showLabel locale={currentLocale} />
       <Controller
         control={control}
         name="themeBase"
@@ -188,31 +182,6 @@ export const UserSettingsForm = (props: IProps) => {
           <h2 className="text-2xl font-bold mb-0">{t('SETTINGS_GENERAL_TITLE')}</h2>
         </div>
         <p className="mb-4">{t('SETTINGS_GENERAL_SUBTITLE')}</p>
-        <div className="mb-3">
-          <Controller
-            control={control}
-            name="guestDashboard"
-            defaultValue={false}
-            render={({ field: { onChange, value, ref, ...rest } }) => (
-              <Switch
-                className="mb-3"
-                ref={ref}
-                checked={value}
-                onCheckedChange={onChange}
-                {...rest}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
-                    <Tooltip className="tooltip" anchorSelect=".guest-dashboard-hint">
-                      {t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')}
-                    </Tooltip>
-                    <span className={clsx('ms-1 form-help guest-dashboard-hint')}>?</span>
-                  </>
-                }
-              />
-            )}
-          />
-        </div>
         <div className="mb-3">
           <Controller
             control={control}
@@ -303,22 +272,6 @@ export const UserSettingsForm = (props: IProps) => {
             )}
           />
         </div>
-        <div className="mb-3">
-          <Input
-            {...register('appsRepoUrl')}
-            label={
-              <>
-                {t('SETTINGS_GENERAL_APPS_REPO')}
-                <Tooltip className="tooltip" anchorSelect=".apps-repo-hint">
-                  {t('SETTINGS_GENERAL_APPS_REPO_HINT')}
-                </Tooltip>
-                <span className={clsx('ms-1 form-help apps-repo-hint')}>?</span>
-              </>
-            }
-            error={errors.appsRepoUrl?.message}
-            placeholder="https://github.com/runtipi/runtipi-appstore"
-          />
-        </div>
         <div>
           <Controller
             control={control}
@@ -330,26 +283,6 @@ export const UserSettingsForm = (props: IProps) => {
               </Suspense>
             )}
           />
-        </div>
-        <div className="mb-3">
-          <Input
-            {...register('localDomain')}
-            label={
-              <>
-                {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
-                <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
-                  {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
-                </Tooltip>
-                <span className={clsx('ms-1 form-help local-domain-hint')}>?</span>
-              </>
-            }
-            error={errors.localDomain?.message}
-            placeholder="tipi.lan"
-            disabled={initialValues?.advancedSettings === false}
-          />
-          <Button className="mt-2 mb-2" onClick={downloadCertificate}>
-            {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
-          </Button>
         </div>
         {initialValues?.advancedSettings && (
           <div>

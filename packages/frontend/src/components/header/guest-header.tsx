@@ -8,5 +8,5 @@ export const GuestHeader = () => {
     navigate('/login');
   };
 
-  return <BaseHeader isLoggedIn={false} allowAutoThemes showCertificateButton onLogin={handleLogin} />;
+  return <BaseHeader isLoggedIn={false} allowAutoThemes onLogin={handleLogin} />;
 };

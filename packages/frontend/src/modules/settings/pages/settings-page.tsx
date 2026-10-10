@@ -5,7 +5,6 @@ import { Suspense, lazy } from 'react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import { AppStoresContainer } from '../containers/app-stores-container';
 
 const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 const UserSettingsContainer = lazy(() => import('../containers/user-settings').then((module) => ({ default: module.UserSettingsContainer })));
@@ -38,16 +37,12 @@ export default () => {
           <TabsTrigger onClick={() => handleTabChange('security')} value="security">
             {t('SETTINGS_SECURITY_TAB_TITLE')}
           </TabsTrigger>
-          <TabsTrigger onClick={() => handleTabChange('appstores')} value="appstores" className="d-none d-md-block">
-            {t('SETTINGS_APPSTORES_TAB_TITLE')}
-          </TabsTrigger>
           <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" className="d-none d-md-block">
             {t('SETTINGS_LOGS_TAB_TITLE')}
           </TabsTrigger>
           <DropdownMenu>
             <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
               <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -65,11 +60,6 @@ export default () => {
         <TabsContent value="security">
           <Suspense>
             <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
-          </Suspense>
-        </TabsContent>
-        <TabsContent value="appstores">
-          <Suspense>
-            <AppStoresContainer />
           </Suspense>
         </TabsContent>
         <TabsContent value="logs">

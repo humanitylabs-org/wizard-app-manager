@@ -43,7 +43,7 @@ export const PageTitle = ({ apps }: Props) => {
 
   return (
     <>
-      <div className="page-pretitle">{renderBreadcrumbs()}</div>
+      {pathArray.length > 1 && <div className="page-pretitle">{renderBreadcrumbs()}</div>}
       <h2 className="page-title mt-1">{title}</h2>
     </>
   );
