@@ -16,6 +16,12 @@ def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
     return json.loads(path.read_text())["slots"]
 
 
+def repo_for(app_id: str, defaults: dict[str, dict] | None = None) -> str | None:
+    """Repo (owner/name) a default app comes from, for defaults that aren't in the public index yet (private)."""
+    defaults = load_defaults() if defaults is None else defaults
+    return next((d.get("repo") for d in defaults.values() if d.get("app") == app_id and d.get("repo")), None)
+
+
 def providers(reg: dict) -> dict[str, list[str]]:
     """slot -> installed app ids that provide it (from apps.json)."""
     out: dict[str, list[str]] = {}
@@ -29,10 +35,13 @@ def table(reg: dict, defaults: dict[str, dict] | None = None) -> list[dict]:
     """Every slot, filled or empty: the parking-spot view the UX and `wam slots` show."""
     defaults = load_defaults() if defaults is None else defaults
     have = providers(reg)
+    installed = {a["id"] for a in reg.get("apps") or []}
     chosen = {k: (v or {}).get("default") for k, v in (reg.get("slots") or {}).items()}
     rows = []
     for slot, d in defaults.items():
         apps = have.get(slot, [])
+        if not apps and d.get("app") in installed:   # a default that fills several spots before it's split
+            apps = [d["app"]]
         rows.append({
             "slot": slot, "name": d.get("name", slot), "required": bool(d.get("required")),
             "default_app": d.get("app"), "installed": apps,

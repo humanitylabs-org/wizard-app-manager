@@ -25,6 +25,24 @@ your apps (Docker), ports on 127.0.0.1    reach them through Tailscale or a Clou
 | Look | Wizard UX styling built in (`packages/frontend/src/styles/wizard.css`), Wizard branding |
 | Everything else | Unchanged: dashboard, install forms, updates, backups, logs, app networking, settings |
 
+## One-line install
+
+```
+curl -fsSL aiwizards.com/os.sh | bash
+```
+
+Sets up Runtipi with the Wizard image, the `wam` command, and the default app in every parking spot (`wam bootstrap`).
+
+**Private apps (team only, until they're public).** Defaults that aren't in the public index yet (today: the Wizard shell
+from `humanitylabs-org/wizard-agent-service`) install straight from their GitHub repo, using this box's GitHub login
+(`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs:
+
+- access to the repo, and
+- the `read:packages` scope for its image: `gh auth refresh -s read:packages`.
+
+Boxes without that access skip those spots and install everything else. Once the repos and images are public, the
+same command works for everyone with no login.
+
 ## Install / switch an existing Runtipi box
 
 ```bash

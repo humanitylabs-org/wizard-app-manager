@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import index, registry, slots
+from . import index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -127,7 +127,19 @@ def installed_ids(rt: Runtipi) -> set[str]:
     return out
 
 
-def build_form(c: Config, app_id: str, info: dict, given: dict[str, str]) -> tuple[dict, list[str]]:
+def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
+    """A secret this app shares with an app it uses, e.g. the shell's WIZARD_HERMES_API_KEY is hermes-agent's
+    HERMES_API_KEY: same name, or same name without a WIZARD_ prefix, in that app's Runtipi app.env."""
+    from .runtipi import read_env
+    for dep in uses:
+        env = read_env(c.runtipi_root / "app-data" / STORE / dep / "app.env")
+        for k in (var, var.removeprefix("WIZARD_")):
+            if env.get(k):
+                return env[k]
+    return None
+
+
+def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
     compose publishes on 127.0.0.1, so openPort/exposed stay off."""
@@ -140,6 +152,8 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str]) -> tup
             continue
         if var in given:
             form[var] = given[var]
+        elif f.get("required") and (v := shared_value(c, var, uses or [])):
+            form[var] = v
         elif "default" in f:
             continue
         elif f.get("required") and f.get("type") == "password":
@@ -162,9 +176,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
     _seen.add(app_id)
-    rec = index.resolve(c.index, app_id)
-    app_id = rec["id"]
     rt = c.runtipi()
+    rec = resolve_any(c, app_id)
+    app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
     for dep in rec.get("uses") or []:
@@ -181,7 +195,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    form, missing = build_form(c, app_id, info, given or {})
+    form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -190,7 +204,24 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     entry = next((a for a in reg["apps"] if a["id"] == app_id), {})
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
-            "installed": [a["id"] for a in reg["apps"]]}
+            "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def resolve_any(c: Config, ref: str) -> dict:
+    """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
+    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    try:
+        return index.resolve(c.index, ref)
+    except index.IndexError_ as e:
+        repo = ref if "/" in ref else slots.repo_for(ref)
+        if not repo:
+            raise
+        try:
+            rec = private.prepare(c.runtipi_root, STORE, repo.removeprefix("https://github.com/"))
+        except private.PrivateError as pe:
+            raise SystemExit(f"{ref}: not in the public index ({e}); private install failed: {pe}") from None
+        print(f"{rec['id']}: installing from private repo {rec['repo']} (only boxes with access can do this)", file=sys.stderr)
+        return rec
 
 
 def uninstall(c: Config, app_id: str, force: bool = False) -> dict:

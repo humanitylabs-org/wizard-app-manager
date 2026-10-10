@@ -1,17 +1,19 @@
 {
-  "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet.",
+  "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it).",
   "slots": {
     "shell": {
       "name": "Shell (Wizard UX)",
-      "app": null,
+      "app": "wizard-shell",
       "required": true,
-      "note": "wizard-ux, its own app (uses agent-service). Oscar's Wizard App or hermes-frontend-3 can fill it instead."
+      "note": "Wizard UX. Today one app with the Agent Service (wizard-agent-service#3); being split (#33). Private until published: installs only on boxes whose GitHub login can see it.",
+      "repo": "humanitylabs-org/wizard-agent-service"
     },
     "agent-service": {
       "name": "Agent Service",
-      "app": null,
+      "app": "wizard-shell",
       "required": true,
-      "note": "wizard-agent-service, headless, separate from the shell so any shell can use it."
+      "note": "Today inside wizard-shell; becomes its own app after the split (#33).",
+      "repo": "humanitylabs-org/wizard-agent-service"
     },
     "agent": {
       "name": "Agent",

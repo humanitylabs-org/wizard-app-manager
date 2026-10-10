@@ -178,3 +178,21 @@ def test_registry_is_shared_with_containers(tmp_path):
     assert json.loads((shared / "apps.json").read_text())["schema"] == 2
     assert (shared / "skills" / "x" / "SKILL.md").read_text() == "hi"
     assert not (shared / "api-token").exists()
+
+
+def test_private_images_and_shared_secret(tmp_path):
+    from wam import private, slots
+    comp = {"services": {"a": {"image": "${WIZARD_SHELL_IMAGE:-ghcr.io/o/shell:0.1.0}"}, "b": {"image": "redis:7"}}}
+    assert private.images(comp) == ["ghcr.io/o/shell:0.1.0", "redis:7"]
+    assert slots.repo_for("wizard-shell") == "humanitylabs-org/wizard-agent-service"
+    assert slots.repo_for("hermes-agent") is None
+    c = cli.Config.__new__(cli.Config)
+    c.runtipi_root = tmp_path
+    env = tmp_path / "app-data" / "wizardapps" / "hermes-agent"
+    env.mkdir(parents=True)
+    (env / "app.env").write_text("HERMES_API_KEY=k1\n")
+    assert cli.shared_value(c, "WIZARD_HERMES_API_KEY", ["hermes-agent"]) == "k1"
+    assert cli.shared_value(c, "OTHER", ["hermes-agent"]) is None
+    d = {"shell": {"app": "s", "required": True}, "agent-service": {"app": "s", "required": True}}
+    t = {r["slot"]: r for r in slots.table({"apps": [{"id": "s", "provides": ["shell"]}]}, d)}
+    assert t["agent-service"]["state"] == "filled" and t["shell"]["state"] == "filled"
