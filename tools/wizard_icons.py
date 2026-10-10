@@ -20,11 +20,14 @@ from PIL import Image, ImageDraw, ImageFilter
 S = 1024
 BG = np.array([5, 3, 12], dtype=np.float32)
 
+# Oscar matches the Wizard App's own black-and-white look; Wizard OS and the App Manager share Wizard UX purple.
 PALETTES = {
-    "oscar": ((143, 99, 255), (255, 92, 207)),
-    "wizardos": ((63, 224, 255), (63, 107, 255)),
-    "wam": ((79, 240, 176), (63, 107, 255)),
+    "oscar": ((236, 236, 242), (120, 120, 134)),
+    "wizardos": ((143, 99, 255), (255, 92, 207)),
+    "wam": ((185, 155, 255), (107, 70, 255)),
 }
+# Second glyph colour (hat band and star, centre node) per icon.
+ACCENT = {"oscar": (34, 34, 42, 255), "wizardos": (143, 99, 255, 255), "wam": (107, 70, 255, 255)}
 
 
 def hexrgb(c):
@@ -139,9 +142,9 @@ def glyph_layer(name, R, small=False):
         d.polygon(left + right_from_peak[1:], fill=ink)
         d.polygon(flop_top + flop_under[1:] + [(c + u * 0.04 * s, c - u * 0.30 * s + oy), (c - u * 0.10 * s, c - u * 0.30 * s + oy)], fill=ink)
         # Brim with thickness: lighter top ellipse over a slightly darker underside.
-        d.ellipse([c - u * 0.70 * s, c + u * 0.19 * s + oy, c + u * 0.70 * s, c + u * 0.47 * s + oy], fill=(196, 182, 255, 255))
+        d.ellipse([c - u * 0.70 * s, c + u * 0.19 * s + oy, c + u * 0.70 * s, c + u * 0.47 * s + oy], fill=(190, 190, 200, 255))
         d.ellipse([c - u * 0.70 * s, c + u * 0.16 * s + oy, c + u * 0.70 * s, c + u * 0.41 * s + oy], fill=ink)
-        band = (124, 82, 255, 255)
+        band = ACCENT["oscar"]
         d.polygon(bez((c - u * 0.40 * s, c + u * 0.10 * s + oy), (c - u * 0.1 * s, c + u * 0.17 * s + oy), (c + u * 0.1 * s, c + u * 0.17 * s + oy), (c + u * 0.40 * s, c + u * 0.10 * s + oy))
                   + bez((c + u * 0.43 * s, c + u * 0.24 * s + oy), (c + u * 0.1 * s, c + u * 0.32 * s + oy), (c - u * 0.1 * s, c + u * 0.32 * s + oy), (c - u * 0.43 * s, c + u * 0.24 * s + oy)), fill=band)
         if not small:
@@ -160,7 +163,7 @@ def glyph_layer(name, R, small=False):
         for i, (x, y, r) in enumerate(nodes):
             d.ellipse([x - r, y - r, x + r, y + r], fill=ink)
             if i == 1:
-                d.ellipse([x - r * 0.46, y - r * 0.46, x + r * 0.46, y + r * 0.46], fill=(46, 92, 255, 255))
+                d.ellipse([x - r * 0.46, y - r * 0.46, x + r * 0.46, y + r * 0.46], fill=ACCENT["wam"])
     G = G.resize((S, S), Image.LANCZOS)
     glow = G.split()[3].filter(ImageFilter.GaussianBlur(S * 0.02))
     return G, glow

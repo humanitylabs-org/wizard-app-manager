@@ -348,3 +348,11 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
   .wam-main { padding: 12px 12px calc(96px + env(safe-area-inset-bottom, 0px)); }
   .wam-shell.embedded .wam-main { padding-bottom: 24px; }
 }
+
+/* Wizard UX sheets fill the screen under the App Manager's chrome (tab bar on top on desktop, at the bottom on phones). */
+.wam-main { --wux-top: 96px; --wux-bottom: 28px; }
+.wam-shell.embedded .wam-main { --wux-top: 28px; --wux-bottom: 28px; }
+@media (max-width: 767.98px) {
+  .wam-main { --wux-top: 24px; --wux-bottom: calc(108px + env(safe-area-inset-bottom, 0px)); padding-left: 8px; padding-right: 8px; }
+  .wam-shell.embedded .wam-main { --wux-bottom: 24px; }
+}
