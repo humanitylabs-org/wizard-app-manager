@@ -92,7 +92,10 @@ def add_app(out: Path, root: Path, m: dict) -> None:
         if cand.is_file():
             shutil.copy2(cand, dst / "metadata" / "logo.jpg")
             break
-    (dst / "metadata" / "description.md").write_text(f"# {m['name']}\n\n{wizardmd.body((root / 'wizard.md').read_text())}\n")
+    desc = wizardmd.body((root / "wizard.md").read_text())
+    if not desc.lstrip().startswith("# "):
+        desc = f"# {m['name']}\n\n{desc}"
+    (dst / "metadata" / "description.md").write_text(desc + "\n")
     sk = out / "skills" / m["id"]
     shutil.rmtree(sk, ignore_errors=True)
     if m.get("skill"):
@@ -172,3 +175,44 @@ def ensure_store_server(out: Path) -> str:
 def matches_arch(app: dict, arch: str) -> bool:
     norm = {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
     return not app.get("architectures") or norm in app["architectures"]
+
+
+# ---------------------------------------------------------------- Wizard UX skin for the stock dashboard
+
+SKIN_CONTAINER = "wizard-skin"
+SKIN_IMAGE = "nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de"
+SKIN_ROUTE = "wizard-skin.yml"
+
+
+def _dashboard_middlewares() -> list[str]:
+    """Whatever the stock dashboard router already uses (e.g. an SSO header), so the skin changes nothing else."""
+    r = _run(["docker", "inspect", "runtipi", "-f", '{{index .Config.Labels "traefik.http.routers.dashboard.middlewares"}}'])
+    names = [m.strip() for m in r.stdout.strip().split(",") if m.strip() and m.strip() != "<no value>"]
+    return [m if "@" in m else f"{m}@docker" for m in names]
+
+
+def skin_on(runtipi_root: Path) -> str:
+    skin_dir = Path(__file__).resolve().parent.parent / "skin"
+    _run(["docker", "rm", "-f", SKIN_CONTAINER])
+    r = _run(["docker", "run", "-d", "--name", SKIN_CONTAINER, "--restart", "unless-stopped", "--user", "101:101",
+              "--network", runtipi_network(), "--read-only", "--tmpfs", "/tmp:size=32m,uid=101,gid=101",
+              "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "64m", "--pids-limit", "64",
+              "-v", f"{skin_dir / 'nginx.conf'}:/etc/nginx/nginx.conf:ro", "-v", f"{skin_dir}:/srv/skin:ro",
+              SKIN_IMAGE], timeout=600)
+    if r.returncode:
+        raise RuntimeError(f"could not start {SKIN_CONTAINER}: {r.stderr.strip()[:300]}")
+    mws = _dashboard_middlewares()
+    route = {"http": {
+        "routers": {"wizard-skin": {"rule": "PathPrefix(`/`)", "priority": 20, "entryPoints": ["web"],
+                                    "service": "wizard-skin", **({"middlewares": mws} if mws else {})}},
+        "services": {"wizard-skin": {"loadBalancer": {"servers": [{"url": f"http://{SKIN_CONTAINER}:8080"}]}}},
+    }}
+    dyn = runtipi_root / "traefik" / "dynamic"
+    (dyn / SKIN_ROUTE).write_text("# Written by `wam skin on`; remove with `wam skin off`.\n"
+                                  + yaml.safe_dump(route, sort_keys=False))
+    return str(dyn / SKIN_ROUTE)
+
+
+def skin_off(runtipi_root: Path) -> None:
+    (runtipi_root / "traefik" / "dynamic" / SKIN_ROUTE).unlink(missing_ok=True)
+    _run(["docker", "rm", "-f", SKIN_CONTAINER])
