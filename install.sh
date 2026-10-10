@@ -82,4 +82,8 @@ systemctl --user restart wizard-app-manager-api.service
 for i in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && break; sleep 2; done
 "$HOME/.local/bin/wam" doctor --fix || true
 "$HOME/.local/bin/wam" apps >/dev/null || true
-"$HOME/.local/bin/wam" doctor
+"$HOME/.local/bin/wam" doctor || true
+
+# 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
+#    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
+if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap; "$HOME/.local/bin/wam" slots; fi
