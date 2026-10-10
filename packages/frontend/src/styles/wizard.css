@@ -301,3 +301,8 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
   .page-header { margin-top: 8px !important; margin-bottom: 8px !important; min-height: 0 !important; }
   .title { min-height: 0 !important; }
 }
+
+/* Phone: leave room under the last row for the fixed bottom bar (the body is the scroller) */
+@media (max-width: 767.98px) {
+  .page-body { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important; margin-bottom: 0 !important; }
+}
