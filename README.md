@@ -37,11 +37,11 @@ Apps answer on `127.0.0.1:<port>` only. Reach them from your devices through Tai
 
 | Command | What it does |
 |---|---|
+| `wam <any runtipi-cli command>` | Passed straight to the stock `runtipi-cli`: `app start/stop/update/reset/uninstall/backup/restore/list-backups/delete-backup/start-all/stop-all/available-updates`, `appstore add/list/remove/update`, `installed`, `start`, `stop`, `restart`, `prepare`, `update`, `version`, `debug`, `reset-password`. App ids may drop the `:store` suffix. |
 | `wam search [query]` | Search the index |
 | `wam install <app> [--set KEY=VALUE]` | `<app>` is an id (`transcriber`), a repo (`owner/name`) or a local folder with `wizard.md`. Installs dependencies in `uses:` first, waits until running, rewrites `apps.json`. Required passwords you don't pass are generated and saved 0600 in `~/.wizard-os/secrets/<id>.json`. |
 | `wam uninstall <id>` | Remove through Runtipi, rewrite `apps.json` |
 | `wam apps [--json]` | What's installed (reads `apps.json`) |
-| `wam update [<id>]` | Move to the commit the index lists now, after re-checking it. Never automatic. |
 | `wam refresh` | Re-register the local store with Runtipi and pull it |
 | `wam doctor` | Check the whole chain |
 | `wam skin on\|off` | Wizard UX look for the stock Runtipi dashboard. A small read-only proxy adds one stylesheet; Runtipi's files and image are unchanged, and `off` restores the stock look. |
