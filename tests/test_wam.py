@@ -164,3 +164,17 @@ def test_shipped_defaults_are_valid():
     from wam import slots
     d = slots.load_defaults()
     assert {"shell", "agent", "files"} <= set(d) and all(d[k]["required"] for k in ("shell", "agent", "files"))
+
+
+def test_registry_is_shared_with_containers(tmp_path):
+    c = cli.Config.__new__(cli.Config)
+    c.home, c.runtipi_root = tmp_path / "home", tmp_path / "runtipi"
+    (c.home / "skills" / "x").mkdir(parents=True)
+    (c.home / "apps.json").write_text('{"schema": 2, "apps": []}')
+    (c.home / "skills" / "x" / "SKILL.md").write_text("hi")
+    (c.home / "api-token").write_text("secret")
+    assert cli.share_registry(c)
+    shared = c.runtipi_root / "app-data" / "wizard-os"
+    assert json.loads((shared / "apps.json").read_text())["schema"] == 2
+    assert (shared / "skills" / "x" / "SKILL.md").read_text() == "hi"
+    assert not (shared / "api-token").exists()

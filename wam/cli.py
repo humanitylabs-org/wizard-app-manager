@@ -95,7 +95,27 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
+    share_registry(c)
     return reg
+
+
+def share_registry(c: Config) -> bool:
+    """Give app containers (the Wizard shell) a read-only copy of apps.json + skills, never secrets or tokens, in
+    Runtipi's app-data, where an app's compose mounts it: ${ROOT_FOLDER_HOST}/app-data/wizard-os (same as wam on stock)."""
+    import shutil
+    shared = c.runtipi_root / "app-data" / "wizard-os"
+    try:
+        shared.mkdir(parents=True, exist_ok=True)
+        tmp = shared / "apps.json.tmp"
+        shutil.copy2(c.home / "apps.json", tmp)
+        tmp.replace(shared / "apps.json")
+        if (c.home / "skills").is_dir():
+            shutil.rmtree(shared / "skills", ignore_errors=True)
+            shutil.copytree(c.home / "skills", shared / "skills")
+        return True
+    except OSError as e:
+        print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
+        return False
 
 
 def installed_ids(rt: Runtipi) -> set[str]:
