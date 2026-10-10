@@ -79,29 +79,23 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
         <TabsTrigger onClick={() => handleTabChange('info')} value="info">
           {t('APP_DETAILS_BASE_INFO')}
         </TabsTrigger>
-        {app && (
-          <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="d-none d-md-block">
+        <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="d-none d-md-block">
           {t('APP_BACKUPS_TAB_TITLE')}
         </TabsTrigger>
-        )}
-        {app && (
-          <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="d-none d-md-block">
           {t('APP_LOGS_TAB_TITLE')}
         </TabsTrigger>
-        )}
-        {app && (
-          <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="d-none d-md-block">
           {t('APP_FILES_TAB_TITLE')}
         </TabsTrigger>
-        )}
-        {app && (<DropdownMenu>
+        <DropdownMenu>
           <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem onClick={() => handleTabChange('backups')}>{t('APP_BACKUPS_TAB_TITLE')}</DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('APP_LOGS_TAB_TITLE')}</DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange('user-config')}>{t('APP_FILES_TAB_TITLE')}</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu>)}
+        </DropdownMenu>
       </TabsList>
       <TabsContent value={metaTabId}>
         {info.deprecated && (

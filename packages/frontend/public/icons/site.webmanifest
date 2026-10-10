@@ -1,16 +1,21 @@
 {
-  "name": "Wizard App Manager",
-  "short_name": "App Manager",
-  "description": "Install, run and connect the apps on your Wizard.",
-  "start_url": "/apps",
-  "scope": "/",
-  "display": "standalone",
-  "background_color": "#05030c",
-  "theme_color": "#05030c",
+  "name": "Runtipi",
+  "short_name": "Runtipi",
   "icons": [
-    { "src": "/icons/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/web-app-manifest-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
-    { "src": "/icons/web-app-manifest-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+    {
+      "src": "/web-app-manifest-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "theme_color": "#f9fafb",
+  "background_color": "#f9fafb",
+  "display": "standalone"
 }

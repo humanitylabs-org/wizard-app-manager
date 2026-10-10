@@ -5,7 +5,6 @@ import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
-import wizardStylesheet from './styles/wizard.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
 
@@ -27,7 +26,6 @@ client.setConfig({
 
 export const links: Route.LinksFunction = () => [
   { rel: 'stylesheet', href: stylesheet },
-  { rel: 'stylesheet', href: wizardStylesheet },
   { rel: 'apple-touch-icon', sizes: '180x180', href: '/icons/apple-touch-icon.png' },
   { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/icons/favicon-96x96.png' },
   { rel: 'icon', type: 'image/svg+xml', href: '/icons/favicon.svg' },
@@ -48,7 +46,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   if (user.data?.isLoggedIn || user.data?.isGuestDashboardEnabled) {
-    return redirect('/apps');
+    return redirect('/dashboard');
   }
 
   return redirect('/login');
@@ -69,8 +67,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <title>Wizard App Manager</title>
-        <meta name="theme-color" content="#05030c" />
+        <title>Runtipi</title>
         <meta charSet="UTF-8" />
         <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />

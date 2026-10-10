@@ -32,8 +32,7 @@ export default [
     ]),
 
     // Settings route
-    route('resources', './modules/settings/pages/settings-page.tsx', { id: 'resources' }),
-    route('settings', './routes/to-resources.tsx', { id: 'settings' }),
+    ...prefix('settings', [index('./modules/settings/pages/settings-page.tsx', { id: 'settings' })]),
   ]),
   route('*', './routes/not-found.tsx'),
 ] satisfies RouteConfig;

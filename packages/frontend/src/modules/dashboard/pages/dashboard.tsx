@@ -1,11 +1,10 @@
-import { Navigate } from 'react-router';
 import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { IconCircuitResistor, IconCpu, IconDatabase } from '@tabler/icons-react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { SystemStat } from '../components/system-stat';
 
-export const SystemStats = () => {
+export default () => {
   const { t } = useTranslation();
   const { data } = useSuspenseQuery({
     ...systemLoadOptions(),
@@ -42,5 +41,3 @@ export const SystemStats = () => {
     </div>
   );
 };
-
-export default () => <Navigate to="/apps" replace />;

@@ -78,9 +78,16 @@ export const Sheet = ({ children, search, top }: { children: ReactNode; search?:
 );
 
 export const SearchBar = ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) => (
-  <form className="search" role="search" onSubmit={(e) => e.preventDefault()}>
+  <form className="search" onSubmit={(e) => e.preventDefault()}>
     <SearchIcon />
-    <input type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={placeholder} spellCheck={false} />
+    <input
+      type="search"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      spellCheck={false}
+    />
   </form>
 );
 
@@ -338,7 +345,13 @@ export const ResourcesView = () => {
         <div className="wux-body top">
           <div className="st-group">
             <h4>This Wizard</h4>
-            <ResourceRow icon={<IconDatabase />} title="Storage" note={`${data.diskUsed} of ${data.diskSize} GB used`} value={`${data.percentUsed}%`} pct={data.percentUsed} />
+            <ResourceRow
+              icon={<IconDatabase />}
+              title="Storage"
+              note={`${data.diskUsed} of ${data.diskSize} GB used`}
+              value={`${data.percentUsed}%`}
+              pct={data.percentUsed}
+            />
             <ResourceRow icon={<IconCpu />} title="Processor" note="Load right now" value={`${Math.round(data.cpuLoad)}%`} pct={data.cpuLoad} />
             <ResourceRow
               icon={<IconCircuitResistor />}
