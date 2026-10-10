@@ -83,6 +83,8 @@ const Flow = ({ main, ins, outs, animate }: { main: GraphNode; ins: GraphNode[];
   const ref = useRef<HTMLDivElement>(null);
   const [wires, setWires] = useState<Wire[]>([]);
 
+  // Redraw whenever the nodes change (index data arrives after the first paint) or the layout resizes.
+  const sig = [main.id, main.status, ...ins.map((n) => `${n.id}:${n.status ?? ''}:${n.ghost ? 1 : 0}`), ...outs.map((n) => `${n.id}:${n.status ?? ''}:${n.ghost ? 1 : 0}`)].join('|');
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -118,14 +120,15 @@ const Flow = ({ main, ins, outs, animate }: { main: GraphNode; ins: GraphNode[];
         }
         next.push({ d, ghost, live: Boolean(animate) && !ghost && mainLive && n.dataset.live === '1' });
       }
-      setWires(next);
+      setWires((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
     };
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(el);
     for (const img of el.querySelectorAll('img')) img.addEventListener('load', draw);
     return () => ro.disconnect();
-  }, [animate]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: sig captures the node set; redraw when it changes
+  }, [animate, sig]);
 
   return (
     <div className={clsx('gflow', `k-${main.kind}`, { 'no-uses': !outs.length })} ref={ref}>
