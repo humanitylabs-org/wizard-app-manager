@@ -170,7 +170,7 @@ function grid(list, extra = {}) {
 }
 
 function row(a) {
-  const tag = a.have ? '<span class="kind wam-have">✓</span>' : a.installs > 0 ? `<span class="kind">↓ ${count(a.installs)}</span>` : '';
+  const tag = a.have ? '<span class="kind wam-have">Installed</span>' : a.installs > 0 ? `<span class="kind">↓ ${count(a.installs)}</span>` : '';
   return `<button class="lrow" data-wam-id="${esc(a.id)}"><span class="ic" style="${gstyle(a)}">${icon(a)}</span><span class="nm">${esc(a.name)}<small>${esc(a.summary)}</small></span>${tag}</button>`;
 }
 
@@ -247,11 +247,13 @@ export function renderCard(el, app, ctx = {}) {
     } else if (!a.have) acts.push(btn('install', 'Install', 'primary'));
     el.innerHTML = `<div class="wam-card">
       <button class="wam-back" data-wam-back>‹ ${ctx.from === 'store' ? 'App Store' : 'My apps'}</button>
-      <div class="st-row static"><span class="wam-ic" style="${gstyle(a)}">${icon(a)}</span><span class="st-tx"><b>${esc(a.name)}</b><small>${esc(a.summary)}</small></span></div>
-      ${st ? `<div class="wam-meta"><i class="wam-dot ${esc(a.installed ? a.status : 'running')}"></i>${esc(st)}${a.update ? ' · update ready' : ''}${!a.installed && a.installs > 0 ? ` · ${count(a.installs)} installs` : ''}</div>` : ''}
-      ${acts.length ? `<div class="wam-acts">${acts.join('')}</div>` : ''}
-      ${a.screen ? '' : note('No screen: ask your agent to use it')}
-      ${msg ? note(msg) : ''}
+      <div class="wam-panel">
+        <div class="st-row static"><span class="wam-ic" style="${gstyle(a)}">${icon(a)}</span><span class="st-tx"><b>${esc(a.name)}</b><small>${esc(a.summary)}</small></span></div>
+        ${st ? `<div class="wam-meta"><i class="wam-dot ${esc(a.installed ? a.status : 'running')}"></i>${esc(st)}${!a.installed && a.installs > 0 ? ` · ${count(a.installs)} installs` : ''}</div>` : ''}
+        ${acts.length ? `<div class="wam-acts">${acts.join('')}</div>` : ''}
+        ${a.screen ? '' : note('No screen: ask your agent to use it')}
+        ${msg ? note(msg) : ''}
+      </div>
     </div>`;
   };
   const settle = async () => {
@@ -333,7 +335,7 @@ export function renderStore(el, ctx = {}) {
   const paintChips = () => {
     const chip = (id, label) => `<button class="wam-chip${s.tag === id ? ' on' : ''}" data-wam-tag="${esc(id)}">${esc(label)}</button>`;
     const sorts = SORTS.map(([k, l]) => `<button class="${s.sort === k ? 'on' : ''}" data-wam-sort="${k}">${l}</button>`).join('');
-    chips.innerHTML = `${chip('', 'All')}${s.tags.map((t) => chip(t, t.charAt(0).toUpperCase() + t.slice(1))).join('')}<span class="wam-sort">${sorts}</span>`;
+    chips.innerHTML = `<div class="wam-tags">${chip('', 'All')}${s.tags.map((t) => chip(t, t.charAt(0).toUpperCase() + t.slice(1))).join('')}</div><span class="wam-sort">${sorts}</span>`;
   };
   const paint = () => {
     const have = new Set((cache.apps || []).map((a) => a.id));
