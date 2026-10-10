@@ -1,46 +1,49 @@
-"""wizard-app-manager CLI and HTTP API.
+"""wizard-app-manager: install Wizard apps from the Wizard App Index onto stock Runtipi.
 
-  wam refresh                 find apps, check them, compile the store, tell Runtipi to pull it
-  wam catalog [--json]        what can be installed
-  wam install <id>            install through Runtipi, then rewrite apps.json
-  wam uninstall <id>          remove (data kept by Runtipi's backups), then rewrite apps.json
-  wam apps [--json]           what is installed (apps.json)
-  wam bootstrap               refresh + install every system app
-  wam doctor                  check the whole chain
-  wam serve                   HTTP API + the compiled store over git smart-HTTP for Runtipi
+  wam search [query]            search the index (apps.aiwizards.com)
+  wam install <app>             <app> = id (transcriber), repo (owner/name) or a local folder with wizard.md
+        [--set KEY=VALUE ...]   install-form values; required passwords are generated and saved if not given
+  wam uninstall <id>            remove through Runtipi, rewrite apps.json
+  wam apps [--json]             what is installed (apps.json)
+  wam update [<id>]             re-install at the commit the index lists now (after the owner says yes)
+  wam refresh                   re-register the local store with Runtipi and pull it
+  wam doctor                    check the whole chain
+  wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import platform
-import subprocess
+import secrets
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from . import nostr, registry, store
-from .runtipi import Runtipi, RuntipiError
+from . import index, registry, store, wizardmd
+from .runtipi import Runtipi, RuntipiError, read_env
 
 
 class Config:
     def __init__(self) -> None:
         self.home = registry.home()
+        self.home.mkdir(parents=True, exist_ok=True)
         cfg_file = self.home / "app-manager.json"
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
-        self.sources = cfg.get("sources") or [{"topic": t} for t in store.DEFAULT_TOPICS]
-        if nostr.enabled(cfg) and not any("nostr" in s for s in self.sources):
-            self.sources = self.sources + [{"nostr": store.DEFAULT_TOPICS[0], "relays": cfg.get("nostr_relays") or nostr.DEFAULT_RELAYS}]
-        self.store_name = cfg.get("store_name", "wizard")          # Runtipi store slug, max 16 chars
-        self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "0.0.0.0"))
+        self.index = index.base(cfg)
+        self.store_name = cfg.get("store_name", "wizardapps")   # Runtipi store slug, max 16 chars
+        self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.out = self.home / "store"
-        tok_file = self.home / "github-token"                       # mode 600; lets the App Manager see private repos
-        self.github_token = os.environ.get("GITHUB_TOKEN") or (tok_file.read_text().strip() if tok_file.is_file() else None)
         self.cache = self.home / "cache"
         self.cache.mkdir(parents=True, exist_ok=True)
+        self.secrets = self.home / "secrets"
+        self.token_file = self.home / "api-token"
 
     def runtipi(self) -> Runtipi:
         rt = Runtipi.from_install(self.runtipi_root)
@@ -50,31 +53,32 @@ class Config:
 
     def host_ip(self) -> str:
         try:
-            from .runtipi import read_env
             return read_env(self.runtipi_root / ".env").get("INTERNAL_IP") or "127.0.0.1"
         except Exception:  # noqa: BLE001
             return "127.0.0.1"
 
-    def store_url(self) -> str:
-        return f"http://{self.host_ip()}:{self.port}/store.git"
+    def api_token(self) -> str:
+        if not self.token_file.is_file():
+            self.token_file.write_text(secrets.token_urlsafe(32) + "\n")
+            self.token_file.chmod(0o600)
+        return self.token_file.read_text().strip()
 
+
+# ---------------------------------------------------------------- helpers
 
 def catalog(c: Config) -> dict:
-    p = c.out / "catalog.json"
-    return json.loads(p.read_text()) if p.is_file() else {"apps": [], "skipped": []}
+    return store.read_catalog(c.out)
 
 
-def refresh(c: Config, pull: bool = True) -> dict:
-    cands, errors = store.discover(c.sources, c.cache, c.github_token)
-    cat = store.compile_store(cands, c.out)
+def sync_store(c: Config, metas: list[dict]) -> str:
+    store.write_catalog(c.out, metas)
     head = store.commit_store(c.out)
-    cat["errors"] = errors
-    cat["store_head"] = head
-    if pull:
-        rt = c.runtipi()
-        rt.ensure_store(c.store_name, c.store_url())
-        rt.pull()
-    return cat
+    url = store.ensure_store_server(c.out)
+    rt = c.runtipi()
+    s = rt.ensure_store(c.store_name, url)
+    c.store_name = s.get("slug") or c.store_name
+    rt.pull()
+    return head
 
 
 def sync_registry(c: Config) -> dict:
@@ -86,7 +90,6 @@ def sync_registry(c: Config) -> dict:
 
 def port_free(port: int) -> bool:
     """True if nothing on this host listens on the port (any address)."""
-    import socket
     for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
         s = socket.socket(fam, socket.SOCK_STREAM)
         try:
@@ -102,8 +105,7 @@ def port_free(port: int) -> bool:
 
 
 def pick_port(wanted: int | None, lo: int = 20000, hi: int = 29999) -> int | None:
-    """Keep the app's own port when it's free; otherwise the first free port in lo..hi.
-    Runtipi accepts a `port` in the install form (1024-65535), so this needs no fork."""
+    """Keep the app's own port when it's free; otherwise the first free port in lo..hi."""
     if wanted and port_free(int(wanted)):
         return None
     for p in range(lo, hi + 1):
@@ -112,44 +114,129 @@ def pick_port(wanted: int | None, lo: int = 20000, hi: int = 29999) -> int | Non
     raise SystemExit("no free port in 20000-29999 for this app")
 
 
-def form_defaults(app_id: str, c: Config) -> dict:
+def build_form(c: Config, app_id: str, given: dict[str, str]) -> tuple[dict, list[str]]:
+    """Install-form values. Defaults and `random` fields are left to Runtipi. Required passwords that the
+    owner didn't give are generated here and saved 0600 under ~/.wizard-os/secrets/<id>.json (never printed)."""
     cfg = json.loads((c.out / "apps" / app_id / "config.json").read_text())
-    form = {}
+    form: dict = {"openPort": False, "exposed": False, "exposedLocal": False}   # loopback mapping is in the compose
+    saved: dict = {}
+    missing: list[str] = []
     for f in cfg.get("form_fields") or []:
-        if "default" in f and f.get("env_variable"):
-            form[f["env_variable"]] = f["default"]
+        var = f.get("env_variable")
+        if not var or f.get("type") == "random":
+            continue
+        if var in given:
+            form[var] = given[var]
+        elif "default" in f:
+            continue
+        elif f.get("required") and f.get("type") == "password":
+            form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
+        elif f.get("required"):
+            missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
     alt = pick_port(cfg.get("port"))
     if alt:
         print(f"{app_id}: port {cfg.get('port')} is taken on this host; using {alt}", file=sys.stderr)
         form["port"] = alt
-    return form
+    if saved:
+        c.secrets.mkdir(mode=0o700, exist_ok=True)
+        p = c.secrets / f"{app_id}.json"
+        p.write_text(json.dumps(saved, indent=2) + "\n")
+        p.chmod(0o600)
+        print(f"{app_id}: generated {', '.join(saved)}; saved to {p}", file=sys.stderr)
+    return form, missing
 
 
-def install(c: Config, app_id: str, wait: bool = True) -> dict:
-    cat = {a["id"]: a for a in catalog(c)["apps"]}
-    if app_id not in cat:
-        raise SystemExit(f"{app_id} is not in the compiled store; run `wam refresh` (skipped apps: `wam catalog --json`)")
-    if not store.matches_arch(cat[app_id], platform.machine()):
-        raise SystemExit(f"{app_id} supports {cat[app_id]['architectures']}, this host is {platform.machine()}")
+def resolve(c: Config, ref: str) -> tuple[Path, str, str]:
+    """-> (checked-out root, origin label, commit)."""
+    p = Path(ref).expanduser()
+    if p.is_dir() and (p / "wizard.md").is_file():
+        return p.resolve(), str(p.resolve()), store.local_commit(p)
+    rec = index.resolve(c.index, ref)
+    root = store.fetch_commit(rec["install"]["git"], rec["install"]["commit"], c.cache)
+    return root, rec["repo"], rec["install"]["commit"]
+
+
+def installed_urns(rt: Runtipi) -> set[str]:
+    return {((r.get("info") or {}).get("urn") or "") for r in rt.installed()}
+
+
+# ---------------------------------------------------------------- commands
+
+def install(c: Config, ref: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None) -> dict:
+    _seen = _seen if _seen is not None else set()
+    root, origin, commit = resolve(c, ref)
+    res = wizardmd.check(root)
+    if not wizardmd.passed(res):
+        raise SystemExit(f"{ref} fails the wizard.md check here: {', '.join(wizardmd.failures(res))}")
+    m = store.meta(root, origin, commit)
+    if m["id"] in _seen:
+        return {"id": m["id"], "status": "already handled"}
+    _seen.add(m["id"])
+    if not store.matches_arch(m, platform.machine()):
+        raise SystemExit(f"{m['id']} supports {m['architectures']}, this host is {platform.machine()}")
     rt = c.runtipi()
-    urn = f"{app_id}:{c.store_name}"
-    for dep in cat[app_id].get("uses") or []:
-        if dep in cat and not any(((r.get('info') or {}).get('urn') or '') == f"{dep}:{c.store_name}" for r in rt.installed()):
+    for dep in m["uses"]:
+        if f"{dep}:{c.store_name}" in installed_urns(rt) or dep in _seen:
+            continue
+        try:
             print(f"installing dependency {dep}", file=sys.stderr)
-            install(c, dep, wait)
-    rt.install(urn, form_defaults(app_id, c))
+            install(c, dep, None, wait, _seen)
+        except (index.IndexError_, SystemExit, RuntimeError) as e:
+            print(f"note: dependency {dep} not installed ({e}); {m['id']} may need it", file=sys.stderr)
+    store.add_app(c.out, root, m)
+    metas = [a for a in catalog(c)["apps"] if a["id"] != m["id"]] + [m]
+    sync_store(c, metas)
+    urn = f"{m['id']}:{c.store_name}"
+    if urn in installed_urns(rt):
+        return {"id": m["id"], "urn": urn, "status": "already installed", "hint": f"wam update {m['id']}"}
+    form, missing = build_form(c, m["id"], given or {})
+    if missing:
+        raise SystemExit(f"{m['id']} needs: " + "; ".join(missing) + f"\n  e.g. wam install {ref} --set KEY=VALUE")
+    rt.install(urn, form)
     status = rt.wait_status(urn, {"running", "stopped"}) if wait else "installing"
     reg = sync_registry(c)
-    return {"id": app_id, "urn": urn, "status": status, "apps_json": str(c.home / "apps.json"), "installed": [a["id"] for a in reg["apps"]]}
+    entry = next((a for a in reg["apps"] if a["id"] == m["id"]), {})
+    return {"id": m["id"], "urn": urn, "status": status, "commit": commit[:12], "from": origin,
+            "open": (entry.get("view") or {}).get("upstream"), "mcp": (entry.get("mcp") or {}).get("url"),
+            "installed": [a["id"] for a in reg["apps"]]}
 
 
 def uninstall(c: Config, app_id: str) -> dict:
     rt = c.runtipi()
     urn = f"{app_id}:{c.store_name}"
-    rt.uninstall(urn)
-    rt.wait_status(urn, {"missing"}, timeout=300)
+    if urn in installed_urns(rt):
+        rt.uninstall(urn)
+        rt.wait_status(urn, {"missing"}, timeout=300)
+    store.remove_app(c.out, app_id)
+    sync_store(c, [a for a in catalog(c)["apps"] if a["id"] != app_id])
     reg = sync_registry(c)
     return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]]}
+
+
+def update(c: Config, app_id: str | None) -> list[dict]:
+    """Move installed apps to the commit the index lists now. Re-checked; Runtipi keeps app data."""
+    rt = c.runtipi()
+    out = []
+    for a in catalog(c)["apps"]:
+        if app_id and a["id"] != app_id:
+            continue
+        if "/" not in a["origin"] or Path(a["origin"]).exists():
+            out.append({"id": a["id"], "status": "local app; reinstall from its folder"}); continue
+        rec = index.resolve(c.index, a["origin"])
+        if rec["install"]["commit"] == a["commit"]:
+            out.append({"id": a["id"], "status": "up to date"}); continue
+        root = store.fetch_commit(rec["install"]["git"], rec["install"]["commit"], c.cache)
+        res = wizardmd.check(root)
+        if not wizardmd.passed(res):
+            out.append({"id": a["id"], "status": "new commit fails the check here", "failed": wizardmd.failures(res)}); continue
+        m = store.meta(root, a["origin"], rec["install"]["commit"])
+        store.add_app(c.out, root, m)
+        sync_store(c, [x for x in catalog(c)["apps"] if x["id"] != m["id"]] + [m])
+        urn = f"{m['id']}:{c.store_name}"
+        rt.req("PATCH", f"/app-lifecycle/{urn}/update", {"performBackup": True}, timeout=600)
+        out.append({"id": m["id"], "status": rt.wait_status(urn, {"running", "stopped"}), "from": a["commit"][:12], "to": m["commit"][:12]})
+    sync_registry(c)
+    return out
 
 
 def doctor(c: Config) -> list[tuple[str, bool, str]]:
@@ -157,25 +244,34 @@ def doctor(c: Config) -> list[tuple[str, bool, str]]:
     try:
         rt = c.runtipi()
         rt.installed()
-        out.append(("Runtipi API reachable with CLI token", True, rt.base))
+        out.append(("Runtipi API reachable", True, rt.base))
         stores = {s.get("slug"): s for s in rt.stores()}
         s = stores.get(c.store_name)
-        out.append(("Wizard store registered in Runtipi", bool(s), (s or {}).get("url", "missing")))
+        out.append(("Wizard store registered in Runtipi", bool(s), (s or {}).get("url", "missing (installs register it)")))
     except Exception as e:  # noqa: BLE001
-        out.append(("Runtipi API reachable with CLI token", False, str(e)[:200]))
-    cat = catalog(c)
-    out.append(("store compiled", (c.out / ".git").is_dir(), f"{len(cat['apps'])} apps, {len(cat['skipped'])} skipped"))
+        out.append(("Runtipi API reachable", False, str(e)[:200]))
+    running = store._run(["docker", "inspect", "-f", "{{.State.Running}}", store.STORE_CONTAINER]).stdout.strip() == "true"
+    out.append(("store server container running", running or not catalog(c)["apps"], store.STORE_CONTAINER if running else "starts on first install"))
+    try:
+        n = len(index.search(c.index, ""))
+        out.append(("index reachable", True, f"{c.index} ({n} apps)"))
+    except Exception as e:  # noqa: BLE001
+        out.append(("index reachable", False, str(e)[:200]))
+    out.append(("API is box-only", c.bind in ("127.0.0.1", "::1", "localhost"), f"{c.bind}:{c.port}"))
+    out.append(("API token present (0600)", c.token_file.is_file() and (c.token_file.stat().st_mode & 0o077) == 0, str(c.token_file)))
     regp = c.home / "apps.json"
-    out.append(("apps.json written", regp.is_file(), str(regp)))
+    out.append(("apps.json written", regp.is_file() or not catalog(c)["apps"], str(regp)))
     if regp.is_file():
-        reg = json.loads(regp.read_text())
-        for col in registry.collisions(reg):
+        for col in registry.collisions(json.loads(regp.read_text())):
             out.append(("slot collision", False, col))
     return out
 
 
+# ---------------------------------------------------------------- HTTP API
+
 class Handler(BaseHTTPRequestHandler):
     cfg: Config
+    token: str
 
     def log_message(self, fmt, *args):  # noqa: D401
         sys.stderr.write("wam: " + (fmt % args) + "\n")
@@ -185,125 +281,131 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(b)
 
-    def _git(self) -> None:
-        """Serve the compiled store with git's own smart-HTTP backend (isomorphic-git needs smart HTTP)."""
-        path, _, query = self.path.partition("?")
-        body = b""
-        if self.command == "POST":
-            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        env = dict(os.environ, GIT_PROJECT_ROOT=str(self.cfg.out.parent), GIT_HTTP_EXPORT_ALL="1",
-                   PATH_INFO=path.replace("/store.git", "/store", 1), REQUEST_METHOD=self.command, QUERY_STRING=query,
-                   CONTENT_TYPE=self.headers.get("Content-Type", ""), CONTENT_LENGTH=str(len(body)),
-                   REMOTE_ADDR=self.client_address[0],
-                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=str(self.cfg.out))
-        r = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True, timeout=120)
-        if r.returncode or b"Status: 5" in r.stdout[:200]:
-            print(f"git http-backend: {r.stderr.decode(errors='replace')[:500]}", file=sys.stderr)
-        head, _, payload = r.stdout.partition(b"\r\n\r\n")
-        if not _:
-            head, _, payload = r.stdout.partition(b"\n\n")
-        code, headers = 200, []
-        for line in head.decode(errors="replace").splitlines():
-            k, _, v = line.partition(":")
-            if k.lower() == "status":
-                code = int(v.strip().split()[0])
-            elif k:
-                headers.append((k, v.strip()))
-        self.send_response(code)
-        for k, v in headers:
-            self.send_header(k, v)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    def _authorized(self) -> bool:
+        got = self.headers.get("Authorization", "")
+        if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
+            return True
+        self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
+        return False
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 65536:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return {}
 
     def do_GET(self):  # noqa: N802
-        c = self.cfg
-        if self.path.startswith("/store.git/"):
-            return self._git()
-        if self.path == "/healthz":
+        c, u = self.cfg, urlparse(self.path)
+        if u.path == "/healthz":
             return self._json(200, {"ok": True})
-        if self.path == "/api/catalog":
-            return self._json(200, catalog(c))
-        if self.path == "/api/apps":
+        if u.path == "/api/apps":
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
-        if self.path == "/api/doctor":
+        if u.path == "/api/catalog":
+            return self._json(200, catalog(c))
+        if u.path == "/api/search":
+            q = parse_qs(u.query)
+            try:
+                return self._json(200, {"apps": index.search(c.index, (q.get("q") or [""])[0],
+                                                             category=(q.get("category") or [None])[0])})
+            except index.IndexError_ as e:
+                return self._json(502, {"error": str(e)})
+        if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        c = self.cfg
-        if self.path.startswith("/store.git/"):
-            return self._git()
+        if not self._authorized():
+            return
+        c, path = self.cfg, urlparse(self.path).path
         try:
-            if self.path == "/api/refresh":
-                return self._json(200, refresh(c))
-            if self.path.startswith("/api/apps/") and self.path.endswith("/install"):
-                return self._json(200, install(c, self.path.split("/")[3]))
-        except (RuntipiError, SystemExit) as e:
+            if path == "/api/install":
+                b = self._body()
+                return self._json(200, install(c, str(b.get("app", "")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
+            if path.startswith("/api/apps/") and path.endswith("/install"):
+                return self._json(200, install(c, path.split("/")[3]))
+            if path == "/api/update":
+                return self._json(200, update(c, self._body().get("app")))
+            if path == "/api/refresh":
+                return self._json(200, {"store_head": sync_store(c, catalog(c)["apps"])})
+        except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):  # noqa: N802
-        if self.path.startswith("/api/apps/"):
+        if not self._authorized():
+            return
+        path = urlparse(self.path).path
+        if path.startswith("/api/apps/"):
             try:
-                return self._json(200, uninstall(self.cfg, self.path.split("/")[3]))
-            except (RuntipiError, SystemExit) as e:
+                return self._json(200, uninstall(self.cfg, path.split("/")[3]))
+            except (RuntipiError, SystemExit, RuntimeError) as e:
                 return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
+
+
+# ---------------------------------------------------------------- main
+
+def _sets(pairs: list[str]) -> dict[str, str]:
+    out = {}
+    for p in pairs or []:
+        k, sep, v = p.partition("=")
+        if not sep:
+            raise SystemExit(f"--set expects KEY=VALUE, got {p!r}")
+        out[k] = v
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("refresh"); r.add_argument("--no-pull", action="store_true")
-    cg = sub.add_parser("catalog"); cg.add_argument("--json", action="store_true")
-    i = sub.add_parser("install"); i.add_argument("id"); i.add_argument("--no-wait", action="store_true")
+    s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
+    i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
     u = sub.add_parser("uninstall"); u.add_argument("id")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
-    sub.add_parser("bootstrap"); sub.add_parser("doctor"); sub.add_parser("serve")
+    up = sub.add_parser("update"); up.add_argument("id", nargs="?")
+    sub.add_parser("refresh"); sub.add_parser("doctor"); sub.add_parser("serve")
     args = ap.parse_args(argv)
     c = Config()
-
-    if args.cmd == "refresh":
-        cat = refresh(c, pull=not args.no_pull)
-        for app in cat["apps"]:
-            print(f"OK    {app['id']:<16} {app['version']:<14} {app['type']:<8} {app['origin']}")
-        for s in cat["skipped"]:
-            print(f"SKIP  {s['origin']}  ({', '.join(s['failed'])})")
-        for e in cat["errors"]:
-            print(f"ERR   {e}")
-        print(f"store {c.out} @ {cat['store_head'][:10]}" + ("" if args.no_pull else f" -> Runtipi store '{c.store_name}' pulled"))
-    elif args.cmd == "catalog":
-        cat = catalog(c)
-        print(json.dumps(cat, indent=2) if args.json else "\n".join(f"{a['id']:<16} {a['type']:<8} {'system ' if a['system'] else ''}{a['summary']}" for a in cat["apps"]))
-    elif args.cmd == "install":
-        print(json.dumps(install(c, args.id, wait=not args.no_wait), indent=2))
-    elif args.cmd == "uninstall":
-        print(json.dumps(uninstall(c, args.id), indent=2))
-    elif args.cmd == "apps":
-        p = c.home / "apps.json"
-        reg = json.loads(p.read_text()) if p.is_file() else {"apps": []}
-        print(json.dumps(reg, indent=2) if args.json else "\n".join(
-            f"{x['id']:<16} {x['status'] or '?':<9} {'(system) ' if x['system'] else ''}{(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]))
-    elif args.cmd == "bootstrap":
-        refresh(c)
-        for app in catalog(c)["apps"]:
-            if app["system"]:
-                print(json.dumps(install(c, app["id"]), indent=2))
-    elif args.cmd == "doctor":
-        res = doctor(c)
-        for n, ok, d in res:
-            print(f"{'PASS' if ok else 'FAIL'}  {n}  {d}")
-        return 0 if all(ok for _, ok, _ in res) else 1
-    elif args.cmd == "serve":
-        Handler.cfg = c
-        srv = ThreadingHTTPServer((c.bind, c.port), Handler)
-        print(f"wizard-app-manager on http://{c.bind}:{c.port}  store {c.store_url()}", flush=True)
-        srv.serve_forever()
+    try:
+        if args.cmd == "search":
+            hits = index.search(c.index, args.query)
+            print(json.dumps(hits, indent=2) if args.json else "\n".join(
+                f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
+        elif args.cmd == "install":
+            print(json.dumps(install(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
+        elif args.cmd == "uninstall":
+            print(json.dumps(uninstall(c, args.id), indent=2))
+        elif args.cmd == "apps":
+            p = c.home / "apps.json"
+            reg = json.loads(p.read_text()) if p.is_file() else {"apps": []}
+            print(json.dumps(reg, indent=2) if args.json else "\n".join(
+                f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
+        elif args.cmd == "update":
+            print(json.dumps(update(c, args.id), indent=2))
+        elif args.cmd == "refresh":
+            print(f"store {c.out} @ {sync_store(c, catalog(c)['apps'])[:12]} -> Runtipi store '{c.store_name}' pulled")
+        elif args.cmd == "doctor":
+            c.api_token()
+            res = doctor(c)
+            for n, ok, d in res:
+                print(f"{'PASS' if ok else 'FAIL'}  {n}  {d}")
+            return 0 if all(ok for _, ok, _ in res) else 1
+        elif args.cmd == "serve":
+            Handler.cfg, Handler.token = c, c.api_token()
+            srv = ThreadingHTTPServer((c.bind, c.port), Handler)
+            print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
+            srv.serve_forever()
+    except (index.IndexError_, RuntipiError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

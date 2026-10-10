@@ -1,28 +1,59 @@
 # wizard-app-manager
 
-The Wizard OS layer that turns GitHub repos into installed Wizard apps, using **stock Runtipi** to run them.
+Installs Wizard apps from the [Wizard App Index](https://www.aiwizards.com/wizard-apps) onto **stock Runtipi**.
 
 ```
- app repos (tagged wizard-app, root wizard.md)
-        │  wam refresh: find → check → compile
+ Wizard App Index (apps.aiwizards.com)   search; id -> repo + pinned commit
+        │  wam install transcriber
         ▼
- compiled store (a normal Runtipi app store, served as git by wam)
-        │  Runtipi pulls it like any other store
-        ▼
- stock Runtipi ── installs/starts/stops containers
-        │  wam install <id> calls Runtipi's own API
-        ▼
- ~/.wizard-os/apps.json + ~/.wizard-os/skills/<id>/SKILL.md
+ fetch that one repo at that commit, re-run the wizard.md check
         │
-        ├─ Wizard Agent Service: connects each app's MCP + skill, tells the agent what's installed
-        └─ Wizard UX Apps screen and `wizard apps list --json`: show the same list
+        ▼
+ local store (~/.wizard-os/store): only this box's apps, served to Runtipi on its own network
+        │  Runtipi installs it like any app-store app; main port published on 127.0.0.1 only
+        ▼
+ ~/.wizard-os/apps.json + skills/<id>/SKILL.md  ->  Agent Service / Wizard UX
 ```
 
-Runtipi is a component. We don't fork it and we don't edit its files or database. Everything goes through its published API and its normal app-store format, so Runtipi upgrades stay free.
+Runtipi is a component. We don't fork it and we don't edit its files or database. Everything goes through its published API and its normal app-store format.
 
-**Status:** reference implementation, 9 Oct 2026. It runs on the same machine as Hermes, the Agent Service and the UX, next to Runtipi; there is no extra VM. The first end-to-end test used a throwaway clean Ubuntu machine (a disposable arm64 box, since deleted) so it would prove a fresh install: refresh → Runtipi pulled the store → `wam install hello-wizard` → container running → `apps.json` written → agent-side MCP `tools/list` and `tools/call` answered. On a Mac, the whole Wizard OS stack (this included) runs inside the one Try Wizard VM. Owner from here: Miguel.
+## Install (Ubuntu/Debian, x86_64 or arm64)
 
-**Dogfood on an existing Hermes host:** `sudo bash scripts/dogfood-host-setup.sh <user>` once (Docker, stock Runtipi, and a firewall rule that keeps Runtipi's ports off the public interface), then `./install.sh` and `wam doctor` as the user.
+```bash
+git clone https://github.com/humanitylabs-org/wizard-app-manager ~/wizard-app-manager
+cd ~/wizard-app-manager && ./install.sh     # installs stock Runtipi if missing, then wam as a user service
+wam doctor                                   # every line should say PASS
+wam search                                   # what's in the index
+wam install hermes-agent                     # dashboard password is generated, saved to ~/.wizard-os/secrets/
+wam install transcriber
+wam apps                                     # what's installed, with each app's MCP address
+```
+
+Or give your agent one line: *"Install the Wizard App Manager on this machine by following https://github.com/humanitylabs-org/wizard-app-manager/blob/main/AGENTS.md"*.
+
+Apps answer on `127.0.0.1:<port>` only. Reach them from your devices through Tailscale or a Cloudflare Tunnel pointed at that address; nothing is published on the public interface.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `wam search [query]` | Search the index |
+| `wam install <app> [--set KEY=VALUE]` | `<app>` is an id (`transcriber`), a repo (`owner/name`) or a local folder with `wizard.md`. Installs dependencies in `uses:` first, waits until running, rewrites `apps.json`. Required passwords you don't pass are generated and saved 0600 in `~/.wizard-os/secrets/<id>.json`. |
+| `wam uninstall <id>` | Remove through Runtipi, rewrite `apps.json` |
+| `wam apps [--json]` | What's installed (reads `apps.json`) |
+| `wam update [<id>]` | Move to the commit the index lists now, after re-checking it. Never automatic. |
+| `wam refresh` | Re-register the local store with Runtipi and pull it |
+| `wam doctor` | Check the whole chain |
+| `wam serve` | HTTP API on `127.0.0.1:7790` (the user service runs this) |
+
+HTTP API (for the Wizard UX Apps screen and the Agent Service): `GET /api/apps`, `GET /api/search?q=`, `GET /api/catalog`, `GET /api/doctor`; changes need `Authorization: Bearer $(cat ~/.wizard-os/api-token)`: `POST /api/install {"app": "...", "set": {...}}`, `POST /api/update {"app": "..."}`, `POST /api/refresh`, `DELETE /api/apps/<id>`.
+
+## Security
+
+- The API listens on `127.0.0.1` only; installs, updates and removals need the token in `~/.wizard-os/api-token` (0600).
+- Installs pin to the exact commit the index listed and re-run the checker here, including the container-safety rule (no privileged, host network/PID, runtime socket, host system paths or dangerous capabilities).
+- Updates are never automatic: `wam update` re-checks the new commit first.
+- The local store's git server runs in a read-only container on Runtipi's network and refuses pushes; no host port.
 
 ## Where it sits
 
@@ -31,85 +62,43 @@ Runtipi is a component. We don't fork it and we don't edit its files or database
 | `wizard-os` | Architecture, rollout, contracts (wizard.md, apps.json, Agent Service API), style | shared |
 | `wizard-ux` | The front end, including the Apps screen | James |
 | `wizard-agent-service` | Proxy in front of the agent; reads `apps.json`, injects Wizard OS instructions | Jan |
-| **`wizard-app-manager`** | **This repo. Finds, checks, compiles, installs; writes `apps.json`** | **Miguel** |
-| `wizard-app-store` | Miguel's hand-curated Runtipi store; becomes a source this compiles | Miguel |
+| **`wizard-app-manager`** | **This repo. Installs from the index onto stock Runtipi; writes `apps.json`** | **Miguel** |
+| `wizard-app-index` | The shared catalog at apps.aiwizards.com that this installs from | Miguel |
+| `wizard-app-store` | Legacy hand-curated Runtipi store; replaced by one repo per app + the index | Miguel |
 | one repo per app | `wizard.md` + Runtipi files + MCP + skill | app author |
-
-## The one-prompt install
-
-Give a fresh agent this:
-
-> Install Runtipi and the Wizard App Manager on this machine by following https://github.com/humanitylabs-org/wizard-app-manager/blob/main/AGENTS.md
-
-Or by hand on Ubuntu/Debian:
-
-```bash
-git clone https://github.com/humanitylabs-org/wizard-app-manager ~/wizard-app-manager
-cd ~/wizard-app-manager && ./install.sh          # installs Runtipi if missing, then wam as a user service
-wam doctor
-wam install hello-wizard
-```
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `wam refresh` | Find app repos, run the wizard.md checker, compile the store, tell Runtipi to pull it |
-| `wam catalog [--json]` | What can be installed, and what was skipped and why |
-| `wam install <id>` | Install through Runtipi (dependencies in `uses:` first), wait until running, rewrite `apps.json` |
-| `wam uninstall <id>` | Remove through Runtipi, rewrite `apps.json` |
-| `wam apps [--json]` | What's installed (reads `apps.json`) |
-| `wam bootstrap` | Refresh, then install every `system: true` app |
-| `wam doctor` | Check the whole chain |
-| `wam serve` | HTTP API on :7790 and the compiled store over git smart-HTTP |
-
-HTTP API (same data, for the UX and Agent Service): `GET /api/catalog`, `GET /api/apps`, `GET /api/doctor`, `POST /api/refresh`, `POST /api/apps/<id>/install`, `DELETE /api/apps/<id>`.
 
 ## Configuration
 
 `~/.wizard-os/app-manager.json` (all optional):
 
 ```json
-{
-  "runtipi_root": "/home/me/runtipi",
-  "store_name": "wizard",
-  "port": 7790,
-  "sources": [
-    {"topic": "wizard-app"},
-    {"git": "https://github.com/humanitylabs-org/wizard-app-store", "glob": "apps/*"},
-    {"local": "/home/me/dev/my-app"},
-    {"nostr": "wizard-app", "relays": ["wss://relay.ngit.dev"], "authors": ["npub1…"]}
-  ]
-}
+{"runtipi_root": "/home/me/runtipi", "index": "https://apps.aiwizards.com", "store_name": "wizardapps", "port": 7790}
 ```
-
-Default sources are the GitHub topics `wizard-app` and `wizard-ai`. A topic only makes a repo **found**. Only a passing `wizard.md` gets it **listed**.
-
-**Nostr source (off by default).** `WAM_NOSTR=1` or `"nostr": true` adds a source that reads NIP-34 repository announcements (kind 30617) tagged `t=wizard-app` from `nostr_relays` (default: relay.ngit.dev, gitnostr.com, relay.damus.io, nos.lol). Every event's signature is verified (stdlib BIP-340, no new dependency). If the app's `wizard.md` declares `publisher: npub1…`, the announcement must be signed by that key or list it as a maintainer; otherwise the app is skipped. A repo found on both GitHub and Nostr is listed once. `authors` restricts a source to known publishers. Each catalog row records `commit`, `found_via`, `publisher` and the announcement id. Why and when this turns on: `wizard-os/docs/ROLLOUT.md`, "Nostr path".
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `WIZARD_OS_HOME` | `~/.wizard-os` | Where `apps.json`, `skills/`, the compiled `store/` and config live |
+| `WIZARD_OS_HOME` | `~/.wizard-os` | `apps.json`, `skills/`, the local `store/`, `secrets/`, `api-token` |
 | `RUNTIPI_ROOT` | `~/runtipi` | Runtipi install dir (reads `.env` for the API address and CLI secret) |
-| `WAM_PORT` / `WAM_BIND` | `7790` / `0.0.0.0` | HTTP API + store |
-| `GITHUB_TOKEN` | none | Raises the topic-search rate limit from 60/hour |
-| `WAM_NOSTR` | off | `1` adds the Nostr catalog source |
+| `WAM_INDEX` | `https://apps.aiwizards.com` | Which index to install from (anyone can run one) |
+| `WAM_PORT` / `WAM_BIND` | `7790` / `127.0.0.1` | HTTP API (keep it on loopback) |
+
+Discovery (GitHub topic crawl, publishing, and later Nostr) happens once in the index, not on every box. `wam/nostr.py` stays here for the index's Nostr source and for re-verifying signed announcements at install time.
 
 ## How it talks to Runtipi
 
-Runtipi already trusts a short-lived HS256 token signed with its own `JWT_SECRET` (`sub: cli`); that's how `runtipi-cli` works. `wam` mints the same token, so it needs no password and no fork. On a brand-new Runtipi with no account yet, `wam` creates the operator account once and stores the password in `~/.wizard-os/runtipi-operator.json` (mode 600). Calls used: `marketplace/create|all|pull`, `app-lifecycle/<urn>/install|uninstall`, `apps/installed`, `apps/<urn>`.
+Runtipi already trusts a short-lived HS256 token signed with its own `JWT_SECRET` (`sub: cli`); that's how `runtipi-cli` works. `wam` mints the same token, so it needs no password and no fork. On a brand-new Runtipi with no account yet, `wam` creates the operator account once and stores the password in `~/.wizard-os/runtipi-operator.json` (mode 600). Calls used: `marketplace/create|all|pull`, `app-lifecycle/<urn>/install|uninstall|update`, `apps/installed`, `apps/<urn>`.
 
 ## apps.json (contract v1)
 
 ```json
 {
   "schema": 1,
-  "store": "wizard",
+  "store": "wizardapps",
   "apps": [{
     "id": "hello-wizard", "name": "Hello Wizard", "type": "service", "version": "0.1.0",
     "status": "running", "system": false, "provides": ["diagnostics"], "uses": [], "needs": [],
-    "summary": "...", "urn": "hello-wizard:wizard",
-    "mcp": {"url": "http://192.168.5.3:8799/mcp", "internal": "http://hello-wizard:8799/mcp", "transport": "streamable-http"},
+    "summary": "...", "urn": "hello-wizard:wizardapps",
+    "mcp": {"url": "http://127.0.0.1:8799/mcp", "internal": "http://hello-wizard:8799/mcp", "transport": "streamable-http"},
     "skill": "/home/me/.wizard-os/skills/hello-wizard/SKILL.md",
     "view": null
   }],
@@ -121,25 +110,27 @@ The Agent Service reads this file (or `GET /api/apps`). It never needs to know a
 
 ## Making an app
 
-Copy `templates/hello-wizard/`. It's the smallest complete app: `wizard.md`, stock Runtipi files, a stdlib MCP server and a skill. Check it with `python3 -m wam.wizardmd <dir>` or `wizard-os/tools/check_wizard_md.py <dir>`. Then tag the repo `wizard-app`.
+Copy `templates/hello-wizard/`. It's the smallest complete app: `wizard.md`, stock Runtipi files, a stdlib MCP server and a skill. Check it with `python3 -m wam.wizardmd <dir>` or `wizard-os/tools/check_wizard_md.py <dir>`. Make the repo public, tag it `wizard-app`, and publish: `curl -X POST https://apps.aiwizards.com/v1/publish -H 'content-type: application/json' -d '{"repo":"owner/name"}'` (or copy `.github/workflows/publish.yml` from any listed app). Before publishing, `wam install ./my-app` installs it from the folder.
 
 ## Layout
 
 ```
 wam/wizardmd.py    the checker (vendored from wizard-os; change it there first)
-wam/store.py       find + compile + serve-as-git
+wam/index.py       Wizard App Index client (search, id -> repo + commit)
+wam/store.py       fetch pinned commit, local Runtipi store, loopback ports
+wam/store_server.py  read-only git smart-HTTP for the store (runs in the wizard-store container)
 wam/runtipi.py     Runtipi API client (CLI token, first-run operator)
 wam/registry.py    apps.json + skills
 wam/cli.py         CLI + HTTP API
 templates/hello-wizard/   the template app
 tests/             pytest; no Docker needed
-install.sh         Runtipi (if missing) + wam user services
+install.sh         Runtipi (if missing) + wam user service
 ```
 
 ## Tests
 
 ```bash
-python3 -m pytest -q        # 11 tests, no Docker
+python3 -m pytest -q        # 27 tests, no Docker
 ```
 
 The compiled output was also checked against `wizard-app-store`'s own suite (official Runtipi schema): 47/47.
