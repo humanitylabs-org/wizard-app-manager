@@ -196,3 +196,16 @@ def test_private_images_and_shared_secret(tmp_path):
     d = {"shell": {"app": "s", "required": True}, "agent-service": {"app": "s", "required": True}}
     t = {r["slot"]: r for r in slots.table({"apps": [{"id": "s", "provides": ["shell"]}]}, d)}
     assert t["agent-service"]["state"] == "filled" and t["shell"]["state"] == "filled"
+
+
+def test_skills_survive_second_write(tmp_path):
+    """write_registry writes apps.json twice (the second adds parking); app skills must survive both passes."""
+    rt = tmp_path / "rt"
+    _fake_store_app(rt, "hello-wizard")
+    installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
+    reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    home = tmp_path / "home"
+    registry.write(reg, home)
+    registry.write(reg, home)
+    assert (home / "skills" / "hello-wizard" / "SKILL.md").is_file()
+    assert "_skill_src" not in (home / "apps.json").read_text()

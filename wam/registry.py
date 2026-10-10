@@ -88,7 +88,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
     shutil.rmtree(sk, ignore_errors=True)
     sk.mkdir()
     for a in reg["apps"]:
-        src = a.pop("_skill_src", None)
+        src = a.get("_skill_src")   # get, not pop: write_registry writes twice and the second pass must copy skills too
         if src:
             (sk / a["id"]).mkdir()
             shutil.copy2(src, sk / a["id"] / "SKILL.md")
@@ -103,7 +103,8 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
             reg["slots"][slot]["default"] = val["default"]
     tmp = root / "apps.json.tmp"
-    tmp.write_text(json.dumps(reg, indent=2) + "\n")
+    public = {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
+    tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev
 
