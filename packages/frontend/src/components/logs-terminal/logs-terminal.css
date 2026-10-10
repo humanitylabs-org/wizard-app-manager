@@ -1,0 +1,8 @@
+.log-terminal {
+  height: 300px;
+  overflow-y: scroll !important;
+}
+
+.wrap-lines {
+  text-wrap: wrap;
+}
