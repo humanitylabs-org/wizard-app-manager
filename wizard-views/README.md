@@ -1,20 +1,31 @@
 # Wizard App Manager views for Wizard UX
 
-Three views, built from Wizard UX's own pieces so they can move into the shell with little change.
-`wux.css` copies Wizard UX class names and values from `wizard-ux/web/styles.css` (`.search`, `.lgroup`, `.lgrid`,
-`.lapp`, `.lrow`, `.st-group`, `.st-row`). Anything new is marked "added" there.
+For James: three small views built in your own launcher and Settings markup. They are vanilla ES modules with no build step.
 
-| View | Where it goes in Wizard UX | What it shows |
-|---|---|---|
-| `MyAppsView` | The launcher sheet (swipe up). It replaces the "Wizard apps" group | Installed apps as tiles. Each interface sits next to the agent or app it opens, joined by a short wire. Apps with no screen have a dashed ring. Status dot and update badge. Search at the bottom covers your apps first, then the App Store |
-| `AppStoreView` | A second launcher page, opened from "Get apps" or from search | The same tiles and groups for everything in the Wizard App Index. Installed apps have a tick |
-| `ResourcesView` | A group in the Settings sheet | Storage, processor and memory rows with a small meter, plus Start / Stop / Restart all |
+| File | What |
+|---|---|
+| `wizard-apps.js` | `renderMyApps(el, ctx)`, `renderStore(el, ctx)`, `renderResources(el, ctx)`, `renderCard(el, app, ctx)` |
+| `wizard-apps.css` | Only the added pieces (`.wam-*`): status dot, update badge, dashed ring for apps with no screen, pair wire, chip row, card, meters. Everything else uses your `.lgroup .lgrid .lapp .lrow .st-group .st-row` |
+| `overlay.js` | Box-local wiring into an unmodified Wizard UX (spec/SHELL.md layer 4), described below |
+| `index.html`, `standalone.*` | The same views full screen for desktop/web without the shell, with a small Admin menu. `wux.css` holds your classes scoped under `.wux`, for this page only |
 
-Groups are Agents, Apps and System. Interfaces don't get their own group: they appear inside the pair with the thing they open.
+## Where they go
 
-## Data
+- **My Apps is the swipe-up launcher.** With an empty query, your "Wizard apps" group becomes Agents / Apps / System, and your other groups stay. An interface sits next to the app it `uses`, joined by a short wire. Apps with no screen get a dashed ring. Tapping a tile opens a short card with only the buttons that apply (Open, Update, Start/Stop). An app with no screen says "No screen: ask your agent to use it".
+- **The App Store is the same sheet.** "Get apps" swaps the sheet body. One chip row goes above `#searchForm` (All, the top tags, then Popular / New / A–Z), and `#search` searches the index until the sheet closes. Install runs the Runtipi install (the app's `uses` first), then `POST /v1/installs`.
+- **Resources is a Settings group** after "Wizard": Storage, Processor and Memory with small meters, then Start all / Stop all / Restart all. Stop all needs a second tap.
 
-- **Installed apps, status, updates:** App Manager API `GET /api/apps/installed`, `GET /api/system/load`, and lifecycle `POST /api/app-lifecycle/:urn/(start|stop|restart)`.
-- **Names, logos, type, `uses`:** the public index `GET https://apps.aiwizards.com/v1/search` (`?q=` or `?id=`). Pairing comes from `uses` in `wizard.md`. Screen versus headless is `type != service`.
+To merge natively, call the render functions from `renderLauncher` and `renderSettings` instead of loading `overlay.js`.
 
-In the shell these calls would go through the Agent Service (`/wizard/...`), per `spec/SHELL.md`.
+## Data (same origin)
+
+- **Runtipi:**
+  - `GET /api/apps/installed` and `GET /api/system/load`
+  - `POST /api/app-lifecycle/{urn}/install|start|stop`, `PATCH .../update`, and `POST /api/app-lifecycle/start-all|stop-all|restart-all`
+  - Logos at `/api/marketplace/apps/{urn}/image`. The urn is `<id>:wizardapps`.
+- **Wizard OS front:**
+  - `GET /wizard/v1/wizard-apps` serves apps.json (type, category, uses, provides, view).
+  - `/wizard/v1/index/*` proxies the public index `https://apps.aiwizards.com/v1`, so your CSP's `connect-src 'self'` still holds.
+  - `/wizard/v1/apps` lists only installed apps whose screen the browser can reach.
+
+`ctx` options are listed at the top of `wizard-apps.js` (`api`, `wizard` and `index` change the base paths).
