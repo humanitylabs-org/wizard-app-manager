@@ -43,15 +43,10 @@ Cloudflare Tunnel + Access remains an alternative: choose `WIZARD_PRIVATE_ACCESS
 This skips Tailscale setup; it does not configure Cloudflare or remove an existing Tailscale connection.
 Tailscale is a host integration for the `private-access` system slot, not an ordinary privileged store container.
 
-**Private apps (team only, until they're public).** Defaults that aren't in the public index yet (today: the Wizard shell
-from `humanitylabs-org/wizard-agent-service`) install straight from their GitHub repo, using this box's GitHub login
-(`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs:
-
-- access to the repo, and
-- the `read:packages` scope for its image: `gh auth refresh -s read:packages`.
-
-Boxes without that access skip those spots and install everything else. Once the repos and images are public, the
-same command works for everyone with no login.
+**Private apps.** A default that isn't in the public index installs straight from its GitHub repo, using this box's
+GitHub login (`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs access to the repo and the
+`read:packages` scope for its image (`gh auth refresh -s read:packages`). Boxes without that access skip those spots
+and install everything else. Today every default is public and in the index, so the one-line install needs no login.
 
 ## Install / switch an existing Runtipi box
 
