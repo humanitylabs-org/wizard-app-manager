@@ -291,3 +291,13 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
 .card-header:has(.nav-tabs) .nav-tabs, [role="tablist"] { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
 [role="tablist"] > * { white-space: nowrap; flex: 0 0 auto; }
 @media (min-width: 768px) { .wsheet, .action-bar.action-bar-sticky { margin-left: 0 !important; } }
+
+/* Phone bottom bar: three equal targets across the full width */
+@media (max-width: 767.98px) {
+  #navbar-menu > div { width: 100% !important; flex: 1 1 auto !important; }
+  #navbar-menu .navbar-nav { display: grid !important; grid-template-columns: repeat(3, 1fr); width: 100% !important; }
+  #navbar-menu .nav-item { min-width: 0; }
+  #navbar-menu .nav-link { width: 100%; margin: 0 4px; }
+  .page-header { margin-top: 8px !important; margin-bottom: 8px !important; min-height: 0 !important; }
+  .title { min-height: 0 !important; }
+}
