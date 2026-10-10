@@ -1,4 +1,4 @@
-import path from 'node:path';
+import path from 'path';
 import { reactRouter } from '@react-router/dev/vite';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig, type PluginOption } from 'vite';

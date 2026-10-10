@@ -7,9 +7,9 @@ export const RouteError = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  let _message = 'Unknown error occurred';
+  let message = 'Unknown error occurred';
   if (error instanceof Error) {
-    _message = error.message;
+    message = error.message;
   }
 
   const onRetry = () => {
