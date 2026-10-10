@@ -6,46 +6,32 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import './navbar.css';
 
-interface IProps {
-  isUpdateAvailable?: boolean;
-}
-
-export const NavBar: React.FC<IProps> = ({ isUpdateAvailable }) => {
+// The only chrome: three tabs. Desktop shows a segmented control at the top; phones get a bottom bar.
+export const NavBar: React.FC = () => {
   const { t } = useTranslation();
   const activeRoute = useUIStore((state) => state.activeRoute);
 
-  const renderItem = (title: string, name: string, IconComponent: typeof IconApps) => {
+  const item = (title: string, name: string, Icon: typeof IconApps) => {
     const isActive = activeRoute?.split('/')[0] === name;
-    const itemClass = clsx('nav-item', { active: isActive, 'border-primary': isActive });
-
     return (
-      <li data-testid={`nav-item-${name}`} className={itemClass}>
-        <Link to={`/${name}`} className="nav-link" aria-label={title} aria-current={isActive ? 'page' : undefined}>
-          <span className={`nav-link-icon d-md-none d-lg-inline-block navbar-icon-${name}`} aria-hidden="true">
-            <IconComponent size={24} />
-          </span>
-          <span className="nav-link-title">{title}</span>
-        </Link>
-      </li>
+      <Link
+        key={name}
+        to={`/${name}`}
+        className={clsx('wam-tab', { active: isActive })}
+        aria-current={isActive ? 'page' : undefined}
+        data-testid={`nav-item-${name}`}
+      >
+        <Icon size={20} aria-hidden="true" />
+        <span>{title}</span>
+      </Link>
     );
   };
 
   return (
-    <nav id="navbar-menu" className="collapse navbar-collapse" aria-label={t('HEADER_MAIN_NAVIGATION')}>
-      <div className="d-flex flex-column flex-md-row flex-fill align-items-stretch align-items-md-center">
-        <ul className="navbar-nav gap-1">
-          {renderItem(t('HEADER_APPS'), 'apps', IconApps)}
-          {renderItem(t('HEADER_APP_STORE'), 'app-store', IconBrandAppstore)}
-          {renderItem(t('HEADER_RESOURCES'), 'resources', IconGauge)}
-        </ul>
-        {Boolean(isUpdateAvailable) && (
-          // biome-ignore lint/a11y/useSemanticElements: explicit role="status" reinforces accessibility intent
-          // biome-ignore lint/a11y/noRedundantRoles: explicit role="status" for assistive technology compatibility
-          <output className="ms-2 badge text-white bg-green d-none d-lg-block" role="status" aria-live="polite">
-            {t('HEADER_UPDATE_AVAILABLE')}
-          </output>
-        )}
-      </div>
+    <nav className="wam-tabs" aria-label={t('HEADER_MAIN_NAVIGATION')}>
+      {item(t('HEADER_APPS'), 'apps', IconApps)}
+      {item(t('HEADER_APP_STORE'), 'app-store', IconBrandAppstore)}
+      {item(t('HEADER_RESOURCES'), 'resources', IconGauge)}
     </nav>
   );
 };

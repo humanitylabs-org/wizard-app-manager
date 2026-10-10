@@ -1,7 +1,6 @@
 import { useUIStore } from '@/stores/ui-store';
 import type { AppInfoSimple } from '@/types/app.types';
-import clsx from 'clsx';
-import { useMemo } from 'react';
+import { IconChevronLeft } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
@@ -9,42 +8,30 @@ type Props = {
   apps: AppInfoSimple[];
 };
 
+/*
+ * No heading on the three top-level views: the selected tab (or the Wizard OS window title) already says
+ * where you are. Deeper pages (an app's details, update, edit) get a back link and the app's name.
+ */
 export const PageTitle = ({ apps }: Props) => {
   const { t } = useTranslation();
-  const activeRoute = useUIStore((state) => state.activeRoute);
+  useUIStore((state) => state.activeRoute); // re-render on navigation
+  const parts = window.location.pathname.substring(1).split('/').filter(Boolean);
 
-  const path = window.location.pathname;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Explicitly ignore this rule to re-render the component when the activeRoute changes
-  const pathArray = useMemo(() => path?.substring(1).split('/') || [], [activeRoute]);
-  const installedAppRoute =
-    pathArray[0] === 'apps' &&
-    pathArray[1] &&
-    pathArray[2] &&
-    apps.some((app) => app.id === pathArray[2] && app.urn === `${pathArray[2]}:${pathArray[1]}`);
+  if (parts.length < 2) return null;
 
-  const renderBreadcrumbs = () => {
-    return (
-      <ol className="breadcrumb" aria-label="breadcrumbs">
-        {pathArray.map((breadcrumb, index) => {
-          const to = installedAppRoute && index === 1 ? `/app-store/${pathArray[1]}` : `/${pathArray.slice(0, index + 1).join('/')}`;
-
-          return (
-            <li key={breadcrumb} className={clsx('breadcrumb-item', { active: index === pathArray.length - 1 })}>
-              <Link to={to}>{breadcrumb}</Link>
-            </li>
-          );
-        })}
-      </ol>
-    );
-  };
-
-  const appTitle = apps.find((app) => app.id.split('_')[0] === pathArray.at(-1))?.name;
-  const title = appTitle ?? t(`HEADER_${pathArray[0]?.toUpperCase().replace('-', '_')}`);
+  const inStore = parts[0] === 'app-store';
+  const back = inStore ? '/app-store' : '/apps';
+  const label = t(inStore ? 'HEADER_APP_STORE' : 'HEADER_APPS');
+  const appId = parts[2] ?? parts[1] ?? '';
+  const name = apps.find((app) => app.id.split('_')[0] === appId)?.name ?? appId.replace(/-/g, ' ');
 
   return (
-    <>
-      {pathArray.length > 1 && <div className="page-pretitle">{renderBreadcrumbs()}</div>}
-      <h2 className="page-title mt-1">{title}</h2>
-    </>
+    <div className="wam-title">
+      <Link to={back} className="wam-back">
+        <IconChevronLeft size={18} aria-hidden="true" />
+        {label}
+      </Link>
+      <h1>{name}</h1>
+    </div>
   );
 };

@@ -312,3 +312,39 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
 .wbatch > *, .wbatch .btn { width: 100%; min-height: 44px; padding: 8px 10px !important; justify-content: center; white-space: nowrap; font-size: 13px; }
 /* App labels: fixed width under the icon, centred, always two lines tall */
 .wlapp .nm { width: 76px; max-width: 76px; min-height: 2.4em; text-align: center; word-break: break-word; }
+
+
+/* ---- Minimal chrome (no brand bar, no duplicate headings). Tokens match wizard-ux core/base.css. ---- */
+.wam-shell { min-height: 100vh; }
+.wam-main { max-width: 1120px; margin: 0 auto; padding: 18px 18px 28px; }
+.wam-shell.embedded .wam-main { padding-top: 14px; }
+
+.wam-tabs {
+  position: sticky; top: 0; z-index: 1030; display: flex; justify-content: center; gap: 4px;
+  width: max-content; margin: 14px auto 0; padding: 4px; border-radius: 16px;
+  background: rgba(12, 8, 28, .82); border: 1px solid var(--w-line-2);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+}
+.wam-tab {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 16px; border-radius: 12px;
+  font-size: 14px; font-weight: 600; color: var(--w-ink-3) !important; text-decoration: none !important; white-space: nowrap;
+}
+.wam-tab:hover { color: var(--w-ink-2) !important; background: rgba(205, 190, 255, .07); }
+.wam-tab.active { color: #fff !important; background: linear-gradient(135deg, rgba(143, 99, 255, .32), rgba(192, 77, 255, .22)); box-shadow: inset 0 0 0 1px rgba(185, 155, 255, .35); }
+
+.wam-title { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 16px; }
+.wam-back { display: inline-flex; align-items: center; gap: 2px; width: max-content; font-size: 13px; font-weight: 600; color: var(--w-ink-3) !important; text-decoration: none !important; }
+.wam-back:hover { color: var(--w-ink-2) !important; }
+.wam-title h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; color: var(--w-ink) !important; text-transform: capitalize; }
+
+@media (max-width: 767.98px) {
+  .wam-tabs {
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0; width: auto; margin: 0; border-radius: 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(8, 5, 18, .96); border: 0; border-top: 1px solid rgba(205, 190, 255, .10);
+  }
+  .wam-tab { flex-direction: column; justify-content: center; gap: 2px; min-height: 52px; padding: 4px 0; margin: 0 4px; font-size: 11px; border-radius: 14px; }
+  .wam-main { padding: 12px 12px calc(96px + env(safe-area-inset-bottom, 0px)); }
+  .wam-shell.embedded .wam-main { padding-bottom: 24px; }
+}
