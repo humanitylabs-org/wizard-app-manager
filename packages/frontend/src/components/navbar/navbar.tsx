@@ -1,5 +1,5 @@
 import { useUIStore } from '@/stores/ui-store';
-import { IconApps, IconBrandAppstore, IconSettings } from '@tabler/icons-react';
+import { IconApps, IconBrandAppstore, IconGauge } from '@tabler/icons-react';
 import clsx from 'clsx';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -36,7 +36,7 @@ export const NavBar: React.FC<IProps> = ({ isUpdateAvailable }) => {
         <ul className="navbar-nav gap-1">
           {renderItem(t('HEADER_APPS'), 'apps', IconApps)}
           {renderItem(t('HEADER_APP_STORE'), 'app-store', IconBrandAppstore)}
-          {renderItem(t('HEADER_SETTINGS'), 'settings', IconSettings)}
+          {renderItem(t('HEADER_RESOURCES'), 'resources', IconGauge)}
         </ul>
         {Boolean(isUpdateAvailable) && (
           // biome-ignore lint/a11y/useSemanticElements: explicit role="status" reinforces accessibility intent

@@ -306,3 +306,9 @@ footer, .footer { background: transparent !important; border-color: var(--w-line
 @media (max-width: 767.98px) {
   .page-body { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important; margin-bottom: 0 !important; }
 }
+
+/* Batch buttons: equal, padded, never cramped */
+.wbatch { display: grid !important; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.wbatch > *, .wbatch .btn { width: 100%; min-height: 44px; padding: 8px 10px !important; justify-content: center; white-space: nowrap; font-size: 13px; }
+/* App labels: fixed width under the icon, centred, always two lines tall */
+.wlapp .nm { width: 76px; max-width: 76px; min-height: 2.4em; text-align: center; word-break: break-word; }
