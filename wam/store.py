@@ -72,19 +72,39 @@ def loopback_compose(text: str) -> str:
     doc = yaml.safe_load(text)
     for svc in (doc.get("services") or {}).values():
         xr = (svc or {}).get("x-runtipi") or {}
-        if not xr.get("is_main") or svc.get("ports") or not xr.get("internal_port"):
+        if not xr.get("is_main") or not xr.get("internal_port"):
             continue
-        svc["ports"] = [f"127.0.0.1:${{APP_PORT}}:{xr['internal_port']}"]
+        if not svc.get("ports"):
+            svc["ports"] = [f"127.0.0.1:${{APP_PORT}}:{xr['internal_port']}"]
+        # Without internal_port, Runtipi's "Open port" toggle (on by default in its install form) adds nothing,
+        # so installing from the Runtipi dashboard is just as box-only as `wam install`.
+        xr.pop("internal_port", None)
     return yaml.safe_dump(doc, sort_keys=False, width=1000, allow_unicode=True)
 
 
-def add_app(out: Path, root: Path, m: dict) -> None:
+def add_app(out: Path, root: Path, m: dict, bump_from: str | None = None) -> None:
+    """Write one app into the local store. `bump_from` is the commit this box had before: if the commit changed,
+    tipi_version is raised past the old local value so Runtipi shows its own "Update available" badge even when
+    the author forgot to bump it."""
     d = wizardmd.front_matter((root / "wizard.md").read_text())
     dst = out / "apps" / m["id"]
+    old_tipi = 0
+    if (dst / "config.json").is_file():
+        try:
+            old_tipi = int(json.loads((dst / "config.json").read_text()).get("tipi_version") or 0)
+        except (ValueError, TypeError):
+            old_tipi = 0
     shutil.rmtree(dst, ignore_errors=True)
     (dst / "metadata").mkdir(parents=True)
     cfg = json.loads((root / d["runtime"]["config"]).read_text())
     cfg["id"] = m["id"]
+    if bump_from and bump_from != m["commit"]:
+        cfg["tipi_version"] = max(int(cfg.get("tipi_version") or 1), old_tipi + 1)
+    elif old_tipi > int(cfg.get("tipi_version") or 1):
+        cfg["tipi_version"] = old_tipi
+    cat = {"agent": ["ai", "featured"], "interface": ["ai"], "system": ["utilities"]}.get(m.get("category") or "")
+    if cat:
+        cfg["categories"] = cat
     (dst / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     (dst / "docker-compose.yml").write_text(loopback_compose((root / d["runtime"]["compose"]).read_text()))
     rt_dir = (root / d["runtime"]["config"]).parent
@@ -191,8 +211,12 @@ def _dashboard_middlewares() -> list[str]:
     return [m if "@" in m else f"{m}@docker" for m in names]
 
 
-def skin_on(runtipi_root: Path) -> str:
-    skin_dir = Path(__file__).resolve().parent.parent / "skin"
+def skin_on(runtipi_root: Path, home: Path) -> str:
+    # Copy the skin to a stable place: bind-mounting the git checkout breaks when git replaces the folder.
+    src = Path(__file__).resolve().parent.parent / "skin"
+    skin_dir = home / "skin"
+    shutil.rmtree(skin_dir, ignore_errors=True)
+    shutil.copytree(src, skin_dir)
     _run(["docker", "rm", "-f", SKIN_CONTAINER])
     r = _run(["docker", "run", "-d", "--name", SKIN_CONTAINER, "--restart", "unless-stopped", "--user", "101:101",
               "--network", runtipi_network(), "--read-only", "--tmpfs", "/tmp:size=32m,uid=101,gid=101",

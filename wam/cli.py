@@ -6,6 +6,7 @@
   wam uninstall <id>            remove through Runtipi, rewrite apps.json
   wam apps [--json]             what is installed (apps.json)
   wam update [<id>]             re-install at the commit the index lists now (after the owner says yes)
+  wam sync                      mirror every index app into Runtipi's "wizardapps" store (the timer runs this)
   wam refresh                   re-register the local store with Runtipi and pull it
   wam doctor                    check the whole chain
   wam skin on|off               Wizard UX look for the stock Runtipi dashboard (a style layer; Runtipi is unchanged)
@@ -78,6 +79,11 @@ def sync_store(c: Config, metas: list[dict]) -> str:
     rt = c.runtipi()
     s = rt.ensure_store(c.store_name, url)
     c.store_name = s.get("slug") or c.store_name
+    if s.get("slug") and s.get("name") != "Wizard Apps":
+        try:
+            rt.req("PATCH", f"/marketplace/{s['slug']}", {"name": "Wizard Apps", "enabled": True})
+        except RuntipiError:
+            pass
     rt.pull()
     return head
 
@@ -231,13 +237,55 @@ def update(c: Config, app_id: str | None) -> list[dict]:
         if not wizardmd.passed(res):
             out.append({"id": a["id"], "status": "new commit fails the check here", "failed": wizardmd.failures(res)}); continue
         m = store.meta(root, a["origin"], rec["install"]["commit"])
-        store.add_app(c.out, root, m)
+        store.add_app(c.out, root, m, bump_from=a["commit"])
         sync_store(c, [x for x in catalog(c)["apps"] if x["id"] != m["id"]] + [m])
         urn = f"{m['id']}:{c.store_name}"
         rt.req("PATCH", f"/app-lifecycle/{urn}/update", {"performBackup": True}, timeout=600)
         out.append({"id": m["id"], "status": rt.wait_status(urn, {"running", "stopped"}), "from": a["commit"][:12], "to": m["commit"][:12]})
     sync_registry(c)
     return out
+
+
+def sync(c: Config) -> dict:
+    """Mirror every listed index app (pinned commit, re-checked here) into the local store, so Runtipi's own
+    App Store, install, update and uninstall buttons work for Wizard apps. Installed or local apps that left
+    the index stay, so nothing installed loses its files."""
+    have = {a["id"]: a for a in catalog(c)["apps"]}
+    keep, added, updated, failed = {}, [], [], []
+    for rec in index.all_listed(c.index):
+        commit = rec["install"]["commit"]
+        old = next((a for a in have.values() if a.get("origin") == rec["repo"]), None)
+        try:
+            root = store.fetch_commit(rec["install"]["git"], commit, c.cache)   # cached per commit
+            res = wizardmd.check(root)
+            if not wizardmd.passed(res):
+                failed.append(f"{rec['repo']}: {', '.join(wizardmd.failures(res))}")
+                if old:
+                    keep[old["id"]] = old
+                continue
+            m = store.meta(root, rec["repo"], commit)
+            if m["id"] in keep:
+                failed.append(f"{rec['repo']}: id '{m['id']}' already taken by {keep[m['id']]['origin']}")
+                continue
+            store.add_app(c.out, root, m, bump_from=(old or {}).get("commit"))
+            keep[m["id"]] = m
+            if not old:
+                added.append(m["id"])
+            elif old.get("commit") != commit:
+                updated.append(m["id"])
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"{rec['repo']}: {str(e)[:200]}")
+            if old:
+                keep[old["id"]] = old
+    installed = {((r.get("info") or {}).get("urn") or "").partition(":")[0] for r in c.runtipi().installed()}
+    for a in have.values():
+        if a["id"] not in keep and (a["id"] in installed or "/" not in a["origin"] or Path(a["origin"]).exists()):
+            keep[a["id"]] = a
+    for gone in set(have) - set(keep):
+        store.remove_app(c.out, gone)
+    head = sync_store(c, list(keep.values()))
+    sync_registry(c)
+    return {"apps": sorted(keep), "added": added, "updated": updated, "failed": failed, "store_head": head[:12]}
 
 
 def doctor(c: Config) -> list[tuple[str, bool, str]]:
@@ -334,6 +382,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, install(c, path.split("/")[3]))
             if path == "/api/update":
                 return self._json(200, update(c, self._body().get("app")))
+            if path == "/api/sync":
+                return self._json(200, sync(c))
             if path == "/api/refresh":
                 return self._json(200, {"store_head": sync_store(c, catalog(c)["apps"])})
         except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
@@ -372,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("uninstall"); u.add_argument("id")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     up = sub.add_parser("update"); up.add_argument("id", nargs="?")
-    sub.add_parser("refresh"); sub.add_parser("doctor"); sub.add_parser("serve")
+    sub.add_parser("refresh"); sub.add_parser("doctor"); sub.add_parser("serve"); sub.add_parser("sync")
     sk = sub.add_parser("skin"); sk.add_argument("state", choices=["on", "off"])
     args = ap.parse_args(argv)
     c = Config()
@@ -392,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
         elif args.cmd == "update":
             print(json.dumps(update(c, args.id), indent=2))
+        elif args.cmd == "sync":
+            print(json.dumps(sync(c), indent=2))
         elif args.cmd == "refresh":
             print(f"store {c.out} @ {sync_store(c, catalog(c)['apps'])[:12]} -> Runtipi store '{c.store_name}' pulled")
         elif args.cmd == "doctor":
@@ -402,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if all(ok for _, ok, _ in res) else 1
         elif args.cmd == "skin":
             if args.state == "on":
-                print(f"Wizard UX skin on (route {store.skin_on(c.runtipi_root)}); reload the Runtipi dashboard")
+                print(f"Wizard UX skin on (route {store.skin_on(c.runtipi_root, c.home)}); reload the Runtipi dashboard")
             else:
                 store.skin_off(c.runtipi_root)
                 print("skin off; the Runtipi dashboard is stock again")
