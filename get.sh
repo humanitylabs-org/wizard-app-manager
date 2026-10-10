@@ -6,12 +6,12 @@
 # What it does:
 #   1. As root: installs Docker, git, gh and python3-yaml, and creates the `wizard` user (docker group,
 #      passwordless sudo) that owns everything. Skipped when run by an existing sudo user.
-#   2. Asks once for a GitHub login, only if a default app is still private (team only). Skip it and those
-#      apps are left out; everything else installs. Set WIZARD_GITHUB=0 to never ask.
+#   2. GitHub login only when asked for with WIZARD_GITHUB=1 (for private, team-only apps). All default apps are
+#      public today, so normally nothing is asked.
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
-# Options (environment): WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WIZARD_GITHUB=0, GITHUB_TOKEN.
+# Options (environment): WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WIZARD_GITHUB=1, GITHUB_TOKEN.
 set -euo pipefail
 REPO="https://github.com/humanitylabs-org/wizard-app-manager"
 WUSER="${WIZARD_USER:-wizard}"
@@ -49,10 +49,9 @@ if [ "$(id -u)" -eq 0 ]; then
   if [ -n "${GITHUB_TOKEN:-}" ] && ! as_wizard gh auth status >/dev/null 2>&1; then
     printf '%s' "$GITHUB_TOKEN" | as_wizard gh auth login --with-token >/dev/null 2>&1 || true
   fi
-  if [ "${WIZARD_GITHUB:-1}" != "0" ] && ! as_wizard gh auth status >/dev/null 2>&1 && tty_ok; then
+  if [ "${WIZARD_GITHUB:-0}" = "1" ] && ! as_wizard gh auth status >/dev/null 2>&1 && tty_ok; then
     say "GitHub login (optional)"
-    echo "Some default apps (the Wizard shell) are still private to the Humanity Labs team."
-    printf "Log in to GitHub to include them? [Y/n] " >/dev/tty
+        printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
     read -r -t 120 ans </dev/tty || ans=n
     if [ "${ans:-y}" != "n" ] && [ "${ans:-y}" != "N" ]; then
       as_wizard gh auth login --hostname github.com --git-protocol https --scopes read:packages </dev/tty >/dev/tty 2>&1 || echo "GitHub login skipped"
@@ -67,8 +66,8 @@ fi
 
 # ---- as the wizard user (or any user with sudo) ----
 command -v git >/dev/null || sudo apt-get install -y -qq git >/dev/null
-if [ "${WIZARD_GITHUB:-1}" != "0" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
-  printf "Some default apps are still private to the team. Log in to GitHub to include them? [Y/n] " >/dev/tty
+if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
+  printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
   if [ "${ans:-y}" != "n" ] && [ "${ans:-y}" != "N" ]; then
     gh auth login --hostname github.com --git-protocol https --scopes read:packages </dev/tty >/dev/tty 2>&1 || true
