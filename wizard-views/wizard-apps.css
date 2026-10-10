@@ -20,17 +20,17 @@
 .wam .lrow .kind.wam-have { color: var(--violet-2); }
 
 /* no screen: dashed ring (use it by asking your agent) */
-.wam .lapp.headless .ic { box-shadow: none; outline: 1.5px dashed rgba(205, 190, 255, .5); outline-offset: 3px; }
+.wam .lapp.headless .ic { box-shadow: none; outline: 1.5px dashed rgba(205, 190, 255, .62); outline-offset: 3px; }
 
 /* an agent/app and the interface that opens it, joined by a short wire */
 .wam-pair { grid-column: span 2; display: flex; gap: 6px; border-radius: 22px; background: rgba(205, 190, 255, .05); box-shadow: inset 0 0 0 1px var(--line); }
 .wam-pair.n3 { grid-column: span 3; }
 .wam-pair.n4 { grid-column: span 4; }
 .wam-pair .lapp { flex: 1 1 0; padding: 8px 0 6px; }
-.wam-pair .lapp + .lapp::before { content: ""; position: absolute; top: 36px; left: calc(-50% + 30px); width: calc(100% - 54px); height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--violet-2), var(--cyan)); opacity: .85; }
+.wam-pair .lapp + .lapp::before { content: ""; position: absolute; top: 34px; left: calc(-50% + 26px); width: calc(100% - 58px); height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--violet-2), var(--cyan)); opacity: .85; }
 
 /* Get apps */
-.wam .lapp .ic.wam-get { background: rgba(205, 190, 255, .08); box-shadow: none; border: 1.5px dashed var(--line-2); color: var(--violet-2); font-size: 28px; font-weight: 300; }
+.wam .lapp .ic.wam-get { background: rgba(143, 99, 255, .22); box-shadow: inset 0 0 0 1px rgba(185, 155, 255, .35); color: var(--ink); font-size: 30px; font-weight: 300; }
 
 /* chip row above the search bar: tags, then Popular / New / A-Z */
 .wam-chips { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; margin: 4px 12px 0; overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
