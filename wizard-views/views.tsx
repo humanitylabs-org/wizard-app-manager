@@ -352,7 +352,7 @@ export const ResourcesView = () => {
               value={`${data.percentUsed}%`}
               pct={data.percentUsed}
             />
-            <ResourceRow icon={<IconCpu />} title="Processor" note="Load right now" value={`${Math.round(data.cpuLoad)}%`} pct={data.cpuLoad} />
+            <ResourceRow icon={<IconCpu />} title="Processor" note="Uninstall apps to reduce load" value={`${Math.round(data.cpuLoad)}%`} pct={data.cpuLoad} />
             <ResourceRow
               icon={<IconCircuitResistor />}
               title="Memory"
