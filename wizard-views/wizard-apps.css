@@ -1,0 +1,70 @@
+/*
+ * Wizard App Manager pieces added on top of Wizard UX (web/styles.css: .lgroup .lgrid .lapp .lrow .st-group .st-row).
+ * Inside the shell only this file loads; the standalone page also loads wux.css (the same Wizard UX classes, scoped .wux).
+ * Everything here is .wam-scoped and uses Wizard UX tokens (--ink-*, --line*, --glass, --violet*, --green, --amber, --red).
+ */
+.wam .lapp { position: relative; min-width: 0; }
+.wam .lapp .ic { overflow: visible; }
+.wam .lapp .ic img, .wam .lrow .ic img, .wam-ic img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; display: block; }
+.wam .lrow .ic { overflow: hidden; }
+
+/* status dot, update badge, installed tick, install count */
+.wam-dot { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #120b26; background: #6a6390; }
+.wam-dot.running { background: var(--green); box-shadow: 0 0 8px rgba(79, 240, 176, .7); }
+.wam-dot.stopped, .wam-dot.missing { background: var(--red); }
+.wam-dot.installing, .wam-dot.updating, .wam-dot.starting, .wam-dot.stopping, .wam-dot.restarting { background: var(--amber); }
+.wam-up, .wam-ok { position: absolute; width: 19px; height: 19px; border-radius: 10px; display: grid; place-items: center; font-size: 11px; font-style: normal; font-weight: 900; color: #0b0718; box-shadow: 0 0 0 2px #120b26; }
+.wam-up { left: -6px; top: -6px; background: var(--green); }
+.wam-ok { right: -5px; bottom: -5px; background: var(--violet-2); }
+.wam .lapp .wam-n { margin-top: -4px; font-size: 10px; color: var(--ink-3); }
+.wam .lrow .kind.wam-have { color: var(--violet-2); }
+
+/* no screen: dashed ring (use it by asking your agent) */
+.wam .lapp.headless .ic { box-shadow: none; outline: 1.5px dashed rgba(205, 190, 255, .5); outline-offset: 3px; }
+
+/* an agent/app and the interface that opens it, joined by a short wire */
+.wam-pair { grid-column: span 2; display: flex; gap: 6px; border-radius: 22px; background: rgba(205, 190, 255, .05); box-shadow: inset 0 0 0 1px var(--line); }
+.wam-pair.n3 { grid-column: span 3; }
+.wam-pair.n4 { grid-column: span 4; }
+.wam-pair .lapp { flex: 1 1 0; padding: 8px 0 6px; }
+.wam-pair .lapp + .lapp::before { content: ""; position: absolute; top: 36px; left: calc(-50% + 30px); width: calc(100% - 54px); height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--violet-2), var(--cyan)); opacity: .85; }
+
+/* Get apps */
+.wam .lapp .ic.wam-get { background: rgba(205, 190, 255, .08); box-shadow: none; border: 1.5px dashed var(--line-2); color: var(--violet-2); font-size: 28px; font-weight: 300; }
+
+/* chip row above the search bar: tags, then Popular / New / A-Z */
+.wam-chips { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; margin: 4px 12px 0; overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
+.wam-chips::-webkit-scrollbar { display: none; }
+.wam-chips[hidden] { display: none; }
+.wam-chip { flex: 0 0 auto; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); background: rgba(205, 190, 255, .06); border: 1px solid var(--line); white-space: nowrap; }
+.wam-chip.on { color: var(--ink); background: rgba(143, 99, 255, .28); border-color: rgba(185, 155, 255, .45); }
+.wam-sort { flex: 0 0 auto; display: flex; height: 30px; padding: 2px; border-radius: 15px; border: 1px solid var(--line); margin-left: 2px; }
+.wam-sort button { padding: 0 9px; border-radius: 13px; font-size: 11.5px; font-weight: 600; color: var(--ink-3); white-space: nowrap; }
+.wam-sort button.on { color: var(--ink); background: rgba(205, 190, 255, .12); }
+
+/* back link, more, notes */
+.wam-back { display: inline-block; margin: 6px 4px 2px; font-size: 13px; font-weight: 600; color: var(--violet-2); }
+.wam-more { display: block; margin: 8px auto 4px; padding: 8px 18px; border-radius: 14px; font-size: 13px; font-weight: 600; color: var(--ink-2); background: rgba(205, 190, 255, .06); border: 1px solid var(--line); }
+.wam-note { text-align: center; }
+
+/* app card (Settings .st-row look) */
+.wam-card { padding: 4px 0 8px; }
+.wam-card .st-row { margin-top: 8px; }
+.wam-card .st-tx small { white-space: normal; }
+.wam-ic { flex: 0 0 48px; width: 48px; height: 48px; border-radius: 14px; overflow: hidden; display: grid; place-items: center; font-size: 22px; background: linear-gradient(145deg, var(--g1, #2a1f55), var(--g2, #120b26)); }
+.wam-meta { display: flex; align-items: center; gap: 8px; margin: 2px 6px 10px; font-size: 13px; color: var(--ink-2); }
+.wam-meta .wam-dot { position: static; width: 8px; height: 8px; border: 0; }
+.wam-acts { display: flex; gap: 8px; }
+.wam-acts .wam-btn { flex: 1 1 0; }
+.wam-btn { min-height: 42px; padding: 6px 10px; border-radius: 14px; font-size: 14px; font-weight: 600; color: var(--ink); background: rgba(205, 190, 255, .08); border: 1px solid var(--line-2); white-space: nowrap; }
+.wam-btn.primary { background: rgba(143, 99, 255, .32); border-color: rgba(185, 155, 255, .45); }
+.wam-btn[disabled] { opacity: .55; }
+.wam-all .wam-btn { min-height: 38px; font-size: 13px; }
+
+/* Resources: a small meter at the end of a Settings row */
+.wam-meter { flex: 0 0 76px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.wam-meter em { font-style: normal; font-size: 14px; font-weight: 700; color: var(--ink); }
+.wam-meter .bar { width: 100%; height: 5px; border-radius: 99px; background: rgba(205, 190, 255, .12); overflow: hidden; }
+.wam-meter .bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--violet), var(--pink)); }
+.wam-meter.hot .bar i { background: linear-gradient(90deg, var(--amber), var(--red)); }
+.wam-meter.hot em { color: var(--amber); }
