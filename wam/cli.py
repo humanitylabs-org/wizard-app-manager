@@ -86,7 +86,9 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
     if s:
         rt.req("PATCH", f"/marketplace/{STORE}", {"name": s.get("name") or STORE_NAME, "enabled": True})
         return
-    rt.req("POST", "/marketplace/create", {"name": STORE_NAME, "url": c.index})
+    # Runtipi derives the slug from the name, so create it as "wizardapps" (the slug every urn uses), then rename.
+    rt.req("POST", "/marketplace/create", {"name": STORE, "url": c.index})
+    rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 
 
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:

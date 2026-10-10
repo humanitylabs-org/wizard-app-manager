@@ -10,12 +10,31 @@ RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
 if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
-  echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first"
+  echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first, box-only"
+  # Box-only from the very first start: dashboard and proxy listen on loopback, never on the public interface.
+  # Reach them later through Cloudflare Tunnel or Tailscale.
+  mkdir -p "$RUNTIPI_ROOT/user-config"
+  [ -f "$RUNTIPI_ROOT/user-config/tipi-compose.yml" ] || cat > "$RUNTIPI_ROOT/user-config/tipi-compose.yml" <<'YML'
+# Wizard OS: box-only. Nothing listens on the public interface; use Cloudflare Tunnel or Tailscale to reach it.
+services:
+  runtipi-reverse-proxy:
+    ports: !override
+      - 127.0.0.1:8480:80
+      - 127.0.0.1:8443:443
+YML
+  ENVF="$(mktemp)"
+  printf 'NGINX_PORT=8480\nNGINX_PORT_SSL=8443\nINTERNAL_IP=127.0.0.1\n' > "$ENVF"
   curl -fsSL https://setup.runtipi.io -o /tmp/runtipi-setup.sh
-  sudo bash /tmp/runtipi-setup.sh
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash /tmp/runtipi-setup.sh --env-file "$ENVF")
+  rm -f "$ENVF"
+  # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
+  sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
+  sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
 fi
 python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
 command -v git >/dev/null || sudo apt-get install -y git
+# Shared, read-only copy of apps.json for app containers (the Wizard shell mounts it).
+mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
 
 # 1) Run the Wizard App Manager image instead of Runtipi's (user-config override; survives Runtipi's own files).
 mkdir -p "$RUNTIPI_ROOT/user-config"
@@ -79,11 +98,17 @@ systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
 
-for i in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && break; sleep 2; done
+for _ in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && break; sleep 2; done
 "$HOME/.local/bin/wam" doctor --fix || true
 "$HOME/.local/bin/wam" apps >/dev/null || true
 "$HOME/.local/bin/wam" doctor || true
 
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
-if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap; "$HOME/.local/bin/wam" slots; fi
+if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap >/dev/null || true; fi
+
+echo
+echo "Wizard OS is installed (box-only: nothing listens on the public interface)."
+"$HOME/.local/bin/wam" slots || true
+echo
+echo "Next: run 'wam slots' or 'wam apps' as $(id -un). Re-run the same curl command any time to update."
