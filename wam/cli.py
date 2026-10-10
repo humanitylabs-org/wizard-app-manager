@@ -14,6 +14,8 @@ Wizard additions:
         [--set KEY=VALUE ...]   install-form values
   wam uninstall <id>            remove (backups are kept unless you delete them)
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
+  wam slots [--json]            system app parking spots: which app fills each, which are empty
+  wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam doctor [--fix]            check the whole chain
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
@@ -30,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import index, registry
+from . import index, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -91,6 +93,8 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
     registry.write(reg, c.home)
+    slots.merge_into_registry(reg)
+    registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     return reg
 
 
@@ -169,14 +173,33 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             "installed": [a["id"] for a in reg["apps"]]}
 
 
-def uninstall(c: Config, app_id: str) -> dict:
+def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
     rt = c.runtipi()
+    if not force:
+        empty = slots.blocks_uninstall(write_registry(c, rt), app_id)
+        if empty:
+            raise SystemExit(f"{app_id} is the only app in required spot(s) {', '.join(empty)}; install another app that "
+                             f"provides it first (or pass --force)")
     urn = f"{app_id}:{STORE}"
     if app_id in installed_ids(rt):
         rt.uninstall(urn)
         rt.wait_status(urn, {"missing"}, timeout=300)
     reg = write_registry(c, rt)
     return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]]}
+
+
+def bootstrap(c: Config) -> dict:
+    """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
+    rt = c.runtipi()
+    reg = write_registry(c, rt)
+    done, failed = [], {}
+    for app_id in slots.to_install(reg):
+        try:
+            done.append(install(c, app_id)["id"])
+        except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
+            failed[app_id] = str(e)[:200]
+    reg = write_registry(c, rt)
+    return {"installed": done, "failed": failed, "spots": slots.table(reg)}
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
@@ -261,6 +284,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"apps": index.search(c.index, (q.get("q") or [""])[0], category=(q.get("category") or [None])[0])})
             except index.IndexError_ as e:
                 return self._json(502, {"error": str(e)})
+        if u.path == "/api/slots":
+            p = c.home / "apps.json"
+            return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -273,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/install":
                 b = self._body()
                 return self._json(200, install(c, str(b.get("app", "")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
+            if path == "/api/bootstrap":
+                return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
         except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
@@ -338,7 +366,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
     i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
-    u = sub.add_parser("uninstall"); u.add_argument("id")
+    u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
+    sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
+    sub.add_parser("bootstrap")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
@@ -352,7 +382,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "install":
             print(json.dumps(install(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
         elif args.cmd == "uninstall":
-            print(json.dumps(uninstall(c, args.id), indent=2))
+            print(json.dumps(uninstall(c, args.id, force=args.force), indent=2))
+        elif args.cmd == "slots":
+            rows = slots.table(write_registry(c))
+            print(json.dumps(rows, indent=2) if args.json else "\n".join(
+                f"{r['name']:<20} {(r['active'] or '-'):<20} {r['state']:<15} default {r['default_app'] or '(none yet)'}"
+                + ("  required" if r["required"] else "") for r in rows))
+        elif args.cmd == "bootstrap":
+            print(json.dumps(bootstrap(c), indent=2))
         elif args.cmd == "apps":
             reg = write_registry(c)
             print(json.dumps(reg, indent=2) if args.json else "\n".join(

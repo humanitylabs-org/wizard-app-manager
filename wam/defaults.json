@@ -1,0 +1,13 @@
+{
+  "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet.",
+  "slots": {
+    "shell": {"name": "Shell (Wizard UX)", "app": null, "required": true, "note": "wizard-ux + wizard-agent-service as one app (Archimedes is packaging it). Other shells, e.g. hermes-frontend-3, can fill it."},
+    "agent": {"name": "Agent", "app": "hermes-agent", "required": true},
+    "ai-accounts": {"name": "AI accounts", "app": "wizard-ai-accounts", "required": false},
+    "files": {"name": "Files", "app": "files", "required": true},
+    "transcription": {"name": "Transcription", "app": "transcriber", "required": false},
+    "browser": {"name": "Browser", "app": "browser", "required": false},
+    "secrets": {"name": "Secrets", "app": "secret-drop", "required": false},
+    "notifications": {"name": "Notifications", "app": null, "required": false, "note": "to build"}
+  }
+}

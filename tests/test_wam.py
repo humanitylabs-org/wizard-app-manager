@@ -142,3 +142,25 @@ def test_template_mcp_server_speaks_mcp():
         assert names == ["wizard_time", "wizard_echo"]
     finally:
         proc.terminate()
+
+
+def test_parking_spots_fill_block_and_bootstrap():
+    from wam import slots
+    defaults = {"shell": {"app": None, "required": True}, "agent": {"app": "hermes-agent", "required": True},
+                "files": {"app": "files", "required": True}, "browser": {"app": "browser", "required": False}}
+    reg = {"apps": [{"id": "hermes-agent", "provides": ["agent"]}, {"id": "my-files", "provides": ["files"]}],
+           "slots": {"agent": {"default": "hermes-agent"}}}
+    t = {r["slot"]: r for r in slots.table(reg, defaults)}
+    assert t["agent"]["active"] == "hermes-agent" and t["agent"]["state"] == "filled"
+    assert t["files"]["active"] == "my-files"           # an alternative fills the spot; the default isn't forced
+    assert t["shell"]["state"] == "no default yet"
+    assert slots.to_install(reg, defaults) == ["browser"]
+    assert slots.blocks_uninstall(reg, "hermes-agent", defaults) == ["agent"]
+    assert slots.blocks_uninstall(reg, "browser", defaults) == []
+    assert [p["slot"] for p in slots.merge_into_registry(dict(reg), defaults)["parking"]] == list(defaults)
+
+
+def test_shipped_defaults_are_valid():
+    from wam import slots
+    d = slots.load_defaults()
+    assert {"shell", "agent", "files"} <= set(d) and all(d[k]["required"] for k in ("shell", "agent", "files"))
