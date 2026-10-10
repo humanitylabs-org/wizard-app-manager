@@ -44,6 +44,7 @@ Apps answer on `127.0.0.1:<port>` only. Reach them from your devices through Tai
 | `wam update [<id>]` | Move to the commit the index lists now, after re-checking it. Never automatic. |
 | `wam refresh` | Re-register the local store with Runtipi and pull it |
 | `wam doctor` | Check the whole chain |
+| `wam skin on\|off` | Wizard UX look for the stock Runtipi dashboard. A small read-only proxy adds one stylesheet; Runtipi's files and image are unchanged, and `off` restores the stock look. |
 | `wam serve` | HTTP API on `127.0.0.1:7790` (the user service runs this) |
 
 HTTP API (for the Wizard UX Apps screen and the Agent Service): `GET /api/apps`, `GET /api/search?q=`, `GET /api/catalog`, `GET /api/doctor`; changes need `Authorization: Bearer $(cat ~/.wizard-os/api-token)`: `POST /api/install {"app": "...", "set": {...}}`, `POST /api/update {"app": "..."}`, `POST /api/refresh`, `DELETE /api/apps/<id>`.

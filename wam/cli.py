@@ -8,6 +8,7 @@
   wam update [<id>]             re-install at the commit the index lists now (after the owner says yes)
   wam refresh                   re-register the local store with Runtipi and pull it
   wam doctor                    check the whole chain
+  wam skin on|off               Wizard UX look for the stock Runtipi dashboard (a style layer; Runtipi is unchanged)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
@@ -372,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     up = sub.add_parser("update"); up.add_argument("id", nargs="?")
     sub.add_parser("refresh"); sub.add_parser("doctor"); sub.add_parser("serve")
+    sk = sub.add_parser("skin"); sk.add_argument("state", choices=["on", "off"])
     args = ap.parse_args(argv)
     c = Config()
     try:
@@ -398,6 +400,12 @@ def main(argv: list[str] | None = None) -> int:
             for n, ok, d in res:
                 print(f"{'PASS' if ok else 'FAIL'}  {n}  {d}")
             return 0 if all(ok for _, ok, _ in res) else 1
+        elif args.cmd == "skin":
+            if args.state == "on":
+                print(f"Wizard UX skin on (route {store.skin_on(c.runtipi_root)}); reload the Runtipi dashboard")
+            else:
+                store.skin_off(c.runtipi_root)
+                print("skin off; the Runtipi dashboard is stock again")
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
