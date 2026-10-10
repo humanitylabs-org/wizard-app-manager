@@ -196,3 +196,47 @@ def test_private_images_and_shared_secret(tmp_path):
     d = {"shell": {"app": "s", "required": True}, "agent-service": {"app": "s", "required": True}}
     t = {r["slot"]: r for r in slots.table({"apps": [{"id": "s", "provides": ["shell"]}]}, d)}
     assert t["agent-service"]["state"] == "filled" and t["shell"]["state"] == "filled"
+
+
+class _FakeStores:
+    """Just enough of Runtipi's /marketplace API: the slug comes from the name, a duplicate URL is a 409."""
+    def __init__(self, stores):
+        self.s = [dict(x) for x in stores]
+        self.calls = []
+
+    def stores(self):
+        return [dict(x) for x in self.s]
+
+    def req(self, method, path, body=None, **_):
+        self.calls.append((method, path))
+        if method == "POST" and path == "/marketplace/create":
+            if any(x["url"].rstrip("/") == body["url"].rstrip("/") for x in self.s):
+                raise RuntimeError("POST /marketplace/create -> 409 SERVER_ERROR_APP_STORE_ALREADY_EXISTS")
+            self.s.append({"slug": body["name"].lower().replace(" ", "-"), "name": body["name"], "url": body["url"], "enabled": True})
+        elif method == "PATCH":
+            slug = path.rsplit("/", 1)[1]
+            for x in self.s:
+                if x["slug"] == slug:
+                    x.update(name=body["name"], enabled=body["enabled"])
+        elif method == "DELETE":
+            slug = path.rsplit("/", 1)[1]
+            self.s = [x for x in self.s if x["slug"] != slug]
+        return {}
+
+
+class _Cfg:
+    index = "https://apps.aiwizards.com"
+
+
+@pytest.mark.parametrize("before", [
+    [],                                                                                    # fresh box
+    [{"slug": "wizard-apps", "name": "Wizard Apps", "url": "https://apps.aiwizards.com", "enabled": True}],  # earlier wam left a stray copy
+])
+def test_ensure_store_lands_on_the_wizardapps_slug(before):
+    rt = _FakeStores([{"slug": "migrated", "name": "migrated", "url": "https://github.com/runtipi/runtipi-appstore", "enabled": True}] + before)
+    cli.ensure_store(_Cfg(), rt)
+    by_slug = {x["slug"]: x for x in rt.s}
+    assert by_slug[cli.STORE]["enabled"] and by_slug[cli.STORE]["name"] == cli.STORE_NAME
+    assert "wizard-apps" not in by_slug and "migrated" in by_slug
+    cli.ensure_store(_Cfg(), rt)                                                          # second run: nothing to do
+    assert rt.calls[-1][0] != "POST"

@@ -1,9 +1,14 @@
 name: image
-# Builds and publishes the Wizard App Manager image to GHCR on every push to main (and on demand).
+# Builds and publishes the Wizard App Manager image to GHCR on every push to main (and on demand), for amd64 and arm64.
+# Each architecture builds on its own native runner (no QEMU: the bun/node build is very slow emulated) and pushes by
+# digest; the publish job then joins both digests into the :latest and versioned multi-arch tags.
+# Pull requests that touch the image build both architectures without publishing anything.
 # Uses the workflow's own token, so no personal access token is needed.
 on:
   push:
     branches: [main]
+    paths: ["packages/**", "Dockerfile", "package.json", "bun.lock", "turbo.json", ".github/workflows/image.yml"]
+  pull_request:
     paths: ["packages/**", "Dockerfile", "package.json", "bun.lock", "turbo.json", ".github/workflows/image.yml"]
   workflow_dispatch: {}
 
@@ -15,33 +20,90 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: ghcr.io/humanitylabs-org/wizard-app-manager
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: v
         run: echo "tag=v4.10.2-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: |
             LOCAL=true
             TIPI_VERSION=${{ steps.v.outputs.tag }}
-          tags: |
-            ghcr.io/humanitylabs-org/wizard-app-manager:latest
-            ghcr.io/humanitylabs-org/wizard-app-manager:${{ steps.v.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/humanitylabs-org/wizard-app-manager
             org.opencontainers.image.description=Wizard App Manager (Runtipi v4.10.2 with an index-backed App Store)
             org.opencontainers.image.licenses=GPL-3.0
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: Keep the digest for the publish job
+        if: env.PUBLISH == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          d='${{ steps.build.outputs.digest }}'
+          touch "$RUNNER_TEMP/digests/${d#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "tag=v4.10.2-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-arch tags (latest + version)
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:latest" -t "$IMAGE:${{ steps.v.outputs.tag }}" \
+            $(printf "$IMAGE@sha256:%s " *)
+      - name: Both architectures are in the published image
+        run: |
+          docker buildx imagetools inspect "$IMAGE:latest" | tee /dev/stderr | grep -q 'linux/amd64'
+          docker buildx imagetools inspect "$IMAGE:latest" | grep -q 'linux/arm64'
