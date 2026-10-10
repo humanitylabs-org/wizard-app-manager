@@ -1,0 +1,62 @@
+import './instrument';
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { type INestApplication, type LogLevel, ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
+import { AppModule } from './app.module';
+import { AppService } from './app.service';
+import { APP_DIR } from './common/constants';
+import { generateSystemEnvFile } from './common/helpers/env-helpers';
+
+async function setupSwagger(app: INestApplication) {
+  const { NODE_ENV } = process.env;
+  if (NODE_ENV === 'production') {
+    return;
+  }
+
+  const config = new DocumentBuilder()
+    .setTitle('Runtipi API')
+    .setDescription('API specs for Runtipi')
+    .setVersion('1.0')
+    .setOpenAPIVersion('3.1.0')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config, {
+    operationIdFactory: (_: string, methodKey: string) => methodKey,
+  });
+  SwaggerModule.setup('api/docs', app, document);
+
+  // write the swagger.json file to the assets folder
+  await fs.promises.writeFile(path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json'), JSON.stringify(document, null, 2));
+}
+
+async function bootstrap() {
+  await generateSystemEnvFile();
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    abortOnError: true,
+    logger: [process.env.LOG_LEVEL as LogLevel, 'error', 'warn', 'fatal'],
+  });
+
+  const appService = app.get(AppService);
+  await appService.bootstrap();
+
+  app.set('trust proxy', true);
+  app.setGlobalPrefix('/api');
+  app.useGlobalPipes(new ValidationPipe());
+  app.enableCors();
+  app.use(cookieParser());
+
+  await setupSwagger(app);
+
+  await app.listen(3000);
+}
+
+bootstrap().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

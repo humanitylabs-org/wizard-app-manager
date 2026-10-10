@@ -1,0 +1,104 @@
+import type { GuestAppsDto } from '@/api-client';
+import { getGuestAppsOptions, getGuestLinksOptions } from '@/api-client/@tanstack/react-query.gen';
+import { GuestHeader } from '@/components/header/guest-header';
+import { BaseDashboardLayout } from '@/components/layouts/dashboard/base-dashboard-layout';
+import { PageTitle } from '@/components/page-title/page-title';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
+import { AppTile } from '@/modules/app/components/app-tile/app-tile';
+import { IconLock, IconLockOff } from '@tabler/icons-react';
+import { useSuspenseQuery } from '@tanstack/react-query';
+import '@/styles/app-grid.css';
+import { EmptyPage } from '@/components/empty-page/empty-page';
+import { useUserContext } from '@/context/user-context';
+import { GuestLinkTile } from '../components/guest-link-tile';
+
+const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
+  const { info, app, metadata } = data;
+
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+
+  const handleOpen = (type: string) => {
+    let url = '';
+    const { https } = info;
+    const protocol = https ? 'https' : 'http';
+
+    if (typeof window !== 'undefined') {
+      // Current domain
+      const domain = window.location.hostname;
+      url = `${protocol}://${domain}:${app.port ?? info.port}${info.url_suffix || ''}`;
+    }
+
+    if (type === 'domain' && app.domain) {
+      url = `https://${app.domain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
+    }
+
+    if (type === 'localDomain') {
+      url = `https://${metadata.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
+    }
+
+    window.open(url, '_blank', 'noreferrer');
+  };
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: works fine */}
+        <div tabIndex={0} className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0">
+          <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
+        </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent>
+        <DropdownMenuGroup>
+          {app.exposed && app.domain && (
+            <DropdownMenuItem onClick={() => handleOpen('domain')}>
+              <IconLock className="text-green me-2" size={16} />
+              {app.domain}
+              {sslPort !== 443 ? `:${sslPort}` : ''}
+            </DropdownMenuItem>
+          )}
+          {(app.exposedLocal || !info.dynamic_config) && (
+            <DropdownMenuItem onClick={() => handleOpen('localDomain')}>
+              <IconLock className="text-muted me-2" size={16} />
+              {metadata.localSubdomain}.{localDomain}
+              {sslPort !== 443 ? `:${sslPort}` : ''}
+            </DropdownMenuItem>
+          )}
+          {(app.openPort || !info.dynamic_config) && (
+            <DropdownMenuItem onClick={() => handleOpen('port')}>
+              <IconLockOff className="text-muted me-2" size={16} />
+              {hostname}:{app.port ?? info.port}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
+export const GuestDashboard = () => {
+  const { localDomain, sslPort } = useUserContext();
+
+  const { data: appsData } = useSuspenseQuery({
+    ...getGuestAppsOptions(),
+  });
+
+  const { data: linksData } = useSuspenseQuery({
+    ...getGuestLinksOptions(),
+  });
+
+  const hasContent = appsData.installed.length > 0 || linksData.links.length > 0;
+
+  return (
+    <BaseDashboardLayout header={<GuestHeader />} pageTitle={<PageTitle apps={[]} />}>
+      {!hasContent && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
+      <div className="row row-cards">
+        {appsData.installed.map((appData) => {
+          return <Tile key={appData.app.id} data={appData} localDomain={localDomain} sslPort={sslPort} />;
+        })}
+        {linksData.links.map((link) => (
+          <GuestLinkTile key={link.id} link={link} />
+        ))}
+      </div>
+    </BaseDashboardLayout>
+  );
+};

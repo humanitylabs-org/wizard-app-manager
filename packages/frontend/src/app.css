@@ -1,0 +1,26 @@
+@import "@tabler/core/dist/css/tabler.min.css";
+@import "@tabler/core/dist/css/tabler-themes.min.css";
+
+#root {
+  height: 100%;
+}
+
+@media (min-width: 992px) {
+  :host,
+  :root {
+    margin-left: 0;
+  }
+}
+
+main {
+  height: 100%;
+}
+
+body {
+  overflow-y: scroll;
+}
+
+.tooltip {
+  max-width: 300px;
+  text-align: center;
+}

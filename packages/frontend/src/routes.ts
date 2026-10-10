@@ -1,0 +1,38 @@
+import { type RouteConfig, index, layout, prefix, route } from '@react-router/dev/routes';
+
+export default [
+  // Unauthenticated routes
+  layout('./components/routes/unauthenticated-route.tsx', [
+    route('login', './modules/auth/pages/login-page.tsx', { id: 'login' }),
+    route('register', './modules/auth/pages/register-page.tsx', { id: 'register' }),
+    route('reset-password', './modules/auth/pages/reset-password-page.tsx', { id: 'reset-password' }),
+  ]),
+  route('playground', './modules/playground/pages/playground-page.tsx', { id: 'playground' }),
+  // Authenticated routes
+  layout('./components/routes/authenticated-route.tsx', [
+    route('dashboard', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),
+
+    // App store routes
+    ...prefix('app-store', [
+      index('./modules/app/pages/app-store-page.tsx', { id: 'app-store' }),
+      route(':storeId', './modules/app/pages/app-store-page.tsx', { id: 'app-store-id' }),
+      route(':storeId/:appId', './modules/app/pages/app-details-page.tsx', { id: 'app-details-store' }),
+      route(':storeId/:appId/update', './modules/app/pages/app-update-page.tsx', { id: 'app-store-app-update' }),
+    ]),
+
+    // My apps routes
+    ...prefix('apps', [
+      index('./modules/app/pages/my-apps-page.tsx', { id: 'my-apps' }),
+      route('create', './modules/app/pages/custom-app-create-page.tsx', { id: 'custom-app-create' }),
+      route(':storeId/:appId/edit', './modules/app/pages/app-edit-page.tsx', { id: 'app-edit' }),
+      route(':appId/edit', './modules/app/pages/app-edit-page.tsx', { id: 'app-edit-custom' }),
+      route(':appId', './modules/app/pages/custom-app-details-page.tsx', { id: 'custom-app' }),
+      route(':storeId/:appId', './modules/app/pages/app-details-page.tsx', { id: 'app-details' }),
+      route(':storeId/:appId/update', './modules/app/pages/app-update-page.tsx', { id: 'app-update' }),
+    ]),
+
+    // Settings route
+    ...prefix('settings', [index('./modules/settings/pages/settings-page.tsx', { id: 'settings' })]),
+  ]),
+  route('*', './routes/not-found.tsx'),
+] satisfies RouteConfig;

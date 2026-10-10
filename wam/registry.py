@@ -1,67 +1,97 @@
-"""apps.json: the one list of installed Wizard apps. The App Manager writes it; the Agent Service and Wizard UX read it."""
+"""apps.json: the one list of installed Wizard apps. The App Manager writes it; the Agent Service and Wizard UX read it.
+
+Source of truth is the Wizard App Manager itself: for each installed app from the Wizard store, the files it fetched
+from the index live in <runtipi>/apps/<store>/<id>/ (installed copy) and <runtipi>/repos/<store>/apps/<id>/ (store copy,
+with wizard.md and SKILL.md).
+"""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
 
-SCHEMA = 1
+import yaml
+
+SCHEMA = 2
 
 
 def home() -> Path:
     return Path(os.environ.get("WIZARD_OS_HOME", Path.home() / ".wizard-os")).expanduser()
 
 
-def build(catalog: dict, installed: list[dict], store_slug: str, host: str, skills_src: Path) -> dict:
-    """Join Runtipi's installed list with the compiled catalog. Only apps from our store count."""
-    by_id = {a["id"]: a for a in catalog.get("apps", [])}
+def _front(text: str) -> dict:
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    return (yaml.safe_load(m.group(1)) or {}) if m else {}
+
+
+def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
+    """wizard.md + config.json of an installed Wizard app, from the store copy (falls back to installed copy)."""
+    for d in (runtipi_root / "repos" / store / "apps" / app_id, runtipi_root / "apps" / store / app_id):
+        wm = d / "wizard.md"
+        if wm.is_file():
+            w = _front(wm.read_text())
+            cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
+            src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
+            commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
+            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit}
+    return None
+
+
+def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
     apps = []
     for row in installed:
         app = row.get("app") or {}
         info = row.get("info") or {}
-        urn = info.get("urn") or app.get("appUrn") or ""
-        name, _, store = urn.partition(":")
-        if store != store_slug or name not in by_id:
+        urn = info.get("urn") or ""
+        name, _, st = urn.partition(":")
+        if st != store:
             continue
-        m = by_id[name]
-        port = app.get("port") or info.get("port") or m.get("port")
-        mcp = m.get("mcp") or None
-        entry = {
-            "id": m["id"], "name": m["name"], "type": m["type"], "version": m["version"],
-            "status": app.get("status"), "system": m["system"], "provides": m["provides"], "uses": m["uses"],
-            "needs": m["needs"], "summary": m["summary"], "urn": urn,
+        meta = app_meta(runtipi_root, store, name)
+        if not meta:
+            continue
+        w, cfg = meta["w"], meta["cfg"]
+        port = app.get("port") or cfg.get("port")
+        mcp = w.get("mcp") or None
+        view = w.get("view") or None
+        apps.append({
+            "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
+            "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
+            "repo": meta["repo"], "commit": meta["commit"],
+            "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
+            "summary": w.get("summary", ""),
             "mcp": None if not mcp else {
-                "url": f"http://{host}:{port}{mcp['path']}",              # from the host / Agent Service
-                "internal": f"http://{m['id']}:{mcp['port']}{mcp['path']}",  # from another Runtipi app
+                "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
+                "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
                 "transport": mcp.get("transport", "streamable-http"),
             },
-            "skill": f"skills/{m['id']}/SKILL.md" if (skills_src / m["id"] / "SKILL.md").is_file() else None,
-            "view": None if not m.get("view") else {"url": f"/apps/{m['id']}/", "route": f"/apps/{m['id']}/", "upstream": f"http://{host}:{port}{m['view'].get('path', '/')}"},
-            "health": f"http://{host}:{port}{m['health']}" if m.get("health") else None,
-            "recommends": m.get("recommends"),
-        }
-        apps.append(entry)
+            "skill": f"skills/{name}/SKILL.md" if (meta["dir"] / "SKILL.md").is_file() else None,
+            "view": None if not view else {"url": f"http://{host}:{port}{view.get('path', '/')}"},
+            "health": f"http://{host}:{port}{w['health']}" if w.get("health") else None,
+            "_skill_src": str(meta["dir"] / "SKILL.md") if (meta["dir"] / "SKILL.md").is_file() else None,
+        })
     apps.sort(key=lambda a: a["id"])
     slots: dict[str, list[str]] = {}
     for a in apps:
         for s in a["provides"]:
             slots.setdefault(s, []).append(a["id"])
-    return {"schema": SCHEMA, "updated_at": int(time.time()), "store": store_slug, "apps": apps,
+    return {"schema": SCHEMA, "updated_at": int(time.time()), "store": store, "apps": apps,
             "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
 
 
-def write(reg: dict, skills_src: Path, root: Path | None = None) -> Path:
+def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
     sk = root / "skills"
     shutil.rmtree(sk, ignore_errors=True)
     sk.mkdir()
     for a in reg["apps"]:
-        if a["skill"]:
+        src = a.pop("_skill_src", None)
+        if src:
             (sk / a["id"]).mkdir()
-            shutil.copy2(skills_src / a["id"] / "SKILL.md", sk / a["id"] / "SKILL.md")
+            shutil.copy2(src, sk / a["id"] / "SKILL.md")
     prev = root / "apps.json"
     old = {}
     if prev.is_file():
@@ -69,8 +99,7 @@ def write(reg: dict, skills_src: Path, root: Path | None = None) -> Path:
             old = json.loads(prev.read_text())
         except Exception:  # noqa: BLE001
             old = {}
-    # Keep owner slot choices across rewrites.
-    for slot, val in (old.get("slots") or {}).items():
+    for slot, val in (old.get("slots") or {}).items():   # keep owner slot choices across rewrites
         if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
             reg["slots"][slot]["default"] = val["default"]
     tmp = root / "apps.json.tmp"

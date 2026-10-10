@@ -1,0 +1,230 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1731334056989,
+      "tag": "0000_sleepy_earthquake",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1731335935965,
+      "tag": "0001_crazy_vanisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1732529309886,
+      "tag": "0002_add-app-version",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1732529344918,
+      "tag": "0003_add-status-updating",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1732529372297,
+      "tag": "0004_add-exposed-domain-fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1732529416112,
+      "tag": "0005_add-user-operator",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1732529440403,
+      "tag": "0006_add-totp-user-fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1732529494219,
+      "tag": "0007_merge-config-with-domain-and-exposed",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1732529539686,
+      "tag": "0008_add-guest-dashboard",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1732529564105,
+      "tag": "0009_add-status-resetting",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1732529654682,
+      "tag": "0010_link-table-description",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1732529678975,
+      "tag": "0011_app-local-exposed",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1732529705065,
+      "tag": "0012_restarting-state",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1732529725697,
+      "tag": "0013_backingup-state",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1739029385015,
+      "tag": "0014_curly_jigsaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1739115204898,
+      "tag": "0015_first_gabe_jones",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1739115230952,
+      "tag": "0016_closed_enchantress",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1739115248605,
+      "tag": "0017_stale_maverick",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1739116677048,
+      "tag": "0018_low_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1746211634455,
+      "tag": "0019_slow_loa",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1746346222904,
+      "tag": "0020_flimsy_orphan",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1746547130244,
+      "tag": "0021_mighty_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1746630488087,
+      "tag": "0022_unusual_redwing",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1746804095231,
+      "tag": "0023_petite_marauders",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1746894385320,
+      "tag": "0024_lovely_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1750518801267,
+      "tag": "0025_stiff_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1754571237126,
+      "tag": "0026_fair_lord_hawal",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1758128400070,
+      "tag": "0027_petite_dexter_bennett",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1760463258294,
+      "tag": "0028_eminent_tony_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1762023575529,
+      "tag": "0029_lumpy_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1762869350391,
+      "tag": "0030_redundant_bloodaxe",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1772133459465,
+      "tag": "0031_editable_apps",
+      "breakpoints": true
+    }
+  ]
+}

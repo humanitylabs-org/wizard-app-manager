@@ -1,0 +1,249 @@
+import { APP_REL_COMPOSE_FILENAME } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { frontmatterSchema, type AppInfo } from '@runtipi/common/schemas';
+import type { AppUrn } from '@runtipi/common/types';
+import { type } from 'arktype';
+import path from 'node:path';
+import * as yaml from 'yaml';
+import { AppsRepository } from '../apps/apps.repository';
+import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
+
+const APPS_FOLDER = '_user';
+
+@Injectable()
+export class CustomAppService {
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly filesystem: FilesystemService,
+    private readonly configService: ConfigurationService,
+    private readonly appsRepository: AppsRepository,
+  ) {}
+
+  private getCustomAppPaths(appUrn: AppUrn) {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const { dataDir } = this.configService.get('directories');
+    const appPath = path.join(dataDir, 'apps', appStoreId, appName);
+    const metadataDir = path.join(appPath, 'metadata');
+
+    return {
+      appName,
+      appStoreId,
+      appPath,
+      dataPath: path.join(dataDir, 'app-data', appStoreId, appName),
+      configPath: path.join(appPath, 'config.json'),
+      composePath: path.join(appPath, APP_REL_COMPOSE_FILENAME),
+      descriptionPath: path.join(metadataDir, 'description.md'),
+      logoPath: path.join(metadataDir, 'logo.jpg'),
+      metadataDir,
+    };
+  }
+
+  async createCustomApp(dto: CreateCustomAppDto): Promise<{ appUrn: AppUrn; appName: string; storeId: string }> {
+    if (this.configService.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const { name, config } = dto;
+
+    const appUrn = createAppUrn(name, APPS_FOLDER);
+
+    const existingApp = await this.appsRepository.getAppByUrn(appUrn);
+    if (existingApp) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name }, HttpStatus.CONFLICT);
+    }
+
+    try {
+      await this.createAppDirectories(appUrn);
+      await this.writeDockerComposeConfig(appUrn, config);
+      await this.createAppInfo(appUrn, name, config);
+
+      await this.appsRepository.createApp({
+        appStoreSlug: APPS_FOLDER,
+        appName: name,
+        config: {},
+        status: 'missing',
+      });
+
+      this.logger.info(`Custom app ${name} created successfully with URN ${appUrn}`);
+
+      return {
+        appUrn,
+        appName: name,
+        storeId: APPS_FOLDER,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to create custom app ${name}:`, error);
+      await this.cleanupAppDirectories(appUrn).catch(() => {
+        // Noop
+      });
+      console.error(error);
+      throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  async updateCustomApp(appUrn: AppUrn, config: UpdateCustomAppDto['config']) {
+    if (this.configService.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const existingApp = await this.appsRepository.getAppByUrn(appUrn);
+    if (!existingApp) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    try {
+      await this.writeDockerComposeConfig(appUrn, config);
+      this.logger.info(`Custom app ${appUrn} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update custom app ${appUrn}:`, error);
+      throw new TranslatableError('CUSTOM_APP_ERROR_UPDATE_FAILED', { urn: appUrn }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  private async createAppDirectories(appUrn: AppUrn): Promise<void> {
+    const { appPath, dataPath } = this.getCustomAppPaths(appUrn);
+
+    const ok = await this.filesystem.createDirectories([appPath, dataPath]);
+    if (!ok) {
+      throw new Error(`Failed to create app directories at ${appPath} and ${dataPath}`);
+    }
+  }
+
+  private async writeDockerComposeConfig(appUrn: AppUrn, config: CreateCustomAppDto['config']): Promise<void> {
+    const { composePath } = this.getCustomAppPaths(appUrn);
+    const configContent = yaml.stringify(config, { nullStr: '' });
+
+    const ok = await this.filesystem.writeTextFile(composePath, configContent);
+    if (!ok) {
+      throw new Error(`Failed to write docker-compose config at ${composePath}`);
+    }
+  }
+
+  private async createAppInfo(appUrn: AppUrn, name: string, config: CreateCustomAppDto['config']): Promise<void> {
+    const { appName, configPath, descriptionPath, metadataDir } = this.getCustomAppPaths(appUrn);
+
+    const services = Object.values(config.services);
+    const main = services.find((s) => s['x-runtipi']?.is_main) ?? services[0];
+    const inferredPort = typeof main?.['x-runtipi']?.internal_port === 'number' ? main['x-runtipi'].internal_port : undefined;
+
+    // Create a minimal app.info file for custom apps
+    const appInfo = {
+      id: appName,
+      name: name,
+      urn: appUrn,
+      available: true,
+      port: inferredPort,
+      categories: ['utilities'],
+      description: `Custom application: ${name}`,
+      short_desc: 'User-created custom app',
+      author: 'User',
+      source: '',
+      website: '',
+      exposable: true,
+      no_gui: false,
+      supported_architectures: ['amd64', 'arm64'],
+      tipi_version: 1,
+      version: '1.0.0',
+      dynamic_config: true,
+      deprecated: false,
+      force_expose: false,
+      generate_vapid_keys: false,
+      form_fields: [],
+      https: false,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      force_pull: false,
+    } satisfies AppInfo;
+
+    const descriptionContent = `---\nname: ${name}\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# ${name}\n\nThis is a user-created custom application.\n`;
+
+    const ok = await this.filesystem.writeJsonFile(configPath, appInfo);
+    if (!ok) {
+      throw new Error(`Failed to write app info at ${configPath}`);
+    }
+
+    await this.filesystem.createDirectory(metadataDir);
+
+    const okDesc = await this.filesystem.writeTextFile(descriptionPath, descriptionContent);
+    if (!okDesc) {
+      throw new Error(`Failed to write description at ${descriptionPath}`);
+    }
+  }
+
+  async uploadAppImage(appUrn: AppUrn, imageBuffer: Buffer): Promise<void> {
+    if (this.configService.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const existingApp = await this.appsRepository.getAppByUrn(appUrn);
+    if (!existingApp) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    try {
+      const { metadataDir, logoPath } = this.getCustomAppPaths(appUrn);
+
+      await this.filesystem.createDirectory(metadataDir);
+
+      const ok = await this.filesystem.writeBinaryFile(logoPath, imageBuffer);
+      if (!ok) {
+        throw new Error(`Failed to write logo at ${logoPath}`);
+      }
+
+      this.logger.info(`Custom app ${appUrn} logo uploaded successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to upload logo for custom app ${appUrn}:`, error);
+      throw new TranslatableError('CUSTOM_APP_ERROR_UPLOAD_FAILED', { urn: appUrn }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  private async cleanupAppDirectories(appUrn: AppUrn): Promise<void> {
+    const { appPath, dataPath } = this.getCustomAppPaths(appUrn);
+
+    await Promise.all([this.filesystem.removeDirectory(appPath), this.filesystem.removeDirectory(dataPath)]);
+  }
+
+  public async updateAppMetadata(appUrn: AppUrn, description: string): Promise<void> {
+    if (this.configService.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const { descriptionPath, configPath } = this.getCustomAppPaths(appUrn);
+
+    const frontmatterYml = getFrontmatter(description) || {};
+
+    if (frontmatterYml) {
+      const frontmatter = frontmatterSchema(frontmatterYml);
+
+      if (frontmatter instanceof type.errors) {
+        throw new Error(`Invalid frontmatter: ${frontmatter.summary}`);
+      }
+
+      const appInfo = await this.filesystem.readJsonFile(configPath);
+
+      if (!appInfo) {
+        throw new Error(`Failed to read app info at ${configPath}`);
+      }
+
+      const ok = await this.filesystem.writeJsonFile(configPath, {
+        ...appInfo,
+        ...frontmatter,
+      });
+
+      if (!ok) {
+        throw new Error(`Failed to update app info at ${configPath}`);
+      }
+    }
+
+    const ok = await this.filesystem.writeTextFile(descriptionPath, description);
+    if (!ok) {
+      throw new Error(`Failed to write description at ${descriptionPath}`);
+    }
+  }
+}

@@ -1,0 +1,12 @@
+.action-button {
+  flex: 1;
+  min-width: 120px;
+}
+
+.more-button {
+  width: 100%;
+
+  @media (min-width: 768px) {
+    width: auto;
+  }
+}

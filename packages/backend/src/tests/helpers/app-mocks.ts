@@ -1,0 +1,79 @@
+import { createAppUrn } from '@/common/helpers/app-helpers';
+import type { App, AppStore } from '@/core/database/drizzle/types';
+import { faker } from '@faker-js/faker';
+import { APP_CATEGORIES, type AppCategory, type AppInfo } from '@runtipi/common/schemas';
+
+export const createMockAppInfo = (data: Partial<AppInfo> = {}): AppInfo => {
+  const id = faker.string.uuid();
+  const storeId = faker.string.uuid();
+
+  return {
+    id,
+    urn: createAppUrn(id, storeId),
+    author: faker.person.fullName(),
+    available: true,
+    categories: faker.helpers.arrayElement(APP_CATEGORIES) as unknown as AppCategory[],
+    created_at: faker.date.past().getTime(),
+    updated_at: faker.date.recent().getTime(),
+    deprecated: false,
+    description: faker.lorem.sentence(),
+    dynamic_config: true,
+    exposable: true,
+    force_expose: false,
+    form_fields: [],
+    generate_vapid_keys: false,
+    https: false,
+    name: faker.lorem.words(2),
+    no_gui: false,
+    short_desc: faker.lorem.sentence(),
+    source: faker.internet.url(),
+    tipi_version: faker.number.int(),
+    version: faker.system.semver(),
+    force_pull: false,
+    supported_architectures: ['amd64', 'arm64'],
+    ...data,
+  };
+};
+
+export const createMockAppStore = (data: Partial<AppStore> = {}): AppStore => ({
+  slug: faker.lorem.slug(),
+  hash: faker.string.alphanumeric(40),
+  name: faker.lorem.words(2).slice(0, 16),
+  enabled: true,
+  url: faker.internet.url(),
+  branch: 'main',
+  createdAt: faker.date.past().getTime() / 1000,
+  updatedAt: faker.date.recent().getTime() / 1000,
+  ...data,
+});
+
+type AppWithStore = App & { appStore: AppStore };
+
+export const createMockApp = (data: Partial<AppWithStore> = {}): AppWithStore => ({
+  id: faker.number.int(),
+  appName: faker.lorem.words(2),
+  appStoreSlug: faker.lorem.slug(),
+  config: {},
+  createdAt: faker.date.past().getTime() / 1000,
+  domain: null,
+  enableAuth: false,
+  exposed: false,
+  exposedLocal: false,
+  isVisibleOnGuestDashboard: false,
+  openPort: true,
+  port: faker.number.int({ min: 1024, max: 65535 }),
+  status: 'running',
+  updatedAt: faker.date.recent().getTime() / 1000,
+  version: 1,
+  subnet: null,
+  localSubdomain: null,
+  pendingRestart: false,
+  userConfigEnabled: true,
+  maxBackups: null,
+  ignoredVersion: null,
+  templateUrn: null,
+  templateVersion: null,
+  lastTemplateSyncAt: null,
+  appStore: createMockAppStore(),
+  ...data,
+});

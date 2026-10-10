@@ -1,0 +1,68 @@
+import type { LoggerService } from '@/core/logger/logger.service';
+import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
+import { type } from 'arktype';
+import type { Request, Response } from 'express';
+import { TranslatableError } from './translatable-error';
+
+@Catch()
+export class MainExceptionFilter implements ExceptionFilter {
+  constructor(private readonly logger: LoggerService) {}
+
+  catch(exception: unknown, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
+    const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+
+    let message = 'Internal server error';
+    let cause: unknown;
+
+    if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(`An error occured while calling: ${request.url}`, exception);
+    }
+
+    // @ts-expect-error
+    const error = exception?.error;
+    if (error instanceof type.errors) {
+      this.logger.error('Schema validation failed: ', request.path, JSON.stringify(error, null, 2));
+    }
+
+    if (exception instanceof Error && status !== HttpStatus.INTERNAL_SERVER_ERROR) {
+      message = exception.message;
+    }
+
+    let intlParams: Record<string, string | undefined> | undefined;
+    if (exception instanceof TranslatableError) {
+      const response = exception.getResponse();
+      cause = exception.cause;
+
+      if (typeof response === 'string') {
+        message = response;
+      } else {
+        // @ts-expect-error
+        message = response.message;
+        // @ts-expect-error
+        intlParams = response.intlParams;
+      }
+    }
+
+    if (status >= 500 && !(exception instanceof TranslatableError)) {
+      Sentry.captureException(exception, {
+        tags: {
+          cause: String(cause),
+          url: request.url,
+          status,
+        },
+      });
+    }
+
+    response.status(status).json({
+      statusCode: status,
+      message,
+      path: request.url,
+      intlParams,
+      cause,
+    });
+  }
+}
