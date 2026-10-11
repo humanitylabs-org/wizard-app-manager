@@ -13,11 +13,18 @@ WORKFLOW = yaml.load((REPO / ".github/workflows/image.yml").read_text(), Loader=
 PUBLISH_SCRIPT = WORKFLOW["jobs"]["publish"]["steps"][-1]["run"]
 
 
-def test_workflow_publication_guards_and_native_runners():
+def test_workflow_publication_guards_and_build_platforms():
     build = WORKFLOW["jobs"]["build"]
     publish = WORKFLOW["jobs"]["publish"]
+    # arm64 is built from x86: native arm64 bun hangs in "Resolving dependencies". The JS stages are pinned to the
+    # build machine ($BUILDPLATFORM); only the runner stage is per target, under QEMU.
     assert {x["platform"]: x["runner"] for x in build["strategy"]["matrix"]["include"]} == {
-        "linux/amd64": "ubuntu-latest", "linux/arm64": "ubuntu-24.04-arm"}
+        "linux/amd64": "ubuntu-latest", "linux/arm64": "ubuntu-latest"}
+    qemu = next(s for s in build["steps"] if s.get("uses", "").startswith("docker/setup-qemu-action"))
+    assert qemu["if"] == "matrix.arch == 'arm64'"
+    dockerfile = (REPO / "Dockerfile").read_text()
+    assert "FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS bun_base\n" in dockerfile
+    assert "FROM node_base AS runner_base" in dockerfile and "--platform=$BUILDPLATFORM node" not in dockerfile
     assert build["strategy"]["fail-fast"] == "false"
     assert build["timeout-minutes"] == "40"
     assert publish["timeout-minutes"] == "10"
