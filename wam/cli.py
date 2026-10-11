@@ -98,7 +98,7 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    return reg
+    return registry.public_projection(reg)
 
 
 def share_registry(c: Config) -> bool:
