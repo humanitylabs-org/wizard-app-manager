@@ -27,7 +27,8 @@ env:
 jobs:
   build:
     strategy:
-      fail-fast: true
+      # Keep the other architecture's diagnostics if one fails or times out.
+      fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
@@ -40,6 +41,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: env.PUBLISH == 'true'
@@ -82,8 +85,11 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: v
         run: echo "tag=v4.10.2-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
@@ -97,13 +103,33 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Multi-arch tags (latest + version)
+      - name: Multi-arch tags (version verified before latest)
         working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ steps.v.outputs.tag }}
         run: |
-          docker buildx imagetools create \
-            -t "$IMAGE:latest" -t "$IMAGE:${{ steps.v.outputs.tag }}" \
-            $(printf "$IMAGE@sha256:%s " *)
-      - name: Both architectures are in the published image
-        run: |
-          docker buildx imagetools inspect "$IMAGE:latest" | tee /dev/stderr | grep -q 'linux/amd64'
-          docker buildx imagetools inspect "$IMAGE:latest" | grep -q 'linux/arm64'
+          shopt -s nullglob
+          digests=(*)
+          [[ ${#digests[@]} -eq 2 ]] || { echo 'Expected two architecture digests' >&2; exit 1; }
+          sources=()
+          for digest in "${digests[@]}"; do
+            [[ $digest =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid image digest' >&2; exit 1; }
+            sources+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create -t "$IMAGE:$VERSION" "${sources[@]}"
+          check_platforms() {
+            docker buildx imagetools inspect --raw "$1" > "$RUNNER_TEMP/manifest.json"
+            python3 - "$RUNNER_TEMP/manifest.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              manifest = json.load(f)
+          platforms = {(m.get('platform', {}).get('os'), m.get('platform', {}).get('architecture'))
+                       for m in manifest.get('manifests', [])}
+          required = {('linux', 'amd64'), ('linux', 'arm64')}
+          if not required <= platforms:
+              raise SystemExit(f'Missing required image platforms: {required - platforms}')
+          PY
+          }
+          check_platforms "$IMAGE:$VERSION"
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$VERSION"
+          check_platforms "$IMAGE:latest"
