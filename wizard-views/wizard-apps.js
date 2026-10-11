@@ -360,11 +360,14 @@ function wires(el, L, E) {
     if (!row) return null;
     const ic = R(t.querySelector('.ic'));
     const tb = R(t);
+    // leave from just under the tile's last line of text, so the drop into the band is always visible
+    const txt = [...t.querySelectorAll('.nm, .wam-spot-k')].map(R).filter((r) => r.b > r.t);
+    const textBottom = txt.length ? Math.max(...txt.map((r) => r.b)) : tb.b;
     // a row that wraps: tiles not on its first/last line leave and enter through the gaps around them
     const lr = L.rows[row.dataset.row];
     const cell = lr?.cells.find((c) => c.id === id);
     const maxLine = Math.max(0, ...(lr?.cells || []).map((c) => c.line), lr?.more ? lr.more.line : 0);
-    return { key: id, vi: parts.indexOf(row), x: ic.x, top: ic.t, bottom: tb.b, bt: tb.t, first: !cell || cell.line === 0, last: !cell || cell.line === maxLine, row: row.dataset.row };
+    return { key: id, vi: parts.indexOf(row), x: ic.x, top: ic.t, bottom: textBottom, bt: tb.t, first: !cell || cell.line === 0, last: !cell || cell.line === maxLine, row: row.dataset.row };
   };
   const segs = new Map();
   const add = (p, q) => {
