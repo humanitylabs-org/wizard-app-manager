@@ -15,8 +15,8 @@
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
-# Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: alongside when an existing Hermes is
-# found), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN.
+# Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: on a first install, alongside when an
+# existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN.
 set -euo pipefail
 REPO="https://github.com/humanitylabs-org/wizard-app-manager"
 WUSER="${WIZARD_USER:-wizard}"
@@ -31,10 +31,33 @@ has_hermes() {  # has_hermes [user]
   [ -n "$h" ] && [ -f "${HERMES_HOME:-$h/.hermes}/config.yaml" ] && { [ -x "$h/.local/bin/hermes" ] || { [ -z "${1:-}" ] && command -v hermes >/dev/null; }; }
 }
 
+# Which Wizard OS does this user already have? alongside | fresh | none. Re-running the command updates a box, and
+# an update must keep the box's mode: a fresh box whose owner also runs Hermes on the host stays fresh.
+wos_mode() {  # wos_mode user
+  local h; h="$(getent passwd "$1" | cut -d: -f6)"
+  if [ -n "$h" ] && [ -f "$h/.wizard-os/alongside.json" ]; then echo alongside
+  elif [ -n "$h" ] && [ -f "$h/.wizard-os/apps.json" ]; then echo fresh
+  else echo none; fi
+}
+# A fresh Wizard OS already on this box: under the wizard user, or a Runtipi it runs, with no alongside record here.
+fresh_box() {  # fresh_box [user]
+  local u="${1:-$(id -un)}"
+  [ "$(wos_mode "$u")" = alongside ] && return 1
+  [ "$(wos_mode "$u")" = fresh ] || [ "$(wos_mode "$WUSER")" = fresh ] && return 0
+  { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
+}
+# Auto mode picks alongside only on a first install next to a Hermes; WIZARD_MODE=alongside forces it.
+want_alongside() {  # want_alongside [user]
+  [ "$MODE" = alongside ] && return 0
+  [ "$MODE" = auto ] && has_hermes "${1:-}" && ! fresh_box "${1:-}"
+}
+
 # Root with an existing Hermes owned by the sudo user: install alongside as that user, not as a new wizard user.
-if [ "$(id -u)" -eq 0 ] && [ "$MODE" != "fresh" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && has_hermes "$SUDO_USER"; then
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && want_alongside "$SUDO_USER"; then
   say "Found Hermes for $SUDO_USER; installing Wizard OS alongside it as $SUDO_USER"
-  exec sudo -iu "$SUDO_USER" env WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="$REF" \
+  SUID="$(id -u "$SUDO_USER")"
+  exec sudo -iu "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUID/bus" \
+    WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="$REF" \
     WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
@@ -94,10 +117,15 @@ if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth stat
     gh auth login --hostname github.com --git-protocol https --scopes read:packages </dev/tty >/dev/tty 2>&1 || true
   fi
 fi
-# Alongside or fresh? One clear question on a terminal; without one, an existing Hermes means alongside.
-if [ "$MODE" = "auto" ]; then
-  MODE=fresh
-  if has_hermes; then
+# Alongside or fresh? A re-run keeps the box's mode. On a first install next to a Hermes: one clear question on a
+# terminal; without one, alongside.
+if [ "$MODE" = auto ]; then
+  if [ "$(wos_mode "$(id -un)")" = alongside ]; then
+    MODE=alongside
+  elif ! want_alongside; then
+    MODE=fresh
+    has_hermes && echo "Found Hermes on this box, but Wizard OS is already installed fresh here: keeping fresh mode (WIZARD_MODE=alongside switches)."
+  else
     MODE=alongside
     if tty_ok; then
       say "Found Hermes on this box (${HERMES_HOME:-$HOME/.hermes})"

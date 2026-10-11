@@ -5,8 +5,10 @@ wizard-os spec/AGENT_BRIDGE.md, "Installing over an existing Hermes". In this mo
   never installs the `hermes-agent` app;
 - the shell (Agent Service + Wizard UX) is pointed at that Hermes. The host Hermes API listens on the host's
   loopback (127.0.0.1:8642), which a container on a bridge network can't reach (on Linux `host-gateway` is the
-  docker0 address, not 127.0.0.1). So the shell runs on the host network, bound to 127.0.0.1 only, as the Hermes
-  owner's uid, with the owner's Hermes home mounted read-only (session history). This is a stock Runtipi
+  docker0 address, not 127.0.0.1). So the shell runs on the host network, bound to 127.0.0.1 only, and reads chats
+  over the Hermes API, as the owner's uid. By default it sees only the agent's images folder (<home>/cache/images),
+  not the rest of the Hermes home. `--share-history` opts in to mounting that whole home read-only (agent thread titles, other-surface activity and the archived
+  list need state.db); that mount also lets the shell read .env, auth.json and any other credential there. This is a stock Runtipi
   per-app user-config override (<runtipi>/user-config/<store>/<app>/docker-compose.yml + app.env), so the app
   recipe in the index stays the same for every box;
 - the Hermes API key is read from the owner's Hermes and handed to the shell through Runtipi's install form and
@@ -169,7 +171,7 @@ def pick_port(start: int = DEFAULT_SHELL_PORT) -> int:
     raise SystemExit(f"no free loopback port from {start}")
 
 
-def enable(wizard_home: Path, home: Path, shell_port: int | None = None) -> dict:
+def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_history: bool | None = None) -> dict:
     """Record alongside mode. Idempotent; keeps an earlier shell port. The shell gets a fixed loopback port so the
     agent's `wizard` MCP entry (written by `wizard link`) can name it before the shell is installed."""
     det = detect(home)
@@ -180,7 +182,10 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None) -> dict
         "mode": "alongside",
         "agent": {"external": True, "id": EXTERNAL_ID, "name": "host Hermes", "hermes_home": str(home),
                   "origin": det["api_origin"], "uid": os.getuid(), "gid": os.getgid()},
-        "shell": {"port": int(shell_port or (prev.get("shell") or {}).get("port") or pick_port())},
+        "shell": {"port": int(shell_port or (prev.get("shell") or {}).get("port") or pick_port()),
+                  # opt-in only; a re-run keeps the owner's earlier choice
+                  "share_history": bool((prev.get("shell") or {}).get("share_history")
+                                        if share_history is None else share_history)},
     }
     image = os.environ.get("WIZARD_SHELL_IMAGE") or (prev.get("shell") or {}).get("image")
     if image:   # pin the shell image (a release's digest, or a local build under test)
@@ -221,23 +226,19 @@ def shared_secret(wizard_home: Path, var: str) -> str | None:
 
 SHELL_OVERRIDE = """\
 # Written by wam (alongside mode): the Wizard shell runs against this box's own Hermes, which listens on the host's
-# loopback. Host network, bound to 127.0.0.1 only; runs as the Hermes owner; Hermes's home is mounted read-only
-# (session history). Remove with `wam alongside --off`, then `wam app update {app}`.
+# loopback. Host network, bound to 127.0.0.1 only; chats are read over the Hermes API. {access}
+# Remove with `wam alongside --off`, then `wam app update {app}`.
 services:
-  {app}:{image}
-    user: "{uid}:{gid}"
+  {app}:{image}{user}
     network_mode: host
     networks: !reset []
     ports: !reset []
     environment:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
-      HERMES_ORIGIN: {origin}
-      WIZARD_HERMES_STATE_PATH: /hermes/state.db
+      HERMES_ORIGIN: {origin}{state_env}
       WIZARD_APPS_MCP_ADDRESS: url
-      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
-    volumes:
-      - {hermes_home}:/hermes:ro
+      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{port}/wizard/health >/dev/null || exit 1"]
 """
@@ -251,10 +252,26 @@ def shell_override(st: dict, app_id: str) -> str:
         raise SystemExit(f"Hermes home path {a['hermes_home']!r} has characters a compose file can't carry safely")
     if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", a["origin"]):
         raise SystemExit(f"host Hermes API {a['origin']} is not a loopback origin; alongside mode needs 127.0.0.1")
-    return SHELL_OVERRIDE.format(app=app_id, uid=int(a["uid"]), gid=int(a["gid"]), origin=a["origin"],
-                                 hermes_home=a["hermes_home"], port=int(st["shell"]["port"]),
-                                 image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing"
-                                        if st["shell"].get("image") else ""))
+    share = bool(st["shell"].get("share_history"))
+    hh = a["hermes_home"]
+    # Without the opt-in the shell gets only the folder of images the agent made (no secrets), so pictures in
+    # chats still show; the recipe's state.db path is blanked so the Agent Service opens no Hermes file.
+    if share:
+        volumes = f"\n    volumes:\n      - {hh}:/hermes:ro"
+    elif Path(hh, "cache", "images").is_dir():
+        volumes = f"\n    volumes:\n      - {hh}/cache/images:/hermes/cache/images:ro"
+    else:
+        volumes = ""
+    return SHELL_OVERRIDE.format(
+        app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
+        access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
+                "# read-only, so the shell can read every file there, credentials included."
+                if share else "The shell sees only the agent's images folder, not the Hermes home\n"
+                "# (opt in to session history: wam alongside --share-history)."),
+        image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing" if st["shell"].get("image") else ""),
+        user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
+        state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
+        volumes=volumes)
 
 
 def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path) -> Path | None:

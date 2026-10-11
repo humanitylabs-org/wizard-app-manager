@@ -439,7 +439,6 @@ def cmd_call(ns) -> dict:
 LINK_FILE = "linked.json"
 MCP_NAME = "wizard"
 PLUGIN_NAME = "wizard-os"
-EAGER_TOOL = f"mcp__{MCP_NAME}__wizard_apps"
 TOKEN_ENV = "WIZARD_MCP_TOKEN"
 PLUGIN_SOURCE = "humanitylabs-org/wizard-agent-service#hermes-plugin/wizard-os"
 DEFAULT_SHELL_PORT = 8796
@@ -784,20 +783,9 @@ def cmd_link(ns) -> dict:
         enabled = []
     if PLUGIN_NAME not in enabled:
         remember("plugins.enabled", enabled + [PLUGIN_NAME])
-    # 4. keep wizard_apps eager behind Tool Search
-    try:
-        ts_enabled = str(hcfg_get(home, "tools.tool_search.enabled")).lower()
-    except KeyError:
-        ts_enabled = "auto"
-    if ts_enabled in ("off", "false", "0"):
-        rec["notes"].append("Tool Search is off in this Hermes; kept it off, so every app tool is loaded eagerly")
-    else:
-        try:
-            eager = list(raw_get(raw_config(home), "tools.tool_search.eager_tools") or [])
-        except KeyError:
-            eager = []
-        if EAGER_TOOL not in eager:
-            remember("tools.tool_search.eager_tools", eager + [EAGER_TOOL])
+    # No 4th edit: stock Hermes has no per-tool eager setting (only `tools.tool_search.defer`) and always keeps MCP
+    # tools behind Tool Search, so `wizard_apps` is reached like any app tool. An older link that recorded
+    # `tools.tool_search.eager_tools` is still reversed by `unlink`, which replays whatever `edits` holds.
     # secrets into the Hermes .env (0600): the gateway token, and an API key when the API server has none yet
     names = env_names(envp)
     if names.get(TOKEN_ENV) != token:
@@ -951,23 +939,6 @@ def cmd_doctor(ns) -> dict:
     _check(rows, "wizard-os plugin installed and enabled",
            (home / "plugins" / PLUGIN_NAME / "plugin.yaml").is_file() and PLUGIN_NAME in enabled,
            str(home / "plugins" / PLUGIN_NAME))
-    # 4th edit: wizard_apps stays eager behind Tool Search. Tool Search off is the owner's choice and is kept:
-    # a PASS that says every app tool loads eagerly, never a FAIL.
-    try:
-        ts = str(raw_get(cfg, "tools.tool_search.enabled")).lower()
-    except KeyError:
-        ts = "auto"
-    try:
-        eager = raw_get(cfg, "tools.tool_search.eager_tools") or []
-    except KeyError:
-        eager = []
-    if ts in ("off", "false", "0"):
-        _check(rows, "wizard_apps eager behind Tool Search", True,
-               "Tool Search is off in this Hermes (kept): every app tool is loaded eagerly")
-    else:
-        _check(rows, "wizard_apps eager behind Tool Search", EAGER_TOOL in eager,
-               f"tools.tool_search.eager_tools has {EAGER_TOOL}" if EAGER_TOOL in eager
-               else f"tools.tool_search.eager_tools is missing {EAGER_TOOL}")
     envn = env_names(home / ".env")
     token = envn.get(TOKEN_ENV, "")
     _check(rows, "gateway token in the Hermes .env", bool(token), f"{TOKEN_ENV} (value not shown)")
@@ -977,15 +948,24 @@ def cmd_doctor(ns) -> dict:
         _check(rows, "Hermes API answers", code < 500, origin)
     except Exception as e:  # noqa: BLE001
         _check(rows, "Hermes API answers", False, f"{origin}: {str(e)[:100]}")
-    db = home / "state.db"
-    uid = (st.get("agent") or {}).get("uid", os.getuid())
-    try:
-        dst = db.stat()
-        readable = dst.st_uid == int(uid) and bool(dst.st_mode & 0o400) and os.access(home, os.X_OK)
-        detail = f"{db} (owner uid {dst.st_uid}, shell uid {uid}, mounted read-only)"
-    except OSError as e:
-        readable, detail = False, f"{db}: {e.strerror}"
-    _check(rows, "session history readable", readable, detail)
+    # The shell reads chats over the Hermes API and sees only the agent's images folder. Sharing the whole Hermes
+    # home (for state.db) is an owner opt-in (`wam alongside --share-history`): that mount also exposes .env,
+    # auth.json and any other credential there.
+    if (st.get("shell") or {}).get("share_history"):
+        db = home / "state.db"
+        uid = (st.get("agent") or {}).get("uid", os.getuid())
+        try:
+            dst = db.stat()
+            readable = dst.st_uid == int(uid) and bool(dst.st_mode & 0o400) and os.access(home, os.X_OK)
+            detail = (f"{db} (owner uid {dst.st_uid}, shell uid {uid}, read-only; the shell can read every file in "
+                      f"{home}, credentials included)")
+        except OSError as e:
+            readable, detail = False, f"{db}: {e.strerror}"
+        _check(rows, "session history readable", readable, detail)
+    else:
+        _check(rows, "Hermes home not shared with the shell", True,
+               "chats over the Hermes API, only the agent's images folder mounted; agent thread titles, other-surface "
+               "activity and the archived list are off (opt in: wam alongside --share-history)")
     base = url.rsplit("/wizard/mcp", 1)[0]
     try:
         code, health = _http_json(f"{base}/wizard/health")

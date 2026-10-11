@@ -6,7 +6,7 @@
 # Default: $HOME/.local/bin/wizard. Re-running upgrades a copy this script installed. It never overwrites a
 # different program already called NAME in DIR: it stops, and you pick another --name (e.g. wizard-os).
 set -eu
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 src="$here/wizard"
 prefix="${HOME}/.local/bin"
 name="wizard"
