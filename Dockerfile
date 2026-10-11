@@ -48,7 +48,9 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/scripts ./packages/frontend/scripts
 COPY ./packages/frontend/public ./packages/frontend/public
 
-RUN bun install --frozen-lockfile --verbose
+# Keep dependency stalls bounded independently of the CI job. Avoid verbose tarball listings, which can
+# clip BuildKit's logs and hide the last useful diagnostic (observed on the native ARM runner).
+RUN timeout 600 bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
 COPY ./packages ./packages
