@@ -9,6 +9,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
+# Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
+bash "$HERE/scripts/setup-private-access.sh"
+
 if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first, box-only"
   # Box-only from the very first start: dashboard and proxy listen on loopback, never on the public interface.

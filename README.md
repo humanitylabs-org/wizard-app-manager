@@ -33,6 +33,16 @@ curl -fsSL aiwizards.com/os.sh | bash
 
 Sets up Runtipi with the Wizard image, the `wam` command, and the default app in every parking spot (`wam bootstrap`).
 
+**Private access defaults to Tailscale.** The installer installs its native host daemon and prints a sign-in link
+for the owner to connect the box to their own tailnet. Existing Tailscale connections and settings are left alone.
+If sign-in is deferred, installation continues with Tailscale preinstalled but unpaired. Install Tailscale on your
+phone/laptop too and use the same account. This does not yet publish app URLs: apps stay on loopback until a private
+proxy is configured. No Funnel, Tailscale SSH, subnet routes or exit node are enabled by this step.
+
+Cloudflare Tunnel + Access remains an alternative: choose `WIZARD_PRIVATE_ACCESS=cloudflare` (or `none` to skip).
+This skips Tailscale setup; it does not configure Cloudflare or remove an existing Tailscale connection.
+Tailscale is a host integration for the `private-access` system slot, not an ordinary privileged store container.
+
 **Private apps (team only, until they're public).** Defaults that aren't in the public index yet (today: the Wizard shell
 from `humanitylabs-org/wizard-agent-service`) install straight from their GitHub repo, using this box's GitHub login
 (`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs:

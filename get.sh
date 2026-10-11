@@ -61,6 +61,7 @@ if [ "$(id -u)" -eq 0 ]; then
   say "Installing Wizard OS as $WUSER"
   exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
     WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 \
+    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     bash -c "curl -fsSL '$REPO/raw/main/get.sh' | bash"
 fi
 
