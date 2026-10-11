@@ -48,9 +48,12 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/scripts ./packages/frontend/scripts
 COPY ./packages/frontend/public ./packages/frontend/public
 
-# Keep dependency stalls bounded independently of the CI job. Avoid verbose tarball listings, which can
-# clip BuildKit's logs and hide the last useful diagnostic (observed on the native ARM runner).
-RUN timeout 600 bun install --frozen-lockfile
+# Native arm64 runners intermittently hang in bun's "Resolving dependencies" (one run passed, the next sat there
+# for 40 min). Bound each attempt, use fewer parallel downloads, and retry; a real lockfile error still fails.
+RUN for i in 1 2 3; do \
+      timeout 300 bun install --frozen-lockfile --network-concurrency=16 && exit 0; \
+      echo "bun install attempt $i failed or stalled; retrying"; rm -rf node_modules; sleep 5; \
+    done; exit 1
 
 COPY ./turbo.json ./turbo.json
 COPY ./packages ./packages
