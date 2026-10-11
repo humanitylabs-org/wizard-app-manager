@@ -81,6 +81,11 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
 
 
+def public_projection(reg: dict) -> dict:
+    """Exclude copy-only app metadata from every JSON serialization boundary."""
+    return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
+
+
 def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
@@ -103,8 +108,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
             reg["slots"][slot]["default"] = val["default"]
     tmp = root / "apps.json.tmp"
-    public = {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
-    tmp.write_text(json.dumps(public, indent=2) + "\n")
+    tmp.write_text(json.dumps(public_projection(reg), indent=2) + "\n")
     tmp.replace(prev)
     return prev
 
