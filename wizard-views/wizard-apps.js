@@ -272,11 +272,11 @@ function drawGraph(el, g) {
   const row = (k) => {
     const r = L.rows[k];
     const fold = g.collapsible?.has(k);
-    const head = `<h4${fold ? ` data-wam-row="${k}" class="wam-fold-h${r.shut ? ' shut' : ''}"` : ''}><b>${g.label?.(k) || k}</b><span>${g.note(k, L)}${g.gets ? `<button class="wam-geth" data-wam-get="${k}" aria-label="${GETS[k]}">+ Get</button>` : ''}${fold ? '<i class="wam-chev"></i>' : ''}</span></h4>`;
+    const head = `<h4${fold ? ` data-wam-row="${k}" class="wam-fold-h${r.shut ? ' shut' : ''}"` : ''}><b>${g.label?.(k) || k}</b><span>${g.note(k, L)}${fold ? '<i class="wam-chev"></i>' : ''}</span></h4>`;
     if (r.shut) return `<div class="lgroup wam-row shut" data-row="${k}">${head}</div>`;
     // Nothing in this layer yet: just its title line, so lines that pass it run by a title, never an empty box.
     if (!r.cells.length && !r.more)
-      return `<div class="lgroup wam-row empty" data-row="${k}"><h4><b>${g.label?.(k) || k}</b><span><em class="wam-none-k">None yet</em>${g.gets ? `<button class="wam-geth" data-wam-get="${k}" aria-label="${GETS[k]}">+ Get</button>` : ''}</span></h4></div>`;
+      return `<div class="lgroup wam-row empty" data-row="${k}"><h4><b>${g.label?.(k) || k}</b><span><em class="wam-none-k">None yet</em></span></h4></div>`;
     const cells = r.cells.map((c) => g.html(c.id, `wam-${c.kind}`, place(c))).join('');
     const m = r.more;
     const more = m
@@ -439,7 +439,9 @@ function wires(el, L, E) {
     let y = yOf(u.vi, hub(u, dn));
     pts.push([x, y]);
     if (dn.vi - u.vi > 1 && gaps.length) {
-      x = near(ex, y, yOf(dn.vi - 1, hub(u, dn)));
+      const used = Math.max(0, ...parts.slice(u.vi + 1, dn.vi).map((n) => n.querySelectorAll?.('.lgrid > .lapp').length || 0));
+      const clear = gaps.filter((_, i) => i >= Math.min(used, gaps.length - 1));
+      x = clear.length ? clear.reduce((p, q) => (Math.abs(q - ex) < Math.abs(p - ex) ? q : p)) : near(ex, y, yOf(dn.vi - 1, hub(u, dn)));
       pts.push([x, y]);
       y = yOf(dn.vi - 1, hub(u, dn));
       pts.push([x, y]);
@@ -549,6 +551,8 @@ const GETS = { Views: 'Get views', Agents: 'Get agents', Apps: 'Get apps', Syste
 const OWN_SPOT = new Set(['shell', 'agent-service', 'agent']);
 const isNode = (id) => !/^(get|spot):/.test(id);
 
+const moreTile = (k, p) =>
+  `<button class="lapp wam-addnext" style="${p.css}" data-wam-get="${k}" data-wam-key="get:${k}" aria-label="${GETS[k]}" title="${GETS[k]}"><span class="ic">+</span><span class="nm">&nbsp;</span></button>`;
 const spotTile = (s, cls, p) =>
   `<button class="lapp wam-espot ${cls}" style="${p.css}" data-wam-get="System" data-wam-key="spot:${esc(s.slot)}" title="${esc(`${s.name} spot is empty. Get an app to fill it.`)}"><span class="ic">+</span><span class="nm">${esc(String(s.name).replace(/\s*\(.*\)$/, ''))}</span><span class="wam-spot-k">Empty spot</span></button>`;
 
@@ -608,6 +612,7 @@ export async function renderMyApps(el, ctx = {}) {
       rows.System.push(id);
     }
     for (const a of apps) if (!spots.has(a.id)) rows[rowOf(a)].push(a.id);
+    for (const k of ROWS) rows[k].push(`get:${k}`); // the "+" sits where the next app will go
     const agent = cache.parking.find((s) => s.slot === 'agent')?.active;
     const parked = new Map([...spots].map(([id, s]) => [s.slot, id]));
     if (agent) parked.set('agent', agent);
@@ -624,13 +629,13 @@ export async function renderMyApps(el, ctx = {}) {
       rows,
       links,
       state: st,
-      pinned: new Set(),
+      pinned: new Set(ROWS.map((k) => `get:${k}`)),
       viewsAt: viewsAt(el, ctx),
-      gets: true,
       service: true,
       wrap: new Set(ROWS),
       collapsible: new Set(['System']),
       html: (id, cls, p) => {
+        if (id.startsWith('get:')) return moreTile(id.slice(4), p);
         if (shellIds.has(id)) return shellTile(shellIds.get(id), cls, p, id, id === st.anchor);
         if (id.startsWith('spot:')) return spotTile(spots.get(id), cls, p);
         const a = byId.get(id);

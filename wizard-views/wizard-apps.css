@@ -811,3 +811,24 @@ html .wam .wam-panel .wam-note {
   color: var(--ink-3);
   opacity: 0.8;
 }
+/* "+": where the next app goes. Only the symbol: no tile, no ring, no label, so it never reads as an app. */
+.wam .lapp.wam-addnext .ic {
+  background: none;
+  box-shadow: none;
+  outline: 0;
+  color: var(--ink-3);
+  font-size: 30px;
+  font-weight: 200;
+  opacity: 0.6;
+  transition: opacity 160ms ease, color 160ms ease;
+}
+.wam .lapp.wam-addnext:hover .ic,
+.wam .lapp.wam-addnext:focus-visible .ic {
+  opacity: 1;
+  color: var(--violet-2);
+}
+.wam-graph .lapp.wam-addnext,
+.wam-graph .lapp.wam-addnext > * {
+  opacity: 1 !important;
+  filter: none !important;
+}
