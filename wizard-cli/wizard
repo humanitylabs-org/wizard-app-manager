@@ -951,6 +951,23 @@ def cmd_doctor(ns) -> dict:
     _check(rows, "wizard-os plugin installed and enabled",
            (home / "plugins" / PLUGIN_NAME / "plugin.yaml").is_file() and PLUGIN_NAME in enabled,
            str(home / "plugins" / PLUGIN_NAME))
+    # 4th edit: wizard_apps stays eager behind Tool Search. Tool Search off is the owner's choice and is kept:
+    # a PASS that says every app tool loads eagerly, never a FAIL.
+    try:
+        ts = str(raw_get(cfg, "tools.tool_search.enabled")).lower()
+    except KeyError:
+        ts = "auto"
+    try:
+        eager = raw_get(cfg, "tools.tool_search.eager_tools") or []
+    except KeyError:
+        eager = []
+    if ts in ("off", "false", "0"):
+        _check(rows, "wizard_apps eager behind Tool Search", True,
+               "Tool Search is off in this Hermes (kept): every app tool is loaded eagerly")
+    else:
+        _check(rows, "wizard_apps eager behind Tool Search", EAGER_TOOL in eager,
+               f"tools.tool_search.eager_tools has {EAGER_TOOL}" if EAGER_TOOL in eager
+               else f"tools.tool_search.eager_tools is missing {EAGER_TOOL}")
     envn = env_names(home / ".env")
     token = envn.get(TOKEN_ENV, "")
     _check(rows, "gateway token in the Hermes .env", bool(token), f"{TOKEN_ENV} (value not shown)")
