@@ -256,12 +256,16 @@ def shell_override(st: dict, app_id: str) -> str:
     hh = a["hermes_home"]
     # Without the opt-in the shell gets only the folder of images the agent made (no secrets), so pictures in
     # chats still show; the recipe's state.db path is blanked so the Agent Service opens no Hermes file.
+    # A new Hermes makes cache/images on its first picture, after the shell started; create it now (owner-owned,
+    # empty, the folder Hermes itself writes to) so a later picture shows without reinstalling the shell.
     if share:
         volumes = f"\n    volumes:\n      - {hh}:/hermes:ro"
-    elif Path(hh, "cache", "images").is_dir():
-        volumes = f"\n    volumes:\n      - {hh}/cache/images:/hermes/cache/images:ro"
     else:
-        volumes = ""
+        try:
+            Path(hh, "cache", "images").mkdir(parents=True, exist_ok=True)
+            volumes = f"\n    volumes:\n      - {hh}/cache/images:/hermes/cache/images:ro"
+        except OSError:
+            volumes = ""
     return SHELL_OVERRIDE.format(
         app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"

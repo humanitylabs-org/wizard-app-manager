@@ -300,7 +300,9 @@ def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monke
     monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
     assert alongside.enable(wh, hh, 18796)["shell"]["share_history"] is False
     text = alongside.shell_override(alongside.load(wh), "wizard-shell")
-    assert "volumes:" not in text and "credentials included" not in text   # no images dir yet: no mount at all
+    assert (hh / "cache" / "images").is_dir()                                 # made so a later picture shows
+    assert f"{hh}/cache/images:/hermes/cache/images:ro" in text and f"{hh}:/hermes:ro" not in text
+    assert "credentials included" not in text
     assert alongside.enable(wh, hh, None, True)["shell"]["share_history"] is True
     text = alongside.shell_override(alongside.load(wh), "wizard-shell")
     assert f"{hh}:/hermes:ro" in text and 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
