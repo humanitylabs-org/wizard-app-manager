@@ -148,7 +148,10 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     if getattr(c, "home", None) and (v := alongside.shared_secret(c.home, var)):
         return v
     for dep in uses:
-        env = read_env(c.runtipi_root / "app-data" / STORE / dep / "app.env")
+        envp = c.runtipi_root / "app-data" / STORE / dep / "app.env"
+        if not envp.is_file():   # not installed (or, alongside, filled by the host)
+            continue
+        env = read_env(envp)
         for k in (var, var.removeprefix("WIZARD_")):
             if env.get(k):
                 return env[k]
