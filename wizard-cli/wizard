@@ -586,10 +586,34 @@ def hermes_python(home: Path) -> str:
     raise Fail("usage", "can't find the Python inside this Hermes install (needed for a safe config edit)")
 
 
+_PROBE_MODULE = "json.tool"
+
+
+def editor_command(home: Path) -> list[str]:
+    """How to run the config editor inside the owner's Hermes (it carries ruamel.yaml). Current installs publish
+    their exact launch command (`hermes --print-runtime-command`: a managed Python plus a bootstrap that leases the
+    dependencies); older ones have a plain venv Python."""
+    import subprocess
+    try:
+        r = subprocess.run([hermes_bin(), "--print-runtime-command", "--module", _PROBE_MODULE], capture_output=True,
+                           text=True, timeout=60, env=_hermes_env(home))
+        cmd = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        cmd = None
+    run = f"runpy.run_module('{_PROBE_MODULE}', run_name='__main__', alter_sys=True)"
+    if isinstance(cmd, list) and cmd and isinstance(cmd[-1], str) and cmd[-1].count(run) == 1:
+        return cmd[:-1] + [cmd[-1].replace(run, f"exec({_EDITOR!r})")]
+    return [hermes_python(home), "-c", _EDITOR]
+
+
+def _hermes_env(home: Path) -> dict[str, str]:
+    return {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", str(Path.home())), "HERMES_HOME": str(home)}
+
+
 def yaml_edit(home: Path, ops: list[dict]) -> dict:
     import subprocess
-    p = subprocess.run([hermes_python(home), "-c", _EDITOR], input=json.dumps({"path": str(home / "config.yaml"), "ops": ops}),
-                       capture_output=True, text=True, timeout=60, env={"PATH": os.environ.get("PATH", "")})
+    p = subprocess.run(editor_command(home), input=json.dumps({"path": str(home / "config.yaml"), "ops": ops}),
+                       capture_output=True, text=True, timeout=120, env=_hermes_env(home))
     if p.returncode != 0:
         raise Fail("tool_error", "config edit failed: " + "\n".join((p.stderr or "").strip().splitlines()[-2:]))
     return json.loads(p.stdout.strip().splitlines()[-1])
