@@ -1,21 +1,29 @@
 # Wizard App Manager views for Wizard UX
 
-For James: three small views built in your own launcher and Settings markup. They are vanilla ES modules with no build step.
+For James: four small pieces built in your own launcher, home and Settings markup. They are vanilla ES modules with no build step.
 
 | File | What |
 |---|---|
-| `wizard-apps.js` | `renderMyApps(el, ctx)`, `renderStore(el, ctx)`, `renderResources(el, ctx)`, `renderCard(el, app, ctx)` |
-| `wizard-apps.css` | Only the added pieces (`.wam-*`): status dot, update badge, dashed ring for apps with no screen, pair wire, chip row, card, meters. Everything else uses your `.lgroup .lgrid .lapp .lrow .st-group .st-row` |
+| `wizard-apps.js` | `renderMyApps(el, ctx)`, `renderStore(el, ctx)`, `renderResources(el, ctx)`, `renderResourceCard(el, ctx)`, `renderCard(el, app, ctx)` |
+| `wizard-graph.js` | The graph layout, pure (no DOM, tested in `tests/wizard-graph.test.mjs`): which tile sits in which cell, what folds into "+N" |
+| `wizard-apps.css` | Only the added pieces (`.wam-*`): graph lines, anchor ring, dimming, "+N", status dot, badges, chip row, card, meters, home card. Everything else uses your `.lgroup .lgrid .lapp .st-group .st-row .now-card` |
 | `overlay.js` | Box-local wiring into an unmodified Wizard UX (spec/SHELL.md layer 4), described below |
-| `index.html`, `standalone.*` | The same views full screen for desktop/web without the shell, with a small Admin menu. `wux.css` holds your classes scoped under `.wux`, for this page only |
+| `index.html`, `standalone.*` | The same views full screen for desktop/web without the shell, with a small Admin menu. `wux.css` holds your classes scoped under `.wux`, for this page and for the desktop palette |
 
 ## Where they go
 
-- **My Apps is the swipe-up launcher.** With an empty query, your "Wizard apps" group becomes Agents / Apps / System, and your other groups stay. An interface sits next to the app it `uses`, joined by a short wire. Apps with no screen get a dashed ring. Tapping a tile opens a short card with only the buttons that apply (Open, Update, Start/Stop). An app with no screen says "No screen: ask your agent to use it".
-- **The App Store is the same sheet.** "Get apps" swaps the sheet body. One chip row goes above `#searchForm` (All, the top tags, then Popular / New / A–Z), and `#search` searches the index until the sheet closes. Install runs the Runtipi install (the app's `uses` first), then `POST /v1/installs`.
-- **Resources is a Settings group** after "Wizard": Storage, Processor and Memory with small meters, then Start all / Stop all / Restart all. Stop all needs a second tap.
+- **My Apps is the swipe-up launcher, drawn as a graph.** With an empty query, your "Views" and "Wizard apps" groups become four steady rows: Views, Agents, Apps, System (System = the apps filling a parking spot: agent, files, transcription...). Your own tiles (Inbox, Chats) stay in those rows and still open as before. On the phone the Views row is at the bottom, next to the thumb; on the desktop it is at the top, next to the input.
+  - One tile is the **anchor** (violet ring and glow, the only selection look; the first view by default). What it connects to (what it `uses`/`needs`, what uses it) comes first in its row, joined to the anchor by thin lines from tile edge to tile edge. Lines share a short trunk, run along the empty band between rows and down the gaps between columns, never through a tile; a row title that would sit on a line slides aside. Everything else dims (icon ~35%, name still readable) but stays tappable. If the anchor fills a parking spot, its row title says which ("Agent spot").
+  - **Tap a tile** to make it the anchor. The anchor shows a pill: **Open** (it has a screen and is running: opens it like the card's Open) or **Details** (opens the card: Open, Update, Start/Stop; "No screen: ask your agent to use it"). Tapping the anchor anywhere else also opens the card.
+  - Rows are left-aligned with no gaps and never shrink or scroll sideways: when a row has more than fits, the rest folds into a "+N" tile at its end that opens the row in place.
+  - Marks, one meaning each: small dot = running (red/amber when not), quiet ↑ = update available, faint solid ring = no screen. Long names use a short form on the tile ("Hermes Desktop"; `short_name` in apps.json wins); the card shows the full name.
+- **The App Store is the same sheet and the same graph** over the index. "Get apps" swaps the sheet body; one chip row goes above `#searchForm` (All and the top tags scrolling sideways, then one sort button that cycles Popular / New / A–Z), and `#search` searches the index until the sheet closes. Tap an app to see what it needs: requirements already installed get ✓, missing ones get an amber + and their own amber dashed branch ("Adds 1" in its row title). Tap Details for the card; Install runs the Runtipi install (the app's `uses` first), then `POST /v1/installs`.
+- **Works with vs allowed to use.** The lines and the card's "Works with" list are compatibility (declared `uses`/`needs`/`provides`). Permission is a different thing and isn't built yet: the card keeps a dashed "Allowed to use" slot for it.
+- **Resources is a Settings group** after "Wizard": Storage, Processor and Memory with small meters in your home cards' colours (mint, violet, pink; amber from 80%). Once it has a few readings, Processor also shows a small line of its last minutes beside its number. Then Start all / Stop all / Restart all. Stop all needs a second tap.
+- **Home card**: under your Unread / Working / Yesterday cards, one card with the same three meters, refreshed every 10 s while it is visible; a calm amber tint when anything is at 80% or more. Tapping it opens Settings at Resources.
+- **Desktop shell**: the ⌘K palette shows the My Apps graph above your list while the input is empty; "Get apps" turns it into the store (Esc goes back). Your Settings card gets the Resources group.
 
-To merge natively, call the render functions from `renderLauncher` and `renderSettings` instead of loading `overlay.js`.
+To merge natively, call the render functions from `renderLauncher`, `renderHome` and `renderSettings` instead of loading `overlay.js`.
 
 ## Data (same origin)
 

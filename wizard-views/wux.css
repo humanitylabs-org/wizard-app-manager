@@ -177,7 +177,7 @@
   display: grid;
   place-items: center;
   font-size: 25px;
-  background: linear-gradient(145deg, #2a1f55, #120b26);
+  background: linear-gradient(145deg, var(--g1, #2a1f55), var(--g2, #120b26));
   box-shadow:
     0 8px 20px rgba(0, 0, 0, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
@@ -255,11 +255,13 @@
   width: 19px;
   background: var(--violet-2);
 }
-/* added: no screen = dashed ring (use it by asking your agent) */
+/* added: no screen = a faint solid ring (use it by asking your agent); the anchor's selection ring replaces it */
 .wux .lapp.headless .ic {
-  box-shadow: none;
-  outline: 1.5px dashed rgba(205, 190, 255, 0.5);
+  outline: 1px solid rgba(205, 190, 255, 0.3);
   outline-offset: 3px;
+}
+.wux .lapp.headless.wam-anchor .ic {
+  outline: 0;
 }
 /* added: an agent/app and the interface(s) that open it, joined like an n8n wire */
 .wux .lpair {

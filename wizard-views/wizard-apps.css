@@ -1,5 +1,5 @@
 /*
- * Wizard App Manager pieces added on top of Wizard UX (web/styles.css: .lgroup .lgrid .lapp .lrow .st-group .st-row).
+ * Wizard App Manager pieces added on top of Wizard UX (web/styles.css: .lgroup .lgrid .lapp .st-group .st-row .now-card).
  * Inside the shell only this file loads; the standalone page also loads wux.css (the same Wizard UX classes, scoped .wux).
  * Everything here is .wam-scoped and uses Wizard UX tokens (--ink-*, --line*, --glass, --violet*, --green, --amber, --red).
  */
@@ -11,32 +11,29 @@
   overflow: visible;
 }
 .wam .lapp .ic img,
-.wam .lrow .ic img,
-.wam-ic img {
+.wam-ic img,
+.wam-mini .ic img {
   width: 100%;
   height: 100%;
   border-radius: inherit;
   object-fit: cover;
   display: block;
 }
-.wam .lrow .ic {
-  overflow: hidden;
-}
 
-/* status dot, update badge, installed tick, install count */
+/* Marks, one meaning each: small dot = running (red/amber when not), quiet ↑ = update available,
+   faint solid ring = no screen; in the store ✓ = on this box, amber + = will be added. */
 .wam-dot {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
-  width: 12px;
-  height: 12px;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   border: 2px solid #120b26;
   background: #6a6390;
 }
 .wam-dot.running {
   background: var(--green);
-  box-shadow: 0 0 8px rgba(79, 240, 176, 0.7);
 }
 .wam-dot.stopped,
 .wam-dot.missing {
@@ -50,7 +47,8 @@
   background: var(--amber);
 }
 .wam-up,
-.wam-ok {
+.wam-ok,
+.wam-add {
   position: absolute;
   width: 19px;
   height: 19px;
@@ -64,61 +62,242 @@
   box-shadow: 0 0 0 2px #120b26;
 }
 .wam-up {
-  left: -6px;
-  top: -6px;
-  background: var(--green);
+  left: -5px;
+  top: -5px;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  color: var(--violet-2);
+  background: #1a1236;
+  box-shadow: inset 0 0 0 1px rgba(185, 155, 255, 0.45), 0 0 0 2px #120b26;
 }
 .wam-ok {
   right: -5px;
   bottom: -5px;
-  background: var(--violet-2);
+  background: var(--green);
 }
-.wam .lapp .wam-n {
-  margin-top: -4px;
-  font-size: 10px;
+.wam-add {
+  right: -5px;
+  bottom: -5px;
+  background: #120b26;
+  color: var(--amber);
+  box-shadow: inset 0 0 0 1.5px var(--amber), 0 0 0 2px #120b26;
+  font-size: 13px;
+}
+
+/* No screen: no ring on the tile (rings mean "selected"); the tooltip and the card say "ask your agent".
+   Marks stay quiet: on a dimmed tile they hide, so only the anchor and what it connects to carry badges. */
+.wam-graph .lapp.wam-dim .wam-up,
+.wam-graph .lapp.wam-dim .wam-dot {
+  display: none;
+}
+
+/* ---- graph: four steady rows, one anchor, thin lines to what it connects to ---- */
+.wam-graph {
+  position: relative;
+}
+/* lines sit behind the rows (titles and tiles); they are routed so they never cross a tile */
+.wam-wires {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: visible;
+  animation: wam-in 420ms 140ms both;
+}
+.wam-wire {
+  fill: none;
+  stroke: rgba(185, 155, 255, 0.72);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wam-wire.miss {
+  stroke: rgba(255, 190, 85, 0.85);
+  stroke-dasharray: 5 4;
+  stroke-linecap: butt;
+}
+.wam .wam-row {
+  position: relative;
+  z-index: 1;
+  margin: 6px 0 2px;
+}
+.wam .wam-row h4 {
+  margin-bottom: 6px;
+}
+.wam-row h4 b {
+  font: inherit;
+  display: inline-block;
+}
+.wam-row h4 > span {
+  transition: opacity 240ms ease;
+}
+.wam-row h4 em {
+  font-style: normal;
+  color: var(--violet-2);
+}
+.wam-row h4 em.add {
+  color: var(--amber);
+}
+.wam-row h4 em.ok {
+  color: var(--green);
+}
+.wam .lgrid.wam-line {
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  gap: 12px 8px;
+  padding: 0 4px; /* the outer labels keep the same distance from the sheet edge as the titles */
+  min-height: 92px;
+  align-items: start;
+}
+/* two lines at most, ellipsis only at the end of the second, never wider than the cell */
+.wam-graph .lapp .nm {
+  max-width: 100%;
+  padding: 0 2px;
+  margin-top: 4px; /* every name sits on the same line, room left for the anchor's pill */
+}
+/* Dimmed: the icon (with its marks) fades to ~35%, the name stays readable. The shell animates the tile's own
+   opacity when the sheet opens, so the dimming sits on its parts. */
+.wam-graph .lapp > * {
+  transition: opacity 300ms ease;
+}
+.wam-graph .lapp.wam-dim > .ic,
+.wam-graph .lapp.wam-was-dim > .ic {
+  opacity: 0.35;
+}
+.wam-graph .lapp.wam-dim > .nm,
+.wam-graph .lapp.wam-was-dim > .nm {
+  opacity: 0.68;
+}
+.wam-graph .lapp.wam-dim.wam-was-lit > * {
+  opacity: 1;
+}
+.wam-graph .lapp.wam-anchor .ic {
+  box-shadow:
+    0 0 0 2px #120b26,
+    0 0 0 3.5px rgba(205, 190, 255, 0.85),
+    0 0 26px rgba(143, 99, 255, 0.55);
+}
+.wam-graph .lapp.wam-anchor .nm {
+  color: var(--ink);
+  font-weight: 650;
+}
+/* the anchor's pill: the second tap opens it */
+.wam-graph .lapp.wam-anchor .wam-dot {
+  display: none;
+}
+.wam-act {
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  height: 15px;
+  padding: 0 7px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #fff;
+  white-space: nowrap;
+  background: linear-gradient(140deg, #8f63ff, #b04dff);
+  box-shadow: 0 0 0 2px #120b26, 0 4px 10px rgba(143, 99, 255, 0.45);
+}
+.wam-act[data-wam-act="details"] {
+  color: var(--ink);
+  background: #241a48;
+  box-shadow: 0 0 0 2px #120b26, inset 0 0 0 1px rgba(185, 155, 255, 0.5);
+}
+/* after the first paint, tiles glide (FLIP in wizard-apps.js) instead of replaying the shell's rise-in */
+.wam .wam-graph.settled .lgrid .lapp {
+  animation: none;
+}
+.wam .wam-graph.settled .lgrid .lapp.wam-new {
+  animation: wam-in 320ms var(--ease) both;
+}
+.wam .lapp.wam-fold .ic {
+  background: rgba(205, 190, 255, 0.06);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.wam .lapp.wam-fold.open .ic {
+  font-size: 22px;
+  font-weight: 400;
+}
+.wam .lapp.wam-fold .nm {
   color: var(--ink-3);
 }
-.wam .lrow .kind.wam-have {
-  color: var(--green);
-  border-color: rgba(79, 240, 176, 0.3);
+.wam-none {
+  grid-column: 1 / -1;
+  align-self: center;
+  margin: 0 4px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+@keyframes wam-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wam-wires,
+  .wam-graph .lapp.wam-new {
+    animation: none;
+  }
 }
 
-/* no screen: dashed ring (use it by asking your agent) */
-.wam .lapp.headless .ic {
-  box-shadow: none;
-  outline: 1.5px dashed rgba(205, 190, 255, 0.62);
-  outline-offset: 3px;
+/* desktop: the graph sits in the ⌘K palette, under the input; his list stays below it */
+.wam-pal {
+  padding: 2px 14px 10px;
+  border-bottom: 1px solid var(--line);
 }
-
-/* an agent/app and the interface that opens it, joined by a short wire */
-.wam-pair {
-  grid-column: span 2;
-  display: flex;
-  gap: 6px;
-  border-radius: 22px;
-  background: rgba(205, 190, 255, 0.05);
-  box-shadow: inset 0 0 0 1px var(--line);
+.wam-pal[hidden],
+.pal-list[hidden] {
+  display: none;
 }
-.wam-pair.n3 {
-  grid-column: span 3;
+.wam-pal .wam-chips {
+  margin: 10px 0 0;
 }
-.wam-pair.n4 {
-  grid-column: span 4;
+.pal-card.wam-pal-on .pal-list {
+  max-height: min(24vh, 230px);
 }
-.wam-pair .lapp {
-  flex: 1 1 0;
-  padding: 12px 0 6px;
+/* a pointer is precise: smaller tiles, one-line names, so the four rows and his list both fit */
+.wux.wam-pal .wam-row {
+  margin: 10px 0 2px;
 }
-.wam-pair .lapp + .lapp::before {
-  content: "";
-  position: absolute;
-  top: 38px;
-  left: calc(-50% + 26px);
-  width: calc(100% - 58px);
-  height: 3px;
-  border-radius: 3px;
-  background: linear-gradient(90deg, var(--violet-2), var(--cyan));
-  box-shadow: 0 0 8px rgba(63, 224, 255, 0.45);
+.wux.wam-pal .lapp.wam-anchor .nm {
+  margin-top: 8px;
+}
+.wux.wam-pal .lgrid.wam-line {
+  min-height: 72px;
+  gap: 8px 4px;
+}
+.wux.wam-pal .lapp {
+  gap: 5px;
+  padding: 2px 0;
+}
+.wux.wam-pal .lapp .ic {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  font-size: 20px;
+}
+.wux.wam-pal .lapp .nm {
+  font-size: 11.5px;
+  max-width: 100%;
+}
+.wux.wam-pal .lapp .ic.wam-get {
+  font-size: 24px;
+}
+.wux.wam-pal .lapp:hover .ic {
+  transform: translateY(-1px);
+}
+.wux.wam-pal .lapp:hover .nm {
+  color: var(--ink);
 }
 
 /* Get apps */
@@ -149,9 +328,10 @@
   overflow-x: auto;
   scrollbar-width: none;
   touch-action: pan-x;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 44px), transparent 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 44px), transparent 100%);
-  padding: 0 40px 0 0;
+  /* the chips scroll sideways under a soft fade at the right edge; the sort button sits beside them, never on them */
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 44px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 44px), transparent 100%);
+  padding-right: 40px;
 }
 .wam-tags::-webkit-scrollbar {
   display: none;
@@ -173,25 +353,25 @@
   background: rgba(143, 99, 255, 0.28);
   border-color: rgba(185, 155, 255, 0.45);
 }
-.wam-sort {
+.wam .wam-sort {
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
+  gap: 5px;
   height: 30px;
-  padding: 2px;
-  border-radius: 15px;
-  border: 1px solid var(--line-2);
-}
-.wam .wam-sort button {
-  padding: 0 7px;
-  border-radius: 13px;
-  font-size: 11px;
+  padding: 0 4px 0 12px;
+  border: 0;
+  border-left: 1px solid var(--line-2); /* a divider, not another chip: this sorts, the chips filter */
+  border-radius: 0;
+  background: none;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--ink-3);
+  color: var(--ink-2);
   white-space: nowrap;
 }
-.wam .wam-sort button.on {
-  color: var(--ink);
-  background: rgba(205, 190, 255, 0.12);
+.wam .wam-sort i {
+  font-style: normal;
+  color: var(--ink-3);
 }
 
 /* back link, more, notes */
@@ -228,7 +408,8 @@
   background: var(--glass);
   border: 1px solid var(--line);
 }
-.wam-panel .st-row {
+/* html prefix: the desktop shell boxes every .st-row; inside the card's panel the header row is plain */
+html .wam .wam-panel .st-row {
   padding: 0;
   margin: 0 0 12px;
   background: none;
@@ -237,7 +418,7 @@
 .wam-panel .st-tx small {
   white-space: normal;
 }
-.wam-panel .wam-note {
+html .wam .wam-panel .wam-note {
   text-align: left;
   margin: 10px 2px 0;
 }
@@ -292,7 +473,7 @@
   opacity: 0.55;
 }
 .wam-all {
-  margin-top: 12px;
+  margin-top: 4px;
 }
 .wam-all .wam-btn {
   min-height: 38px;
@@ -300,9 +481,80 @@
   border-radius: 16px;
 }
 
-/* Resources: a small meter at the end of a Settings row */
+/* What an app works with (compatibility: solid) and, apart, what it is allowed to use (permission: dashed slot) */
+.wam-links {
+  margin: 14px 2px 0;
+}
+.wam-links h5 {
+  margin: 0 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.wam-links > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.wam-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px 0 4px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  background: rgba(143, 99, 255, 0.14);
+  border: 1px solid rgba(185, 155, 255, 0.3);
+}
+.wam-mini.off {
+  color: var(--ink-2);
+  background: rgba(205, 190, 255, 0.04);
+  border-color: var(--line);
+}
+.wam-mini .ic {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  background: linear-gradient(145deg, var(--g1), var(--g2));
+}
+.wam-mini i {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 900;
+}
+.wam-mini i.ok {
+  color: var(--green);
+}
+.wam-mini i.add {
+  color: var(--amber);
+}
+.wam-slot {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  border: 1px dashed rgba(63, 224, 255, 0.35);
+}
+
+/* Resources: the same small meter in Settings and on the home card. --c is the metric's colour. */
+.wam .wam-res-row .st-ic {
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+}
 .wam-meter {
-  flex: 0 0 76px;
+  flex: 0 0 84px;
   align-self: center;
   display: flex;
   flex-direction: column;
@@ -311,26 +563,110 @@
 }
 .wam-meter em {
   font-style: normal;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
-.wam-meter .bar {
+.wam-meter em small {
+  font-size: 0.7em;
+  font-weight: 600;
+  color: var(--ink-3);
+  margin-left: 1px;
+}
+.wam-bar {
+  display: block;
   width: 100%;
-  height: 5px;
+  height: 4px;
   border-radius: 99px;
   background: rgba(205, 190, 255, 0.12);
   overflow: hidden;
 }
-.wam-meter .bar i {
+.wam-bar i {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--violet), var(--pink)) 0 0 / 76px 100% no-repeat;
+  background: var(--c);
+  box-shadow: 0 0 8px var(--c);
 }
-.wam-meter.hot .bar i {
-  background: linear-gradient(90deg, var(--amber), var(--red)) 0 0 / 76px 100% no-repeat;
+/* the processor's last minutes, beside its number (left of it in Settings, right of it on the home card) */
+.wam-mv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: flex-end;
+}
+.wam-g .wam-mv {
+  justify-content: flex-start;
+}
+.wam-res-row .wam-mv {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+}
+.wam-res-row .wam-meter {
+  flex-basis: 96px;
+}
+.wam-res-row .wam-spark {
+  max-width: 42px;
+}
+.wam-spark {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 64px;
+  height: 18px;
+  overflow: visible;
+}
+.wam-spark path {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.wam-spark path.fill {
+  stroke: none;
+}
+.wam-meter.hot {
+  --c: var(--amber);
 }
 .wam-meter.hot em {
   color: var(--amber);
 }
+
+/* home card: three meters side by side */
+.wam-res-card {
+  margin-top: 9px;
+  gap: 18px;
+  align-items: stretch;
+  padding: 15px 16px;
+}
+/* a value at 80% or more: only that value and its bar turn amber; the card and the labels stay as they are */
+.wam-g {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.wam-g .k {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c);
+}
+.wam-g .wam-meter {
+  flex: none;
+  align-self: stretch;
+  align-items: stretch;
+  gap: 8px;
+}
+.wam-g .wam-meter em {
+  font-size: 22px;
+  font-weight: 300;
+}
+

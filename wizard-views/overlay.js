@@ -1,11 +1,27 @@
 // Box-local overlay for Wizard UX (wizard-os spec/SHELL.md layer 4). The front injects it into the shell's entry
-// documents; it changes nothing in James's code, only what his launcher and Settings sheet show:
-//   - swipe-up launcher: his "Wizard apps" group becomes My Apps (his other groups stay); "Get apps" turns the same
-//     sheet into the App Store, with one chip row above his search bar, and the search bar searches the index
-//   - Settings sheet: a Resources group
-import { renderCard, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
+// documents; it changes nothing in James's code, only what his launcher, home and Settings show:
+//   phone   - swipe-up launcher: his "Views" and "Wizard apps" groups become the My Apps graph (his own tiles stay in
+//             it, views at the bottom near the thumb); "Get apps" turns the same sheet into the App Store, with one
+//             chip row above his search bar, and the search bar searches the index
+//           - home: a Resources card under his cards; tapping it opens Settings at Resources
+//           - Settings sheet: a Resources group
+//   desktop - the ⌘K palette shows the My Apps graph (views at the top, near the input) while the query is empty;
+//             "Get apps" turns it into the App Store and the input searches the index
+//           - Settings card: a Resources group
+// His code rewrites these containers' innerHTML freely, so each piece is put back by a MutationObserver.
+import { renderCard, renderMyApps, renderResourceCard, renderResources, renderStore } from './wizard-apps.js';
 
 const $ = (s) => document.querySelector(s);
+const groupTitle = (g) => g.querySelector('h4')?.textContent.trim() || '';
+// His tiles that aren't App Manager apps (Chats, Inbox, his own links) stay; the remote duplicates go.
+const keep = (group, ids) => (group ? [...group.querySelectorAll('.lapp[data-app]')].filter((b) => !ids.has(b.dataset.app)).map((b) => b.outerHTML) : []);
+const remoteIds = () =>
+  fetch('/wizard/v1/apps', { credentials: 'same-origin', cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : { apps: [] }))
+    .catch(() => ({ apps: [] }))
+    .then((d) => new Set((d.apps || []).map((a) => a.id)));
+
+// ---- phone: launcher -----------------------------------------------------------------------------------------------
 const body = $('#launcherBody');
 const sheet = $('#launcher');
 const form = $('#searchForm');
@@ -23,28 +39,28 @@ if (body && sheet && form && input) {
   const toBottom = () => {
     body.scrollTop = body.scrollHeight;
   };
-  // His tiles in that group that aren't App Manager apps (Chats, his own links) stay first.
-  const keep = (group, ids) => [...group.querySelectorAll('.lapp[data-app]')].filter((b) => !ids.has(b.dataset.app)).map((b) => b.outerHTML);
 
   function injectMyApps() {
     if (body.querySelector(':scope > .wam-host')) return;
-    const group = [...body.querySelectorAll(':scope > .lgroup')].find((g) => /^wizard apps/i.test(g.querySelector('h4')?.textContent.trim() || ''));
-    if (!group) return;
+    const groups = [...body.querySelectorAll(':scope > .lgroup')];
+    const views = groups.find((g) => /^views/i.test(groupTitle(g)));
+    const wiz = groups.find((g) => /^wizard apps/i.test(groupTitle(g)));
+    if (!wiz) return;
     const host = document.createElement('div');
     host.className = 'wam-host';
-    const theirs = group.cloneNode(true);
-    group.replaceWith(host);
+    const theirViews = views?.cloneNode(true);
+    const theirs = wiz.cloneNode(true);
+    (views || wiz).replaceWith(host);
+    if (views) wiz.remove();
     const ctx = {
       shell: true,
+      viewsAt: 'bottom',
       onGetApps: openStore,
       onApp: (a) => openCard(a, 'apps'),
     };
-    // The shell's remote tiles are the same apps; My Apps shows them with status, so drop the duplicates.
-    fetch('/wizard/v1/apps', { credentials: 'same-origin', cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : { apps: [] }))
-      .catch(() => ({ apps: [] }))
-      .then((d) => {
-        ctx.extraTiles = keep(theirs, new Set((d.apps || []).map((a) => a.id)));
+    remoteIds()
+      .then((ids) => {
+        ctx.shellTiles = { Views: keep(theirViews, ids), Apps: keep(theirs, ids) };
         return renderMyApps(host, ctx);
       })
       .then(() => host.isConnected && toBottom());
@@ -60,10 +76,10 @@ if (body && sheet && form && input) {
     input.value = '';
     const host = document.createElement('div');
     host.className = 'wam-host wam-store';
-    const api = renderStore(host, { shell: true, chipsEl: chips, onBack: backToApps, onApp: (a) => openCard(a, 'store') });
-    store = { host, api };
     setStoreUi(true);
     body.replaceChildren(host);
+    const api = renderStore(host, { shell: true, viewsAt: 'bottom', chipsEl: chips, onBack: backToApps, onApp: (a) => openCard(a, 'store') });
+    store = { host, api };
     body.scrollTop = 0;
   }
 
@@ -138,18 +154,158 @@ if (body && sheet && form && input) {
   injectMyApps();
 }
 
-// Settings sheet: Resources after his "Wizard" group.
-const settings = $('#settingsBody');
-if (settings) {
+// ---- phone: home card ----------------------------------------------------------------------------------------------
+// One card element for the page's life: his home re-renders often, so it is moved back in, not rebuilt.
+const track = $('#track');
+if (track) {
+  const card = document.createElement('div');
+  card.className = 'wam-res-host';
+  let started = false;
+  const openResources = () => {
+    window.__wos?.openSettings?.();
+    requestAnimationFrame(() => $('#settingsBody .wam-res')?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  };
+  const place = () => {
+    const cards = track.querySelector('.home-desk .home > .constellation');
+    if (!cards || cards.nextElementSibling === card) return;
+    cards.after(card);
+    if (!started) {
+      started = true;
+      renderResourceCard(card, { onOpen: openResources });
+    }
+  };
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      place();
+    });
+  }).observe(track, { childList: true, subtree: true });
+  place();
+}
+
+// ---- Settings: Resources (phone sheet and desktop card) ------------------------------------------------------------
+function resourcesIn(root, bodyOf, wide) {
   const add = () => {
-    if (!settings.children.length || settings.querySelector(':scope > .wam-res')) return;
+    const into = bodyOf();
+    if (!into || !into.children.length || into.querySelector(':scope > .wam-res')) return;
     const host = document.createElement('div');
-    host.className = 'wam-res';
-    const wiz = [...settings.querySelectorAll(':scope > .st-group')].find((g) => /^wizard$/i.test(g.querySelector('h4')?.textContent.trim() || ''));
+    host.className = wide ? 'wam-res wux' : 'wam-res';
+    const wiz = [...into.querySelectorAll(':scope > .st-group')].find((g) => /^wizard$/i.test(groupTitle(g)));
     if (wiz) wiz.after(host);
-    else settings.append(host);
+    else into.append(host);
     renderResources(host, {});
   };
-  new MutationObserver(add).observe(settings, { childList: true });
+  new MutationObserver(add).observe(root, { childList: true, subtree: root !== bodyOf() });
   add();
+}
+const settings = $('#settingsBody');
+if (settings) resourcesIn(settings, () => settings, false);
+const dsettings = $('#dsettings');
+if (dsettings) resourcesIn(dsettings, () => dsettings.querySelector('.set-body'), true);
+
+// ---- desktop: ⌘K palette -------------------------------------------------------------------------------------------
+const pal = $('#palette');
+const palIn = $('#palInput');
+const palList = $('#palList');
+if (pal && palIn && palList && !body) {
+  // His desktop stylesheet has no launcher tiles; the views' copy of them is scoped to .wux.
+  if (!document.querySelector('link[href$="/wizard-views/wux.css"]'))
+    document.head.insertAdjacentHTML('beforeend', '<link rel="stylesheet" href="/wizard-views/wux.css">');
+  const palCard = pal.querySelector('.pal-card') || pal;
+  const placeholder = palIn.placeholder;
+  const wrap = document.createElement('div');
+  wrap.className = 'wux wam wam-pal';
+  const chips = document.createElement('div');
+  chips.hidden = true;
+  const host = document.createElement('div');
+  host.className = 'wam-host';
+  wrap.append(chips, host);
+  palList.before(wrap);
+  let mode = 'apps'; // apps | store | card
+  let store = null;
+
+  const sync = () => {
+    const graph = mode !== 'apps' || !palIn.value.trim();
+    wrap.hidden = !graph;
+    palList.hidden = mode !== 'apps';
+    chips.hidden = mode !== 'store';
+    palCard.classList.toggle('wam-pal-on', graph);
+    palIn.placeholder = mode === 'store' ? 'Search the App Store' : placeholder;
+  };
+  const myApps = () => {
+    mode = 'apps';
+    store = null;
+    palIn.value = '';
+    host.className = 'wam-host';
+    host.replaceChildren();
+    delete host._wamG;
+    sync();
+    renderMyApps(host, { viewsAt: 'top', onGetApps: openStore, onApp: (a) => openCard(a, 'apps') });
+  };
+  function openStore() {
+    mode = 'store';
+    palIn.value = '';
+    host.className = 'wam-host wam-store';
+    host.replaceChildren();
+    sync();
+    store = renderStore(host, { viewsAt: 'top', chipsEl: chips, onBack: myApps, onApp: (a) => openCard(a, 'store') });
+    palIn.focus();
+  }
+  function openCard(a, from) {
+    const back = from === 'store' && store ? backToStore : myApps;
+    mode = 'card';
+    const cardEl = document.createElement('div');
+    cardEl.className = 'wam-host';
+    host.replaceWith(cardEl);
+    sync();
+    renderCard(cardEl, a, {
+      from,
+      onBack: () => {
+        cardEl.replaceWith(host);
+        back();
+      },
+    });
+  }
+  function backToStore() {
+    mode = 'store';
+    sync();
+    store.repaint();
+  }
+
+  // Opening the palette starts at My Apps.
+  new MutationObserver(() => {
+    if (!pal.hidden) myApps();
+  }).observe(pal, { attributes: true, attributeFilter: ['hidden'] });
+  palIn.addEventListener('input', () => mode === 'apps' && sync());
+  document.addEventListener(
+    'input',
+    (e) => {
+      if (e.target !== palIn || mode === 'apps') return;
+      e.stopImmediatePropagation();
+      store?.setQuery(palIn.value);
+    },
+    true,
+  );
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (pal.hidden || mode === 'apps') return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const back = wrap.querySelector('[data-wam-back]') || pal.querySelector('.wam-card [data-wam-back]');
+        return back ? back.click() : myApps();
+      }
+      if (e.target === palIn && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (e.key === 'Enter') store?.setQuery(palIn.value);
+      }
+    },
+    true,
+  );
+  if (!pal.hidden) myApps();
 }
