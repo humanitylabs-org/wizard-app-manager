@@ -29,3 +29,29 @@ To merge natively, call the render functions from `renderLauncher` and `renderSe
   - `/wizard/v1/apps` lists only installed apps whose screen the browser can reach.
 
 `ctx` options are listed at the top of `wizard-apps.js` (`api`, `wizard` and `index` change the base paths).
+
+## App opening and routing
+
+Keep stock Runtipi's Open actions and Traefik routing as the source of truth for app
+access. Wizard cards should reuse the configured Runtipi endpoint/action, not
+introduce per-app Tailscale Serve routes or a bespoke subpath proxy. Runtipi supports
+the current hostname plus app port, an app domain, and a local domain. Those endpoints
+still need a working private network/domain configuration; a URL alone is not proof
+of remote reachability.
+
+`runtipi-open.js` reads the live app's explicit domain or local subdomain plus
+`GET /api/user-context` (`localDomain`, `sslPort`), preserving `url_suffix`.
+Stopped, headless, or restart-pending apps do not get an Open action. External
+domain screens open in a new top-level tab, as in stock Runtipi; this lets private
+access sign-in work without a cross-origin iframe.
+
+New installs appear automatically from Runtipi's installed-app API. Runtipi generates
+Traefik routes when its normal domain settings are enabled. This adapter does not
+provision DNS, Cloudflare Access policies, tunnel entries, or Tailscale routing.
+Those provider prerequisites must already be configured; two manually configured
+app hosts do not make all future apps remotely reachable automatically.
+
+Verification: `node --test tests/runtipi-open.test.mjs`. Live pilot checks exercised
+an existing Hermes screen and a fresh Files install through stock Runtipi TLS;
+the real launcher Open button reached Cloudflare sign-in. An owner-authenticated
+public session is a separate check, not implied by local browser/origin tests.

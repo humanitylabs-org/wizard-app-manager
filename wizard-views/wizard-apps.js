@@ -10,6 +10,8 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
+import { runtipiDomainUrl } from './runtipi-open.js';
+
 const STORE = 'wizardapps';
 const BUSY = new Set(['installing', 'updating', 'starting', 'stopping', 'restarting', 'uninstalling', 'resetting']);
 const PALETTE = [
@@ -58,7 +60,7 @@ async function indexMeta(c) {
   return cache.index;
 }
 
-function model(x, meta, idx, c) {
+function model(x, meta, idx, c, settings = {}) {
   const info = x.info || {};
   const m = meta.get(info.id) || {};
   const i = idx.get(info.id) || {};
@@ -77,7 +79,7 @@ function model(x, meta, idx, c) {
     status: x.app?.status || 'missing',
     update: latest > version && latest !== Number(x.app?.ignoredVersion || 0),
     screen: type !== 'service' && !info.no_gui && m.view !== null,
-    open: m.view?.open || '',
+    open: x.app?.status === 'running' && !x.app?.pendingRestart && !info.no_gui ? runtipiDomainUrl(x, settings) || m.view?.open || '' : '',
     logo: `${c.api}/marketplace/apps/${encodeURIComponent(info.urn || `${info.id}:${STORE}`)}/image`,
     installed: true,
   };
@@ -87,13 +89,14 @@ function model(x, meta, idx, c) {
 export async function loadInstalled(ctx, fresh = false) {
   const c = conf(ctx);
   if (!fresh && cache.apps && Date.now() - cache.at < 10e3) return cache.apps;
-  const [inst, meta, idx] = await Promise.all([
+  const [inst, meta, idx, settings] = await Promise.all([
     req(`${c.api}/apps/installed`),
     req(`${c.wizard}/wizard-apps`).catch(() => ({ apps: [] })),
     indexMeta(c).catch(() => new Map()),
+    req(`${c.api}/user-context`).catch(() => ({})),
   ]);
   const m = new Map((meta.apps || []).map((a) => [a.id, a]));
-  cache.apps = (inst.installed || []).filter((x) => x.info?.id).map((x) => model(x, m, idx, c));
+  cache.apps = (inst.installed || []).filter((x) => x.info?.id).map((x) => model(x, m, idx, c, settings));
   cache.at = Date.now();
   return cache.apps;
 }
@@ -240,7 +243,9 @@ export function renderCard(el, app, ctx = {}) {
     const acts = [];
     if (a.installed) {
       if (a.screen && a.open && a.status === 'running')
-        acts.push(`<button class="wam-btn primary" data-wam-do="open"${c.shell ? ` data-app="${esc(a.id)}"` : ''}>Open</button>`);
+        acts.push(
+          `<button class="wam-btn primary" data-wam-do="open"${c.shell && new URL(a.open, location.href).origin === location.origin ? ` data-app="${esc(a.id)}"` : ''}>Open</button>`,
+        );
       if (a.update) acts.push(btn('update', 'Update', 'primary'));
       if (a.status === 'running') acts.push(btn('stop', 'Stop'));
       else if (!BUSY.has(a.status)) acts.push(btn('start', 'Start'));
@@ -289,9 +294,9 @@ export function renderCard(el, app, ctx = {}) {
     const b = e.target.closest('[data-wam-do]');
     if (!b) return;
     if (b.dataset.wamDo === 'open') {
-      if (c.shell) return; // the shell's own launcher opens it (data-app)
+      if (c.shell && b.hasAttribute('data-app')) return; // same-origin screen: shell window
       e.stopPropagation();
-      return window.open(a.open, '_blank', 'noopener');
+      return window.open(a.open, '_blank', 'noopener,noreferrer'); // stock Runtipi Open; Access login needs top-level navigation
     }
     e.stopPropagation();
     run(b.dataset.wamDo);
