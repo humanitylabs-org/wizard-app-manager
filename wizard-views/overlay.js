@@ -9,7 +9,7 @@
 //             "Get apps" turns it into the App Store and the input searches the index
 //           - Settings card: a Resources group
 // His code rewrites these containers' innerHTML freely, so each piece is put back by a MutationObserver.
-import { renderCard, renderMyApps, renderResourceCard, renderResources, renderStore } from './wizard-apps.js';
+import { renderCard, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
 
 const $ = (s) => document.querySelector(s);
 const groupTitle = (g) => g.querySelector('h4')?.textContent.trim() || '';
@@ -157,36 +157,7 @@ if (body && sheet && form && input) {
 }
 
 // ---- phone: home card ----------------------------------------------------------------------------------------------
-// One card element for the page's life: his home re-renders often, so it is moved back in, not rebuilt.
-const track = $('#track');
-if (track) {
-  const card = document.createElement('div');
-  card.className = 'wam-res-host';
-  let started = false;
-  const openResources = () => {
-    window.__wos?.openSettings?.();
-    requestAnimationFrame(() => $('#settingsBody .wam-res')?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
-  };
-  const place = () => {
-    const cards = track.querySelector('.home-desk .home > .constellation');
-    if (!cards || cards.nextElementSibling === card) return;
-    cards.after(card);
-    if (!started) {
-      started = true;
-      renderResourceCard(card, { onOpen: openResources });
-    }
-  };
-  let queued = false;
-  new MutationObserver(() => {
-    if (queued) return;
-    queued = true;
-    queueMicrotask(() => {
-      queued = false;
-      place();
-    });
-  }).observe(track, { childList: true, subtree: true });
-  place();
-}
+// The home-screen resources card is not proposed: Resources lives in Settings only (Miguel, 11 Oct).
 
 // ---- Settings: Resources (phone sheet and desktop card) ------------------------------------------------------------
 function resourcesIn(root, bodyOf, wide) {

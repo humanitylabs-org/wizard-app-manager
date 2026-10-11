@@ -796,3 +796,18 @@ html .wam .wam-panel .wam-note {
 .wam .wam-graph .wam-row h4 {
   margin-bottom: 11px;
 }
+/* an empty layer: title line only */
+.wam .wam-row.empty {
+  padding: 6px 0;
+}
+.wam .wam-row.empty h4 {
+  margin-bottom: 0;
+}
+.wam-none-k {
+  font-style: normal;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink-3);
+  opacity: 0.8;
+}

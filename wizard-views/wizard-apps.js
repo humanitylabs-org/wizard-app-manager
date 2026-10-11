@@ -274,6 +274,9 @@ function drawGraph(el, g) {
     const fold = g.collapsible?.has(k);
     const head = `<h4${fold ? ` data-wam-row="${k}" class="wam-fold-h${r.shut ? ' shut' : ''}"` : ''}><b>${g.label?.(k) || k}</b><span>${g.note(k, L)}${g.gets ? `<button class="wam-geth" data-wam-get="${k}" aria-label="${GETS[k]}">+ Get</button>` : ''}${fold ? '<i class="wam-chev"></i>' : ''}</span></h4>`;
     if (r.shut) return `<div class="lgroup wam-row shut" data-row="${k}">${head}</div>`;
+    // Nothing in this layer yet: just its title line, so lines that pass it run by a title, never an empty box.
+    if (!r.cells.length && !r.more)
+      return `<div class="lgroup wam-row empty" data-row="${k}"><h4><b>${g.label?.(k) || k}</b><span><em class="wam-none-k">None yet</em>${g.gets ? `<button class="wam-geth" data-wam-get="${k}" aria-label="${GETS[k]}">+ Get</button>` : ''}</span></h4></div>`;
     const cells = r.cells.map((c) => g.html(c.id, `wam-${c.kind}`, place(c))).join('');
     const m = r.more;
     const more = m
