@@ -670,3 +670,124 @@ html .wam .wam-panel .wam-note {
   font-weight: 300;
 }
 
+
+/* ---- round 3: layers, Agent Service, parking spots, Get buttons, folding rows ---- */
+/* Home card: one quiet colour that sits in the background (the accents above mean Unread / Working). */
+.wam-res-card .wam-g .k {
+  color: var(--ink-3);
+}
+.wam-res-card .wam-bar i {
+  background: rgba(205, 190, 255, 0.45);
+  box-shadow: none;
+}
+.wam-res-card .wam-spark path {
+  stroke: rgba(205, 190, 255, 0.55);
+}
+.wam-res-card .wam-meter em {
+  color: var(--ink-2);
+}
+
+/* The Agent Service: one small node between Views and Agents; every view reaches its agent through it. */
+.wam-svc {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 30px;
+  margin: 4px 0;
+}
+.wam-svc i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #1a1236;
+  box-shadow: inset 0 0 0 2px rgba(185, 155, 255, 0.85), 0 0 12px rgba(143, 99, 255, 0.5);
+}
+.wam-svc span {
+  position: absolute;
+  left: calc(50% + 14px);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* Parking spots: the app filling one says which spot it fills; an empty spot is a dashed placeholder. */
+.wam-spot-k {
+  margin-top: -3px;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wam .lapp.wam-espot .ic {
+  background: none;
+  box-shadow: none;
+  outline: 1.5px dashed rgba(205, 190, 255, 0.32);
+  outline-offset: -1.5px;
+  color: var(--ink-3);
+  font-size: 22px;
+  font-weight: 300;
+}
+.wam .lapp.wam-espot .nm {
+  color: var(--ink-3);
+}
+
+/* Get views / Get agents / ...: last in each row, quieter than an app */
+.wam .lapp.wam-gett .ic.wam-get {
+  background: rgba(205, 190, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--violet-2);
+  font-size: 26px;
+}
+.wam .lapp.wam-gett .nm {
+  color: var(--ink-3);
+}
+.wam-graph .lapp.wam-gett > * {
+  opacity: 1 !important;
+}
+
+/* folding rows: tap the title */
+.wam-row h4.wam-fold-h {
+  cursor: pointer;
+}
+.wam-row h4 > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.wam-chev {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 200ms ease;
+}
+.wam-fold-h.shut .wam-chev {
+  transform: rotate(-45deg);
+}
+.wam .wam-row.shut {
+  margin: 2px 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.wam .wam-row.shut h4 {
+  margin-bottom: 0;
+}
+/* the anchor's pill says what it is; its ✓ / + would sit under the pill */
+.wam-graph .lapp.wam-anchor .wam-ok,
+.wam-graph .lapp.wam-anchor .wam-add {
+  display: none;
+}
+/* room between a row title and its tiles for a line to come in */
+.wam .wam-graph .wam-row h4 {
+  margin-bottom: 11px;
+}

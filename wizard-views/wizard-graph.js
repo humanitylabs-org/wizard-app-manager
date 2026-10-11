@@ -16,22 +16,75 @@
 
 export const ROWS = ['Views', 'Agents', 'Apps', 'System'];
 
+/** id -> layer index (Views 0 ... System 3). */
+export const layersOf = (rows) => new Map(ROWS.flatMap((k, n) => (rows[k] || []).map((id) => [id, n])));
+
+/**
+ * Connections only run between layers, never along one: things in a row tie in through the rows above and below.
+ * lineage: everything reachable from the anchor moving only toward the views (up) or only toward the system (down).
+ * Edges come back as [upper, lower] (views side first), each once.
+ */
+export function lineage(links, anchor, layer) {
+  const nodes = new Set();
+  const edges = [];
+  if (anchor == null || !layer.has(anchor)) return { nodes, edges };
+  nodes.add(anchor);
+  const seen = new Set();
+  for (const dir of [-1, 1]) {
+    const queue = [anchor];
+    const done = new Set(queue);
+    while (queue.length) {
+      const x = queue.shift();
+      for (const y of links.get(x) || []) {
+        if (!layer.has(y) || Math.sign(layer.get(y) - layer.get(x)) !== dir) continue;
+        const e = dir < 0 ? [y, x] : [x, y];
+        if (!seen.has(e.join('>'))) {
+          seen.add(e.join('>'));
+          edges.push(e);
+        }
+        nodes.add(y);
+        if (!done.has(y)) {
+          done.add(y);
+          queue.push(y);
+        }
+      }
+    }
+  }
+  return { nodes, edges };
+}
+
+/** The anchor's direct links to other layers only (the App Store shows what one app needs and what needs it). */
+export function neighbours(links, anchor, layer) {
+  if (anchor == null || !layer.has(anchor)) return [];
+  return [...(links.get(anchor) || [])]
+    .filter((id) => layer.has(id) && layer.get(id) !== layer.get(anchor))
+    .map((id) => (layer.get(id) < layer.get(anchor) ? [id, anchor] : [anchor, id]));
+}
+
 export function layout(rows, links, anchor, opts = {}) {
   const cols = Math.max(2, Math.floor(opts.cols || 4));
   const open = opts.open || new Set();
   const pinned = opts.pinned || new Set();
+  const wrap = opts.wrap || new Set(); // rows that never fold: they wrap onto more lines instead
+  const shut = opts.shut || new Set(); // collapsed rows: header only
   const rowOf = new Map();
   for (const k of ROWS) for (const id of rows[k] || []) rowOf.set(id, k);
   if (anchor && !rowOf.has(anchor)) anchor = null;
-  const related = new Set(anchor ? [...(links.get(anchor) || [])].filter((id) => id !== anchor && rowOf.has(id)) : []);
+  const related = new Set(
+    anchor ? [...(opts.related || links.get(anchor) || [])].filter((id) => id !== anchor && rowOf.has(id)) : [],
+  );
 
   const out = {};
   for (const k of ROWS) {
+    if (shut.has(k)) {
+      out[k] = { cells: [], more: null, shut: true };
+      continue;
+    }
     const ids = rows[k] || [];
     const pins = ids.filter((id) => pinned.has(id));
     const rel = ids.filter((id) => related.has(id));
     const rest = ids.filter((id) => id !== anchor && !related.has(id) && !pinned.has(id));
-    const fold = ids.length > cols && !open.has(k);
+    const fold = ids.length > cols && !open.has(k) && !wrap.has(k);
     const room = fold ? cols - 1 - pins.length : Infinity; // cells for apps, leaving "+N" and pinned tiles
     let order;
     if (k === rowOf.get(anchor)) {
@@ -50,7 +103,7 @@ export function layout(rows, links, anchor, opts = {}) {
     const place = (id) => cells.push({ id, col: cells.length % cols, line: Math.floor(cells.length / cols), kind: kind(id) });
     shown.forEach(place);
     let more = null;
-    if (hidden.length || (open.has(k) && ids.length > cols)) {
+    if (hidden.length || (open.has(k) && !wrap.has(k) && ids.length > cols)) {
       const n = cells.length;
       more = { col: n % cols, line: Math.floor(n / cols), ids: hidden, open: open.has(k) };
       cells.push(null);
@@ -59,7 +112,7 @@ export function layout(rows, links, anchor, opts = {}) {
     out[k] = { cells: cells.filter(Boolean), more };
   }
   const visible = new Set(ROWS.flatMap((k) => out[k].cells.map((c) => c.id)));
-  return { rows: out, related, lines: [...related].filter((id) => visible.has(id)) };
+  return { rows: out, related, visible, lines: [...related].filter((id) => visible.has(id)) };
 }
 
 /** Undirected links from `uses` / `needs`, matched by app id or by what an app `provides` (the parked one first). */

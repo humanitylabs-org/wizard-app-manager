@@ -46,6 +46,8 @@ if (body && sheet && form && input) {
     const views = groups.find((g) => /^views/i.test(groupTitle(g)));
     const wiz = groups.find((g) => /^wizard apps/i.test(groupTitle(g)));
     if (!wiz) return;
+    // Recent goes: the graph already shows everything, and it doubled Chats and Inbox.
+    groups.find((g) => /^recent/i.test(groupTitle(g)))?.remove();
     const host = document.createElement('div');
     host.className = 'wam-host';
     const theirViews = views?.cloneNode(true);
@@ -71,14 +73,14 @@ if (body && sheet && form && input) {
     input.placeholder = on ? 'Search the App Store' : placeholder;
   }
 
-  function openStore() {
+  function openStore(focus) {
     mode = 'store';
     input.value = '';
     const host = document.createElement('div');
     host.className = 'wam-host wam-store';
     setStoreUi(true);
     body.replaceChildren(host);
-    const api = renderStore(host, { shell: true, viewsAt: 'bottom', chipsEl: chips, onBack: backToApps, onApp: (a) => openCard(a, 'store') });
+    const api = renderStore(host, { shell: true, viewsAt: 'bottom', focus, chipsEl: chips, onBack: backToApps, onApp: (a) => openCard(a, 'store') });
     store = { host, api };
     body.scrollTop = 0;
   }
@@ -227,6 +229,26 @@ if (pal && palIn && palList && !body) {
   let mode = 'apps'; // apps | store | card
   let store = null;
 
+  // His own views (Chats, Inbox...) as tiles, the way his phone launcher draws them; the box's apps come from us.
+  const desk = window.WizCore?.apps?.('desktop');
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  const deskViews = () =>
+    (desk?.APPS || [])
+      .filter((a) => a.kind !== 'wizard' && a.kind !== 'native')
+      .map((a) => {
+        const ic = window.WizSigil ? window.WizSigil.box('span', 'ic', a) : `<span class="ic" style="--g1:${a.g?.[0]};--g2:${a.g?.[1]}">${esc(a.icon || '◇')}</span>`;
+        return `<button class="lapp" data-app="${esc(a.id)}">${ic}<span class="nm">${esc(a.name)}</span></button>`;
+      });
+  // Opening one runs his own palette entry for it, so it opens exactly as it always has.
+  const deskOpen = (id) => {
+    const a = desk?.APP?.[id];
+    if (!a) return;
+    palIn.value = '';
+    palIn.dispatchEvent(new Event('input', { bubbles: true }));
+    const it = [...palList.querySelectorAll('[data-i]')].find((b) => b.querySelector('.nm')?.firstChild?.textContent.trim() === a.name);
+    it?.click();
+  };
+
   const sync = () => {
     const graph = mode !== 'apps' || !palIn.value.trim();
     wrap.hidden = !graph;
@@ -243,15 +265,21 @@ if (pal && palIn && palList && !body) {
     host.replaceChildren();
     delete host._wamG;
     sync();
-    renderMyApps(host, { viewsAt: 'top', onGetApps: openStore, onApp: (a) => openCard(a, 'apps') });
+    renderMyApps(host, {
+      viewsAt: 'top',
+      shellTiles: { Views: deskViews() },
+      onShellOpen: deskOpen,
+      onGetApps: openStore,
+      onApp: (a) => openCard(a, 'apps'),
+    });
   };
-  function openStore() {
+  function openStore(focus) {
     mode = 'store';
     palIn.value = '';
     host.className = 'wam-host wam-store';
     host.replaceChildren();
     sync();
-    store = renderStore(host, { viewsAt: 'top', chipsEl: chips, onBack: myApps, onApp: (a) => openCard(a, 'store') });
+    store = renderStore(host, { viewsAt: 'top', focus, chipsEl: chips, onBack: myApps, onApp: (a) => openCard(a, 'store') });
     palIn.focus();
   }
   function openCard(a, from) {

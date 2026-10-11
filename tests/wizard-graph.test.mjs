@@ -51,3 +51,22 @@ test('pinned tiles stay last, after "+N"; an open row shows everything', () => {
   assert.equal(O.rows.Apps.cells.length, 5);
   assert.equal(O.rows.Apps.more.open, true);
 });
+
+import { layersOf, lineage, neighbours } from '../wizard-views/wizard-graph.js';
+
+test('connections only run between layers, never along a row', () => {
+  const layer = layersOf(rows);
+  const L = lineage(links, 'video', layer);
+  for (const [u, d] of L.edges) assert.notEqual(layer.get(u), layer.get(d), `${u}-${d} is along a row`);
+  assert.ok(!L.nodes.has('files') || L.edges.some((e) => e.includes('files')));
+  // stt and files are both System: linked, but never drawn
+  const S = lineage(links, 'stt', layer);
+  assert.ok(!S.edges.some((e) => e.includes('files')));
+});
+
+test('the agent line runs up to the views and down to what it uses', () => {
+  const layer = layersOf(rows);
+  const L = lineage(links, 'agent', layer);
+  assert.deepEqual(L.edges, [['ui', 'agent']]);
+  assert.deepEqual(neighbours(links, 'video', layer).map(([u]) => u), ['video', 'video', 'video']);
+});
