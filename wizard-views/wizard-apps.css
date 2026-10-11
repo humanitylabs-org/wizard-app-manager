@@ -740,18 +740,23 @@ html .wam .wam-panel .wam-note {
   color: var(--ink-3);
 }
 
-/* Get views / Get agents / ...: last in each row, quieter than an app */
-.wam .lapp.wam-gett .ic.wam-get {
-  background: rgba(205, 190, 255, 0.07);
-  box-shadow: inset 0 0 0 1px var(--line-2);
-  color: var(--violet-2);
-  font-size: 26px;
-}
-.wam .lapp.wam-gett .nm {
+/* Get: a quiet text link on the row's title line, never a tile, so it can't be mistaken for an app */
+.wam-geth {
+  margin: -6px -4px -6px 4px;
+  padding: 6px 4px; /* bigger touch target than it looks */
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--ink-3);
+  cursor: pointer;
 }
-.wam-graph .lapp.wam-gett > * {
-  opacity: 1 !important;
+.wam-geth:hover,
+.wam-geth:focus-visible {
+  color: var(--violet-2);
 }
 
 /* folding rows: tap the title */
