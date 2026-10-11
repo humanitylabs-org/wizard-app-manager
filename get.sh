@@ -3,6 +3,10 @@
 #
 #   curl -fsSL aiwizards.com/os.sh | bash
 #
+# Already running Hermes on this box? Run the same command as the user who owns that Hermes: Wizard OS installs
+# *alongside* it (the App Manager, the apps, and the Wizard shell pointed at your Hermes; your agent is linked to the
+# apps with `wizard link`, reversible with `wizard unlink`). Nothing in your Hermes is migrated or moved.
+#
 # What it does:
 #   1. As root: installs Docker, git, gh and python3-yaml, and creates the `wizard` user (docker group,
 #      passwordless sudo) that owns everything. Skipped when run by an existing sudo user.
@@ -11,12 +15,28 @@
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
-# Options (environment): WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WIZARD_GITHUB=1, GITHUB_TOKEN.
+# Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: alongside when an existing Hermes is
+# found), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN.
 set -euo pipefail
 REPO="https://github.com/humanitylabs-org/wizard-app-manager"
 WUSER="${WIZARD_USER:-wizard}"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 tty_ok() { [ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null; }
+MODE="${WIZARD_MODE:-auto}"
+case "$MODE" in auto|alongside|fresh) ;; *) echo "WIZARD_MODE must be auto, alongside or fresh" >&2; exit 2 ;; esac
+REF="${WAM_REF:-main}"
+# An existing Hermes = the `hermes` command plus ~/.hermes/config.yaml, for the given user (default: this one).
+has_hermes() {  # has_hermes [user]
+  local h; h="$(getent passwd "${1:-$(id -un)}" | cut -d: -f6)"
+  [ -n "$h" ] && [ -f "${HERMES_HOME:-$h/.hermes}/config.yaml" ] && { [ -x "$h/.local/bin/hermes" ] || { [ -z "${1:-}" ] && command -v hermes >/dev/null; }; }
+}
+
+# Root with an existing Hermes owned by the sudo user: install alongside as that user, not as a new wizard user.
+if [ "$(id -u)" -eq 0 ] && [ "$MODE" != "fresh" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && has_hermes "$SUDO_USER"; then
+  say "Found Hermes for $SUDO_USER; installing Wizard OS alongside it as $SUDO_USER"
+  exec sudo -iu "$SUDO_USER" env WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="$REF" \
+    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   say "Preparing the server"
@@ -60,9 +80,9 @@ if [ "$(id -u)" -eq 0 ]; then
 
   say "Installing Wizard OS as $WUSER"
   exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
-    WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 \
+    WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 WIZARD_MODE=fresh WAM_REF="$REF" \
     WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
-    bash -c "curl -fsSL '$REPO/raw/main/get.sh' | bash"
+    bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
@@ -74,6 +94,26 @@ if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth stat
     gh auth login --hostname github.com --git-protocol https --scopes read:packages </dev/tty >/dev/tty 2>&1 || true
   fi
 fi
+# Alongside or fresh? One clear question on a terminal; without one, an existing Hermes means alongside.
+if [ "$MODE" = "auto" ]; then
+  MODE=fresh
+  if has_hermes; then
+    MODE=alongside
+    if tty_ok; then
+      say "Found Hermes on this box (${HERMES_HOME:-$HOME/.hermes})"
+      printf "Install Wizard OS alongside it? Your Hermes stays as it is and gets linked to the apps. [Y/n] " >/dev/tty
+      read -r -t 120 ans </dev/tty || ans=y
+      case "${ans:-y}" in n|N|no|NO) MODE=fresh ;; esac
+    else
+      echo "Found Hermes on this box: installing alongside it (set WIZARD_MODE=fresh to skip)."
+    fi
+  fi
+fi
+export WIZARD_MODE="$MODE"
 DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
-if [ -d "$DIR/.git" ]; then git -C "$DIR" pull --ff-only -q; else git clone -q "$REPO" "$DIR"; fi
+if [ -d "$DIR/.git" ]; then
+  git -C "$DIR" fetch -q origin "$REF" && git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
+else
+  git clone -q --branch "$REF" "$REPO" "$DIR"
+fi
 exec bash "$DIR/install.sh"

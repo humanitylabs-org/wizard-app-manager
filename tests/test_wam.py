@@ -240,3 +240,32 @@ def test_ensure_store_lands_on_the_wizardapps_slug(before):
     assert "wizard-apps" not in by_slug and "migrated" in by_slug
     cli.ensure_store(_Cfg(), rt)                                                          # second run: nothing to do
     assert rt.calls[-1][0] != "POST"
+
+
+def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch):
+    """Alongside mode: the host's Hermes fills the agent spot (bootstrap skips hermes-agent); the shell gets a
+    host-network override pointed at it, with the Hermes home read-only and the gateway token in a 0600 env file."""
+    from wam import alongside, slots
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("platforms:\n  api_server:\n    extra:\n      port: 8650\n")
+    (hh / ".env").write_text("API_SERVER_KEY=host-key-not-real\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    st = alongside.enable(wh, hh, 18796)
+    assert st["agent"]["origin"] == "http://127.0.0.1:8650" and st["shell"]["port"] == 18796
+    assert "host-key-not-real" not in json.dumps(st)
+    assert alongside.shared_secret(wh, "WIZARD_HERMES_API_KEY") == "host-key-not-real"
+    reg = {"apps": [], "external": alongside.external_slots(wh)}
+    d = {"agent": {"app": "hermes-agent", "required": True}, "shell": {"app": "wizard-shell", "required": True}}
+    rows = {r["slot"]: r for r in slots.table(reg, d)}
+    assert rows["agent"]["state"] == "external" and rows["agent"]["external"] == "external: host Hermes"
+    assert slots.to_install(reg, d) == ["wizard-shell"]
+    p = alongside.write_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell", wh)
+    text = p.read_text()
+    assert "network_mode: host" in text and f"{hh}:/hermes:ro" in text and "HERMES_ORIGIN: http://127.0.0.1:8650" in text
+    assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    envp = p.parent / "app.env"
+    assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
+    assert alongside.disable(wh) and alongside.external_slots(wh) == {}
+    assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
