@@ -280,6 +280,12 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     text = p.read_text()
     assert "network_mode: host" in text and "HERMES_ORIGIN: http://127.0.0.1:8650" in text
     assert f"{hh}:/hermes:ro" not in text and f"{hh}/cache/images:/hermes/cache/images:ro" in text
+    # /hermes is wam's own folder with the mount point already in it (Docker can't mkdir inside a read-only /hermes)
+    view = wh / "hermes-view"
+    assert f"{view}:/hermes:ro" in text and (view / "cache" / "images").is_dir()
+    assert sorted(x.name for x in view.rglob("*")) == ["cache", "images"]      # nothing else: no secrets
+    vols = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["volumes"]
+    assert [v.split(":")[1] for v in vols] == ["/hermes", "/hermes/cache/images"]   # parent before child
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
@@ -299,12 +305,12 @@ def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monke
     monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
     monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
     assert alongside.enable(wh, hh, 18796)["shell"]["share_history"] is False
-    text = alongside.shell_override(alongside.load(wh), "wizard-shell")
+    text = alongside.shell_override(alongside.load(wh), "wizard-shell", wh)
     assert (hh / "cache" / "images").is_dir()                                 # made so a later picture shows
     assert f"{hh}/cache/images:/hermes/cache/images:ro" in text and f"{hh}:/hermes:ro" not in text
     assert "credentials included" not in text
     assert alongside.enable(wh, hh, None, True)["shell"]["share_history"] is True
-    text = alongside.shell_override(alongside.load(wh), "wizard-shell")
+    text = alongside.shell_override(alongside.load(wh), "wizard-shell", wh)
     assert f"{hh}:/hermes:ro" in text and 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
     assert "credentials included" in text
     yaml.safe_load(text.replace("!reset", ""))

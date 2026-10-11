@@ -246,7 +246,7 @@ services:
 _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
 
 
-def shell_override(st: dict, app_id: str) -> str:
+def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> str:
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):
         raise SystemExit(f"Hermes home path {a['hermes_home']!r} has characters a compose file can't carry safely")
@@ -256,16 +256,23 @@ def shell_override(st: dict, app_id: str) -> str:
     hh = a["hermes_home"]
     # Without the opt-in the shell gets only the folder of images the agent made (no secrets), so pictures in
     # chats still show; the recipe's state.db path is blanked so the Agent Service opens no Hermes file.
-    # A new Hermes makes cache/images on its first picture, after the shell started; create it now (owner-owned,
-    # empty, the folder Hermes itself writes to) so a later picture shows without reinstalling the shell.
+    # Default: the shell's /hermes is a small wam-owned folder (replacing the recipe's /hermes mount) that holds
+    # only an empty cache/images mount point, with the owner's images folder mounted on it read-only. The mount
+    # point must already exist: Docker can't create it inside a read-only /hermes. A new Hermes makes
+    # cache/images on its first picture, after the shell started, so it is created here (empty, owner-owned).
     if share:
         volumes = f"\n    volumes:\n      - {hh}:/hermes:ro"
     else:
+        view = Path(wizard_home or Path(hh).parent / ".wizard-os") / "hermes-view"
+        if not _SAFE_PATH.match(str(view)):
+            raise SystemExit(f"Wizard OS home path {str(view)!r} has characters a compose file can't carry safely")
         try:
+            (view / "cache" / "images").mkdir(parents=True, exist_ok=True)
             Path(hh, "cache", "images").mkdir(parents=True, exist_ok=True)
-            volumes = f"\n    volumes:\n      - {hh}/cache/images:/hermes/cache/images:ro"
+            volumes = (f"\n    volumes:\n      - {view}:/hermes:ro"
+                       f"\n      - {hh}/cache/images:/hermes/cache/images:ro")
         except OSError:
-            volumes = ""
+            volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
     return SHELL_OVERRIDE.format(
         app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
@@ -285,7 +292,7 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
         return None
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "docker-compose.yml").write_text(shell_override(st, app_id))
+    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home))
     envp = d / "app.env"
     fd = os.open(envp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
