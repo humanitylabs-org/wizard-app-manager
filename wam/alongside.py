@@ -253,7 +253,8 @@ def shell_override(st: dict, app_id: str) -> str:
         raise SystemExit(f"host Hermes API {a['origin']} is not a loopback origin; alongside mode needs 127.0.0.1")
     return SHELL_OVERRIDE.format(app=app_id, uid=int(a["uid"]), gid=int(a["gid"]), origin=a["origin"],
                                  hermes_home=a["hermes_home"], port=int(st["shell"]["port"]),
-                                 image=f"\n    image: {st['shell']['image']}" if st["shell"].get("image") else "")
+                                 image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing"
+                                        if st["shell"].get("image") else ""))
 
 
 def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path) -> Path | None:
