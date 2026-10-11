@@ -110,9 +110,27 @@ for _ in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NG
 "$HOME/.local/bin/wam" apps >/dev/null || true
 "$HOME/.local/bin/wam" doctor || true
 
+# The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
+sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os || true
+
+# 2b) Alongside an existing Hermes (WIZARD_MODE=alongside, set by get.sh): the host's Hermes fills the agent spot
+#     and is linked to the apps; the hermes-agent app is never installed. `wizard unlink` reverses the link.
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+  echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
+  "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null
+  "$HOME/.local/bin/wizard" link --restart ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
+    ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"} || echo "note: 'wizard link' did not finish; run it again later"
+  # Hermes' API server answers once the gateway has restarted with its key.
+  ORIGIN="$("$HOME/.local/bin/wam" alongside --detect 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_origin"])' || echo http://127.0.0.1:8642)"
+  for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && break; sleep 2; done
+fi
+
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap >/dev/null || true; fi
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+  echo; "$HOME/.local/bin/wizard" doctor || true
+fi
 
 echo
 echo "Wizard OS is installed (box-only: nothing listens on the public interface)."

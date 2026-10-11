@@ -17,6 +17,8 @@ Wizard additions:
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam doctor [--fix]            check the whole chain
+  wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N]
+                                run next to this box's existing Hermes: it fills the agent spot (never migrated)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
@@ -32,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import index, private, registry, slots
+from . import alongside, index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -101,6 +103,9 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    ext = alongside.external_slots(c.home)
+    if ext:
+        reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
@@ -140,6 +145,8 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     """A secret this app shares with an app it uses, e.g. the shell's WIZARD_HERMES_API_KEY is hermes-agent's
     HERMES_API_KEY: same name, or same name without a WIZARD_ prefix, in that app's Runtipi app.env."""
     from .runtipi import read_env
+    if getattr(c, "home", None) and (v := alongside.shared_secret(c.home, var)):
+        return v
     for dep in uses:
         env = read_env(c.runtipi_root / "app-data" / STORE / dep / "app.env")
         for k in (var, var.removeprefix("WIZARD_")):
@@ -190,8 +197,12 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
+    external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
     for dep in rec.get("uses") or []:
         if dep in have or dep in _seen:
+            continue
+        if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
+            print(f"skipping dependency {dep}: its spot is filled by the host (alongside mode)", file=sys.stderr)
             continue
         try:
             print(f"installing dependency {dep}", file=sys.stderr)
@@ -205,6 +216,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
+    if (al := alongside.load(c.home)) and is_shell(rec, app_id):
+        alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home)
+        form["port"] = int(al["shell"]["port"])   # fixed, so the agent's `wizard` MCP entry can name it
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -214,6 +228,35 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def is_shell(rec: dict, app_id: str) -> bool:
+    shell_default = (slots.load_defaults().get(alongside.SHELL_SLOT) or {}).get("app")
+    return app_id == shell_default or alongside.SHELL_SLOT in (rec.get("provides") or [])
+
+
+def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None) -> dict:
+    home = alongside.hermes_home(hermes_home)
+    if detect_only:
+        return alongside.detect(home)
+    shell_default = (slots.load_defaults().get(alongside.SHELL_SLOT) or {}).get("app") or "wizard-shell"
+    if off:
+        was = alongside.disable(c.home)
+        removed = alongside.remove_shell_override(c.runtipi_root, STORE, shell_default)
+        return {"mode": "fresh", "was_alongside": was, "shell_override_removed": removed,
+                "next": f"wam app update {shell_default}  (restarts the shell on its own recipe)"}
+    st = alongside.enable(c.home, home, shell_port)
+    out = {k: v for k, v in st.items() if k != "detected"}
+    out["detected"] = st["detected"]
+    try:
+        rt = c.runtipi()
+        if shell_default in installed_ids(rt):
+            alongside.write_shell_override(c.runtipi_root, STORE, shell_default, c.home)
+            out["next"] = f"wam app update {shell_default}  (applies the alongside settings to the installed shell)"
+        write_registry(c, rt)
+    except (RuntipiError, OSError) as e:
+        out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    return out
 
 
 def resolve_any(c: Config, ref: str) -> dict:
@@ -291,6 +334,18 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out.append(("API token present (0600)", c.token_file.is_file() and (c.token_file.stat().st_mode & 0o077) == 0, str(c.token_file)))
     regp = c.home / "apps.json"
     out.append(("apps.json written", regp.is_file(), str(regp)))
+    st = alongside.load(c.home)
+    if st:
+        a = st["agent"]
+        out.append(("alongside: host Hermes API answers", alongside.api_up(a["origin"]), a["origin"]))
+        out.append(("alongside: host Hermes has an API key", bool(alongside.api_key(Path(a["hermes_home"]))),
+                    "API_SERVER_KEY in its .env (`wizard link` adds one if missing)"))
+        ovr = c.runtipi_root / "user-config" / STORE / ((slots.load_defaults().get("shell") or {}).get("app") or "wizard-shell") / "docker-compose.yml"
+        out.append(("alongside: shell points at the host Hermes", ovr.is_file() and a["origin"] in ovr.read_text(), str(ovr)))
+        db = Path(a["hermes_home"]) / "state.db"
+        readable = db.is_file() and os.access(db, os.R_OK) and os.stat(db).st_uid == os.getuid()
+        out.append(("alongside: session history readable by the shell", readable,
+                    f"{db} (shell runs as uid {a['uid']}, mounted read-only)"))
     if regp.is_file():
         for col in registry.collisions(json.loads(regp.read_text())):
             out.append(("slot collision", False, col))
@@ -432,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
+    al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     args = ap.parse_args(argv)
     c = Config()
     try:
@@ -460,6 +517,11 @@ def main(argv: list[str] | None = None) -> int:
             for n, ok, det in res:
                 print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
             return 0 if all(ok for _, ok, _ in res) else 1
+        elif args.cmd == "alongside":
+            res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port)
+            print(json.dumps(res, indent=2))
+            if args.detect:
+                return 0 if res["found"] else 3
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
