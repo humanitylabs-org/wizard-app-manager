@@ -209,3 +209,60 @@ def test_skills_survive_second_write(tmp_path):
     registry.write(reg, home)
     assert (home / "skills" / "hello-wizard" / "SKILL.md").is_file()
     assert "_skill_src" not in (home / "apps.json").read_text()
+
+
+# ---------------------------------------------------------------- connect: apps' tools -> agents
+
+def _reg(*apps):
+    return {"apps": list(apps)}
+
+
+def _app(i, t="service", mcp=True, status="running"):
+    return {"id": i, "type": t, "status": status,
+            "mcp": {"internal": f"http://{i}:8000/mcp"} if mcp else None}
+
+
+def test_connect_wanted_lists_tool_apps_not_agents_or_views():
+    from wam import connect
+    reg = _reg(_app("hermes-agent", "agent"), _app("secret-drop"), _app("files", "view", mcp=False),
+               _app("other-agent", "agent"), _app("stopped", status="stopped"))
+    assert connect.wanted(reg, "hermes-agent") == {"secret-drop": "http://secret-drop:8000/mcp"}
+
+
+def test_connect_rejects_unsafe_names_and_urls():
+    from wam import connect
+    bad = {"id": "x;rm", "type": "service", "status": "running", "mcp": {"internal": "http://x:1/mcp"}}
+    evil = {"id": "evil", "type": "service", "status": "running", "mcp": {"internal": "http://evil:1/mcp $(id)"}}
+    assert connect.wanted(_reg(bad, evil), "hermes-agent") == {}
+
+
+def test_connect_sync_adds_removes_only_its_own(tmp_path, monkeypatch):
+    from wam import connect
+    calls = []
+
+    class R:
+        def __init__(self, rc=0): self.returncode, self.stdout, self.stderr = rc, "", ""
+
+    def fake(args, timeout=60):
+        calls.append(args)
+        return R(0) if args[0] != "ps" else type("P", (), {"returncode": 0, "stdout": "cid1\n", "stderr": ""})()
+    monkeypatch.setattr(connect, "_docker", fake)
+    (tmp_path / "connections.json").write_text('{"hermes-agent": {"gone": "http://gone:1/mcp"}}')
+    rep = connect.sync(_reg(_app("hermes-agent", "agent"), _app("secret-drop")), "wizardapps", tmp_path)
+    r = rep["hermes-agent"]
+    assert r["added"] == ["secret-drop"] and r["removed"] == ["gone"] and r["reloaded"] is True
+    sets = [c for c in calls if c[:1] == ["exec"] and "set" in c]
+    unsets = [c for c in calls if c[:1] == ["exec"] and "unset" in c]
+    assert sets and sets[0][-2:] == ["mcp_servers.secret-drop.url", "http://secret-drop:8000/mcp"]
+    assert unsets and unsets[0][-1] == "mcp_servers.gone"
+    # a second run changes nothing and does not restart the agent
+    calls.clear()
+    rep2 = connect.sync(_reg(_app("hermes-agent", "agent"), _app("secret-drop")), "wizardapps", tmp_path)
+    assert rep2["hermes-agent"]["added"] == [] and rep2["hermes-agent"]["reloaded"] is False
+    assert not [c for c in calls if c[:1] in (["exec"], ["restart"])]
+
+
+def test_connect_skips_unknown_agents(tmp_path):
+    from wam import connect
+    rep = connect.sync(_reg(_app("some-new-agent", "agent"), _app("secret-drop")), "wizardapps", tmp_path, dry_run=True)
+    assert "skipped" in rep["some-new-agent"]

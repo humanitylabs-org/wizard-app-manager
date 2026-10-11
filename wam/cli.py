@@ -16,6 +16,7 @@ Wizard additions:
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
+  wam connect [--dry-run]       give every installed agent the tools (MCP) of every installed app
   wam doctor [--fix]            check the whole chain
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
@@ -32,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import index, private, registry, slots
+from . import connect, index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -98,7 +99,24 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
+    connect_agents(c, reg)
     return registry.public_projection(reg)
+
+
+def connect_agents(c: Config, reg: dict, dry_run: bool = False) -> dict:
+    """Give every installed agent the tools of every installed app (see wam/connect.py). Never fatal."""
+    if os.environ.get("WAM_NO_CONNECT") == "1":
+        return {}
+    try:
+        report = connect.sync(registry.public_projection(reg), STORE, c.home, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001
+        print(f"note: could not connect apps to agents ({e})", file=sys.stderr)
+        return {"error": str(e)[:200]}
+    for agent, r in report.items():
+        if r.get("added") or r.get("removed") or r.get("failed"):
+            print(f"{agent}: connected {', '.join(r.get('connected') or []) or 'nothing'}"
+                  + (f" (failed: {', '.join(r['failed'])})" if r.get("failed") else ""), file=sys.stderr)
+    return report
 
 
 def share_registry(c: Config) -> bool:
@@ -424,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("bootstrap")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
+    cn = sub.add_parser("connect"); cn.add_argument("--dry-run", action="store_true")
     sub.add_parser("serve")
     args = ap.parse_args(argv)
     c = Config()
@@ -447,6 +466,10 @@ def main(argv: list[str] | None = None) -> int:
             reg = write_registry(c)
             print(json.dumps(reg, indent=2) if args.json else "\n".join(
                 f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
+        elif args.cmd == "connect":
+            rt = c.runtipi()
+            reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+            print(json.dumps(connect_agents(c, reg, dry_run=args.dry_run), indent=2))
         elif args.cmd == "doctor":
             c.api_token()
             res = doctor(c, fix=args.fix)
