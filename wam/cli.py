@@ -87,6 +87,13 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
         rt.req("PATCH", f"/marketplace/{STORE}", {"name": s.get("name") or STORE_NAME, "enabled": True})
         return
     # Runtipi derives the slug from the name, so create it as "wizardapps" (the slug every urn uses), then rename.
+    # Earlier wam versions created it as "Wizard Apps" (slug wizard-apps); with that copy present the create is a
+    # 409 (same URL), so remove only that known legacy slug. The API refuses deletion when apps exist
+    # or this is the last store; let that failure stop migration rather than bypassing its safeguards.
+    want = c.index.rstrip("/")
+    for x in rt.stores():
+        if x.get("slug") == "wizard-apps" and str(x.get("url") or "").rstrip("/") == want:
+            rt.req("DELETE", "/marketplace/wizard-apps")
     rt.req("POST", "/marketplace/create", {"name": STORE, "url": c.index})
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 

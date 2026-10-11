@@ -2,7 +2,10 @@ ARG NODE_VERSION="jod"
 ARG ALPINE_VERSION="3.21"
 ARG BUN_VERSION="1.3.0"
 
-FROM oven/bun:${BUN_VERSION}-alpine AS bun_base
+# The JS build (bun install, frontend, backend bundle) is the same bytes on every architecture, so it always runs
+# on the build machine. Native arm64 bun hangs in "Resolving dependencies" (three bounded attempts, all stuck).
+# Only the small runner stage (node + argon2 prebuilds + docker-compose for TARGETARCH) is built per target.
+FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS bun_base
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
 
 # ---- BUILDER BASE ----
@@ -48,7 +51,8 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/scripts ./packages/frontend/scripts
 COPY ./packages/frontend/public ./packages/frontend/public
 
-RUN bun install --frozen-lockfile --verbose
+# Bounded independently of the CI job, so a stall fails fast with a readable log.
+RUN timeout 600 bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
 COPY ./packages ./packages

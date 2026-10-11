@@ -36,6 +36,10 @@ YML
 fi
 python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
 command -v git >/dev/null || sudo apt-get install -y git
+# An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
+# the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
+DOCKER=(docker)
+docker info >/dev/null 2>&1 || DOCKER=(sudo docker)
 # Shared, read-only copy of apps.json for app containers (the Wizard shell mounts it).
 mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
 
@@ -63,9 +67,9 @@ else:
 p.write_text("\n".join(lines) + "\n")
 PY
 # Point the existing Wizard store at the index (older installs had a local git store here).
-docker exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then docker pull "$IMAGE"; fi
-(cd "$RUNTIPI_ROOT" && docker compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
+"${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
+if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
@@ -93,7 +97,7 @@ EOF
 # Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
-docker rm -f wizard-store wizard-skin >/dev/null 2>&1 || true
+"${DOCKER[@]}" rm -f wizard-store wizard-skin >/dev/null 2>&1 || true
 rm -f "$RUNTIPI_ROOT/traefik/dynamic/wizard-skin.yml"
 
 loginctl enable-linger "$USER" 2>/dev/null || true
