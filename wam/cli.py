@@ -29,6 +29,7 @@ import hmac
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -226,6 +227,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
+    if alongside_role(rec, app_id) == "service" and (carried := carry_bundle_state(c.runtipi_root, app_id)):
+        print(f"{app_id}: carried the Wizard shell's state (threads, files, approvals) over from {carried}", file=sys.stderr)
     rt.install(urn, form)
     status = rt.wait_status(urn, {"running", "stopped"}) if wait else "installing"
     reg = write_registry(c, rt)
@@ -233,6 +236,20 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE) -> Path | None:
+    """Splitting the pre-split wizard-shell bundle: the new Agent Service starts with the bundle's state (thread
+    dispositions, files, run queue) instead of an empty folder. Copied, never moved, and only into an empty
+    folder, so the bundle can still be started again (rollback) and a re-run changes nothing."""
+    src = runtipi_root / "app-data" / store / alongside.LEGACY_BUNDLE / "data"
+    dst = runtipi_root / "app-data" / store / app_id / "data"
+    if app_id == alongside.LEGACY_BUNDLE or not src.is_dir() or not any(src.iterdir()):
+        return None
+    if dst.is_dir() and any(dst.iterdir()):
+        return None
+    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+    return src
 
 
 def alongside_role(rec: dict, app_id: str) -> str | None:

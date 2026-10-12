@@ -337,6 +337,20 @@ def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
     assert by["environment"]["WIZARD_PORT"] == "18796" and by["environment"]["HERMES_ORIGIN"] == "http://127.0.0.1:8650"
 
 
+def test_split_carries_bundle_state_once_and_keeps_the_bundle(tmp_path):
+    """Upgrading a box from the wizard-shell bundle: the Agent Service starts from a copy of the bundle's state."""
+    bundle = tmp_path / "app-data" / cli.STORE / "wizard-shell" / "data"
+    (bundle / "wizard-os").mkdir(parents=True)
+    (bundle / "wizard-os" / "thread-dispositions.json").write_text('{"s1":"done"}')
+    assert cli.carry_bundle_state(tmp_path, "wizard-agent-service") == bundle
+    dst = tmp_path / "app-data" / cli.STORE / "wizard-agent-service" / "data" / "wizard-os" / "thread-dispositions.json"
+    assert dst.read_text() == '{"s1":"done"}' and (bundle / "wizard-os" / "thread-dispositions.json").is_file()
+    dst.write_text('{"s1":"later"}')
+    assert cli.carry_bundle_state(tmp_path, "wizard-agent-service") is None     # never over existing service state
+    assert dst.read_text() == '{"s1":"later"}'
+    assert cli.carry_bundle_state(tmp_path / "fresh", "wizard-agent-service") is None
+
+
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
     """--share-history mounts the whole Hermes home (session history) and says it exposes credentials; a re-run
     without the flag keeps the owner's choice; --no-share-history takes it back."""
