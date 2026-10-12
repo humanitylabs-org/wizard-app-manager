@@ -90,14 +90,14 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
     ok(!await frame.evaluate(()=>overlay),`${width} overlay Back LIFO callback`);
     await page.locator('#back').click();
     ok(page.url()===base+'/host'&&await page.evaluate(()=>lastBack==='atRoot')&&await frame.evaluate(()=>WizardApp.hosted),`${width} root Back keeps app open`);
-    await frame.evaluate(()=>window.hold=WizardApp.update.hold('Unsent draft'));
-    ok(await page.evaluate(()=>WizAppServices.update.busy()),`${width} unsaved state blocks update`);
-    await frame.evaluate(()=>hold.release());
-    ok(!await page.evaluate(()=>WizAppServices.update.busy()),`${width} save/discard release clears update hold`);
+    ok(await page.evaluate(()=>WizAppServices.update.busy()),`${width} actual unsaved template draft blocks update`);
+    await frame.locator('#habit-name').fill('');
+    ok(!await page.evaluate(()=>WizAppServices.update.busy()),`${width} explicit draft discard clears update hold`);
     // Exercise generated real service save, not a synthetic API response.
     const savedName='Saved local QA record '+width;
     await frame.locator('#habit-name').fill(savedName);await frame.locator('#add').click();
     await frame.locator('#habits').getByText(savedName,{exact:true}).first().waitFor();
+    ok(!await page.evaluate(()=>WizAppServices.update.busy()),`${width} durable save/readback releases template hold`);
     await page.reload();
     const readback=page.frames().find(f=>f.url().startsWith(base+'/app/'));
     await readback.locator('#habits').getByText(savedName,{exact:true}).first().waitFor();
@@ -112,7 +112,8 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
     await page.locator('#habit-name').click();
     await page.goBack({waitUntil:'domcontentloaded'}).catch(()=>{});
     // CloseWatcher/popstate delivery depends on browser; require one Back stay.
-    ok(page.url().startsWith(base+'/app/')&&await page.evaluate(()=>!!WizardApp),`standalone ${light?'light':'dark'} first root Back does not close app`);
+    await page.locator('#wizard-app-back-notice').getByText('Press back again to exit',{exact:true}).waitFor();
+    ok(page.url().startsWith(base+'/app/')&&await page.evaluate(()=>!!WizardApp),`standalone ${light?'light':'dark'} first root Back warns and keeps app open`);
     await ctx.close();
   }
   ok(errors.length===0,'zero browser runtime errors');ok(external.length===0,'zero external requests/production writes');
