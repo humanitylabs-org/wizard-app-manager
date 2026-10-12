@@ -15,6 +15,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--out', type=Path, required=True)
 p.add_argument('--sha', required=True)
+p.add_argument('--tree-sha256', required=True)
 p.add_argument('--core', type=Path, required=True)
 p.add_argument('--node', required=True)
 p.add_argument('--lock', type=Path, default=Path('/Volumes/ThalesMedia/AndroidBuilds/worker.lock'))
@@ -38,10 +39,20 @@ def run(name, cmd, expect=0):
         raise RuntimeError(name + ' failed')
     return r
 
-result = {'host': socket.gethostname(), 'source_sha': a.sha, 'source': str(a.source), 'core': str(a.core), 'lock': str(a.lock), 'commands': commands, 'utc': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+def tree_digest(root):
+    h = hashlib.sha256()
+    files = [x for x in root.rglob('*') if x.is_file() and not any(k in {'.git', '__pycache__', '.pytest_cache'} for k in x.relative_to(root).parts)]
+    for x in sorted(files, key=lambda x: x.relative_to(root).as_posix()):
+        h.update(x.relative_to(root).as_posix().encode() + b'\0' + hashlib.sha256(x.read_bytes()).digest())
+    return h.hexdigest()
+
+
+result = {'host': socket.gethostname(), 'source_sha': a.sha, 'source_tree_sha256': a.tree_sha256, 'source': str(a.source), 'core': str(a.core), 'lock': str(a.lock), 'commands': commands, 'utc': datetime.datetime.now(datetime.timezone.utc).isoformat()}
 try:
     with a.lock.open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if tree_digest(a.source) != a.tree_sha256:
+            raise RuntimeError('Transferred source does not match supplied exact tree hash')
         result['lock_wait_seconds'] = round(time.monotonic()-start, 3)
         run('pytest', [sys.executable, '-m', 'pytest', '-q', 'tests', '--junitxml=' + str(a.out/'pytest.xml')])
         run('node-syntax', [a.node, '--check', 'qa/builder/system-functions-browser.cjs'])
@@ -69,6 +80,9 @@ try:
         duplicate.write_bytes((a.core/'app-client.js').read_bytes())
         run('negative-actual-client-copy', [sys.executable, '-m', 'wam', 'check', str(generated)], expect=1)
         duplicate.unlink()
+        if tree_digest(a.source) != a.tree_sha256:
+            raise RuntimeError('Source changed during verification')
+        result['verified_source_tree_sha256'] = tree_digest(a.source)
         result['ok'] = True
 except Exception as e:
     result['ok'] = False
