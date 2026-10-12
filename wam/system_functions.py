@@ -27,15 +27,22 @@ def _member(name):
 
 
 RULES = [
-    ('capture', r'\b(?:getUserMedia|webkitGetUserMedia|mozGetUserMedia|MediaRecorder|AudioContext|webkitAudioContext)\b', 'Use WizardApp.capture; permission, recording, levels and durable chunks belong to core.'),
+    ('capture', r'''\b(?:getUserMedia|webkitGetUserMedia|mozGetUserMedia|MediaRecorder|AudioContext|webkitAudioContext)\b|\bnavigator\s*''' + _member('permissions') + r'''\s*''' + _member('query') + r'''\s*\([^)]*?\bname\s*:\s*['"](?:microphone|camera)['"]''', 'Use WizardApp.capture; permission, recording, levels and durable chunks belong to core.'),
     ('share', r'\bnavigator\s*' + _member('share'), 'Use WizardApp.share.text/file and await its honest outcome.'),
     ('close-watcher', r'\bCloseWatcher\b', 'Use WizardApp.back; only shared core owns the platform exit guard.'),
-    ('service-worker', r'\bnavigator\s*' + _member('serviceWorker') + r'|\b(?:importScripts|skipWaiting)\s*\(|\bself\s*\.\s*clients\s*\.\s*claim\s*\(', 'Hosted apps do not own service workers or update reload policy.'),
+    ('service-worker', r'\bnavigator\s*' + _member('serviceWorker') + r'''|\b(?:importScripts|skipWaiting)\s*\(|\bself\s*\.\s*clients\s*\.\s*claim\s*\(|(?<![\w.])(?:self\s*\.\s*)?addEventListener\s*\(\s*['"](?:install|activate|fetch)['"]|\bself\s*\.\s*on(?:install|activate|fetch)\s*=''', 'Hosted apps do not own service workers or update reload policy.'),
     ('install-prompt', r'\bbeforeinstallprompt\b|\b(?:deferredPrompt|installPrompt)\s*\.\s*prompt\s*\(', 'Installation UI belongs to Wizard, not a hosted app.'),
     ('theme-storage', r'''\b(?:localStorage|sessionStorage)\s*\.\s*(?:setItem|getItem)\s*\(\s*['"](?:theme|dark(?:Mode|-mode)?|color[-_]?scheme|wos\.skin|skin)['"]''', 'System skin/dark/light state belongs to WizardApp.theme, not app storage.'),
     ('theme-switch', r'''\b(?:toggleDarkMode|toggleTheme|setDarkMode)\s*\(|(?:id|data-action)\s*=\s*['"][^'"]*(?:theme-toggle|dark-mode|dark-toggle)[^'"]*['"]''', 'Remove app-local system theme switches; keep app reading/art controls.'),
     ('root-guard', r'''\b(?:wzGuard|wosGuard|rootGuard|backGuard|__wosNativeBack)\b|Press\s+back\s+again\s+to\s+exit''', 'Use WizardApp.back; root exit/standalone guards live only in shared core.'),
 ]
+
+
+def _bounce_in(body):
+    # Domain route state (including same-URL state) and constructed route URLs
+    # are legal. Empty/primitive same-document pushState in popstate is a
+    # sentinel, as is moving forward; marker-named guards have a separate rule.
+    return bool(re.search(r'''history\s*\.\s*forward\s*\(|history\s*\.\s*pushState\s*\(\s*(?:\{\s*\}|null|true|false|[0-9]+)\s*,\s*['"][^'"]*['"]\s*(?:\)|,\s*(?:window\s*\.\s*)?location\s*\.\s*(?:href|pathname)\s*\))''', body))
 
 
 def _popstate_bounce(text):
@@ -61,7 +68,12 @@ def _popstate_bounce(text):
         # A domain redirect to a different route from a popstate callback is
         # legal. Only rearming the current entry / moving forward is an exit
         # sentinel here; route callbacks are not a blanket ban on history.
-        if re.search(r'''history\s*\.\s*forward\s*\(|history\s*\.\s*pushState\s*\([^;]*?location\s*\.\s*(?:href|pathname)|history\s*\.\s*pushState\s*\([^,;]*,\s*['"][^'"]*['"]\s*\)''', body):
+        if _bounce_in(body):
+            return True
+    # Expression-bodied assignments have no brace to balance. Stop at a
+    # statement boundary so a later route function is never swept in.
+    for expression in re.finditer(r'''onpopstate\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z_$][\w$]*)\s*=>\s*(?!\{)([^;\n]+)''', text):
+        if _bounce_in(expression.group(1)):
             return True
     return False
 
@@ -73,12 +85,12 @@ def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dic
     scanned = 0
     for p in sorted(root.rglob('*')):
         rel = p.relative_to(root)
-        if any(part in SKIP for part in rel.parts) or p.suffix.lower() not in EXTENSIONS:
+        if any(part in SKIP for part in rel.parts):
             continue
         if p.is_symlink():
             rows.append({'rule': 'system functions: confined source', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': symlink cannot hide platform code'})
             continue
-        if not p.is_file():
+        if p.suffix.lower() not in EXTENSIONS or not p.is_file():
             continue
         scanned += 1
         digest = approved_assets.get(str(p.resolve()))

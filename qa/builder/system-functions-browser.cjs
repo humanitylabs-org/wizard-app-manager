@@ -95,9 +95,13 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
     await frame.evaluate(()=>hold.release());
     ok(!await page.evaluate(()=>WizAppServices.update.busy()),`${width} save/discard release clears update hold`);
     // Exercise generated real service save, not a synthetic API response.
-    await frame.locator('#habit-name').fill('Saved local QA record');await frame.locator('#add').click();
-    await frame.locator('#habits').getByText('Saved local QA record').first().waitFor();
-    ok(true,`${width} generated task API durably saves local record`);
+    const savedName='Saved local QA record '+width;
+    await frame.locator('#habit-name').fill(savedName);await frame.locator('#add').click();
+    await frame.locator('#habits').getByText(savedName,{exact:true}).first().waitFor();
+    await page.reload();
+    const readback=page.frames().find(f=>f.url().startsWith(base+'/app/'));
+    await readback.locator('#habits').getByText(savedName,{exact:true}).first().waitFor();
+    ok(true,`${width} generated task API reads back saved record after document reload`);
     await ctx.close();
   }
   for(const light of [false,true]){

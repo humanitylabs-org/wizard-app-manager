@@ -50,12 +50,20 @@ def tree_digest(root):
 result = {'host': socket.gethostname(), 'source_sha': a.sha, 'source_tree_sha256': a.tree_sha256, 'source': str(a.source), 'core': str(a.core), 'lock': str(a.lock), 'commands': commands, 'utc': datetime.datetime.now(datetime.timezone.utc).isoformat()}
 try:
     with a.lock.open('a+') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()-start > 2400:
+                    raise TimeoutError('Shared worker lock unavailable after 2400 seconds; candidate preserved')
+                time.sleep(2)
         if tree_digest(a.source) != a.tree_sha256:
             raise RuntimeError('Transferred source does not match supplied exact tree hash')
         result['lock_wait_seconds'] = round(time.monotonic()-start, 3)
         run('pytest', [sys.executable, '-m', 'pytest', '-q', 'tests', '--junitxml=' + str(a.out/'pytest.xml')])
         run('node-syntax', [a.node, '--check', 'qa/builder/system-functions-browser.cjs'])
+        run('appearance-contract', [a.node, 'qa/builder/theme-client.cjs', str(a.core/'app-client.js')])
         run('actual-core-audit', [sys.executable, '-c',
             "import hashlib,json; from pathlib import Path; from wam.system_functions import check; p=Path(" + repr(str(a.core)) + "); trust={str(x.resolve()):hashlib.sha256(x.read_bytes()).hexdigest() for x in p.glob('app-*.js')}; rows=check(p,trust); print(json.dumps(rows)); assert all(r['ok'] for r in rows)"])
         new = run('scaffold', [sys.executable, '-m', 'wam', 'new', 'system-gate-demo', '--dev-root', str(a.out/'dev')])
