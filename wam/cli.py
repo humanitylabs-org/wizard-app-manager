@@ -463,7 +463,9 @@ def alongside_side(rt: Runtipi, apps: dict[str, str], saved: bool) -> bool:
         return True
     if up("bundle"):
         return False
-    return saved
+    # Neither runs (a reboot, an update): the saved choice; a box split in fresh mode has none, but its shell is
+    # installed, which is only allowed after the split.
+    return saved or any(r == "shell" for r in apps.values())
 
 
 def alongside_role(rec: dict, app_id: str) -> str | None:

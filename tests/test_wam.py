@@ -574,6 +574,8 @@ def test_alongside_side_follows_what_runs_then_the_saved_choice():
     assert cli.alongside_side(rt, apps, saved=False) is True
     rt.state.update({"wizard-agent-service": "stopped"})                                 # split, service restarting
     assert cli.alongside_side(rt, apps, saved=True) is True
+    assert cli.alongside_side(rt, apps, saved=False) is True                             # split in fresh mode, no flag
+    assert cli.alongside_side(rt, {"wizard-shell": "bundle", "wizard-agent-service": "service"}, saved=False) is False
     assert cli.alongside_side(rt, {"wizard-shell": "bundle"}, saved=True) is False       # never split
 
 
