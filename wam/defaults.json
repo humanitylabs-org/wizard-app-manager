@@ -3,16 +3,16 @@
   "slots": {
     "shell": {
       "name": "Shell (Wizard UX)",
-      "app": "wizard-shell",
+      "app": "wizard-ux",
       "required": true,
-      "note": "Wizard UX. Today one app with the Agent Service (wizard-agent-service#3); being split (#33). Public and in the index.",
-      "repo": "humanitylabs-org/wizard-agent-service"
+      "note": "Unmerged modular-shell candidate; independent container. DECISION36.",
+      "repo": "humanitylabs-org/wizard-ux"
     },
     "agent-service": {
       "name": "Agent Service",
-      "app": "wizard-shell",
+      "app": "wizard-agent-service",
       "required": true,
-      "note": "Today inside wizard-shell; becomes its own app after the split (#33).",
+      "note": "Unmerged modular-shell candidate; independent container. DECISION36.",
       "repo": "humanitylabs-org/wizard-agent-service"
     },
     "agent": {
