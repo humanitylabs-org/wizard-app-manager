@@ -162,6 +162,9 @@ def port_free(port: int, host: str = "127.0.0.1") -> bool:
 
 
 DEFAULT_SHELL_PORT = 8796   # the bridge's runtipi/config.json port
+# The host-only lifecycle bridge (python3 -m wam.lifecycle serve; docs/lifecycle-bridge.md). The alongside shell runs
+# on the host network, so it reaches the bridge on the host's loopback.
+LIFECYCLE_ORIGIN = "http://127.0.0.1:7791"
 
 
 def is_bridge_app(app_id: str) -> bool:
@@ -243,7 +246,9 @@ services:
       WIZARD_PORT: "{port}"
       HERMES_ORIGIN: {origin}{state_env}
       WIZARD_APPS_MCP_ADDRESS: url
-      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
+      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
+      WIZARD_APP_MANAGER_URL: {manager}
+      WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}{volumes}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{port}/wizard/health >/dev/null || exit 1"]
 """
@@ -279,7 +284,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> st
         except OSError:
             volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
     return SHELL_OVERRIDE.format(
-        app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
+        app=app_id, origin=a["origin"], port=int(st["shell"]["port"]), manager=LIFECYCLE_ORIGIN,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
                 "# read-only, so the shell can read every file there, credentials included."
                 if share else "The shell sees only the agent's images folder, not the Hermes home\n"
@@ -299,9 +304,13 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     d.mkdir(parents=True, exist_ok=True)
     (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home))
     envp = d / "app.env"
+    from .lifecycle import token_file   # late: lifecycle imports this module
+    # The same dedicated token the host lifecycle bridge (wizard-app-lifecycle.service) checks; server-side only.
+    manager_token = token_file(wizard_home / "lifecycle-token")
     fd = os.open(envp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(f"WIZARD_MCP_TOKEN={gateway_token(wizard_home)}\n")
+        f.write(f"WIZARD_APP_MANAGER_TOKEN={manager_token}\n")
     os.chmod(envp, 0o600)
     return d / "docker-compose.yml"
 

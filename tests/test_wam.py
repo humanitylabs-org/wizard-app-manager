@@ -291,6 +291,11 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
     envp = p.parent / "app.env"
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
+    # The shell reaches the host lifecycle bridge with the bridge's own dedicated token, server-side only.
+    assert "WIZARD_APP_MANAGER_URL: http://127.0.0.1:7791" in text
+    assert "WIZARD_APP_MANAGER_TOKEN: ${WIZARD_APP_MANAGER_TOKEN}" in text
+    lifecycle_token = (wh / "lifecycle-token").read_text().strip()
+    assert f"WIZARD_APP_MANAGER_TOKEN={lifecycle_token}\n" in envp.read_text() and lifecycle_token not in text
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
 

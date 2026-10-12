@@ -94,6 +94,23 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
+# The host-only lifecycle bridge the Agent Service calls for app install/start/stop/update/uninstall
+# (docs/lifecycle-bridge.md). Loopback only; its dedicated token is ~/.wizard-os/lifecycle-token (0600).
+cat > "$HOME/.config/systemd/user/wizard-app-lifecycle.service" <<EOF
+[Unit]
+Description=wam lifecycle bridge (127.0.0.1:7791; needs ~/.wizard-os/lifecycle-token)
+After=network-online.target
+
+[Service]
+Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+WorkingDirectory=$HERE
+ExecStart=/usr/bin/env python3 -m wam.lifecycle serve --bind 127.0.0.1 --port 7791
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
 # Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
@@ -104,6 +121,8 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
+systemctl --user enable --now wizard-app-lifecycle.service
+systemctl --user restart wizard-app-lifecycle.service
 
 for _ in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && break; sleep 2; done
 "$HOME/.local/bin/wam" doctor --fix || true
