@@ -289,10 +289,34 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    # attachments: the host Hermes is handed the host path of the user-files folder, not the container's /media
+    env = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert env["WIZARD_MEDIA_AGENT_ROOT"] == str(tmp_path / "rt" / "media")
     envp = p.parent / "app.env"
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
+
+
+def test_alongside_media_agent_root_follows_runtipi_root_folder_host(tmp_path):
+    """Runtipi's ROOT_FOLDER_HOST decides where /media lives on the host; unsafe paths are refused, not quoted."""
+    from wam import alongside
+    rt = tmp_path / "rt"; rt.mkdir()
+    assert alongside.host_media_root(rt) == rt / "media"
+    (rt / ".env").write_text("ROOT_FOLDER_HOST=/srv/runtipi\n")
+    assert alongside.host_media_root(rt) == Path("/srv/runtipi/media")
+    st = {"agent": {"hermes_home": str(tmp_path / "h"), "origin": "http://127.0.0.1:8642", "uid": 1000, "gid": 1000},
+          "shell": {"port": 18796, "share_history": True}}
+    text = alongside.shell_override(st, "wizard-shell", tmp_path / "wos", Path("/srv/runtipi/media"))
+    env = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert env["WIZARD_MEDIA_AGENT_ROOT"] == "/srv/runtipi/media"
+    assert "WIZARD_MEDIA_AGENT_ROOT" not in alongside.shell_override(st, "wizard-shell", tmp_path / "wos")
+    try:
+        alongside.shell_override(st, "wizard-shell", tmp_path / "wos", Path("/srv/run tipi/media"))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("an unsafe media path must be refused")
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
