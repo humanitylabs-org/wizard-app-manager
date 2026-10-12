@@ -103,6 +103,8 @@ class Completion:
                         event = json.loads(b"\n".join(data))
                     except ValueError:
                         raise BridgeError(502, "invalid_completion_event") from None
+                    if not isinstance(event, dict):
+                        raise BridgeError(502, "invalid_completion_event")
                     if event.get("appUrn") == self.urn:
                         if event.get("event") == self.action + "_success":
                             return True
@@ -132,20 +134,30 @@ class Bridge:
         self.operations = self.cfg.home / "lifecycle-operations.json"
 
     @contextlib.contextmanager
-    def serialized(self):
-        with self.lock, (self.cfg.home / "lifecycle.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+    def serialized(self, *, blocking=True):
+        if not self.lock.acquire(blocking=blocking):
+            raise BridgeError(409, "bridge_busy")
+        try:
+            with (self.cfg.home / "lifecycle.lock").open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                except BlockingIOError:
+                    raise BridgeError(409, "bridge_busy") from None
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        finally:
+            self.lock.release()
 
     def clean(self, value: Any) -> Any:
-        value = registry.sanitize(value)
+        return self._redact(registry.sanitize(value))
+
+    def _redact(self, value: Any) -> Any:
         if isinstance(value, dict):
-            return {k: self.clean(v) for k, v in value.items()}
+            return {k: self._redact(v) for k, v in value.items()}
         if isinstance(value, list):
-            return [self.clean(v) for v in value]
+            return [self._redact(v) for v in value]
         if isinstance(value, str):
             for secret in (self.token, self.rt.secret):
                 if secret and secret in value:
@@ -173,45 +185,84 @@ class Bridge:
         return self.clean(reg), rows
 
     def read(self, path: str, query: str = ""):
-        with self.serialized():
-            if path in {"/api/apps", "/api/apps/installed", "/api/slots"}:
-                reg, rows = self.refresh()
-                if path == "/api/apps":
-                    return reg
-                if path == "/api/slots":
-                    return {"spots": slots.table(reg)}
-                by_urn = {a["urn"]: a for a in reg["apps"]}
-                installed = []
-                for row in rows:
-                    urn = (row.get("info") or {}).get("urn")
-                    if urn not in by_urn:
-                        continue
-                    installed.append(self._detail(row, by_urn[urn]))
-                return {"installed": installed, "registry": reg}
-            match = re.fullmatch(r"/api/internal/apps/([a-z0-9-]+)/view", path)
-            if match:
-                self.refresh()
-                target = registry._json_file(self.cfg.home / "view-upstreams.json").get(match[1])
-                if not target:
-                    raise BridgeError(404, "view_not_found")
-                return {"upstream": target, "path": f"/apps/{match[1]}/"}
-            if path == "/api/system/load":
-                return self.clean(self.rt.req("GET", "/system/load"))
-            if path in {"/api/marketplace/all", "/api/marketplace/enabled"}:
-                return self.clean(self.rt.req("GET", path[4:]))
-            if path == "/api/marketplace/apps/search":
-                params = parse_qsl(query, keep_blank_values=True)
-                if any(k not in {"search", "pageSize", "cursor", "category", "storeId"} for k, _ in params):
-                    raise BridgeError(400, "invalid_query")
-                params = [(k, v) for k, v in params if k != "storeId"] + [("storeId", cli.STORE)]
-                return self.clean(self.rt.req("GET", path[4:] + "?" + urlencode(params)))
-            match = re.fullmatch(r"/api/apps/([^/]+)", path)
-            if match:
-                urn = urn_value(match[1])
-                reg, _ = self.refresh()
-                entry = next((a for a in reg["apps"] if a["urn"] == urn), None)
-                return self._detail(self.rt.app(urn), entry)
+        if path == "/api/system/load":
+            return self.clean(self.rt.req("GET", "/system/load"))
+        if path in {"/api/marketplace/all", "/api/marketplace/enabled"}:
+            return self.clean(self.rt.req("GET", path[4:]))
+        if path == "/api/marketplace/apps/search":
+            params = parse_qsl(query, keep_blank_values=True)
+            if any(k not in {"search", "pageSize", "cursor", "category", "storeId"} for k, _ in params):
+                raise BridgeError(400, "invalid_query")
+            params = [(k, v) for k, v in params if k != "storeId"] + [("storeId", cli.STORE)]
+            return self.clean(self.rt.req("GET", path[4:] + "?" + urlencode(params)))
+        try:
+            with self.serialized(blocking=False):
+                return self._read_projection(path)
+        except BridgeError as e:
+            if e.reason != "bridge_busy":
+                raise
+            return self._snapshot(path)
+
+    def _read_projection(self, path: str):
+        if path in {"/api/apps", "/api/apps/installed", "/api/slots"}:
+            reg, rows = self.refresh()
+            if path == "/api/apps":
+                return reg
+            if path == "/api/slots":
+                return {"spots": slots.table(reg)}
+            by_urn = {a["urn"]: a for a in reg["apps"]}
+            installed = []
+            for row in rows:
+                urn = (row.get("info") or {}).get("urn")
+                if urn not in by_urn:
+                    continue
+                installed.append(self._detail(row, by_urn[urn]))
+            return {"installed": installed, "registry": reg}
+        match = re.fullmatch(r"/api/internal/apps/([a-z0-9-]+)/view", path)
+        if match:
+            self.refresh()
+            target = registry._json_file(self.cfg.home / "view-upstreams.json").get(match[1])
+            if not target:
+                raise BridgeError(404, "view_not_found")
+            return {"upstream": target, "path": f"/apps/{match[1]}/"}
+        match = re.fullmatch(r"/api/apps/([^/]+)", path)
+        if match:
+            urn = urn_value(match[1])
+            reg, _ = self.refresh()
+            entry = next((a for a in reg["apps"] if a["urn"] == urn), None)
+            return self._detail(self.rt.app(urn), entry)
+        raise BridgeError(404, "not_found")
+
+
+    def _snapshot(self, path: str):
+        if path not in {"/api/apps", "/api/apps/installed", "/api/slots"} and not re.fullmatch(
+                r"/api/apps/[^/]+|/api/internal/apps/[a-z0-9-]+/view", path):
             raise BridgeError(404, "not_found")
+        reg = registry._json_file(self.cfg.home / "apps.json")
+        if not isinstance(reg, dict) or not isinstance(reg.get("apps"), list):
+            raise BridgeError(503, "registry_not_ready")
+        reg = self.clean(reg)
+        if path == "/api/apps":
+            return {**reg, "snapshot": True}
+        if path == "/api/slots":
+            return {"spots": slots.table(reg), "snapshot": True}
+        match = re.fullmatch(r"/api/internal/apps/([a-z0-9-]+)/view", path)
+        if match:
+            target = registry._json_file(self.cfg.home / "view-upstreams.json").get(match[1])
+            if not target:
+                raise BridgeError(404, "view_not_found")
+            return {"upstream": target, "path": f"/apps/{match[1]}/", "snapshot": True}
+        def detail(app):
+            return {"app": {"status": app["status"]},
+                    "info": {"id": app["id"], "urn": app["urn"], "name": app["name"]},
+                    "metadata": {}, "wizard": app}
+        if path == "/api/apps/installed":
+            return {"installed": [detail(a) for a in reg["apps"]], "registry": reg, "snapshot": True}
+        urn = urn_value(path.removeprefix("/api/apps/"))
+        app = next((a for a in reg["apps"] if a["urn"] == urn), None)
+        if not app:
+            raise BridgeError(503, "app_busy")
+        return {**detail(app), "snapshot": True}
 
     def _detail(self, row: dict, entry: dict | None):
         app = row.get("app")
@@ -277,7 +328,8 @@ class Bridge:
                 raise BridgeError(400, "invalid_form")
             return {key: body.get(key, action == "update")}
         app_id = urn.split(":")[0]
-        cli.ensure_store(self.cfg, self.rt)
+        if not any(s.get("slug") == cli.STORE and s.get("enabled") for s in self.rt.stores()):
+            raise BridgeError(503, "store_unavailable")
         info = self.rt.app(urn).get("info") or {}
         if not info:
             raise BridgeError(404, "app_not_found")
@@ -288,7 +340,9 @@ class Bridge:
         external_apps = {v.get("app") for k, v in slots.load_defaults().items() if k in external}
         if set(uses) - have - external_apps:
             raise BridgeError(409, "dependencies_required")
-        allowed = {f.get("env_variable") for f in info.get("form_fields") or []}
+        allowed = {f.get("env_variable") for f in info.get("form_fields") or []} - {
+            "port", "exposed", "exposedLocal", "openPort", "domain", "enableAuth", "skipEnv", "skipPull",
+            "skipRun", "forcePull", "localSubdomain", "isVisibleOnGuestDashboard", "maxBackups"}
         if set(body) - allowed:
             raise BridgeError(400, "invalid_form")
         if noop:
@@ -335,16 +389,17 @@ class Bridge:
         return next(((r.get("app") or {}).get("status", "unknown") for r in rows
                      if (r.get("info") or {}).get("urn") == urn), "missing")
 
-    def _verify(self, urn: str, action: str) -> str:
+    def _verify(self, urn: str, action: str, *, failure=False) -> str:
+        want = {"missing", "running", "stopped"} if failure else TERMINAL[action]
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             status = self._status(urn)
-            if status in TERMINAL[action]:
+            if status in want:
                 return status
             time.sleep(self.poll)
         raise BridgeError(504, "terminal_status_unconfirmed")
 
-    def _execute(self, urn: str, action: str, body: dict) -> dict:
+    def _execute(self, urn: str, action: str, body: dict, on_submit) -> dict:
         reg, rows = self.refresh()
         status = self._status(urn)
         if status not in {"missing", "running", "stopped"}:
@@ -361,11 +416,13 @@ class Bridge:
         if noop:
             return {"success": True, "noop": True, "status": status}
         with self.completion(self.rt, urn, action, self.timeout) as completion:
+            on_submit()
             result = self.rt.req(ACTIONS[action], f"/app-lifecycle/{urn}/{action}", form, timeout=120)
             request_id = result.get("requestId")
             if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", request_id):
                 raise BridgeError(502, "untrackable_operation")
             if not completion.wait():
+                self._verify(urn, action, failure=True)
                 raise BridgeError(422, "lifecycle_failed")
             status = self._verify(urn, action)
         return {"success": True, "noop": False, "status": status, "requestId": request_id}
@@ -397,22 +454,30 @@ class Bridge:
                     journal[key] = {"urn": urn, "action": action, "fingerprint": fingerprint,
                                     "state": "reserved", "created_at": int(time.time())}
                     self._save(journal)  # durable reservation BEFORE any upstream call
+                    submitted = False
+
+                    def on_submit():
+                        nonlocal submitted
+                        # A durable phase marker distinguishes preflight from possible upstream effects.
+                        journal[key]["phase"] = "submitted"
+                        self._save(journal)
+                        submitted = True
+
                     try:
-                        result = self._execute(urn, action, body)
+                        result = self._execute(urn, action, body, on_submit)
                         code = 200
                     except BridgeError as e:
                         code, result = e.code, {"success": False, "error": e.reason}
-                    except (RuntipiError, OSError, ValueError, SystemExit):
+                    except (Exception, SystemExit):
                         code, result = 502, {"success": False, "error": "upstream_unavailable"}
-                    uncertain = result.get("error") in {"upstream_unavailable", "completion_unconfirmed",
-                        "untrackable_operation", "terminal_status_unconfirmed", "invalid_completion_event"}
+                    uncertain = submitted and result.get("error") not in {None, "lifecycle_failed"}
                     journal[key].update(state="uncertain" if uncertain else "done", code=code, result=result)
                     self._save(journal)
             finally:
                 # Refresh for success, failure, conflicting retries and duplicate deliveries alike.
                 try:
                     reg, _ = self.refresh()
-                except (RuntipiError, OSError, ValueError):
+                except Exception:
                     raise BridgeError(502, "projection_refresh_failed") from None
             return code, {**result, "urn": urn, "action": action, "replayed": replay, "registry": reg}
 
@@ -478,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_data(code, json.dumps(bridge.clean(result)).encode())
         except BridgeError as e:
             self.send_data(e.code, json.dumps({"success": False, "error": e.reason}).encode())
-        except (RuntipiError, OSError, ValueError, urllib.error.HTTPError):
+        except Exception:
             self.send_data(502, b'{"success":false,"error":"upstream_unavailable"}')
 
     do_GET = do_POST = do_PATCH = do_DELETE = dispatch

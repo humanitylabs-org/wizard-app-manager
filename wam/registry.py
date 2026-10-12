@@ -28,6 +28,9 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, dict):
         out = {k: sanitize(v) for k, v in value.items()
                if isinstance(k, str) and not k.startswith("_") and not SENSITIVE.search(k)}
+        if "schema" in value and "apps" in value and isinstance(value.get("slots"), dict):
+            # Slot identifiers are a namespace, not metadata field names (password-manager is legitimate).
+            out["slots"] = {k: sanitize(v) for k, v in value["slots"].items() if ID.fullmatch(k)}
         if value.get("type") in {"password", "random"} or "env_variable" in value:
             out.pop("default", None)
             out.pop("value", None)
@@ -89,6 +92,50 @@ def service_app_host(value: str) -> str:
     return value
 
 
+def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, runtipi_root: Path) -> dict | None:
+    meta = app_meta(runtipi_root, store, name)
+    if not meta:
+        return None
+    w, cfg = meta["w"], meta["cfg"]
+    port = app.get("port") or cfg.get("port")
+    port = int(port) if str(port).isdigit() and 1 <= int(port) <= 65535 else None
+    mcp, view = w.get("mcp"), w.get("view")
+    mcp = mcp if isinstance(mcp, dict) else None
+    view = view if isinstance(view, dict) else None
+    skill = meta["dir"] / "SKILL.md"
+    if skill.is_symlink():
+        raise ValueError("skill source symlink")
+    for key in ("provides", "uses", "needs"):
+        vals = w.get(key) or []
+        if not isinstance(vals, list) or any(not isinstance(v, str) or not ID.fullmatch(v) for v in vals):
+            raise ValueError("invalid capability metadata")
+    entry = {
+        "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
+        "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
+        "repo": meta["repo"], "commit": meta["commit"],
+        "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
+        "summary": w.get("summary", ""),
+        "mcp": None if not mcp or not port else {
+            "url": f"http://{host}:{port}{local_path(mcp.get('path'), '/mcp')}",
+            "internal": f"http://{name}:{mcp.get('port')}{local_path(mcp.get('path'), '/mcp')}",
+            "transport": mcp.get("transport", "streamable-http"),
+        },
+        "skill": f"skills/{name}/SKILL.md" if skill.is_file() else None,
+        "view": None if not view or not port else {**sanitize(view), "url": f"/apps/{name}/"},
+        "health": f"http://{host}:{port}{local_path(w['health'])}" if w.get("health") and port else None,
+    }
+    # Preserve existing metadata as data; no proposed API/backend/replacement interpretation.
+    for key in ("api", "source", "backend", "replaces_view", "system"):
+        if key in w or key in info or key in cfg:
+            entry[key] = sanitize(w.get(key, info.get(key, cfg.get(key))))
+    entry = sanitize(entry)
+    entry["_skill_src"] = str(skill) if skill.is_file() else None
+    if view and port:
+        entry["_view_upstream"] = f"http://{host}:{port}{local_path(view.get('path'))}"
+    json.dumps(entry)  # Reject non-JSON YAML scalars before they can poison the whole projection.
+    return entry
+
+
 def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
     host = service_app_host(host)
     apps = []
@@ -98,40 +145,15 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         name, _, st = urn.partition(":")
         if st != store or not ID.fullmatch(name):
             continue
-        meta = app_meta(runtipi_root, store, name)
-        if not meta:
-            continue
-        w, cfg = meta["w"], meta["cfg"]
-        port = app.get("port") or cfg.get("port")
-        port = int(port) if str(port).isdigit() and 1 <= int(port) <= 65535 else None
-        mcp, view = w.get("mcp"), w.get("view")
-        mcp = mcp if isinstance(mcp, dict) else None
-        view = view if isinstance(view, dict) else None
-        skill = meta["dir"] / "SKILL.md"
-        entry = {
-            "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
-            "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
-            "repo": meta["repo"], "commit": meta["commit"],
-            "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
-            "summary": w.get("summary", ""),
-            "mcp": None if not mcp or not port else {
-                "url": f"http://{host}:{port}{local_path(mcp.get('path'), '/mcp')}",
-                "internal": f"http://{name}:{mcp.get('port')}{local_path(mcp.get('path'), '/mcp')}",
-                "transport": mcp.get("transport", "streamable-http"),
-            },
-            "skill": f"skills/{name}/SKILL.md" if skill.is_file() else None,
-            "view": None if not view or not port else {**sanitize(view), "url": f"/apps/{name}/"},
-            "health": f"http://{host}:{port}{local_path(w['health'])}" if w.get("health") and port else None,
-        }
-        # Preserve existing metadata as data; no proposed API/backend/replacement interpretation.
-        for key in ("api", "source", "backend", "replaces_view", "system"):
-            if key in w or key in info or key in cfg:
-                entry[key] = sanitize(w.get(key, info.get(key, cfg.get(key))))
-        entry = sanitize(entry)
-        entry["_skill_src"] = str(skill) if skill.is_file() else None
-        if view and port:
-            entry["_view_upstream"] = f"http://{host}:{port}{local_path(view.get('path'))}"
-        apps.append(entry)
+        try:
+            entry = _entry(app, info, urn, name, store, host, runtipi_root)
+        except (ValueError, TypeError, AttributeError, OSError, yaml.YAMLError):
+            # One malformed app stays visible/uninstallable, but contributes no unsafe routes/skills/slots.
+            entry = {"id": name, "name": name, "urn": urn, "status": app.get("status"),
+                     "metadata_error": "metadata_invalid", "provides": [], "uses": [], "needs": [],
+                     "mcp": None, "view": None, "health": None, "skill": None, "_skill_src": None}
+        if entry:
+            apps.append(entry)
     apps.sort(key=lambda a: a["id"])
     slots: dict[str, list[str]] = {}
     for a in apps:
@@ -139,6 +161,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             slots.setdefault(s, []).append(a["id"])
     return {"schema": SCHEMA, "updated_at": int(time.time()), "store": store, "apps": apps,
             "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
+
 
 
 def public_projection(reg: dict) -> dict:
@@ -192,24 +215,33 @@ def _skills(reg: dict, root: Path, old: dict) -> None:
             raise ValueError("invalid app id")
         p = sk / app_id / "SKILL.md"
         if p.parent.is_symlink() or p.is_symlink():
-            raise ValueError("skill symlinks are not allowed")
+            a["skill"] = None
+            continue  # Existing external/system links are never app-owned.
         current = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
-        if current and owned.get(app_id) != current:
+        accepted = owned.get(app_id)
+        accepted = accepted if isinstance(accepted, list) else [accepted]
+        if current and current not in accepted:
             # A system/user-owned collision is not ours to overwrite.
+            a["skill"] = None
             continue
         if src:
             source = Path(src)
             if source.is_symlink():
                 raise ValueError("app skill source symlinks are not allowed")
             data = source.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            # Write-ahead ownership retains both old/new digests across a crash between individual files.
+            owned[app_id] = [d for d in {current, digest} if d]
+            atomic_write(manifest, (json.dumps(owned) + "\n").encode())
             atomic_write(p, data)
-            new[app_id] = hashlib.sha256(data).hexdigest()
+            owned[app_id] = digest
+            new[app_id] = digest
     for app_id, digest in owned.items():
         if not ID.fullmatch(app_id) or app_id in new:
             continue
         p = sk / app_id / "SKILL.md"
         if (not p.parent.is_symlink() and not p.is_symlink() and p.is_file()
-                and hashlib.sha256(p.read_bytes()).hexdigest() == digest):
+                and hashlib.sha256(p.read_bytes()).hexdigest() in (digest if isinstance(digest, list) else [digest])):
             p.unlink()
             if not any(p.parent.iterdir()):
                 p.parent.rmdir()

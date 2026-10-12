@@ -294,12 +294,15 @@ def test_lookup_failure_is_not_missing_and_refresh_failure_is_explicit(bridge, m
     b = bridge
     op(b, "install")
     before = (b.cfg.home / "apps.json").read_bytes()
+    original = b.rt.installed
     monkeypatch.setattr(b.rt, "installed", lambda: (_ for _ in ()).throw(OSError(SECRET + TOKEN)))
     with pytest.raises(OSError):
         b._status(URN)
     with pytest.raises(BridgeError, match="projection_refresh_failed"):
         op(b, "stop", "fixture-failure-key-0001")
     assert (b.cfg.home / "apps.json").read_bytes() == before
+    monkeypatch.setattr(b.rt, "installed", original)
+    assert op(b, "stop", "fixture-recovered-key-0001")[1]["status"] == "stopped"
 
 
 def test_token_permissions_and_persistence(tmp_path):
@@ -388,6 +391,71 @@ def test_skill_source_symlink_cannot_copy_host_secret(bridge):
     private.write_text(SECRET)
     source.unlink()
     source.symlink_to(private)
-    with pytest.raises(ValueError, match="source symlinks"):
-        b.refresh()
+    reg, _ = b.refresh()
+    assert reg["apps"][0]["metadata_error"] == "metadata_invalid"
+    assert reg["apps"][0]["skill"] is None
     assert not (b.cfg.home / "skills/hello-wizard/SKILL.md").exists()
+
+
+@pytest.mark.parametrize("text", [
+    "---\nview: {path: 'http://bad/'}\n---\n",
+    "---\nprovides: [{bad: value}]\n---\n",
+    "---\nview: [broken\n---\n",
+    "---\nsource: 2026-10-12\n---\n",
+])
+def test_bad_metadata_remains_visible_and_uninstallable(bridge, text):
+    b = bridge
+    op(b, "install")
+    (b.cfg.runtipi_root / "repos/wizardapps/apps/hello-wizard/wizard.md").write_text(text)
+    reg, _ = b.refresh()
+    assert reg["apps"][0]["metadata_error"] == "metadata_invalid"
+    assert reg["apps"][0]["view"] is None
+    assert op(b, "uninstall", "fixture-quarantine-key-0001")[0] == 200
+
+
+def test_skill_write_failure_retains_generated_ownership(bridge, monkeypatch):
+    b = bridge
+    op(b, "install")
+    source = b.cfg.runtipi_root / "repos/wizardapps/apps/hello-wizard/SKILL.md"
+    source.write_text("generated-v2")
+    original = registry.atomic_write
+    def interrupted(path, data, mode=0o644):
+        if path == b.cfg.home / "apps.json":
+            raise OSError("fixture-fault-after-skill-write")
+        return original(path, data, mode)
+    monkeypatch.setattr(registry, "atomic_write", interrupted)
+    with pytest.raises(OSError):
+        b.refresh()
+    assert (b.cfg.home / "skills/hello-wizard/SKILL.md").read_text() == "generated-v2"
+    monkeypatch.setattr(registry, "atomic_write", original)
+    source.write_text("generated-v3")
+    b.refresh()
+    assert (b.cfg.home / "skills/hello-wizard/SKILL.md").read_text() == "generated-v3"
+    op(b, "uninstall", "fixture-ownership-key-0001")
+    assert not (b.cfg.home / "skills/hello-wizard/SKILL.md").exists()
+
+
+def test_reads_do_not_wait_for_operation_lock(bridge):
+    b = bridge
+    op(b, "install")
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        with b.serialized():
+            rows = worker.submit(b.read, "/api/apps/installed").result(timeout=2)
+            assert rows["snapshot"] is True and rows["installed"][0]["wizard"]["id"] == "hello-wizard"
+            assert_clean(rows)
+            load = worker.submit(b.read, "/api/system/load").result(timeout=2)
+            assert load["cpu"] == 0.1
+    # Same contract for another Bridge/process scope sharing the filesystem lock.
+    another = Bridge(b.cfg, TOKEN, rt=b.rt)
+    with b.serialized():
+        assert another.read("/api/apps/installed")["snapshot"] is True
+
+
+def test_secret_named_slot_is_not_dropped(bridge):
+    b = bridge
+    wizard = b.cfg.runtipi_root / "repos/wizardapps/apps/hello-wizard/wizard.md"
+    meta = registry._front(wizard.read_text())
+    meta["provides"] = ["password-manager", "secret-store", "api-key-vault"]
+    wizard.write_text("---\n" + yaml.safe_dump(meta) + "---\n")
+    _, result = op(b, "install")
+    assert set(result["registry"]["slots"]) == {"password-manager", "secret-store", "api-key-vault"}
