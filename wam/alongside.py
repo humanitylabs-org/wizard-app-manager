@@ -161,7 +161,12 @@ def port_free(port: int, host: str = "127.0.0.1") -> bool:
         s.close()
 
 
-DEFAULT_SHELL_PORT = 8796   # wizard-shell's runtipi/config.json port
+DEFAULT_SHELL_PORT = 8796   # the bridge's runtipi/config.json port
+
+
+def is_bridge_app(app_id: str) -> bool:
+    """The modular bridge replaces the legacy combined shell, not the separate wizard-ux app."""
+    return app_id in {"wizard-shell", "wizard-agent-service"}
 
 
 def pick_port(start: int = DEFAULT_SHELL_PORT) -> int:
