@@ -22,7 +22,9 @@ a = p.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
 commands = []
 start = time.monotonic()
-env = dict(os.environ, PYTHONPATH=str(a.source), QA_PYTHON=sys.executable)
+(a.out/'tmp').mkdir(exist_ok=True)
+env = dict(os.environ, PYTHONPATH=str(a.source), QA_PYTHON=sys.executable,
+           TMPDIR=str(a.out/'tmp'), PATH=str(Path(sys.executable).parent) + ':/opt/homebrew/bin:' + os.environ.get('PATH', ''))
 
 def run(name, cmd, expect=0):
     begin = time.monotonic()
