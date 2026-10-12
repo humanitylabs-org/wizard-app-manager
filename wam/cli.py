@@ -386,8 +386,10 @@ def shell_split(c: Config, rollback: bool = False, force: bool = False) -> dict:
         raise SystemExit(f"{ux} is already installed next to the bundle; `wam shell-split --rollback` stops it, "
                          f"`wam uninstall {ux}` removes it")
     bundle_stopped = _stopped(rt, bundle)
-    resume = svc in have and bundle_stopped          # killed after the service install: nothing new on the bundle
-    again = svc in have and not bundle_stopped       # splitting again after a rollback
+    # Killed after the service install: the service still runs and the bundle is stopped. Anything else with the
+    # service installed (it was stopped by a rollback) is a split again: the bundle's current state is copied.
+    resume = svc in have and bundle_stopped and not _stopped(rt, svc)
+    again = svc in have and not resume
     owner = (int(al["agent"]["uid"]), int(al["agent"]["gid"])) if al else (1000, 1000)
     if not resume and (why := can_carry(c.runtipi_root, *owner)):
         raise SystemExit(f"can't copy the Wizard shell's state: {why}. Nothing was changed")
@@ -412,7 +414,7 @@ def shell_split(c: Config, rollback: bool = False, force: bool = False) -> dict:
         if not resume:
             old = c.runtipi_root / "app-data" / STORE / svc / "data"
             if old.is_dir() and any(old.iterdir()):   # an earlier split's state: keep it aside, start from the bundle's
-                old.rename(old.with_name(f"data.before-split-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
+                old.rename(old.with_name(f"data.before-split-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.getpid()}"))
             carried = carry_bundle_state(c.runtipi_root, svc, uid=owner[0], gid=owner[1])
         if again:
             step = f"starting {svc} again"

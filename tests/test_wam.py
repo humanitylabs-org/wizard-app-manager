@@ -534,10 +534,18 @@ def test_split_again_after_a_rollback_copies_the_bundles_current_state(tmp_path,
     rt.state["wizard-agent-service"] = "stopped"
     out = cli.shell_split(c)
     assert out["again"] is True and out["resumed"] is False
+    # same after the owner also stopped the bundle by hand: still a split again, never a silent resume
+    calls.clear(); rt.have.discard("wizard-ux"); rt.state.pop("wizard-ux")
+    rt.state.update({"wizard-shell": "stopped", "wizard-agent-service": "stopped"})
+    out = cli.shell_split(c)
+    assert out["again"] is True and ("carry", "wizard-agent-service") in calls and ("stop", "wizard-shell") not in calls
+    calls.clear(); rt.have.discard("wizard-ux"); rt.state.pop("wizard-ux"); rt.state["wizard-agent-service"] = "stopped"
+    rt.state["wizard-shell"] = "running"
+    out = cli.shell_split(c)
     assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"), ("start", "wizard-agent-service"),
                      ("install", "wizard-ux", True)]
     kept = list(old.parent.glob("data.before-split-*"))
-    assert len(kept) == 1 and (kept[0] / "x").read_text() == "split-era"
+    assert any((k / "x").is_file() and (k / "x").read_text() == "split-era" for k in kept)
 
 
 def test_failed_uninstall_stops_the_service_and_never_starts_a_second_writer(tmp_path, monkeypatch):
