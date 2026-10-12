@@ -131,10 +131,10 @@ def test_app_manager_image_mismatch_fails(box):
     assert "FAIL  image wizard-app-manager" in p.stdout
 
 
-def test_failed_install_keeps_its_exit_code_and_still_records(box):
+def test_failed_install_keeps_its_exit_code_and_records_it_as_failed(box):
     p, rec = box["run"](INSTALL_RC="5")
     assert p.returncode == 5
-    assert rec is not None and rec["release"] == "9.9.9"
+    assert rec["release"] == "9.9.9" and rec["status"] == "install-failed" and rec["install_rc"] == 5
 
 
 def test_explicit_release_and_alongside_skip_the_external_agent(box):
@@ -143,21 +143,65 @@ def test_explicit_release_and_alongside_skip_the_external_agent(box):
     assert "default app agent" not in {c["name"] for c in rec["checks"]}
 
 
-def test_no_stable_pointer_installs_main_unpinned(box):
+def test_no_stable_pointer_installs_main_unpinned_and_says_so(box):
     (box["rel"] / "stable").unlink()
     p, rec = box["run"]()
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "couldn't read the Wizard OS stable release" in p.stdout and "unpinned" in p.stdout and rec is None
+    assert "no Wizard OS stable release is published" in p.stdout and rec["status"] == "unpinned"
     assert "moved-on" in p.stdout   # main's install.sh ran, not the pinned one
+
+
+def test_strict_refuses_an_unpinned_install(box):
+    (box["rel"] / "stable").unlink()
+    p, rec = box["run"](WIZARD_STRICT="1")
+    assert p.returncode == 3 and rec["status"] == "unpinned"
+    assert not (box["home"] / "install-env").exists()
+
+
+def test_an_unreachable_release_base_fails_instead_of_going_unpinned(box):
+    p, rec = box["run"](WIZARD_RELEASE_BASE="http://127.0.0.1:9/releases")
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert not (box["home"] / "install-env").exists() and rec is None
+
+
+def test_an_old_pinned_record_never_survives_a_later_unpinned_run(box):
+    p, rec = box["run"]()
+    assert rec["status"] == "pinned"
+    p, rec = box["run"](WAM_REF="main")
+    assert p.returncode == 0 and rec["status"] == "unpinned"
 
 
 def test_wam_ref_is_the_unpinned_developer_override(box):
     p, rec = box["run"](WAM_REF="main")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert rec is None and "moved-on" in p.stdout
+    assert rec["status"] == "unpinned" and "WAM_REF" in rec["reason"] and "moved-on" in p.stdout
+
+
+def test_a_different_shell_image_is_a_mismatch_not_drift(box):
+    p, rec = box["run"](SHELL_DIGEST=OTHER)
+    assert p.returncode == 1
+    assert rec["status"] == "mismatch" and "FAIL  image wizard-shell" in p.stdout
+
+
+def test_a_modified_app_manager_checkout_is_refused(box):
+    p, _ = box["run"]()
+    assert p.returncode == 0
+    (box["home"] / "wam" / "install.sh").write_text("#!/usr/bin/env bash\necho tampered\n")
+    p, rec = box["run"]()
+    assert p.returncode == 1 and "local changes" in p.stderr and rec is None
+
+
+def test_a_broken_default_app_entry_still_writes_a_record(box):
+    f = box["rel"] / "9.9.9.json"
+    rel = json.loads(f.read_text())
+    rel["default_apps"]["files"] = {"index_version": "1"}
+    f.write_text(json.dumps(rel))
+    p, rec = box["run"]()
+    assert rec is not None and rec["status"] in ("drift", "pinned", "mismatch")
 
 
 @pytest.mark.parametrize("bad", [
+    {"drop_image": "wizard-app-manager"},
     {"commit": "main"},
     {"digest": "sha256:short"},
     {"ref": "ghcr.io/x/y; rm -rf ~"},
@@ -174,6 +218,8 @@ def test_a_malformed_release_is_refused_before_anything_runs(box, bad):
         rel["images"]["wizard-shell"]["ref"] = bad["ref"]
     if "version" in bad:
         rel["version"] = bad["version"]
+    if "drop_image" in bad:
+        del rel["images"][bad["drop_image"]]
     f.write_text(json.dumps(rel))
     p, rec = box["run"]()
     assert p.returncode == 2, p.stdout + p.stderr

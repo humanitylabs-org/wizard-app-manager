@@ -68,7 +68,8 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &
   exec sudo -iu "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUID/bus" \
     WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+    WAM_REPO="$REPO" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" \
+    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -115,8 +116,8 @@ if [ "$(id -u)" -eq 0 ]; then
   exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
     WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 WIZARD_MODE=fresh WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
-    bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+    WAM_REPO="$REPO" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
+    bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
@@ -154,14 +155,36 @@ DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
 # Which release? (wizard-os#27) WAM_REF set = developer override, unpinned. Otherwise WIZARD_RELEASE, else the
 # stable pointer. No stable pointer published yet = the previous behaviour (App Manager main), said out loud.
 PINS=""
+RECORD="$HOME/.wizard-os/release.json"
+mkdir -p "$HOME/.wizard-os"
+rm -f "$RECORD"   # never leave an older run's "pinned" record behind; this run writes its own (or "unpinned")
+unpinned() {  # unpinned <reason>: record it, refuse it under WIZARD_STRICT=1
+  printf '{"status": "unpinned", "reason": "%s", "at": "%s"}\n' "$1" "$(date -u +%FT%TZ)" > "$RECORD"
+  if [ "${WIZARD_STRICT:-0}" = "1" ]; then echo "WIZARD_STRICT=1: refusing an unpinned install ($1)" >&2; exit 3; fi
+}
+fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published (404 / no file), 1 = any other error
+  local url="$RELEASE_BASE/$1" code
+  case "$url" in
+    file://*) [ -f "${url#file://}" ] || return 4; cp "${url#file://}" "$2"; return ;;
+  esac
+  code="$(curl -sSL --retry 3 --retry-delay 2 -o "$2" -w '%{http_code}' "$url" 2>/dev/null)" || true
+  case "$code" in 200) return 0 ;; 404) return 4 ;; *) echo "fetching $url failed (HTTP ${code:-none})" >&2; return 1 ;; esac
+}
 if [ -z "${WAM_REF:-}" ]; then
   REL="${WIZARD_RELEASE:-}"
-  [ -n "$REL" ] || REL="$(curl -fsSL "$RELEASE_BASE/stable" 2>/dev/null | tr -d ' \t\r\n' || true)"
+  if [ -z "$REL" ]; then
+    frc=0; fetch_release stable "$RECORD.stable" || frc=$?
+    if [ "$frc" -eq 1 ]; then
+      echo "Could not read the Wizard OS stable release; not installing unpinned bits by accident. Try again, or set WIZARD_RELEASE." >&2
+      exit 1
+    fi
+    [ "$frc" -eq 0 ] && REL="$(tr -d ' \t\r\n' < "$RECORD.stable")"
+    rm -f "$RECORD.stable"
+  fi
   if [ -n "$REL" ]; then
     case "$REL" in *[!0-9A-Za-z.+-]*|.*) echo "WIZARD_RELEASE '$REL' is not a version" >&2; exit 2 ;; esac
-    mkdir -p "$HOME/.wizard-os"
     PINS="$HOME/.wizard-os/release-pins.json"
-    curl -fsSL "$RELEASE_BASE/$REL.json" -o "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
+    fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
     # Only validated values leave Python (40-hex commit, sha256 digests, plain image names), shell-quoted.
     PIN_ENV="$(python3 - "$PINS.tmp" "$REL" <<'PY'
 import json, re, shlex, sys
@@ -176,7 +199,7 @@ def image(name):
     im = (rel.get("images") or {}).get(name) or {}
     ref, dig = str(im.get("ref", "")), str(im.get("digest", ""))
     if not im:
-        return ""
+        sys.exit(f"release {want}: images.{name} is missing; a release pins both the App Manager and the shell image")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", dig):
         sys.exit(f"release {want}: image {name} digest {dig!r} is not sha256:<64 hex>")
     repo = re.sub(r"(@.*|:[^/:]*)$", "", ref)
@@ -207,16 +230,23 @@ PY
     fi
     say "Installing Wizard OS $REL (App Manager ${REF:0:12})"
   else
-    echo "note: couldn't read the Wizard OS stable release ($RELEASE_BASE/stable); installing the App Manager's main branch (unpinned)."
+    echo "note: no Wizard OS stable release is published at $RELEASE_BASE/stable; installing the App Manager's main branch (unpinned)."
+    unpinned "no stable release published at $RELEASE_BASE/stable"
   fi
+else
+  unpinned "WAM_REF=$WAM_REF (developer override)"
 fi
 
 if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, detached, and prove it
   if [ -d "$DIR/.git" ]; then
-    git -C "$DIR" fetch -q origin "$REF"
+    if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
+      echo "$DIR has local changes; a pinned install would run them. Commit/stash them, or use WAM_REF for a dev checkout." >&2
+      exit 1
+    fi
   else
     git clone -q "$REPO" "$DIR"
   fi
+  git -C "$DIR" fetch -q origin "$REF"
   git -C "$DIR" checkout -q --detach "$REF"
   [ "$(git -C "$DIR" rev-parse HEAD)" = "$REF" ] || { echo "App Manager checkout is not $REF" >&2; exit 1; }
 elif [ -d "$DIR/.git" ]; then
@@ -230,10 +260,15 @@ rc=0
 bash "$DIR/install.sh" || rc=$?
 # Read back what actually runs and compare it with the release (always, even after a failed install).
 vrc=0
-python3 - "$PINS" "$DIR" "${WIZARD_MODE:-fresh}" "$HOME/.wizard-os/release.json" "${WIZARD_STRICT:-0}" <<'PY' || vrc=$?
+python3 - "$PINS" "$DIR" "${WIZARD_MODE:-fresh}" "$RECORD" "${WIZARD_STRICT:-0}" "$rc" <<'PY' || vrc=$?
 import json, os, re, subprocess, sys, time
-pins_path, wam_dir, mode, out_path, strict = sys.argv[1:6]
+pins_path, wam_dir, mode, out_path, strict, install_rc = sys.argv[1:7]
 rel = json.load(open(pins_path))
+def write(rec):
+    tmp = out_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rec, f, indent=2); f.write("\n")
+    os.replace(tmp, out_path)
 checks = []
 def check(name, expected, observed, core):
     checks.append({"name": name, "expected": expected, "observed": observed, "ok": expected == observed, "core": core})
@@ -242,7 +277,10 @@ def run(*cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
-docker = ["docker"] if subprocess.run(["docker", "info"], capture_output=True).returncode == 0 else ["sudo", "-n", "docker"]
+try:
+    docker = ["docker"] if subprocess.run(["docker", "info"], capture_output=True).returncode == 0 else ["sudo", "-n", "docker"]
+except OSError:
+    docker = ["docker"]
 def digests_of(container):
     image_id = run(*docker, "inspect", "--format", "{{.Image}}", container)
     if not image_id:
@@ -254,30 +292,34 @@ def digest_check(name, container, core):
         return
     have = digests_of(container) if container else []
     check(f"image {name}", want, want if want in have else (",".join(have) or f"no running container{' ' + container if container else ''}"), core)
-check("wizard-app-manager commit", rel["components"]["wizard-app-manager"]["commit"], run("git", "-C", wam_dir, "rev-parse", "HEAD"), True)
-digest_check("wizard-app-manager", "runtipi", True)
 try:
-    apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
-except (OSError, ValueError):
-    apps = {}
-names = run(*docker, "ps", "--format", "{{.Names}}").split()
-shell_app = ((rel.get("default_apps") or {}).get("shell") or {}).get("app", "wizard-shell")
-digest_check("wizard-shell", next((n for n in names if shell_app in n), ""), False)
-for slot, d in (rel.get("default_apps") or {}).items():
-    if not d or (mode == "alongside" and d.get("alongside")):
-        continue
-    a = apps.get(d["app"])
-    check(f"default app {slot}", f"{d['app']} {d.get('index_version')}",
-          f"{d['app']} {a.get('version')}" if a else f"{d['app']} not installed", False)
+  check("wizard-app-manager commit", rel["components"]["wizard-app-manager"]["commit"], run("git", "-C", wam_dir, "rev-parse", "HEAD"), True)
+  dirty = run("git", "-C", wam_dir, "status", "--porcelain", "--untracked-files=no")
+  check("App Manager checkout clean", "clean", "clean" if not dirty else "modified: " + " ".join(dirty.split()[:6]), True)
+  digest_check("wizard-app-manager", "runtipi", True)
+  try:
+      apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
+  except (OSError, ValueError):
+      apps = {}
+  names = run(*docker, "ps", "--format", "{{.Names}}").split()
+  shell_app = ((rel.get("default_apps") or {}).get("shell") or {}).get("app", "wizard-shell")
+  # The shell is a pinned image like the App Manager: a different digest is a mismatch, not drift.
+  digest_check("wizard-shell", next((n for n in names if shell_app in n), ""), True)
+  for slot, d in (rel.get("default_apps") or {}).items():
+      if not d or (mode == "alongside" and d.get("alongside")):
+          continue
+      app_id = d.get("app") or f"<no app for {slot}>"
+      a = apps.get(app_id)
+      check(f"default app {slot}", f"{app_id} {d.get('index_version')}",
+            f"{app_id} {a.get('version')}" if a else f"{app_id} not installed", False)
+except Exception as e:   # never leave a run without a record
+    check("read-back", "completed", f"error: {type(e).__name__}: {e}"[:200], True)
 core_bad = [c for c in checks if c["core"] and not c["ok"]]
 drift = [c for c in checks if not c["core"] and not c["ok"]]
-status = "mismatch" if core_bad else ("drift" if drift else "pinned")
+status = ("install-failed" if install_rc != "0" else "mismatch" if core_bad else "drift" if drift else "pinned")
 rec = {"release": rel.get("version"), "mode": mode, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-       "status": status, "checks": checks}
-tmp = out_path + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(rec, f, indent=2); f.write("\n")
-os.replace(tmp, out_path)
+       "status": status, "install_rc": int(install_rc), "checks": checks}
+write(rec)
 print(f"\nWizard OS {rel.get('version')}: what runs vs the release")
 for c in checks:
     print(f"  {'PASS' if c['ok'] else ('FAIL' if c['core'] else 'DRIFT')}  {c['name']}: {c['observed']}"
