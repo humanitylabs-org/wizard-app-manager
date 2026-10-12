@@ -5,7 +5,7 @@
  * Rule 2: speak Chats' visual language: system UI type at the shell's sizes, ink / ink-2 / ink-3
  *         hierarchy, hairline separators, faint tinted fills instead of opaque cards, pill inputs,
  *         a round accent action. Every value derives from the appearance v1 roles (--wz-*), so all
- *         six skins and any future skin flow through without per-app colour work.
+ *         the five accepted skins and future shell-approved skins flow through without per-app colour work.
  * Rule 3: layout and content stay the app's own. Use these classes; add app styles in styles.css.
  *
  * Values mirror web/core/chats.css and core/base.css in Wizard UX (ch-row, ch-sec-h, ch-compose). */

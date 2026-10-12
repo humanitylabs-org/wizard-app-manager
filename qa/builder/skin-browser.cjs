@@ -1,8 +1,8 @@
-// Generated app inside the real shell + six skins. Asserts it sits on the window glass like Chats,
+// Generated app inside the real shell + five accepted skins. Asserts it sits on the window glass like Chats,
 // follows live skin changes without losing state, and never steals Back. Writes only to this app's API.
 const fs=require('fs'),path=require('path'),os=require('os');let pw;try{pw=require('playwright')}catch{pw=require('playwright-core')}
 const url=process.argv[2],out=process.env.QA_OUT||path.join(os.tmpdir(),'builder-skin-qa');
-const SKINS=['nebula','grove','paper','tide','ember','signal'];
+const SKINS=['nebula','grove','tide','ember','signal'];
 const today='new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10)';
 (async()=>{fs.mkdirSync(out,{recursive:true});const browser=await pw.chromium.launch({headless:true});const checks=[];let blocked=0;
 function ok(name,value,detail){if(!value)throw Error(name+': '+JSON.stringify(detail));checks.push(name)}
@@ -16,6 +16,8 @@ for(const [width,height] of [[393,852],[1200,850]]){
  await frame.waitForFunction(()=>window.WizardTheme?.connected&&document.getElementById('day-short')?.textContent);
  await p.waitForSelector('.frame-wrap.wz-themed');
  const hist0=await p.evaluate(()=>history.length);
+ ok('Paper is retired from the shell registry',await p.evaluate(()=>!WosSkin.list.some(s=>s.id==='paper')));
+ ok('Paper is absent from the skin controls',await p.locator('.pv-skin[data-skin="paper"]').count()===0);
  ok(width+' hosted app pushes no history into the shell',!(await frame.evaluate(()=>!!(history.state&&history.state.wzGuard))));
 
  const tag=String(Date.now()).slice(-5);
@@ -31,8 +33,8 @@ for(const [width,height] of [[393,852],[1200,850]]){
  {const after=await p.evaluate(()=>history.length),guard=await p.evaluate(()=>__wos.back.guardOn);
   ok(width+' app wrote no history (Back stays the shell\'s)',after===hist0+(guard?1:0),{before:hist0,after,guard});}
 
- await p.locator('.pv-pill').click();await p.locator('.pv-skin[data-skin="paper"]').click();
- await frame.waitForFunction(()=>WizardTheme.current.skin==='paper');await p.locator('.pv-x').click();
+ await p.locator('.pv-pill').click();await p.locator('.pv-skin[data-skin="grove"]').click();
+ await frame.waitForFunction(()=>WizardTheme.current.skin==='grove');await p.locator('.pv-x').click();
  ok(width+' Preview skin menu re-skins the app',true);
 
  await frame.evaluate(()=>{window.qaDocument=crypto.randomUUID();document.getElementById('habit-name').value='Unsent habit'});
@@ -52,12 +54,12 @@ for(const [width,height] of [[393,852],[1200,850]]){
  }
  ok(width+' skin changes keep saved data',await data()===beforeData);
 
- await p.evaluate(()=>WosSkin.set('paper'));await frame.waitForFunction(()=>WizardTheme.current.skin==='paper');
+ await p.evaluate(()=>WosSkin.set('grove'));await frame.waitForFunction(()=>WizardTheme.current.skin==='grove');
  await frame.evaluate(()=>{const a={...WizardTheme.current,skin:'forged'};window.postMessage({type:'wizard:appearance',appearance:a},location.origin);dispatchEvent(new MessageEvent('message',{origin:'https://untrusted.invalid',source:parent,data:{type:'wizard:appearance',appearance:a}}));dispatchEvent(new MessageEvent('message',{origin:location.origin,source:parent,data:{type:'wizard:appearance',appearance:{...a,revision:0}}}))});
- await p.waitForTimeout(80);ok(width+' forged, foreign and stale messages ignored',await frame.evaluate(()=>WizardTheme.current.skin==='paper'));
+ await p.waitForTimeout(80);ok(width+' forged, foreign and stale messages ignored',await frame.evaluate(()=>WizardTheme.current.skin==='grove'));
 
  const wid=await p.evaluate(()=>Object.keys(__wos.wins).find(k=>__wos.wins[k].appId==='habit-tracker'));
- for(const skin of ['paper','nebula']){
+ for(const skin of ['grove','nebula']){
   await p.evaluate(s=>WosSkin.set(s),skin);await frame.waitForFunction(s=>WizardTheme.current.skin===s,skin);
   await p.evaluate(w=>__wos.setFull(w,true),wid);await frame.waitForFunction(()=>WizardTheme.current.presentation==='immersive');await p.waitForTimeout(250);
   const full=await p.evaluate(()=>getComputedStyle(document.querySelector('.win.full')).backgroundColor);
