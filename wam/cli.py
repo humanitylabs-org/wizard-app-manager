@@ -484,6 +484,10 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] in {"new", "check", "install-local", "publish", "builder-skill"}:
+        from .builder import main as builder_main
+        return builder_main(argv)
     if argv and argv[0] in RUNTIPI_COMMANDS:
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

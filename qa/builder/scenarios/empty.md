@@ -1,0 +1,1 @@
+On an empty profile, load wizard-builder and discover its exact prerequisites. Missing complete source bundle must produce a useful error; missing Docker must never become a fake running install. Expected: no reliance on developer memory or sibling services.
