@@ -425,7 +425,7 @@ def _split_env(tmp_path, monkeypatch, rt, calls):
     def app(c_, verb, a):
         calls.append((verb, a))
         if verb == "stop" and a in rt.stuck:
-            return
+            return                                     # the stop "succeeds" but the app keeps running
         if verb == "stop" and a == "wizard-ux" and "ux-stop-fails" in rt.stuck:
             raise SystemExit("runtipi-cli app stop wizard-ux failed")
         rt.state[a] = "stopped" if verb == "stop" else "running"
@@ -518,10 +518,43 @@ def test_shell_split_resumes_a_run_killed_after_the_service_install(tmp_path, mo
     rt.state["wizard-shell"] = "stopped"
     out = cli.shell_split(c)
     assert out["resumed"] is True and calls == [("install", "wizard-ux", True)]
-    calls.clear()                                                  # same, but someone started the bundle again
-    rt.have.discard("wizard-ux"); rt.state.pop("wizard-ux"); rt.state["wizard-shell"] = "running"
+
+
+def test_split_again_after_a_rollback_copies_the_bundles_current_state(tmp_path, monkeypatch):
+    """Rollback, then `wam uninstall wizard-ux`, then split again: the owner used the bundle meanwhile, so the
+    service's earlier state is set aside and the bundle's current state copied, never silently reused."""
+    calls = []
+    rt = _SplitRt({"wizard-shell", "wizard-agent-service"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
+    old = tmp_path / "app-data" / cli.STORE / "wizard-agent-service" / "data"
+    old.mkdir(parents=True); (old / "x").write_text("split-era")
+    with pytest.raises(SystemExit, match="running next to the bundle"):
+        cli.shell_split(c)                                         # service running too: refuse, nothing changed
+    assert calls == []
+    rt.state["wizard-agent-service"] = "stopped"
     out = cli.shell_split(c)
-    assert out["resumed"] is True and calls == [("stop", "wizard-shell"), ("install", "wizard-ux", True)]
+    assert out["again"] is True and out["resumed"] is False
+    assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"), ("start", "wizard-agent-service"),
+                     ("install", "wizard-ux", True)]
+    kept = list(old.parent.glob("data.before-split-*"))
+    assert len(kept) == 1 and (kept[0] / "x").read_text() == "split-era"
+
+
+def test_failed_uninstall_stops_the_service_and_never_starts_a_second_writer(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell"}, stuck={"wizard-ux"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
+    def bad_uninstall(urn, remove_backups=False):
+        raise RuntimeError("runtipi busy (409)")
+    rt.uninstall = bad_uninstall
+    with pytest.raises(SystemExit, match="uninstall wizard-agent-service: runtipi busy") as e:
+        cli.shell_split(c)
+    assert ("stop", "wizard-agent-service") in calls and rt.state["wizard-agent-service"] == "stopped"
+    assert rt.state["wizard-shell"] == "running"                   # service confirmed stopped: bundle back
+    calls.clear(); rt.state.update({"wizard-shell": "stopped", "wizard-agent-service": "running"}); rt.stuck = {"wizard-agent-service"}
+    r = cli._restore_bundle(c, rt, None, stop=["wizard-agent-service"])
+    assert "stop wizard-agent-service" in "; ".join(r["errors"]) and r["bundle"].startswith("stopped (not started")
+    assert ("start", "wizard-shell") not in calls
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
