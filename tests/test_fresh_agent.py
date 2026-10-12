@@ -331,7 +331,6 @@ def test_prepare_and_install_overlays(fresh):
     assert agent["environment"]["WIZARD_OS_HOME"] == fresh_agent.CONTAINER_OS_HOME
     assert agent["volumes"] == [f"${{ROOT_FOLDER_HOST}}/app-data/wizard-os:{fresh_agent.CONTAINER_OS_HOME}:ro"]
     assert not (uc / "hermes-agent" / "app.env").exists()
-    assert not fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-ux", f.c.home)
     foreign = uc / "wizard-shell" / "docker-compose.yml"
     foreign.parent.mkdir()
     foreign.write_text("services: {}\n")
@@ -434,6 +433,79 @@ def test_connect_prefers_modular_service_and_wires_legacy_bundle_too(fresh):
     assert len(_config(f)["mcp_servers"]) == 1
     assert sorted(res["changed"]["service_overlays"]) == ["wizard-agent-service", "wizard-shell"]
     assert f.rt.calls and all(m == "POST" and path.endswith("/restart") for m, path in f.rt.calls)   # nothing installed
+
+
+class _ResetLoader(yaml.SafeLoader):
+    """Compose's `!reset` (drop the base file's value) as a plain value, for reading generated overlays."""
+
+
+_ResetLoader.add_constructor("!reset", lambda loader, node: ("!reset", loader.construct_sequence(node)))
+
+
+def test_split_shell_overlay_is_loopback_only_and_reaches_the_service_port(fresh):
+    f = fresh
+    uc = f.c.runtipi_root / "user-config" / "wizardapps"
+    fresh_agent.prepare(f.c)
+    # Before install: the recipes' ports; the Service's real APP_PORT once Runtipi wrote it.
+    svc_env = f.c.runtipi_root / "app-data" / "wizardapps" / "wizard-agent-service" / "app.env"
+    svc_env.parent.mkdir(parents=True)
+    svc_env.write_text("APP_PORT=18797\nOTHER=x\n")
+    assert fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-ux", f.c.home)
+    compose = (uc / "wizard-ux" / "docker-compose.yml").read_text()
+    spec = yaml.load(compose, Loader=_ResetLoader)["services"]["wizard-ux"]
+    assert spec["network_mode"] == "host" and spec["ports"] == ("!reset", []) and spec["networks"] == ("!reset", [])
+    assert spec["environment"] == {"WIZARD_SHELL_LISTEN": "127.0.0.1:8796", "WIZARD_AGENT_SERVICE_ORIGIN": "http://127.0.0.1:18797"}
+    assert spec["entrypoint"] == ["/bin/sh", "/etc/wizard-shell-adapter/shell-adapter.sh"]
+    assert spec["volumes"] == ["${ROOT_FOLDER_HOST}/user-config/wizardapps/wizard-ux/shell-adapter.sh:/etc/wizard-shell-adapter/shell-adapter.sh:ro"]
+    # The shell holds no token: no app.env, nothing secret in the overlay or the adapter.
+    assert not (uc / "wizard-ux" / "app.env").exists()
+    adapter = (uc / "wizard-ux" / "shell-adapter.sh").read_text()
+    assert f.token not in compose + adapter and (uc / "wizard-ux" / "shell-adapter.sh").stat().st_mode & 0o777 == 0o644
+    assert not fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-ux", f.c.home)   # idempotent
+    # connect wires an installed shell too and restarts it; status checks it; disconnect removes overlay + adapter.
+    f.rt.apps.append("wizard-ux")
+    (uc / "wizard-ux" / "shell-adapter.sh").write_text("# Written by wam (stale)\n")
+    res = fresh_agent.main(f.c, "connect")
+    assert res["ok"] and "wizard-ux" in res["changed"]["service_overlays"]
+    assert [r for r in res["checks"] if r["check"].startswith("Shell overlay")][0]["ok"]
+    assert (uc / "wizard-ux" / "shell-adapter.sh").read_text() == fresh_agent.SHELL_ADAPTER_SH
+    fresh_agent.main(f.c, "disconnect")
+    assert not (uc / "wizard-ux").exists()
+
+
+def test_shell_adapter_script_adapts_the_recipe_config_or_refuses(tmp_path):
+    """Runs the generated adapter on copies shaped like the wizard-ux recipe's own files (PR5 795ff1a layout)."""
+    etc, bin_ = tmp_path / "etc", tmp_path / "bin"
+    etc.mkdir(), bin_.mkdir()
+    (etc / "nginx.conf.template").write_text(
+        "http {\n  server {\n    listen ${WIZARD_SHELL_LISTEN};\n    server_name _;\n    set $wizard_api \"x\";\n"
+        "    location ^~ /wizard-os-home/api/ { proxy_pass $wizard_api$request_uri; include /tmp/wizard-proxy.conf; }\n"
+        "    location /wizard-os-home/ {\n      alias /usr/share/nginx/wizard-ux/; include /tmp/wizard-static.conf;\n    }\n  }\n}\n")
+    (etc / "static.conf").write_text("add_header Content-Security-Policy \"default-src 'self'; frame-ancestors 'none'\" always;\n"
+                                     "add_header X-Frame-Options \"DENY\" always;\n")
+    (etc / "proxy.conf").write_text("proxy_http_version 1.1;\n")
+    (bin_ / "entry").write_text(f"cp {etc}/static.conf OUT/static\ncp {etc}/nginx.conf.template OUT/tpl\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    (bin_ / "entry").write_text((bin_ / "entry").read_text().replace("OUT", str(out)))
+    script = (fresh_agent.SHELL_ADAPTER_SH.replace("/etc/wizard-shell", str(etc))
+              .replace("/usr/local/bin/wizard-shell-entrypoint", str(bin_ / "entry"))
+              .replace("/tmp/wizard-shell-adapted", str(tmp_path / "adapted")))
+
+    def run(listen):
+        return subprocess.run(["sh", "-c", script], env={"PATH": os.environ["PATH"], "WIZARD_SHELL_LISTEN": listen},
+                              capture_output=True, text=True)
+    assert run("8788").returncode == 3   # never a container-network listener
+    p = run("127.0.0.1:8796")
+    assert p.returncode == 0, p.stderr
+    tpl, static = (out / "tpl").read_text(), (out / "static").read_text()
+    assert "    server_name _;\n    allow 127.0.0.1;\n    deny all;\n" in tpl
+    assert ("    location ^~ /wizard-os-home/store-data/ {\n      limit_except GET { deny all; }\n"
+            "      proxy_pass $wizard_api$request_uri; include /tmp/wizard-proxy.conf;\n    }\n    location /wizard-os-home/ {") in tpl
+    assert "location ^~ /wizard-os-home/api/" in tpl   # the recipe's routes are untouched
+    assert "frame-ancestors 'self'" in static and 'X-Frame-Options "SAMEORIGIN"' in static and "'none'" not in static
+    (etc / "static.conf").write_text("add_header X-Frame-Options \"DENY\" always;\n")   # the recipe changed
+    assert run("127.0.0.1:8796").returncode == 3
 
 
 def test_connect_refuses_a_second_gateway_and_missing_apps(fresh):

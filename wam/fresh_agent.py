@@ -37,7 +37,10 @@ STATE_FILE = "fresh-agent.json"
 AGENT_APP = "hermes-agent"
 ENGINE = "hermes-agent-engine"              # the hermes-agent recipe's stock Hermes container (data at /opt/data)
 SERVICE_APPS = ("wizard-agent-service", "wizard-shell")   # the modular Agent Service first, then the legacy bundle
+SHELL_APP = "wizard-ux"                      # the modular shell (UX only), beside wizard-agent-service
 SERVICE_PORT = 8787                          # both recipes' internal port
+DEFAULT_PORTS = {"wizard-agent-service": 8797, SHELL_APP: 8796}   # the recipes' runtipi/config.json ports
+SHELL_ADAPTER = "shell-adapter.sh"
 BRIDGE_HOST = "wizard-app-lifecycle"         # the name the Service resolves to the bridge's container listener
 BRIDGE_PORT = 7791
 RUNTIPI_NETWORK = "runtipi_tipi_main_network"
@@ -228,6 +231,64 @@ services:
 """
 
 
+SHELL_OVERLAY = """\
+# Written by wam (fresh mode): the Wizard shell (UX only) on the host network, listening on 127.0.0.1 only, reaching
+# the Agent Service on its 127.0.0.1-published port. Tailscale Serve (the owner's private route) points at this
+# loopback port; no container can reach it. The Service sees its Runtipi gateway peer, which it trusts only with the
+# named owner login (the Service overlay), so an app container forging that header is refused at both doors.
+# The shell holds no token. {adapter} runs the recipe's own entrypoint on adapted copies of its own config.
+# Remove with `wam fresh-agent disconnect`.
+services:
+  {app}:
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    entrypoint: ["/bin/sh", "/etc/wizard-shell-adapter/{adapter}"]
+    environment:
+      WIZARD_SHELL_LISTEN: "127.0.0.1:{port}"
+      WIZARD_AGENT_SERVICE_ORIGIN: http://127.0.0.1:{service_port}
+    volumes:
+      - ${{ROOT_FOLDER_HOST}}/user-config/{store}/{app}/{adapter}:/etc/wizard-shell-adapter/{adapter}:ro
+"""
+
+# Derived at every start from the image's own files, so recipe routing (API, voice, streaming, health, the box-only
+# gateway rule) stays the recipe's. Three changes, each checked; a template without the anchors refuses to start.
+SHELL_ADAPTER_SH = r"""#!/bin/sh
+# Written by wam (fresh mode). The wizard-ux recipe's entrypoint, run on adapted copies of its own config:
+#  1. loopback ingress only: the listen address must be 127.0.0.1:<port>, and nginx allows 127.0.0.1 alone;
+#  2. /wizard-os-home/store-data/ (the Store's read-only data, GET/HEAD) goes to the Agent Service, not static files;
+#  3. the shell may frame its own pages (frame-ancestors 'self', X-Frame-Options SAMEORIGIN): the Store window.
+set -eu
+case "${WIZARD_SHELL_LISTEN:-}" in 127.0.0.1:*) ;; *) echo "wam adapter: WIZARD_SHELL_LISTEN must be 127.0.0.1:<port>" >&2; exit 3;; esac
+src=/etc/wizard-shell; dst=/tmp/wizard-shell-adapted
+rm -rf "$dst"; mkdir -p "$dst"; cp "$src"/* "$dst"/
+t="$dst/nginx.conf.template"; s="$dst/static.conf"
+grep -q '^    server_name _;$' "$t" && grep -q '^    location /wizard-os-home/ {$' "$t" \
+  && grep -q "frame-ancestors 'none'" "$s" && grep -q 'X-Frame-Options "DENY"' "$s" \
+  || { echo "wam adapter: the shell recipe's nginx files changed; regenerate the adapter" >&2; exit 3; }
+sed -i -e 's|^    server_name _;$|&\n    allow 127.0.0.1;\n    deny all;|' \
+  -e 's|^    location /wizard-os-home/ {$|    location ^~ /wizard-os-home/store-data/ {\n      limit_except GET { deny all; }\n      proxy_pass $wizard_api$request_uri; include /tmp/wizard-proxy.conf;\n    }\n&|' "$t"
+sed -i -e "s|frame-ancestors 'none'|frame-ancestors 'self'|" -e 's|X-Frame-Options "DENY"|X-Frame-Options "SAMEORIGIN"|' "$s"
+[ "$(grep -c '^    allow 127.0.0.1;$' "$t")" = 1 ] && [ "$(grep -c 'store-data' "$t")" = 1 ] && grep -q "frame-ancestors 'self'" "$s" \
+  || { echo "wam adapter: adaptation did not apply" >&2; exit 3; }
+sed "s|/etc/wizard-shell/|$dst/|g" /usr/local/bin/wizard-shell-entrypoint > "$dst/entrypoint.sh"
+exec /bin/sh "$dst/entrypoint.sh"
+"""
+
+
+def app_port(runtipi_root: Path, store: str, app_id: str) -> int:
+    """The app's host port: Runtipi's APP_PORT for an installed app, else its recipe's config.json port."""
+    envp = runtipi_root / "app-data" / store / app_id / "app.env"
+    if envp.is_file():
+        for ln in envp.read_text().splitlines():
+            k, _, v = ln.partition("=")
+            if k.strip() == "APP_PORT" and v.strip().isdigit():
+                return int(v.strip())
+    cfg = registry._json_file(runtipi_root / "repos" / store / "apps" / app_id / "config.json")
+    port = cfg.get("port")
+    return int(port) if isinstance(port, int) and 0 < port < 65536 else DEFAULT_PORTS[app_id]
+
+
 def _env_text(path: Path, values: dict[str, str]) -> str:
     lines = path.read_text().splitlines() if path.is_file() else []
     keep = [ln for ln in lines if ln.split("=", 1)[0].strip() not in values]
@@ -263,6 +324,9 @@ def _remove_overlay(runtipi_root: Path, store: str, app_id: str, keys: tuple[str
     if cp.is_file() and not cp.is_symlink() and cp.read_text().startswith(MARK + " (fresh mode)"):
         cp.unlink()
         removed = True
+        adapter = d / SHELL_ADAPTER
+        if adapter.is_file() and not adapter.is_symlink() and MARK in adapter.read_text():
+            adapter.unlink()
     if keys and envp.is_file() and not envp.is_symlink():
         lines = [ln for ln in envp.read_text().splitlines() if ln.split("=", 1)[0].strip() not in keys]
         if lines:
@@ -291,6 +355,29 @@ def write_service_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
         "WIZARD_APP_MANAGER_TOKEN": token_file(home / "lifecycle-token")})
 
 
+def write_shell_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
+    """The modular shell beside wizard-agent-service: loopback-only on the host network, the Service on its loopback
+    port (the Service overlay trusts that gateway peer for the named owner only), plus the generated nginx adapter."""
+    st = load(home)
+    if not st:
+        return False
+    if not (st.get("owner") or {}).get("logins"):
+        raise FreshError("owner_login_required", "run `wam fresh-agent prepare` with WIZARD_APP_OWNER_LOGINS set")
+    d = runtipi_root / "user-config" / store / SHELL_APP
+    d.mkdir(parents=True, exist_ok=True)
+    adapter = d / SHELL_ADAPTER
+    if adapter.is_symlink():
+        raise FreshError("overlay_symlink", str(adapter))
+    changed = False
+    if not adapter.is_file() or adapter.read_text() != SHELL_ADAPTER_SH:
+        registry.atomic_write(adapter, SHELL_ADAPTER_SH.encode(), 0o644)
+        changed = True
+    compose = SHELL_OVERLAY.format(app=SHELL_APP, store=store, adapter=SHELL_ADAPTER,
+                                   port=app_port(runtipi_root, store, SHELL_APP),
+                                   service_port=app_port(runtipi_root, store, "wizard-agent-service"))
+    return _write_overlay(runtipi_root, store, SHELL_APP, compose, {}) or changed
+
+
 def write_agent_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
     if not load(home):
         return False
@@ -305,6 +392,8 @@ def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
         return False
     if app_id == AGENT_APP:
         return write_agent_overlay(runtipi_root, store, home)
+    if app_id == SHELL_APP:
+        return write_shell_overlay(runtipi_root, store, home)
     return write_service_overlay(runtipi_root, store, app_id, home)
 
 
@@ -389,6 +478,8 @@ def connect(c, restart: bool = True) -> dict:
     service = services[0]   # one gateway: the modular Service when present, else the legacy bundle
     gateway = gateway_url(service)
     restarts = [a for a in services if write_service_overlay(c.runtipi_root, STORE, a, c.home)]
+    if SHELL_APP in have and write_shell_overlay(c.runtipi_root, STORE, c.home):
+        restarts.append(SHELL_APP)
     agent_changed = write_agent_overlay(c.runtipi_root, STORE, c.home)
 
     container = engine_container(STORE)
@@ -506,6 +597,15 @@ def status(c) -> dict:
                   ", ".join(pubs) or "not published on the host")
         except FreshError as e:
             check("Service published on 127.0.0.1 only", False, e.code)
+    shell = c.runtipi_root / "user-config" / STORE / SHELL_APP / "docker-compose.yml"
+    try:
+        shell_installed = SHELL_APP in _installed(c)[1]
+    except (RuntipiError, OSError):
+        shell_installed = False
+    if shell_installed or shell.is_file():
+        text = shell.read_text() if shell.is_file() else ""
+        check("Shell overlay (loopback only, Service loopback port)", "network_mode: host" in text
+              and '"127.0.0.1:' in text and "WIZARD_AGENT_SERVICE_ORIGIN: http://127.0.0.1:" in text, str(shell))
     bind = registry._json_file(c.home / "app-manager.json").get("container_bridge_bind")
     check("bridge container listener declared", bool(bind), f"{bind}:{BRIDGE_PORT}" if bind else "missing")
     return {"ok": all(r["ok"] for r in rows), "checks": rows, "gateway": gateway, "live": live}
@@ -531,7 +631,7 @@ def disconnect(c, restart: bool = True) -> dict:
                                                 "remove_plugin": bool(rec.get("plugin_installed")),
                                                 "stamp": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())})
         reversed_keys = out.get("reversed") or []
-    removed = [a for a in (*SERVICE_APPS, AGENT_APP) if _remove_overlay(
+    removed = [a for a in (*SERVICE_APPS, SHELL_APP, AGENT_APP) if _remove_overlay(
         c.runtipi_root, STORE, a, ("WIZARD_MCP_TOKEN", "WIZARD_APP_MANAGER_TOKEN") if a in SERVICE_APPS else ())]
     _merge_json(c.home / "app-manager.json", {}, drop=("container_bridge_bind", "service_app_network"))
     (c.home / STATE_FILE).unlink()
