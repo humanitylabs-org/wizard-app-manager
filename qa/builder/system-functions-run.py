@@ -45,6 +45,8 @@ try:
         result['lock_wait_seconds'] = round(time.monotonic()-start, 3)
         run('pytest', [sys.executable, '-m', 'pytest', '-q', 'tests', '--junitxml=' + str(a.out/'pytest.xml')])
         run('node-syntax', [a.node, '--check', 'qa/builder/system-functions-browser.cjs'])
+        run('actual-core-audit', [sys.executable, '-c',
+            "import hashlib,json; from pathlib import Path; from wam.system_functions import check; p=Path(" + repr(str(a.core)) + "); trust={str(x.resolve()):hashlib.sha256(x.read_bytes()).hexdigest() for x in p.glob('app-*.js')}; rows=check(p,trust); print(json.dumps(rows)); assert all(r['ok'] for r in rows)"])
         new = run('scaffold', [sys.executable, '-m', 'wam', 'new', 'system-gate-demo', '--dev-root', str(a.out/'dev')])
         generated = a.out/'dev/system-gate-demo'
         run('check', [sys.executable, '-m', 'wam', 'check', str(generated)])
@@ -63,6 +65,10 @@ try:
         bad = generated/'web/local-platform.js'; bad.write_text('navigator.share({text:"app duplicate"}); new MediaRecorder(stream);')
         run('negative-cli', [sys.executable, '-m', 'wam', 'check', str(generated)], expect=1)
         bad.unlink()
+        duplicate = generated/'web/app-client.js'
+        duplicate.write_bytes((a.core/'app-client.js').read_bytes())
+        run('negative-actual-client-copy', [sys.executable, '-m', 'wam', 'check', str(generated)], expect=1)
+        duplicate.unlink()
         result['ok'] = True
 except Exception as e:
     result['ok'] = False

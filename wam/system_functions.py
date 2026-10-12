@@ -57,7 +57,11 @@ def _popstate_bounce(text):
                 if not depth:
                     end = pos + token.end()
                     break
-        if re.search(r'history\s*\.\s*(?:pushState|forward)\s*\(', text[pos:end]):
+        body = text[pos:end]
+        # A domain redirect to a different route from a popstate callback is
+        # legal. Only rearming the current entry / moving forward is an exit
+        # sentinel here; route callbacks are not a blanket ban on history.
+        if re.search(r'''history\s*\.\s*forward\s*\(|history\s*\.\s*pushState\s*\([^;]*?location\s*\.\s*(?:href|pathname)|history\s*\.\s*pushState\s*\([^,;]*,\s*['"][^'"]*['"]\s*\)''', body):
             return True
     return False
 
