@@ -15,6 +15,7 @@
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
+# Owner behind Tailscale Serve: WIZARD_APP_OWNER_LOGINS (and WIZARD_ALLOWED_HOSTS), else this box's tailscale status.
 # Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: on a first install, alongside when an
 # existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN.
 set -euo pipefail
@@ -58,7 +59,8 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &
   SUID="$(id -u "$SUDO_USER")"
   exec sudo -iu "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUID/bus" \
     WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="$REF" \
-    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
+    WIZARD_APP_OWNER_LOGINS="${WIZARD_APP_OWNER_LOGINS:-}" WIZARD_ALLOWED_HOSTS="${WIZARD_ALLOWED_HOSTS:-}" bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -105,6 +107,7 @@ if [ "$(id -u)" -eq 0 ]; then
   exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
     WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 WIZARD_MODE=fresh WAM_REF="$REF" \
     WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
+    WIZARD_APP_OWNER_LOGINS="${WIZARD_APP_OWNER_LOGINS:-}" WIZARD_ALLOWED_HOSTS="${WIZARD_ALLOWED_HOSTS:-}" \
     bash -c "curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
