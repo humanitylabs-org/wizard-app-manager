@@ -12,12 +12,16 @@ from wam import builder, system_functions
     ('navigator.mediaDevices.getUserMedia({audio:true})', 'capture'),
     ('new MediaRecorder(stream)', 'capture'),
     ('new AudioContext()', 'capture'),
+    ('''navigator.permissions.query({name:'microphone'})''', 'capture'),
+    ('''navigator["permissions"]["query"]({name:'camera'})''', 'capture'),
     ('navigator.share({text:"x"})', 'share'),
     ('navigator["share"]({text:"x"})', 'share'),
     ('new CloseWatcher()', 'close-watcher'),
     ('navigator.serviceWorker.register("sw.js")', 'service-worker'),
     ('navigator["serviceWorker"].getRegistrations()', 'service-worker'),
     ('self.addEventListener("install",()=>self.skipWaiting())', 'service-worker'),
+    ('''self.addEventListener('fetch',e=>e.respondWith(caches.match(e.request)))''', 'service-worker'),
+    ('''self.oninstall = e => caches.open('app-cache')''', 'service-worker'),
     ('addEventListener("beforeinstallprompt", prompt)', 'install-prompt'),
     ('localStorage.setItem("theme", "dark")', 'theme-storage'),
     ('localStorage.getItem("wos.skin")', 'theme-storage'),
@@ -26,6 +30,8 @@ from wam import builder, system_functions
     ('history.pushState({rootGuard:1}, "", location.href)', 'root-guard'),
     ('addEventListener("popstate",()=>{ history.pushState({},"",location.href) })', 'root-history-bounce'),
     ('window.onpopstate = () => { history.forward() };', 'root-history-bounce'),
+    ('window.onpopstate = () => history.forward();', 'root-history-bounce'),
+    ('''window.onpopstate = () => history.pushState(null, '', location.href);''', 'root-history-bounce'),
 ])
 def test_raw_implementations_rejected(tmp_path, snippet, rule):
     (tmp_path / 'screen.html').write_text(snippet)
@@ -40,6 +46,10 @@ def test_domain_callbacks_real_routes_and_reading_controls_allowed(tmp_path):
       WizardApp.back.useHistory({isRoot:()=>route==='home'});
       addEventListener('popstate',()=>render(history.state));
       addEventListener('popstate',()=>{ if (route==='removed-record') history.pushState({route:'list'}, '', '/list') });
+      addEventListener('popstate',()=>history.pushState(state, '', location.pathname + '?record=2'));
+      window.onpopstate = () => history.pushState({record:2}, '', location.href);
+      document.querySelector('record-card').addEventListener('activate', render);
+      navigator.permissions.query({name:'geolocation'});
       function openRecord(id) { history.pushState({record:id}, '', '/record/'+id);render() }
       function closeRecord() { history.back() }
       WizardApp.theme.onChange(a=>applyReadingSurface(a));
@@ -82,6 +92,11 @@ def test_inline_and_symlink_source_not_hidden(tmp_path):
     outside = tmp_path.parent / (tmp_path.name + '-outside.js'); outside.write_text('new CloseWatcher()')
     (tmp_path / 'view.js').symlink_to(outside)
     assert not all(r['ok'] for r in system_functions.check(tmp_path))
+    (tmp_path / 'view.js').unlink()
+    outside_dir = tmp_path.parent / (tmp_path.name + '-external-dir'); outside_dir.mkdir()
+    (outside_dir / 'hidden.js').write_text('new MediaRecorder(stream)')
+    (tmp_path / 'web').symlink_to(outside_dir, target_is_directory=True)
+    assert any(not r['ok'] and r['rule'] == 'system functions: confined source' for r in system_functions.check(tmp_path))
 
 
 def test_wam_check_and_stage_publish_update_are_wired(tmp_path):
