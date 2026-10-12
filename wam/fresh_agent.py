@@ -209,6 +209,8 @@ services:
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
       WIZARD_APP_MANAGER_URL: http://{bridge_host}:{bridge_port}
       WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}
+      WIZARD_APP_MANAGER_HOSTS: {bridge_host}
+      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}
 """
 
 AGENT_OVERLAY = """\
