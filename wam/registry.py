@@ -28,9 +28,10 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, dict):
         out = {k: sanitize(v) for k, v in value.items()
                if isinstance(k, str) and not k.startswith("_") and not SENSITIVE.search(k)}
-        if "schema" in value and "apps" in value and isinstance(value.get("slots"), dict):
-            # Slot identifiers are a namespace, not metadata field names (password-manager is legitimate).
-            out["slots"] = {k: sanitize(v) for k, v in value["slots"].items() if ID.fullmatch(k)}
+        for namespace in ("slots", "external"):
+            if "schema" in value and "apps" in value and isinstance(value.get(namespace), dict):
+                # Slot identifiers are a namespace, not credential-bearing metadata field names.
+                out[namespace] = {k: sanitize(v) for k, v in value[namespace].items() if ID.fullmatch(k)}
         if value.get("type") in {"password", "random"} or "env_variable" in value:
             out.pop("default", None)
             out.pop("value", None)
@@ -103,7 +104,7 @@ def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, ru
     mcp = mcp if isinstance(mcp, dict) else None
     view = view if isinstance(view, dict) else None
     skill = meta["dir"] / "SKILL.md"
-    if skill.is_symlink():
+    if skill.is_symlink() or not meta["dir"].resolve().is_relative_to(runtipi_root.resolve()):
         raise ValueError("skill source symlink")
     for key in ("provides", "uses", "needs"):
         vals = w.get(key) or []
@@ -190,19 +191,26 @@ def atomic_write(path: Path, data: bytes, mode=0o644) -> None:
 
 def _json_file(path: Path) -> dict:
     try:
-        return json.loads(path.read_text())
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
     except (FileNotFoundError, ValueError):
         return {}
 
 
 def _skills(reg: dict, root: Path, old: dict) -> None:
     sk = root / "skills"
+    if sk.is_symlink():
+        raise ValueError("skills root must not be a symlink")
     sk.mkdir(exist_ok=True)
     manifest = root / ".generated-app-skills.json"
     owned = _json_file(manifest)
     # Migrate pre-manifest registries: only the explicitly named app SKILL.md files belong to WAM.
     if not manifest.exists():
-        for a in old.get("apps", []):
+        old_apps = old.get("apps", [])
+        old_apps = old_apps if isinstance(old_apps, list) else []
+        for a in old_apps:
+            if not isinstance(a, dict):
+                continue
             app_id = a.get("id", "")
             if ID.fullmatch(app_id) and a.get("skill") == f"skills/{app_id}/SKILL.md":
                 p = sk / app_id / "SKILL.md"
@@ -230,6 +238,9 @@ def _skills(reg: dict, root: Path, old: dict) -> None:
                 raise ValueError("app skill source symlinks are not allowed")
             data = source.read_bytes()
             digest = hashlib.sha256(data).hexdigest()
+            if current == digest:
+                owned[app_id] = new[app_id] = digest
+                continue
             # Write-ahead ownership retains both old/new digests across a crash between individual files.
             owned[app_id] = [d for d in {current, digest} if d]
             atomic_write(manifest, (json.dumps(owned) + "\n").encode())
@@ -248,13 +259,18 @@ def _skills(reg: dict, root: Path, old: dict) -> None:
     atomic_write(manifest, (json.dumps(new) + "\n").encode())
 
 
-def write(reg: dict, root: Path | None = None) -> Path:
+def write(reg: dict, root: Path | None = None, *, preserve_choices=True) -> Path:
     root = root or home()
+    if root.is_symlink():
+        raise ValueError("registry root must not be a symlink")
     root.mkdir(parents=True, exist_ok=True)
     prev = root / "apps.json"
     old = _json_file(prev)
-    for slot, val in (old.get("slots") or {}).items():
-        if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
+    choices = old.get("slots") if preserve_choices else {}
+    choices = choices if isinstance(choices, dict) else {}
+    for slot, val in choices.items():
+        if (isinstance(val, dict) and slot in reg["slots"]
+                and val.get("default") in reg["slots"][slot]["candidates"]):
             reg["slots"][slot]["default"] = val["default"]
     _skills(reg, root, old)
     atomic_write(prev, (json.dumps(public_projection(reg), indent=2) + "\n").encode())

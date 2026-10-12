@@ -12,6 +12,9 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
+import stat
+import tempfile
 import os
 import re
 import secrets
@@ -45,18 +48,46 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class UpstreamFailure(RuntimeError):
+    def __init__(self, *, rejected=False):
+        super().__init__("upstream_rejected" if rejected else "upstream_unavailable")
+        self.rejected = rejected
+
+
+class BridgeRuntipi(Runtipi):
+    """Use stock Runtipi CLI JWT/client helpers, but refuse redirects and retain safe rejection classification."""
+    def req(self, method: str, path: str, body: dict | None = None, timeout: int = 60):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Authorization": "Bearer " + cli_token(self.secret)}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as e:
+            raise UpstreamFailure(rejected=400 <= e.code < 500 and e.code not in {408, 429}) from None
+        except urllib.error.URLError as e:
+            raise UpstreamFailure(rejected=isinstance(e.reason, ConnectionRefusedError)) from None
+        return json.loads(raw) if raw else {}
+
+
 def token_file(path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(secrets.token_urlsafe(32) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-    if path.is_symlink() or path.stat().st_mode & 0o077:
+    if not path.exists() and not path.is_symlink():
+        fd, temporary = tempfile.mkstemp(prefix=".lifecycle-token.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(secrets.token_urlsafe(32) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)  # Publish complete bytes without replacing a concurrent winner.
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(temporary)
+    if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_mode & 0o077:
         raise ValueError("lifecycle token must be a regular owner-only file (0600)")
     value = path.read_text().strip()
     if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", value):
@@ -93,7 +124,10 @@ class Completion:
         data = []
         size = 0
         while time.monotonic() < deadline:
-            line = self.stream.readline(65537)
+            try:
+                line = self.stream.readline(65537)
+            except TimeoutError:
+                raise BridgeError(504, "completion_unconfirmed") from None
             size += len(line)
             if not line or len(line) > 65536 or size > 1048576:
                 raise BridgeError(504, "completion_unconfirmed")
@@ -119,7 +153,7 @@ class Completion:
 class Bridge:
     def __init__(self, cfg, token: str, *, rt=None, completion=Completion, timeout: float=900, poll=0.5):
         self.cfg, self.token = cfg, token
-        self.rt = rt if rt is not None else Runtipi.from_install(cfg.runtipi_root)
+        self.rt = rt if rt is not None else BridgeRuntipi.from_install(cfg.runtipi_root)
         # Use .env only for the supported JWT_SECRET and port, never its LAN host.
         if rt is None:
             port = int(read_env(cfg.runtipi_root / ".env").get("NGINX_PORT") or 80)
@@ -179,7 +213,7 @@ class Bridge:
         registry.write(reg, self.cfg.home)
         # The shared copy goes through the same atomic ownership-aware writer, not cli.share_registry's rmtree.
         shared = self.cfg.runtipi_root / "app-data" / "wizard-os"
-        registry.write(reg, shared)
+        registry.write(reg, shared, preserve_choices=False)
         upstreams = {a["id"]: a["_view_upstream"] for a in reg["apps"] if a.get("_view_upstream")}
         registry.atomic_write(self.cfg.home / "view-upstreams.json", json.dumps(upstreams).encode(), 0o600)
         return self.clean(reg), rows
@@ -343,7 +377,8 @@ class Bridge:
         allowed = {f.get("env_variable") for f in info.get("form_fields") or []} - {
             "port", "exposed", "exposedLocal", "openPort", "domain", "enableAuth", "skipEnv", "skipPull",
             "skipRun", "forcePull", "localSubdomain", "isVisibleOnGuestDashboard", "maxBackups"}
-        if set(body) - allowed:
+        if (set(body) - allowed or any(not isinstance(v, (str, int, float, bool)) for v in body.values())
+                or any(isinstance(v, float) and not math.isfinite(v) for v in body.values())):
             raise BridgeError(400, "invalid_form")
         if noop:
             return {}
@@ -468,9 +503,11 @@ class Bridge:
                         code = 200
                     except BridgeError as e:
                         code, result = e.code, {"success": False, "error": e.reason}
+                    except UpstreamFailure as e:
+                        code, result = 502, {"success": False, "error": str(e)}
                     except (Exception, SystemExit):
                         code, result = 502, {"success": False, "error": "upstream_unavailable"}
-                    uncertain = submitted and result.get("error") not in {None, "lifecycle_failed"}
+                    uncertain = submitted and result.get("error") not in {None, "lifecycle_failed", "upstream_rejected"}
                     journal[key].update(state="uncertain" if uncertain else "done", code=code, result=result)
                     self._save(journal)
             finally:
@@ -543,6 +580,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_data(code, json.dumps(bridge.clean(result)).encode())
         except BridgeError as e:
             self.send_data(e.code, json.dumps({"success": False, "error": e.reason}).encode())
+        except UpstreamFailure as e:
+            self.send_data(502, json.dumps({"success": False, "error": str(e)}).encode())
         except Exception:
             self.send_data(502, b'{"success":false,"error":"upstream_unavailable"}')
 

@@ -17,7 +17,7 @@ import yaml
 
 from test_wam import _fake_store_app
 from wam import alongside, registry
-from wam.lifecycle import Bridge, BridgeError, Server, token_file
+from wam.lifecycle import Bridge, BridgeError, BridgeRuntipi, Server, UpstreamFailure, token_file
 from wam.runtipi import Runtipi
 
 TOKEN = "dedicated-fixture-bridge-token-123456789"
@@ -94,6 +94,11 @@ class TipiHandler(BaseHTTPRequestHandler):
         s = self.server
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
         action = self.path.rsplit("/", 1)[1]
+        if s.reject_action == action:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write((SECRET + TOKEN).encode())
+            return
         s.mutations.append((self.command, self.path, body))
         s.status = {"install": "running", "start": "running", "stop": "stopped", "restart": "running",
                     "update": "running", "uninstall": "missing"}[action]
@@ -123,6 +128,7 @@ def bridge(tmp_path):
     tipi.daemon_threads = True
     tipi.status = "missing"
     tipi.mutations, tipi.subscribers = [], []
+    tipi.reject_action = None
     tipi.jwt_calls, tipi.fail_action, tipi.lose_completion, tipi.redirect_image = 0, None, False, False
 
     def detail():
@@ -137,7 +143,7 @@ def bridge(tmp_path):
     thread = threading.Thread(target=tipi.serve_forever, daemon=True)
     thread.start()
     cfg = SimpleNamespace(home=tmp_path / "home", runtipi_root=root, secrets=tmp_path / "home" / "secrets")
-    b = Bridge(cfg, TOKEN, rt=Runtipi(f"http://127.0.0.1:{tipi.server_port}/api", SECRET), timeout=0.5, poll=0.01)
+    b = Bridge(cfg, TOKEN, rt=BridgeRuntipi(f"http://127.0.0.1:{tipi.server_port}/api", SECRET), timeout=0.5, poll=0.01)
     b.tipi = tipi
     try:
         yield b
@@ -459,3 +465,71 @@ def test_secret_named_slot_is_not_dropped(bridge):
     wizard.write_text("---\n" + yaml.safe_dump(meta) + "---\n")
     _, result = op(b, "install")
     assert set(result["registry"]["slots"]) == {"password-manager", "secret-store", "api-key-vault"}
+
+
+def test_definite_rejection_is_retryable_and_form_types_checked(bridge):
+    b = bridge
+    for i, value in enumerate([None, {"a": 1}, ["a"], float("nan")]):
+        code, result = op(b, "install", f"fixture-types-key-{i:06d}", {"PW": value})
+        assert code == 400 and result["error"] == "invalid_form"
+    b.tipi.reject_action = "install"
+    code, result = op(b, "install", "fixture-rejected-key-001")
+    assert code == 502 and result["error"] == "upstream_rejected"
+    assert_clean(result)
+    b.tipi.reject_action = None
+    assert op(b, "install", "fixture-recovered-key-002")[0] == 200
+    assert len(b.tipi.mutations) == 1
+
+
+def test_token_creation_concurrent_publish_is_complete(tmp_path):
+    p = tmp_path / "token"
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        values = list(workers.map(lambda _: token_file(p), range(8)))
+    assert len(set(values)) == 1 and len(values[0]) >= 32
+    assert not list(p.parent.glob(".lifecycle-token.*"))
+
+
+def test_shared_root_symlink_and_bad_shapes_are_safe(bridge, tmp_path):
+    b = bridge
+    op(b, "install")
+    shared = b.cfg.runtipi_root / "app-data/wizard-os"
+    (shared / "apps.json").write_text(json.dumps({"slots": []}))
+    (shared / ".generated-app-skills.json").write_text("[]")
+    b.refresh()
+    import shutil
+    shutil.rmtree(shared / "skills")
+    target = tmp_path / "private-skills"
+    target.mkdir()
+    (shared / "skills").symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="skills root"):
+        b.refresh()
+    assert list(target.iterdir()) == []
+
+
+def test_module_serve_uses_production_loopback_client(bridge):
+    import os
+    import subprocess
+    import sys
+    b = bridge
+    (b.cfg.runtipi_root / ".env").write_text(
+        f"INTERNAL_IP=10.99.99.99\nNGINX_PORT={b.tipi.server_port}\nJWT_SECRET={SECRET}\n")
+    env = {**os.environ, "WIZARD_OS_HOME": str(b.cfg.home), "RUNTIPI_ROOT": str(b.cfg.runtipi_root),
+           "WIZARD_APP_MANAGER_TOKEN": TOKEN}
+    proc = subprocess.Popen([sys.executable, "-m", "wam.lifecycle", "serve", "--port", "0"],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        line = proc.stdout.readline().strip()
+        assert line.startswith("WAM lifecycle bridge on 127.0.0.1:"), proc.stderr.read() if proc.poll() is not None else line
+        port = int(line.rsplit(":", 1)[1])
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/app-lifecycle/{URN}/install", b"{}",
+                {"Authorization": "Bearer " + TOKEN, "Idempotency-Key": "fixture-process-key-001"}, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            result = json.load(response)
+            assert result["success"] and result["status"] == "running"
+            assert_clean(result)
+        assert len(b.tipi.mutations) == 1
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+        proc.stdout.close()
+        proc.stderr.close()
