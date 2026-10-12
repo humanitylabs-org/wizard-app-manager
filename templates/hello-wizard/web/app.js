@@ -86,7 +86,7 @@ el('add-form').onsubmit = async event => {
 if (!window.WizardApp || WizardApp.version !== 1) {
   say('Wizard system functions are unavailable. Open this preview through Wizard.', 'error');
 } else {
-  WizardApp.ready({ name: 'hello-wizard', version: '0.1.0' });
+  WizardApp.ready({ name: 'hello-wizard', version: '0.2.0' });
   // A routed variant uses WizardApp.back.useHistory({isRoot}) with its real router.
   // This one-screen app has no route history to adapt.
   WizardApp.back.register({ canGoBack: () => false, back: () => false });

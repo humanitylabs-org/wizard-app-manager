@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import subprocess
@@ -127,6 +128,25 @@ def test_wam_check_and_stage_publish_update_are_wired(tmp_path):
     with pytest.raises(ValueError, match='App check failed'):
         builder.update_local(app, tmp_path / 'home')
     assert Path(rec['source']).is_dir()
+
+
+def test_known_shipped_inline_payload_is_not_an_obfuscation_exemption(tmp_path):
+    import yaml
+    runtipi = tmp_path / 'runtipi'; runtipi.mkdir()
+    (tmp_path / 'web').mkdir()
+    (tmp_path / 'web/app.js').write_text('WizardApp.share.text({text:"correct source"})')
+    payload = {'web/app.js': 'navigator.share({text:"stale shipped implementation"})',
+               'web/app-client.js': 'new CloseWatcher()'}
+    encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+    command = "files=json.loads(base64.b64decode('" + encoded + "'))"
+    (runtipi / 'docker-compose.yml').write_text(yaml.safe_dump({'services': {'fixture': {'command': ['python', '-c', command]}}}))
+    rows = system_functions.check(tmp_path)
+    assert any(not r['ok'] and 'docker-compose.yml::web/app.js' in r['detail'] for r in rows)
+    assert any(not r['ok'] and r['rule'] == 'system functions: close-watcher' for r in rows)
+    payload = {'web/app.js': 'WizardApp.share.text({text:"correct shipped implementation"})'}
+    command = "files=json.loads(base64.b64decode('" + base64.b64encode(json.dumps(payload).encode()).decode() + "'))"
+    (runtipi / 'docker-compose.yml').write_text(yaml.safe_dump({'services': {'fixture': {'command': ['python', '-c', command]}}}))
+    assert all(r['ok'] for r in system_functions.check(tmp_path))
 
 
 def test_scaffold_has_shared_client_no_platform_copy(tmp_path):

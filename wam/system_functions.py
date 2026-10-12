@@ -5,13 +5,17 @@ Only a release-owner supplied exact path + SHA256 exempts shared assets.
 The normal builder deliberately supplies no exemptions.
 """
 from __future__ import annotations
+import base64
 import hashlib
+import json
 import re
 from pathlib import Path
 
+import yaml
+
 CLIENT_URL = '/wizard-os-home/core/app-client.js'
 SHARED_NAMES = {'app-client.js', 'app-services.js', 'app-capture.js'}
-EXTENSIONS = {'.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.html', '.htm', '.vue', '.svelte', '.css'}
+EXTENSIONS = {'.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.html', '.htm', '.vue', '.svelte', '.css', '.svg'}
 SKIP = {'.git', 'node_modules', '.venv', '__pycache__', '.pytest_cache'}
 
 
@@ -78,6 +82,49 @@ def _popstate_bounce(text):
     return False
 
 
+def _scan_text(raw, rel):
+    text = _code(raw)
+    rows = []
+    for name, expression, remedy in RULES:
+        match = re.search(expression, text, re.I if name in {'theme-storage', 'theme-switch', 'root-guard'} else 0)
+        if match:
+            line = text.count('\n', 0, match.start()) + 1
+            rows.append({'rule': 'system functions: ' + name, 'ok': False, 'severity': 'error', 'detail': f'{rel}:{line}: {remedy}'})
+    if _popstate_bounce(text):
+        rows.append({'rule': 'system functions: root-history-bounce', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': move history sentinel rearming into shared core; use back.useHistory for routes'})
+    return rows
+
+
+def _packed_rows(root):
+    # The builder's own inline Runtipi format is known, not arbitrary code to
+    # evaluate. Inspect its shipped files too so a stale payload cannot smuggle
+    # an old theme client/Back guard through a clean-looking source directory.
+    p = root / 'runtipi/docker-compose.yml'
+    if not p.is_file() or p.is_symlink():
+        return []
+    rows = []
+    try:
+        compose = yaml.safe_load(p.read_text())
+        for service in (compose or {}).get('services', {}).values():
+            cmd = service.get('command')
+            if not isinstance(cmd, list) or len(cmd) != 3 or cmd[1] != '-c' or not isinstance(cmd[2], str):
+                continue
+            match = re.search(r'''files\s*=\s*json\.loads\(base64\.b64decode\(['"]([A-Za-z0-9+/=]*)['"]\)\)''', cmd[2])
+            if not match:
+                continue
+            if len(match.group(1)) > 8 * 1024 * 1024:
+                raise ValueError('Known inline source payload exceeds 8 MiB')
+            payload = json.loads(base64.b64decode(match.group(1), validate=True))
+            if not isinstance(payload, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in payload.items()):
+                raise ValueError('Known inline source payload must map file names to text')
+            for name, text in payload.items():
+                if Path(name).suffix.lower() in EXTENSIONS:
+                    rows += _scan_text(text, 'runtipi/docker-compose.yml::' + name)
+    except (ValueError, OSError, yaml.YAMLError, AttributeError) as e:
+        rows.append({'rule': 'system functions: readable inline source', 'ok': False, 'severity': 'error', 'detail': str(e)})
+    return rows
+
+
 def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dict]:
     root = Path(root).resolve()
     approved_assets = approved_assets or {}
@@ -101,18 +148,11 @@ def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dic
                 continue
             rows.append({'rule': 'system functions: approved asset hash', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': approved core bytes do not match'})
         try:
-            text = _code(p.read_text(encoding='utf-8'))
+            text = p.read_text(encoding='utf-8')
         except (UnicodeError, OSError) as e:
             rows.append({'rule': 'system functions: readable source', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': ' + str(e)})
             continue
-        for name, expression, remedy in RULES:
-            match = re.search(expression, text, re.I if name in {'theme-storage', 'theme-switch', 'root-guard'} else 0)
-            if match:
-                line = text.count('\n', 0, match.start()) + 1
-                rows.append({'rule': 'system functions: ' + name, 'ok': False, 'severity': 'error', 'detail': f'{rel}:{line}: {remedy}'})
-        # A bounce in popstate recreates an exit sentinel. Real route history,
-        # popstate render callbacks and history.back in domain handlers are valid.
-        if _popstate_bounce(text):
-            rows.append({'rule': 'system functions: root-history-bounce', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': move history sentinel rearming into shared core; use back.useHistory for routes'})
+        rows += _scan_text(text, rel)
+    rows += _packed_rows(root)
     rows.insert(0, {'rule': 'system functions: shared platform implementations only', 'ok': not rows, 'severity': 'error', 'detail': f'Scanned {scanned} source files. Client: {CLIENT_URL}. Static lint requires the browser checklist too.'})
     return rows
