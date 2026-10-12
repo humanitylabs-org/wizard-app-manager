@@ -26,8 +26,10 @@ for(const [width,height] of [[393,852],[1200,850]]){
  await frame.locator('#habits .wz-row',{hasText:'Stretch '+tag}).click();
  await frame.waitForFunction(n=>[...document.querySelectorAll('#habits .wz-row')].some(r=>r.textContent.includes(n)&&r.getAttribute('aria-pressed')==='true'),'Stretch '+tag);
  ok(width+' add and mark through the real UI',true);
- // Using the app (typing, adding, marking) must not add a single top-level history entry.
- ok(width+' app wrote no history (Back stays the shell\'s)',await p.evaluate(()=>history.length)===hist0,{before:hist0,after:await p.evaluate(()=>history.length)});
+ // Using the app (typing, adding, marking) must not add history of its own. The shell arms exactly one
+ // Back-guard entry (ensureGuard) on first user activation; that is the only growth allowed.
+ {const after=await p.evaluate(()=>history.length),guard=await p.evaluate(()=>__wos.back.guardOn);
+  ok(width+' app wrote no history (Back stays the shell\'s)',after===hist0+(guard?1:0),{before:hist0,after,guard});}
 
  await p.locator('.pv-pill').click();await p.locator('.pv-skin[data-skin="paper"]').click();
  await frame.waitForFunction(()=>WizardTheme.current.skin==='paper');await p.locator('.pv-x').click();
