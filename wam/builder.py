@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
-from . import app_standard, wizardmd
+from . import app_standard, wizardmd, system_functions
 
 REPO = Path(__file__).resolve().parent.parent
 ID = re.compile(r'[a-z0-9][a-z0-9-]{1,40}')
@@ -111,6 +111,7 @@ def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
     rows = [{'rule': n, 'ok': ok, 'severity': 'error', 'detail': d} for n, ok, d in approved]
+    rows += system_functions.check(root)
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)
@@ -254,11 +255,11 @@ def update_local(root, os_home=None, *, run=False):
         digest = source_hash(snapshot)
         if digest != before or source_hash(root) != before:
             raise ValueError('Source changed while updating; nothing was changed.')
-        if digest == rec['source_sha256']:
-            return {**rec, 'update': 'already_current'}
         report = check_app(snapshot, proposal=True)
         if not report['ok']:
             raise ValueError('App check failed: ' + json.dumps([r for r in report['rules'] if not r['ok'] and r['severity'] == 'error']))
+        if digest == rec['source_sha256']:
+            return {**rec, 'update': 'already_current'}
         doc = wizardmd.front_matter((snapshot / 'wizard.md').read_text())
         if doc.get('id') != app_id:
             raise ValueError('An update cannot change the app id.')

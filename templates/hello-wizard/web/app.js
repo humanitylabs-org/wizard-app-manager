@@ -1,6 +1,5 @@
 'use strict';
 const el = id => document.getElementById(id);
-const hosted = document.documentElement.classList.contains('wz-hosted');
 // The owner's local day: the box clock is UTC, the person is not.
 const localDay = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 let state = { day: localDay(), habits: [] };
@@ -71,21 +70,14 @@ el('add-form').onsubmit = async event => {
   finally { add.disabled = !input.value.trim(); }
 };
 
-/* Back contract (Wizard OS): hosted, the shell owns Back and asks the app first through
- * __wizardCloseOverlay(); this app has no nested views, so it answers "not handled" and the shell
- * takes the step. It never pushes history inside a frame (that would steal the shell's Back).
- * Standalone in a browser tab: first Back at the root warns, a second within 2 s may leave. */
-window.__wizardCloseOverlay = () => false;
-if (!hosted) {
-  let warnAt = 0;
-  history.pushState({ wzGuard: 1 }, '', location.href);
-  addEventListener('popstate', () => {
-    if (Date.now() - warnAt < 2000) { history.back(); return; }
-    warnAt = Date.now();
-    say('Press back again to exit', 'note');
-    setTimeout(() => { if (el('status').textContent === 'Press back again to exit') say(''); }, 2000);
-    history.pushState({ wzGuard: 1 }, '', location.href);
-  });
+// Domain-only Back callbacks. Core owns the root guard in hosted and standalone modes.
+// This one-screen app is already at root. Add nested route/overlay state here, not exit logic.
+if (!window.WizardApp || WizardApp.version !== 1) {
+  say('Wizard system functions are unavailable. Open this preview through Wizard.', 'error');
+} else {
+  WizardApp.ready({ name: 'hello-wizard', version: '0.1.0' });
+  WizardApp.back.register({ canGoBack: () => false, back: () => false });
+  WizardApp.back.useHistory({ isRoot: () => true });
 }
 
 request('api/habits?day=' + localDay()).then(render).catch(error => say(error.message, 'error'));

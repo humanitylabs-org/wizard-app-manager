@@ -1,0 +1,72 @@
+"""Worker receipt runner: bounded commands under the shared heavy-worker lock."""
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+
+p = argparse.ArgumentParser()
+p.add_argument('--source', type=Path, required=True)
+p.add_argument('--out', type=Path, required=True)
+p.add_argument('--sha', required=True)
+p.add_argument('--core', type=Path, required=True)
+p.add_argument('--node', required=True)
+p.add_argument('--lock', type=Path, default=Path('/Volumes/ThalesMedia/AndroidBuilds/worker.lock'))
+a = p.parse_args()
+a.out.mkdir(parents=True, exist_ok=True)
+commands = []
+start = time.monotonic()
+env = dict(os.environ, PYTHONPATH=str(a.source), QA_PYTHON=sys.executable)
+
+def run(name, cmd, expect=0):
+    begin = time.monotonic()
+    r = subprocess.run(cmd, cwd=a.source, env=env, capture_output=True, text=True, timeout=300)
+    (a.out / (name + '.log')).write_text(r.stdout + r.stderr)
+    rec = {'name': name, 'command': cmd, 'exit_code': r.returncode, 'expected': expect, 'seconds': round(time.monotonic()-begin, 3)}
+    commands.append(rec)
+    print(json.dumps(rec), flush=True)
+    if r.returncode != expect:
+        print(r.stdout + r.stderr, flush=True)
+        raise RuntimeError(name + ' failed')
+    return r
+
+result = {'host': socket.gethostname(), 'source_sha': a.sha, 'source': str(a.source), 'core': str(a.core), 'lock': str(a.lock), 'commands': commands, 'utc': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+try:
+    with a.lock.open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result['lock_wait_seconds'] = round(time.monotonic()-start, 3)
+        run('pytest', [sys.executable, '-m', 'pytest', '-q', 'tests', '--junitxml=' + str(a.out/'pytest.xml')])
+        run('node-syntax', [a.node, '--check', 'qa/builder/system-functions-browser.cjs'])
+        new = run('scaffold', [sys.executable, '-m', 'wam', 'new', 'system-gate-demo', '--dev-root', str(a.out/'dev')])
+        generated = a.out/'dev/system-gate-demo'
+        run('check', [sys.executable, '-m', 'wam', 'check', str(generated)])
+        run('check-proposal', [sys.executable, '-m', 'wam', 'check', str(generated), '--proposal'])
+        env['WIZARD_OS_HOME'] = str(a.out/'os-home')
+        run('stage', [sys.executable, '-m', 'wam', 'install-local', str(generated), '--stage-only'])
+        run('skill-install', [sys.executable, '-m', 'wam', 'builder-skill', '--hermes-home', str(a.out/'hermes-home')])
+        installed = a.out/'os-home/system-skills/wizard-builder'
+        ref = installed/'references/system-functions.md'
+        if not ref.is_file() or 'references/system-functions.md' not in (installed/'SKILL.md').read_text():
+            raise RuntimeError('Installed system skill lost mandatory reference')
+        result['installed_reference_sha256'] = hashlib.sha256(ref.read_bytes()).hexdigest()
+        # Use the exact staged source copy in the browser, never the mutable scaffold.
+        stage = json.loads((a.out/'stage.log').read_text())
+        run('browser', [a.node, 'qa/builder/system-functions-browser.cjs', '--source', stage['source'], '--core', str(a.core), '--out', str(a.out/'browser')])
+        bad = generated/'web/local-platform.js'; bad.write_text('navigator.share({text:"app duplicate"}); new MediaRecorder(stream);')
+        run('negative-cli', [sys.executable, '-m', 'wam', 'check', str(generated)], expect=1)
+        bad.unlink()
+        result['ok'] = True
+except Exception as e:
+    result['ok'] = False
+    result['error'] = str(e)
+finally:
+    result['seconds'] = round(time.monotonic()-start, 3)
+    (a.out/'receipt.json').write_text(json.dumps(result, indent=2)+'\n')
+    print(json.dumps(result, indent=2), flush=True)
+sys.exit(0 if result['ok'] else 1)
