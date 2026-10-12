@@ -76,6 +76,25 @@ def test_registry_reads_app_manager_files(tmp_path):
     assert "_skill_src" not in data["apps"][0]
 
 
+def test_views_are_same_origin_routes_and_staged_installs_never_shadow_owner_tiles(tmp_path):
+    rt = tmp_path / "runtipi"
+    d = _fake_store_app(rt)
+    wm = d / "wizard.md"
+    wm.write_text(wm.read_text().replace("\n---\n", "\nview:\n  path: /\n  port: 8799\n---\n", 1))
+    installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
+    reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    home = tmp_path / "home"
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] is None   # no owner route yet: never a raw host URL
+    (home / "routes.json").write_text(json.dumps({"hello-wizard": {"view": "/hello-next/", "staged_as": "hello-next"},
+                                                   "evil": {"view": "http://1.2.3.4/", "staged_as": "Bad Id"}}))
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] == {"url": "/hello-next/"} and a["id"] == "hello-next" and a["app_id"] == "hello-wizard"
+    assert a["staged"] is True and a["skill"] == "skills/hello-wizard/SKILL.md"
+    assert (home / "skills" / "hello-wizard" / "SKILL.md").is_file()
+    assert registry.routes(home)["evil"] == {"view": None, "staged_as": None}
+
+
 def test_build_form_generates_required_passwords(tmp_path, monkeypatch):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
     c = cli.Config()
