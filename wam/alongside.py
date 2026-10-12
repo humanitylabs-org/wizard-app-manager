@@ -255,7 +255,7 @@ def host_media_root(runtipi_root: Path) -> Path:
     from .runtipi import read_env
     envf = Path(runtipi_root) / ".env"
     root = ((read_env(envf).get("ROOT_FOLDER_HOST") if envf.is_file() else "") or "").strip() or str(runtipi_root)
-    return Path(root).expanduser() / "media"
+    return Path(root).expanduser().absolute() / "media"
 
 
 def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, media_root: Path | None = None) -> str:
