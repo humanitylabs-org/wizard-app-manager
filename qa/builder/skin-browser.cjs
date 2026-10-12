@@ -38,6 +38,7 @@ for(const [width,height] of [[393,852],[1200,850]]){
  await p.evaluate(()=>__wos.goDesk(1));await frame.waitForFunction(()=>WizardTheme.current.skin==='paper');
  ok(width+' reopened app is visibly focused',await p.evaluate(()=>__wos.wins[__wos.desks[__wos.idx].focus]?.appId==='habit-tracker')&&await frame.locator('#add').isVisible());
  await p.evaluate(()=>WosSkin.set('grove'));await frame.waitForFunction(()=>WizardTheme.current.skin==='grove');
+ await p.waitForFunction(()=>parseFloat(getComputedStyle(document.getElementById('toast')).opacity)<0.01);
  await p.screenshot({path:path.join(out,'grove-'+width+'.png'),fullPage:true});
  ok(width+' shell has no overflow',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  ok(width+' zero page errors',errors.length===0,errors);
