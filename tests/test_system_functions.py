@@ -27,6 +27,8 @@ from wam import builder, system_functions
     ('localStorage.getItem("wos.skin")', 'theme-storage'),
     ('function toggleDarkMode() {}', 'theme-switch'),
     ('<button id="theme-toggle">Dark</button>', 'theme-switch'),
+    ('''document.documentElement.classList.toggle('dark')''', 'theme-switch'),
+    ('''document.documentElement.setAttribute('data-color-scheme', 'light')''', 'theme-switch'),
     ('history.pushState({rootGuard:1}, "", location.href)', 'root-guard'),
     ('addEventListener("popstate",()=>{ history.pushState({},"",location.href) })', 'root-history-bounce'),
     ('window.onpopstate = () => { history.forward() };', 'root-history-bounce'),
@@ -54,6 +56,8 @@ def test_domain_callbacks_real_routes_and_reading_controls_allowed(tmp_path):
       function closeRecord() { history.back() }
       WizardApp.theme.onChange(a=>applyReadingSurface(a));
       localStorage.setItem('reader-font-size', '20');
+      document.documentElement.classList.toggle('reader-serif');
+      document.documentElement.setAttribute('data-color-scheme', appearance.colorScheme);
       WizardApp.share.text({text:'domain'});
       WizardApp.capture.start({kind:'audio'});
       const hold=WizardApp.update.hold('draft'); hold.release();
