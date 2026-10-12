@@ -40,8 +40,10 @@ def run(name, cmd, expect=0):
     return r
 
 def tree_digest(root):
+    # Unit tests import the reference server and can create its ignored .data
+    # SQLite DB; it is runtime state, never part of builder/source distribution.
     h = hashlib.sha256()
-    files = [x for x in root.rglob('*') if x.is_file() and not any(k in {'.git', '__pycache__', '.pytest_cache'} for k in x.relative_to(root).parts)]
+    files = [x for x in root.rglob('*') if x.is_file() and not any(k in {'.git', '__pycache__', '.pytest_cache', '.data'} for k in x.relative_to(root).parts)]
     for x in sorted(files, key=lambda x: x.relative_to(root).as_posix()):
         h.update(x.relative_to(root).as_posix().encode() + b'\0' + hashlib.sha256(x.read_bytes()).digest())
     return h.hexdigest()
