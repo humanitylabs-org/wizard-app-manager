@@ -18,7 +18,7 @@ for(const name of ['app-client.js','app-services.js','appearance-host.js']) {
   hashes[name]=crypto.createHash('sha256').update(fs.readFileSync(path.join(CORE,name))).digest('hex');
 }
 function ok(value,label){assert(value,label);checks.push(label);console.log('PASS',label)}
-const harness=`<!doctype html><html data-skin="nebula"><head><style>
+const harness=`<!doctype html><html data-skin="nebula"><head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><style>
 html {color-scheme:dark;--bg:#05030c;--ink:#f3efff;--ink-2:#b9b0d8;--ink-3:#7d74a3;--violet-2:#b99bff;--line-2:#b9b0d8}
 body {margin:0;background:var(--bg);color:var(--ink)} .win{width:100%;height:92vh}iframe{border:0;width:100%;height:100%;color-scheme:inherit}
 </style><script>window.WizCore={apps:()=>({APPS:[{id:'builder-qa',url:'/app/'}]})};</script>
@@ -57,6 +57,7 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
     await page.goto(base+'/host');await page.waitForFunction(()=>document.querySelector('#app')?.contentWindow.WizardApp?.hosted);
     const frame=page.frames().find(f=>f.url().startsWith(base+'/app/'));
     await frame.waitForFunction(()=>WizardApp.theme.get()!==null);
+    ok(await frame.evaluate(()=>innerWidth)===width,`${width} real frame layout viewport matches requested device width`);
     await frame.locator('#habit-name').fill('Unsent domain draft');
     await frame.evaluate(()=>window.qaDoc=document);
     for(const light of [false,true]) {
