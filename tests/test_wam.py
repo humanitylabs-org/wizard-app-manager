@@ -1,4 +1,4 @@
-import json, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
+import json, os, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
 import pytest
@@ -309,11 +309,13 @@ def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
     monkeypatch.setenv("WIZARD_AGENT_SERVICE_IMAGE", "wizard-agent-service:test")
     monkeypatch.setenv("WIZARD_UX_IMAGE", "wizard-ux:test")
     st = alongside.enable(wh, hh, 18796)
-    assert st["service"] == {"port": 8798, "image": "wizard-agent-service:test"}
-    assert st["shell"]["image"] == "wizard-ux:test"
+    assert st["service"] == {"port": 8798, "active": False}
+    assert st["images"] == {"wizard-agent-service": "wizard-agent-service:test", "wizard-ux": "wizard-ux:test"}
     monkeypatch.delenv("WIZARD_AGENT_SERVICE_IMAGE"); monkeypatch.delenv("WIZARD_UX_IMAGE")
     assert alongside.enable(wh, hh)["service"]["port"] == 8798                 # a re-run keeps the ports and pins
-    assert alongside.load(wh)["service"]["image"] == "wizard-agent-service:test"
+    assert alongside.load(wh)["images"]["wizard-agent-service"] == "wizard-agent-service:test"
+    alongside.set_service_active(wh, True)
+    assert alongside.enable(wh, hh)["service"]["active"] is True
     assert alongside.role_of("wizard-agent-service", ["agent-service"]) == "service"
     assert alongside.role_of("wizard-ux", ["shell"]) == "shell"
     assert alongside.role_of("wizard-shell", ["shell"]) == "bundle"
@@ -349,6 +351,99 @@ def test_split_carries_bundle_state_once_and_keeps_the_bundle(tmp_path):
     assert cli.carry_bundle_state(tmp_path, "wizard-agent-service") is None     # never over existing service state
     assert dst.read_text() == '{"s1":"later"}'
     assert cli.carry_bundle_state(tmp_path / "fresh", "wizard-agent-service") is None
+
+
+def test_bundle_box_fills_both_spots_and_install_refuses_a_second_service():
+    """A box still on the wizard-shell bundle: bootstrap installs no Agent Service beside it, and installing one
+    by hand is refused (two Agent Services would both write to the same Hermes)."""
+    from wam import slots
+    reg = {"apps": [{"id": "wizard-shell", "provides": ["shell"]}]}
+    rows = {r["slot"]: r for r in slots.table(reg)}
+    assert rows["shell"]["state"] == rows["agent-service"]["state"] == "filled"
+    assert "wizard-agent-service" not in slots.to_install(reg) and "wizard-ux" not in slots.to_install(reg)
+    assert set(slots.blocks_uninstall(reg, "wizard-shell")) >= {"shell", "agent-service"}
+
+
+def test_alongside_pins_are_per_app_and_old_pin_stays_with_the_bundle(tmp_path, monkeypatch):
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir(); (hh / "config.yaml").write_text("{}\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    for v in alongside.PIN_VARS.values():
+        monkeypatch.delenv(v, raising=False)
+    st = alongside.enable(wh, hh, 18796)
+    st["shell"]["image"] = "ghcr.io/x/wizard-shell@sha256:" + "a" * 64      # a pre-split alongside.json
+    st.pop("images", None); alongside.save(wh, {k: v for k, v in st.items() if k != "detected"})
+    monkeypatch.setenv("WIZARD_UX_IMAGE", "wizard-ux:test")
+    st = alongside.enable(wh, hh)
+    assert st["images"] == {"wizard-shell": "ghcr.io/x/wizard-shell@sha256:" + "a" * 64, "wizard-ux": "wizard-ux:test"}
+    monkeypatch.delenv("WIZARD_UX_IMAGE")
+    rt = tmp_path / "rt"
+    ux = alongside.write_shell_override(rt, "wizardapps", "wizard-ux", wh, "shell").read_text()
+    bundle = alongside.write_shell_override(rt, "wizardapps", "wizard-shell", wh, "bundle").read_text()
+    svc = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service").read_text()
+    assert "image: wizard-ux:test" in ux and "sha256:" not in ux
+    assert "wizard-shell@sha256:" in bundle and "wizard-ux:test" not in bundle
+    assert "image:" not in svc                                   # no pin: the recipe's own image
+
+
+def test_carry_is_atomic_and_refuses_a_uid_it_cannot_set(tmp_path, monkeypatch):
+    src = tmp_path / "app-data" / cli.STORE / "wizard-shell" / "data"
+    (src / "a").mkdir(parents=True); (src / "a" / "f").write_text("1")
+    dst = tmp_path / "app-data" / cli.STORE / "wizard-agent-service" / "data"
+    if os.geteuid() != 0:
+        with pytest.raises(SystemExit, match="runs as uid"):
+            cli.carry_bundle_state(tmp_path, "wizard-agent-service", uid=os.getuid() + 1, gid=os.getgid())
+        assert not dst.exists() and not list(dst.parent.glob(".data.carry-*"))
+    real = shutil.copytree
+    def broken(s, d, *a, **k):
+        real(s, d, *a, **k); raise PermissionError("unreadable file")
+    monkeypatch.setattr(cli.shutil, "copytree", broken)
+    with pytest.raises(SystemExit, match="nothing was changed"):
+        cli.carry_bundle_state(tmp_path, "wizard-agent-service", uid=os.getuid(), gid=os.getgid())
+    assert not dst.exists() and not list(dst.parent.glob(".data.carry-*"))
+    monkeypatch.setattr(cli.shutil, "copytree", real)
+    assert cli.carry_bundle_state(tmp_path, "wizard-agent-service", uid=os.getuid(), gid=os.getgid()) == src
+    assert (dst / "a" / "f").read_text() == "1"
+
+
+class _SplitRt:
+    def __init__(self, have, status):
+        self.have, self.status, self.calls = set(have), status, []
+    def wait_status(self, urn, want, timeout=0):
+        self.calls.append(("wait", urn)); return self.status
+
+
+def test_shell_split_is_ordered_and_refuses_live_runs(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell"}, "stopped")
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
+    c.runtipi = lambda: rt
+    monkeypatch.setattr(cli, "installed_ids", lambda r: set(r.have))
+    monkeypatch.setattr(cli, "_app", lambda c_, verb, app: calls.append((verb, app)))
+    monkeypatch.setattr(cli, "carry_bundle_state", lambda root, app, **k: calls.append(("carry", app)) or root)
+    monkeypatch.setattr(cli, "install", lambda c_, app, *a, _split=False, **k: calls.append(("install", app, _split)) or {"status": "running"})
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 1, "queued": 0})
+    with pytest.raises(SystemExit, match="1 running"):
+        cli.shell_split(c)
+    assert calls == []
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: None)
+    with pytest.raises(SystemExit, match="does not answer"):
+        cli.shell_split(c)
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
+    rt.status = "running"
+    with pytest.raises(SystemExit, match="did not stop"):
+        cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell")]
+    calls.clear(); rt.status = "stopped"
+    out = cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"),
+                     ("install", "wizard-agent-service", True), ("install", "wizard-ux", True)]
+    assert out["split"] is True
+    calls.clear(); rt.have |= {"wizard-agent-service", "wizard-ux"}; rt.status = "running"
+    out = cli.shell_split(c, rollback=True)
+    assert calls == [("stop", "wizard-ux"), ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):

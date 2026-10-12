@@ -168,6 +168,27 @@ DEFAULT_SERVICE_PORT = 8797   # wizard-agent-service's runtipi/config.json port
 # talks only to the Agent Service; the pre-split bundle (wizard-shell) is both in one container.
 LEGACY_BUNDLE = "wizard-shell"
 SERVICE_SLOT = "agent-service"
+# Image pin per app (a release's digest, or a local build under test): env var -> stored in alongside.json "images".
+PIN_VARS = {LEGACY_BUNDLE: "WIZARD_SHELL_IMAGE", "wizard-ux": "WIZARD_UX_IMAGE",
+            "wizard-agent-service": "WIZARD_AGENT_SERVICE_IMAGE"}
+
+
+def pin(st: dict, app_id: str) -> str:
+    return str((st.get("images") or {}).get(app_id) or "")
+
+
+def image_lines(st: dict, app_id: str) -> str:
+    image = pin(st, app_id)
+    return f"\n    image: {image}\n    pull_policy: missing" if image else ""
+
+
+def set_service_active(wizard_home: Path, active: bool) -> None:
+    """After the split the Agent Service answers the agent's gateway; after a rollback the bundle does again."""
+    st = load(wizard_home)
+    if st:
+        st.setdefault("service", {"port": DEFAULT_SERVICE_PORT})["active"] = bool(active)
+        save(wizard_home, st)
+
 
 
 def role_of(app_id: str, provides: list | None) -> str | None:
@@ -208,14 +229,21 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
                                         if share_history is None else share_history)},
     }
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
-    st["service"] = {"port": service_port}
-    # Image pins (a release's digest, or a local build under test), kept across re-runs.
-    for part, names in (("shell", ("WIZARD_UX_IMAGE", "WIZARD_SHELL_IMAGE")), ("service", ("WIZARD_AGENT_SERVICE_IMAGE",))):
-        image = next((os.environ[n] for n in names if os.environ.get(n)), None) or (prev.get(part) or {}).get("image")
-        if image:
-            if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
-                raise SystemExit(f"{names[0]} {image!r} is not an image reference")
-            st[part]["image"] = image
+    # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
+    st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
+    # Image pins (a release's digest, or a local build under test), one per app, kept across re-runs.
+    pins = dict(prev.get("images") or {})
+    old = (prev.get("shell") or {}).get("image")
+    if old and not pins:   # before the split one pin served the bundle: it stays the bundle's
+        pins[LEGACY_BUNDLE] = old
+    for app, var in PIN_VARS.items():
+        if os.environ.get(var):
+            pins[app] = os.environ[var]
+    for app, image in pins.items():
+        if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", str(image)):
+            raise SystemExit(f"{PIN_VARS.get(app, app)} {image!r} is not an image reference")
+    if pins:
+        st["images"] = pins
     gateway_token(wizard_home)
     save(wizard_home, st)
     return {**st, "detected": det}
@@ -287,8 +315,7 @@ services:
 
 def ux_override(st: dict, app_id: str) -> str:
     return UX_OVERRIDE.format(
-        app=app_id, port=int(st["shell"]["port"]), service_port=service_port(st),
-        image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing" if st["shell"].get("image") else ""))
+        app=app_id, port=int(st["shell"]["port"]), service_port=service_port(st), image=image_lines(st, app_id))
 
 
 def service_port(st: dict) -> int:
@@ -300,7 +327,6 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     also serves the UX, so it keeps the shell's port)."""
     if role == "shell":
         return ux_override(st, app_id)
-    part = "service" if role == "service" else "shell"
     port = service_port(st) if role == "service" else int(st["shell"]["port"])
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):
@@ -334,7 +360,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
                 "# read-only, so the shell can read every file there, credentials included."
                 if share else "The shell sees only the agent's images folder, not the Hermes home\n"
                 "# (opt in to session history: wam alongside --share-history)."),
-        image=(f"\n    image: {(st.get(part) or {})['image']}\n    pull_policy: missing" if (st.get(part) or {}).get("image") else ""),
+        image=image_lines(st, app_id),
         user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
         volumes=volumes)

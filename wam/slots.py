@@ -28,11 +28,16 @@ def repo_for(app_id: str, defaults: dict[str, dict] | None = None) -> str | None
                 RETIRED_REPOS.get(app_id))
 
 
+# The pre-split bundle is the shell and the Agent Service in one container: on a box that still runs it, both spots
+# are filled, so `bootstrap` installs no second Agent Service beside it (the split is `wam shell-split`).
+BUNDLE_FILLS = {"wizard-shell": ("shell", "agent-service")}
+
+
 def providers(reg: dict) -> dict[str, list[str]]:
     """slot -> installed app ids that provide it (from apps.json)."""
     out: dict[str, list[str]] = {}
     for a in reg.get("apps") or []:
-        for s in a.get("provides") or []:
+        for s in dict.fromkeys([*(a.get("provides") or []), *BUNDLE_FILLS.get(a["id"], ())]):
             out.setdefault(s, []).append(a["id"])
     return out
 
