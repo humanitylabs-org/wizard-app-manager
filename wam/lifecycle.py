@@ -226,6 +226,7 @@ class Bridge:
         canonical = (json.dumps(registry.public_projection(reg), indent=2) + "\n").encode()
         if (self.cfg.home / "apps.json").read_bytes() != canonical:
             registry.atomic_write(self.cfg.home / "apps.json", canonical)
+            registry.stamp_pointers(self.cfg.home)   # after the last apps.json write (see stamp_pointers)
         upstreams = {a["id"]: a["_view_upstream"] for a in reg["apps"] if a.get("_view_upstream")}
         registry.atomic_write(self.cfg.home / "view-upstreams.json", json.dumps(upstreams).encode(), 0o600)
         return self.clean(reg), rows

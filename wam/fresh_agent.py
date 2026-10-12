@@ -211,7 +211,7 @@ services:
       WIZARD_APP_MANAGER_URL: http://{bridge_host}:{bridge_port}
       WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}
       WIZARD_APP_MANAGER_HOSTS: {bridge_host}
-      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}
+      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}{owner}
 """
 
 AGENT_OVERLAY = """\
@@ -281,7 +281,11 @@ def write_service_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
         return False
     from .lifecycle import token_file   # late: lifecycle imports this module
     b = st["bridge"]
-    compose = SERVICE_OVERLAY.format(app=app_id, bridge_host=BRIDGE_HOST, bridge_ip=b["ip"], bridge_port=b["port"])
+    owner = st.get("owner") or {}
+    if not owner.get("logins"):   # a trusted gateway peer without a named owner would be refused by the Service
+        raise FreshError("owner_login_required", "run `wam fresh-agent prepare` with WIZARD_APP_OWNER_LOGINS set")
+    compose = SERVICE_OVERLAY.format(app=app_id, bridge_host=BRIDGE_HOST, bridge_ip=b["ip"], bridge_port=b["port"],
+                                     owner=alongside.owner_env(owner["logins"], owner.get("hosts")))
     return _write_overlay(runtipi_root, store, app_id, compose, {
         "WIZARD_MCP_TOKEN": alongside.gateway_token(home),
         "WIZARD_APP_MANAGER_TOKEN": token_file(home / "lifecycle-token")})
@@ -309,13 +313,19 @@ def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
 def prepare(c) -> dict:
     if alongside.load(c.home):
         raise FreshError("alongside_mode", "this box runs alongside its own Hermes; fresh-agent is for fresh boxes")
+    # The Service trusts the Runtipi gateway peer (Tailscale Serve -> 127.0.0.1-published port) only for a named
+    # owner login: from $WIZARD_APP_OWNER_LOGINS or this box's own tailnet identity. No owner, no fresh mode.
+    owner = alongside.owner_identity()
+    if not owner["logins"]:
+        raise FreshError("owner_login_required", "set WIZARD_APP_OWNER_LOGINS=<your tailnet login> (or sign this "
+                         "box into Tailscale) so the Agent Service knows its owner behind Tailscale Serve")
     alongside.gateway_token(c.home)
     from .lifecycle import token_file
     token_file(c.home / "lifecycle-token")
     ip = network_gateway(os.environ.get("WAM_RUNTIPI_NETWORK", RUNTIPI_NETWORK))
     _merge_json(c.home / "app-manager.json", {"container_bridge_bind": ip, "service_app_network": "internal"})
     prev = load(c.home) or {}
-    st = {**prev, "mode": "fresh", "bridge": {"host": BRIDGE_HOST, "ip": ip, "port": BRIDGE_PORT}}
+    st = {**prev, "mode": "fresh", "bridge": {"host": BRIDGE_HOST, "ip": ip, "port": BRIDGE_PORT}, "owner": owner}
     save(c.home, st)
     (c.runtipi_root / "app-data" / "wizard-os" / "skills").mkdir(parents=True, exist_ok=True)
     return {"ok": True, "mode": "fresh", "bridge": f"{BRIDGE_HOST} -> {ip}:{BRIDGE_PORT}",
@@ -326,6 +336,29 @@ def _installed(c) -> tuple[object, set[str]]:
     from .cli import installed_ids
     rt = c.runtipi()
     return rt, installed_ids(rt)
+
+
+CONTAINER_UNIT = "wizard-app-lifecycle-containers.service"
+
+
+def _systemctl_user(*args: str) -> str:
+    try:
+        p = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=60)
+        return "ok" if p.returncode == 0 else f"exit {p.returncode}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return type(e).__name__
+
+
+def service_publications(store: str, app_id: str) -> list[str]:
+    """Host addresses the Service app's containers publish on (`docker ps` Ports). The Service trusts its gateway
+    peer for a named owner only, but a wildcard publication would let an app container hairpin to it."""
+    p = _docker("ps", "--filter", f"label=com.docker.compose.project={app_id}_{store}", "--format", "{{.Ports}}")
+    out = []
+    for part in ",".join(p.stdout.split("\n")).split(","):
+        part = part.strip()
+        if "->" in part:
+            out.append(part.split("->")[0].rsplit(":", 1)[0].strip("[]"))
+    return out
 
 
 def _restart(rt, store: str, app_id: str) -> str:
@@ -465,6 +498,14 @@ def status(c) -> dict:
     if service:
         ovr = c.runtipi_root / "user-config" / STORE / service / "docker-compose.yml"
         check("Service overlay (token + bridge route)", ovr.is_file() and BRIDGE_HOST in ovr.read_text(), str(ovr))
+        check("Service overlay names the owner", ovr.is_file() and "WIZARD_APP_OWNER_LOGINS" in ovr.read_text(),
+              ",".join((st.get("owner") or {}).get("logins") or []) or "missing")
+        try:
+            pubs = service_publications(STORE, service)
+            check("Service published on 127.0.0.1 only", all(h in ("127.0.0.1", "::1") for h in pubs),
+                  ", ".join(pubs) or "not published on the host")
+        except FreshError as e:
+            check("Service published on 127.0.0.1 only", False, e.code)
     bind = registry._json_file(c.home / "app-manager.json").get("container_bridge_bind")
     check("bridge container listener declared", bool(bind), f"{bind}:{BRIDGE_PORT}" if bind else "missing")
     return {"ok": all(r["ok"] for r in rows), "checks": rows, "gateway": gateway, "live": live}
@@ -494,13 +535,16 @@ def disconnect(c, restart: bool = True) -> dict:
         c.runtipi_root, STORE, a, ("WIZARD_MCP_TOKEN", "WIZARD_APP_MANAGER_TOKEN") if a in SERVICE_APPS else ())]
     _merge_json(c.home / "app-manager.json", {}, drop=("container_bridge_bind", "service_app_network"))
     (c.home / STATE_FILE).unlink()
+    # Without a declared container_bridge_bind the second bridge exits at start; don't leave it restart-looping.
+    unit = _systemctl_user("disable", "--now", CONTAINER_UNIT)
     restarted = {}
     if restart:
         rt, have = _installed(c)
         for a in removed:
             if a in have:
                 restarted[a] = _restart(rt, STORE, a)
-    return {"ok": True, "reversed": reversed_keys, "overlays_removed": removed, "restarted": restarted}
+    return {"ok": True, "reversed": reversed_keys, "overlays_removed": removed, "restarted": restarted,
+            "container_listener": unit}
 
 
 def main(c, action: str, restart: bool = True) -> dict:

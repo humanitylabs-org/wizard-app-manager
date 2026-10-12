@@ -313,9 +313,15 @@ def write_pointers(reg: dict, root: Path, mcp_address: str = "url") -> list[str]
             if current == text or POINTER_MARK not in current:
                 continue   # unchanged, or a skill of the owner's that happens to use the name
         atomic_write(p, text.encode())
-    # Same stamp the Agent Service writes: the plugin's session-start refresh skips work this already did.
-    atomic_write(sk / kernel.JOB_STAMP, f"{int(time.time() * 1000)}\n".encode())
+    stamp_pointers(root)
     return sorted(want)
+
+
+def stamp_pointers(root: Path) -> None:
+    """Same stamp the Agent Service writes: the plugin's session-start refresh skips work this already did. It must
+    be newer than <root>/apps.json: that refresh (the pinned kernel) deletes every wizard-job-* folder it doesn't
+    render, owner folders included, so whoever rewrites apps.json last re-stamps."""
+    atomic_write(root / "skills" / kernel.JOB_STAMP, f"{int(time.time() * 1000)}\n".encode())
 
 
 def write(reg: dict, root: Path | None = None, *, preserve_choices=True, mcp_address: str = "url") -> Path:

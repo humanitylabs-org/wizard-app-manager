@@ -106,6 +106,32 @@ def test_bridge_results_refresh_pointers_in_home_and_shared_immediately(bridge):
     assert not (b.cfg.home / "skills" / POINTER).exists() and not (shared / "skills" / POINTER).exists()
 
 
+def test_apps_json_rewritten_after_the_stamp_never_lets_the_plugin_delete_owner_pointers(bridge, monkeypatch):  # noqa: F811
+    """lifecycle.refresh rewrites apps.json after registry.write stamped the pointers (a collision found only in the
+    shared projection). The stamp must still be newest, so the pinned kernel's session-start refresh (which deletes
+    every wizard-job-* folder it doesn't render) skips; an owner's own wizard-job-* folder survives."""
+    import time as _time
+    b = bridge
+    owner = b.cfg.home / "skills" / "wizard-job-owner-notes" / "SKILL.md"
+    registry.atomic_write(owner, b"---\nname: wizard-job-owner-notes\n---\nmine\n")
+    real = registry.public_projection
+    calls = {"n": 0}
+
+    def drifting(reg):   # the second projection (lifecycle's canonical rewrite) differs from what write() wrote
+        calls["n"] += 1
+        out = real(reg)
+        return {**out, "note": "canonical"} if calls["n"] > 2 else out
+    monkeypatch.setattr(registry, "public_projection", drifting)
+    _time.sleep(0.02)
+    code, _ = op(b, "install")
+    assert code == 200 and "canonical" in (b.cfg.home / "apps.json").read_text()
+    stamp = b.cfg.home / "skills" / kernel.JOB_STAMP
+    assert stamp.stat().st_mtime_ns >= (b.cfg.home / "apps.json").stat().st_mtime_ns
+    monkeypatch.setenv("WIZARD_OS_HOME", str(b.cfg.home))
+    assert kernel.refresh_pointer_skills(b.cfg.home) is None   # skipped: nothing deleted
+    assert owner.read_text().endswith("mine\n")
+
+
 def test_internal_service_network_view_upstream(bridge):  # noqa: F811
     b = bridge
     (b.cfg.home / "app-manager.json").write_text(json.dumps({"service_app_network": "internal"}))
@@ -250,13 +276,18 @@ def fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(fresh_agent, "CONTAINER_OS_HOME", str(rt_root / "app-data" / "wizard-os"))
     monkeypatch.setattr(fresh_agent, "VENV_PYTHON", sys.executable)
     monkeypatch.setattr(fresh_agent, "RESTART_SETTLE", 0)
+    monkeypatch.setenv("WIZARD_APP_OWNER_LOGINS", "owner@example.test")
+    monkeypatch.setenv("WIZARD_ALLOWED_HOSTS", "box.example.ts.net")
+    monkeypatch.setattr(alongside, "_tailscale_status", lambda: {})
+    units = []
+    monkeypatch.setattr(fresh_agent, "_systemctl_user", lambda *a: units.append(a) or "ok")
     gw = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
     gw.token = alongside.gateway_token(home)
     threading.Thread(target=gw.serve_forever, daemon=True).start()
     monkeypatch.setattr(fresh_agent, "gateway_url", lambda app: f"http://127.0.0.1:{gw.server_port}/{app}/wizard/mcp")
     rt = FakeRuntipi(["hermes-agent", "wizard-agent-service", "files"])
     c = SimpleNamespace(home=home, runtipi_root=rt_root, runtipi=lambda: rt)
-    yield SimpleNamespace(c=c, rt=rt, hermes=hermes_home, log=log, token=gw.token, gw=gw)
+    yield SimpleNamespace(c=c, rt=rt, hermes=hermes_home, log=log, token=gw.token, gw=gw, units=units)
     gw.shutdown()
     gw.server_close()
 
@@ -286,6 +317,9 @@ def test_prepare_and_install_overlays(fresh):
     assert spec["environment"]["WIZARD_APP_MANAGER_HOSTS"] == "wizard-app-lifecycle"
     assert spec["environment"]["WIZARD_APP_TRUSTED_PROXY_IPS"] == "172.18.0.1"
     assert spec["environment"]["WIZARD_UX_PREFIX"] == "wizard-os-home"
+    # ...and only for a named owner login behind it, with the box's tailnet name in the Host fence.
+    assert spec["environment"]["WIZARD_APP_OWNER_LOGINS"] == "owner@example.test"
+    assert spec["environment"]["WIZARD_ALLOWED_HOSTS"] == "box.example.ts.net"
     assert "network_mode" not in spec   # stays on the Runtipi network: UX and Hermes reach it by name
     env = pinned.read_text()
     assert env.startswith("WIZARD_AGENT_SERVICE_IMAGE=127.0.0.1:5000/svc:test\n")
@@ -304,6 +338,34 @@ def test_prepare_and_install_overlays(fresh):
     with pytest.raises(fresh_agent.FreshError) as e:
         fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-shell", f.c.home)
     assert e.value.code == "overlay_not_ours" and foreign.read_text() == "services: {}\n"
+
+
+def test_prepare_requires_a_named_owner_from_env_or_this_box_tailnet(fresh, monkeypatch):
+    f = fresh
+    monkeypatch.delenv("WIZARD_APP_OWNER_LOGINS")
+    monkeypatch.delenv("WIZARD_ALLOWED_HOSTS")
+    res = fresh_agent.main(f.c, "prepare")
+    assert res["error"] == "owner_login_required" and not (f.c.home / "fresh-agent.json").exists()
+    # This node's own Tailscale identity (Self -> User LoginName, DNSName) is the inferred owner.
+    monkeypatch.setattr(alongside, "_tailscale_status", lambda: {
+        "Self": {"UserID": 2558283730723414, "DNSName": "thales.tailc0f369.ts.net."},
+        "User": {"2558283730723414": {"LoginName": "jdefleur@github"}}})
+    assert fresh_agent.main(f.c, "prepare")["ok"]
+    assert json.loads((f.c.home / "fresh-agent.json").read_text())["owner"] == {
+        "logins": ["jdefleur@github"], "hosts": ["thales.tailc0f369.ts.net"]}
+    monkeypatch.setenv("WIZARD_APP_OWNER_LOGINS", "owner@x.test\nWIZARD_REQUIRE_CF_ACCESS=0")
+    with pytest.raises(SystemExit):
+        alongside.owner_identity()
+
+
+def test_status_flags_a_wildcard_service_publication(fresh, monkeypatch):
+    f = fresh
+    fresh_agent.prepare(f.c)
+    assert fresh_agent.main(f.c, "connect")["ok"]
+    monkeypatch.setattr(fresh_agent, "service_publications", lambda store, app: ["0.0.0.0", "::"])
+    res = fresh_agent.main(f.c, "status")
+    row = next(r for r in res["checks"] if r["check"] == "Service published on 127.0.0.1 only")
+    assert not row["ok"] and not res["ok"]
 
 
 def test_prepare_refuses_alongside(fresh, tmp_path):
@@ -359,6 +421,8 @@ def test_connect_one_gateway_skills_plugin_idempotent_and_reversible(fresh):
     assert not (f.c.runtipi_root / "user-config" / "wizardapps" / "wizard-agent-service").exists()
     assert not (f.c.home / "fresh-agent.json").exists()
     assert json.loads((f.c.home / "app-manager.json").read_text()) == {}
+    # The container listener has nothing to bind any more: disabled, not left restart-looping.
+    assert ("disable", "--now", "wizard-app-lifecycle-containers.service") in f.units and out["container_listener"] == "ok"
 
 
 def test_connect_prefers_modular_service_and_wires_legacy_bundle_too(fresh):

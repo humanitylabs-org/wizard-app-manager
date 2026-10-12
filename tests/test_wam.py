@@ -297,6 +297,14 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert "WIZARD_APP_MANAGER_TOKEN: ${WIZARD_APP_MANAGER_TOKEN}" in text
     lifecycle_token = (wh / "lifecycle-token").read_text().strip()
     assert f"WIZARD_APP_MANAGER_TOKEN={lifecycle_token}\n" in envp.read_text() and lifecycle_token not in text
+    assert "WIZARD_APP_OWNER_LOGINS" not in text   # no owner known: only direct loopback callers are the owner
+    # The owner behind Tailscale Serve: this box's tailnet login and name (or the explicit env), pinned in the override.
+    monkeypatch.setattr(alongside, "_tailscale_status", lambda: {
+        "Self": {"UserID": 7, "DNSName": "box.tail0.ts.net."}, "User": {"7": {"LoginName": "Owner@GitHub"}}})
+    alongside.enable(wh, hh, 18796)
+    spec = yaml.safe_load(alongside.write_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell", wh)
+                          .read_text().replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert spec["WIZARD_APP_OWNER_LOGINS"] == "owner@github" and spec["WIZARD_ALLOWED_HOSTS"] == "box.tail0.ts.net"
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
 
