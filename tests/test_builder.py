@@ -217,6 +217,12 @@ def test_generated_view_defaults_to_containing_skin(tmp_path):
     blob=re.search(r"b64decode\('([^']+)'\)",compose['services']['skin-app']['command'][2]).group(1)
     shipped=set(json.loads(base64.b64decode(blob)))
     assert {'web/'+p.name for p in (root/'web').iterdir()} <= shipped
+    env=compose['services']['skin-app']['environment']
+    assert env['WIZARD_TRUSTED_HOSTS']=='${WIZARD_TRUSTED_HOSTS:-}'
+    from wam.builder_assets import package_inline
+    (root/'web'/'logo.png').write_bytes(b'\x89PNG')
+    with pytest.raises(ValueError, match='text view files only'):
+        package_inline(root)
 
 
 
