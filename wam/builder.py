@@ -230,7 +230,8 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
-        subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True)
+        subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
+                       stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
         rec['state'] = 'started_health_unverified'
         _json(stage / 'stage.json', rec)
     return rec
@@ -276,7 +277,8 @@ def update_local(root, os_home=None, *, run=False):
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
-        subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True)
+        subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
+                       stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
     return {**rec, 'update': 'updated'}
 
 
