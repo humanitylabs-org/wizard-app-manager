@@ -81,10 +81,22 @@ def _save(app_id, home, view):
     return view
 
 
+def _require(app_id, home):
+    view = load(app_id, home)
+    if not view:
+        raise ViewError(f'{app_id} is not customized.')
+    return view
+
+
 @contextlib.contextmanager
-def _locked(app_id, home):
+def _locked(app_id, home, create=False):
     d = view_dir(app_id, home)
-    d.mkdir(parents=True, exist_ok=True)
+    if d.is_symlink():
+        raise ViewError(f'views/{app_id} is a symlink; refusing to use it.')
+    if not d.is_dir():
+        if not create:
+            raise ViewError(f'{app_id} is not customized.')
+        d.mkdir(parents=True)
     with open(d / '.lock', 'a+') as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield d
@@ -140,9 +152,30 @@ def _replace_tree(src, snapshot_root):
         shutil.copyfile(f, dest)
 
 
+def _ensure_main(src):
+    """Recover from an interrupted operation: finish nothing half-way, and be on `main`. Owner work is
+    always committed on main before any branch switch, so discarding a dirty non-main tree loses nothing."""
+    if (src / '.git' / 'MERGE_HEAD').exists():
+        _git(src, 'merge', '--abort', check=False)
+    branch = _git(src, 'rev-parse', '--abbrev-ref', 'HEAD', check=False).stdout.strip()
+    if branch != 'main':
+        _git(src, 'reset', '-q', '--hard', check=False)
+        _git(src, 'clean', '-fdq', check=False)
+        _git(src, 'checkout', '-q', 'main')
+
+
+def _owner_paths_ok(src, view_path):
+    """Everything the owner changed on main relative to the app (committed or not) is screen source."""
+    prefix = view_path.strip('/') + '/'
+    changed = _git(src, 'diff', '--name-only', '--no-renames', 'upstream...HEAD').stdout.split()
+    outside = [p for p in changed if not p.startswith(prefix)]
+    if outside:
+        raise ViewError('Only the screen source (' + prefix + ') belongs in a custom view; changed outside it: ' + ', '.join(outside[:5]))
+
+
 def _commit_owner(src, view_path):
     """Commit the owner's pending edits on main. Only the screen's source may change."""
-    status = _git(src, 'status', '--porcelain', '-uall').stdout.splitlines()
+    status = _git(src, 'status', '--porcelain', '-uall', '--no-renames').stdout.splitlines()
     if not status:
         return False
     prefix = view_path.strip('/').rstrip('/') + '/'
@@ -161,6 +194,8 @@ def _run_build(work, view, image):
     the app's own image: no network, read-only root, no capabilities, source in and dist out over a pipe
     (no host mounts). WIZARD_VIEWS_BUILD=host is a developer/test opt-in."""
     build = (view.get('build') or '').strip()
+    if not hasattr(tarfile, 'data_filter'):
+        raise ViewError('Custom views need Python with tarfile data filters (3.12+, 3.11.4+ or 3.10.12+).')
     if not build or build == 'none':
         return work / view['dist'], ''
     where = os.environ.get('WIZARD_VIEWS_BUILD', 'container')
@@ -180,7 +215,7 @@ def _run_build(work, view, image):
         tf.add(work, arcname='.')
     script = ('set -e; mkdir -p /tmp/w; cd /tmp/w; tar xf -; eval "$WZ_BUILD" >&2; '
               'case "$WZ_DIST" in /*|*..*) echo "bad dist" >&2; exit 2;; esac; tar cf - -C "$WZ_DIST" .')
-    cmd = ['docker', 'run', '-i', '--rm', '--network', 'none', '--read-only', '--tmpfs', '/tmp:rw,exec,size=256m',
+    cmd = ['docker', 'run', '-i', '--rm', '--pull', 'never', '--network', 'none', '--cpus', '1', '--read-only', '--tmpfs', '/tmp:rw,exec,size=256m',
            '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--memory', '512m', '--pids-limit', '256',
            '--user', '1000:1000', '-e', 'HOME=/tmp', '-e', 'WZ_BUILD=' + build, '-e', 'WZ_DIST=' + view['dist'],
            '--entrypoint', 'sh', image, '-c', script]
@@ -239,9 +274,29 @@ def _build(d, view, commit, image=None):
 
 # ---------------------------------------------------------------- overlay --
 
+def _read_regular(d, name, limit=128 * 1024):
+    """Read views/<id>/overlay/<name> only if it is a regular file (no symlinks anywhere on the
+    way) under `limit`. Returns None if absent or unsafe; checked on every read, not just at apply."""
+    for p in (d, d / 'overlay'):
+        try:
+            if not os.path.isdir(p) or os.path.islink(p):
+                return None
+        except OSError:
+            return None
+    try:
+        fd = os.open(d / 'overlay' / name, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as f:
+        st = os.fstat(f.fileno())
+        if not (st.st_mode & 0o170000 == 0o100000) or st.st_size > limit:
+            return None
+        return f.read(limit + 1)[:limit]
+
+
 def _overlay_requires(d):
-    p = d / 'overlay' / 'overlay.json'
-    req = json.loads(p.read_text()).get('requires', []) if p.is_file() else []
+    raw = _read_regular(d, 'overlay.json')
+    req = json.loads(raw).get('requires', []) if raw else []
     if not isinstance(req, list) or not all(isinstance(s, str) and 0 < len(s) < 120 for s in req):
         raise ViewError('overlay.json "requires" must be a list of CSS selectors.')
     return req
@@ -271,11 +326,11 @@ def _missing_selectors(app, requires):
 
 def _check_overlay_files(d):
     o = d / 'overlay'
-    for name in ('overlay.css', 'overlay.js'):
+    for name in ('overlay.css', 'overlay.js', 'overlay.json'):
         p = o / name
-        if p.is_symlink() or (p.exists() and p.stat().st_size > 128 * 1024):
-            raise ViewError(f'{name} must be a regular file under 128 KB.')
-    if not (o / 'overlay.css').is_file():
+        if (p.exists() or p.is_symlink()) and _read_regular(d, name) is None:
+            raise ViewError(f'{name} must be a regular file under 128 KB (no symlinks).')
+    if _read_regular(d, 'overlay.css') is None:
         raise ViewError('An overlay needs overlay/overlay.css.')
 
 
@@ -286,7 +341,19 @@ def customize(app_id, mode='own', home=None):
     if mode not in ('own', 'overlay'):
         raise ViewError('mode is own or overlay.')
     app = app_record(app_id, home)
-    with _locked(app_id, home) as d:
+    if load(app_id, home):
+        raise ViewError(f'{app_id} is already customized; edit it, or use revert / status.')
+    try:
+        return _customize(app_id, mode, home, app)
+    except BaseException:
+        d = view_dir(app_id, home)
+        if d.is_dir() and not d.is_symlink() and not (d / 'view.json').exists():
+            shutil.rmtree(d, ignore_errors=True)
+        raise
+
+
+def _customize(app_id, mode, home, app):
+    with _locked(app_id, home, create=True) as d:
         if (d / 'view.json').exists():
             raise ViewError(f'{app_id} is already customized; edit it, or use revert / status.')
         if mode == 'overlay':
@@ -331,25 +398,50 @@ def apply(app_id, home=None):
                 raise ViewError("The overlay targets things this app's screen doesn't have: " + ', '.join(missing))
             view.update(active=True, state='active', suspended=False, note=None, base=app['version'])
             return _save(app_id, home, view)
-        if view['state'] == 'update_conflict':
-            raise ViewError('An app update is waiting on a decision: resolve --keep mine|upstream first.')
-        _commit_owner(d / 'src', view['path'])
-        commit = _git(d / 'src', 'rev-parse', 'HEAD').stdout.strip()
+        src = d / 'src'
+        _ensure_main(src)
+        _commit_owner(src, view['path'])
+        merged = _git(src, 'merge-base', '--is-ancestor', 'upstream', 'HEAD', check=False).returncode == 0
+        if view['state'] == 'update_conflict' and not merged:
+            raise ViewError('An app update is waiting on a decision: resolve --keep mine|upstream first '
+                            '(or merge upstream into main by hand, then apply).')
+        _owner_paths_ok(src, view['path'])
+        commit = _git(src, 'rev-parse', 'HEAD').stdout.strip()
         _build(d, view, commit, app.get('image'))
-        if view.get('state') == 'update_build_failed' and view.get('pending'):
-            # The update was already merged on main; the owner's fix makes it build, so the update is done.
-            view.update(base=view['pending'], pending=None, build_log=None)
+        if view.get('pending') and merged:
+            # The update is on main (merged earlier, or by hand) and now builds: the update is done.
+            view.update(base=view['pending'], pending=None, conflicts=[], build_log=None)
         view.update(active=True, serving=commit, state='active', note=None)
         return _save(app_id, home, view)
 
 
-def _merge_and_build(app_id, home, d, view, app, strategy=None):
+def _settle(src, keep):
+    """Finish a conflicted merge by choosing a side per conflicted path, including modify/delete."""
+    side = '2' if keep == 'mine' else '3'   # index stage 2 = main (owner), 3 = upstream (app)
+    for path in _git(src, 'diff', '--name-only', '--diff-filter=U').stdout.split():
+        stages = {line.split()[2] for line in _git(src, 'ls-files', '-u', '--', path).stdout.splitlines()}
+        if side in stages:
+            _git(src, 'checkout', '--ours' if keep == 'mine' else '--theirs', '--', path)
+            _git(src, 'add', '--', path)
+        else:
+            _git(src, 'rm', '-q', '--', path)
+    _git(src, 'commit', '-q', '--no-edit')
+
+
+def _merge_and_build(app_id, home, d, view, app, keep=None):
     src = d / 'src'
-    args = ['merge', '--no-edit', '-m', f"App update {str(app['version'])[:12]}"] + (['-X', strategy] if strategy else []) + ['upstream']
-    r = _git(src, *args, check=False)
-    if r.returncode:
+    args = ['merge', '--no-edit', '-m', f"App update {str(app['version'])[:12]}"]
+    if keep:
+        args += ['-X', 'ours' if keep == 'mine' else 'theirs']
+    r = _git(src, *args, 'upstream', check=False)
+    if r.returncode and keep and (src / '.git' / 'MERGE_HEAD').exists():
+        _settle(src, keep)
+    elif r.returncode:
         conflicts = _git(src, 'diff', '--name-only', '--diff-filter=U', check=False).stdout.split()
         _git(src, 'merge', '--abort', check=False)
+        _git(src, 'reset', '-q', '--hard', check=False)
+        if not conflicts:
+            raise ViewError('The update could not be merged: ' + (r.stderr or r.stdout).strip()[-300:])
         view.update(state='update_conflict', pending=app['version'], conflicts=conflicts,
                     note=(f"{app_id} updated and its screen changed where yours did ({', '.join(conflicts) or 'see git'}). "
                           'Your version stays on screen. Decide: keep mine, or take upstream.'))
@@ -363,8 +455,8 @@ def _merge_and_build(app_id, home, d, view, app, strategy=None):
                     note=f'{app_id} updated but your version no longer builds ({lines[-1][:160] if lines else "build failed"}); '
                          'the last working version stays on screen.')
         return _save(app_id, home, view)
-    view.update(base=app['version'], pending=None, conflicts=[], note=None, serving=commit,
-                state='active' if view['active'] else 'reverted')
+    view.update(base=app['version'], pending=None, conflicts=[], note=None, serving=commit, build_log=None,
+                state='active' if view['active'] else ('reverted' if view.get('serving') else 'editing'))
     return _save(app_id, home, view)
 
 
@@ -385,7 +477,10 @@ def update(app_id, home=None):
         if view['base'] == app['version'] and view['state'] not in ('update_conflict', 'update_build_failed'):
             return {**view, 'update': 'already_current'}
         src = d / 'src'
+        _ensure_main(src)
         _commit_owner(src, view['path'])
+        if not Path(app['source']).is_dir():
+            raise ViewError(f"{app_id}'s installed source is missing; nothing changed.")
         _git(src, 'checkout', '-q', 'upstream')
         try:
             _replace_tree(src, Path(app['source']))
@@ -393,7 +488,7 @@ def update(app_id, home=None):
             if _git(src, 'status', '--porcelain').stdout.strip():
                 _git(src, 'commit', '-q', '-m', f"App {app_id} at {str(app['version'])[:12]}")
         finally:
-            _git(src, 'checkout', '-q', 'main')
+            _ensure_main(src)
         return _merge_and_build(app_id, home, d, view, app)
 
 
@@ -407,10 +502,9 @@ def resolve(app_id, keep, home=None):
         view = load(app_id, home)
         if not view or view.get('state') != 'update_conflict':
             raise ViewError(f'{app_id} has no update waiting on a decision.')
-        view = _merge_and_build(app_id, home, d, view, app, strategy='ours' if keep == 'mine' else 'theirs')
-        if view['state'] == 'update_conflict':
-            raise ViewError('The update still could not merge (a file was deleted on one side). Edit src/ by hand, then apply.')
-        return view
+        _ensure_main(d / 'src')
+        _commit_owner(d / 'src', view['path'])
+        return _merge_and_build(app_id, home, d, view, app, keep=keep)
 
 
 def revert(app_id, home=None):
@@ -424,17 +518,15 @@ def revert(app_id, home=None):
 
 
 def reactivate(app_id, home=None):
-    with _locked(app_id, home) as d:
-        view = load(app_id, home)
-        if not view:
-            raise ViewError(f'{app_id} is not customized.')
-        if view['mode'] == 'own' and not (view.get('serving') and (d / 'builds' / view['serving'] / '.ok').is_file()):
-            raise ViewError('No working build to switch back to; apply first.')
+    view = _require(app_id, home)
     if view['mode'] == 'overlay':
         return apply(app_id, home)
-    with _locked(app_id, home):
+    with _locked(app_id, home) as d:
         view = load(app_id, home)
-        view.update(active=True, state='active' if not view.get('pending') else view['state'])
+        if not (view.get('serving') and (d / 'builds' / view['serving'] / '.ok').is_file()):
+            raise ViewError('No working build to switch back to; apply first.')
+        pending = view.get('pending') and view['state'] in ('update_conflict', 'update_build_failed')
+        view.update(active=True, state=view['state'] if pending else 'active')
         return _save(app_id, home, view)
 
 
@@ -474,22 +566,28 @@ def _fetch(base, path, method='GET', body=None, headers=None):
 
 
 def overlay_loader(app_id, d):
+    """Checks the overlay still matches, then loads the owner's script as its own file so that a
+    syntax error, a runtime error or a failed load all switch the overlay off."""
     req = json.dumps(_overlay_requires(d))
-    js_path = d / 'overlay' / 'overlay.js'
-    owner_js = js_path.read_text() if js_path.is_file() and not js_path.is_symlink() else ''
+    has_js = 'true' if _read_regular(d, 'overlay.js') else 'false'
     return (f'''(() => {{ 'use strict';
-  const base = '/views/{app_id}/', requires = {req};
-  const off = why => {{ document.querySelector('link[data-wz-overlay]')?.remove();
+  const base = '/views/{app_id}/', requires = {req}, ownerJs = base + '_overlay-owner.js';
+  let done = false;
+  const off = why => {{ if (done) return; done = true;
+    document.querySelectorAll('[data-wz-overlay]').forEach(n => n.remove());
     fetch(base + '_overlay-report', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(why) }}).catch(() => {{}}); }};
+  addEventListener('error', e => {{ if (String(e.filename || '').endsWith(ownerJs)) off({{ error: String(e.message || 'script error').slice(0, 200) }}); }});
   const run = () => {{
     const missing = requires.filter(s => {{ try {{ return !document.querySelector(s); }} catch (e) {{ return true; }} }});
     if (missing.length) return off({{ missing }});
-    try {{
-''' + owner_js + '''
-    } catch (e) { off({ error: String(e && e.message || e).slice(0, 200) }); }
-  };
+    if (!{has_js}) return;
+    const s = document.createElement('script');
+    s.src = ownerJs; s.dataset.wzOverlay = '';
+    s.onerror = () => off({{ error: 'overlay script failed to load' }});
+    document.head.appendChild(s);
+  }};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run); else run();
-})();
+}})();
 ''').encode()
 
 
@@ -520,6 +618,9 @@ class Door(BaseHTTPRequestHandler):
         if (self.headers.get('Host') or '').lower() not in self.hosts:
             self._send(403, {'error': 'Unknown host.'})
             return True
+        if self.headers.get('Sec-Fetch-Site') == 'cross-site' and self.headers.get('Sec-Fetch-Mode') != 'navigate':
+            self._send(403, {'error': 'Cross-site requests refused.'})
+            return True
         if write:
             origin = (self.headers.get('Origin') or '').lower()
             if (origin and origin not in self.origins) or (not origin and self.headers.get('Sec-Fetch-Site') == 'cross-site'):
@@ -533,11 +634,10 @@ class Door(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._route()
 
-    def do_POST(self):
-        self._route()
+    do_POST = do_PUT = do_PATCH = do_DELETE = do_GET
 
     def _route(self):
-        write = self.command == 'POST'
+        write = self.command not in ('GET', 'HEAD')
         if self._refused(write):
             return
         u = urlsplit(self.path)
@@ -561,21 +661,24 @@ class Door(BaseHTTPRequestHandler):
         if kind == 'apps':
             # The app's own screen and its declared API. Its MCP and anything else that writes stay
             # behind the agent's authenticated door, not the browser's.
-            api_path = (app['api'].get('path') or '/api').rstrip('/')
+            api_path = ((app['api'] if isinstance(app['api'], dict) else {}).get('path') or '/api').rstrip('/')
             in_api = rest == api_path or rest.startswith(api_path + '/')
             mcp = ((app.get('mcp') or {}).get('path') or '/mcp').rstrip('/')
             if (write and not in_api) or rest == mcp or rest.startswith(mcp + '/'):
                 return self._send(404, {'error': 'Not found.'})
             return self._proxy(app, rest, u.query, view, d)
         # /views/<id>/...
-        if rest == '/_overlay.css' and view and view['mode'] == 'overlay':
-            return self._send(200, (d / 'overlay' / 'overlay.css').read_bytes(), 'text/css; charset=utf-8')
+        if rest in ('/_overlay.css', '/_overlay-owner.js') and view and view['mode'] == 'overlay' and not write:
+            data = _read_regular(d, 'overlay.css' if rest.endswith('.css') else 'overlay.js')
+            if data is None:
+                return self._send(404, {'error': 'Not found.'})
+            return self._send(200, data, 'text/css; charset=utf-8' if rest.endswith('.css') else 'text/javascript; charset=utf-8')
         if rest == '/_overlay.js' and view and view['mode'] == 'overlay':
             return self._send(200, overlay_loader(app_id, d), 'text/javascript; charset=utf-8')
         if rest == '/_overlay-report' and write and view and view['mode'] == 'overlay':
             return self._overlay_report(app_id, d)
-        if rest.startswith('/api/') and view and view['mode'] == 'own':
-            api_path = (app['api'].get('path') or '/api').rstrip('/')
+        if (rest == '/api' or rest.startswith('/api/')) and view and view['mode'] == 'own':
+            api_path = ((app['api'] if isinstance(app['api'], dict) else {}).get('path') or '/api').rstrip('/')
             return self._forward(app, api_path + rest[len('/api'):], u.query)
         if view and view['mode'] == 'own' and view['active'] and view.get('serving') and not write:
             return self._static(d / 'builds' / view['serving'], rest)
@@ -591,7 +694,7 @@ class Door(BaseHTTPRequestHandler):
 
     def _forward(self, app, path, query):
         try:
-            body = self._body() if self.command == 'POST' else None
+            body = self._body() if self.command not in ('GET', 'HEAD') else None
         except ViewError as e:
             return self._send(413, {'error': str(e)})
         headers = {k: self.headers[k] for k in ('Content-Type', 'Accept') if self.headers.get(k)}
@@ -607,7 +710,7 @@ class Door(BaseHTTPRequestHandler):
 
     def _proxy(self, app, rest, query, view, d):
         try:
-            body = self._body() if self.command == 'POST' else None
+            body = self._body() if self.command not in ('GET', 'HEAD') else None
         except ViewError as e:
             return self._send(413, {'error': str(e)})
         headers = {k: self.headers[k] for k in ('Content-Type', 'Accept') if self.headers.get(k)}

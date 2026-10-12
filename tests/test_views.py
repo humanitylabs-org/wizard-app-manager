@@ -272,6 +272,65 @@ def test_app_build_commands_never_run_on_the_host_by_default(box, monkeypatch):
         views.apply('habit-tracker', box.home)
 
 
+def test_modify_delete_conflict_is_resolved_explicitly(box):
+    web = Path(views.customize('habit-tracker', 'own', box.home)['edit'])
+    _edit(web / 'styles.css', '.habit-progress', '.mine { color: red; }\n.habit-progress')
+    views.apply('habit-tracker', box.home)
+    box.upstream_update(lambda w: (w / 'styles.css').unlink())
+    v = views.update('habit-tracker', box.home)
+    assert v['state'] == 'update_conflict' and v['conflicts'] == ['web/styles.css']
+    v = views.resolve('habit-tracker', 'mine', box.home)
+    assert v['state'] == 'active' and '.mine' in box.get('/views/habit-tracker/styles.css')[2]
+    src = box.home / 'views/habit-tracker/src'
+    assert subprocess.run(['git', '-C', str(src), 'merge-base', '--is-ancestor', 'upstream', 'main']).returncode == 0
+
+
+def test_interrupted_operations_heal_back_to_main(box, monkeypatch):
+    web = Path(views.customize('habit-tracker', 'own', box.home)['edit'])
+    _edit(web / 'index.html', '<h1>Habits</h1>', '<h1>Mine</h1>')
+    views.apply('habit-tracker', box.home)
+    src = box.home / 'views/habit-tracker/src'
+    branch = lambda: subprocess.run(['git', '-C', str(src), 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    rec = views.app_record('habit-tracker', box.home)
+    monkeypatch.setattr(views, 'app_record', lambda *a, **k: {**rec, 'version': 'new', 'source': str(box.home / 'gone')})
+    with pytest.raises(views.ViewError, match='source is missing'):
+        views.update('habit-tracker', box.home)
+    assert branch() == 'main'
+    monkeypatch.setattr(views, 'app_record', lambda *a, **k: rec)
+    # A crash left the repo on upstream with a half-written tree: the next operation recovers.
+    subprocess.run(['git', '-C', str(src), 'checkout', '-q', 'upstream'], check=True)
+    (src / 'web/index.html').write_text('half')
+    assert views.apply('habit-tracker', box.home)['state'] == 'active' and branch() == 'main'
+    assert '<h1>Mine</h1>' in box.get('/views/habit-tracker/')[2]
+    # Direct commits outside the screen folder are refused too, not only uncommitted ones.
+    (src / 'app/server.py').write_text('# planted\n')
+    subprocess.run(['git', '-C', str(src), '-c', 'user.name=x', '-c', 'user.email=x@x', 'commit', '-qam', 'x'], check=True)
+    with pytest.raises(views.ViewError, match='Only the screen source'):
+        views.apply('habit-tracker', box.home)
+
+
+def test_overlay_files_are_checked_on_every_request_and_owner_js_loads_separately(box, tmp_path):
+    d = Path(views.customize('habit-tracker', 'overlay', box.home)['edit'])
+    (d / 'overlay.css').write_text('#add-form { order: -1; }\n')
+    (d / 'overlay.js').write_text('document.body.dataset.owner = "1";\n')
+    views.apply('habit-tracker', box.home)
+    loader = box.get('/views/habit-tracker/_overlay.js')[2]
+    assert 'dataset.owner' not in loader and '_overlay-owner.js' in loader
+    assert 'dataset.owner' in box.get('/views/habit-tracker/_overlay-owner.js')[2]
+    secret = tmp_path / 'secret.json'; secret.write_text('{"token": "s3cret"}')
+    (d / 'overlay.css').unlink(); (d / 'overlay.css').symlink_to(secret)
+    code, _, body = box.get('/views/habit-tracker/_overlay.css')
+    assert code == 404 and 's3cret' not in body
+
+
+def test_cross_site_reads_refused_and_uncustomized_apps_get_no_folder(box):
+    assert box.get('/apps/habit-tracker/api/habits', **{'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors'})[0] == 403
+    assert box.get('/apps/habit-tracker/', **{'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate'})[0] == 200
+    with pytest.raises(views.ViewError, match='not customized'):
+        views.revert('habit-tracker', box.home)
+    assert not (box.home / 'views/habit-tracker').exists()
+
+
 def test_cli_routes_views_and_update_local():
     src = (Path(builder.REPO) / 'wam/cli.py').read_text()
     assert 'argv[0] == "views"' in src and '"update-local"' in src
