@@ -206,6 +206,7 @@ services:
     extra_hosts:
       - "{bridge_host}:{bridge_ip}"
     environment:
+      WIZARD_UX_PREFIX: wizard-os-home
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
       WIZARD_APP_MANAGER_URL: http://{bridge_host}:{bridge_port}
       WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}

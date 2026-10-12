@@ -289,6 +289,7 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    assert "WIZARD_UX_PREFIX: wizard-os-home" in text   # the UX's Store/System/PWA paths, also on the legacy image
     envp = p.parent / "app.env"
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
     # The shell reaches the host lifecycle bridge with the bridge's own dedicated token, server-side only.

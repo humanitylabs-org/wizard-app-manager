@@ -282,6 +282,10 @@ def test_prepare_and_install_overlays(fresh):
     spec = yaml.safe_load(compose)["services"]["wizard-agent-service"]
     assert spec["extra_hosts"] == ["wizard-app-lifecycle:172.18.0.1"]
     assert spec["environment"]["WIZARD_APP_MANAGER_URL"] == "http://wizard-app-lifecycle:7791"
+    # The Service admits exactly that bridge name and exactly the host's peer address on the Runtipi network.
+    assert spec["environment"]["WIZARD_APP_MANAGER_HOSTS"] == "wizard-app-lifecycle"
+    assert spec["environment"]["WIZARD_APP_TRUSTED_PROXY_IPS"] == "172.18.0.1"
+    assert spec["environment"]["WIZARD_UX_PREFIX"] == "wizard-os-home"
     assert "network_mode" not in spec   # stays on the Runtipi network: UX and Hermes reach it by name
     env = pinned.read_text()
     assert env.startswith("WIZARD_AGENT_SERVICE_IMAGE=127.0.0.1:5000/svc:test\n")

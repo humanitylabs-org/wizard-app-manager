@@ -244,6 +244,7 @@ services:
     environment:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
+      WIZARD_UX_PREFIX: wizard-os-home
       HERMES_ORIGIN: {origin}{state_env}
       WIZARD_APPS_MCP_ADDRESS: url
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
