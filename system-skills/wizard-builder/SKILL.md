@@ -1,7 +1,7 @@
 ---
 name: wizard-builder
 description: Use when building, porting or changing Wizard apps.
-version: 0.1.0
+version: 0.1.1
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -28,6 +28,9 @@ A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML;
 4. Redesign of an installed app's screen: an own version with `wam views customize <app>`, edited, then `wam views apply <app>`; it survives app updates. See `references/views.md`.
 5. Independent process/database or install on another Wizard: app source under `dev/<id>/`.
 6. Existing upstream app: add metadata, packaging, MCP and a skill in a wrapper; see `references/port.md`.
+
+## Supported shell skins
+Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
 
 ## Build and verify
 1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.

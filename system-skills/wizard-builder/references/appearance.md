@@ -8,6 +8,9 @@ Goal: an app the agent builds should look like part of Wizard OS, in whichever s
 - `web/wizard-ui.css`: the kit. It copies Chats' visual language (system UI type at the shell's sizes, ink hierarchy, hairline separators, faint tinted fills, pill input, round accent action) and derives every value from the `--wz-*` roles.
 - `web/styles.css`: the app's own layout only, written with the kit variables.
 
+## Supported skins
+Nebula (default), Grove, Tide, Ember and Signal. The shell registry owns the available choices; Paper is retired. Read the current registry before generating examples or QA matrices. A retired saved/query choice falls back to Nebula. Keep appearance protocol light/dark support generic for future skins; it does not make Paper an available choice.
+
 ## Rules
 1. Hosted, paint nothing behind the app. The shell's window glass is the canvas, as it is for Chats. Only a standalone tab paints `--canvas`. An opaque app background is what makes apps look "jet black" next to Chats.
 2. Colours come from kit variables: `--ink`, `--ink-2`, `--ink-3`, `--line`, `--line-2`, `--fill`, `--fill-2`, `--accent`, `--on-accent`, `--danger`. No hex values in app CSS except inside the kit's fallbacks.
