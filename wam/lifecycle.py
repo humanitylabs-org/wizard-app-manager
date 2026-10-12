@@ -63,7 +63,7 @@ class BridgeRuntipi(Runtipi):
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect).open(request, timeout=timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as e:
             raise UpstreamFailure(rejected=400 <= e.code < 500 and e.code not in {408, 429}) from None
@@ -108,7 +108,7 @@ class Completion:
         self.urn, self.action, self.timeout = urn, action, timeout
         req = urllib.request.Request(rt.base + "/sse/app", headers={
             "Authorization": "Bearer " + cli_token(rt.secret), "Accept": "text/event-stream"})
-        self.stream = urllib.request.build_opener(NoRedirect).open(req, timeout=timeout)
+        self.stream = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect).open(req, timeout=timeout)
         if "text/event-stream" not in self.stream.headers.get("Content-Type", ""):
             self.stream.close()
             raise BridgeError(502, "completion_stream_unavailable")
@@ -214,6 +214,10 @@ class Bridge:
         # The shared copy goes through the same atomic ownership-aware writer, not cli.share_registry's rmtree.
         shared = self.cfg.runtipi_root / "app-data" / "wizard-os"
         registry.write(reg, shared, preserve_choices=False)
+        # A collision discovered only in the shared skill destination still has one canonical projection.
+        canonical = (json.dumps(registry.public_projection(reg), indent=2) + "\n").encode()
+        if (self.cfg.home / "apps.json").read_bytes() != canonical:
+            registry.atomic_write(self.cfg.home / "apps.json", canonical)
         upstreams = {a["id"]: a["_view_upstream"] for a in reg["apps"] if a.get("_view_upstream")}
         registry.atomic_write(self.cfg.home / "view-upstreams.json", json.dumps(upstreams).encode(), 0o600)
         return self.clean(reg), rows
@@ -318,7 +322,7 @@ class Bridge:
         urn = urn_value(urn)
         req = urllib.request.Request(self.rt.base + f"/marketplace/apps/{urn}/image",
                                      headers={"Authorization": "Bearer " + cli_token(self.rt.secret)})
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=30) as response:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect).open(req, timeout=30) as response:
             kind = response.headers.get("Content-Type", "").split(";", 1)[0]
             if kind not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
                 raise BridgeError(502, "unsupported_image")
@@ -452,7 +456,12 @@ class Bridge:
             return {"success": True, "noop": True, "status": status}
         with self.completion(self.rt, urn, action, self.timeout) as completion:
             on_submit()
-            result = self.rt.req(ACTIONS[action], f"/app-lifecycle/{urn}/{action}", form, timeout=120)
+            try:
+                result = self.rt.req(ACTIONS[action], f"/app-lifecycle/{urn}/{action}", form, timeout=120)
+            except UpstreamFailure as e:
+                if e.rejected:
+                    raise BridgeError(502, "upstream_rejected") from None
+                raise
             request_id = result.get("requestId")
             if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", request_id):
                 raise BridgeError(502, "untrackable_operation")
@@ -503,8 +512,9 @@ class Bridge:
                         code = 200
                     except BridgeError as e:
                         code, result = e.code, {"success": False, "error": e.reason}
-                    except UpstreamFailure as e:
-                        code, result = 502, {"success": False, "error": str(e)}
+                    except UpstreamFailure:
+                        # Only a rejection of the mutation request itself proves non-delivery.
+                        code, result = 502, {"success": False, "error": "upstream_unavailable"}
                     except (Exception, SystemExit):
                         code, result = 502, {"success": False, "error": "upstream_unavailable"}
                     uncertain = submitted and result.get("error") not in {None, "lifecycle_failed", "upstream_rejected"}

@@ -533,3 +533,43 @@ def test_module_serve_uses_production_loopback_client(bridge):
         proc.wait(timeout=5)
         proc.stdout.close()
         proc.stderr.close()
+
+
+def test_postaccept_verification_rejection_remains_uncertain(bridge, monkeypatch):
+    b = bridge
+    original = b.rt.installed
+    def after_delivery():
+        if b.tipi.mutations:
+            raise UpstreamFailure(rejected=True)  # Received 401/connection refusal on VERIFY, not lifecycle POST.
+        return original()
+    monkeypatch.setattr(b.rt, "installed", after_delivery)
+    with pytest.raises(BridgeError, match="projection_refresh_failed"):
+        op(b, "install", "fixture-postaccepted-key-001")
+    journal = json.loads(b.operations.read_text())
+    assert next(iter(journal.values()))["state"] == "uncertain"
+    monkeypatch.setattr(b.rt, "installed", original)
+    with pytest.raises(BridgeError, match="operation_unconfirmed"):
+        op(b, "restart", "fixture-postaccepted-key-002")
+    assert len(b.tipi.mutations) == 1
+
+
+def test_control_requests_ignore_proxy_environment(bridge, monkeypatch):
+    b = bridge
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
+    assert op(b, "install")[0] == 200  # Exercises direct control, SSE subscription and status verification.
+    assert b.image(URN)[1] == "image/png"
+    assert b.read("/api/system/load")["cpu"] == 0.1
+
+
+def test_shared_only_skill_collision_keeps_same_projection(bridge):
+    b = bridge
+    shared = b.cfg.runtipi_root / "app-data/wizard-os"
+    registry.atomic_write(shared / "skills/hello-wizard/SKILL.md", b"system-owned-collision")
+    _, result = op(b, "install")
+    assert result["registry"]["apps"][0]["skill"] is None
+    assert json.loads((b.cfg.home / "apps.json").read_text()) == result["registry"]
+    assert json.loads((shared / "apps.json").read_text()) == result["registry"]
+    assert (shared / "skills/hello-wizard/SKILL.md").read_bytes() == b"system-owned-collision"
