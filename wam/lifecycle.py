@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from . import alongside, cli, registry, slots
+from . import alongside, cli, fresh_agent, registry, slots
 from .runtipi import Runtipi, RuntipiError, cli_token, read_env
 
 ACTIONS = {"install": "POST", "start": "POST", "stop": "POST", "restart": "POST",
@@ -161,8 +161,7 @@ class Bridge:
                 raise ValueError("invalid Runtipi port")
             self.rt.base = f"http://127.0.0.1:{port}/api"
         self.completion, self.timeout, self.poll = completion, timeout, poll
-        config = registry._json_file(self.cfg.home / "app-manager.json")
-        self.service_app_host = registry.service_app_host(config.get("service_app_host", "127.0.0.1"))
+        self.app_network()   # fail at start on a bad declaration; re-read at every refresh after that
         self.lock = threading.RLock()
         self.cfg.home.mkdir(parents=True, exist_ok=True)
         self.operations = self.cfg.home / "lifecycle-operations.json"
@@ -198,9 +197,17 @@ class Bridge:
                     value = value.replace(secret, "[redacted]")
         return value
 
+    def app_network(self) -> tuple[str, str]:
+        """Declared Service-side addressing ($WIZARD_OS_HOME/app-manager.json), read per refresh so a bridge that
+        started before `wam fresh-agent prepare` follows it without a restart."""
+        config = registry._json_file(self.cfg.home / "app-manager.json")
+        self.service_app_host = registry.service_app_host(config.get("service_app_host", "127.0.0.1"))
+        return self.service_app_host, registry.service_app_network(config.get("service_app_network", "host"))
+
     def refresh(self) -> tuple[dict, list]:
         rows = self.rt.installed()
-        reg = registry.build(rows, cli.STORE, self.service_app_host, self.cfg.runtipi_root)
+        host, network = self.app_network()
+        reg = registry.build(rows, cli.STORE, host, self.cfg.runtipi_root, network)
         ext = alongside.external_slots(self.cfg.home)
         if ext:
             reg["external"] = ext
@@ -213,7 +220,8 @@ class Bridge:
         registry.write(reg, self.cfg.home)
         # The shared copy goes through the same atomic ownership-aware writer, not cli.share_registry's rmtree.
         shared = self.cfg.runtipi_root / "app-data" / "wizard-os"
-        registry.write(reg, shared, preserve_choices=False)
+        # Containers (the Agent Service, a container Hermes) reach apps by their Runtipi network names.
+        registry.write(reg, shared, preserve_choices=False, mcp_address="internal")
         # A collision discovered only in the shared skill destination still has one canonical projection.
         canonical = (json.dumps(registry.public_projection(reg), indent=2) + "\n").encode()
         if (self.cfg.home / "apps.json").read_bytes() != canonical:
@@ -391,6 +399,10 @@ class Bridge:
         if state and alongside.is_bridge_app(app_id):
             alongside.write_shell_override(self.cfg.runtipi_root, cli.STORE, app_id, self.cfg.home)
             form["port"] = int(state["shell"]["port"])
+        elif not state:
+            # Fresh mode: the Service gets the gateway token and the bridge route, the container Hermes the shared
+            # skills, on their first start. No-op unless `wam fresh-agent prepare` ran.
+            fresh_agent.write_install_overlay(self.cfg.runtipi_root, cli.STORE, app_id, self.cfg.home)
         return form
 
     def _install_form(self, app_id: str, info: dict, given: dict, uses: list) -> dict:
@@ -601,9 +613,14 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, bridge: Bridge):
-        if not ipaddress.ip_address(address[0]).is_loopback or ":" in address[0]:
-            raise ValueError("lifecycle bridge must bind an IPv4 loopback address")
+    def __init__(self, address, bridge: Bridge, *, container_bind: str | None = None):
+        ip = ipaddress.ip_address(address[0])
+        # The only non-loopback bind: the Runtipi Docker network's gateway on this host, declared by
+        # `wam fresh-agent prepare` so the containerised Agent Service can call the bridge (docs/lifecycle-bridge.md).
+        declared = (container_bind is not None and address[0] == container_bind and ip.version == 4
+                    and ip.is_private and not ip.is_loopback and not ip.is_unspecified)
+        if (not ip.is_loopback and not declared) or ":" in address[0]:
+            raise ValueError("lifecycle bridge must bind an IPv4 loopback address (or the declared container gateway)")
         self.bridge = bridge
         super().__init__(address, Handler)
 
@@ -614,14 +631,22 @@ def main(argv=None):
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7791)
     ap.add_argument("--token-file", type=Path)
+    ap.add_argument("--container", action="store_true",
+                    help="bind the container gateway address declared in app-manager.json (fresh mode) instead")
     args = ap.parse_args(argv)
     cfg = cli.Config()
+    container_bind = None
+    if args.container:
+        container_bind = registry._json_file(cfg.home / "app-manager.json").get("container_bridge_bind")
+        if not isinstance(container_bind, str) or not container_bind:
+            raise SystemExit("no container_bridge_bind in app-manager.json (run `wam fresh-agent prepare`)")
+        args.bind = container_bind
     token = (token_file(args.token_file) if args.token_file else
              os.environ.get("WIZARD_APP_MANAGER_TOKEN") or token_file(cfg.home / "lifecycle-token"))
     if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", token):
         raise ValueError("dedicated lifecycle token must contain 32-256 header-safe characters")
     bridge = Bridge(cfg, token)
-    with Server((args.bind, args.port), bridge) as server:
+    with Server((args.bind, args.port), bridge, container_bind=container_bind) as server:
         print(f"WAM lifecycle bridge on {args.bind}:{server.server_port}", flush=True)
         server.serve_forever()
 

@@ -75,3 +75,12 @@ exec "{sys.executable}" "$@"
     assert "ports: !override" in compose and "127.0.0.1:8480:80" in compose
     assert "image: ghcr.io/humanitylabs-org/wizard-app-manager:latest" in compose
     assert any(line.startswith("wam -m wam bootstrap") for line in log)
+    # Fresh (the default): fresh mode is recorded before bootstrap, the container gets connected after it, and the
+    # bridge's container listener unit is installed and enabled.
+    wam_calls = [line for line in log if line.startswith("wam -m wam ")]
+    order = [next(i for i, line in enumerate(wam_calls) if line.startswith(f"wam -m wam {c}"))
+             for c in ("fresh-agent prepare", "bootstrap", "fresh-agent connect")]
+    assert order == sorted(order)
+    unit = (home / ".config/systemd/user/wizard-app-lifecycle-containers.service").read_text()
+    assert "python3 -m wam.lifecycle serve --container --port 7791" in unit
+    assert "systemctl --user enable --now wizard-app-lifecycle-containers.service" in log

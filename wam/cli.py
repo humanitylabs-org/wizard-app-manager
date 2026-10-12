@@ -20,6 +20,9 @@ Wizard additions:
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
+  wam fresh-agent prepare|connect|status|disconnect [--no-restart]
+                                fresh mode: connect the hermes-agent container to the one Wizard gateway, shared
+                                skills and the wizard-os plugin (docs/lifecycle-bridge.md, "Fresh mode")
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
@@ -35,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import alongside, index, private, registry, slots
+from . import alongside, fresh_agent, index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -127,8 +130,10 @@ def share_registry(c: Config) -> bool:
         if (c.home / "skills").is_dir():
             shutil.rmtree(shared / "skills", ignore_errors=True)
             shutil.copytree(c.home / "skills", shared / "skills")
+        # Containers reach apps by their Runtipi network names: re-render the copied pointers for that address.
+        registry.write_pointers(json.loads((c.home / "apps.json").read_text()), shared, "internal")
         return True
-    except OSError as e:
+    except (OSError, ValueError) as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
         return False
 
@@ -220,9 +225,12 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
-    if (al := alongside.load(c.home)) and is_shell(rec, app_id):
+    al = alongside.load(c.home)
+    if al and is_shell(rec, app_id):
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home)
         form["port"] = int(al["shell"]["port"])   # fixed, so the agent's `wizard` MCP entry can name it
+    elif not al:   # fresh mode, once `wam fresh-agent prepare` ran: Service token/bridge route, container Hermes skills
+        fresh_agent.write_install_overlay(c.runtipi_root, STORE, app_id, c.home)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -500,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
+    fa = sub.add_parser("fresh-agent"); fa.add_argument("action", choices=["prepare", "connect", "status", "disconnect"])
+    fa.add_argument("--no-restart", action="store_true")
     args = ap.parse_args(argv)
     c = Config()
     try:
@@ -533,6 +543,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
+        elif args.cmd == "fresh-agent":
+            res = fresh_agent.main(c, args.action, restart=not args.no_restart)
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("ok") else 1
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)

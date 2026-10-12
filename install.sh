@@ -111,6 +111,24 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
+# Fresh mode only (enabled below after `wam fresh-agent prepare`): the same bridge, also listening on this box's
+# address on the Runtipi Docker network, so the containerised Agent Service can reach it. Same token and home.
+cat > "$HOME/.config/systemd/user/wizard-app-lifecycle-containers.service" <<EOF
+[Unit]
+Description=wam lifecycle bridge for the Agent Service container (Runtipi network gateway:7791)
+After=network-online.target wizard-app-lifecycle.service
+
+[Service]
+Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+WorkingDirectory=$HERE
+ExecStart=/usr/bin/env python3 -m wam.lifecycle serve --container --port 7791
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
 # Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
@@ -142,6 +160,16 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   # Hermes' API server answers once the gateway has restarted with its key.
   ORIGIN="$("$HOME/.local/bin/wam" alongside --detect 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_origin"])' || echo http://127.0.0.1:8642)"
   for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && break; sleep 2; done
+  systemctl --user disable --now wizard-app-lifecycle-containers.service 2>/dev/null || true
+else
+  # 2c) Fresh: the hermes-agent container is the agent. Record fresh mode before bootstrap so the Agent Service and
+  #     hermes-agent start with their generated overlays (gateway token, bridge route, shared skills mount).
+  if WAM_DOCKER="${DOCKER[*]}" "$HOME/.local/bin/wam" fresh-agent prepare >/dev/null; then
+    systemctl --user enable --now wizard-app-lifecycle-containers.service || true
+    systemctl --user restart wizard-app-lifecycle-containers.service || true
+  else
+    echo "note: 'wam fresh-agent prepare' did not finish; run it again later"
+  fi
 fi
 
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
@@ -149,6 +177,9 @@ fi
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap >/dev/null || true; fi
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo; "$HOME/.local/bin/wizard" doctor || true
+elif [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then
+  # Exactly one Wizard gateway, the shared skills and the wizard-os plugin in the container Hermes (one restart).
+  WAM_DOCKER="${DOCKER[*]}" "$HOME/.local/bin/wam" fresh-agent connect || echo "note: 'wam fresh-agent connect' did not finish; run it again later"
 fi
 
 echo

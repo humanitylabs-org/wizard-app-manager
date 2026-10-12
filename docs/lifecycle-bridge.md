@@ -7,11 +7,11 @@ WIZARD_OS_HOME=/path/to/isolated/wizard-home RUNTIPI_ROOT=/path/to/runtipi \
   python3 -m wam.lifecycle serve --bind 127.0.0.1 --port 7791
 ```
 
-Only an IPv4 loopback bind is permitted. Use a service supervisor outside this module. Existing WAM/YAML dependencies are unchanged; HTTP server, locking, journal, SSE client and authentication use Python's standard library.
+Only an IPv4 loopback bind is permitted, except the one declared fresh-mode container listener (`--container`, see "Fresh mode"). Use a service supervisor outside this module. Existing WAM/YAML dependencies are unchanged; HTTP server, locking, journal, SSE client and authentication use Python's standard library.
 
 ## Authentication and proxy boundary
 
-The bridge uses `WIZARD_APP_MANAGER_TOKEN` if set, otherwise creates `$WIZARD_OS_HOME/lifecycle-token` atomically with permissions 0600. `--token-file PATH` explicitly selects an owner-only file instead. The dedicated token must have 32–256 header-safe characters from `[A-Za-z0-9._~-]`. Provision the same value into the Agent Service's **server-side** `WIZARD_APP_MANAGER_TOKEN` and configure its bridge origin as `http://127.0.0.1:7791` (no `/api` suffix). Do not put it in UX settings, bundles, browser requests, app manifests, or public registry files.
+The bridge uses `WIZARD_APP_MANAGER_TOKEN` if set, otherwise creates `$WIZARD_OS_HOME/lifecycle-token` atomically with permissions 0600. `--token-file PATH` explicitly selects an owner-only file instead. The dedicated token must have 32–256 header-safe characters from `[A-Za-z0-9._~-]`. Provision the same value into the Agent Service's **server-side** `WIZARD_APP_MANAGER_TOKEN` and configure its bridge origin as `http://127.0.0.1:7791` (no `/api` suffix; a containerised fresh-mode Service uses `http://wizard-app-lifecycle:7791`, generated below). Do not put it in UX settings, bundles, browser requests, app manifests, or public registry files.
 
 Every request, including reads, images and `/healthz`, requires `Authorization: Bearer <dedicated token>`. Any `Origin` header is rejected: the browser uses the existing same-origin session/CSRF-protected service routes, which reconstruct the allowlisted host request without forwarding browser Origin, cookies, auth or arbitrary headers. No CORS. The internal upstream-resolution endpoint below is **not** a browser proxy route.
 
@@ -39,7 +39,59 @@ Alongside defaults to `127.0.0.1`: the Agent Service is on the same host. A fres
 {"service_app_host": "host.docker.internal"}
 ```
 
-An IPv4 address or DNS hostname is accepted verbatim; URL schemes, ports, paths, userinfo, whitespace, empty labels and invalid IPv4 are rejected. This setting maps registry `mcp.url`, `health`, and the private view upstream to that Service-reachable host, leaving browser `view.url` same-origin and Runtipi/JWT control traffic on host loopback. `mcp.internal` keeps existing app-network DNS metadata. This is declared addressing, **not connectivity proof**: a host port bound only to loopback may need packaging's explicit network forwarding before a container can reach it. No compose mutation, automatic host discovery, per-app MCP configuration or gateway restart occurs here. The parent must verify one Wizard gateway plus skill/orientation discovery and the actual application endpoint from inside the fresh Service/Hermes container. Old `wam doctor` remains unchanged; its seam is `wam.cli.doctor`, whose config/file checks cannot certify that container route.
+An IPv4 address or DNS hostname is accepted verbatim; URL schemes, ports, paths, userinfo, whitespace, empty labels and invalid IPv4 are rejected. This setting maps registry `mcp.url`, `health`, and the private view upstream to that Service-reachable host, leaving browser `view.url` same-origin and Runtipi/JWT control traffic on host loopback. `mcp.internal` keeps existing app-network DNS metadata. This is declared addressing, **not connectivity proof**: app ports are published on host loopback only, so `host.docker.internal` does not reach them from a container (real-box run B3). **Fresh mode does not use it**; it uses the app network instead:
+
+```json
+{"service_app_network": "internal"}
+```
+
+`internal` (written by `wam fresh-agent prepare`) makes the private view upstream `http://<app id>:<view.port or app port><path>`, the app's Runtipi network name, which the Agent Service container on that network resolves (B3 proved `mcp.internal` the same way). `mcp.url`/`health` stay on `service_app_host` for host-side tools; the Service recipes already set `WIZARD_APPS_MCP_ADDRESS: internal`. Both settings are re-read at every refresh, so a running bridge follows them without a restart.
+
+## Pointer skills (`wizard-job-*`) are rewritten with every result
+
+Every `registry.write` (each bridge refresh, so every lifecycle result including failures and replays, and every `wam` CLI registry write) also renders the `wizard-job-<job>` pointer skills into that root's `skills/` and refreshes the `.wizard-jobs` stamp. The renderer is the wizard-os plugin's own `kernel.py` (`pointer_skills(bridge_apps(...))`), vendored byte-identical at a pinned wizard-agent-service commit in `wam/vendor/` (`SOURCE.json` holds repo, commit and sha256; `tests/test_fresh_agent.py` fails on drift). It is the same text the Agent Service and the plugin write, so an install appears and an uninstall disappears in the agent's skills folder immediately, without a Hermes session start, an Agent Service write or a restart:
+
+- `$WIZARD_OS_HOME/skills` (what an alongside host Hermes reads through `skills.external_dirs`) with `mcp.url` addresses;
+- the shared `app-data/wizard-os/skills` (what a fresh container Hermes reads) with `mcp.internal` addresses.
+
+Only folders that are generated pointers are replaced or removed: a real directory holding only `SKILL.md` (and the renderers' `SKILL.md.tmp`) whose text carries the generated marker. App skills, `system-skills/wizard-builder`, owner skills (even one named `wizard-job-*` without the marker), symlinks and `wizard link`/`unlink` state are left alone. The Agent Service's richer pointers (with tool names) still land in its own `/state` folder; the plugin's session-start refresh sees a current stamp and skips.
+
+## Fresh mode: the container Hermes and the containerised Agent Service
+
+`wam fresh-agent prepare|connect|status|disconnect` (`wam/fresh_agent.py`) is the installation helper for a box without its own Hermes. `install.sh` runs `prepare` before `wam bootstrap` (so the apps start already wired) and `connect` after it. It writes only generated stock Runtipi user-config overlays and Hermes' own config; no recipe, image, Hermes core or host Hermes change. It refuses to run in alongside mode.
+
+**`prepare`** creates `mcp-token` and `lifecycle-token` (0600) if missing, reads the Runtipi Docker network's gateway address (`docker network inspect runtipi_tipi_main_network`, private IPv4 only) and records in `app-manager.json`:
+
+```json
+{"container_bridge_bind": "172.18.0.1", "service_app_network": "internal"}
+```
+
+plus `$WIZARD_OS_HOME/fresh-agent.json` (0600). `wizard-app-lifecycle-containers.service` then runs a second bridge process, `python3 -m wam.lifecycle serve --container --port 7791`, bound to that address only. It is the same bridge (same home, token, journal and `flock` serialization as the loopback one). `Server` accepts exactly that declared private, non-loopback IPv4 and nothing else. The address is reachable from containers on Docker networks of this box, not from the public interface. Every request still needs the dedicated bearer token, and `Origin` is still refused. A host firewall that drops Docker-to-host traffic (for example UFW with default deny incoming) must allow `7791/tcp` from that network.
+
+**Generated overlays** (`<runtipi>/user-config/wizardapps/<app>/`, header `# Written by wam (fresh mode)`; a compose file wam did not write is never replaced; other `app.env` keys such as image pins are kept):
+
+| app | `docker-compose.yml` | `app.env` (0600) |
+|---|---|---|
+| `wizard-agent-service` and/or legacy `wizard-shell` | `extra_hosts: wizard-app-lifecycle:<gateway ip>`; env `WIZARD_MCP_TOKEN`, `WIZARD_APP_MANAGER_URL: http://wizard-app-lifecycle:7791`, `WIZARD_APP_MANAGER_TOKEN` | `WIZARD_MCP_TOKEN`, `WIZARD_APP_MANAGER_TOKEN` |
+| `hermes-agent` (service `hermes-agent-engine`) | volume `${ROOT_FOLDER_HOST}/app-data/wizard-os:/wizard-os:ro`; env `WIZARD_OS_HOME: /wizard-os`, `WIZARD_APPS_MCP_ADDRESS: internal` | none |
+
+The Service stays on the Runtipi network (not host networking), so `wizard-ux` keeps reaching `http://wizard-agent-service:8787`, the container Hermes reaches the gateway by DNS, and app MCP/view upstreams resolve by app name. Overlays are written at install (by `wam install`/`bootstrap` and the bridge's install action) once `prepare` ran, and by `connect` for apps already installed.
+
+**`connect`** picks the gateway: `http://wizard-agent-service:8787/wizard/mcp` when the modular Service is installed, else `http://wizard-shell:8787/wizard/mcp` (legacy bundle). It never installs a second agent or Service. Inside the running `hermes-agent-engine` container (`docker exec` as its `HERMES_UID:HERMES_GID`, `HERMES_HOME=/opt/data`, Hermes' own interpreter found via `hermes --print-runtime-command` or `/opt/hermes/.venv/bin/python`) it:
+
+1. refuses if any MCP server other than `wizard` already points at a `/wizard/mcp` gateway, or if `wizard` names something else (exactly one gateway);
+2. backs up `config.yaml` and `.env` to `/opt/data/backups/wizard-os/<UTC stamp>/` (0700) before the first change;
+3. installs the plugin with stock `hermes plugins install humanitylabs-org/wizard-agent-service#hermes-plugin/wizard-os --ref <pinned commit> --no-enable --no-deps`, checks the installed files' sha256 against `wam/vendor/SOURCE.json` (on mismatch it stops before enabling), then runs `hermes plugins enable wizard-os`. Only a Hermes without that subcommand falls back to the `plugins.enabled` allow-list edit `wizard link` makes. `WIZARD_PLUGIN_SOURCE`/`WIZARD_PLUGIN_REF` override the source and ref;
+4. sets `mcp_servers.wizard = {url: <gateway>, headers: {Authorization: "Bearer ${WIZARD_MCP_TOKEN}"}}` and appends `/wizard-os/skills` to `skills.external_dirs`. These are minimal-diff, atomic edits (the `wizard link` splice: unchanged lines keep their bytes). An empty `mcp_servers: []` becomes a map;
+5. writes `WIZARD_MCP_TOKEN` into `/opt/data/.env` (0600). The token reaches the container over stdin only, never argv or output.
+
+The edits' previous values are recorded in `fresh-agent.json`. Then a stock Runtipi restart (`POST /app-lifecycle/<urn>/restart`) runs, only for apps whose overlay or config changed. A rerun with nothing to change makes no edit and no restart. `connect` ends with `status`.
+
+**`status`** is read-only. It checks: exactly one Wizard gateway with the expected URL, `/wizard-os/skills` linked and mounted (lists the visible `wizard-job-*` pointers), the pinned plugin enabled, the token present in the Hermes `.env` (value not shown), the Service overlay, the declared bridge listener, and one live `initialize` + `tools/list` through the gateway **from inside the hermes-agent container**, using the token Hermes uses. It does not prove a model turn or the Service→bridge route; `opus-qa/fresh-agent-qa.sh` probes the latter from the Service container.
+
+**`disconnect`** reverses the recorded edits (removing the token and the plugin only if `connect` added them; it backs up first), removes the generated overlays and the `app-manager.json` keys, deletes `fresh-agent.json`, and restarts the affected apps.
+
+**After `connect`, app lifecycle needs no agent restart**: the bridge rewrites the shared `apps.json`, app skills and pointers (bind-mounted read-only into the container Hermes), the plugin's kernel reads `/wizard-os/apps.json`, and the Agent Service gateway sends `tools/list_changed`. Owner identity for a containerised Service (real-box gate 6e: only loopback peers or verified tailnet/Access principals pass owner routes) is the Service's decision and is not changed here.
 
 ## Mutations (synchronous terminal response)
 
@@ -68,6 +120,6 @@ Missing SSE receipt, lost upstream response or a process crash after journal res
 
 `registry.write` updates individual files atomically using fsync + rename; write-ahead skill ownership records accept old/new generated digests across interrupted writes, and protect non-app/system directories, user-modified skills and `system-skills/wizard-builder`. Obsolete **unmodified generated** app SKILL.md files alone are removed. Registry and skill trees are not a multi-file transactional filesystem snapshot. Malformed manifest paths/YAML/capabilities/non-JSON values or source skill symlinks quarantine only that installed app: it remains listed with `metadata_error: metadata_invalid`, null `mcp/view/health/skill` and empty capabilities, so uninstall remains possible and other apps still refresh. No secret-bearing raw metadata exception is exposed. The shared registry mount must remain read-only to app containers; symlinked registry/skills roots are rejected and non-dict JSON shapes cannot poison refresh. Host-private slot choices are authoritative for the shared copy. Confirm the actual mount mode in packaging acceptance; this module does not authorize container writers to shared state. Bridge refresh uses this writer for both destinations and never the old CLI shared-copy directory deletion.
 
-Alongside host substitution now recognizes the modular `wizard-agent-service` as well as legacy `wizard-shell`, not separate `wizard-ux`; the lifecycle install path supplies the existing override mechanism with the correct service id. No compose edits, VM mutations, gateway restart or per-app MCP changes. Legacy `cli.py` bootstrap/alongside entry points are unchanged and retain their existing slot-default selection; packaging/parent must select the modular service in its integration path.
+Alongside host substitution now recognizes the modular `wizard-agent-service` as well as legacy `wizard-shell`, not separate `wizard-ux`; the lifecycle install path supplies the existing override mechanism with the correct service id. Fresh mode recognizes the same two ids (above). No recipe edits, VM mutations, gateway restart for app lifecycle, or per-app MCP changes. Legacy `cli.py` bootstrap/alongside entry points keep their existing slot-default selection. Alongside shell/Service split overrides for `wizard-ux` belong to the modular-shell WAM branch; packaging/parent must select the modular service in its integration path.
 
 Tests are HTTP fixtures using the real `Runtipi.req` + CLI JWT and stock-shaped SSE/contracts, executed on Thales under `/Volumes/ThalesMedia/AndroidBuilds/worker.lock`. They do not establish a live Runtipi install, phone journey or gateway/tool reload. Those remain the parent's isolated `wos-apps` VM acceptance gate.

@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from .vendor.wizard_os_plugin import kernel
+
 SCHEMA = 2
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
 SENSITIVE = re.compile(r"password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|^headers$|^env$", re.I)
@@ -93,13 +95,25 @@ def service_app_host(value: str) -> str:
     return value
 
 
-def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, runtipi_root: Path) -> dict | None:
+def service_app_network(value: str) -> str:
+    """How the Agent Service reaches app views: "host" (service_app_host:<published port>) or "internal"
+    (the app's Runtipi network DNS name, for a Service container on that network)."""
+    if value not in ("host", "internal"):
+        raise ValueError("service_app_network must be 'host' or 'internal'")
+    return value
+
+
+def _port(value) -> int | None:
+    return int(value) if str(value).isdigit() and 1 <= int(value) <= 65535 else None
+
+
+def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, runtipi_root: Path,
+           network: str = "host") -> dict | None:
     meta = app_meta(runtipi_root, store, name)
     if not meta:
         return None
     w, cfg = meta["w"], meta["cfg"]
-    port = app.get("port") or cfg.get("port")
-    port = int(port) if str(port).isdigit() and 1 <= int(port) <= 65535 else None
+    port = _port(app.get("port") or cfg.get("port"))
     mcp, view = w.get("mcp"), w.get("view")
     mcp = mcp if isinstance(mcp, dict) else None
     view = view if isinstance(view, dict) else None
@@ -132,13 +146,14 @@ def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, ru
     entry = sanitize(entry)
     entry["_skill_src"] = str(skill) if skill.is_file() else None
     if view and port:
-        entry["_view_upstream"] = f"http://{host}:{port}{local_path(view.get('path'))}"
+        origin = f"{name}:{_port(view.get('port')) or port}" if network == "internal" else f"{host}:{port}"
+        entry["_view_upstream"] = f"http://{origin}{local_path(view.get('path'))}"
     json.dumps(entry)  # Reject non-JSON YAML scalars before they can poison the whole projection.
     return entry
 
 
-def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
-    host = service_app_host(host)
+def build(installed: list[dict], store: str, host: str, runtipi_root: Path, network: str = "host") -> dict:
+    host, network = service_app_host(host), service_app_network(network)
     apps = []
     for row in installed:
         app, info = row.get("app") or {}, row.get("info") or {}
@@ -147,7 +162,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         if st != store or not ID.fullmatch(name):
             continue
         try:
-            entry = _entry(app, info, urn, name, store, host, runtipi_root)
+            entry = _entry(app, info, urn, name, store, host, runtipi_root, network)
         except (ValueError, TypeError, AttributeError, OSError, yaml.YAMLError):
             # One malformed app stays visible/uninstallable, but contributes no unsafe routes/skills/slots.
             entry = {"id": name, "name": name, "urn": urn, "status": app.get("status"),
@@ -259,7 +274,51 @@ def _skills(reg: dict, root: Path, old: dict) -> None:
     atomic_write(manifest, (json.dumps(new) + "\n").encode())
 
 
-def write(reg: dict, root: Path | None = None, *, preserve_choices=True) -> Path:
+POINTER_MARK = "Written by Wizard OS from apps.json and rebuilt when apps change. Do not edit."
+POINTER_TEMP = "SKILL.md.tmp"   # the Agent Service's and the plugin's in-flight name
+
+
+def _generated_pointer(d: Path) -> bool:
+    """A wizard-job-* folder Wizard OS wrote: a real folder holding only its generated SKILL.md."""
+    if d.is_symlink() or not d.is_dir():
+        return False
+    names = {p.name for p in d.iterdir()}
+    skill = d / "SKILL.md"
+    if not names <= {"SKILL.md", POINTER_TEMP} or skill.is_symlink() or not skill.is_file():
+        return False
+    return POINTER_MARK in skill.read_text(encoding="utf-8", errors="replace")
+
+
+def write_pointers(reg: dict, root: Path, mcp_address: str = "url") -> list[str]:
+    """The wizard-job-<job> pointer skills in <root>/skills, rendered by the pinned wizard-os plugin kernel (the
+    Agent Service's and the plugin's renderer), so an agent reading this skills folder sees an install or an
+    uninstall at once, without waiting for a Hermes session or the Agent Service. Stale generated pointers go;
+    app skills, system/owner skills, symlinks and owner-edited pointers (no generated marker) stay."""
+    sk = root / "skills"
+    if sk.is_symlink():
+        raise ValueError("skills root must not be a symlink")
+    sk.mkdir(parents=True, exist_ok=True)
+    want = kernel.pointer_skills(kernel.bridge_apps(public_projection(reg), mcp_address))
+    for d in sorted(sk.iterdir()):
+        if d.name.startswith(kernel.JOB_SKILL_PREFIX) and d.name not in want and _generated_pointer(d):
+            for f in d.iterdir():
+                f.unlink()
+            d.rmdir()
+    for name, text in want.items():
+        d, p = sk / name, sk / name / "SKILL.md"
+        if d.is_symlink() or p.is_symlink() or (d.exists() and not d.is_dir()):
+            continue
+        if p.is_file():
+            current = p.read_text(encoding="utf-8", errors="replace")
+            if current == text or POINTER_MARK not in current:
+                continue   # unchanged, or a skill of the owner's that happens to use the name
+        atomic_write(p, text.encode())
+    # Same stamp the Agent Service writes: the plugin's session-start refresh skips work this already did.
+    atomic_write(sk / kernel.JOB_STAMP, f"{int(time.time() * 1000)}\n".encode())
+    return sorted(want)
+
+
+def write(reg: dict, root: Path | None = None, *, preserve_choices=True, mcp_address: str = "url") -> Path:
     root = root or home()
     if root.is_symlink():
         raise ValueError("registry root must not be a symlink")
@@ -274,6 +333,7 @@ def write(reg: dict, root: Path | None = None, *, preserve_choices=True) -> Path
             reg["slots"][slot]["default"] = val["default"]
     _skills(reg, root, old)
     atomic_write(prev, (json.dumps(public_projection(reg), indent=2) + "\n").encode())
+    write_pointers(reg, root, mcp_address)
     return prev
 
 

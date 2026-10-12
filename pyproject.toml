@@ -10,4 +10,9 @@ license = {text = "MIT"}
 wam = "wam.cli:main"
 
 [tool.setuptools]
-packages = ["wam"]
+packages = ["wam", "wam.vendor", "wam.vendor.wizard_os_plugin"]
+
+[tool.setuptools.package-data]
+"wam" = ["defaults.json"]
+"wam.vendor" = ["SOURCE.json"]
+"wam.vendor.wizard_os_plugin" = ["plugin.yaml"]
