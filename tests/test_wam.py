@@ -557,6 +557,18 @@ def test_failed_uninstall_stops_the_service_and_never_starts_a_second_writer(tmp
     assert ("start", "wizard-shell") not in calls
 
 
+def test_alongside_side_follows_what_runs_then_the_saved_choice():
+    apps = {"wizard-shell": "bundle", "wizard-agent-service": "service", "wizard-ux": "shell"}
+    rt = _SplitRt({"wizard-shell", "wizard-agent-service", "wizard-ux"})
+    rt.state.update({"wizard-shell": "running", "wizard-agent-service": "stopped"})      # rolled back
+    assert cli.alongside_side(rt, apps, saved=False) is False
+    rt.state.update({"wizard-shell": "stopped", "wizard-agent-service": "running"})      # split
+    assert cli.alongside_side(rt, apps, saved=False) is True
+    rt.state.update({"wizard-agent-service": "stopped"})                                 # split, service restarting
+    assert cli.alongside_side(rt, apps, saved=True) is True
+    assert cli.alongside_side(rt, {"wizard-shell": "bundle"}, saved=True) is False       # never split
+
+
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
     """--share-history mounts the whole Hermes home (session history) and says it exposes credentials; a re-run
     without the flag keeps the owner's choice; --no-share-history takes it back."""

@@ -450,6 +450,20 @@ def installed_ids_safe(rt: Runtipi) -> set[str]:
         return set()
 
 
+def alongside_side(rt: Runtipi, apps: dict[str, str], saved: bool) -> bool:
+    """True when the Agent Service is the side this box runs: the service if it is running, the bundle if it is
+    running, else the saved choice (a reboot or an update can catch both stopped for a moment)."""
+    def up(role: str) -> bool:
+        return any(rt.wait_status(f"{a}:{STORE}", {"running"}, 1) == "running" for a, r in apps.items() if r == role)
+    if not any(r == "service" for r in apps.values()):
+        return False
+    if up("service"):
+        return True
+    if up("bundle"):
+        return False
+    return saved
+
+
 def alongside_role(rec: dict, app_id: str) -> str | None:
     """'service', 'shell' or 'bundle' (the pre-split wizard-shell) for the apps alongside mode reconfigures."""
     provides = list(rec.get("provides") or [])
@@ -510,10 +524,7 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         # split apps aren't started. Naming the other side in `next` would start a second Agent Service.
         # Which side runs is decided by run status, not install status: after a rollback the Agent Service is
         # installed but stopped. (A box split before alongside mode was turned on has no saved flag yet.)
-        svc_app = next((a for a, r in apps.items() if r == "service"), None)
-        running = svc_app is not None and rt.wait_status(f"{svc_app}:{STORE}", {"running"}, 1) == "running"
-        active = running or (svc_app is not None and bool((st.get("service") or {}).get("active"))
-                             and not any(r == "bundle" for r in apps.values()))
+        active = alongside_side(rt, apps, bool((st.get("service") or {}).get("active")))
         if active != bool((st.get("service") or {}).get("active")):
             alongside.set_service_active(c.home, active)
         apps = {a: r for a, r in apps.items() if (r != "bundle") == active} or apps
