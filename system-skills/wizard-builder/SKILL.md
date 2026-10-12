@@ -24,8 +24,8 @@ A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML;
 ## Choose the lightest level
 1. Shell setting/theme/layout: use the shell's supported configuration.
 2. Report/dashboard: a page under `media/Pages/<slug>/`.
-3. Small styling change: plan an overlay; runtime injection is a follow-up.
-4. Own screen: API-first source in `views/<app-id>/`; preserve base commit and owner patch. See `references/views.md` for the proposed update model.
+3. Small change to an installed app's screen ("move this", "hide that"): an overlay with `wam views customize <app> --mode overlay`. See `references/views.md`.
+4. Redesign of an installed app's screen: an own version with `wam views customize <app>`, edited, then `wam views apply <app>`; it survives app updates. See `references/views.md`.
 5. Independent process/database or install on another Wizard: app source under `dev/<id>/`.
 6. Existing upstream app: add metadata, packaging, MCP and a skill in a wrapper; see `references/port.md`.
 

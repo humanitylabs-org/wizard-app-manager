@@ -236,6 +236,50 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
     return rec
 
 
+def update_local(root, os_home=None, *, run=False):
+    """Update a staged developer app to new source, keeping its project, port and data volume.
+    The staged-app equivalent of an app update: the same snapshot-then-check rule as install_local."""
+    root = Path(root).resolve()
+    os_home = (Path(os_home) if os_home is not None else _home()).resolve()
+    app_id = _id(str(wizardmd.front_matter((root / 'wizard.md').read_text()).get('id', '')))
+    stage = os_home / 'staged-apps' / app_id
+    rec = json.loads((stage / 'stage.json').read_text())
+    scratch = Path(tempfile.mkdtemp(prefix='.builder-update-', dir=stage))
+    try:
+        snapshot = scratch / 'source'; snapshot.mkdir()
+        before = source_hash(root)
+        for p in source_files(root):
+            dest = snapshot / p.relative_to(root); dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, dest)
+        digest = source_hash(snapshot)
+        if digest != before or source_hash(root) != before:
+            raise ValueError('Source changed while updating; nothing was changed.')
+        if digest == rec['source_sha256']:
+            return {**rec, 'update': 'already_current'}
+        report = check_app(snapshot, proposal=True)
+        if not report['ok']:
+            raise ValueError('App check failed: ' + json.dumps([r for r in report['rules'] if not r['ok'] and r['severity'] == 'error']))
+        doc = wizardmd.front_matter((snapshot / 'wizard.md').read_text())
+        if doc.get('id') != app_id:
+            raise ValueError('An update cannot change the app id.')
+        previous = stage / 'source.previous'
+        if previous.exists():
+            shutil.rmtree(previous)
+        (stage / 'source').rename(previous)
+        snapshot.rename(stage / 'source')
+        compose = yaml.safe_load((stage / 'compose.yml').read_text())
+        compose['services'][app_id]['image'] = f"{rec['project']}:{digest[:12]}"
+        (stage / 'compose.yml.tmp').write_text(yaml.safe_dump(compose, sort_keys=False)); (stage / 'compose.yml.tmp').replace(stage / 'compose.yml')
+        rec.update(source_sha256=digest, previous_source_sha256=rec['source_sha256'], version=doc.get('version'),
+                   **{k: doc[k] for k in ('api', 'mcp', 'view') if k in doc})
+        _json(stage / 'stage.json', rec)
+    finally:
+        if scratch.exists():
+            shutil.rmtree(scratch)
+    if run:
+        subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True)
+    return {**rec, 'update': 'updated'}
+
+
 def install_skill(os_home=None, hermes_home=None):
     os_home = Path(os_home) if os_home is not None else _home()
     hermes_home = Path(hermes_home) if hermes_home is not None else Path(os.environ.get('HERMES_HOME', Path.home() / '.hermes'))
@@ -289,6 +333,7 @@ def main(argv=None):
     c = sub.add_parser('check'); c.add_argument('source', type=Path); c.add_argument('--proposal', action='store_true')
     i = sub.add_parser('install-local'); i.add_argument('source', type=Path); i.add_argument('--stage-only', action='store_true'); i.add_argument('--run', action='store_true'); i.add_argument('--port', type=int, default=18799); i.add_argument('--trust-origin', action='append', default=[], help='Extra exact origin allowed to call the app, e.g. a private preview proxy.')
     p = sub.add_parser('publish'); p.add_argument('source', type=Path); p.add_argument('--repo', required=True); p.add_argument('--output', type=Path); p.add_argument('--execute', action='store_true')
+    up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
     sk = sub.add_parser('builder-skill'); sk.add_argument('--hermes-home', type=Path)
     a = ap.parse_args(argv)
     try:
@@ -299,6 +344,8 @@ def main(argv=None):
             print(json.dumps(out, indent=2)); return 0 if out['ok'] else 1
         elif a.cmd == 'install-local':
             out = install_local(a.source, stage_only=a.stage_only, run=a.run, port=a.port, trusted_origins=a.trust_origin)
+        elif a.cmd == 'update-local':
+            out = update_local(a.source, run=a.run)
         elif a.cmd == 'builder-skill':
             out = install_skill(hermes_home=a.hermes_home)
         else:
