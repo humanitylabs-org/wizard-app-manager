@@ -216,17 +216,18 @@ dev2 = DEV / 'habit-notes'
 wam('install-local', str(dev2), '--stage-only', '--run', '--port', str(APP_PORT + 1), *origins)
 ok('second app running', wait('/healthz', port=APP_PORT + 1))
 o = Path(wam('views', 'customize', 'habit-notes', '--mode', 'overlay')['edit'])
-(o / 'overlay.css').write_text('.wz-app { display: flex; flex-direction: column; }\n#add-form { order: -1; margin: 0 0 12px; }\n')
+(o / 'overlay.css').write_text('.wz-app { display: flex; flex-direction: column; }\n.wz-head { order: -2; }\n#add-form { order: -1; margin: 4px 0 12px; }\n')
 (o / 'overlay.json').write_text(json.dumps({'requires': ['#add-form', '.wz-app']}))
 (o / 'overlay.js').write_text('document.documentElement.dataset.ownerOverlay = "on";\n')
 ok('overlay applies', wam('views', 'apply', 'habit-notes')['active'])
 probe = r'''
 let pw;try{pw=require('playwright')}catch{pw=require('playwright-core')}
 (async()=>{const b=await pw.chromium.launch();const p=await b.newPage({viewport:{width:393,height:760},colorScheme:'dark'});
-await p.goto('http://127.0.0.1:'+process.argv[1]+'/apps/habit-notes/');await p.waitForTimeout(1500);
+const errs=[];p.on('pageerror',e=>errs.push(String(e)));
+await p.goto('http://127.0.0.1:'+process.argv[1]+'/apps/habit-notes/');await p.waitForFunction(()=>document.getElementById('day-short')?.textContent,null,{timeout:10000}).catch(()=>{});await p.waitForTimeout(800);
 const r=await p.evaluate(()=>{const f=document.querySelector('form'),l=document.querySelector('#habits');
  return {formTop:f?f.getBoundingClientRect().top:null,listTop:l?l.getBoundingClientRect().top:null,owner:document.documentElement.dataset.ownerOverlay||null,
- tags:document.querySelectorAll('[data-wz-overlay]').length}});
+ tags:document.querySelectorAll('[data-wz-overlay]').length,day:document.getElementById('day-short')?.textContent||''}});r.errs=errs.filter(x=>!x.includes('not javascript')&&!x.includes('SyntaxError'));
 if(process.argv[3])await p.screenshot({path:process.argv[3]});console.log(JSON.stringify(r));await b.close()})();
 '''
 def browse(shot=''):
@@ -235,7 +236,7 @@ def browse(shot=''):
     try: return json.loads(r.stdout.strip().splitlines()[-1])
     except Exception: return {'err': r.stdout[-300:] + r.stderr[-300:]}
 r = browse(str(shots / 'overlay.png'))
-ok('overlay moves the add box above the list in a real browser', r.get('formTop') is not None and r['formTop'] < r['listTop'] and r.get('owner') == 'on', r)
+ok('overlay moves the add box above the list in a real browser', r.get('formTop') is not None and r['formTop'] < r['listTop'] and r.get('owner') == 'on' and r.get('day') and not r.get('errs'), r)
 (o / 'overlay.js').write_text('this is not javascript (\n')
 r = browse()
 time.sleep(1)
@@ -244,14 +245,16 @@ ok('owner script syntax error switches the overlay off and leaves a note', st.ge
 (o / 'overlay.js').unlink()
 ok('fixed overlay applies again', wam('views', 'apply', 'habit-notes')['active'] and not wam('views', 'status', 'habit-notes').get('suspended'))
 edit(dev2 / 'web/index.html', 'id="add-form"', 'id="new-habit-form"')
+(dev2 / 'web/app.js').write_text((dev2 / 'web/app.js').read_text().replace("'add-form'", "'new-habit-form'").replace('"add-form"', '"new-habit-form"').replace('#add-form', '#new-habit-form'))
+subprocess.run([PY, '-c', 'import sys,pathlib; sys.path.insert(0, sys.argv[1]); from wam.builder_assets import package_inline; package_inline(pathlib.Path(sys.argv[2]))', str(SRC), str(dev2)], check=True)
 wam('update-local', str(dev2), '--run'); wait('/healthz', port=APP_PORT + 1)
 u = wam('views', 'update', 'habit-notes')
 ok('app update that removes the target switches the overlay off with a note', u.get('suspended') and '#add-form' in (u.get('note') or ''), u)
 r = browse()
-ok('app opens normally after its overlay is switched off', r.get('tags') == 0 and r.get('formTop') is not None, r)
-(o / 'overlay.css').write_text('.wz-app { display: flex; flex-direction: column; }\n#new-habit-form { order: -1; margin: 0 0 12px; }\n')
+ok('app opens normally after its overlay is switched off', r.get('tags') == 0 and r.get('formTop') is not None and r.get('day') and not r.get('errs'), r)
+(o / 'overlay.css').write_text('.wz-app { display: flex; flex-direction: column; }\n.wz-head { order: -2; }\n#new-habit-form { order: -1; margin: 4px 0 12px; }\n')
 (o / 'overlay.json').write_text(json.dumps({'requires': ['#new-habit-form', '.wz-app']}))
 ok('agent re-targets the overlay after the update', wam('views', 'apply', 'habit-notes')['active'])
 r = browse(str(shots / 'overlay-after-update.png'))
-ok('re-targeted overlay works on the updated app', r.get('formTop') is not None and r['formTop'] < r['listTop'], r)
+ok('re-targeted overlay works on the updated app', r.get('formTop') is not None and r['formTop'] < r['listTop'] and r.get('day') and not r.get('errs'), r)
 finish(0)
