@@ -1,0 +1,7 @@
+# Bounded view persistence follow-up — proposed PR24
+
+Pick setting, page, overlay or own version before a separate view app. No view folder means unchanged upstream. Copy view.source only on first edit to views/<id>, recording the installed app commit and immutable source ref. Keep upstream branch for base and main for owner changes; overlay uses a confined CSS/JS directory, own view uses an API and isolated build.
+
+On app update, re-check metadata and API compatibility, fetch new source into upstream, merge onto main in a scratch worktree. Publish an atomic active-view pointer only after build, API/UI and Back gates pass. On conflict or runtime mismatch keep the last working source and route, expose a repairable diagnostic and let the owner choose resolution. Never execute code from media or let app payloads write owner-authority view source. Source build commands are untrusted code and run in the configured isolated build worker.
+
+Integration seam: authenticated same-origin lifecycle proxy owns serving/overlay injection and update events; builder owns preparing source/patch/build manifest. Persist view.json and compiled artifacts outside generated app/package trees. Add path/symlink confinement, route-only asset allowlist and transaction/rollback contracts before activation. This candidate implements declaration checking and editable source; override serving, update merge and view-app swap remain unimplemented.

@@ -128,7 +128,9 @@ def test_api_requires_token_for_changes(tmp_path, monkeypatch):
 def test_template_mcp_server_speaks_mcp():
     import subprocess
     src = (TEMPLATE / "app" / "server.py").read_text()
-    port = 18799
+    import socket
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
     proc = subprocess.Popen([sys.executable, "-c", src], env={"PORT": str(port), "PATH": "/usr/bin:/bin"})
     try:
         for _ in range(50):
@@ -136,10 +138,11 @@ def test_template_mcp_server_speaks_mcp():
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1); break
             except Exception:
                 time.sleep(0.1)
+        assert proc.poll() is None, "The owned fixture server did not start"
         req = urllib.request.Request(f"http://127.0.0.1:{port}/mcp", json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).encode(),
                                      {"Content-Type": "application/json"})
         names = [t["name"] for t in json.load(urllib.request.urlopen(req, timeout=5))["result"]["tools"]]
-        assert names == ["wizard_time", "wizard_echo"]
+        assert names == ["wizard_time", "wizard_echo", "habits_list", "habits_add", "habits_set_done"]
     finally:
         proc.terminate()
 

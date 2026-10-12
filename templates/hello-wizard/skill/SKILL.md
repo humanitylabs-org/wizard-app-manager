@@ -1,11 +1,17 @@
 ---
 name: hello-wizard
-description: Use when the owner asks for the server time or wants to check that installed Wizard apps are reachable.
+description: Use when tracking habits or checking this app's tools.
+version: 0.2.0
+author: James DeFleur (defleur-agents), Hermes Agent
+license: GPL-3.0-only
+platforms: [linux, macos]
+metadata:
+  hermes:
+    tags: [habits, diagnostics]
+    related_skills: []
 ---
+# Habits and diagnostics
 
-# Hello Wizard
+Use the single Wizard MCP gateway to discover this app's tools. `habits_list` reads real saved habits; `habits_add` takes a name; `habits_set_done` takes the returned integer id and boolean done. Confirm writes by `habits_list`. Marking and undoing use the server's current ISO date and are idempotent. Keep the owner's names literal.
 
-- `wizard_time` returns the server's UTC time. Convert it to the owner's timezone when you answer.
-- `wizard_echo` echoes text. Use it once to prove the app is reachable, then say so plainly.
-
-If the MCP call fails, say the app is unreachable and suggest `wam doctor`.
+`wizard_time` returns UTC time. `wizard_echo` proves app reachability. If a call fails, report its exact app error; never claim a habit was saved. The screen and HTTP API use the same saved data. The gateway owns authorization; direct app ports stay private. No additional per-app Hermes connection or restart.
