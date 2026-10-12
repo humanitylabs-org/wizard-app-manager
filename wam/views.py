@@ -107,13 +107,14 @@ def app_record(app_id, home=None):
         with contextlib.suppress(Exception):
             image = yaml.safe_load(Path(r['compose']).read_text())['services'][app_id]['image']
         return {'id': app_id, 'source': r['source'], 'upstream': _loopback(r['url']), 'api': r.get('api') or {},
-                'view': r.get('view') or {}, 'version': r.get('source_sha256'), 'image': image}
+                'mcp': r.get('mcp') or {}, 'view': r.get('view') or {}, 'version': r.get('source_sha256'), 'image': image}
     reg = home / 'apps.json'
     if reg.is_file():
         for a in json.loads(reg.read_text()).get('apps', []):
             if a.get('id') == app_id and (a.get('view') or {}).get('upstream'):
                 return {'id': app_id, 'source': a.get('source_dir'), 'upstream': _loopback(a['view']['upstream']),
-                        'api': a.get('api') or {}, 'view': a.get('view') or {}, 'version': a.get('source_sha256') or a.get('version'),
+                        'api': a.get('api') or {}, 'mcp': a.get('mcp') or {}, 'view': a.get('view') or {},
+                        'version': a.get('source_sha256') or a.get('version'),
                         'image': a.get('image')}
     raise ViewError(f'{app_id} is not installed on this Wizard.')
 
@@ -335,6 +336,9 @@ def apply(app_id, home=None):
         _commit_owner(d / 'src', view['path'])
         commit = _git(d / 'src', 'rev-parse', 'HEAD').stdout.strip()
         _build(d, view, commit, app.get('image'))
+        if view.get('state') == 'update_build_failed' and view.get('pending'):
+            # The update was already merged on main; the owner's fix makes it build, so the update is done.
+            view.update(base=view['pending'], pending=None, build_log=None)
         view.update(active=True, serving=commit, state='active', note=None)
         return _save(app_id, home, view)
 
@@ -555,6 +559,13 @@ class Door(BaseHTTPRequestHandler):
         view = load(app_id, self.home)
         d = view_dir(app_id, self.home)
         if kind == 'apps':
+            # The app's own screen and its declared API. Its MCP and anything else that writes stay
+            # behind the agent's authenticated door, not the browser's.
+            api_path = (app['api'].get('path') or '/api').rstrip('/')
+            in_api = rest == api_path or rest.startswith(api_path + '/')
+            mcp = ((app.get('mcp') or {}).get('path') or '/mcp').rstrip('/')
+            if (write and not in_api) or rest == mcp or rest.startswith(mcp + '/'):
+                return self._send(404, {'error': 'Not found.'})
             return self._proxy(app, rest, u.query, view, d)
         # /views/<id>/...
         if rest == '/_overlay.css' and view and view['mode'] == 'overlay':

@@ -119,6 +119,9 @@ def test_no_views_folder_means_the_apps_own_screen(box):
     assert code == 200 and 'data-wz-overlay' not in html and '<h1>Habits</h1>' in html
     code, headers, _ = box.get('/views/habit-tracker/')
     assert code == 307 and headers['Location'] == '/apps/habit-tracker/'
+    assert box.get('/apps/habit-tracker/mcp')[0] == 404  # MCP stays behind the agent's door
+    assert box.post('/apps/habit-tracker/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[0] == 404
+    assert box.post('/apps/habit-tracker/api/habits', {'name': 'Via app route', 'day': time.strftime('%Y-%m-%d')})[0] in (200, 201)
 
 
 def test_own_version_uses_the_api_survives_updates_reverts_and_restarts(box):
@@ -172,11 +175,20 @@ def test_own_version_uses_the_api_survives_updates_reverts_and_restarts(box):
     v = views.update('habit-tracker', box.home)
     assert v['state'] == 'update_build_failed' and v['serving'] == kept and 'no longer builds' in v['note']
     assert box.get('/views/habit-tracker/')[0] == 200
+    # The owner (agent) fixes the build; the update completes.
+    (box.home / 'views/habit-tracker/src/app/build_view.py').write_text(
+        (box.home / 'views/habit-tracker/src/app/build_view.py').read_text().replace("'theme-client.js', ", ''))
+    with pytest.raises(views.ViewError, match='Only the screen source'):
+        views.apply('habit-tracker', box.home)  # build script lives outside the screen folder: refused
+    subprocess.run(['git', '-C', str(box.home / 'views/habit-tracker/src'), 'checkout', '--', 'app'], check=True)
+    (box.home / 'views/habit-tracker/src/web/theme-client.js').write_text('/* owner restored */\n')
+    fixed = views.apply('habit-tracker', box.home)
+    assert fixed['state'] == 'active' and fixed['pending'] is None and fixed['base'] == views.app_record('habit-tracker', box.home)['version']
 
     # Door restart: routes come back from disk.
     box.start_door()
     idx = json.loads(box.get('/views/_index.json')[2])['apps']['habit-tracker']
-    assert idx['open'] == '/views/habit-tracker/' and idx['state'] == 'update_build_failed' and idx['note']
+    assert idx['open'] == '/views/habit-tracker/' and idx['state'] == 'active' and idx['note'] is None
     assert '<h1>My rituals</h1>' in box.get('/views/habit-tracker/')[2]
 
     # Put it back to normal; history stays and it can come back.
