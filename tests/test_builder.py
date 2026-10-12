@@ -205,7 +205,8 @@ def test_generated_view_defaults_to_containing_skin(tmp_path):
     assert 'body { font: 15px/1.4 var(--font); color: var(--ink); background: transparent;' in kit
     assert 'html[data-presentation="standalone"]:not(.wz-hosted) body { background: var(--canvas); }' in kit
     app=(root/'web/app.js').read_text()
-    assert 'WizardApp.back.register' in app and 'WizardApp.back.useHistory' in app
+    assert 'WizardApp.back.register' in app
+    assert 'back.useHistory({ isRoot: () => true })' not in app
     assert 'history.pushState' not in app
     assert not (root/'web/theme-client.js').exists()
     assert not (root/'appearance-provenance.json').exists()

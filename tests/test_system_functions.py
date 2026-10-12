@@ -133,5 +133,7 @@ def test_scaffold_has_shared_client_no_platform_copy(tmp_path):
     assert html.index(system_functions.CLIENT_URL) < html.index('app.js')
     assert not (app / 'web/theme-client.js').exists()
     js = (app / 'web/app.js').read_text()
-    assert 'WizardApp.back.register' in js and 'WizardApp.back.useHistory' in js
+    assert 'WizardApp.back.register' in js
+    assert 'back.useHistory({ isRoot: () => true })' not in js
+    assert 'WizardApp.update.hold' in js and 'syncDraftHold()' in js
     assert 'history.pushState' not in js

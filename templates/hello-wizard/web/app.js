@@ -60,14 +60,25 @@ function render(data) {
 }
 
 const input = el('habit-name'), add = el('add');
-input.addEventListener('input', () => { add.disabled = !input.value.trim(); if (el('status').textContent) say(''); });
+let draftHold = null;
+function syncDraftHold() {
+  const unsaved = !!input.value.trim();
+  if (unsaved && !draftHold && window.WizardApp?.version === 1) draftHold = WizardApp.update.hold('Unsubmitted habit');
+  if (!unsaved && draftHold) { draftHold.release(); draftHold = null; }
+}
+input.addEventListener('input', () => { syncDraftHold(); add.disabled = !input.value.trim(); if (el('status').textContent) say(''); });
 el('add-form').onsubmit = async event => {
   event.preventDefault();
   if (!input.value.trim()) return;
-  add.disabled = true;
-  try { render(await request('api/habits', { name: input.value })); input.value = ''; say('Habit added.'); }
+  add.disabled = true; input.disabled = true;
+  try {
+    await request('api/habits', { name: input.value });
+    // The update hold is released only after a durable task API readback.
+    render(await request('api/habits?day=' + localDay()));
+    input.value = ''; syncDraftHold(); say('Habit added.');
+  }
   catch (error) { say(error.message, 'error'); }
-  finally { add.disabled = !input.value.trim(); }
+  finally { input.disabled = false; add.disabled = !input.value.trim(); }
 };
 
 // Domain-only Back callbacks. Core owns the root guard in hosted and standalone modes.
@@ -76,8 +87,9 @@ if (!window.WizardApp || WizardApp.version !== 1) {
   say('Wizard system functions are unavailable. Open this preview through Wizard.', 'error');
 } else {
   WizardApp.ready({ name: 'hello-wizard', version: '0.1.0' });
+  // A routed variant uses WizardApp.back.useHistory({isRoot}) with its real router.
+  // This one-screen app has no route history to adapt.
   WizardApp.back.register({ canGoBack: () => false, back: () => false });
-  WizardApp.back.useHistory({ isRoot: () => true });
 }
 
 request('api/habits?day=' + localDay()).then(render).catch(error => say(error.message, 'error'));
