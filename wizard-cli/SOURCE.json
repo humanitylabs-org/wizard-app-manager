@@ -1,12 +1,12 @@
 {
   "repo": "humanitylabs-org/wizard-os",
-  "commit": "4eb55359cbe104c50e217acd5228ea4e11fbe199",
+  "commit": "41e09aa716101aaaee0a0048deebbc47ac28678c",
   "files": {
     "wizard": "tools/wizard",
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "ffbc2b91d4397a61754753a5c347e2c39ba6d1d72f961363775b684f6b58de3e",
+    "wizard": "4e2700bca51e9c1de202807c156df392ba48257ceb6f067373fe2f0a717a006e",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
   "about": "wizard-cli/ is a byte-identical copy of these wizard-os files at this commit. tests/test_wam.py fails when they drift; to update, copy the files from wizard-os and set commit + sha256 here."
