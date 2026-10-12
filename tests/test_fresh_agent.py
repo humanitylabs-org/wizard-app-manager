@@ -170,6 +170,7 @@ if args[:2] == ["plugins", "install"]:
         open(os.path.join(d, "kernel.py"), "a").write("# tampered\n")
     sys.exit(0)
 if args[:2] == ["plugins", "enable"]:
+    assert sys.stdin.read() == ""   # never the installer's terminal
     if os.environ.get("FAKE_OLD_HERMES"):
         sys.stderr.write("hermes plugins: error: argument: invalid choice: 'enable'\n"); sys.exit(2)
     p = os.path.join(home, "config.yaml")

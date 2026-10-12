@@ -152,8 +152,10 @@ def _engine_user(container: str) -> str:
     return f"{uid}:{gid}" if uid.isdigit() and gid.isdigit() else "hermes"
 
 
-def _exec(container: str, user: str, argv: list[str], stdin: str | None = None,
+def _exec(container: str, user: str, argv: list[str], stdin: str = "",
           timeout: int = 300) -> subprocess.CompletedProcess:
+    # stdin is always given (empty by default): a stock Hermes prompt answers "no" instead of waiting on the
+    # installer's terminal.
     env = ["-e", f"HERMES_HOME={CONTAINER_HERMES_HOME}", "-e", f"HOME={CONTAINER_HERMES_HOME}", "-e", "NO_COLOR=1"]
     return _docker("exec", "-i", "-u", user, *env, container, *argv, stdin=stdin, timeout=timeout)
 
