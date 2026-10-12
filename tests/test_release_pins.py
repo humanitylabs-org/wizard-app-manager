@@ -184,17 +184,20 @@ def test_fresh_box_reports_a_different_shell_as_drift(box):
 
 def test_alongside_updates_a_shell_left_on_an_old_digest_and_fails_if_it_stays(box):
     # stand-in wam records the update; the stand-in docker keeps reporting the old digest, so it must FAIL
-    wam = Path(box["home"]).parent / "bin" / "wam"
-    wam.write_text('#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"\n')
+    wam = Path(box["home"]) / ".local" / "bin" / "wam"
+    wam.parent.mkdir(parents=True, exist_ok=True)
+    wam.write_text('#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"; exit 1\n')   # real wam exits 1 too
     wam.chmod(0o755)
     p, rec = box["run"](SHELL_DIGEST=OTHER, WIZARD_MODE="alongside", WIZARD_SHELL_WAIT="1")
     assert (box["home"] / "wam-calls").read_text().strip() == "app update wizard-shell"
     assert p.returncode == 1 and rec["status"] == "mismatch" and "FAIL  image wizard-shell" in p.stdout
+    assert "fix: ~/.local/bin/wam app update wizard-shell" in p.stdout
 
 
 def test_alongside_shell_update_that_lands_is_a_pass(box, tmp_path):
     # the stand-in wam "updates" the shell: from then on the stand-in docker reports the pinned digest
-    wam = Path(box["home"]).parent / "bin" / "wam"
+    wam = Path(box["home"]) / ".local" / "bin" / "wam"
+    wam.parent.mkdir(parents=True, exist_ok=True)
     wam.write_text(f'#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"; echo {SHELL_DIGEST} > "$HOME/shell-now"\n')
     wam.chmod(0o755)
     docker = Path(box["home"]).parent / "bin" / "docker"
@@ -218,8 +221,10 @@ def test_a_failed_release_fetch_leaves_the_previous_record_alone(box):
 
 
 def test_an_odd_wam_ref_still_writes_valid_json(box):
-    p, rec = box["run"](WAM_REF='main"x')
-    assert rec["status"] == "unpinned" and 'main"x' in rec["reason"]
+    git("branch", 'dev"x', cwd=box["src"])
+    p, rec = box["run"](WAM_REF='dev"x')
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert rec["status"] == "unpinned" and 'dev"x' in rec["reason"]
 
 
 def test_a_modified_app_manager_checkout_is_refused(box):
@@ -268,3 +273,10 @@ def test_a_malformed_release_is_refused_before_anything_runs(box, bad):
 def test_a_version_with_shell_characters_is_refused(box):
     p, _ = box["run"](WIZARD_RELEASE="1.0;id")
     assert p.returncode == 2
+
+
+def test_unpinned_record_is_only_written_once_the_checkout_worked(box):
+    p, rec = box["run"]()
+    assert rec["status"] == "pinned"
+    p, rec = box["run"](WAM_REF="no-such-branch")
+    assert p.returncode != 0 and rec["status"] == "pinned"

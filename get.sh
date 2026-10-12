@@ -159,12 +159,16 @@ DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
 PINS=""
 RECORD="$HOME/.wizard-os/release.json"
 mkdir -p "$HOME/.wizard-os"
-unpinned() {  # unpinned <reason>: refuse it under WIZARD_STRICT=1 (box untouched), else record it before installing
+UNPINNED=""
+unpinned() {  # unpinned <reason>: refuse it under WIZARD_STRICT=1 (box untouched); recorded once the checkout succeeds
   if [ "${WIZARD_STRICT:-0}" = "1" ]; then echo "WIZARD_STRICT=1: refusing an unpinned install ($1)" >&2; exit 3; fi
+  UNPINNED="$1"
+}
+record_unpinned() {
   python3 -c 'import json, sys, time
 with open(sys.argv[2], "w") as f:
     json.dump({"status": "unpinned", "reason": sys.argv[1], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
-    f.write("\n")' "$1" "$RECORD"
+    f.write("\n")' "$UNPINNED" "$RECORD"
 }
 fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published (404 / no file), 1 = any other error
   local url="$RELEASE_BASE/$1" code
@@ -255,11 +259,16 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
   git -C "$DIR" checkout -q --detach "$REF"
   [ "$(git -C "$DIR" rev-parse HEAD)" = "$REF" ] || { echo "App Manager checkout is not $REF" >&2; exit 1; }
 elif [ -d "$DIR/.git" ]; then
-  git -C "$DIR" fetch -q origin "$REF" && git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
+  # (an `a && b` list doesn't trip set -e: without this a bad WAM_REF ran whatever was checked out and exited 0)
+  git -C "$DIR" fetch -q origin "$REF" || { echo "App Manager ref '$REF' not found in $REPO" >&2; exit 1; }
+  git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
 else
   git clone -q --branch "$REF" "$REPO" "$DIR"
 fi
-[ -n "$PINS" ] || exec bash "$DIR/install.sh"
+if [ -z "$PINS" ]; then
+  [ -z "$UNPINNED" ] || record_unpinned
+  exec bash "$DIR/install.sh"
+fi
 
 rc=0
 bash "$DIR/install.sh" || rc=$?
@@ -312,13 +321,18 @@ try:
   want_shell = (rel.get("images") or {}).get("wizard-shell", {}).get("digest")
   if mode == "alongside" and want_shell and shell_c and want_shell not in digests_of(shell_c):
       # The override already names the pinned digest; an existing shell only moves to it on an app update.
+      import shutil
+      wam = os.path.expanduser("~/.local/bin/wam")
+      wam = wam if os.access(wam, os.X_OK) else (shutil.which("wam") or wam)
       print(f"updating {shell_app} to the release's image", flush=True)
-      try:
-          subprocess.run(["wam", "app", "update", shell_app], timeout=900)
+      queued = True
+      try:   # exits non-zero even when Runtipi takes the job (its CLI can't reach the queue port); judge by the result
+          subprocess.run([wam, "app", "update", shell_app], timeout=900)
       except (OSError, subprocess.TimeoutExpired) as e:
-          print(f"note: wam app update {shell_app} failed: {e}", flush=True)
+          queued = False
+          print(f"note: {wam} app update {shell_app} failed: {e}", flush=True)
       # Runtipi applies the update from its queue, so wait (bounded) for the new container to run the pin.
-      for _ in range(int(os.environ.get("WIZARD_SHELL_WAIT", "60"))):
+      for _ in range(int(os.environ.get("WIZARD_SHELL_WAIT", "60")) if queued else 0):
           names = run(*docker, "ps", "--format", "{{.Names}}").split()
           shell_c = next((n for n in names if shell_app in n), "")
           if shell_c and want_shell in digests_of(shell_c):
@@ -326,6 +340,8 @@ try:
           time.sleep(5)
   # Alongside applies the shell pin, so a different digest there is a mismatch. A fresh box takes the index's shell.
   digest_check("wizard-shell", shell_c, mode == "alongside")
+  if mode == "alongside" and checks[-1]["name"] == "image wizard-shell" and not checks[-1]["ok"]:
+      checks[-1]["remedy"] = f"~/.local/bin/wam app update {shell_app}, then re-run this command"
   for slot, d in (rel.get("default_apps") or {}).items():
       if not d or (mode == "alongside" and d.get("alongside")):
           continue
@@ -344,7 +360,7 @@ write(rec)
 print(f"\nWizard OS {rel.get('version')}: what runs vs the release")
 for c in checks:
     print(f"  {'PASS' if c['ok'] else ('FAIL' if c['core'] else 'DRIFT')}  {c['name']}: {c['observed']}"
-          + ("" if c["ok"] else f" (release: {c['expected']})"))
+          + ("" if c["ok"] else f" (release: {c['expected']})") + (f"\n        fix: {c['remedy']}" if c.get("remedy") else ""))
 print(f"  -> {status}; recorded in {out_path}")
 sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
