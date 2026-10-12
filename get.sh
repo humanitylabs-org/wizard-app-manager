@@ -24,7 +24,9 @@
 # current stable release; WIZARD_RELEASE=<version> keeps a box on that version. WAM_REF=<branch|sha> is the
 # developer override: it installs that App Manager ref unpinned. Afterwards the installer reads back what actually
 # runs (App Manager commit and image, shell image, default app versions) and records it in ~/.wizard-os/release.json.
-# WIZARD_STRICT=1 makes any drift from the release exit non-zero.
+# WIZARD_STRICT=1 makes any drift from the release exit non-zero, and refuses unpinned installs (incl. WAM_REF).
+# Alongside mode applies the shell pin (and updates a shell left on an older digest); a fresh box takes the shell
+# the index serves, so there a different shell digest is reported as DRIFT until the App Manager can pin it.
 set -euo pipefail
 REPO="${WAM_REPO:-https://github.com/humanitylabs-org/wizard-app-manager}"
 RELEASE_BASE="${WIZARD_RELEASE_BASE:-https://raw.githubusercontent.com/humanitylabs-org/wizard-os/main/releases}"
@@ -157,10 +159,12 @@ DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
 PINS=""
 RECORD="$HOME/.wizard-os/release.json"
 mkdir -p "$HOME/.wizard-os"
-rm -f "$RECORD"   # never leave an older run's "pinned" record behind; this run writes its own (or "unpinned")
-unpinned() {  # unpinned <reason>: record it, refuse it under WIZARD_STRICT=1
-  printf '{"status": "unpinned", "reason": "%s", "at": "%s"}\n' "$1" "$(date -u +%FT%TZ)" > "$RECORD"
+unpinned() {  # unpinned <reason>: refuse it under WIZARD_STRICT=1 (box untouched), else record it before installing
   if [ "${WIZARD_STRICT:-0}" = "1" ]; then echo "WIZARD_STRICT=1: refusing an unpinned install ($1)" >&2; exit 3; fi
+  python3 -c 'import json, sys, time
+with open(sys.argv[2], "w") as f:
+    json.dump({"status": "unpinned", "reason": sys.argv[1], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
+    f.write("\n")' "$1" "$RECORD"
 }
 fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published (404 / no file), 1 = any other error
   local url="$RELEASE_BASE/$1" code
@@ -237,6 +241,7 @@ else
   unpinned "WAM_REF=$WAM_REF (developer override)"
 fi
 
+[ -z "$PINS" ] || rm -f "$RECORD"   # this pinned run writes its own record; an older one must not survive it
 if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, detached, and prove it
   if [ -d "$DIR/.git" ]; then
     if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
@@ -303,8 +308,19 @@ try:
       apps = {}
   names = run(*docker, "ps", "--format", "{{.Names}}").split()
   shell_app = ((rel.get("default_apps") or {}).get("shell") or {}).get("app", "wizard-shell")
-  # The shell is a pinned image like the App Manager: a different digest is a mismatch, not drift.
-  digest_check("wizard-shell", next((n for n in names if shell_app in n), ""), True)
+  shell_c = next((n for n in names if shell_app in n), "")
+  want_shell = (rel.get("images") or {}).get("wizard-shell", {}).get("digest")
+  if mode == "alongside" and want_shell and shell_c and want_shell not in digests_of(shell_c):
+      # The override already names the pinned digest; an existing shell only moves to it on an app update.
+      print(f"updating {shell_app} to the release's image", flush=True)
+      try:
+          subprocess.run(["wam", "app", "update", shell_app], timeout=900)
+      except (OSError, subprocess.TimeoutExpired) as e:
+          print(f"note: wam app update {shell_app} failed: {e}", flush=True)
+      names = run(*docker, "ps", "--format", "{{.Names}}").split()
+      shell_c = next((n for n in names if shell_app in n), "")
+  # Alongside applies the shell pin, so a different digest there is a mismatch. A fresh box takes the index's shell.
+  digest_check("wizard-shell", shell_c, mode == "alongside")
   for slot, d in (rel.get("default_apps") or {}).items():
       if not d or (mode == "alongside" and d.get("alongside")):
           continue

@@ -154,7 +154,7 @@ def test_no_stable_pointer_installs_main_unpinned_and_says_so(box):
 def test_strict_refuses_an_unpinned_install(box):
     (box["rel"] / "stable").unlink()
     p, rec = box["run"](WIZARD_STRICT="1")
-    assert p.returncode == 3 and rec["status"] == "unpinned"
+    assert p.returncode == 3 and rec is None
     assert not (box["home"] / "install-env").exists()
 
 
@@ -177,10 +177,37 @@ def test_wam_ref_is_the_unpinned_developer_override(box):
     assert rec["status"] == "unpinned" and "WAM_REF" in rec["reason"] and "moved-on" in p.stdout
 
 
-def test_a_different_shell_image_is_a_mismatch_not_drift(box):
+def test_fresh_box_reports_a_different_shell_as_drift(box):
     p, rec = box["run"](SHELL_DIGEST=OTHER)
-    assert p.returncode == 1
-    assert rec["status"] == "mismatch" and "FAIL  image wizard-shell" in p.stdout
+    assert p.returncode == 0 and rec["status"] == "drift" and "DRIFT  image wizard-shell" in p.stdout
+
+
+def test_alongside_updates_a_shell_left_on_an_old_digest_and_fails_if_it_stays(box):
+    # stand-in wam records the update; the stand-in docker keeps reporting the old digest, so it must FAIL
+    wam = Path(box["home"]).parent / "bin" / "wam"
+    wam.write_text('#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"\n')
+    wam.chmod(0o755)
+    p, rec = box["run"](SHELL_DIGEST=OTHER, WIZARD_MODE="alongside")
+    assert (box["home"] / "wam-calls").read_text().strip() == "app update wizard-shell"
+    assert p.returncode == 1 and rec["status"] == "mismatch" and "FAIL  image wizard-shell" in p.stdout
+
+
+def test_strict_failure_leaves_the_previous_record_alone(box):
+    p, rec = box["run"]()
+    assert rec["status"] == "pinned"
+    p, rec = box["run"](WAM_REF="main", WIZARD_STRICT="1")
+    assert p.returncode == 3 and rec["status"] == "pinned"
+
+
+def test_a_failed_release_fetch_leaves_the_previous_record_alone(box):
+    p, rec = box["run"]()
+    p, rec = box["run"](WIZARD_RELEASE_BASE="http://127.0.0.1:9/releases")
+    assert p.returncode == 1 and rec["status"] == "pinned"
+
+
+def test_an_odd_wam_ref_still_writes_valid_json(box):
+    p, rec = box["run"](WAM_REF='main"x')
+    assert rec["status"] == "unpinned" and 'main"x' in rec["reason"]
 
 
 def test_a_modified_app_manager_checkout_is_refused(box):
