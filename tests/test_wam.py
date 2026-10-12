@@ -424,18 +424,19 @@ def test_shell_split_is_ordered_and_refuses_live_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_app", lambda c_, verb, app: calls.append((verb, app)))
     monkeypatch.setattr(cli, "carry_bundle_state", lambda root, app, **k: calls.append(("carry", app)) or root)
     monkeypatch.setattr(cli, "install", lambda c_, app, *a, _split=False, **k: calls.append(("install", app, _split)) or {"status": "running"})
+    monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "")
     monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 1, "queued": 0})
     with pytest.raises(SystemExit, match="1 running"):
         cli.shell_split(c)
     assert calls == []
     monkeypatch.setattr(cli, "_bundle_queue", lambda port: None)
-    with pytest.raises(SystemExit, match="does not answer"):
+    with pytest.raises(SystemExit, match="does not report its run queue"):
         cli.shell_split(c)
     monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
     rt.status = "running"
     with pytest.raises(SystemExit, match="did not stop"):
         cli.shell_split(c)
-    assert calls == [("stop", "wizard-shell")]
+    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")]
     calls.clear(); rt.status = "stopped"
     out = cli.shell_split(c)
     assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"),
@@ -444,6 +445,44 @@ def test_shell_split_is_ordered_and_refuses_live_runs(tmp_path, monkeypatch):
     calls.clear(); rt.have |= {"wizard-agent-service", "wizard-ux"}; rt.status = "running"
     out = cli.shell_split(c, rollback=True)
     assert calls == [("stop", "wizard-ux"), ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
+
+
+def test_shell_split_restores_the_bundle_on_any_failure_after_the_stop(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell"}, "stopped")
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
+    c.runtipi = lambda: rt
+    monkeypatch.setattr(cli, "installed_ids", lambda r: set(r.have))
+    monkeypatch.setattr(cli, "_app", lambda c_, verb, app: calls.append((verb, app)))
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
+    monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "the Agent Service runs as uid 1000")
+    with pytest.raises(SystemExit, match="Nothing was changed"):
+        cli.shell_split(c)
+    assert calls == []                                       # refused before anything stopped
+    monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "")
+    def boom(*a, **k):
+        raise SystemExit("could not copy")
+    monkeypatch.setattr(cli, "carry_bundle_state", boom)
+    with pytest.raises(SystemExit, match="bundle was started again"):
+        cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")]
+    calls.clear()
+    monkeypatch.setattr(cli, "carry_bundle_state", lambda *a, **k: None)
+    def install(c_, app, *a, _split=False, **k):
+        calls.append(("install", app))
+        if app == "wizard-ux":
+            raise SystemExit("index unreachable")
+        rt.have.add(app); return {"status": "running"}
+    monkeypatch.setattr(cli, "install", install)
+    with pytest.raises(SystemExit, match="while installing wizard-ux"):
+        cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell"), ("install", "wizard-agent-service"), ("install", "wizard-ux"),
+                     ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
+    # interrupted after the service install (bundle stopped, service there, no shell): the next run resumes
+    calls.clear(); rt.status = "stopped"
+    monkeypatch.setattr(cli, "install", lambda c_, app, *a, _split=False, **k: calls.append(("install", app)) or {"status": "running"})
+    out = cli.shell_split(c)
+    assert out["resumed"] is True and calls == [("install", "wizard-ux")]
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):

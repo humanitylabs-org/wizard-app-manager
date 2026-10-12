@@ -130,7 +130,7 @@ def load(wizard_home: Path) -> dict | None:
 def save(wizard_home: Path, st: dict) -> Path:
     p = state_path(wizard_home)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(st, indent=2) + "\n")
+    tmp.write_text(json.dumps({k: v for k, v in st.items() if k != "detected"}, indent=2) + "\n")
     tmp.replace(p)
     return p
 
@@ -174,7 +174,10 @@ PIN_VARS = {LEGACY_BUNDLE: "WIZARD_SHELL_IMAGE", "wizard-ux": "WIZARD_UX_IMAGE",
 
 
 def pin(st: dict, app_id: str) -> str:
-    return str((st.get("images") or {}).get(app_id) or "")
+    pins = st.get("images") or {}
+    if app_id == LEGACY_BUNDLE and not pins:   # a pre-split alongside.json: its one pin was the bundle's
+        return str((st.get("shell") or {}).get("image") or "")
+    return str(pins.get(app_id) or "")
 
 
 def image_lines(st: dict, app_id: str) -> str:
