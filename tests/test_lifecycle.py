@@ -339,3 +339,55 @@ def test_modular_bridge_selection_and_override(tmp_path):
     text = alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos")
     assert "  wizard-agent-service:" in text and "  wizard-shell:" not in text and "wizard-ux:" not in text
     assert "HERMES_ORIGIN: http://127.0.0.1:8642" in text
+
+
+def test_declared_service_gateway_projection(bridge):
+    b = bridge
+    (b.cfg.home / "app-manager.json").write_text(json.dumps({"service_app_host": "host.docker.internal"}))
+    fresh = Bridge(b.cfg, TOKEN, rt=b.rt, timeout=0.5, poll=0.01)
+    _, result = op(fresh, "install")
+    app = result["registry"]["apps"][0]
+    assert app["mcp"]["url"] == "http://host.docker.internal:8799/mcp"
+    assert app["health"] == "http://host.docker.internal:8799/healthz"
+    assert app["view"]["url"] == "/apps/hello-wizard/"
+    assert fresh.read("/api/internal/apps/hello-wizard/view")["upstream"] == "http://host.docker.internal:8799/ui/"
+    assert fresh.rt.base.startswith("http://127.0.0.1:")
+    for invalid in ["http://host.docker.internal", "host:8080", "user@host", "host/path", "host?token=secret",
+                    "host\nInjected: x", "bad..host", "-bad", "999.999.1.1", "", None]:
+        with pytest.raises(ValueError):
+            registry.service_app_host(invalid)
+
+
+def test_corrupt_journal_fails_closed_and_refreshes(bridge):
+    b = bridge
+    op(b, "install")
+    b.operations.write_text("{truncated")
+    with pytest.raises(BridgeError, match="operation_journal_invalid"):
+        op(b, "restart", "fixture-corrupt-key-0001")
+    assert len(b.tipi.mutations) == 1
+    assert json.loads((b.cfg.home / "apps.json").read_text())["apps"][0]["status"] == "running"
+
+
+def test_generated_password_reused_and_atomic(bridge):
+    b = bridge
+    info = {"form_fields": [{"env_variable": "PW", "type": "password", "required": True}]}
+    first = b._install_form("hello-wizard", info, {}, [])
+    second = b._install_form("hello-wizard", info, {}, [])
+    assert first == second and len(first["PW"]) >= 32
+    p = b.cfg.home / "secrets/hello-wizard.json"
+    assert p.stat().st_mode & 0o777 == 0o600
+    assert json.loads(p.read_text()) == {"PW": first["PW"]}
+    assert not list(p.parent.glob(".*.json.*"))
+
+
+def test_skill_source_symlink_cannot_copy_host_secret(bridge):
+    b = bridge
+    b.tipi.status = "running"
+    source = b.cfg.runtipi_root / "repos/wizardapps/apps/hello-wizard/SKILL.md"
+    private = b.cfg.runtipi_root / "private.env"
+    private.write_text(SECRET)
+    source.unlink()
+    source.symlink_to(private)
+    with pytest.raises(ValueError, match="source symlinks"):
+        b.refresh()
+    assert not (b.cfg.home / "skills/hello-wizard/SKILL.md").exists()

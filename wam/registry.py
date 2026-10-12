@@ -77,7 +77,20 @@ def local_path(value, default="/") -> str:
     return value
 
 
+def service_app_host(value: str) -> str:
+    """A declared service-reachable hostname/IP, not a URL or client-supplied upstream."""
+    if (not isinstance(value, str) or len(value) > 253 or not value or
+            any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                for label in value.split("."))):
+        raise ValueError("service_app_host must be an IPv4 address or DNS hostname without scheme, port or path")
+    if value.replace(".", "").isdigit():
+        import ipaddress
+        ipaddress.IPv4Address(value)
+    return value
+
+
 def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
+    host = service_app_host(host)
     apps = []
     for row in installed:
         app, info = row.get("app") or {}, row.get("info") or {}
@@ -102,13 +115,13 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
             "mcp": None if not mcp or not port else {
-                "url": f"http://127.0.0.1:{port}{local_path(mcp.get('path'), '/mcp')}",
+                "url": f"http://{host}:{port}{local_path(mcp.get('path'), '/mcp')}",
                 "internal": f"http://{name}:{mcp.get('port')}{local_path(mcp.get('path'), '/mcp')}",
                 "transport": mcp.get("transport", "streamable-http"),
             },
             "skill": f"skills/{name}/SKILL.md" if skill.is_file() else None,
             "view": None if not view or not port else {**sanitize(view), "url": f"/apps/{name}/"},
-            "health": f"http://127.0.0.1:{port}{local_path(w['health'])}" if w.get("health") and port else None,
+            "health": f"http://{host}:{port}{local_path(w['health'])}" if w.get("health") and port else None,
         }
         # Preserve existing metadata as data; no proposed API/backend/replacement interpretation.
         for key in ("api", "source", "backend", "replaces_view", "system"):
@@ -117,7 +130,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         entry = sanitize(entry)
         entry["_skill_src"] = str(skill) if skill.is_file() else None
         if view and port:
-            entry["_view_upstream"] = f"http://127.0.0.1:{port}{local_path(view.get('path'))}"
+            entry["_view_upstream"] = f"http://{host}:{port}{local_path(view.get('path'))}"
         apps.append(entry)
     apps.sort(key=lambda a: a["id"])
     slots: dict[str, list[str]] = {}
@@ -185,7 +198,10 @@ def _skills(reg: dict, root: Path, old: dict) -> None:
             # A system/user-owned collision is not ours to overwrite.
             continue
         if src:
-            data = Path(src).read_bytes()
+            source = Path(src)
+            if source.is_symlink():
+                raise ValueError("app skill source symlinks are not allowed")
+            data = source.read_bytes()
             atomic_write(p, data)
             new[app_id] = hashlib.sha256(data).hexdigest()
     for app_id, digest in owned.items():

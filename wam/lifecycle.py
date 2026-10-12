@@ -59,8 +59,8 @@ def token_file(path: Path) -> str:
     if path.is_symlink() or path.stat().st_mode & 0o077:
         raise ValueError("lifecycle token must be a regular owner-only file (0600)")
     value = path.read_text().strip()
-    if len(value) < 32:
-        raise ValueError("lifecycle token must contain at least 32 characters")
+    if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", value):
+        raise ValueError("lifecycle token must contain 32-256 header-safe characters")
     return value
 
 
@@ -125,6 +125,8 @@ class Bridge:
                 raise ValueError("invalid Runtipi port")
             self.rt.base = f"http://127.0.0.1:{port}/api"
         self.completion, self.timeout, self.poll = completion, timeout, poll
+        config = registry._json_file(self.cfg.home / "app-manager.json")
+        self.service_app_host = registry.service_app_host(config.get("service_app_host", "127.0.0.1"))
         self.lock = threading.RLock()
         self.cfg.home.mkdir(parents=True, exist_ok=True)
         self.operations = self.cfg.home / "lifecycle-operations.json"
@@ -152,7 +154,7 @@ class Bridge:
 
     def refresh(self) -> tuple[dict, list]:
         rows = self.rt.installed()
-        reg = registry.build(rows, cli.STORE, "127.0.0.1", self.cfg.runtipi_root)
+        reg = registry.build(rows, cli.STORE, self.service_app_host, self.cfg.runtipi_root)
         ext = alongside.external_slots(self.cfg.home)
         if ext:
             reg["external"] = ext
@@ -239,6 +241,27 @@ class Bridge:
             if len(data) > 4194304:
                 raise BridgeError(502, "image_too_large")
             return data, kind
+
+    def _journal(self) -> dict:
+        if not self.operations.exists():
+            return {}
+        try:
+            journal = json.loads(self.operations.read_text())
+            if not isinstance(journal, dict):
+                raise ValueError
+            for key, item in journal.items():
+                if (not re.fullmatch(r"[0-9a-f]{64}", key) or not isinstance(item, dict)
+                        or not re.fullmatch(r"[0-9a-f]{64}", item.get("fingerprint", ""))
+                        or item.get("state") not in {"reserved", "uncertain", "done"}
+                        or not isinstance(item.get("urn"), str)):
+                    raise ValueError
+                urn_value(item["urn"])
+                if item["state"] == "done" and (not isinstance(item.get("code"), int)
+                                                     or not isinstance(item.get("result"), dict)):
+                    raise ValueError
+        except (ValueError, TypeError, OSError, BridgeError):
+            raise BridgeError(503, "operation_journal_invalid") from None
+        return journal
 
     def _save(self, journal: dict):
         registry.atomic_write(self.operations, json.dumps(journal).encode(), 0o600)
@@ -357,9 +380,9 @@ class Bridge:
                                                               separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
         key = hashlib.sha256(key.encode()).hexdigest()
         with self.serialized():
-            journal = registry._json_file(self.operations)
             replay = False
             try:
+                journal = self._journal()
                 prior = journal.get(key)
                 if prior:
                     if prior["fingerprint"] != fingerprint:
@@ -481,8 +504,8 @@ def main(argv=None):
     cfg = cli.Config()
     token = (token_file(args.token_file) if args.token_file else
              os.environ.get("WIZARD_APP_MANAGER_TOKEN") or token_file(cfg.home / "lifecycle-token"))
-    if len(token) < 32:
-        raise ValueError("dedicated lifecycle token must contain at least 32 characters")
+    if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", token):
+        raise ValueError("dedicated lifecycle token must contain 32-256 header-safe characters")
     bridge = Bridge(cfg, token)
     with Server((args.bind, args.port), bridge) as server:
         print(f"WAM lifecycle bridge on {args.bind}:{server.server_port}", flush=True)
