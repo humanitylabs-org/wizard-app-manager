@@ -155,8 +155,18 @@ def _replace_tree(src, snapshot_root):
 def _ensure_main(src):
     """Recover from an interrupted operation: finish nothing half-way, and be on `main`. Owner work is
     always committed on main before any branch switch, so discarding a dirty non-main tree loses nothing."""
+    marker = src / '.git' / 'WZ_MERGE'
     if (src / '.git' / 'MERGE_HEAD').exists():
-        _git(src, 'merge', '--abort', check=False)
+        if marker.exists():
+            # A merge Wizard started and never finished (crash): undo it.
+            _git(src, 'merge', '--abort', check=False)
+        elif _unmerged(src):
+            raise ViewError('A merge in src/ is unfinished; finish it (resolve the conflict markers and commit) or abort it, then apply.')
+        else:
+            # The owner (or agent) merged by hand and resolved everything: keep it.
+            _git(src, 'add', '-A')
+            _git(src, 'commit', '-q', '--no-edit')
+    marker.unlink(missing_ok=True)
     branch = _git(src, 'rev-parse', '--abbrev-ref', 'HEAD', check=False).stdout.strip()
     if branch != 'main':
         _git(src, 'reset', '-q', '--hard', check=False)
@@ -164,10 +174,15 @@ def _ensure_main(src):
         _git(src, 'checkout', '-q', 'main')
 
 
+def _unmerged(src):
+    out = _git(src, 'diff', '--name-only', '-z', '--diff-filter=U', check=False).stdout
+    return [p for p in out.split('\0') if p]
+
+
 def _owner_paths_ok(src, view_path):
     """Everything the owner changed on main relative to the app (committed or not) is screen source."""
     prefix = view_path.strip('/') + '/'
-    changed = _git(src, 'diff', '--name-only', '--no-renames', 'upstream...HEAD').stdout.split()
+    changed = [p for p in _git(src, 'diff', '--name-only', '-z', '--no-renames', 'upstream...HEAD').stdout.split('\0') if p]
     outside = [p for p in changed if not p.startswith(prefix)]
     if outside:
         raise ViewError('Only the screen source (' + prefix + ') belongs in a custom view; changed outside it: ' + ', '.join(outside[:5]))
@@ -346,9 +361,9 @@ def customize(app_id, mode='own', home=None):
     try:
         return _customize(app_id, mode, home, app)
     except BaseException:
-        d = view_dir(app_id, home)
-        if d.is_dir() and not d.is_symlink() and not (d / 'view.json').exists():
-            shutil.rmtree(d, ignore_errors=True)
+        with contextlib.suppress(ViewError), _locked(app_id, home) as d:
+            if not (d / 'view.json').exists():
+                shutil.rmtree(d, ignore_errors=True)
         raise
 
 
@@ -418,7 +433,7 @@ def apply(app_id, home=None):
 def _settle(src, keep):
     """Finish a conflicted merge by choosing a side per conflicted path, including modify/delete."""
     side = '2' if keep == 'mine' else '3'   # index stage 2 = main (owner), 3 = upstream (app)
-    for path in _git(src, 'diff', '--name-only', '--diff-filter=U').stdout.split():
+    for path in _unmerged(src):
         stages = {line.split()[2] for line in _git(src, 'ls-files', '-u', '--', path).stdout.splitlines()}
         if side in stages:
             _git(src, 'checkout', '--ours' if keep == 'mine' else '--theirs', '--', path)
@@ -433,19 +448,25 @@ def _merge_and_build(app_id, home, d, view, app, keep=None):
     args = ['merge', '--no-edit', '-m', f"App update {str(app['version'])[:12]}"]
     if keep:
         args += ['-X', 'ours' if keep == 'mine' else 'theirs']
+    _owner_paths_ok(src, view['path'])
+    marker = src / '.git' / 'WZ_MERGE'
+    marker.write_text(str(app['version']))
     r = _git(src, *args, 'upstream', check=False)
     if r.returncode and keep and (src / '.git' / 'MERGE_HEAD').exists():
         _settle(src, keep)
+        marker.unlink(missing_ok=True)
     elif r.returncode:
-        conflicts = _git(src, 'diff', '--name-only', '--diff-filter=U', check=False).stdout.split()
+        conflicts = _unmerged(src)
         _git(src, 'merge', '--abort', check=False)
         _git(src, 'reset', '-q', '--hard', check=False)
+        marker.unlink(missing_ok=True)
         if not conflicts:
             raise ViewError('The update could not be merged: ' + (r.stderr or r.stdout).strip()[-300:])
         view.update(state='update_conflict', pending=app['version'], conflicts=conflicts,
                     note=(f"{app_id} updated and its screen changed where yours did ({', '.join(conflicts) or 'see git'}). "
                           'Your version stays on screen. Decide: keep mine, or take upstream.'))
         return _save(app_id, home, view)
+    marker.unlink(missing_ok=True)
     commit = _git(src, 'rev-parse', 'HEAD').stdout.strip()
     try:
         _build(d, view, commit, app.get('image'))
@@ -487,8 +508,11 @@ def update(app_id, home=None):
             _git(src, 'add', '-A')
             if _git(src, 'status', '--porcelain').stdout.strip():
                 _git(src, 'commit', '-q', '-m', f"App {app_id} at {str(app['version'])[:12]}")
-        finally:
-            _ensure_main(src)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                _ensure_main(src)  # best effort; the original error is the one to report
+            raise
+        _ensure_main(src)
         return _merge_and_build(app_id, home, d, view, app)
 
 
@@ -663,7 +687,7 @@ class Door(BaseHTTPRequestHandler):
             # behind the agent's authenticated door, not the browser's.
             api_path = ((app['api'] if isinstance(app['api'], dict) else {}).get('path') or '/api').rstrip('/')
             in_api = rest == api_path or rest.startswith(api_path + '/')
-            mcp = ((app.get('mcp') or {}).get('path') or '/mcp').rstrip('/')
+            mcp = ((app.get('mcp') if isinstance(app.get('mcp'), dict) else {}).get('path') or '/mcp').rstrip('/')
             if (write and not in_api) or rest == mcp or rest.startswith(mcp + '/'):
                 return self._send(404, {'error': 'Not found.'})
             return self._proxy(app, rest, u.query, view, d)
@@ -679,7 +703,11 @@ class Door(BaseHTTPRequestHandler):
             return self._overlay_report(app_id, d)
         if (rest == '/api' or rest.startswith('/api/')) and view and view['mode'] == 'own':
             api_path = ((app['api'] if isinstance(app['api'], dict) else {}).get('path') or '/api').rstrip('/')
-            return self._forward(app, api_path + rest[len('/api'):], u.query)
+            target = api_path + rest[len('/api'):]
+            mcp = ((app.get('mcp') if isinstance(app.get('mcp'), dict) else {}).get('path') or '/mcp').rstrip('/')
+            if target == mcp or target.startswith(mcp + '/'):
+                return self._send(404, {'error': 'Not found.'})
+            return self._forward(app, target, u.query)
         if view and view['mode'] == 'own' and view['active'] and view.get('serving') and not write:
             return self._static(d / 'builds' / view['serving'], rest)
         if write:

@@ -285,6 +285,27 @@ def test_modify_delete_conflict_is_resolved_explicitly(box):
     assert subprocess.run(['git', '-C', str(src), 'merge-base', '--is-ancestor', 'upstream', 'main']).returncode == 0
 
 
+def test_owner_merge_by_hand_is_kept_not_aborted(box):
+    web = Path(views.customize('habit-tracker', 'own', box.home)['edit'])
+    _edit(web / 'index.html', '<h1>Habits</h1>', '<h1>My rituals</h1>')
+    views.apply('habit-tracker', box.home)
+    box.upstream_update(lambda w: _edit(w / 'index.html', '<h1>Habits</h1>', '<h1>Daily habits</h1>'))
+    assert views.update('habit-tracker', box.home)['state'] == 'update_conflict'
+    src = box.home / 'views/habit-tracker/src'
+    git = lambda *a: subprocess.run(['git', '-C', str(src), '-c', 'user.name=x', '-c', 'user.email=x@x', *a], capture_output=True, text=True)
+    git('merge', 'upstream')
+    with pytest.raises(views.ViewError, match='unfinished'):
+        views.apply('habit-tracker', box.home)  # conflict markers still there: never silently aborted
+    html = (src / 'web/index.html').read_text()
+    start, end = html.index('<<<<<<<'), html.index('>>>>>>>')
+    end = html.index('\n', end) + 1
+    (src / 'web/index.html').write_text(html[:start] + '    <header class="wz-head"><h1>My daily rituals</h1><p id="day"></p></header>\n' + html[end:])
+    git('add', '-A')
+    v = views.apply('habit-tracker', box.home)
+    assert v['state'] == 'active' and v['pending'] is None
+    assert '<h1>My daily rituals</h1>' in box.get('/views/habit-tracker/')[2]
+
+
 def test_interrupted_operations_heal_back_to_main(box, monkeypatch):
     web = Path(views.customize('habit-tracker', 'own', box.home)['edit'])
     _edit(web / 'index.html', '<h1>Habits</h1>', '<h1>Mine</h1>')
