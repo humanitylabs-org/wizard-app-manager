@@ -317,8 +317,13 @@ try:
           subprocess.run(["wam", "app", "update", shell_app], timeout=900)
       except (OSError, subprocess.TimeoutExpired) as e:
           print(f"note: wam app update {shell_app} failed: {e}", flush=True)
-      names = run(*docker, "ps", "--format", "{{.Names}}").split()
-      shell_c = next((n for n in names if shell_app in n), "")
+      # Runtipi applies the update from its queue, so wait (bounded) for the new container to run the pin.
+      for _ in range(int(os.environ.get("WIZARD_SHELL_WAIT", "60"))):
+          names = run(*docker, "ps", "--format", "{{.Names}}").split()
+          shell_c = next((n for n in names if shell_app in n), "")
+          if shell_c and want_shell in digests_of(shell_c):
+              break
+          time.sleep(5)
   # Alongside applies the shell pin, so a different digest there is a mismatch. A fresh box takes the index's shell.
   digest_check("wizard-shell", shell_c, mode == "alongside")
   for slot, d in (rel.get("default_apps") or {}).items():

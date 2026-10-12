@@ -187,9 +187,21 @@ def test_alongside_updates_a_shell_left_on_an_old_digest_and_fails_if_it_stays(b
     wam = Path(box["home"]).parent / "bin" / "wam"
     wam.write_text('#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"\n')
     wam.chmod(0o755)
-    p, rec = box["run"](SHELL_DIGEST=OTHER, WIZARD_MODE="alongside")
+    p, rec = box["run"](SHELL_DIGEST=OTHER, WIZARD_MODE="alongside", WIZARD_SHELL_WAIT="1")
     assert (box["home"] / "wam-calls").read_text().strip() == "app update wizard-shell"
     assert p.returncode == 1 and rec["status"] == "mismatch" and "FAIL  image wizard-shell" in p.stdout
+
+
+def test_alongside_shell_update_that_lands_is_a_pass(box, tmp_path):
+    # the stand-in wam "updates" the shell: from then on the stand-in docker reports the pinned digest
+    wam = Path(box["home"]).parent / "bin" / "wam"
+    wam.write_text(f'#!/usr/bin/env bash\necho "$@" >> "$HOME/wam-calls"; echo {SHELL_DIGEST} > "$HOME/shell-now"\n')
+    wam.chmod(0o755)
+    docker = Path(box["home"]).parent / "bin" / "docker"
+    docker.write_text(docker.read_text().replace('$SHELL_DIGEST', '$(cat "$HOME/shell-now" 2>/dev/null || echo $SHELL_DIGEST)'))
+    p, rec = box["run"](SHELL_DIGEST=OTHER, WIZARD_MODE="alongside")
+    assert (box["home"] / "wam-calls").read_text().strip() == "app update wizard-shell"
+    assert p.returncode == 0 and rec["status"] == "pinned", p.stdout
 
 
 def test_strict_failure_leaves_the_previous_record_alone(box):
