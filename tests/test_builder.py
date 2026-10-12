@@ -166,3 +166,19 @@ def test_real_api_mcp_roundtrip_and_failures(app_server):
     assert rpc('tools/call',{'name':'missing'})['error']['code']==-32602
     bad=rpc('tools/call',{'name':'habits_add','arguments':{'name':''}})
     assert bad['result']['isError']
+
+
+def test_generated_view_defaults_to_containing_skin(tmp_path):
+    root=builder.new_app('skin-app',tmp_path,'Small app')
+    html=(root/'web/index.html').read_text();css=(root/'web/styles.css').read_text()
+    assert html.index('theme-client.js') < html.index('app.js')
+    assert 'data-app="skin-app"' in html
+    assert '--wz-surface' in css and '--wz-text' in css
+    assert '#4ade80' not in css
+    assert 'html[data-presentation="window"]' in css
+    client=(root/'web/theme-client.js').read_text()
+    assert "e.source!==parent" in client and "e.origin!==trustedHost" in client
+    prov=json.loads((root/'appearance-provenance.json').read_text())
+    assert prov['source_thread']=='wizard_1791807054943_dc70b2bccb22'
+    compose=yaml.safe_load((root/'runtipi/docker-compose.yml').read_text())
+    assert compose['services']['skin-app']['command'][0]=='python'

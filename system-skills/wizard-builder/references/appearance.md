@@ -1,0 +1,7 @@
+# App styling default — MVP
+
+The hello-wizard template ships the App styling lane's framework-independent appearance v1 client, semantic CSS aliases and matching Nebula fallback. Use it for every generated app; keep layouts and app-specific reading/display typography independent. The shell resolves the skin and sends initial/live appearance; apps do not import a shell or duplicate the six palettes.
+
+The exact installed same-origin parent is trusted. A ready → appearance → ack handshake applies version 1 / monotonic revision payloads; wrong source/origin, unsupported versions, malformed colors and stale revisions are ignored. Tokens carry appearance only, never app data or agent authority. Standalone pages remain usable with dark Nebula defaults and no host connection. Window presentation exposes the surrounding background; immersive presentation uses an opaque theme canvas. Generic controls use surface, text, border, accent, on-accent, UI font and radius roles.
+
+Verify a saved record, an unsent input and current scroll survive dark/light/all-skin changes with no document reload, then window/fullscreen/nested/root Back. The containing host adapter must be shipped by its own integration owner. Existing daily shell lacks that adapter; template adoption is staged, not a daily rollout. The current protocol and packaging remain an MVP, with font-role expansion, shared control library and alternate-origin deployments future work.

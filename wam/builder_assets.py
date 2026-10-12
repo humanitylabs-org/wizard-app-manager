@@ -7,7 +7,7 @@ import yaml
 
 def package_inline(root):
     root = Path(root)
-    files = ['app/server.py', 'web/index.html', 'web/app.js', 'web/styles.css', 'openapi.json']
+    files = ['app/server.py', 'web/index.html', 'web/app.js', 'web/theme-client.js', 'web/styles.css', 'openapi.json']
     payload = {p: (root / p).read_text() for p in files}
     blob = base64.b64encode(json.dumps(payload, sort_keys=True).encode()).decode()
     code = ("import base64,json,pathlib,runpy\n"

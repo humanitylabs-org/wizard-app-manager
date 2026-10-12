@@ -144,9 +144,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, list_habits())
         if path == '/api/time':
             return self.send(200, {'utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
-        if path in {'/', '/index.html', '/app.js', '/styles.css'}:
+        if path in {'/', '/index.html', '/app.js', '/styles.css', '/theme-client.js'}:
             name = 'index.html' if path == '/' else path[1:]
-            ct = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8'}[name]
+            ct = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'theme-client.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8'}[name]
             return self.send(200, (ROOT / 'web' / name).read_bytes(), ct)
         if path == '/openapi.json':
             return self.send(200, (ROOT / 'openapi.json').read_bytes())

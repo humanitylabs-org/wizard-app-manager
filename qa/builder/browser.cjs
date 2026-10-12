@@ -8,8 +8,8 @@ const context=await browser.newContext({viewport:{width:393,height:852},isMobile
 let agentWrites=0;const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
 await context.route('**/*',async route=>{const req=route.request();const u=new URL(req.url());if(!['GET','HEAD'].includes(req.method())&&!/^\/api\/habits(?:\/\d+\/today)?$/.test(u.pathname)){agentWrites++;return route.fulfill({status:403,body:'QA refuses non-app writes'});}return route.continue();});
 const checks=[];async function ok(name,condition){if(!condition)throw Error(name);checks.push(name);}
-await page.goto(origin);await page.locator('#day').filter({hasText:'Today'}).waitFor();await ok('dark mobile view',await page.evaluate(()=>getComputedStyle(document.body).backgroundColor==='rgb(15, 17, 21)'));
-const name='Read 10 pages';
+await page.goto(origin);await page.locator('#day').filter({hasText:'Today'}).waitFor();await ok('dark mobile view',await page.evaluate(()=>getComputedStyle(document.body).backgroundColor==='rgb(5, 3, 12)'&&window.WizardTheme.current.skin==='nebula'&&!window.WizardTheme.connected));
+const name=process.env.QA_HABIT||'Read 10 pages';
 const rows=await page.locator('#habits li').count();
 await page.fill('#habit-name',name);await page.tap('#add');await page.locator('#status').filter({hasText:'Habit added.'}).waitFor();
 await ok('add through actual API',await page.locator('#habits li').count()===rows+1);
