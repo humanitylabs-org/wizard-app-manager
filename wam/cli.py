@@ -259,8 +259,9 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
         return None
     if dst.is_dir() and any(dst.iterdir()):
         return None
+    for stale in dst.parent.glob(".data.carry-*") if dst.parent.is_dir() else []:   # a copy killed midway
+        shutil.rmtree(stale, ignore_errors=True)
     tmp = dst.parent / f".data.carry-{os.getpid()}"
-    shutil.rmtree(tmp, ignore_errors=True)
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, tmp, symlinks=True)
@@ -312,15 +313,46 @@ def can_carry(runtipi_root: Path, uid: int, gid: int, store: str = STORE) -> str
     return ""
 
 
+def _restore_bundle(c: Config, rt: Runtipi, al: dict | None, remove: list[str] = (), stop: list[str] = ()) -> dict:
+    """Best effort, every step tried: uninstall the apps a failed split installed (`remove`), stop the others
+    (`stop`), point alongside back at the bundle and start it. Returns what happened and every error on the way."""
+    errors, done = [], []
+    for app in remove:
+        try:
+            rt.uninstall(f"{app}:{STORE}")
+            done.append(f"uninstalled {app}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"uninstall {app}: {str(e)[:160]}")
+    for app in stop:
+        try:
+            _app(c, "stop", app)
+            done.append(f"stopped {app}")
+        except BaseException as e:  # noqa: BLE001 - SystemExit from runtipi-cli too
+            errors.append(f"stop {app}: {str(e)[:160]}")
+    if al:
+        try:
+            alongside.write_shell_override(c.runtipi_root, STORE, alongside.LEGACY_BUNDLE, c.home, "bundle")
+            alongside.set_service_active(c.home, False)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"alongside override: {str(e)[:160]}")
+    status = "unknown"
+    try:
+        _app(c, "start", alongside.LEGACY_BUNDLE)
+        status = rt.wait_status(f"{alongside.LEGACY_BUNDLE}:{STORE}", {"running"}, 180)
+    except BaseException as e:  # noqa: BLE001
+        errors.append(f"start {alongside.LEGACY_BUNDLE}: {str(e)[:160]}")
+    return {"bundle": status, "done": done, "errors": errors}
+
+
 def shell_split(c: Config, rollback: bool = False, force: bool = False) -> dict:
     """The one ordered upgrade from the wizard-shell bundle to the split pair, and its rollback.
     Split: check the state copy can succeed and refuse while the bundle has live runs (nothing changed yet) -> stop
     the bundle and confirm it stopped -> copy its state -> install the Agent Service, then the shell. Any failure
-    after the stop rolls back (the bundle runs again); a split interrupted after the service install resumes with
-    the shell on the next run. Exactly one Agent
+    after the stop uninstalls what this run installed and starts the bundle again, so a re-run starts clean. A run
+    killed after the service install (service there, no shell) is resumed by the next run. Exactly one Agent
     Service (and so one follow-through writer) runs at any time. Rollback: stop both, start the bundle on its own
-    state again (anything made after the split stays with the Agent Service). The agent's `wizard` MCP entry is
-    never edited: it names the shell's loopback port, which serves the gateway before and after the split."""
+    state again (anything made after the split stays with the Agent Service, whose folder is kept). The agent's
+    `wizard` MCP entry is never edited: it names the shell's loopback port, which serves the gateway throughout."""
     rt = c.runtipi()
     have = installed_ids(rt)
     bundle, svc, ux = alongside.LEGACY_BUNDLE, "wizard-agent-service", "wizard-ux"
@@ -329,58 +361,65 @@ def shell_split(c: Config, rollback: bool = False, force: bool = False) -> dict:
     if bundle not in have:
         raise SystemExit(f"no {bundle} bundle on this box: nothing to split or go back to")
     if rollback:
-        stopped = []
-        for app in (ux, svc):
-            if app in have:
-                _app(c, "stop", app)
-                stopped.append(app)
-        if al:
-            alongside.write_shell_override(c.runtipi_root, STORE, bundle, c.home, "bundle")
-            alongside.set_service_active(c.home, False)
-        _app(c, "start", bundle)
-        status = rt.wait_status(f"{bundle}:{STORE}", {"running"}, 180)
-        return {"rolled_back": True, "stopped": stopped, "bundle": status,
+        r = _restore_bundle(c, rt, al, stop=[a for a in (ux, svc) if a in have])
+        if r["errors"]:
+            raise SystemExit("rollback incomplete: " + "; ".join(r["errors"]) + f" (done: {', '.join(r['done']) or 'nothing'})")
+        return {"rolled_back": True, "stopped": r["done"], "bundle": r["bundle"],
                 "note": "threads, files and runs made after the split stay with the Agent Service (its folder is kept)"}
-    resume = svc in have and ux not in have and rt.wait_status(f"{bundle}:{STORE}", {"stopped"}, 1) == "stopped"
-    if (svc in have or ux in have) and not resume:
-        raise SystemExit(f"{svc}/{ux} already installed next to the bundle; finish or undo that first "
-                         f"(`wam shell-split --rollback` stops them)")
+    if ux in have:
+        raise SystemExit(f"{ux} is already installed next to the bundle; `wam shell-split --rollback` stops it, "
+                         f"`wam uninstall {ux}` removes it")
+    resume = svc in have                 # a split killed after the service install: finish it
+    bundle_stopped = rt.wait_status(f"{bundle}:{STORE}", {"stopped"}, 1) == "stopped"
     owner = (int(al["agent"]["uid"]), int(al["agent"]["gid"])) if al else (1000, 1000)
-    if not resume:
-        if why := can_carry(c.runtipi_root, *owner):
-            raise SystemExit(f"can't copy the Wizard shell's state: {why}. Nothing was changed")
+    if not resume and (why := can_carry(c.runtipi_root, *owner)):
+        raise SystemExit(f"can't copy the Wizard shell's state: {why}. Nothing was changed")
+    if not bundle_stopped:
         q = _bundle_queue(port)
         if not force and q is None:
             raise SystemExit(f"the bundle's health ({port}) does not report its run queue, so live runs can't be "
-                             "checked; start it, or pass --force once you know nothing is running. Nothing was changed")
+                             "checked; pass --force once you know nothing is running. Nothing was changed")
         if not force and (q.get("active") or q.get("queued")):
             raise SystemExit(f"the bundle has {q.get('active', 0)} running and {q.get('queued', 0)} queued runs; "
                              "split when they finish (or --force). Nothing was changed")
         _app(c, "stop", bundle)
         if (st := rt.wait_status(f"{bundle}:{STORE}", {"stopped"}, 180)) != "stopped":
-            _app(c, "start", bundle)
-            raise SystemExit(f"the bundle did not stop (status {st}); it was started again, nothing else changed")
-    carried = None
+            r = _restore_bundle(c, rt, al)
+            raise SystemExit(f"the bundle did not stop (status {st}); it was started again ({r['bundle']}), "
+                             "nothing else changed")
+    carried, installed_now = None, []
     step = "copying the bundle's state"
     try:
-        old = c.runtipi_root / "app-data" / STORE / svc / "data"
-        if not resume and old.is_dir() and any(old.iterdir()):   # an earlier split's state: keep it, start fresh
-            old.rename(old.with_name(f"data.before-split-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
         if not resume:
+            old = c.runtipi_root / "app-data" / STORE / svc / "data"
+            if old.is_dir() and any(old.iterdir()):   # an earlier split's state: keep it aside, start from the bundle's
+                old.rename(old.with_name(f"data.before-split-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
             carried = carry_bundle_state(c.runtipi_root, svc, uid=owner[0], gid=owner[1])
-        step = f"installing {svc}"
-        r1 = install(c, svc, _split=True) if svc not in installed_ids(rt) else {"status": "already installed"}
+            step = f"installing {svc}"
+            r1 = install(c, svc, _split=True)
+            installed_now.append(svc)
+        else:
+            r1 = {"status": "already installed (resumed)"}
         step = f"installing {ux}"
         r2 = install(c, ux, _split=True)
     except (SystemExit, RuntimeError, RuntipiError, OSError) as e:
-        back = shell_split(c, rollback=True)    # stop whatever started, start the bundle on its own state again
-        raise SystemExit(f"the split stopped while {step} ({str(e)[:300]}). The bundle was started again "
-                         f"({back.get('bundle')}); the owner's Wizard is back as it was. Fix the cause and re-run "
-                         f"`wam shell-split`") from None
+        remove = [a for a in (ux, *installed_now) if a in installed_ids_safe(rt)]
+        r = _restore_bundle(c, rt, al, remove=remove, stop=[svc] if resume else [])
+        tail = ("" if not r["errors"] else " Recovery had problems: " + "; ".join(r["errors"])
+                + ". Run `wam shell-split --rollback` once they are fixed.")
+        raise SystemExit(f"the split stopped while {step} ({str(e)[:300]}). Recovery: {', '.join(r['done']) or 'nothing to undo'}"
+                         f"; bundle {r['bundle']}.{tail} Fix the cause and re-run `wam shell-split`") from None
     return {"split": True, "resumed": resume, "carried_from": str(carried) if carried else None,
             "service": r1.get("status"), "shell": r2.get("status"),
             # the agent's `wizard` MCP entry keeps its URL: the shell's loopback port passes the gateway through
             "rollback": "wam shell-split --rollback  (the bundle and its state are kept)"}
+
+
+def installed_ids_safe(rt: Runtipi) -> set[str]:
+    try:
+        return installed_ids(rt)
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 def alongside_role(rec: dict, app_id: str) -> str | None:
@@ -441,7 +480,10 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = _alongside_apps(c, rt)
         # Only the side that runs: after the split the bundle stays stopped (rollback material), and before it the
         # split apps aren't started. Naming the other side in `next` would start a second Agent Service.
-        active = bool((st.get("service") or {}).get("active"))
+        # A box split before alongside mode was turned on: the installed Agent Service is the running side.
+        active = bool((st.get("service") or {}).get("active")) or "service" in apps.values()
+        if active and not (st.get("service") or {}).get("active"):
+            alongside.set_service_active(c.home, True)
         apps = {a: r for a, r in apps.items() if (r != "bundle") == active} or apps
         for app_id, role in apps.items():
             alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)

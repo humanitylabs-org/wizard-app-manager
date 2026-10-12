@@ -409,80 +409,119 @@ def test_carry_is_atomic_and_refuses_a_uid_it_cannot_set(tmp_path, monkeypatch):
 
 
 class _SplitRt:
-    def __init__(self, have, status):
-        self.have, self.status, self.calls = set(have), status, []
+    """Fake Runtipi: per-app status that follows start/stop/uninstall; `stuck` apps refuse to stop."""
+    def __init__(self, have, stuck=()):
+        self.have, self.state, self.stuck = set(have), {a: "running" for a in have}, set(stuck)
     def wait_status(self, urn, want, timeout=0):
-        self.calls.append(("wait", urn)); return self.status
+        return self.state.get(urn.split(":")[0], "missing")
+    def uninstall(self, urn, remove_backups=False):
+        app = urn.split(":")[0]; self.have.discard(app); self.state.pop(app, None)
+
+
+def _split_env(tmp_path, monkeypatch, rt, calls):
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir(exist_ok=True)
+    c.runtipi = lambda: rt
+    monkeypatch.setattr(cli, "installed_ids", lambda r: set(r.have))
+    def app(c_, verb, a):
+        calls.append((verb, a))
+        if verb == "stop" and a in rt.stuck:
+            return
+        if verb == "stop" and a == "wizard-ux" and "ux-stop-fails" in rt.stuck:
+            raise SystemExit("runtipi-cli app stop wizard-ux failed")
+        rt.state[a] = "stopped" if verb == "stop" else "running"
+    monkeypatch.setattr(cli, "_app", app)
+    monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "")
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
+    monkeypatch.setattr(cli, "carry_bundle_state", lambda root, a, **k: calls.append(("carry", a)) or root)
+    def install(c_, a, *x, _split=False, **k):
+        calls.append(("install", a, _split))
+        if a in rt.stuck:
+            rt.have.add(a); rt.state[a] = "installing"
+            raise SystemExit(f"{a}: index unreachable")
+        rt.have.add(a); rt.state[a] = "running"; return {"status": "running"}
+    monkeypatch.setattr(cli, "install", install)
+    return c
 
 
 def test_shell_split_is_ordered_and_refuses_live_runs(tmp_path, monkeypatch):
     calls = []
-    rt = _SplitRt({"wizard-shell"}, "stopped")
-    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
-    c.runtipi = lambda: rt
-    monkeypatch.setattr(cli, "installed_ids", lambda r: set(r.have))
-    monkeypatch.setattr(cli, "_app", lambda c_, verb, app: calls.append((verb, app)))
-    monkeypatch.setattr(cli, "carry_bundle_state", lambda root, app, **k: calls.append(("carry", app)) or root)
-    monkeypatch.setattr(cli, "install", lambda c_, app, *a, _split=False, **k: calls.append(("install", app, _split)) or {"status": "running"})
-    monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "")
+    rt = _SplitRt({"wizard-shell"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
     monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 1, "queued": 0})
     with pytest.raises(SystemExit, match="1 running"):
         cli.shell_split(c)
-    assert calls == []
     monkeypatch.setattr(cli, "_bundle_queue", lambda port: None)
     with pytest.raises(SystemExit, match="does not report its run queue"):
         cli.shell_split(c)
-    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
-    rt.status = "running"
-    with pytest.raises(SystemExit, match="did not stop"):
-        cli.shell_split(c)
-    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")]
-    calls.clear(); rt.status = "stopped"
-    out = cli.shell_split(c)
-    assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"),
-                     ("install", "wizard-agent-service", True), ("install", "wizard-ux", True)]
-    assert out["split"] is True
-    calls.clear(); rt.have |= {"wizard-agent-service", "wizard-ux"}; rt.status = "running"
-    out = cli.shell_split(c, rollback=True)
-    assert calls == [("stop", "wizard-ux"), ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
-
-
-def test_shell_split_restores_the_bundle_on_any_failure_after_the_stop(tmp_path, monkeypatch):
-    calls = []
-    rt = _SplitRt({"wizard-shell"}, "stopped")
-    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
-    c.runtipi = lambda: rt
-    monkeypatch.setattr(cli, "installed_ids", lambda r: set(r.have))
-    monkeypatch.setattr(cli, "_app", lambda c_, verb, app: calls.append((verb, app)))
-    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
     monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "the Agent Service runs as uid 1000")
     with pytest.raises(SystemExit, match="Nothing was changed"):
         cli.shell_split(c)
-    assert calls == []                                       # refused before anything stopped
+    assert calls == [] and rt.state["wizard-shell"] == "running"
     monkeypatch.setattr(cli, "can_carry", lambda root, uid, gid: "")
+    monkeypatch.setattr(cli, "_bundle_queue", lambda port: {"active": 0, "queued": 0})
+    rt.stuck = {"wizard-shell"}
+    with pytest.raises(SystemExit, match="did not stop"):
+        cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")]
+    calls.clear(); rt.stuck = set()
+    out = cli.shell_split(c)
+    assert calls == [("stop", "wizard-shell"), ("carry", "wizard-agent-service"),
+                     ("install", "wizard-agent-service", True), ("install", "wizard-ux", True)]
+    assert out["split"] is True and rt.state == {"wizard-shell": "stopped", "wizard-agent-service": "running", "wizard-ux": "running"}
+    calls.clear()
+    out = cli.shell_split(c, rollback=True)
+    assert calls == [("stop", "wizard-ux"), ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
+    assert rt.state == {"wizard-shell": "running", "wizard-agent-service": "stopped", "wizard-ux": "stopped"}
+
+
+def test_shell_split_failure_restores_the_bundle_and_a_rerun_starts_clean(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell"}, stuck={"wizard-ux"})          # the shell's install fails
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
+    with pytest.raises(SystemExit, match="while installing wizard-ux") as e:
+        cli.shell_split(c)
+    assert "uninstalled wizard-ux" in str(e.value) and "uninstalled wizard-agent-service" in str(e.value)
+    assert rt.have == {"wizard-shell"} and rt.state["wizard-shell"] == "running"   # back as it was
+    calls.clear(); rt.stuck = set()
+    out = cli.shell_split(c)                                     # the advised re-run works
+    assert out["split"] is True and out["resumed"] is False
+    assert ("install", "wizard-ux", True) in calls
+
+
+def test_shell_split_copy_failure_after_the_stop_restarts_the_bundle(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
     def boom(*a, **k):
         raise SystemExit("could not copy")
     monkeypatch.setattr(cli, "carry_bundle_state", boom)
-    with pytest.raises(SystemExit, match="bundle was started again"):
+    with pytest.raises(SystemExit, match="while copying"):
         cli.shell_split(c)
-    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")]
-    calls.clear()
-    monkeypatch.setattr(cli, "carry_bundle_state", lambda *a, **k: None)
-    def install(c_, app, *a, _split=False, **k):
-        calls.append(("install", app))
-        if app == "wizard-ux":
-            raise SystemExit("index unreachable")
-        rt.have.add(app); return {"status": "running"}
-    monkeypatch.setattr(cli, "install", install)
-    with pytest.raises(SystemExit, match="while installing wizard-ux"):
-        cli.shell_split(c)
-    assert calls == [("stop", "wizard-shell"), ("install", "wizard-agent-service"), ("install", "wizard-ux"),
-                     ("stop", "wizard-agent-service"), ("start", "wizard-shell")]
-    # interrupted after the service install (bundle stopped, service there, no shell): the next run resumes
-    calls.clear(); rt.status = "stopped"
-    monkeypatch.setattr(cli, "install", lambda c_, app, *a, _split=False, **k: calls.append(("install", app)) or {"status": "running"})
+    assert calls == [("stop", "wizard-shell"), ("start", "wizard-shell")] and rt.state["wizard-shell"] == "running"
+
+
+def test_shell_split_recovery_is_best_effort(tmp_path, monkeypatch):
+    """A stop that fails during recovery doesn't keep the bundle down; every error is reported."""
+    calls = []
+    rt = _SplitRt({"wizard-shell", "wizard-ux", "wizard-agent-service"}, stuck={"ux-stop-fails"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
+    rt.state["wizard-shell"] = "stopped"
+    with pytest.raises(SystemExit, match="rollback incomplete: stop wizard-ux"):
+        cli.shell_split(c, rollback=True)
+    assert ("start", "wizard-shell") in calls and rt.state["wizard-shell"] == "running"
+
+
+def test_shell_split_resumes_a_run_killed_after_the_service_install(tmp_path, monkeypatch):
+    calls = []
+    rt = _SplitRt({"wizard-shell", "wizard-agent-service"})
+    c = _split_env(tmp_path, monkeypatch, rt, calls)
+    rt.state["wizard-shell"] = "stopped"
     out = cli.shell_split(c)
-    assert out["resumed"] is True and calls == [("install", "wizard-ux")]
+    assert out["resumed"] is True and calls == [("install", "wizard-ux", True)]
+    calls.clear()                                                  # same, but someone started the bundle again
+    rt.have.discard("wizard-ux"); rt.state.pop("wizard-ux"); rt.state["wizard-shell"] = "running"
+    out = cli.shell_split(c)
+    assert out["resumed"] is True and calls == [("stop", "wizard-shell"), ("install", "wizard-ux", True)]
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
