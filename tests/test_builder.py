@@ -160,25 +160,119 @@ def test_real_api_mcp_roundtrip_and_failures(app_server):
     with pytest.raises(urllib.error.HTTPError) as e:
         call('/api/habits',{'name':'Other'},Origin='https://foreign.invalid')
     assert e.value.code==403
+    # DNS rebinding: an attacker's Host with its own matching Origin is still refused, reads too.
+    port=origin.rsplit(':',1)[1]
+    for headers in [{'Host':'attacker.example:'+port,'Origin':'http://attacker.example:'+port},{'Host':'attacker.example:'+port}]:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            call('/mcp',{'jsonrpc':'2.0','id':1,'method':'tools/list'},**headers)
+        assert e.value.code==403
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(origin+'/api/habits',headers={'Host':'attacker.example:'+port}))
+    assert e.value.code==403
+    assert call('/api/habits',{'name':'Same origin'},Origin=origin)['habits']
     assert (data/'habits.sqlite3').is_file()
     head=urllib.request.Request(origin+'/',method='HEAD')
     assert urllib.request.urlopen(head).status==200
     assert rpc('tools/call',{'name':'missing'})['error']['code']==-32602
     bad=rpc('tools/call',{'name':'habits_add','arguments':{'name':''}})
     assert bad['result']['isError']
+    # The owner's local day: accepted within a day of UTC, rejected when malformed or far away.
+    import datetime as dt
+    utc=dt.datetime.now(dt.timezone.utc).date()
+    ahead=(utc+dt.timedelta(days=1)).isoformat()
+    call('/api/habits/'+str(habit['id'])+'/today',{'done':True,'day':ahead})
+    assert call('/api/habits?day='+ahead)['habits'][0]['done']
+    assert not call('/api/habits?day='+utc.isoformat())['habits'][0]['done']
+    for day in ['yesterday', (utc-dt.timedelta(days=5)).isoformat()]:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            call('/api/habits?day='+day)
+        assert e.value.code==400
+    # Static view: allowlisted files only, no traversal.
+    assert urllib.request.urlopen(origin+'/wizard-ui.css').status==200
+    for path in ['/../app/server.py','/.hidden','/app/server.py']:
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(origin+path)
 
 
 def test_generated_view_defaults_to_containing_skin(tmp_path):
     root=builder.new_app('skin-app',tmp_path,'Small app')
-    html=(root/'web/index.html').read_text();css=(root/'web/styles.css').read_text()
+    html=(root/'web/index.html').read_text();kit=(root/'web/wizard-ui.css').read_text()
+    assert html.index('boot.js') < html.index('wizard-ui.css') < html.index('styles.css')
     assert html.index('theme-client.js') < html.index('app.js')
     assert 'data-app="skin-app"' in html
-    assert '--wz-surface' in css and '--wz-text' in css
-    assert '#4ade80' not in css
-    assert 'html[data-presentation="window"]' in css
+    # Colours come only from appearance roles; a hosted app paints no canvas of its own.
+    assert '--wz-text' in kit and '--wz-accent' in kit and '--wz-border' in kit
+    assert 'body { font: 15px/1.4 var(--font); color: var(--ink); background: transparent;' in kit
+    assert 'html[data-presentation="standalone"]:not(.wz-hosted) body { background: var(--canvas); }' in kit
+    app=(root/'web/app.js').read_text()
+    assert 'window.__wizardCloseOverlay = () => false;' in app
+    assert app.index('if (!hosted)') < app.index('history.pushState')
     client=(root/'web/theme-client.js').read_text()
     assert "e.source!==parent" in client and "e.origin!==trustedHost" in client
     prov=json.loads((root/'appearance-provenance.json').read_text())
     assert prov['source_thread']=='wizard_1791807054943_dc70b2bccb22'
     compose=yaml.safe_load((root/'runtipi/docker-compose.yml').read_text())
     assert compose['services']['skin-app']['command'][0]=='python'
+    import base64,re
+    blob=re.search(r"b64decode\('([^']+)'\)",compose['services']['skin-app']['command'][2]).group(1)
+    shipped=set(json.loads(base64.b64decode(blob)))
+    assert {'web/'+p.name for p in (root/'web').iterdir()} <= shipped
+
+
+
+def test_two_homes_never_share_docker_project_or_data(tmp_path):
+    root = builder.new_app('sample-app', tmp_path / 'dev', 'Hello')
+    a = builder.install_local(root, tmp_path / 'home-a', stage_only=True, port=18801)
+    b = builder.install_local(root, tmp_path / 'home-b', stage_only=True, port=18802)
+    assert a['project'] != b['project'] and a['project'].startswith('wizard-dev-sample-app-')
+    for rec in (a, b):
+        compose = yaml.safe_load(Path(rec['compose']).read_text())
+        assert compose['volumes'] == {'app-data': {}}   # Compose prefixes it with the unique project
+        assert json.loads((Path(rec['compose']).parent / 'stage.json').read_text())['project'] == rec['project']
+
+
+def test_receipt_hash_is_the_staged_snapshot_and_edits_during_staging_abort(tmp_path, monkeypatch):
+    root = builder.new_app('sample-app', tmp_path / 'dev', 'Hello')
+    rec = builder.install_local(root, tmp_path / 'home', stage_only=True)
+    assert builder.source_hash(Path(rec['source'])) == rec['source_sha256'] == builder.source_hash(root)
+    real = builder.shutil.copyfile
+    def edit_while_copying(src, dst, *a, **k):
+        out = real(src, dst, *a, **k)
+        if str(src).endswith('wizard.md'):
+            Path(src).write_text(Path(src).read_text() + '\nedited mid-stage\n')
+        return out
+    monkeypatch.setattr(builder.shutil, 'copyfile', edit_while_copying)
+    with pytest.raises(ValueError, match='changed while staging'):
+        builder.install_local(root, tmp_path / 'home-2', stage_only=True)
+    assert not (tmp_path / 'home-2' / 'staged-apps' / 'sample-app').exists()
+
+
+@pytest.mark.parametrize('field,value', [('skill', '../outside/SKILL.md'), ('skill', '/etc/hostname')])
+def test_manifest_references_must_stay_inside_the_app(tmp_path, field, value):
+    root = builder.new_app('sample-app', tmp_path / 'dev', 'Hello')
+    (tmp_path / 'dev' / 'outside').mkdir(); (tmp_path / 'dev' / 'outside' / 'SKILL.md').write_text('---\nname: x\ndescription: y\n---\n')
+    wm = root / 'wizard.md'; doc = wizardmd.front_matter(wm.read_text()); doc[field] = value
+    wm.write_text('---\n' + yaml.safe_dump(doc) + '---\n# Sample\n')
+    assert not builder.check_app(root)['ok']
+    with pytest.raises(ValueError):
+        builder.prepare_publish(root, 'example/sample-app')
+    with pytest.raises(ValueError):
+        builder.install_local(root, tmp_path / 'home', stage_only=True)
+
+
+def test_manifest_reference_through_symlinked_folder_is_refused(tmp_path):
+    root = builder.new_app('sample-app', tmp_path / 'dev', 'Hello')
+    outside = tmp_path / 'elsewhere'; shutil.copytree(root / 'skill', outside)
+    shutil.rmtree(root / 'skill'); (root / 'skill').symlink_to(outside, target_is_directory=True)
+    rows = builder.check_app(root)['rules']
+    assert any(r['rule'] == 'builder: skill stays inside the app' and not r['ok'] for r in rows)
+
+
+def test_production_install_is_never_rerouted_to_the_builder():
+    import inspect
+    from wam import cli
+    src = inspect.getsource(cli.main)
+    # Only the builder's own verbs route to it; `wam install <x>` always means a production install,
+    # whatever folders happen to exist in the current directory.
+    assert '{"new", "check", "install-local", "publish", "builder-skill"}' in src
+    assert '"install-local", *argv' not in src and 'is_dir()' not in src

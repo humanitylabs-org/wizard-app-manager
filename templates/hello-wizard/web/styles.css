@@ -1,11 +1,3 @@
-/* Semantic aliases: host appearance changes values, never app layout/state. */
-*:before,*:after,*{box-sizing:border-box}
-:root{--bg:var(--wz-canvas,#05030c);--control:var(--wz-surface,rgba(18,12,38,.58));--row:var(--wz-surface-raised,rgba(28,19,58,.92));--text:var(--wz-text,#f3efff);--secondary:var(--wz-text-secondary,#b9b0d8);--muted:var(--wz-text-muted,#a59abf);--accent:var(--wz-accent,#b99bff);--accent-soft:var(--wz-accent-soft,rgba(143,99,255,.16));--on-accent:var(--wz-on-accent,#160b32);--border:var(--wz-border,rgba(205,190,255,.24));--radius:var(--wz-radius,14px);--error:#f87171;color-scheme:dark light}
-html[data-color-scheme="light"]{--error:#b91c1c}
-body{background:var(--bg);color:var(--text);font:16px/1.5 var(--wz-font-ui,system-ui,sans-serif);margin:0}
-html[data-presentation="window"],html[data-presentation="window"] body{background:transparent}
-html[data-presentation="immersive"] body,html[data-presentation="standalone"] body{background:var(--bg)}
-main{max-width:480px;padding:28px 16px;margin:auto}header{display:flex;align-items:center;gap:12px}h1{font-size:28px;font-weight:650;letter-spacing:-.03em;margin:0}.sigil{color:var(--accent);font-size:40px;line-height:1}.muted,footer{color:var(--muted)}#day{color:var(--secondary);margin:8px 0 28px}form{display:flex;gap:8px}
-input{min-width:0;flex:1;font:inherit;min-height:44px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--control);color:var(--text)}
-button{font:inherit;cursor:pointer;min-height:44px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--control);color:var(--text)}#add{background:var(--accent);color:var(--on-accent);border:0;font-weight:600}button:hover{background:var(--accent-soft)}#add:hover{background:var(--accent);filter:brightness(1.1)}button:active{transform:scale(.98)}button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.5;cursor:wait}
-ul{padding:0;list-style:none;margin:22px 0}li{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--row);border:1px solid var(--border);border-radius:var(--radius);margin:10px 0;padding:14px}li span{overflow-wrap:anywhere}li.done{border-left:3px solid var(--accent)}li.done span{color:var(--muted);text-decoration:line-through}li button{flex-shrink:0;font-size:14px}.empty{text-align:center;margin:48px 0}#status{min-height:24px;font-size:14px;color:var(--muted)}#status.error{color:var(--error)}footer{font-size:12px;margin-top:40px}
+/* Habit-specific styles only. Everything shared (type, rows, composer, colours) comes from wizard-ui.css. */
+.habit-progress { height: 3px; margin: 0 8px 6px; border-radius: 2px; background: var(--fill); overflow: hidden; }
+.habit-progress i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width 260ms var(--ease); }

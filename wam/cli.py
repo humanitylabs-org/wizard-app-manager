@@ -424,9 +424,6 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in {"new", "check", "install-local", "publish", "builder-skill"}:
         from .builder import main as builder_main
         return builder_main(argv)
-    if len(argv) > 1 and argv[0] == "install" and Path(argv[1]).is_dir():
-        from .builder import main as builder_main
-        return builder_main(["install-local", *argv[1:]])
     if argv and argv[0] in RUNTIPI_COMMANDS:
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

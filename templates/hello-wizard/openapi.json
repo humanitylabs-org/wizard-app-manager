@@ -11,8 +11,23 @@
         "responses": {
           "200": {
             "description": "{day, habits:[{id,name,done}]}"
+          },
+          "400": {
+            "description": "Invalid day"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "day",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Owner's local date; defaults to the box's UTC date. Must be within a day of UTC."
+          }
+        ]
       },
       "post": {
         "summary": "Add a habit",
@@ -27,6 +42,11 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 60
+                  },
+                  "day": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "Owner's local date (YYYY-MM-DD)."
                   }
                 },
                 "required": [
@@ -71,6 +91,11 @@
                 "properties": {
                   "done": {
                     "type": "boolean"
+                  },
+                  "day": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "Owner's local date (YYYY-MM-DD)."
                   }
                 },
                 "required": [

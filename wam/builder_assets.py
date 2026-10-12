@@ -7,7 +7,9 @@ import yaml
 
 def package_inline(root):
     root = Path(root)
-    files = ['app/server.py', 'web/index.html', 'web/app.js', 'web/theme-client.js', 'web/styles.css', 'openapi.json']
+    # Every file of the view ships, so a new kit file or app asset can never be silently left out.
+    files = ['app/server.py', 'openapi.json'] + sorted(
+        'web/' + p.name for p in (root / 'web').iterdir() if p.is_file() and not p.name.startswith('.'))
     payload = {p: (root / p).read_text() for p in files}
     blob = base64.b64encode(json.dumps(payload, sort_keys=True).encode()).decode()
     code = ("import base64,json,pathlib,runpy\n"

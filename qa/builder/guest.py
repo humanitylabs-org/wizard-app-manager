@@ -51,6 +51,7 @@ else:
     raise RuntimeError('App did not recover after restart')
 assert persisted['habits'][0]['name']=='Drink water' and not persisted['habits'][0]['done']
 inspect=json.loads(subprocess.check_output(['docker','inspect',rec['project']+'-habit-tracker-1']))[0]
+assert source_hash(pathlib.Path(rec['source']))==rec['source_sha256'], 'receipt hash must equal the staged snapshot'
 plan=prepare_publish(source,'humanitylabs-org/habit-tracker')
 result={'host':os.uname().nodename,'architecture':os.uname().machine,'source':str(source),
         'source_sha256':source_hash(source),'container_id':inspect['Id'],'image_id':inspect['Image'],
