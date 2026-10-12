@@ -74,9 +74,17 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
       await frame.waitForFunction(()=>document.documentElement.dataset.presentation==='window');
     }
     // Actual domain callbacks against actual core; never a substitute client.
-    await frame.evaluate(()=>{window.nested=true;WizardApp.back.register({canGoBack:()=>nested,back:()=>{nested=false;return true}})});
+    await frame.evaluate(()=>{
+      window.nested=false;
+      window.openNested=()=>{nested=true;const panel=document.createElement('section');panel.id='qa-nested';panel.innerHTML='<h2>Record details (QA domain view)</h2><button id="qa-close">Close details</button>';document.querySelector('.wz-scroll').prepend(panel);panel.querySelector('button').onclick=closeNested};
+      window.closeNested=()=>{if(!nested)return false;nested=false;document.querySelector('#qa-nested')?.remove();return true};
+      WizardApp.back.register({canGoBack:()=>nested,back:closeNested});openNested();
+    });
+    await frame.locator('#qa-nested').waitFor();
     await page.locator('#back').click();
-    ok(await page.evaluate(()=>lastBack==='handled')&&!await frame.evaluate(()=>nested),`${width} nested Back closes domain view`);
+    ok(await page.evaluate(()=>lastBack==='handled')&&!await frame.evaluate(()=>nested)&&await frame.locator('#qa-nested').count()===0,`${width} nested Back closes visible domain view, app stays open`);
+    await frame.evaluate(()=>openNested());await frame.locator('#qa-close').click();
+    ok(!await frame.evaluate(()=>nested)&&await frame.locator('#qa-nested').count()===0,`${width} on-screen close matches nested Back`);
     await frame.evaluate(()=>{window.overlay=true;window.token=WizardApp.back.push(()=>{overlay=false;return true})});
     await page.locator('#back').click();
     ok(!await frame.evaluate(()=>overlay),`${width} overlay Back LIFO callback`);

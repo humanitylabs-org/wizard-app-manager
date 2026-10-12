@@ -39,6 +39,7 @@ def test_domain_callbacks_real_routes_and_reading_controls_allowed(tmp_path):
       const overlay=WizardApp.back.push(()=>{closeEditor();return true}); overlay.release();
       WizardApp.back.useHistory({isRoot:()=>route==='home'});
       addEventListener('popstate',()=>render(history.state));
+      addEventListener('popstate',()=>{ if (route==='removed-record') history.pushState({route:'list'}, '', '/list') });
       function openRecord(id) { history.pushState({record:id}, '', '/record/'+id);render() }
       function closeRecord() { history.back() }
       WizardApp.theme.onChange(a=>applyReadingSurface(a));
