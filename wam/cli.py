@@ -220,9 +220,10 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
-    if (al := alongside.load(c.home)) and is_shell(rec, app_id):
-        alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home)
-        form["port"] = int(al["shell"]["port"])   # fixed, so the agent's `wizard` MCP entry can name it
+    if (al := alongside.load(c.home)) and (role := alongside_role(rec, app_id)):
+        alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+        # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
+        form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -234,9 +235,43 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
 
 
+def alongside_role(rec: dict, app_id: str) -> str | None:
+    """'service', 'shell' or 'bundle' (the pre-split wizard-shell) for the apps alongside mode reconfigures."""
+    provides = list(rec.get("provides") or [])
+    defaults = slots.load_defaults()
+    for slot in (alongside.SHELL_SLOT, alongside.SERVICE_SLOT):   # a default fills its spot before its record says so
+        if app_id == (defaults.get(slot) or {}).get("app") and slot not in provides:
+            provides.append(slot)
+    return alongside.role_of(app_id, provides)
+
+
 def is_shell(rec: dict, app_id: str) -> bool:
-    shell_default = (slots.load_defaults().get(alongside.SHELL_SLOT) or {}).get("app")
-    return app_id == shell_default or alongside.SHELL_SLOT in (rec.get("provides") or [])
+    return alongside_role(rec, app_id) is not None
+
+
+def _alongside_apps(c: Config, rt: Runtipi | None = None) -> dict[str, str]:
+    """app id -> role, for the shell/service apps alongside mode reconfigures: the installed ones when the App
+    Manager answers, else the slot defaults."""
+    defaults = slots.load_defaults()
+    want = {d.get("app") for s, d in defaults.items() if s in (alongside.SHELL_SLOT, alongside.SERVICE_SLOT)}
+    want.add(alongside.LEGACY_BUNDLE)
+    out = {}
+    have = installed_ids(rt) if rt is not None else None
+    reg = registry_apps(c)
+    for app_id in sorted(a for a in want if a):
+        if have is not None and app_id not in have:
+            continue
+        role = alongside_role(reg.get(app_id) or {}, app_id)
+        if role:
+            out[app_id] = role
+    return out
+
+
+def registry_apps(c: Config) -> dict[str, dict]:
+    try:
+        return {a["id"]: a for a in json.loads((c.home / "apps.json").read_text()).get("apps") or []}
+    except (OSError, ValueError, KeyError):
+        return {}
 
 
 def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None,
@@ -244,20 +279,23 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
     home = alongside.hermes_home(hermes_home)
     if detect_only:
         return alongside.detect(home)
-    shell_default = (slots.load_defaults().get(alongside.SHELL_SLOT) or {}).get("app") or "wizard-shell"
     if off:
         was = alongside.disable(c.home)
-        removed = alongside.remove_shell_override(c.runtipi_root, STORE, shell_default)
-        return {"mode": "fresh", "was_alongside": was, "shell_override_removed": removed,
-                "next": f"wam app update {shell_default}  (restarts the shell on its own recipe)"}
+        apps = sorted(_alongside_apps(c))
+        removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
+        return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
+                "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
     st = alongside.enable(c.home, home, shell_port, share_history)
     out = {k: v for k, v in st.items() if k != "detected"}
     out["detected"] = st["detected"]
     try:
         rt = c.runtipi()
-        if shell_default in installed_ids(rt):
-            alongside.write_shell_override(c.runtipi_root, STORE, shell_default, c.home)
-            out["next"] = f"wam app update {shell_default}  (applies the alongside settings to the installed shell)"
+        apps = _alongside_apps(c, rt)
+        for app_id, role in apps.items():
+            alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+        if apps:   # the service first, so the shell finds it when it starts
+            order = sorted(apps, key=lambda a: apps[a] != "service")
+            out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
@@ -345,8 +383,18 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
         out.append(("alongside: host Hermes API answers", alongside.api_up(a["origin"]), a["origin"]))
         out.append(("alongside: host Hermes has an API key", bool(alongside.api_key(Path(a["hermes_home"]))),
                     "API_SERVER_KEY in its .env (`wizard link` adds one if missing)"))
-        ovr = c.runtipi_root / "user-config" / STORE / ((slots.load_defaults().get("shell") or {}).get("app") or "wizard-shell") / "docker-compose.yml"
-        out.append(("alongside: shell points at the host Hermes", ovr.is_file() and a["origin"] in ovr.read_text(), str(ovr)))
+        apps = _alongside_apps(c)
+        agent_side = next((x for x, r in apps.items() if r in ("service", "bundle")
+                           and (c.runtipi_root / "user-config" / STORE / x / "docker-compose.yml").is_file()),
+                          next((x for x, r in apps.items() if r == "service"), alongside.LEGACY_BUNDLE))
+        ovr = c.runtipi_root / "user-config" / STORE / agent_side / "docker-compose.yml"
+        label = "Agent Service" if apps.get(agent_side) == "service" else "shell"
+        out.append((f"alongside: {label} points at the host Hermes", ovr.is_file() and a["origin"] in ovr.read_text(), str(ovr)))
+        ux = next((x for x, r in apps.items() if r == "shell"), None)
+        if ux and apps.get(agent_side) == "service":
+            uo = c.runtipi_root / "user-config" / STORE / ux / "docker-compose.yml"
+            want = f"http://127.0.0.1:{alongside.service_port(st)}"
+            out.append(("alongside: shell points at the Agent Service", uo.is_file() and want in uo.read_text(), str(uo)))
         if st["shell"].get("share_history"):
             db = Path(a["hermes_home"]) / "state.db"
             readable = db.is_file() and os.access(db, os.R_OK) and os.stat(db).st_uid == os.getuid()

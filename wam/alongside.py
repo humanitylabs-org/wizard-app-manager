@@ -161,12 +161,30 @@ def port_free(port: int, host: str = "127.0.0.1") -> bool:
         s.close()
 
 
-DEFAULT_SHELL_PORT = 8796   # wizard-shell's runtipi/config.json port
+DEFAULT_SHELL_PORT = 8796     # the shell's loopback port (wizard-ux; before the split, the bundled wizard-shell)
+DEFAULT_SERVICE_PORT = 8797   # wizard-agent-service's runtipi/config.json port
+
+# What an app is to alongside mode (DECISIONS #36): the Agent Service talks to the host Hermes; the shell (wizard-ux)
+# talks only to the Agent Service; the pre-split bundle (wizard-shell) is both in one container.
+LEGACY_BUNDLE = "wizard-shell"
+SERVICE_SLOT = "agent-service"
 
 
-def pick_port(start: int = DEFAULT_SHELL_PORT) -> int:
+def role_of(app_id: str, provides: list | None) -> str | None:
+    """'bundle', 'service', 'shell' or None (not a Wizard shell/service app)."""
+    p = set(provides or [])
+    if app_id == LEGACY_BUNDLE or {SHELL_SLOT, SERVICE_SLOT} <= p:
+        return "bundle"
+    if SERVICE_SLOT in p:
+        return "service"
+    if SHELL_SLOT in p:
+        return "shell"
+    return None
+
+
+def pick_port(start: int = DEFAULT_SHELL_PORT, avoid: set[int] | None = None) -> int:
     for p in range(start, start + 200):
-        if port_free(p):
+        if p not in (avoid or set()) and port_free(p):
             return p
     raise SystemExit(f"no free loopback port from {start}")
 
@@ -178,20 +196,26 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
     if not det["found"]:
         raise SystemExit(f"no existing Hermes here (need the `hermes` command and {home / 'config.yaml'})")
     prev = load(wizard_home) or {}
+    shell_port = int(shell_port or (prev.get("shell") or {}).get("port") or pick_port())
+    service_port = int((prev.get("service") or {}).get("port") or pick_port(DEFAULT_SERVICE_PORT, {shell_port}))
     st = {
         "mode": "alongside",
         "agent": {"external": True, "id": EXTERNAL_ID, "name": "host Hermes", "hermes_home": str(home),
                   "origin": det["api_origin"], "uid": os.getuid(), "gid": os.getgid()},
-        "shell": {"port": int(shell_port or (prev.get("shell") or {}).get("port") or pick_port()),
+        "shell": {"port": shell_port,
                   # opt-in only; a re-run keeps the owner's earlier choice
                   "share_history": bool((prev.get("shell") or {}).get("share_history")
                                         if share_history is None else share_history)},
     }
-    image = os.environ.get("WIZARD_SHELL_IMAGE") or (prev.get("shell") or {}).get("image")
-    if image:   # pin the shell image (a release's digest, or a local build under test)
-        if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
-            raise SystemExit(f"WIZARD_SHELL_IMAGE {image!r} is not an image reference")
-        st["shell"]["image"] = image
+    # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
+    st["service"] = {"port": service_port}
+    # Image pins (a release's digest, or a local build under test), kept across re-runs.
+    for part, names in (("shell", ("WIZARD_UX_IMAGE", "WIZARD_SHELL_IMAGE")), ("service", ("WIZARD_AGENT_SERVICE_IMAGE",))):
+        image = next((os.environ[n] for n in names if os.environ.get(n)), None) or (prev.get(part) or {}).get("image")
+        if image:
+            if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
+                raise SystemExit(f"{names[0]} {image!r} is not an image reference")
+            st[part]["image"] = image
     gateway_token(wizard_home)
     save(wizard_home, st)
     return {**st, "detected": det}
@@ -246,7 +270,38 @@ services:
 _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
 
 
-def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> str:
+UX_OVERRIDE = """\
+# Written by wam (alongside mode): the Wizard shell (UX only) on the host network, bound to 127.0.0.1, talking to the
+# Agent Service on its own loopback port. It holds no Hermes credentials and mounts nothing.
+# Remove with `wam alongside --off`, then `wam app update {app}`.
+services:
+  {app}:{image}
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    environment:
+      WIZARD_SHELL_LISTEN: "127.0.0.1:{port}"
+      WIZARD_AGENT_SERVICE_ORIGIN: http://127.0.0.1:{service_port}
+"""
+
+
+def ux_override(st: dict, app_id: str) -> str:
+    return UX_OVERRIDE.format(
+        app=app_id, port=int(st["shell"]["port"]), service_port=service_port(st),
+        image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing" if st["shell"].get("image") else ""))
+
+
+def service_port(st: dict) -> int:
+    return int((st.get("service") or {}).get("port") or DEFAULT_SERVICE_PORT)
+
+
+def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle") -> str:
+    """The override for the app that talks to the host Hermes: the Agent Service, or the pre-split bundle (which
+    also serves the UX, so it keeps the shell's port)."""
+    if role == "shell":
+        return ux_override(st, app_id)
+    part = "service" if role == "service" else "shell"
+    port = service_port(st) if role == "service" else int(st["shell"]["port"])
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):
         raise SystemExit(f"Hermes home path {a['hermes_home']!r} has characters a compose file can't carry safely")
@@ -274,25 +329,30 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> st
         except OSError:
             volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
     return SHELL_OVERRIDE.format(
-        app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
+        app=app_id, origin=a["origin"], port=port,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
                 "# read-only, so the shell can read every file there, credentials included."
                 if share else "The shell sees only the agent's images folder, not the Hermes home\n"
                 "# (opt in to session history: wam alongside --share-history)."),
-        image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing" if st["shell"].get("image") else ""),
+        image=(f"\n    image: {(st.get(part) or {})['image']}\n    pull_policy: missing" if (st.get(part) or {}).get("image") else ""),
         user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
         volumes=volumes)
 
 
-def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path) -> Path | None:
-    """Write the user-config override for the shell app. Returns its path, or None outside alongside mode."""
+def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path,
+                         role: str = "bundle") -> Path | None:
+    """Write the user-config override for a shell, Agent Service or pre-split bundle app (`role`, see role_of).
+    Returns its path, or None outside alongside mode."""
     st = load(wizard_home)
     if not st:
         return None
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home))
+    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role))
+    if role == "shell":   # the UX holds no gateway token
+        (d / "app.env").unlink(missing_ok=True)
+        return d / "docker-compose.yml"
     envp = d / "app.env"
     fd = os.open(envp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:

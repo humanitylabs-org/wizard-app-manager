@@ -295,6 +295,48 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
 
 
+def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
+    """DECISIONS #36 split: the Agent Service gets the host-Hermes override on its own loopback port (with the
+    gateway token); the shell (wizard-ux) gets a UX-only override pointed at the service, no token, no mounts.
+    The pre-split wizard-shell bundle keeps its old override, so existing boxes keep working."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("platforms:\n  api_server:\n    extra:\n      port: 8650\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    monkeypatch.setattr(alongside, "port_free", lambda p: p != 8797)       # something already holds 8797
+    monkeypatch.setenv("WIZARD_AGENT_SERVICE_IMAGE", "wizard-agent-service:test")
+    monkeypatch.setenv("WIZARD_UX_IMAGE", "wizard-ux:test")
+    st = alongside.enable(wh, hh, 18796)
+    assert st["service"] == {"port": 8798, "image": "wizard-agent-service:test"}
+    assert st["shell"]["image"] == "wizard-ux:test"
+    monkeypatch.delenv("WIZARD_AGENT_SERVICE_IMAGE"); monkeypatch.delenv("WIZARD_UX_IMAGE")
+    assert alongside.enable(wh, hh)["service"]["port"] == 8798                 # a re-run keeps the ports and pins
+    assert alongside.load(wh)["service"]["image"] == "wizard-agent-service:test"
+    assert alongside.role_of("wizard-agent-service", ["agent-service"]) == "service"
+    assert alongside.role_of("wizard-ux", ["shell"]) == "shell"
+    assert alongside.role_of("wizard-shell", ["shell"]) == "bundle"
+    assert alongside.role_of("files", ["files"]) is None
+    assert cli.alongside_role({}, "wizard-agent-service") == "service"        # slot defaults count before apps.json
+    assert cli.alongside_role({}, "wizard-ux") == "shell"
+    rt = tmp_path / "rt"
+    sp = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    s = sp.read_text(); sy = yaml.safe_load(s.replace("!reset", ""))["services"]["wizard-agent-service"]
+    assert sy["environment"]["HERMES_ORIGIN"] == "http://127.0.0.1:8650" and sy["environment"]["WIZARD_PORT"] == "8798"
+    assert sy["image"] == "wizard-agent-service:test" and "8798/wizard/health" in s
+    assert (sp.parent / "app.env").read_text().startswith("WIZARD_MCP_TOKEN=")
+    up = alongside.write_shell_override(rt, "wizardapps", "wizard-ux", wh, "shell")
+    uy = yaml.safe_load(up.read_text().replace("!reset", ""))["services"]["wizard-ux"]
+    assert uy["environment"] == {"WIZARD_SHELL_LISTEN": "127.0.0.1:18796",
+                                 "WIZARD_AGENT_SERVICE_ORIGIN": "http://127.0.0.1:8798"}
+    assert uy["image"] == "wizard-ux:test" and uy["network_mode"] == "host"
+    assert "volumes" not in uy and "HERMES" not in up.read_text() and not (up.parent / "app.env").exists()
+    bp = alongside.write_shell_override(rt, "wizardapps", "wizard-shell", wh)  # legacy bundle: unchanged shape
+    by = yaml.safe_load(bp.read_text().replace("!reset", ""))["services"]["wizard-shell"]
+    assert by["environment"]["WIZARD_PORT"] == "18796" and by["environment"]["HERMES_ORIGIN"] == "http://127.0.0.1:8650"
+
+
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
     """--share-history mounts the whole Hermes home (session history) and says it exposes credentials; a re-run
     without the flag keeps the owner's choice; --no-share-history takes it back."""
