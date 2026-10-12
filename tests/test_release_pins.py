@@ -147,7 +147,7 @@ def test_no_stable_pointer_installs_main_unpinned(box):
     (box["rel"] / "stable").unlink()
     p, rec = box["run"]()
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "unpinned" in p.stdout and rec is None
+    assert "couldn't read the Wizard OS stable release" in p.stdout and "unpinned" in p.stdout and rec is None
     assert "moved-on" in p.stdout   # main's install.sh ran, not the pinned one
 
 

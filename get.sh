@@ -207,7 +207,7 @@ PY
     fi
     say "Installing Wizard OS $REL (App Manager ${REF:0:12})"
   else
-    echo "note: no Wizard OS stable release is published yet; installing the App Manager's main branch (unpinned)."
+    echo "note: couldn't read the Wizard OS stable release ($RELEASE_BASE/stable); installing the App Manager's main branch (unpinned)."
   fi
 fi
 
