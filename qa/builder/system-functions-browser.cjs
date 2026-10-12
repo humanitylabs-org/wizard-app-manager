@@ -29,7 +29,7 @@ function file(res,p) {if(!fs.existsSync(p)){res.writeHead(404);return res.end('n
 function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(0,'127.0.0.1',()=>{let p=s.address().port;s.close(()=>resolve(p))})})}
 (async()=>{
   const backendPort=await port();
-  backend=spawn(process.env.QA_PYTHON||'python3',[path.join(SOURCE,'app/server.py')],{env:{...process.env,PORT:String(backendPort),DATA_DIR:path.join(OUT,'task-data'),WIZARD_TRUSTED_HOSTS:`127.0.0.1:${backendPort}`,WIZARD_TRUSTED_ORIGINS:`http://127.0.0.1:${backendPort}`},stdio:['ignore','pipe','pipe']});
+  backend=spawn(process.env.QA_PYTHON||'python3',[path.join(SOURCE,'app/server.py')],{env:{...process.env,BIND:'127.0.0.1',PORT:String(backendPort),DATA_DIR:path.join(OUT,'task-data'),WIZARD_TRUSTED_HOSTS:`127.0.0.1:${backendPort}`,WIZARD_TRUSTED_ORIGINS:`http://127.0.0.1:${backendPort}`},stdio:['ignore','pipe','pipe']});
   const backendLog=fs.createWriteStream(path.join(OUT,'task-api.log'));backend.stdout.pipe(backendLog);backend.stderr.pipe(backendLog);
   backend.on('error',e=>errors.push(String(e)));
   for(let i=0;i<100;i++){try{let r=await fetch(`http://127.0.0.1:${backendPort}/healthz`);if(r.ok)break}catch{}await new Promise(r=>setTimeout(r,50));if(i===99)throw Error('Generated task API not ready')}
@@ -63,6 +63,7 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
       await page.evaluate(light=>{const r=document.documentElement;r.dataset.skin=light?'paper':'nebula';r.style.colorScheme=light?'light':'dark';for(const [k,v] of Object.entries(light?{bg:'#faf8f3',ink:'#201d28','ink-2':'#52485f','ink-3':'#65596f','violet-2':'#6943a7','line-2':'#d3cbdc'}:{bg:'#05030c',ink:'#f3efff','ink-2':'#b9b0d8','ink-3':'#7d74a3','violet-2':'#b99bff','line-2':'#b9b0d8'}))r.style.setProperty('--'+k,v);WizAppearance.sync()},light);
       await frame.waitForFunction(light=>document.documentElement.dataset.colorScheme===(light?'light':'dark'),light);
       ok(await frame.evaluate(()=>getComputedStyle(document.body).backgroundColor==='rgba(0, 0, 0, 0)'&&getComputedStyle(document.documentElement).backgroundColor==='rgba(0, 0, 0, 0)'),`${width} ${light?'light':'dark'} transparent hosted canvas`);
+      ok(await frame.evaluate(()=>{const p=document.createElement('span');p.style.color='var(--wz-text)';document.body.append(p);const expected=getComputedStyle(p).color;p.remove();return getComputedStyle(document.body).color===expected}),`${width} ${light?'light':'dark'} text inherits actual shared semantic token`);
       ok(await frame.evaluate(()=>getComputedStyle(document.querySelector('.wz-head')).display==='none'),`${width} no redundant app-title chrome`);
       ok(await frame.evaluate(()=>document===qaDoc)&&await frame.locator('#habit-name').inputValue()==='Unsent domain draft',`${width} live theme preserves document/draft`);
       ok(await frame.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${width} no horizontal overflow`);
@@ -109,6 +110,7 @@ function port(){return new Promise(resolve=>{let s=http.createServer();s.listen(
     const page=await ctx.newPage();page.on('pageerror',e=>errors.push(String(e)));
     await page.goto(base+'/app/');await page.waitForFunction(()=>WizardApp?.version===1);
     ok(await page.evaluate(()=>!WizardApp.hosted&&getComputedStyle(document.documentElement).colorScheme===(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')),`standalone ${light?'light':'dark'} uses system preference without app theme state`);
+    ok(await page.evaluate(()=>{const p=document.createElement('span');p.style.color='var(--canvas)';document.body.append(p);const expected=getComputedStyle(p).color;p.remove();return getComputedStyle(document.body).backgroundColor===expected}),`standalone ${light?'light':'dark'} paints system-preference fallback canvas`);
     await page.locator('#habit-name').click();
     await page.goBack({waitUntil:'domcontentloaded'}).catch(()=>{});
     // CloseWatcher/popstate delivery depends on browser; require one Back stay.

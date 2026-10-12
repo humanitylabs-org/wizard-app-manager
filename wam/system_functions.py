@@ -33,7 +33,7 @@ RULES = [
     ('service-worker', r'\bnavigator\s*' + _member('serviceWorker') + r'''|\b(?:importScripts|skipWaiting)\s*\(|\bself\s*\.\s*clients\s*\.\s*claim\s*\(|(?<![\w.])(?:self\s*\.\s*)?addEventListener\s*\(\s*['"](?:install|activate|fetch)['"]|\bself\s*\.\s*on(?:install|activate|fetch)\s*=''', 'Hosted apps do not own service workers or update reload policy.'),
     ('install-prompt', r'\bbeforeinstallprompt\b|\b(?:deferredPrompt|installPrompt)\s*\.\s*prompt\s*\(', 'Installation UI belongs to Wizard, not a hosted app.'),
     ('theme-storage', r'''\b(?:localStorage|sessionStorage)\s*\.\s*(?:setItem|getItem)\s*\(\s*['"](?:theme|dark(?:Mode|-mode)?|color[-_]?scheme|wos\.skin|skin)['"]''', 'System skin/dark/light state belongs to WizardApp.theme, not app storage.'),
-    ('theme-switch', r'''\b(?:toggleDarkMode|toggleTheme|setDarkMode)\s*\(|(?:id|data-action)\s*=\s*['"][^'"]*(?:theme-toggle|dark-mode|dark-toggle)[^'"]*['"]''', 'Remove app-local system theme switches; keep app reading/art controls.'),
+    ('theme-switch', r'''\b(?:toggleDarkMode|toggleTheme|setDarkMode)\s*\(|(?:id|data-action)\s*=\s*['"][^'"]*(?:theme-toggle|dark-mode|dark-toggle)[^'"]*['"]|\bdocument\s*\.\s*documentElement\s*\.\s*classList\s*\.\s*(?:toggle|add|remove)\s*\(\s*['"](?:dark|light|dark-mode|light-mode)['"]|\bdocument\s*\.\s*documentElement\s*\.\s*setAttribute\s*\(\s*['"]data-(?:theme|color-scheme)['"]\s*,\s*['"](?:dark|light)['"]''', 'Remove app-local system theme switches; keep app reading/art controls.'),
     ('root-guard', r'''\b(?:wzGuard|wosGuard|rootGuard|backGuard|__wosNativeBack)\b|Press\s+back\s+again\s+to\s+exit''', 'Use WizardApp.back; root exit/standalone guards live only in shared core.'),
 ]
 
