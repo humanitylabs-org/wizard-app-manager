@@ -573,3 +573,19 @@ def test_shared_only_skill_collision_keeps_same_projection(bridge):
     assert json.loads((b.cfg.home / "apps.json").read_text()) == result["registry"]
     assert json.loads((shared / "apps.json").read_text()) == result["registry"]
     assert (shared / "skills/hello-wizard/SKILL.md").read_bytes() == b"system-owned-collision"
+
+
+def test_dependency_on_a_slot_is_filled_by_any_installed_provider(bridge):
+    """The split shell's recipe says `uses: [agent-service]`, a slot: an installed app providing it satisfies it."""
+    b = bridge
+    wizard = b.cfg.runtipi_root / "repos/wizardapps/apps/hello-wizard/wizard.md"
+    meta = registry._front(wizard.read_text())
+    meta["uses"] = ["agent-service"]
+    wizard.write_text("---\n" + yaml.safe_dump(meta) + "---\n")
+    with pytest.raises(BridgeError) as e:
+        b._form(URN, "install", {}, [], reg={"apps": []})
+    assert e.value.reason == "dependencies_required"
+    provider = {"apps": [{"id": "wizard-agent-service", "provides": ["agent-service"]}]}
+    assert b._form(URN, "install", {}, [], noop=True, reg=provider) == {}
+    code, result = op(b, "install")   # the real path: nothing provides the slot on this box, so still refused
+    assert code == 409 and result["error"] == "dependencies_required" and not b.tipi.mutations

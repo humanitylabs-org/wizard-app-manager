@@ -364,7 +364,7 @@ class Bridge:
     def _save(self, journal: dict):
         registry.atomic_write(self.operations, json.dumps(journal).encode(), 0o600)
 
-    def _form(self, urn: str, action: str, body: dict, rows: list, *, noop=False) -> dict:
+    def _form(self, urn: str, action: str, body: dict, rows: list, *, noop=False, reg: dict | None = None) -> dict:
         if action in {"start", "stop", "restart"}:
             if body:
                 raise BridgeError(400, "unexpected_fields")
@@ -385,7 +385,9 @@ class Bridge:
         have = {(r.get("info") or {}).get("urn", "").split(":")[0] for r in rows}
         external = alongside.external_slots(self.cfg.home)
         external_apps = {v.get("app") for k, v in slots.load_defaults().items() if k in external}
-        if set(uses) - have - external_apps:
+        # `uses` names apps or slots (the split shell uses `agent-service`): an installed provider fills a slot.
+        filled = set(slots.providers(reg or {}))
+        if set(uses) - have - external_apps - filled:
             raise BridgeError(409, "dependencies_required")
         allowed = {f.get("env_variable") for f in info.get("form_fields") or []} - {
             "port", "exposed", "exposedLocal", "openPort", "domain", "enableAuth", "skipEnv", "skipPull",
@@ -464,7 +466,7 @@ class Bridge:
         if action == "uninstall" and slots.blocks_uninstall(reg, urn.split(":")[0]):
             raise BridgeError(409, "required_slot")
         # Validate even no-op requests; no exposure flags/host ports or arbitrary lifecycle options.
-        form = self._form(urn, action, body, rows, noop=noop)
+        form = self._form(urn, action, body, rows, noop=noop, reg=reg)
         if noop:
             return {"success": True, "noop": True, "status": status}
         with self.completion(self.rt, urn, action, self.timeout) as completion:
