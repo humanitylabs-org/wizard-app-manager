@@ -1,7 +1,8 @@
-import json, shutil, sys, threading, time, urllib.error, urllib.request
+import json, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -253,3 +254,138 @@ def test_ensure_store_lands_on_the_wizardapps_slug(before):
     assert "wizard-apps" not in by_slug and "migrated" in by_slug
     cli.ensure_store(_Cfg(), rt)                                                          # second run: nothing to do
     assert rt.calls[-1][0] != "POST"
+
+
+def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch):
+    """Alongside mode: the host's Hermes fills the agent spot (bootstrap skips hermes-agent); the shell gets a
+    host-network override pointed at it, the gateway token in a 0600 env file, and by default no Hermes home: only
+    the agent's images folder, and the recipe's state.db path blanked."""
+    from wam import alongside, slots
+    hh = tmp_path / "hermes"; hh.mkdir(); (hh / "cache" / "images").mkdir(parents=True)
+    (hh / "config.yaml").write_text("platforms:\n  api_server:\n    extra:\n      port: 8650\n")
+    (hh / ".env").write_text("API_SERVER_KEY=host-key-not-real\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    st = alongside.enable(wh, hh, 18796)
+    assert st["agent"]["origin"] == "http://127.0.0.1:8650" and st["shell"]["port"] == 18796
+    assert "host-key-not-real" not in json.dumps(st)
+    assert alongside.shared_secret(wh, "WIZARD_HERMES_API_KEY") == "host-key-not-real"
+    reg = {"apps": [], "external": alongside.external_slots(wh)}
+    d = {"agent": {"app": "hermes-agent", "required": True}, "shell": {"app": "wizard-shell", "required": True}}
+    rows = {r["slot"]: r for r in slots.table(reg, d)}
+    assert rows["agent"]["state"] == "external" and rows["agent"]["external"] == "external: host Hermes"
+    assert slots.to_install(reg, d) == ["wizard-shell"]
+    p = alongside.write_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell", wh)
+    text = p.read_text()
+    assert "network_mode: host" in text and "HERMES_ORIGIN: http://127.0.0.1:8650" in text
+    assert f"{hh}:/hermes:ro" not in text and f"{hh}/cache/images:/hermes/cache/images:ro" in text
+    # /hermes is wam's own folder with the mount point already in it (Docker can't mkdir inside a read-only /hermes)
+    view = wh / "hermes-view"
+    assert f"{view}:/hermes:ro" in text and (view / "cache" / "images").is_dir()
+    assert sorted(x.name for x in view.rglob("*")) == ["cache", "images"]      # nothing else: no secrets
+    vols = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["volumes"]
+    assert [v.split(":")[1] for v in vols] == ["/hermes", "/hermes/cache/images"]   # parent before child
+    assert 'WIZARD_HERMES_STATE_PATH: ""' in text
+    yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
+    assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    envp = p.parent / "app.env"
+    assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
+    assert alongside.disable(wh) and alongside.external_slots(wh) == {}
+    assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
+
+
+def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
+    """--share-history mounts the whole Hermes home (session history) and says it exposes credentials; a re-run
+    without the flag keeps the owner's choice; --no-share-history takes it back."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("{}\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    assert alongside.enable(wh, hh, 18796)["shell"]["share_history"] is False
+    text = alongside.shell_override(alongside.load(wh), "wizard-shell", wh)
+    assert (hh / "cache" / "images").is_dir()                                 # made so a later picture shows
+    assert f"{hh}/cache/images:/hermes/cache/images:ro" in text and f"{hh}:/hermes:ro" not in text
+    assert "credentials included" not in text
+    assert alongside.enable(wh, hh, None, True)["shell"]["share_history"] is True
+    text = alongside.shell_override(alongside.load(wh), "wizard-shell", wh)
+    assert f"{hh}:/hermes:ro" in text and 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
+    assert "credentials included" in text
+    yaml.safe_load(text.replace("!reset", ""))
+    assert alongside.enable(wh, hh)["shell"]["share_history"] is True          # re-run keeps the choice
+    assert alongside.enable(wh, hh, None, False)["shell"]["share_history"] is False
+
+
+GET_SH = Path(__file__).resolve().parents[1] / "get.sh"
+
+
+def _mode(tmp_path, *, mode="auto", hermes=True, wos=None, wizard_user_wos=None, runtipi=False):
+    """Run get.sh's mode helpers (has_hermes .. want_alongside) with stub getent/docker; return the picked mode."""
+    src = GET_SH.read_text()
+    funcs = src[src.index("has_hermes() {"):src.index("# Root with an existing Hermes")]
+    homes = {}
+    for user, state in (("owner", wos), ("wizard", wizard_user_wos)):
+        h = tmp_path / user; h.mkdir(exist_ok=True); homes[user] = h
+        if state:
+            (h / ".wizard-os").mkdir(exist_ok=True)
+            (h / ".wizard-os" / "apps.json").write_text("{}")
+            if state == "alongside":
+                (h / ".wizard-os" / "alongside.json").write_text("{}")
+    if hermes:
+        (homes["owner"] / ".hermes").mkdir(exist_ok=True)
+        (homes["owner"] / ".hermes" / "config.yaml").write_text("{}")
+        (homes["owner"] / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+        hb = homes["owner"] / ".local" / "bin" / "hermes"; hb.write_text("#!/bin/sh\n"); hb.chmod(0o755)
+    script = f"""
+set -u
+MODE={mode}; WUSER=wizard
+getent() {{ case "$2" in owner) echo "owner:x:1:1::{homes['owner']}:/bin/sh";; wizard) echo "wizard:x:2:2::{homes['wizard']}:/bin/sh";; esac; }}
+docker() {{ {"echo runtipi" if runtipi else "true"}; }}
+sudo() {{ return 1; }}
+id() {{ echo owner; }}
+{funcs}
+if [ "$(wos_mode owner)" = alongside ]; then echo alongside; elif want_alongside owner; then echo alongside; else echo fresh; fi
+"""
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+    assert p.returncode == 0, p.stderr
+    return p.stdout.strip()
+
+
+def test_get_sh_first_install_next_to_hermes_is_alongside(tmp_path):
+    assert _mode(tmp_path) == "alongside"
+    d = tmp_path / "nohermes"; d.mkdir()
+    assert _mode(d, hermes=False) == "fresh"
+
+
+def test_get_sh_rerun_on_a_fresh_box_stays_fresh(tmp_path):
+    """Oscar's review of #12: a fresh-mode box whose owner also runs Hermes must not switch on update."""
+    assert _mode(tmp_path, wos="fresh") == "fresh"
+    d = tmp_path / "b"; d.mkdir()
+    assert _mode(d, wizard_user_wos="fresh") == "fresh"          # installed under the wizard user
+    d = tmp_path / "c"; d.mkdir()
+    assert _mode(d, runtipi=True) == "fresh"                      # a running Runtipi, home not readable
+    d = tmp_path / "e"; d.mkdir()
+    assert _mode(d, wos="fresh", mode="alongside") == "alongside"  # explicit WIZARD_MODE=alongside still switches
+
+
+def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
+    assert _mode(tmp_path, wos="alongside", runtipi=True) == "alongside"
+
+
+def test_vendored_wizard_cli_matches_its_wizard_os_source():
+    """wizard-cli/ is a byte-identical copy of wizard-os files at the commit in SOURCE.json."""
+    import hashlib
+    d = Path(__file__).resolve().parents[1] / "wizard-cli"
+    src = json.loads((d / "SOURCE.json").read_text())
+    for name, want in src["sha256"].items():
+        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: re-sync it from wizard-os"
+    try:
+        import urllib.request
+        for name, path in src["files"].items():
+            url = f"https://raw.githubusercontent.com/{src['repo']}/{src['commit']}/{path}"
+            with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
+                assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
+    except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
+        pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
