@@ -161,3 +161,25 @@ def test_scaffold_has_shared_client_no_platform_copy(tmp_path):
     assert 'back.useHistory({ isRoot: () => true })' not in js
     assert 'WizardApp.update.hold' in js and 'syncDraftHold()' in js
     assert 'history.pushState' not in js
+
+
+def test_installed_portable_skill_retains_mandatory_qa_and_reference(tmp_path):
+    os_home, hermes_home = tmp_path / 'os', tmp_path / 'hermes'
+    receipt = builder.install_skill(os_home, hermes_home)
+    skill = Path(receipt['skill'])
+    linked = Path(receipt['hermes_link'])
+    assert linked.is_symlink() and linked.resolve() == skill.parent.resolve()
+    text = skill.read_text()
+    assert 'references/system-functions.md' in text
+    assert '**Mandatory QA before handoff:**' in text
+    assert 'Nebula (default), Grove, Tide, Ember, Signal' in text
+    reference = skill.parent / 'references/system-functions.md'
+    assert reference.read_bytes() == (builder.REPO / 'system-skills/wizard-builder/references/system-functions.md').read_bytes()
+    assert 'Executable and browser gate (required before staging)' in reference.read_text()
+    assert 'wam check <source>' in reference.read_text()
+    assert 'system-functions-browser.cjs' in reference.read_text()
+    # The installed instructions point at a real executable admission path.
+    app = builder.new_app('portable-gate', tmp_path / 'dev')
+    assert builder.check_app(app)['ok']
+    (app / 'web/platform.js').write_text('navigator.serviceWorker.register("custom.js")')
+    assert not builder.check_app(app)['ok']
