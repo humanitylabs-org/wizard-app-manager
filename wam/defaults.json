@@ -47,9 +47,8 @@
     },
     "notifications": {
       "name": "Notifications",
-      "app": null,
-      "required": false,
-      "note": "to build"
+      "app": "notifications",
+      "required": false
     }
   }
 }
