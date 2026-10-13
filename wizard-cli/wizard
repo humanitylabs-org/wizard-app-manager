@@ -824,6 +824,7 @@ def cmd_link(ns) -> dict:
         rec["notes"].append("Hermes had no API key; added API_SERVER_KEY so its API server starts (the shell uses it)")
     rec["config_sha_after"] = sha256_file(cfgp)
     rec["env_sha_after"] = sha256_file(envp)
+    p = osh / LINK_FILE
     rec["complete"] = True
     persist()
     restarted = False
