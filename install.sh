@@ -136,4 +136,10 @@ echo
 echo "Wizard OS is installed (box-only: nothing listens on the public interface)."
 "$HOME/.local/bin/wam" slots || true
 echo
+# 4) Private links (wizard-app-manager#18): when this box is on the owner's Tailscale, each installed app page gets its
+#    own https://<box>.<tailnet>.ts.net:<port> with stock `tailscale serve`, and the links are printed here.
+if [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
+  "$HOME/.local/bin/wam" links || true
+  echo
+fi
 echo "Next: run 'wam slots' or 'wam apps' as $(id -un). Re-run the same curl command any time to update."

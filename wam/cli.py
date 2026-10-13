@@ -16,6 +16,7 @@ Wizard additions:
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
+  wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam doctor [--fix]            check the whole chain
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
@@ -503,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -540,6 +542,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
+        elif args.cmd == "links":
+            from . import links
+            reg = write_registry(c)
+            shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run)
+            print(json.dumps(res, indent=2) if args.json else links.describe(res))
+            return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
