@@ -111,7 +111,9 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    return registry.public_projection(reg)
+    # Return the exact owner-route projection we persisted, including staged view IDs.
+    # Internal _skill_src remains available for both copy passes, never in API/CLI output.
+    return json.loads((c.home / "apps.json").read_text())
 
 
 def share_registry(c: Config) -> bool:
