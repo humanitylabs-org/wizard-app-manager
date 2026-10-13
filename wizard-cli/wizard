@@ -722,6 +722,8 @@ def cmd_link(ns) -> dict:
     if not cfgp.is_file():
         raise Fail("usage", f"no Hermes config at {cfgp}")
     if link_record():
+        if not link_record().get("complete", True):
+            raise Fail("tool_error", "Interrupted link: run `wizard unlink --restart`, then retry the Jan installer")
         return {"ok": True, "already_linked": True, "record": str(os_home() / LINK_FILE),
                 "hint": "run `wizard unlink` first to link again"}
     osh = os_home()
@@ -750,12 +752,23 @@ def cmd_link(ns) -> dict:
            "env_sha_before": sha256_file(envp), "edits": [], "env_added": [], "plugin_installed": False,
            "notes": []}
 
+    def persist():
+        p = osh / LINK_FILE
+        tmp = p.with_suffix('.jan-tmp')
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(rec, indent=2) + '\n'); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, p)
+    rec['complete'] = False
+    persist()
+
     def remember(key: str, after) -> None:
         try:
             before = {"present": True, "value": raw_get(raw_config(home), key)}
         except KeyError:
             before = {"present": False}
         rec["edits"].append({"key": key, "before": before, "after": after})
+        persist()  # Undo intent is durable before the config edit.
         hcfg_set(home, key, after)
 
     # 1. the one MCP entry (never touches other mcp_servers entries)
@@ -775,8 +788,17 @@ def cmd_link(ns) -> dict:
         args = ["plugins", "install", ns.plugin_source or PLUGIN_SOURCE, "--no-enable", "--no-deps"]
         if ns.plugin_ref:
             args += ["--ref", ns.plugin_ref]
-        run_hermes(home, *args)
         rec["plugin_installed"] = True
+        persist()
+        local = Path(ns.plugin_source or '').expanduser()
+        if local.is_dir():
+            # Stock Hermes discovers local plugins in HERMES_HOME/plugins; no core changes.
+            if not (local / '__init__.py').is_file():
+                raise Fail('usage', 'local plugin source has no __init__.py')
+            (home / 'plugins').mkdir(exist_ok=True)
+            shutil.copytree(local, home / 'plugins' / PLUGIN_NAME)
+        else:
+            run_hermes(home, *args)
     try:
         enabled = list(raw_get(raw_config(home), "plugins.enabled") or [])
     except KeyError:
@@ -789,20 +811,21 @@ def cmd_link(ns) -> dict:
     # secrets into the Hermes .env (0600): the gateway token, and an API key when the API server has none yet
     names = env_names(envp)
     if names.get(TOKEN_ENV) != token:
+        rec["env_added"].append(TOKEN_ENV)
+        persist()
         if TOKEN_ENV in names:
             env_remove(envp, [TOKEN_ENV])
         env_append(envp, TOKEN_ENV, token)
-        rec["env_added"].append(TOKEN_ENV)
     if len(names.get("API_SERVER_KEY", "")) < 16:
         import secrets as _s
-        env_append(envp, "API_SERVER_KEY", _s.token_urlsafe(32))
         rec["env_added"].append("API_SERVER_KEY")
+        persist()
+        env_append(envp, "API_SERVER_KEY", _s.token_urlsafe(32))
         rec["notes"].append("Hermes had no API key; added API_SERVER_KEY so its API server starts (the shell uses it)")
     rec["config_sha_after"] = sha256_file(cfgp)
     rec["env_sha_after"] = sha256_file(envp)
-    p = osh / LINK_FILE
-    p.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
-    os.chmod(p, 0o600)
+    rec["complete"] = True
+    persist()
     restarted = False
     if ns.restart:
         restarted = run_hermes(home, "gateway", "restart", check=False, timeout=180).returncode == 0
