@@ -28,6 +28,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -50,6 +51,15 @@ class Config:
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
         self.index = index.base(cfg)
+        self.private_apps: dict[str, str] = {}
+        pa = cfg.get("private_apps") or {}
+        if isinstance(pa, dict):
+            for k, v in pa.items():
+                if (isinstance(k, str) and isinstance(v, str) and
+                        re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", k) and
+                        "/" in v):
+                    repo = v.strip().removeprefix("https://github.com/").strip("/")
+                    self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
@@ -265,8 +275,23 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
 
 
 def resolve_any(c: Config, ref: str) -> dict:
-    """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
-    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    """Owner private_apps short-id aliases first (exact match only; explicit owner config precedes public index).
+    Then the public index. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
+    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally.
+    For private_apps aliases: fetched manifest id must exactly match the requested alias before any install/store write."""
+    # explicit owner-configured private app aliases (short id only, validated at load)
+    if ref in c.private_apps:
+        repo = c.private_apps[ref]
+        if not isinstance(repo, str) or "/" not in repo:
+            raise SystemExit(f"private_apps[{ref}] is not a valid owner/repo string")
+        try:
+            rec = private.prepare(c.runtipi_root, STORE, repo.removeprefix("https://github.com/"))
+        except private.PrivateError as pe:
+            raise SystemExit(f"{ref}: private_apps alias to {repo} failed: {pe}") from None
+        if rec.get("id") != ref:
+            raise SystemExit(f"private_apps alias '{ref}' points to repo whose manifest id is '{rec.get('id')}' (must match the alias exactly before install)")
+        print(f"{rec['id']}: installing from private repo {rec['repo']} (owner-configured alias; only boxes with access can do this)", file=sys.stderr)
+        return rec
     try:
         return index.resolve(c.index, ref)
     except index.IndexError_ as e:
