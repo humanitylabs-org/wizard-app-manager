@@ -347,11 +347,11 @@ def test_prepare_requires_a_named_owner_from_env_or_this_box_tailnet(fresh, monk
     assert res["error"] == "owner_login_required" and not (f.c.home / "fresh-agent.json").exists()
     # This node's own Tailscale identity (Self -> User LoginName, DNSName) is the inferred owner.
     monkeypatch.setattr(alongside, "_tailscale_status", lambda: {
-        "Self": {"UserID": 2558283730723414, "DNSName": "thales.tailc0f369.ts.net."},
-        "User": {"2558283730723414": {"LoginName": "jdefleur@github"}}})
+        "Self": {"UserID": 1111111111111111, "DNSName": "box.tail1234.ts.net."},
+        "User": {"1111111111111111": {"LoginName": "owner@example.invalid"}}})
     assert fresh_agent.main(f.c, "prepare")["ok"]
     assert json.loads((f.c.home / "fresh-agent.json").read_text())["owner"] == {
-        "logins": ["jdefleur@github"], "hosts": ["thales.tailc0f369.ts.net"]}
+        "logins": ["owner@example.invalid"], "hosts": ["box.tail1234.ts.net"]}
     monkeypatch.setenv("WIZARD_APP_OWNER_LOGINS", "owner@x.test\nWIZARD_REQUIRE_CF_ACCESS=0")
     with pytest.raises(SystemExit):
         alongside.owner_identity()
