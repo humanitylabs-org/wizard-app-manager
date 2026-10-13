@@ -206,6 +206,8 @@ SERVICE_OVERLAY = """\
 # Tokens are in the 0600 app.env next to this file. Remove with `wam fresh-agent disconnect`.
 services:
   {app}:
+    image: wizard-shell:mac-mvp-20261013
+    pull_policy: never
     extra_hosts:
       - "{bridge_host}:{bridge_ip}"
     environment:
@@ -223,6 +225,10 @@ AGENT_OVERLAY = """\
 # Remove with `wam fresh-agent disconnect`.
 services:
   {engine}:
+    image: ghcr.io/humanitylabs-org/hermes-agent:v2026.9.24-wizard-slim1
+    pull_policy: missing
+    extra_hosts:
+      - "wizard-vm:host-gateway"
     environment:
       WIZARD_OS_HOME: {os_home}
       WIZARD_APPS_MCP_ADDRESS: internal
