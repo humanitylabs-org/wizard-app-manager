@@ -363,6 +363,11 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     with os.fdopen(fd, "w") as f:
         f.write(f"WIZARD_MCP_TOKEN={gateway_token(wizard_home)}\n")
         f.write(f"WIZARD_APP_MANAGER_TOKEN={manager_token}\n")
+        # Re-read after link/relink: unlink removes a generated Hermes API key.
+        # The stock Runtipi user-config app.env overrides the saved install form.
+        host_key = api_key(Path(st["agent"]["hermes_home"]))
+        if host_key:
+            f.write(f"WIZARD_HERMES_API_KEY={host_key}\n")
     os.chmod(envp, 0o600)
     return d / "docker-compose.yml"
 
