@@ -33,15 +33,20 @@ curl -fsSL aiwizards.com/os.sh | bash
 
 Sets up Runtipi with the Wizard image, the `wam` command, and the default app in every parking spot (`wam bootstrap`).
 
-**Private apps (team only, until they're public).** Defaults that aren't in the public index yet (today: the Wizard shell
-from `humanitylabs-org/wizard-agent-service`) install straight from their GitHub repo, using this box's GitHub login
-(`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs:
+**Private access defaults to Tailscale.** The installer installs its native host daemon and prints a sign-in link
+for the owner to connect the box to their own tailnet. Existing Tailscale connections and settings are left alone.
+If sign-in is deferred, installation continues with Tailscale preinstalled but unpaired. Install Tailscale on your
+phone/laptop too and use the same account. This does not yet publish app URLs: apps stay on loopback until a private
+proxy is configured. No Funnel, Tailscale SSH, subnet routes or exit node are enabled by this step.
 
-- access to the repo, and
-- the `read:packages` scope for its image: `gh auth refresh -s read:packages`.
+Cloudflare Tunnel + Access remains an alternative: choose `WIZARD_PRIVATE_ACCESS=cloudflare` (or `none` to skip).
+This skips Tailscale setup; it does not configure Cloudflare or remove an existing Tailscale connection.
+Tailscale is a host integration for the `private-access` system slot, not an ordinary privileged store container.
 
-Boxes without that access skip those spots and install everything else. Once the repos and images are public, the
-same command works for everyone with no login.
+**Private apps.** A default that isn't in the public index installs straight from its GitHub repo, using this box's
+GitHub login (`$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`). The login needs access to the repo and the
+`read:packages` scope for its image (`gh auth refresh -s read:packages`). Boxes without that access skip those spots
+and install everything else. Today every default is public and in the index, so the one-line install needs no login.
 
 ## Install / switch an existing Runtipi box
 

@@ -9,6 +9,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
+# Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
+bash "$HERE/scripts/setup-private-access.sh"
+
 if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first, box-only"
   # Box-only from the very first start: dashboard and proxy listen on loopback, never on the public interface.
@@ -33,6 +36,10 @@ YML
 fi
 python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
 command -v git >/dev/null || sudo apt-get install -y git
+# An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
+# the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
+DOCKER=(docker)
+docker info >/dev/null 2>&1 || DOCKER=(sudo docker)
 # Shared, read-only copy of apps.json for app containers (the Wizard shell mounts it).
 mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
 
@@ -60,9 +67,9 @@ else:
 p.write_text("\n".join(lines) + "\n")
 PY
 # Point the existing Wizard store at the index (older installs had a local git store here).
-docker exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then docker pull "$IMAGE"; fi
-(cd "$RUNTIPI_ROOT" && docker compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
+"${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
+if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
@@ -90,7 +97,7 @@ EOF
 # Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
-docker rm -f wizard-store wizard-skin >/dev/null 2>&1 || true
+"${DOCKER[@]}" rm -f wizard-store wizard-skin >/dev/null 2>&1 || true
 rm -f "$RUNTIPI_ROOT/traefik/dynamic/wizard-skin.yml"
 
 loginctl enable-linger "$USER" 2>/dev/null || true
@@ -103,9 +110,27 @@ for _ in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NG
 "$HOME/.local/bin/wam" apps >/dev/null || true
 "$HOME/.local/bin/wam" doctor || true
 
+# The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
+sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os || true
+
+# 2b) Alongside an existing Hermes (WIZARD_MODE=alongside, set by get.sh): the host's Hermes fills the agent spot
+#     and is linked to the apps; the hermes-agent app is never installed. `wizard unlink` reverses the link.
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+  echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
+  "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null
+  "$HOME/.local/bin/wizard" link --restart ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
+    ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"} || echo "note: 'wizard link' did not finish; run it again later"
+  # Hermes' API server answers once the gateway has restarted with its key.
+  ORIGIN="$("$HOME/.local/bin/wam" alongside --detect 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_origin"])' || echo http://127.0.0.1:8642)"
+  for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && break; sleep 2; done
+fi
+
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ]; then "$HOME/.local/bin/wam" bootstrap >/dev/null || true; fi
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+  echo; "$HOME/.local/bin/wizard" doctor || true
+fi
 
 echo
 echo "Wizard OS is installed (box-only: nothing listens on the public interface)."

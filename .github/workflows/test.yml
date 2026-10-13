@@ -9,3 +9,6 @@ jobs:
         with: {python-version: "3.11"}
       - run: pip install pyyaml pytest pyjwt
       - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: node --test tests/runtipi-open.test.mjs
