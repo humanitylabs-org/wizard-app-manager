@@ -11,6 +11,7 @@ The authoritative tokens, client and components live in [wizard-os/style/](https
 - `web/styles.css`: app-specific layout. This is the file the builder edits.
 
 Appearance owns surfaces and ink; the app owns layout, content and intentional typography. Hosted canvas is transparent; standalone uses the skin base. The accepted skins are Nebula (default), Grove, Tide, Ember and Signal. Selection belongs in the shell. Generic light-mode transport stays available without reviving retired skins. Static type, spacing, radius and motion roles are CSS defaults; the v1 host message carries colours only.
+Paper is retired; use one of the accepted skins from the shell registry.
 
 Use the classes documented in the canonical style README. Keep existing app accents and serif reading where intentional. Hosted nested Back answers `window.__wizardCloseOverlay()`; root returns false and never pushes browser history. Build completion ends: "is there a component here other apps could share?"
 

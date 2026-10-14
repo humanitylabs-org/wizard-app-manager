@@ -31,6 +31,7 @@ A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML;
 
 ## Supported shell skins
 Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
+Paper is retired; use one of the accepted skins from the shell registry.
 
 ## Build and verify
 1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.
