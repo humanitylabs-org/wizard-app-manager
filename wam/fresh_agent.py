@@ -211,12 +211,12 @@ services:
     extra_hosts:
       - "{bridge_host}:{bridge_ip}"
     environment:
-      WIZARD_UX_PREFIX: wizard-os-home
+      WIZARD_UX_PREFIX: wizard-os-home{mac_apps_env}
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
       WIZARD_APP_MANAGER_URL: http://{bridge_host}:{bridge_port}
       WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}
       WIZARD_APP_MANAGER_HOSTS: {bridge_host}
-      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}{owner}
+      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}{owner}{mac_apps_ports}
 """
 
 AGENT_OVERLAY = """\
@@ -354,8 +354,14 @@ def write_service_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
     owner = st.get("owner") or {}
     if not owner.get("logins"):   # a trusted gateway peer without a named owner would be refused by the Service
         raise FreshError("owner_login_required", "run `wam fresh-agent prepare` with WIZARD_APP_OWNER_LOGINS set")
+    # Mac MVP opts into a separate browser origin via its guest ingress. Other boxes keep their existing route.
+    mac_apps = registry._json_file(home / 'app-manager.json').get('mac_apps_origin')
+    if mac_apps and mac_apps != 'http://localhost:48023':
+        raise FreshError('invalid_mac_apps_origin', 'Mac apps origin must be http://localhost:48023')
     compose = SERVICE_OVERLAY.format(app=app_id, bridge_host=BRIDGE_HOST, bridge_ip=b["ip"], bridge_port=b["port"],
-                                     owner=alongside.owner_env(owner["logins"], owner.get("hosts")))
+                                     owner=alongside.owner_env(owner["logins"], owner.get("hosts")),
+                                     mac_apps_env='\n      WIZARD_APPS_PORT: "8788"\n      WIZARD_APPS_ORIGIN: http://localhost:48023' if mac_apps else '',
+                                     mac_apps_ports='\n    ports:\n      - "127.0.0.1:8798:8788"' if mac_apps else '')
     return _write_overlay(runtipi_root, store, app_id, compose, {
         "WIZARD_MCP_TOKEN": alongside.gateway_token(home),
         "WIZARD_APP_MANAGER_TOKEN": token_file(home / "lifecycle-token")})

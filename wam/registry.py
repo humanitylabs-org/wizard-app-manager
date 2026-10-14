@@ -107,6 +107,22 @@ def _port(value) -> int | None:
     return int(value) if str(value).isdigit() and 1 <= int(value) <= 65535 else None
 
 
+def _main_internal_port(directory: Path) -> int | None:
+    """Runtipi's published host port is NOT the container's listening port.
+
+    Recipes in the installed catalog historically used either in view.port.
+    Prefer the main service's authoritative Runtipi compose metadata.
+    """
+    path = directory / "docker-compose.yml"
+    if not path.is_file():
+        return None
+    compose = yaml.safe_load(path.read_text()) or {}
+    ports = [_port((service.get('x-runtipi') or {}).get('internal_port'))
+             for service in (compose.get('services') or {}).values()
+             if isinstance(service, dict) and (service.get('x-runtipi') or {}).get('is_main') is True]
+    return ports[0] if len(ports) == 1 else None
+
+
 def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, runtipi_root: Path,
            network: str = "host") -> dict | None:
     meta = app_meta(runtipi_root, store, name)
@@ -146,7 +162,8 @@ def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, ru
     entry = sanitize(entry)
     entry["_skill_src"] = str(skill) if skill.is_file() else None
     if view and port:
-        origin = f"{name}:{_port(view.get('port')) or port}" if network == "internal" else f"{host}:{port}"
+        internal_port = _main_internal_port(meta['dir']) or _port(view.get('port')) or port
+        origin = f"{name}:{internal_port}" if network == "internal" else f"{host}:{port}"
         entry["_view_upstream"] = f"http://{origin}{local_path(view.get('path'))}"
     json.dumps(entry)  # Reject non-JSON YAML scalars before they can poison the whole projection.
     return entry
