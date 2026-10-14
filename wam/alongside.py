@@ -291,7 +291,7 @@ services:
     environment:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
-      HERMES_ORIGIN: {origin}{state_env}
+      HERMES_ORIGIN: {origin}{state_env}{media_env}
       WIZARD_APPS_MCP_ADDRESS: url
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
     healthcheck:
@@ -299,6 +299,18 @@ services:
 """
 
 _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
+
+
+def host_media_root(runtipi_root: Path) -> Path:
+    """Where this box's Hermes sees the user-files folder the shell mounts at /media.
+
+    The recipe mounts ${ROOT_FOLDER_HOST}/media; Runtipi records ROOT_FOLDER_HOST in its .env (the CLI's install
+    folder when it is absent). The host Hermes is a plain host process, so it reads attachments by that host path,
+    never by the container's /media."""
+    from .runtipi import read_env
+    envf = Path(runtipi_root) / ".env"
+    root = ((read_env(envf).get("ROOT_FOLDER_HOST") if envf.is_file() else "") or "").strip() or str(runtipi_root)
+    return Path(root).expanduser().absolute() / "media"
 
 
 UX_OVERRIDE = """\
@@ -325,9 +337,11 @@ def service_port(st: dict) -> int:
     return int((st.get("service") or {}).get("port") or DEFAULT_SERVICE_PORT)
 
 
-def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle") -> str:
+def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle",
+                   media_root: Path | None = None) -> str:
     """The override for the app that talks to the host Hermes: the Agent Service, or the pre-split bundle (which
-    also serves the UX, so it keeps the shell's port)."""
+    also serves the UX, so it keeps the shell's port). `media_root`: the host path of the /media both recipes mount,
+    handed to the host Hermes (wizard-agent-service#12); the UX-only shell mounts no media and gets none."""
     if role == "shell":
         return ux_override(st, app_id)
     port = service_port(st) if role == "service" else int(st["shell"]["port"])
@@ -338,6 +352,14 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         raise SystemExit(f"host Hermes API {a['origin']} is not a loopback origin; alongside mode needs 127.0.0.1")
     share = bool(st["shell"].get("share_history"))
     hh = a["hermes_home"]
+    # Attachments: the service writes them under its /media, the host Hermes must be handed the host path of the
+    # same file (trusted_path), so the agent's file tools can open what the person attached.
+    media_env = ""
+    if media_root is not None:
+        media = os.path.normpath(str(media_root))
+        if not _SAFE_PATH.match(media) or media == "/":
+            raise SystemExit(f"Runtipi media path {media!r} has characters a compose file can't carry safely")
+        media_env = f'\n      WIZARD_MEDIA_AGENT_ROOT: "{media}"'
     # Without the opt-in the shell gets only the folder of images the agent made (no secrets), so pictures in
     # chats still show; the recipe's state.db path is blanked so the Agent Service opens no Hermes file.
     # Default: the shell's /hermes is a small wam-owned folder (replacing the recipe's /hermes mount) that holds
@@ -366,7 +388,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         image=image_lines(st, app_id),
         user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
-        volumes=volumes)
+        media_env=media_env, volumes=volumes)
 
 
 def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path,
@@ -378,7 +400,8 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
         return None
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role))
+    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role,
+                                                         None if role == "shell" else host_media_root(runtipi_root)))
     if role == "shell":   # the UX holds no gateway token
         (d / "app.env").unlink(missing_ok=True)
         return d / "docker-compose.yml"

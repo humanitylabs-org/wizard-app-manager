@@ -289,6 +289,9 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    # attachments: the host Hermes is handed the host path of the user-files folder, not the container's /media
+    env = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert env["WIZARD_MEDIA_AGENT_ROOT"] == str(tmp_path / "rt" / "media")
     envp = p.parent / "app.env"
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
@@ -327,6 +330,7 @@ def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
     s = sp.read_text(); sy = yaml.safe_load(s.replace("!reset", ""))["services"]["wizard-agent-service"]
     assert sy["environment"]["HERMES_ORIGIN"] == "http://127.0.0.1:8650" and sy["environment"]["WIZARD_PORT"] == "8798"
     assert sy["image"] == "wizard-agent-service:test" and "8798/wizard/health" in s
+    assert sy["environment"]["WIZARD_MEDIA_AGENT_ROOT"] == str((rt / "media").absolute())   # host path of /media
     assert (sp.parent / "app.env").read_text().startswith("WIZARD_MCP_TOKEN=")
     up = alongside.write_shell_override(rt, "wizardapps", "wizard-ux", wh, "shell")
     uy = yaml.safe_load(up.read_text().replace("!reset", ""))["services"]["wizard-ux"]
@@ -577,6 +581,32 @@ def test_alongside_side_follows_what_runs_then_the_saved_choice():
     assert cli.alongside_side(rt, apps, saved=False) is True                             # split in fresh mode, no flag
     assert cli.alongside_side(rt, {"wizard-shell": "bundle", "wizard-agent-service": "service"}, saved=False) is False
     assert cli.alongside_side(rt, {"wizard-shell": "bundle"}, saved=True) is False       # never split
+
+
+def test_alongside_media_agent_root_follows_runtipi_root_folder_host(tmp_path):
+    """Runtipi's ROOT_FOLDER_HOST decides where /media lives on the host; unsafe paths are refused, not quoted."""
+    from wam import alongside
+    rt = tmp_path / "rt"; rt.mkdir()
+    assert alongside.host_media_root(rt) == rt / "media"
+    (rt / ".env").write_text("ROOT_FOLDER_HOST=/srv/runtipi\n")
+    assert alongside.host_media_root(rt) == Path("/srv/runtipi/media")
+    st = {"agent": {"hermes_home": str(tmp_path / "h"), "origin": "http://127.0.0.1:8642", "uid": 1000, "gid": 1000},
+          "shell": {"port": 18796, "share_history": True}}
+    text = alongside.shell_override(st, "wizard-shell", tmp_path / "wos", media_root=Path("/srv/runtipi/media"))
+    env = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert env["WIZARD_MEDIA_AGENT_ROOT"] == "/srv/runtipi/media"
+    assert "WIZARD_MEDIA_AGENT_ROOT" not in alongside.shell_override(st, "wizard-shell", tmp_path / "wos")
+    try:
+        alongside.shell_override(st, "wizard-shell", tmp_path / "wos", media_root=Path("/srv/run tipi/media"))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("an unsafe media path must be refused")
+    # split roles: the Agent Service (which mounts /media) is handed the host path; the UX-only shell is not
+    svc = alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service", Path("/srv/runtipi/media"))
+    senv = yaml.safe_load(svc.replace("!reset", ""))["services"]["wizard-agent-service"]["environment"]
+    assert senv["WIZARD_MEDIA_AGENT_ROOT"] == "/srv/runtipi/media"
+    assert "WIZARD_MEDIA_AGENT_ROOT" not in alongside.shell_override(st, "wizard-ux", tmp_path / "wos", "shell", Path("/srv/runtipi/media"))
 
 
 def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monkeypatch):
