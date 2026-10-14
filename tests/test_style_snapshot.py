@@ -15,7 +15,9 @@ def test_reference_inline_package_matches_template_source():
     template = builder.REPO / 'templates/hello-wizard'
     compose = yaml.safe_load((template / 'runtipi/docker-compose.yml').read_text())
     code = next(iter(compose['services'].values()))['command'][2]
-    blob = re.search(r"base64.b64decode\('([^']+)'\)", code).group(1)
+    match = re.search(r"base64.b64decode\('([^']+)'\)", code)
+    assert match is not None
+    blob = match.group(1)
     payload = json.loads(base64.b64decode(blob))
     assert payload['web/index.html'] == (template / 'web/index.html').read_text()
     lock = json.loads((template / 'appearance-provenance.json').read_text())
