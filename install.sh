@@ -125,7 +125,10 @@ sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-
 # 2b) Alongside an existing Hermes (WIZARD_MODE=alongside, set by get.sh): the host's Hermes fills the agent spot
 #     and is linked to the apps; the hermes-agent app is never installed. `wizard unlink` reverses the link.
 #     A failed link rolls itself back (Hermes is left exactly as it was) and fails the install.
-if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+#     Never on a failed install: linking points Hermes at a gateway that isn't up and restarts it (PR19 review).
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
+  echo "Alongside mode: the install already failed, so your Hermes (${HERMES_HOME:-$HOME/.hermes}) was not touched."
+elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
     FAILED+=("could not record alongside mode (wam alongside)")
@@ -145,10 +148,19 @@ fi
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ] && [ "$healthy" = 1 ]; then
   if boot="$("$HOME/.local/bin/wam" bootstrap)"; then
-    failed_apps="$(printf '%s' "$boot" | python3 -c 'import json,sys
+    # The apps in the shell / agent-service spots are the only way to use Wizard OS: if one of them failed the
+    # install failed. Any other default app that failed leaves a usable box (degraded). Line 1 = failed core apps,
+    # line 2 = the rest; bootstrap only installs the defaults named in wam/defaults.json.
+    split="$(printf '%s' "$boot" | python3 -c 'import json,sys
+core = {(v or {}).get("app") for k, v in json.load(open(sys.argv[1]))["slots"].items() if k in ("shell", "agent-service")}
 try: f = json.load(sys.stdin).get("failed") or {}
-except ValueError: print("(unreadable bootstrap result)"); raise SystemExit
-print("; ".join(f"{k}: {v}" for k, v in f.items()))' 2>/dev/null || echo "(unreadable bootstrap result)")"
+except ValueError: print("\n(unreadable bootstrap result)"); raise SystemExit
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k in core))
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam/defaults.json" 2>/dev/null \
+      || printf '\n(unreadable bootstrap result)')"
+    core_failed="$(printf '%s\n' "$split" | sed -n 1p)"
+    failed_apps="$(printf '%s\n' "$split" | sed -n 2p)"
+    [ -z "$core_failed" ] || FAILED+=("the Wizard shell / Agent Service did not install, so Wizard OS can't be used: $core_failed")
     [ -z "$failed_apps" ] || DEGRADED+=("some default apps did not install: $failed_apps")
   else
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")
@@ -187,6 +199,10 @@ case "$status" in
     echo "Wizard OS did NOT finish installing:" >&2
     printf '  - %s\n' "${FAILED[@]}" >&2
     [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' "${DEGRADED[@]}" >&2
-    echo "Re-run the same curl command once it is fixed. Recorded in $OUTCOME." >&2
+    if [ -f "$OUTCOME" ]; then
+      echo "Re-run the same curl command once it is fixed. Recorded in $OUTCOME." >&2
+    else
+      echo "Re-run the same curl command once it is fixed." >&2
+    fi
     exit 1 ;;
 esac

@@ -10,7 +10,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 
 
-def sandbox(tmp_path, docker_access=True, **extra_env):
+def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     home = tmp_path / "home"
     root = home / "runtipi"
     (root / "user-config").mkdir(parents=True)
@@ -59,6 +59,8 @@ exec "PYEXE" "$@"
     env = {"PATH": str(bin_dir), "HOME": str(home), "USER": "sandbox", "TMPDIR": str(tmp_path),
            "CALLS": str(calls), "DOCKER_ACCESS": str(int(docker_access)), "RUNTIPI_ROOT": str(root),
            "PYTHONDONTWRITEBYTECODE": "1", **extra_env}
+    if before:
+        before(home)
     p = subprocess.run(["bash", str(REPO / "install.sh")], env=env, capture_output=True, text=True, timeout=60)
     outcome_file = home / ".wizard-os/install-outcome.json"
     outcome = json.loads(outcome_file.read_text()) if outcome_file.is_file() else None
@@ -130,3 +132,50 @@ def test_an_app_manager_that_never_answers_fails_the_install(tmp_path):
     assert outcome["status"] == "failed"
     assert any("health check" in f for f in outcome["failed"])
     assert not any(line.startswith("wam -m wam bootstrap") for line in calls.read_text().splitlines())
+
+
+def owner_hermes(tmp_path):
+    hermes = tmp_path / "hermes"
+    hermes.mkdir()
+    (hermes / "config.yaml").write_text("model:\n  default: some/model\n")
+    (hermes / ".env").write_text("OPENROUTER_API_KEY=x\n")
+    return hermes, {p.name: p.read_bytes() for p in hermes.iterdir()}
+
+
+def test_a_failed_install_never_links_the_owners_hermes(tmp_path):
+    # PR19 review P2: App Manager down -> FAILED; alongside must not link Hermes to a gateway that isn't up.
+    hermes, before = owner_hermes(tmp_path)
+    p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down", WIZARD_HEALTH_TRIES="2",
+                                            WIZARD_MODE="alongside", HERMES_HOME=str(hermes))
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert outcome["status"] == "failed"
+    assert "your Hermes" in p.stdout and "was not touched" in p.stdout
+    log = calls.read_text().splitlines()
+    assert not any(line.startswith("wam -m wam alongside") for line in log)
+    assert {x.name: x.read_bytes() for x in hermes.iterdir()} == before
+    assert not (home / ".wizard-os/linked.json").exists()
+
+
+def test_a_failed_shell_or_agent_service_fails_the_install(tmp_path):
+    # PR19 review P2: the shell / agent-service spots are the only way to use Wizard OS.
+    boot = json.dumps({"installed": ["files"], "failed": {"wizard-shell": "image pull denied",
+                                                          "browser": "timeout"}})
+    p, home, root, calls, outcome = sandbox(tmp_path, BOOTSTRAP_OUT=boot)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert outcome["status"] == "failed"
+    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so Wizard OS can't be used: "
+                                 "wizard-shell: image pull denied"]
+    assert outcome["degraded"] == ["some default apps did not install: browser: timeout"]
+    assert "Wizard OS did NOT finish installing" in p.stderr
+
+
+def test_the_outcome_path_is_printed_only_when_it_was_written(tmp_path):
+    # PR19 review P3: the outcome write is best-effort; don't point the owner at a file that isn't there.
+    def block(home):
+        (home / ".wizard-os/install-outcome.json").mkdir(parents=True)   # a directory: the write fails
+    p, home, root, calls, outcome = sandbox(tmp_path, before=block, HEALTH="down", WIZARD_HEALTH_TRIES="2")
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "Wizard OS did NOT finish installing" in p.stderr
+    assert "Recorded in" not in p.stderr
+    p, *_ = sandbox(tmp_path / "ok", HEALTH="down", WIZARD_HEALTH_TRIES="2")
+    assert "Recorded in" in p.stderr

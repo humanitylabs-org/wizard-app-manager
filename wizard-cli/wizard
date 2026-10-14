@@ -738,6 +738,29 @@ def save_record(rec: dict) -> None:
     os.replace(tmp, p)
 
 
+class link_lock:
+    """One `wizard link` / `unlink` at a time (an installer re-run and the owner typing `wizard unlink`, say):
+    both read and write linked.json and the Hermes config, so a second run fails fast instead of rolling the
+    first one's journal back mid-edit. flock is released by the kernel when the process dies, kill included."""
+
+    def __enter__(self):
+        import fcntl
+        p = os_home() / (LINK_FILE + ".lock")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.fd)
+            raise Fail("usage", "another `wizard link` or `wizard unlink` is running on this box; wait for it to "
+                                "finish, then try again", stage="locked") from None
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)   # closing the descriptor drops the lock
+        return False
+
+
 def restore_bytes(src: Path, dst: Path) -> None:
     """Put a backup back atomically (mode and bytes as backed up)."""
     import shutil
@@ -787,6 +810,8 @@ def rollback_link(rec: dict) -> dict:
             envp.unlink()
         else:
             env_remove(envp, rec.get("env_added") or [])
+            if not envp.read_text(encoding="utf-8").strip():   # nothing of the owner's in it: there was no .env
+                envp.unlink()
     config_ok = sha256_file(cfgp) == rec.get("config_sha_before")
     env_ok = sha256_file(envp) == rec.get("env_sha_before")
     rec.update(state="rolled_back", linked=False,
@@ -860,6 +885,7 @@ def cmd_link(ns) -> dict:
         save_record(rec)
         fault(f"before:{key}")
         hcfg_set(home, key, after)
+        fault(f"mid:{key}")   # edit landed, its result not yet journalled: rollback must work key by key
         produced()
         fault(f"after:{key}")
 
@@ -903,15 +929,19 @@ def cmd_link(ns) -> dict:
             if TOKEN_ENV in names:
                 env_remove(envp, [TOKEN_ENV])
             env_append(envp, TOKEN_ENV, token)
+            fault("mid:env")
             produced()
             fault("after:env")
         if len(names.get("API_SERVER_KEY", "")) < 16:
-            import secrets as _s
+            # The same key every time (kept 0600 next to the gateway token): the shell captured it at install, so
+            # unlink -> link must not hand Hermes a new one the shell doesn't know (wizard-os#28 relink defect).
+            api_key = secret_file(osh / "hermes-api-key")
             rec["env_added"].append("API_SERVER_KEY")
             rec["notes"].append("Hermes had no API key; added API_SERVER_KEY so its API server starts (the shell uses it)")
             save_record(rec)
             fault("before:apikey")
-            env_append(envp, "API_SERVER_KEY", _s.token_urlsafe(32))
+            env_append(envp, "API_SERVER_KEY", api_key)
+            fault("mid:apikey")
             produced()
             fault("after:apikey")
         rec["config_sha_after"] = sha256_file(cfgp)
@@ -997,7 +1027,12 @@ def cmd_unlink(ns) -> dict:
     import shutil
     pending = pending_record()
     if pending:   # a link that never finished: roll its journal back instead
-        undone = rollback_link(pending)
+        try:
+            undone = rollback_link(pending)
+        except Exception as e:  # noqa: BLE001 - same JSON contract as a failed link's rollback
+            raise Fail("tool_error", f"the unfinished link could not be rolled back ({_why(e)}); the journal is "
+                       f"kept in {os_home() / LINK_FILE}: fix the cause and run `wizard unlink` again",
+                       stage="rollback_incomplete") from None
         restarted = False
         if ns.restart:
             restarted = run_hermes(Path(pending["hermes_home"]), "gateway", "restart", check=False,
@@ -1030,6 +1065,14 @@ def cmd_unlink(ns) -> dict:
     if same and sha256_file(backup_cfg) == rec.get("config_sha_before"):
         shutil.copy2(backup_cfg, cfgp)
     env_names_now = env_names(envp)
+    # Keep the API key link added before removing it, so the next link hands Hermes the same key the shell already
+    # has (covers boxes linked before link reused a saved key).
+    added_key = env_names_now.get("API_SERVER_KEY", "")
+    keyf = os_home() / "hermes-api-key"
+    if "API_SERVER_KEY" in (rec.get("env_added") or []) and len(added_key) >= 16 and not keyf.is_file():
+        fd = os.open(keyf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(added_key + "\n")
     env_ok = True
     if rec.get("env_existed") and (bdir / ".env").is_file():
         env_remove(envp, rec.get("env_added") or [])
@@ -1305,9 +1348,11 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.cmd == "call":
             out, kind = cmd_call(ns), "call"
         elif ns.cmd == "link":
-            out, kind = cmd_link(ns), "link"
+            with link_lock():
+                out, kind = cmd_link(ns), "link"
         elif ns.cmd == "unlink":
-            out, kind = cmd_unlink(ns), "unlink"
+            with link_lock():
+                out, kind = cmd_unlink(ns), "unlink"
         elif ns.cmd == "doctor":
             out, kind = cmd_doctor(ns), "doctor"
             print(json.dumps(out) if want_json else human(kind, out))
