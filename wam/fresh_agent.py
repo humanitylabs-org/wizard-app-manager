@@ -49,6 +49,9 @@ CONTAINER_OS_HOME = "/wizard-os"             # the shared, read-only app-data/wi
 VENV_PYTHON = "/opt/hermes/.venv/bin/python"
 MCP_NAME, PLUGIN_NAME, TOKEN_ENV = "wizard", "wizard-os", "WIZARD_MCP_TOKEN"
 MARK = "# Written by wam"
+AGENT_SSH_DIR = "agent-ssh"                  # $WIZARD_OS_HOME/agent-ssh: the agent's key for a terminal on this box
+CONTAINER_AGENT_SSH = "/opt/agent-ssh"
+_SAFE_PATH = __import__("re").compile(r"/[A-Za-z0-9._/@+-]+")
 RESTART_SETTLE = 3                           # seconds between Runtipi's restart answer and the status poll
 VENDOR = Path(__file__).with_name("vendor")
 
@@ -233,7 +236,7 @@ services:
       WIZARD_OS_HOME: {os_home}
       WIZARD_APPS_MCP_ADDRESS: internal
     volumes:
-      - ${{ROOT_FOLDER_HOST}}/app-data/wizard-os:{os_home}:ro
+      - ${{ROOT_FOLDER_HOST}}/app-data/wizard-os:{os_home}:ro{agent_ssh}
 """
 
 
@@ -394,8 +397,13 @@ def write_agent_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
     if not load(home):
         return False
     (runtipi_root / "app-data" / "wizard-os" / "skills").mkdir(parents=True, exist_ok=True)
+    # A box that gives the agent a terminal on the box itself (Wizard for Mac: ssh into the VM) keeps that key in
+    # $WIZARD_OS_HOME/agent-ssh, mounted read-only. Never under the app's data folder: Runtipi runs
+    # `chmod -R a+rwx` there on every start/stop, and ssh then refuses the key.
+    ssh_dir = home / AGENT_SSH_DIR
+    agent_ssh = f"\n      - {ssh_dir}:{CONTAINER_AGENT_SSH}:ro" if ssh_dir.is_dir() and _SAFE_PATH.fullmatch(str(ssh_dir)) else ""
     return _write_overlay(runtipi_root, store, AGENT_APP,
-                          AGENT_OVERLAY.format(engine=ENGINE, os_home=CONTAINER_OS_HOME), {})
+                          AGENT_OVERLAY.format(engine=ENGINE, os_home=CONTAINER_OS_HOME, agent_ssh=agent_ssh), {})
 
 
 def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Path) -> bool:
