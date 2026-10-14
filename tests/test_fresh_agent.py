@@ -554,3 +554,46 @@ def test_cli_exposes_fresh_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "wos"))
     p = subprocess.run([sys.executable, "-m", "wam", "fresh-agent", "--help"], cwd=ROOT, capture_output=True, text=True)
     assert p.returncode == 0 and "prepare" in p.stdout and "disconnect" in p.stdout
+
+
+# ---------------------------------------------------------------- external agent (an existing Hermes, e.g. the Mac's)
+
+def test_external_agent_points_the_service_at_it_and_off_restores_the_box_agent(fresh, monkeypatch):
+    import io
+    f = fresh
+    uc = f.c.runtipi_root / "user-config" / "wizardapps" / "wizard-agent-service"
+    fresh_agent.prepare(f.c)
+    fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-agent-service", f.c.home)
+    plain = (uc / "docker-compose.yml").read_text()
+    assert "HERMES_ORIGIN" not in plain
+    # refuses a short key, a non-name origin and a non-IP host
+    monkeypatch.setattr("sys.stdin", io.StringIO("short\n"))
+    assert fresh_agent.main(f.c, "external", origin="http://wizard-mac-hermes:18642", host_ip="172.18.0.1")["error"] \
+        == "external_key_missing"
+    for origin, ip in (("http://evil.example:80/x", "172.18.0.1"), ("http://wizard-mac-hermes:18642", "nope")):
+        monkeypatch.setattr("sys.stdin", io.StringIO("k" * 32 + "\n"))
+        assert fresh_agent.main(f.c, "external", origin=origin, host_ip=ip)["error"] == "invalid_external_agent"
+    key = "existing-hermes-api-key-0123456789"
+    monkeypatch.setattr("sys.stdin", io.StringIO(key + "\n"))
+    res = fresh_agent.main(f.c, "external", origin="http://wizard-mac-hermes:18642", host_ip="172.18.0.1")
+    assert res["ok"] and res["service_overlays"] == ["wizard-agent-service"], res
+    spec = yaml.safe_load((uc / "docker-compose.yml").read_text())["services"]["wizard-agent-service"]
+    assert spec["environment"]["HERMES_ORIGIN"] == "http://wizard-mac-hermes:18642"
+    assert spec["environment"]["WIZARD_HERMES_API_KEY"] == "${WIZARD_HERMES_API_KEY}"
+    assert spec["environment"]["WIZARD_HERMES_STATE_PATH"] == ""
+    assert "wizard-mac-hermes:172.18.0.1" in spec["extra_hosts"]
+    env = (uc / "app.env").read_text()
+    assert f"WIZARD_HERMES_API_KEY={key}" in env and key not in (uc / "docker-compose.yml").read_text()
+    assert (uc / "app.env").stat().st_mode & 0o077 == 0
+    assert (f.c.home / fresh_agent.EXTERNAL_KEY_FILE).stat().st_mode & 0o077 == 0
+    # one agent owns the memory: the box's own hermes-agent is stopped
+    assert ("POST", "/app-lifecycle/hermes-agent:wizardapps/stop") in f.rt.calls
+    # an app install later regenerates the overlay and keeps the external agent
+    fresh_agent.write_install_overlay(f.c.runtipi_root, "wizardapps", "wizard-agent-service", f.c.home)
+    assert "HERMES_ORIGIN: http://wizard-mac-hermes:18642" in (uc / "docker-compose.yml").read_text()
+    off = fresh_agent.main(f.c, "external", off=True)
+    assert off["ok"] and off["previous"]["origin"] == "http://wizard-mac-hermes:18642"
+    assert (uc / "docker-compose.yml").read_text() == plain
+    assert "WIZARD_HERMES_API_KEY" not in (uc / "app.env").read_text()
+    assert not (f.c.home / fresh_agent.EXTERNAL_KEY_FILE).exists()
+    assert ("POST", "/app-lifecycle/hermes-agent:wizardapps/start") in f.rt.calls

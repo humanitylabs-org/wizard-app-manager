@@ -14,6 +14,10 @@ config surface. No recipe, image or Hermes core change; the host (and any host H
               recorded in $WIZARD_OS_HOME/fresh-agent.json, then one Runtipi restart of what changed. Idempotent.
   status      the same checks, read-only, plus one live tools/list through the gateway from inside the container.
   disconnect  reverse exactly the recorded edits and overlays.
+  external    use an existing Hermes outside this box (Wizard for Mac: the owner's Mac Hermes, reached through the
+              Mac's vsock relay). The Service overlay points HERMES_ORIGIN at it, its API key goes into the 0600
+              user-config app.env, and the box's own hermes-agent app is stopped so one agent owns the memory.
+              `--off` reverses all three. The record lives in fresh-agent.json under `external_agent`.
 
 App installs/uninstalls after this need no agent restart: the bridge rewrites the shared apps.json, app skills and
 wizard-job-* pointers the container Hermes reads, and the gateway announces tools/list_changed.
@@ -49,6 +53,9 @@ CONTAINER_OS_HOME = "/wizard-os"             # the shared, read-only app-data/wi
 VENV_PYTHON = "/opt/hermes/.venv/bin/python"
 MCP_NAME, PLUGIN_NAME, TOKEN_ENV = "wizard", "wizard-os", "WIZARD_MCP_TOKEN"
 MARK = "# Written by wam"
+EXTERNAL_HOST = "wizard-mac-hermes"           # the name the Service resolves to the guest end of the Mac relay
+EXTERNAL_KEY_FILE = "external-agent.key"     # 0600, $WIZARD_OS_HOME; the existing Hermes's API_SERVER_KEY
+EXTERNAL_ORIGIN_RE = __import__("re").compile(r"http://[a-z0-9-]+:\d{2,5}")
 RESTART_SETTLE = 3                           # seconds between Runtipi's restart answer and the status poll
 VENDOR = Path(__file__).with_name("vendor")
 
@@ -209,14 +216,14 @@ services:
     image: wizard-shell:mac-mvp-20261013
     pull_policy: never
     extra_hosts:
-      - "{bridge_host}:{bridge_ip}"
+      - "{bridge_host}:{bridge_ip}"{external_hosts}
     environment:
       WIZARD_UX_PREFIX: wizard-os-home{mac_apps_env}
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
       WIZARD_APP_MANAGER_URL: http://{bridge_host}:{bridge_port}
       WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}
       WIZARD_APP_MANAGER_HOSTS: {bridge_host}
-      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}{owner}{mac_apps_ports}
+      WIZARD_APP_TRUSTED_PROXY_IPS: {bridge_ip}{owner}{external_env}{mac_apps_ports}
 """
 
 AGENT_OVERLAY = """\
@@ -358,13 +365,48 @@ def write_service_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
     mac_apps = registry._json_file(home / 'app-manager.json').get('mac_apps_origin')
     if mac_apps and mac_apps != 'http://localhost:48023':
         raise FreshError('invalid_mac_apps_origin', 'Mac apps origin must be http://localhost:48023')
+    ext = st.get("external_agent") or {}
+    if ext and not (EXTERNAL_ORIGIN_RE.fullmatch(ext.get("origin", "")) and _is_ip(ext.get("host_ip", ""))):
+        raise FreshError("invalid_external_agent", "external_agent needs an http://<name>:<port> origin and a host IP")
     compose = SERVICE_OVERLAY.format(app=app_id, bridge_host=BRIDGE_HOST, bridge_ip=b["ip"], bridge_port=b["port"],
                                      owner=alongside.owner_env(owner["logins"], owner.get("hosts")),
+                                     external_hosts=(f'\n      - "{EXTERNAL_HOST}:{ext["host_ip"]}"' if ext else ""),
+                                     external_env=(f'\n      HERMES_ORIGIN: {ext["origin"]}'
+                                                   '\n      WIZARD_HERMES_API_KEY: ${WIZARD_HERMES_API_KEY}'
+                                                   '\n      WIZARD_HERMES_STATE_PATH: ""' if ext else ""),
                                      mac_apps_env='\n      WIZARD_APPS_PORT: "8788"\n      WIZARD_APPS_ORIGIN: http://localhost:48023' if mac_apps else '',
                                      mac_apps_ports='\n    ports:\n      - "127.0.0.1:8798:8788"' if mac_apps else '')
-    return _write_overlay(runtipi_root, store, app_id, compose, {
-        "WIZARD_MCP_TOKEN": alongside.gateway_token(home),
-        "WIZARD_APP_MANAGER_TOKEN": token_file(home / "lifecycle-token")})
+    env = {"WIZARD_MCP_TOKEN": alongside.gateway_token(home),
+           "WIZARD_APP_MANAGER_TOKEN": token_file(home / "lifecycle-token")}
+    key_file = home / EXTERNAL_KEY_FILE
+    if ext:
+        if not key_file.is_file():
+            raise FreshError("external_key_missing", str(key_file))
+        env["WIZARD_HERMES_API_KEY"] = key_file.read_text().strip()
+    changed = _write_overlay(runtipi_root, store, app_id, compose, env)
+    if not ext:   # back to the box's own agent: drop a key an earlier `external` left in the overlay env
+        changed = _drop_env_keys(runtipi_root, store, app_id, ("WIZARD_HERMES_API_KEY",)) or changed
+    return changed
+
+
+def _drop_env_keys(runtipi_root: Path, store: str, app_id: str, keys: tuple[str, ...]) -> bool:
+    envp = runtipi_root / "user-config" / store / app_id / "app.env"
+    if not envp.is_file() or envp.is_symlink():
+        return False
+    lines = envp.read_text().splitlines()
+    keep = [ln for ln in lines if ln.split("=", 1)[0].strip() not in keys]
+    if keep == lines:
+        return False
+    registry.atomic_write(envp, ("\n".join(keep) + "\n").encode(), 0o600)
+    return True
+
+
+def _is_ip(v: str) -> bool:
+    try:
+        ipaddress.ip_address(v)
+        return True
+    except ValueError:
+        return False
 
 
 def write_shell_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
@@ -659,8 +701,51 @@ def disconnect(c, restart: bool = True) -> dict:
             "container_listener": unit}
 
 
-def main(c, action: str, restart: bool = True) -> dict:
+def external(c, origin: str = "", host_ip: str = "", off: bool = False, restart: bool = True) -> dict:
+    """Point the Agent Service at an existing Hermes outside this box (key on stdin), or `off` to return to the box's
+    own hermes-agent. Only the Service overlay, its 0600 env and the hermes-agent app's run state change."""
+    from .cli import STORE
+    import sys
+    st = load(c.home)
+    if not st:
+        raise FreshError("not_prepared", "run `wam fresh-agent prepare` first")
+    rt, have = _installed(c)
+    services = [a for a in SERVICE_APPS if a in have]
+    if not services:
+        raise FreshError("service_not_installed", "install wizard-agent-service (or wizard-shell) first")
+    key_file = c.home / EXTERNAL_KEY_FILE
+    if off:
+        was = st.pop("external_agent", None)
+        save(c.home, st)
+        key_file.unlink(missing_ok=True)
+    else:
+        if not (EXTERNAL_ORIGIN_RE.fullmatch(origin) and _is_ip(host_ip)):
+            raise FreshError("invalid_external_agent", "usage: external --origin http://<name>:<port> --host-ip <ip>")
+        key = sys.stdin.readline().strip()
+        if len(key) < 16:
+            raise FreshError("external_key_missing", "the existing Hermes's API_SERVER_KEY goes on stdin (16+ chars)")
+        registry.atomic_write(key_file, (key + "\n").encode(), 0o600)
+        was = st.get("external_agent")
+        st["external_agent"] = {"origin": origin, "host_ip": host_ip, "at": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}
+        save(c.home, st)
+    changed = [a for a in services if write_service_overlay(c.runtipi_root, STORE, a, c.home)]
+    restarted, agent = {}, None
+    if restart:
+        for a in changed:
+            restarted[a] = _restart(rt, STORE, a)
+        if AGENT_APP in have:
+            urn = f"{AGENT_APP}:{STORE}"
+            # One agent owns the memory: the box's own Hermes sleeps while an existing one is in use.
+            rt.req("POST", f"/app-lifecycle/{urn}/{'start' if off else 'stop'}", {}, timeout=120)
+            agent = rt.wait_status(urn, {"running"} if off else {"stopped"}, timeout=600)
+    return {"ok": True, "external_agent": None if off else st["external_agent"], "previous": was,
+            "service_overlays": changed, "restarted": restarted, "box_agent": agent}
+
+
+def main(c, action: str, restart: bool = True, **kw) -> dict:
     try:
+        if action == "external":
+            return external(c, restart=restart, **kw)
         if action == "prepare":
             return prepare(c)
         if action == "connect":

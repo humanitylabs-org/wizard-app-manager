@@ -21,6 +21,7 @@ Wizard additions:
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
   wam fresh-agent prepare|connect|status|disconnect [--no-restart]
+  wam fresh-agent external --origin URL --host-ip IP (API key on stdin) | external --off
                                 fresh mode: connect the hermes-agent container to the one Wizard gateway, shared
                                 skills and the wizard-os plugin (docs/lifecycle-bridge.md, "Fresh mode")
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
@@ -508,8 +509,10 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
-    fa = sub.add_parser("fresh-agent"); fa.add_argument("action", choices=["prepare", "connect", "status", "disconnect"])
+    fa = sub.add_parser("fresh-agent")
+    fa.add_argument("action", choices=["prepare", "connect", "status", "disconnect", "external"])
     fa.add_argument("--no-restart", action="store_true")
+    fa.add_argument("--origin", default=""); fa.add_argument("--host-ip", default=""); fa.add_argument("--off", action="store_true")
     args = ap.parse_args(argv)
     c = Config()
     try:
@@ -544,7 +547,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.detect:
                 return 0 if res["found"] else 3
         elif args.cmd == "fresh-agent":
-            res = fresh_agent.main(c, args.action, restart=not args.no_restart)
+            kw = ({"origin": args.origin, "host_ip": args.host_ip, "off": args.off} if args.action == "external" else {})
+            res = fresh_agent.main(c, args.action, restart=not args.no_restart, **kw)
             print(json.dumps(res, indent=2))
             return 0 if res.get("ok") else 1
         elif args.cmd == "serve":
