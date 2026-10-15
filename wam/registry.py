@@ -62,6 +62,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            "receives_voice_input": w.get("receives_voice_input") is True,
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app

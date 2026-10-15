@@ -124,6 +124,12 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule("view declared", bool(v.get("path")) and bool(v.get("port")), json.dumps(v))
     bad = [n for n in d.get("needs") or [] if n not in NEEDS and not str(n).startswith("credentials:")]
     rule("needs known", not bad, ", ".join(map(str, bad)))
+    if "receives_voice_input" in d:
+        rv = d["receives_voice_input"]
+        rule("receives_voice_input is boolean", type(rv) is bool, repr(rv))
+        if rv is True:
+            voice_view = d.get("view")
+            rule("voice input has a declared view", isinstance(voice_view, dict) and bool(voice_view.get("path")) and bool(voice_view.get("port")), str(voice_view))
     if d.get("provides") is not None:
         pv = d.get("provides")
         badp = [p for p in (pv if isinstance(pv, list) else [pv]) if not SLOT.fullmatch(str(p))]
