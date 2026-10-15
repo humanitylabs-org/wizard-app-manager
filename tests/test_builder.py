@@ -74,11 +74,11 @@ def test_skill_lives_outside_generated_refresh(tmp_path):
     rec = builder.install_skill(os_home, hermes)
     skill = Path(rec['skill'])
     assert skill.is_relative_to(os_home / 'system-skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').read_text() == skill.read_text()
+    assert yaml.safe_load((hermes / 'config.yaml').read_text())['skills']['external_dirs'] == [str(os_home / 'system-skills')]
     (os_home / 'skills').mkdir()
     (os_home / 'skills' / 'generated').touch()
     shutil.rmtree(os_home / 'skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').is_file()
+    assert skill.is_file()
     assert builder.install_skill(os_home, hermes)['state'] == 'installed'
 
 
@@ -209,8 +209,8 @@ def test_generated_view_defaults_to_containing_skin(tmp_path):
     assert 'back.useHistory({ isRoot: () => true })' not in app
     assert 'history.pushState' not in app
     assert not (root/'web/theme-client.js').exists()
-    assert not (root/'appearance-provenance.json').exists()
-    assert 'prefers-color-scheme: light' in kit
+    assert json.loads((root/'appearance-provenance.json').read_text())['schema'] == 3
+    assert 'prefers-color-scheme: light' in (root/'web/standalone.css').read_text()
     compose=yaml.safe_load((root/'runtipi/docker-compose.yml').read_text())
     assert compose['services']['skin-app']['command'][0]=='python'
     import base64,re

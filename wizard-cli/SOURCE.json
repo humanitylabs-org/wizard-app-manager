@@ -1,13 +1,17 @@
 {
   "repo": "humanitylabs-org/wizard-os",
-  "commit": "4eb55359cbe104c50e217acd5228ea4e11fbe199",
+  "commit": "47c33d29dff42d8505a9ea63ce802eae66c8518d",
   "files": {
     "wizard": "tools/wizard",
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "ffbc2b91d4397a61754753a5c347e2c39ba6d1d72f961363775b684f6b58de3e",
+    "wizard": "b6d9d99656d94f3c7919bd18b4d3067ca05ad1565722bdc7d0f9693388965509",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
-  "about": "wizard-cli/ is a byte-identical copy of these wizard-os files at this commit. tests/test_wam.py fails when they drift; to update, copy the files from wizard-os and set commit + sha256 here."
+  "about": "Upstream base is pinned by commit and upstream_sha256. WAM maintains local stock-builder provisioning/link lifecycle changes in wizard; sha256 records the shipped files. Do not replace local changes with an unreviewed upstream sync.",
+  "upstream_sha256": {
+    "wizard": "0e3a08aaaefdb1ca664e1418b75921290e40edee08234c2b59c1a80e0f2b4c2b",
+    "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
+  }
 }

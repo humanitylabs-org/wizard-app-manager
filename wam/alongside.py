@@ -130,7 +130,7 @@ def load(wizard_home: Path) -> dict | None:
 def save(wizard_home: Path, st: dict) -> Path:
     p = state_path(wizard_home)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(st, indent=2) + "\n")
+    tmp.write_text(json.dumps({k: v for k, v in st.items() if k != "detected"}, indent=2) + "\n")
     tmp.replace(p)
     return p
 
@@ -161,12 +161,54 @@ def port_free(port: int, host: str = "127.0.0.1") -> bool:
         s.close()
 
 
-DEFAULT_SHELL_PORT = 8796   # wizard-shell's runtipi/config.json port
+DEFAULT_SHELL_PORT = 8796     # the shell's loopback port (wizard-ux; before the split, the bundled wizard-shell)
+DEFAULT_SERVICE_PORT = 8797   # wizard-agent-service's runtipi/config.json port
+
+# What an app is to alongside mode (DECISIONS #36): the Agent Service talks to the host Hermes; the shell (wizard-ux)
+# talks only to the Agent Service; the pre-split bundle (wizard-shell) is both in one container.
+LEGACY_BUNDLE = "wizard-shell"
+SERVICE_SLOT = "agent-service"
+# Image pin per app (a release's digest, or a local build under test): env var -> stored in alongside.json "images".
+PIN_VARS = {LEGACY_BUNDLE: "WIZARD_SHELL_IMAGE", "wizard-ux": "WIZARD_UX_IMAGE",
+            "wizard-agent-service": "WIZARD_AGENT_SERVICE_IMAGE"}
 
 
-def pick_port(start: int = DEFAULT_SHELL_PORT) -> int:
+def pin(st: dict, app_id: str) -> str:
+    pins = st.get("images") or {}
+    if app_id == LEGACY_BUNDLE and not pins:   # a pre-split alongside.json: its one pin was the bundle's
+        return str((st.get("shell") or {}).get("image") or "")
+    return str(pins.get(app_id) or "")
+
+
+def image_lines(st: dict, app_id: str) -> str:
+    image = pin(st, app_id)
+    return f"\n    image: {image}\n    pull_policy: missing" if image else ""
+
+
+def set_service_active(wizard_home: Path, active: bool) -> None:
+    """After the split the Agent Service answers the agent's gateway; after a rollback the bundle does again."""
+    st = load(wizard_home)
+    if st:
+        st.setdefault("service", {"port": DEFAULT_SERVICE_PORT})["active"] = bool(active)
+        save(wizard_home, st)
+
+
+
+def role_of(app_id: str, provides: list | None) -> str | None:
+    """'bundle', 'service', 'shell' or None (not a Wizard shell/service app)."""
+    p = set(provides or [])
+    if app_id == LEGACY_BUNDLE or {SHELL_SLOT, SERVICE_SLOT} <= p:
+        return "bundle"
+    if SERVICE_SLOT in p:
+        return "service"
+    if SHELL_SLOT in p:
+        return "shell"
+    return None
+
+
+def pick_port(start: int = DEFAULT_SHELL_PORT, avoid: set[int] | None = None) -> int:
     for p in range(start, start + 200):
-        if port_free(p):
+        if p not in (avoid or set()) and port_free(p):
             return p
     raise SystemExit(f"no free loopback port from {start}")
 
@@ -178,20 +220,33 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
     if not det["found"]:
         raise SystemExit(f"no existing Hermes here (need the `hermes` command and {home / 'config.yaml'})")
     prev = load(wizard_home) or {}
+    shell_port = int(shell_port or (prev.get("shell") or {}).get("port") or pick_port())
+    service_port = int((prev.get("service") or {}).get("port") or pick_port(DEFAULT_SERVICE_PORT, {shell_port}))
     st = {
         "mode": "alongside",
         "agent": {"external": True, "id": EXTERNAL_ID, "name": "host Hermes", "hermes_home": str(home),
                   "origin": det["api_origin"], "uid": os.getuid(), "gid": os.getgid()},
-        "shell": {"port": int(shell_port or (prev.get("shell") or {}).get("port") or pick_port()),
+        "shell": {"port": shell_port,
                   # opt-in only; a re-run keeps the owner's earlier choice
                   "share_history": bool((prev.get("shell") or {}).get("share_history")
                                         if share_history is None else share_history)},
     }
-    image = os.environ.get("WIZARD_SHELL_IMAGE") or (prev.get("shell") or {}).get("image")
-    if image:   # pin the shell image (a release's digest, or a local build under test)
-        if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
-            raise SystemExit(f"WIZARD_SHELL_IMAGE {image!r} is not an image reference")
-        st["shell"]["image"] = image
+    # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
+    # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
+    st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
+    # Image pins (a release's digest, or a local build under test), one per app, kept across re-runs.
+    pins = dict(prev.get("images") or {})
+    old = (prev.get("shell") or {}).get("image")
+    if old and not pins:   # before the split one pin served the bundle: it stays the bundle's
+        pins[LEGACY_BUNDLE] = old
+    for app, var in PIN_VARS.items():
+        if os.environ.get(var):
+            pins[app] = os.environ[var]
+    for app, image in pins.items():
+        if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", str(image)):
+            raise SystemExit(f"{PIN_VARS.get(app, app)} {image!r} is not an image reference")
+    if pins:
+        st["images"] = pins
     gateway_token(wizard_home)
     save(wizard_home, st)
     return {**st, "detected": det}
@@ -236,7 +291,7 @@ services:
     environment:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
-      HERMES_ORIGIN: {origin}{state_env}
+      HERMES_ORIGIN: {origin}{state_env}{media_env}{artifact_env}{stt_env}
       WIZARD_APPS_MCP_ADDRESS: url
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
     healthcheck:
@@ -246,7 +301,111 @@ services:
 _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
 
 
-def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> str:
+def host_media_root(runtipi_root: Path) -> Path:
+    """Where this box's Hermes sees the user-files folder the shell mounts at /media.
+
+    The recipe mounts ${ROOT_FOLDER_HOST}/media; Runtipi records ROOT_FOLDER_HOST in its .env (the CLI's install
+    folder when it is absent). The host Hermes is a plain host process, so it reads attachments by that host path,
+    never by the container's /media."""
+    from .runtipi import read_env
+    envf = Path(runtipi_root) / ".env"
+    root = ((read_env(envf).get("ROOT_FOLDER_HOST") if envf.is_file() else "") or "").strip() or str(runtipi_root)
+    return Path(root).expanduser().absolute() / "media"
+
+
+# Folders where the host Hermes writes files it sends back with MEDIA:<host path> (pictures, voice replies,
+# screenshots, videos). The Agent Service gets each one read-only at the SAME path, so the path the agent reports
+# is the path the service opens; under /hermes it would not match and every picture/voice reply was dropped.
+AGENT_OUTPUT_DIRS = ("cache/images", "cache/audio", "cache/screenshots", "cache/videos")
+
+
+def docker_rootless() -> bool:
+    """Rootless Docker maps the owner's uid to uid 0 in the container (and the owner's 1000 to a subuid)."""
+    import subprocess
+    host = os.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix:///run/user/"):
+        return True
+    try:
+        out = subprocess.run(["docker", "info", "--format", "{{json .SecurityOptions}}"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        # no docker on PATH (e.g. a minimal PATH): a per-user socket and no system one means rootless
+        return Path(f"/run/user/{os.getuid()}/docker.sock").exists() and not Path("/var/run/docker.sock").exists()
+    return "rootless" in out
+
+
+def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootless: bool | None = None) -> bool:
+    """Switching an existing Agent Service to the owner's identity on rootless Docker (container uid 0): its saved
+    state was written by the recipe's uid 1000, and it can't chmod files it doesn't own, so it crash-looped on
+    start. Hand the folder to 0:1000 (group-writable) once, with a throwaway container of the app's own image.
+    Rootful Docker and fresh installs need nothing. Returns True when ownership was changed."""
+    import subprocess
+    if not (docker_rootless() if rootless is None else rootless):
+        return False
+    data = Path(runtipi_root) / "app-data" / store / app_id / "data"
+    if not data.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
+        return False
+    if not _SAFE_PATH.match(str(data)):
+        raise SystemExit(f"app data path {str(data)!r} has characters a command can't carry safely")
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+                        "--entrypoint", "sh", "-v", f"{data}:/state", image, "-c",
+                        "chown -R 0:1000 /state && chmod -R g+rwX /state"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise SystemExit(f"could not hand {app_id}'s saved state to the owner: {r.stderr.strip()[:200]}")
+    return True
+
+
+def container_user(a: dict, rootless: bool | None = None) -> str:
+    """The uid that reads the owner's Hermes files. On rootful Docker that's the owner's own uid; on rootless Docker
+    the owner IS container uid 0 (no capabilities), with gid 1000 so it can still write the shared /media folder
+    that the other apps (uid 1000) own."""
+    if docker_rootless() if rootless is None else rootless:
+        return "0:1000"
+    return f'{int(a["uid"])}:{int(a["gid"])}'
+
+
+def transcriber_origin(runtipi_root: Path, store: str = "wizardapps") -> str | None:
+    """The Transcriber on the host's loopback. On the host network the recipe's http://transcriber:8000 doesn't
+    resolve, so voice showed "Voice unavailable"."""
+    envp = Path(runtipi_root) / "app-data" / store / "transcriber" / "app.env"
+    port = (read_env(envp).get("APP_PORT") if envp.is_file() else "") or ""
+    return f"http://127.0.0.1:{int(port)}" if port.isdigit() else None
+
+
+UX_OVERRIDE = """\
+# Written by wam (alongside mode): the Wizard shell (UX only) on the host network, bound to 127.0.0.1, talking to the
+# Agent Service on its own loopback port. It holds no Hermes credentials and mounts nothing.
+# Remove with `wam alongside --off`, then `wam app update {app}`.
+services:
+  {app}:{image}
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    environment:
+      WIZARD_SHELL_LISTEN: "127.0.0.1:{port}"
+      WIZARD_AGENT_SERVICE_ORIGIN: http://127.0.0.1:{service_port}
+"""
+
+
+def ux_override(st: dict, app_id: str) -> str:
+    return UX_OVERRIDE.format(
+        app=app_id, port=int(st["shell"]["port"]), service_port=service_port(st), image=image_lines(st, app_id))
+
+
+def service_port(st: dict) -> int:
+    return int((st.get("service") or {}).get("port") or DEFAULT_SERVICE_PORT)
+
+
+def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle",
+                   media_root: Path | None = None, stt_origin: str | None = None,
+                   rootless: bool | None = None) -> str:
+    """The override for the app that talks to the host Hermes: the Agent Service, or the pre-split bundle (which
+    also serves the UX, so it keeps the shell's port). `media_root`: the host path of the /media both recipes mount,
+    handed to the host Hermes (wizard-agent-service#12); the UX-only shell mounts no media and gets none."""
+    if role == "shell":
+        return ux_override(st, app_id)
+    port = service_port(st) if role == "service" else int(st["shell"]["port"])
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):
         raise SystemExit(f"Hermes home path {a['hermes_home']!r} has characters a compose file can't carry safely")
@@ -254,6 +413,14 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> st
         raise SystemExit(f"host Hermes API {a['origin']} is not a loopback origin; alongside mode needs 127.0.0.1")
     share = bool(st["shell"].get("share_history"))
     hh = a["hermes_home"]
+    # Attachments: the service writes them under its /media, the host Hermes must be handed the host path of the
+    # same file (trusted_path), so the agent's file tools can open what the person attached.
+    media_env = ""
+    if media_root is not None:
+        media = os.path.normpath(str(media_root))
+        if not _SAFE_PATH.match(media) or media == "/":
+            raise SystemExit(f"Runtipi media path {media!r} has characters a compose file can't carry safely")
+        media_env = f'\n      WIZARD_MEDIA_AGENT_ROOT: "{media}"'
     # Without the opt-in the shell gets only the folder of images the agent made (no secrets), so pictures in
     # chats still show; the recipe's state.db path is blanked so the Agent Service opens no Hermes file.
     # Default: the shell's /hermes is a small wam-owned folder (replacing the recipe's /hermes mount) that holds
@@ -273,26 +440,51 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None) -> st
                        f"\n      - {hh}/cache/images:/hermes/cache/images:ro")
         except OSError:
             volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
+    # The agent's output folders at their real host paths (see AGENT_OUTPUT_DIRS), plus /media.
+    roots = []
+    for rel in AGENT_OUTPUT_DIRS:
+        d = Path(hh, rel)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if not volumes:
+            volumes = "\n    volumes:"
+        volumes += f"\n      - {d}:{d}:ro"
+        roots.append(str(d))
+    artifact_env = f'\n      WIZARD_AGENT_ARTIFACT_ROOTS: "{":".join(roots + ["/media"])}"' if roots else ""
+    stt_env = ""
+    if stt_origin:
+        if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", stt_origin):
+            raise SystemExit(f"Transcriber address {stt_origin!r} is not a loopback origin")
+        stt_env = f"\n      WIZARD_STT_ORIGIN: {stt_origin}"
     return SHELL_OVERRIDE.format(
-        app=app_id, origin=a["origin"], port=int(st["shell"]["port"]),
+        app=app_id, origin=a["origin"], port=port,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
                 "# read-only, so the shell can read every file there, credentials included."
                 if share else "The shell sees only the agent's images folder, not the Hermes home\n"
                 "# (opt in to session history: wam alongside --share-history)."),
-        image=(f"\n    image: {st['shell']['image']}\n    pull_policy: missing" if st["shell"].get("image") else ""),
-        user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
+        image=image_lines(st, app_id),
+        user=f'\n    user: "{container_user(a, rootless)}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
-        volumes=volumes)
+        media_env=media_env, artifact_env=artifact_env, stt_env=stt_env, volumes=volumes)
 
 
-def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path) -> Path | None:
-    """Write the user-config override for the shell app. Returns its path, or None outside alongside mode."""
+def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path,
+                         role: str = "bundle") -> Path | None:
+    """Write the user-config override for a shell, Agent Service or pre-split bundle app (`role`, see role_of).
+    Returns its path, or None outside alongside mode."""
     st = load(wizard_home)
     if not st:
         return None
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home))
+    (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role,
+                                                         None if role == "shell" else host_media_root(runtipi_root),
+                                                         None if role == "shell" else transcriber_origin(runtipi_root, store)))
+    if role == "shell":   # the UX holds no gateway token
+        (d / "app.env").unlink(missing_ok=True)
+        return d / "docker-compose.yml"
     envp = d / "app.env"
     fd = os.open(envp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:

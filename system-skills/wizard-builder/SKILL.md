@@ -1,7 +1,7 @@
 ---
 name: wizard-builder
 description: Use when building, porting or changing Wizard apps.
-version: 0.1.1
+version: 0.2.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -19,7 +19,7 @@ Use the smallest artifact that finishes the owner's job. This system skill lives
 - Start with an installed app's shipped skill for ordinary use; reach for the builder when code or packaging must change.
 
 ## Prerequisites
-A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML; Docker with Compose for local execution. Source-bundle install: `terminal(command="python3 -m pip install -e <source-folder>")`. Use the host's configured build worker for sustained builds/tests. Run everything in an isolated developer home; keep the owner's active apps intact.
+Wizard OS installs a complete, matching skill/tooling/templates bundle automatically. In `terminal`, run `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor` before building. This works with the stock local container terminal and the VM's configured SSH terminal: SSH executes on the host and uses its own `$HOME`, not a container-only path. Do not change the owner's terminal backend. Python 3.10+ and PyYAML are installed by Wizard OS (the container uses stock Hermes' Python); Docker with Compose is needed only to run a local app. If doctor fails, report the missing capability and repair with the Wizard installer, not a private checkout or personal skill. Use the configured build worker for sustained builds/tests. Keep the owner's active apps intact.
 
 ## Choose the lightest level
 1. Shell setting/theme/layout: use the shell's supported configuration.
@@ -38,7 +38,7 @@ Read `references/system-functions.md` **before** editing any view. Always reuse 
 ## Build and verify
 1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.
 2. `terminal(command="wam new habit-tracker --request 'Build me a habit tracker'")` creates local source from hello-wizard. This template already includes daily habits, diagnostics, API, MCP and vanilla view. Other jobs require actual source edits; the request is recorded, not magically implemented by the CLI.
-3. Use `read_file`, `write_file` and `patch` to adapt that source to the named job. Build the screen from the template's `wizard-ui.css` kit (rows, section labels, composer, empty state) and keep its `boot.js` + shared `/wizard-os-home/core/app-client.js` inclusion: the app then looks like Chats in every skin, follows live skin changes, and paints no background of its own when hosted (the window glass is its canvas). Put only app-specific styles in `styles.css`, using the kit's variables, never literal colours. Register domain-only Back callbacks with `WizardApp.back.register/push`; routed apps use `back.useHistory`. Real route history is allowed, app root history sentinels are not. See references/appearance.md. Keep user text as data, use a documented API for every view action, and expose the same job through narrow MCP tools. Record copied dependency origin/license. Read `references/build.md` for the contract.
+3. Use `read_file`, `write_file` and `patch` to adapt that source to the named job. Build the screen from the canonical Wizard OS `style/` snapshot (`wizard-tokens.css`, `wizard-ui.css`, `boot.js`), pinned offline by `appearance-provenance.json`; never edit those generated files and keep its `boot.js` + shared `/wizard-os-home/core/app-client.js` inclusion: the app then looks like Chats in every skin, follows live skin changes, and paints no background of its own when hosted (the window glass is its canvas). Put only app-specific styles in `styles.css`, using the kit's variables, never literal colours. Register domain-only Back callbacks with `WizardApp.back.register/push`; routed apps use `back.useHistory`. Real route history is allowed, app root history sentinels are not. See references/appearance.md. Keep user text as data, use a documented API for every view action, and expose the same job through narrow MCP tools. Record copied dependency origin/license. Read `references/build.md` for the contract.
 4. `terminal(command="wam check <source>")` runs the unchanged approved manifest checker **plus the mandatory shared-system-function source gate**. `terminal(command="wam check <source> --proposal")` additionally applies PR24 API/view-source rules explicitly. Missing API is a transition warning in 0.2. Future 0.3 remains unapproved/unknown.
 5. `terminal(command="wam install-local <source> --stage-only --run --port 18799")` builds/runs only a loopback local developer container. The result is a staging manifest, **not** the production apps registry. Run on the configured worker; record hostname, exact source hash and image id.
 6. **Mandatory QA before handoff:** follow the executable and browser gate in `references/system-functions.md`, not only `wam check`. On the configured worker record candidate/source hashes, exact commands and receipts for phone + desktop, light + dark, window + fullscreen, state-preserving live theme, root/nested/overlay Back and on-screen close parity. Exercise sharing/capture when the app uses them, including cancelled/unsupported/denied/busy/recovery and held updates. Exercise add → list → mark → readback → undo through both screen and MCP/API, then restart and read back saved data. Back stays inside the app; Home exits the device app. A successful build or source lint alone does not finish the user's job.
@@ -48,10 +48,10 @@ Read `references/system-functions.md` **before** editing any view. Always reuse 
 `terminal(command="wam publish <source> --repo owner/name --output <outside-source-plan.json>")` prepares the exact source hash, files, source patch, public GitHub settings/topic, catalog request and separate signing handoff. Read `references/publish.md`. Public repo creation, pushing, catalog publication and signing require the owner's explicit approval of that prepared artifact. `--execute` refuses: this candidate has no public executor. Never call prepared publication published.
 
 ## Pitfalls
-- Generated skills are managed by the app registry. Put the builder in `system-skills/` and link it to Hermes using `wam builder-skill`; no per-app MCP connection/restart.
+- Generated app skills are managed by the registry. The OS builder is separately registered through `skills.external_dirs`; `wizard link` handles alongside installs, and the installer prepares stock containers. `wam builder-bundle install` repairs the bundle; `wam builder-bundle fresh` prepares the stock container mount/discovery (restart the agent to adopt a new mount). Do not manually copy it into personal skills.
 - `<source>` placeholders are arguments the agent resolves, not commands to paste literally.
 - Local stage is a developer proof; production install, launcher refresh and same-origin routing belong to the lifecycle integration.
-- Current builder requires a complete source checkout; wheel-only installation does not include template assets yet.
+- The installed content-addressed bundle includes all templates, references, UI assets and Python modules; a source checkout is not needed during use. Bare third-party wheels without these assets are not a supported provisioning source.
 - Proposed view machinery, cheap-model evaluation and public publication stay open until their own evidence exists.
 
 ## Verification

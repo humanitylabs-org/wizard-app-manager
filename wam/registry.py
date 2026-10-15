@@ -58,7 +58,8 @@ def routes(root: Path | None = None) -> dict:
         view = r.get("view")
         staged = r.get("staged_as")
         ok[app_id] = {
-            "view": view if isinstance(view, str) and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
+            "view": view if isinstance(view, str) and not view.startswith("//") and
+            ".." not in view.split("/") and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
             "staged_as": staged if isinstance(staged, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", staged) else None,
         }
     return ok
@@ -133,11 +134,12 @@ def write(reg: dict, root: Path | None = None) -> Path:
             reg["slots"][slot]["default"] = val["default"]
     tmp = root / "apps.json.tmp"
     owner = routes(root)
+    owner_routes_enabled = (root / "routes.json").exists()
 
     def project(a: dict) -> dict:
         out = {k: v for k, v in a.items() if not k.startswith("_")}
         r = owner.get(a["id"]) or {}
-        if out.get("view") is not None:
+        if owner_routes_enabled and out.get("view") is not None:
             # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
             out["view"] = {"url": r["view"]} if r.get("view") else None
         if r.get("staged_as"):

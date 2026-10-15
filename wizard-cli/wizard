@@ -706,12 +706,220 @@ def mcp_entry(url: str) -> dict:
     return {"url": url, "headers": {"Authorization": f"Bearer ${{{TOKEN_ENV}}}"}}
 
 
-def link_record() -> dict | None:
+def read_record() -> dict | None:
     try:
         rec = json.loads((os_home() / LINK_FILE).read_text(encoding="utf-8"))
-        return rec if rec.get("linked") else None
+        return rec if isinstance(rec, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def link_record() -> dict | None:
+    rec = read_record()
+    return rec if rec and rec.get("linked") else None
+
+
+def pending_record() -> dict | None:
+    """A link that started but never finished (a failure the rollback couldn't complete, or the process was
+    killed). Its journal lists every edit that may have landed, so it can be rolled back."""
+    rec = read_record()
+    return rec if rec and rec.get("state") == "linking" else None
+
+
+def save_record(rec: dict) -> None:
+    """Durable, atomic write of the link journal (0600): a reader sees the old or the new record, never half."""
+    p = os_home() / LINK_FILE
+    tmp = p.with_name(p.name + ".wizard-tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(rec, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+class link_lock:
+    """One `wizard link` / `unlink` at a time (an installer re-run and the owner typing `wizard unlink`, say):
+    both read and write linked.json and the Hermes config, so a second run fails fast instead of rolling the
+    first one's journal back mid-edit. flock is released by the kernel when the process dies, kill included."""
+
+    def __enter__(self):
+        import fcntl
+        p = os_home() / (LINK_FILE + ".lock")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.fd)
+            raise Fail("usage", "another `wizard link` or `wizard unlink` is running on this box; wait for it to "
+                                "finish, then try again", stage="locked") from None
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)   # closing the descriptor drops the lock
+        return False
+
+
+def restore_bytes(src: Path, dst: Path) -> None:
+    """Put a backup back atomically (mode and bytes as backed up)."""
+    import shutil
+    tmp = dst.with_name(dst.name + ".wizard-tmp")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+
+
+def rollback_link(rec: dict) -> dict:
+    """Undo an unfinished link from its journal. Files still in a state link itself produced get their backed-up
+    bytes back; anything the owner changed meanwhile keeps the owner's edits and loses only Wizard OS's."""
+    home = Path(rec["hermes_home"])
+    cfgp, envp, bdir = home / "config.yaml", home / ".env", Path(rec["backup"])
+    for stray in (home / "config.yaml.wizard-tmp", home / ".env.wizard-tmp"):
+        try:
+            stray.unlink()
+        except OSError:
+            pass
+    if rec.get("plugin_installed"):
+        remove_installed_plugin(home, rec)
+    backup_cfg = bdir / "config.yaml"
+    backup_ok = sha256_file(backup_cfg) == rec.get("config_sha_before")
+    if backup_ok and sha256_file(cfgp) in (rec.get("known_config_shas") or []):
+        restore_bytes(backup_cfg, cfgp)   # only link touched it: the owner's original bytes go straight back
+    else:   # the owner edited it too: reverse only Wizard OS's keys, keep theirs
+        for e in reversed(rec.get("edits") or []):
+            reverse_edit(home, e)
+        try:
+            import yaml
+            same = _semantic(yaml.safe_load(cfgp.read_text(encoding="utf-8")) or {}) == \
+                _semantic(yaml.safe_load(backup_cfg.read_text(encoding="utf-8")) or {})
+        except Exception:  # noqa: BLE001
+            same = False
+        if same and backup_ok:
+            restore_bytes(backup_cfg, cfgp)
+    known_env = rec.get("known_env_shas") or []
+    if rec.get("env_existed"):
+        if sha256_file(envp) in known_env and sha256_file(bdir / ".env") == rec.get("env_sha_before"):
+            restore_bytes(bdir / ".env", envp)
+        else:
+            env_remove(envp, rec.get("env_added") or [])
+    elif envp.is_file():
+        if sha256_file(envp) in known_env:
+            envp.unlink()
+        else:
+            env_remove(envp, rec.get("env_added") or [])
+            if not envp.read_text(encoding="utf-8").strip():   # nothing of the owner's in it: there was no .env
+                envp.unlink()
+    config_ok = sha256_file(cfgp) == rec.get("config_sha_before")
+    env_ok = sha256_file(envp) == rec.get("env_sha_before")
+    rec.update(state="rolled_back", linked=False,
+               rolled_back={"config_byte_identical": config_ok, "env_byte_identical": env_ok})
+    save_record(rec)
+    return {"config_byte_identical": config_ok, "env_byte_identical": env_ok,
+            "plugin_removed": bool(rec.get("plugin_installed"))}
+
+
+def builder_module():
+    # The standalone CLI uses the OS bundle after installation, the adjacent
+    # source only in a complete checkout. No developer PYTHONPATH is required.
+    roots = [Path(__file__).resolve().parent.parent, os_home() / 'builder/current']
+    for root in roots:
+        if (root / 'wam/builder_bundle.py').is_file():
+            sys.path.insert(0, str(root))
+            from wam import builder_bundle
+            return builder_bundle
+    raise Fail('tool_error', 'Stock builder bundle is missing; reinstall Wizard App Manager')
+
+
+def plugin_fingerprint(home):
+    return plugin_tree_fingerprint(home / 'plugins' / PLUGIN_NAME)
+
+
+def plugin_tree_fingerprint(root):
+    import hashlib
+    files = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(root.rglob('*')) if p.is_file() and '.git' not in p.parts
+             and '__pycache__' not in p.parts and p.suffix != '.pyc'}
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def attest_legacy_plugin(home, rec):
+    """An old managed link has no fingerprint: compare against its recorded Git
+    revision, not today's upstream or a guessed owner path. Any difference stops.
+    """
+    import subprocess
+    import tempfile
+    try:
+        metadata = json.loads((home / 'plugins/.install-metadata.json').read_text())[PLUGIN_NAME]
+        revision, source = metadata['revision'], metadata['source']
+        if not re.fullmatch(r'[0-9a-f]{40}', revision) or source != PLUGIN_SOURCE:
+            raise ValueError('unknown source or unpinned installed revision')
+        repo, subdir = source.split('#', 1)
+        with tempfile.TemporaryDirectory(prefix='.plugin-attest-', dir=os_home()) as td:
+            root = Path(td)
+            for args in (['init', '-q', td], ['-C', td, 'fetch', '-q', '--depth=1', 'https://github.com/' + repo + '.git', revision],
+                         ['-C', td, 'checkout', '-q', '--detach', 'FETCH_HEAD']):
+                subprocess.run(['git', *args], check=True, capture_output=True, timeout=120)
+            if plugin_tree_fingerprint(root / subdir) != plugin_fingerprint(home):
+                raise ValueError('plugin differs from its recorded upstream revision')
+        rec['plugin_sha256'] = plugin_fingerprint(home)
+        # Pre-bundle link records omitted plugin_ref. Preserve an explicitly
+        # pinned stock install when migrating its attested ownership record.
+        if 'plugin_ref' not in rec and metadata.get('pinned'):
+            rec['plugin_ref'] = revision
+        save_record(rec)
+    except (KeyError, ValueError, OSError, subprocess.SubprocessError) as e:
+        raise Fail('tool_error', f'Cannot attest existing wizard-os plugin; preserving it ({e}). '
+                   'Review/back up the owner plugin before replacing it.') from None
+
+
+def refresh_owned_plugin(home, rec, ns):
+    """Refresh only a plugin whose last installed bytes we can attest."""
+    import shutil
+    root = home / 'plugins' / PLUGIN_NAME
+    if not rec.get('plugin_installed'):
+        raise Fail('tool_error', 'Existing wizard-os plugin is owner-managed; preserving it. Update it explicitly before relinking.')
+    if not rec.get('plugin_sha256'):
+        attest_legacy_plugin(home, rec)
+    if plugin_fingerprint(home) != rec['plugin_sha256']:
+        raise Fail('tool_error', 'Owner modified wizard-os plugin; preserving it. Review changes before upgrading.')
+    backup = Path(rec['backup']) / 'plugin-before-refresh'
+    if backup.exists():
+        raise Fail('tool_error', f'Unfinished plugin refresh: preserved backup at {backup}; recover before retrying')
+    shutil.copytree(root, backup, symlinks=True)
+    try:
+        args = ['plugins', 'install', ns.plugin_source or PLUGIN_SOURCE, '--force', '--no-enable']
+        ref = ns.plugin_ref or rec.get('plugin_ref')
+        if ref:
+            args += ['--ref', ref]
+        run_hermes(home, *args)
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(backup, root, symlinks=True)
+        shutil.rmtree(backup)
+        raise
+    shutil.rmtree(backup)
+    rec['plugin_ref'] = ref
+    rec['plugin_sha256'] = plugin_fingerprint(home)
+    save_record(rec)
+
+
+def reverse_edit(home, e):
+    if e['key'] == 'skills.external_dirs':
+        try:
+            now = list(raw_get(raw_config(home), e['key']) or [])
+        except KeyError:
+            now = []
+        before = e['before'].get('value') or []
+        added = [d for d in e['after'] if d not in before]
+        kept = [d for d in now if d not in added]
+        if kept or e['before']['present']:
+            hcfg_set(home, e['key'], kept)
+        else:
+            hcfg_unset(home, e['key'])
+    elif e['before']['present']:
+        hcfg_set(home, e['key'], e['before']['value'])
+    else:
+        hcfg_unset(home, e['key'])
 
 
 def cmd_link(ns) -> dict:
@@ -721,9 +929,33 @@ def cmd_link(ns) -> dict:
     cfgp, envp = home / "config.yaml", home / ".env"
     if not cfgp.is_file():
         raise Fail("usage", f"no Hermes config at {cfgp}")
-    if link_record():
-        return {"ok": True, "already_linked": True, "record": str(os_home() / LINK_FILE),
-                "hint": "run `wizard unlink` first to link again"}
+    bb = builder_module()
+    if (home / 'plugins' / PLUGIN_NAME).exists() and not link_record() and not pending_record():
+        raise Fail('tool_error', 'Owner-managed wizard-os plugin already exists; preserving it. Review it before linking.')
+    try:
+        bb.check_collisions(home, os_home(), raw_config(home))
+        builder = bb.install(os_home())
+    except (ValueError, OSError) as e:
+        raise Fail('tool_error', str(e)) from None
+    if rec := link_record():
+        if Path(rec['hermes_home']) != home:
+            raise Fail('usage', 'Wizard OS is linked to a different Hermes home; unlink it first')
+        refresh_owned_plugin(home, rec, ns)
+        dirs = list((raw_config(home).get('skills') or {}).get('external_dirs') or [])
+        wanted = [str(os_home() / 'skills'), builder['system_skills']]
+        after = dirs + [d for d in wanted if d not in dirs]
+        if after != dirs:
+            rec['edits'].append({'key': 'skills.external_dirs', 'before': {'present': bool(dirs), 'value': dirs}, 'after': after})
+            save_record(rec)
+            hcfg_set(home, 'skills.external_dirs', after)
+        rec['config_sha_after'] = sha256_file(cfgp)
+        save_record(rec)
+        restarted = ns.restart and run_hermes(home, 'gateway', 'restart', check=False, timeout=180).returncode == 0
+        return {"ok": True, "already_linked": True, 'builder': builder, 'plugin_refreshed': True,
+                'gateway_restarted': bool(restarted), "record": str(os_home() / LINK_FILE)}
+    recovered = None
+    if pending_record():   # an earlier link died half-way: put the owner's files back before starting again
+        recovered = rollback_link(pending_record())
     osh = os_home()
     osh.mkdir(parents=True, exist_ok=True)
     (osh / "skills").mkdir(exist_ok=True)
@@ -739,16 +971,32 @@ def cmd_link(ns) -> dict:
                             "left it alone (rename it, then link)")
     stamp = _t.strftime("%Y%m%dT%H%M%SZ", _t.gmtime())
     bdir = osh / "link-backup" / stamp
+    n = 1
+    while bdir.exists():   # a quick retry after a rolled-back link lands in the same second
+        bdir, n = osh / "link-backup" / f"{stamp}-{n}", n + 1
     bdir.mkdir(parents=True, mode=0o700)
     shutil.copy2(cfgp, bdir / "config.yaml")
     env_existed = envp.is_file()
     if env_existed:
         shutil.copy2(envp, bdir / ".env")
     os.chmod(bdir, 0o700)
-    rec = {"linked": True, "version": 1, "linked_at": stamp, "hermes_home": str(home), "gateway": url,
-           "backup": str(bdir), "config_sha_before": sha256_file(cfgp), "env_existed": env_existed,
+    # The journal is written (fsync'd) before the first edit, and every edit is added to it *before* it is made,
+    # so a failure or a kill at any point leaves a record that `wizard link` / `wizard unlink` can roll back.
+    # known_*_shas: every state of the two files that link itself produced (owner edits are anything else).
+    rec = {"linked": False, "state": "linking", "version": 2, "linked_at": stamp, "hermes_home": str(home),
+           "gateway": url, "backup": str(bdir), "config_sha_before": sha256_file(cfgp), "env_existed": env_existed,
            "env_sha_before": sha256_file(envp), "edits": [], "env_added": [], "plugin_installed": False,
-           "notes": []}
+           "plugins_dir_existed": (home / "plugins").is_dir(),
+           "plugin_metadata_existed": (home / "plugins" / ".install-metadata.json").is_file(),
+           "known_config_shas": [sha256_file(cfgp)], "known_env_shas": [sha256_file(envp)], "notes": []}
+    save_record(rec)
+
+    def produced() -> None:
+        for key, path in (("known_config_shas", cfgp), ("known_env_shas", envp)):
+            h = sha256_file(path)
+            if h not in rec[key]:
+                rec[key].append(h)
+        save_record(rec)
 
     def remember(key: str, after) -> None:
         try:
@@ -756,60 +1004,117 @@ def cmd_link(ns) -> dict:
         except KeyError:
             before = {"present": False}
         rec["edits"].append({"key": key, "before": before, "after": after})
+        save_record(rec)
+        fault(f"before:{key}")
         hcfg_set(home, key, after)
+        fault(f"mid:{key}")   # edit landed, its result not yet journalled: rollback must work key by key
+        produced()
+        fault(f"after:{key}")
 
-    # 1. the one MCP entry (never touches other mcp_servers entries)
-    remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url))
-    # 2. app + pointer skills as an extra skills dir
     try:
-        dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])
-    except KeyError:
-        dirs = []
-    skills_dir = str(osh / "skills")
-    if skills_dir not in dirs and str(Path(skills_dir)) not in [str(Path(d).expanduser()) for d in dirs]:
-        remember("skills.external_dirs", dirs + [skills_dir])
-    # 3. the wizard-os plugin (stock `hermes plugins install`, then the allow-list)
-    rec["plugins_dir_existed"] = (home / "plugins").is_dir()
-    rec["plugin_metadata_existed"] = (home / "plugins" / ".install-metadata.json").is_file()
-    if not (home / "plugins" / PLUGIN_NAME).is_dir():
-        args = ["plugins", "install", ns.plugin_source or PLUGIN_SOURCE, "--no-enable", "--no-deps"]
-        if ns.plugin_ref:
-            args += ["--ref", ns.plugin_ref]
-        run_hermes(home, *args)
-        rec["plugin_installed"] = True
-    try:
-        enabled = list(raw_get(raw_config(home), "plugins.enabled") or [])
-    except KeyError:
-        enabled = []
-    if PLUGIN_NAME not in enabled:
-        remember("plugins.enabled", enabled + [PLUGIN_NAME])
-    # No 4th edit: stock Hermes has no per-tool eager setting (only `tools.tool_search.defer`) and always keeps MCP
-    # tools behind Tool Search, so `wizard_apps` is reached like any app tool. An older link that recorded
-    # `tools.tool_search.eager_tools` is still reversed by `unlink`, which replays whatever `edits` holds.
-    # secrets into the Hermes .env (0600): the gateway token, and an API key when the API server has none yet
-    names = env_names(envp)
-    if names.get(TOKEN_ENV) != token:
-        if TOKEN_ENV in names:
-            env_remove(envp, [TOKEN_ENV])
-        env_append(envp, TOKEN_ENV, token)
-        rec["env_added"].append(TOKEN_ENV)
-    if len(names.get("API_SERVER_KEY", "")) < 16:
-        import secrets as _s
-        env_append(envp, "API_SERVER_KEY", _s.token_urlsafe(32))
-        rec["env_added"].append("API_SERVER_KEY")
-        rec["notes"].append("Hermes had no API key; added API_SERVER_KEY so its API server starts (the shell uses it)")
-    rec["config_sha_after"] = sha256_file(cfgp)
-    rec["env_sha_after"] = sha256_file(envp)
+        # 1. the one MCP entry (never touches other mcp_servers entries)
+        remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url))
+        # 2. app + pointer skills as an extra skills dir
+        try:
+            dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])
+        except KeyError:
+            dirs = []
+        wanted = [str(osh / "skills"), builder['system_skills']]
+        after = dirs + [d for d in wanted if d not in [str(Path(p).expanduser()) for p in dirs]]
+        if after != dirs:
+            remember("skills.external_dirs", after)
+        # 3. the wizard-os plugin (stock `hermes plugins install`, then the allow-list)
+        if not (home / "plugins" / PLUGIN_NAME).is_dir():
+            args = ["plugins", "install", ns.plugin_source or PLUGIN_SOURCE, "--no-enable", "--no-deps"]
+            if ns.plugin_ref:
+                args += ["--ref", ns.plugin_ref]
+            rec["plugin_installed"] = True   # recorded first: a half-finished install is removed on rollback
+            save_record(rec)
+            fault("before:plugin")
+            run_hermes(home, *args)
+            rec['plugin_sha256'] = plugin_fingerprint(home)
+            rec['plugin_ref'] = ns.plugin_ref
+            save_record(rec)
+            produced()
+            fault("after:plugin")
+        try:
+            enabled = list(raw_get(raw_config(home), "plugins.enabled") or [])
+        except KeyError:
+            enabled = []
+        if PLUGIN_NAME not in enabled:
+            remember("plugins.enabled", enabled + [PLUGIN_NAME])
+        # No 4th edit: stock Hermes has no per-tool eager setting (only `tools.tool_search.defer`) and always keeps
+        # MCP tools behind Tool Search, so `wizard_apps` is reached like any app tool. An older link that recorded
+        # `tools.tool_search.eager_tools` is still reversed by `unlink`, which replays whatever `edits` holds.
+        # secrets into the Hermes .env (0600): the gateway token, and an API key when the API server has none yet
+        names = env_names(envp)
+        if names.get(TOKEN_ENV) != token:
+            rec["env_added"].append(TOKEN_ENV)
+            save_record(rec)
+            fault("before:env")
+            if TOKEN_ENV in names:
+                env_remove(envp, [TOKEN_ENV])
+            env_append(envp, TOKEN_ENV, token)
+            fault("mid:env")
+            produced()
+            fault("after:env")
+        if len(names.get("API_SERVER_KEY", "")) < 16:
+            # The same key every time (kept 0600 next to the gateway token): the shell captured it at install, so
+            # unlink -> link must not hand Hermes a new one the shell doesn't know (wizard-os#28 relink defect).
+            api_key = secret_file(osh / "hermes-api-key")
+            rec["env_added"].append("API_SERVER_KEY")
+            rec["notes"].append("Hermes had no API key; added API_SERVER_KEY so its API server starts (the shell uses it)")
+            save_record(rec)
+            fault("before:apikey")
+            env_append(envp, "API_SERVER_KEY", api_key)
+            fault("mid:apikey")
+            produced()
+            fault("after:apikey")
+        rec["config_sha_after"] = sha256_file(cfgp)
+        rec["env_sha_after"] = sha256_file(envp)
+        rec.update(linked=True, state="linked")
+        save_record(rec)
+    except BaseException as e:   # noqa: BLE001 - Ctrl-C included: never leave a half-linked Hermes behind
+        try:
+            undone = rollback_link(rec)
+        except Exception as re_:  # noqa: BLE001
+            raise Fail("tool_error", f"link failed ({_why(e)}) and the rollback did not finish ({_why(re_)}); the "
+                       f"journal is kept in {os_home() / LINK_FILE}: run `wizard unlink` to finish it",
+                       stage="rollback_incomplete") from None
+        if isinstance(e, KeyboardInterrupt):
+            raise
+        raise Fail("tool_error", f"link failed ({_why(e)}); nothing was left changed in {home}",
+                   stage="rolled_back", rolled_back=undone) from None
     p = osh / LINK_FILE
-    p.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
-    os.chmod(p, 0o600)
     restarted = False
     if ns.restart:
         restarted = run_hermes(home, "gateway", "restart", check=False, timeout=180).returncode == 0
-    return {"ok": True, "hermes_home": str(home), "gateway": url, "record": str(p),
-            "edits": [e["key"] for e in rec["edits"]], "env_added": rec["env_added"],
-            "plugin_installed": rec["plugin_installed"], "notes": rec["notes"], "gateway_restarted": restarted,
-            "next": "" if restarted else "restart Hermes so it loads the plugin and the wizard MCP server: hermes gateway restart"}
+    out = {"ok": True, "hermes_home": str(home), "gateway": url, "record": str(p),
+           "edits": [e["key"] for e in rec["edits"]], "env_added": rec["env_added"],
+           "plugin_installed": rec["plugin_installed"], "notes": rec["notes"], "gateway_restarted": restarted,
+           "next": "" if restarted else "restart Hermes so it loads the plugin and the wizard MCP server: hermes gateway restart"}
+    if recovered is not None:
+        out["recovered_unfinished_link"] = recovered
+    return out
+
+
+def _why(e: BaseException) -> str:
+    return (e.message if isinstance(e, Fail) else f"{type(e).__name__}: {e}")[:300]
+
+
+def fault(point: str) -> None:
+    """Test-only fault injection (tools/tests/test_wizard_link.py): WIZARD_LINK_FAULT=<point>[=kill], e.g.
+    `after:plugin=kill`. `kill` exits
+    at once with no cleanup, like a killed process; otherwise the step raises. Unset in normal use."""
+    want = os.environ.get("WIZARD_LINK_FAULT", "")
+    if not want:
+        return
+    name, _, how = want.partition("=")
+    if name != point:
+        return
+    if how == "kill":
+        os._exit(137)
+    raise RuntimeError(f"injected fault at {point}")
 
 
 def remove_installed_plugin(home: Path, rec: dict) -> None:
@@ -846,6 +1151,20 @@ def _semantic(cfg: dict) -> dict:
 
 def cmd_unlink(ns) -> dict:
     import shutil
+    pending = pending_record()
+    if pending:   # a link that never finished: roll its journal back instead
+        try:
+            undone = rollback_link(pending)
+        except Exception as e:  # noqa: BLE001 - same JSON contract as a failed link's rollback
+            raise Fail("tool_error", f"the unfinished link could not be rolled back ({_why(e)}); the journal is "
+                       f"kept in {os_home() / LINK_FILE}: fix the cause and run `wizard unlink` again",
+                       stage="rollback_incomplete") from None
+        restarted = False
+        if ns.restart:
+            restarted = run_hermes(Path(pending["hermes_home"]), "gateway", "restart", check=False,
+                                   timeout=180).returncode == 0
+        return {"ok": True, "linked": False, "recovered_unfinished_link": True, **undone,
+                "gateway_restarted": restarted}
     rec = link_record()
     if not rec:
         return {"ok": True, "linked": False, "message": "not linked; nothing to undo"}
@@ -854,12 +1173,13 @@ def cmd_unlink(ns) -> dict:
     bdir = Path(rec["backup"])
     untouched_since_link = sha256_file(cfgp) == rec.get("config_sha_after")
     if rec.get("plugin_installed"):
-        remove_installed_plugin(home, rec)
-    for e in reversed(rec["edits"]):
-        if e["before"]["present"]:
-            hcfg_set(home, e["key"], e["before"]["value"])
+        if not rec.get('plugin_sha256') or plugin_fingerprint(home) != rec['plugin_sha256']:
+            rec.setdefault('notes', []).append('Modified or unattested plugin preserved on unlink')
+            rec['plugin_installed'] = False
         else:
-            hcfg_unset(home, e["key"])
+            remove_installed_plugin(home, rec)
+    for e in reversed(rec["edits"]):
+        reverse_edit(home, e)
     # Byte-for-byte: when nothing else changed since link (the reversed document means exactly what the backup
     # meant), put the original bytes back, so even whitespace is the owner's.
     backup_cfg = bdir / "config.yaml"
@@ -872,6 +1192,14 @@ def cmd_unlink(ns) -> dict:
     if same and sha256_file(backup_cfg) == rec.get("config_sha_before"):
         shutil.copy2(backup_cfg, cfgp)
     env_names_now = env_names(envp)
+    # Keep the API key link added before removing it, so the next link hands Hermes the same key the shell already
+    # has (covers boxes linked before link reused a saved key).
+    added_key = env_names_now.get("API_SERVER_KEY", "")
+    keyf = os_home() / "hermes-api-key"
+    if "API_SERVER_KEY" in (rec.get("env_added") or []) and len(added_key) >= 16 and not keyf.is_file():
+        fd = os.open(keyf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(added_key + "\n")
     env_ok = True
     if rec.get("env_existed") and (bdir / ".env").is_file():
         env_remove(envp, rec.get("env_added") or [])
@@ -888,7 +1216,8 @@ def cmd_unlink(ns) -> dict:
     rec["linked"] = False
     rec["unlinked"] = {"config_byte_identical": byte_identical, "env_restored": env_ok,
                        "owner_changed_config_since_link": not untouched_since_link and not same}
-    (os_home() / LINK_FILE).write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+    rec["state"] = "unlinked"
+    save_record(rec)
     restarted = False
     if ns.restart:
         restarted = run_hermes(home, "gateway", "restart", check=False, timeout=180).returncode == 0
@@ -918,6 +1247,8 @@ def cmd_doctor(ns) -> dict:
     rec = link_record()
     st = alongside_state()
     _check(rows, "Hermes config present", (home / "config.yaml").is_file(), str(home / "config.yaml"))
+    if pending_record():
+        _check(rows, "no unfinished link", False, "a link stopped half-way; `wizard unlink` rolls it back")
     _check(rows, "linked (wizard link)", bool(rec), str(os_home() / LINK_FILE))
     cfg = raw_config(home)
     url = (rec or {}).get("gateway") or gateway_url(ns)
@@ -932,6 +1263,11 @@ def cmd_doctor(ns) -> dict:
     except KeyError:
         dirs = []
     _check(rows, "Hermes reads the Wizard OS skills", str(os_home() / "skills") in dirs, str(os_home() / "skills"))
+    try:
+        for name, ok, detail in builder_module().health(os_home(), home):
+            _check(rows, name, ok, detail)
+    except (Fail, ImportError, ValueError) as e:
+        _check(rows, 'Wizard builder bundle', False, str(e))
     try:
         enabled = raw_get(cfg, "plugins.enabled") or []
     except KeyError:
@@ -1144,9 +1480,11 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.cmd == "call":
             out, kind = cmd_call(ns), "call"
         elif ns.cmd == "link":
-            out, kind = cmd_link(ns), "link"
+            with link_lock():
+                out, kind = cmd_link(ns), "link"
         elif ns.cmd == "unlink":
-            out, kind = cmd_unlink(ns), "unlink"
+            with link_lock():
+                out, kind = cmd_unlink(ns), "unlink"
         elif ns.cmd == "doctor":
             out, kind = cmd_doctor(ns), "doctor"
             print(json.dumps(out) if want_json else human(kind, out))

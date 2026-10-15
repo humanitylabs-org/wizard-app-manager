@@ -122,6 +122,23 @@ def check_app(root, proposal=False):
             'rules': rows, 'warnings': [r for r in rows if not r['ok'] and r['severity'] == 'warning']}
 
 
+def validate_style_snapshot(template):
+    """Fail closed on edits to the generated canonical style distribution assets."""
+    lock = json.loads((template / 'appearance-provenance.json').read_text())
+    mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
+               'style/boot.js': 'web/boot.js'}
+    if (lock.get('schema') != 3 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
+            or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
+            or set(lock.get('files', {})) != set(mapping)):
+        raise ValueError('Invalid canonical style/ snapshot lock; refresh with tools/sync_wizard_style.py.')
+    for src, dst in mapping.items():
+        item = lock['files'][src]
+        path = template / dst
+        if (item.get('destination') != dst or not path.is_file() or path.is_symlink()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != item.get('sha256')):
+            raise ValueError('Canonical style/ snapshot drifted: ' + dst)
+
+
 def new_app(app_id, dev_root=None, request='', *, name=None):
     _id(app_id)
     dev_root = Path(dev_root) if dev_root is not None else _home() / 'dev'
@@ -132,6 +149,7 @@ def new_app(app_id, dev_root=None, request='', *, name=None):
     template = REPO / 'templates' / 'hello-wizard'
     if not template.is_dir():
         raise ValueError('Source bundle missing templates/hello-wizard; use the complete source checkout.')
+    validate_style_snapshot(template)
     display = name or app_id.replace('-', ' ').title()
     scratch = Path(tempfile.mkdtemp(prefix='.builder-', dir=dev_root))
     try:
@@ -284,22 +302,15 @@ def update_local(root, os_home=None, *, run=False):
 
 
 def install_skill(os_home=None, hermes_home=None):
+    """Compatibility alias: install the complete bundle and register discovery."""
+    from . import builder_bundle
     os_home = Path(os_home) if os_home is not None else _home()
     hermes_home = Path(hermes_home) if hermes_home is not None else Path(os.environ.get('HERMES_HOME', Path.home() / '.hermes'))
-    target = os_home / 'system-skills' / 'wizard-builder'
-    src = REPO / 'system-skills' / 'wizard-builder'
-    link = hermes_home / 'skills' / 'wizard-builder'
-    if target.is_symlink():
-        raise ValueError('System skill destination is a symlink; preserving it.')
-    if link.exists() or link.is_symlink():
-        if not link.is_symlink() or link.resolve() != target.resolve():
-            raise ValueError('Hermes already has a different wizard-builder; preserving it.')
-    shutil.copytree(src, target, dirs_exist_ok=True)
-    link.parent.mkdir(parents=True, exist_ok=True)
-    if not link.is_symlink():
-        link.symlink_to(target.resolve(), target_is_directory=True)
-    return {'state': 'installed', 'skill': str(target / 'SKILL.md'), 'hermes_link': str(link),
-            'generated_skills_touched': False, 'gateway_connections_added': 0}
+    cfg = yaml.safe_load((hermes_home / 'config.yaml').read_text()) or {} if (hermes_home / 'config.yaml').exists() else {}
+    builder_bundle.check_collisions(hermes_home, os_home, cfg)
+    out = builder_bundle.install(os_home)
+    out['registered'] = builder_bundle.register(hermes_home, os_home)
+    return {**out, 'generated_skills_touched': False, 'gateway_connections_added': 0}
 
 
 def prepare_publish(root, repo):
@@ -338,6 +349,7 @@ def main(argv=None):
     p = sub.add_parser('publish'); p.add_argument('source', type=Path); p.add_argument('--repo', required=True); p.add_argument('--output', type=Path); p.add_argument('--execute', action='store_true')
     up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
     sk = sub.add_parser('builder-skill'); sk.add_argument('--hermes-home', type=Path)
+    inline = sub.add_parser('package-inline'); inline.add_argument('source', type=Path)
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'new':
@@ -351,6 +363,10 @@ def main(argv=None):
             out = update_local(a.source, run=a.run)
         elif a.cmd == 'builder-skill':
             out = install_skill(hermes_home=a.hermes_home)
+        elif a.cmd == 'package-inline':
+            from .builder_assets import package_inline
+            package_inline(a.source)
+            out = {'state': 'packaged', 'source': str(a.source)}
         else:
             if a.execute:
                 raise ValueError('Public execution is approval-gated and delegated to release authority; only payload preparation is implemented.')

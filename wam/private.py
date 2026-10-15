@@ -104,7 +104,8 @@ def pull(image: str, tok: str) -> None:
                            f"(or set GITHUB_TOKEN with read:packages), or ask the owner to make the package public")
 
 
-def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None) -> dict:
+def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None,
+            expected_id: str | None = None) -> dict:
     """Fetch `repo` (owner/name) at its newest commit into the Wizard store folder and pull its images.
     Returns an index-like record: {id, repo, uses, private: True, install: {commit}}."""
     tok = tok or token()
@@ -122,6 +123,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             raise PrivateError(f"{repo}: no wizard.md")
         d = wizardmd.front_matter(wtext)
         app_id = str(d.get("id") or "")
+        if expected_id is not None and app_id != expected_id:
+            raise PrivateError(f"alias {expected_id!r} does not match manifest id {app_id!r}; nothing installed")
         if release and app_id != release['id']:
             raise PrivateError('pinned app identity mismatch')
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", app_id):

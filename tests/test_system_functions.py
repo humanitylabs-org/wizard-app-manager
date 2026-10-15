@@ -167,8 +167,9 @@ def test_installed_portable_skill_retains_mandatory_qa_and_reference(tmp_path):
     os_home, hermes_home = tmp_path / 'os', tmp_path / 'hermes'
     receipt = builder.install_skill(os_home, hermes_home)
     skill = Path(receipt['skill'])
-    linked = Path(receipt['hermes_link'])
-    assert linked.is_symlink() and linked.resolve() == skill.parent.resolve()
+    registered = Path(receipt['registered'])
+    assert (registered / 'wizard-builder').resolve() == skill.parent.resolve()
+    assert receipt['generated_skills_touched'] is False
     text = skill.read_text()
     assert 'references/system-functions.md' in text
     assert '**Mandatory QA before handoff:**' in text
