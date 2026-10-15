@@ -18,8 +18,10 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam doctor [--fix]            check the whole chain
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
+                [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
+                                --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
@@ -508,7 +510,7 @@ def registry_apps(c: Config) -> dict[str, dict]:
 
 
 def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None,
-                  share_history: bool | None = None) -> dict:
+                  share_history: bool | None = None, share_sessions: bool | None = None) -> dict:
     home = alongside.hermes_home(hermes_home)
     if detect_only:
         return alongside.detect(home)
@@ -518,7 +520,7 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
-    st = alongside.enable(c.home, home, shell_port, share_history)
+    st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
     out = {k: v for k, v in st.items() if k != "detected"}
     out["detected"] = st["detected"]
     try:
@@ -645,9 +647,18 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
             readable = db.is_file() and os.access(db, os.R_OK) and os.stat(db).st_uid == os.getuid()
             out.append(("alongside: session history readable by the shell", readable,
                         f"{db} (shell runs as uid {a['uid']}, read-only; it can read every file in the Hermes home)"))
+        elif st["shell"].get("share_sessions"):
+            db = Path(a["hermes_home"]) / "state.db"
+            text = ovr.read_text() if ovr.is_file() else ""
+            mounted = 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
+            stale = alongside.stale_session_mounts(text, a["hermes_home"]) if mounted else []
+            out.append(("alongside: session database shared read-only (no credentials)", mounted and db.is_file() and not stale,
+                        f"{db} -> /hermes/state.db" if mounted and not stale else
+                        f"Hermes replaced {', '.join(stale)} since the mount: run `wam app update {agent_side}`" if stale else
+                        f"not in the override yet: run `wam alongside` then `wam app update {agent_side}`"))
         else:
             out.append(("alongside: Hermes home not shared with the shell", True,
-                        "chats over the Hermes API (opt in to history: wam alongside --share-history)"))
+                        "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
     if regp.is_file():
         for col in registry.collisions(json.loads(regp.read_text())):
             out.append(("slot collision", False, col))
@@ -802,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
+    al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
+    al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
     args = ap.parse_args(argv)
     c = Config()
     try:
@@ -833,7 +846,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
             return 0 if all(ok for _, ok, _ in res) else 1
         elif args.cmd == "alongside":
-            res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history)
+            res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history,
+                                args.share_sessions)
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3

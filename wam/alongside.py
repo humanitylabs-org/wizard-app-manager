@@ -213,7 +213,8 @@ def pick_port(start: int = DEFAULT_SHELL_PORT, avoid: set[int] | None = None) ->
     raise SystemExit(f"no free loopback port from {start}")
 
 
-def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_history: bool | None = None) -> dict:
+def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_history: bool | None = None,
+           share_sessions: bool | None = None) -> dict:
     """Record alongside mode. Idempotent; keeps an earlier shell port. The shell gets a fixed loopback port so the
     agent's `wizard` MCP entry (written by `wizard link`) can name it before the shell is installed."""
     det = detect(home)
@@ -229,7 +230,10 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
         "shell": {"port": shell_port,
                   # opt-in only; a re-run keeps the owner's earlier choice
                   "share_history": bool((prev.get("shell") or {}).get("share_history")
-                                        if share_history is None else share_history)},
+                                        if share_history is None else share_history),
+                  # narrower opt-in: only the session database (helper status, other-surface activity, archive)
+                  "share_sessions": bool((prev.get("shell") or {}).get("share_sessions")
+                                         if share_sessions is None else share_sessions)},
     }
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
     # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
@@ -313,6 +317,64 @@ def host_media_root(runtipi_root: Path) -> Path:
     return Path(root).expanduser().absolute() / "media"
 
 
+# The Hermes session database and its WAL sidecars. A WAL-mode SQLite reader needs all three, and they must be the
+# live files: SQLite keeps -wal/-shm while any Hermes process has the database open.
+SESSION_STATE_FILES = ("state.db", "state.db-wal", "state.db-shm")
+INODE_MARK = "wam-session-inodes:"
+
+
+def session_state_mounts(hermes_home: str, view: Path) -> list[tuple[str, str]]:
+    """File bind mounts for --share-sessions: [(host file, /hermes/<name>)]. Only files that exist are mounted
+    (Docker would otherwise create a root-owned directory at the missing host path, inside the owner's Hermes home).
+    Each needs an empty mount-point file in the read-only view. Without state.db nothing is mounted."""
+    if not Path(hermes_home, "state.db").is_file():
+        return []
+    out = []
+    for name in SESSION_STATE_FILES:
+        src = Path(hermes_home, name)
+        if not src.is_file() or src.is_symlink() or not _SAFE_PATH.match(str(src)):
+            continue
+        point = view / name
+        try:
+            if not point.exists():
+                point.touch(mode=0o600)
+        except OSError:
+            continue
+        if point.is_file():
+            out.append((str(src), f"/hermes/{name}"))
+    return out
+
+
+def session_inodes(hermes_home: str) -> dict[str, int]:
+    out = {}
+    for name in SESSION_STATE_FILES:
+        try:
+            out[name] = os.stat(Path(hermes_home, name)).st_ino
+        except OSError:
+            pass
+    return out
+
+
+def inode_stamp(hermes_home: str) -> str:
+    """Recorded in the override so `wam doctor` can tell when Hermes replaced a mounted file (a file bind mount
+    keeps the old inode: after Hermes deletes and recreates its -wal/-shm on a full restart, the service would read
+    a stale snapshot until `wam app update` remounts them)."""
+    return INODE_MARK + json.dumps(session_inodes(hermes_home), sort_keys=True, separators=(",", ":"))
+
+
+def stale_session_mounts(override_text: str, hermes_home: str) -> list[str]:
+    """Names whose host inode no longer matches the one the override was written with ([] = fresh or not shared)."""
+    for line in override_text.splitlines():
+        if INODE_MARK in line:
+            try:
+                then = json.loads(line.split(INODE_MARK, 1)[1].strip())
+            except ValueError:
+                return list(SESSION_STATE_FILES)
+            now = session_inodes(hermes_home)
+            return sorted(n for n in set(then) | set(now) if then.get(n) != now.get(n))
+    return []
+
+
 UX_OVERRIDE = """\
 # Written by wam (alongside mode): the Wizard shell (UX only) on the host network, bound to 127.0.0.1, talking to the
 # Agent Service on its own loopback port. It holds no Hermes credentials and mounts nothing.
@@ -351,6 +413,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", a["origin"]):
         raise SystemExit(f"host Hermes API {a['origin']} is not a loopback origin; alongside mode needs 127.0.0.1")
     share = bool(st["shell"].get("share_history"))
+    sessions = bool(st["shell"].get("share_sessions")) and not share
     hh = a["hermes_home"]
     # Attachments: the service writes them under its /media, the host Hermes must be handed the host path of the
     # same file (trusted_path), so the agent's file tools can open what the person attached.
@@ -379,15 +442,22 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
                        f"\n      - {hh}/cache/images:/hermes/cache/images:ro")
         except OSError:
             volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
+        # --share-sessions: only the session database (and its WAL sidecars), read-only, never the rest of the home.
+        mounted = session_state_mounts(hh, view) if sessions and volumes else []
+        for src, dst in mounted:
+            volumes += f"\n      - {src}:{dst}:ro"
+        sessions = bool(mounted)
     return SHELL_OVERRIDE.format(
         app=app_id, origin=a["origin"], port=port,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
                 "# read-only, so the shell can read every file there, credentials included."
-                if share else "The shell sees only the agent's images folder, not the Hermes home\n"
-                "# (opt in to session history: wam alongside --share-history)."),
+                if share else "The owner opted in to --share-sessions: only the Hermes session database (state.db and\n"
+                f"# its -wal/-shm) is mounted read-only, no credentials or other Hermes files. {inode_stamp(hh)}"
+                if sessions else "The shell sees only the agent's images folder, not the Hermes home\n"
+                "# (opt in to session history: wam alongside --share-sessions, or --share-history for the whole home)."),
         image=image_lines(st, app_id),
         user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
-        state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share else ""}"',
+        state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share or sessions else ""}"',
         media_env=media_env, volumes=volumes)
 
 
