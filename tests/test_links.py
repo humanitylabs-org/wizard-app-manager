@@ -79,6 +79,8 @@ def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
 
 def test_failed_serve_is_reported_not_listed(tmp_path, fake_tailscale, monkeypatch):
     monkeypatch.setenv("SERVE_RC", "1")
+    which = links.shutil.which
+    monkeypatch.setattr(links.shutil, "which", lambda name: None if name == "sudo" else which(name))
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"})
     assert [l["id"] for l in res["links"]] == ["files"]
     assert "wizard-shell" in res["errors"]
