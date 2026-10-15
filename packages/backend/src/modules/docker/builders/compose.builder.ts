@@ -4,6 +4,7 @@ import { type DynamicComposeSchemaYaml, type XRuntipiServiceParams } from '@runt
 import type { AppUrn } from '@runtipi/common/types';
 import deepmerge from 'deepmerge';
 import * as yaml from 'yaml';
+import { isWizardIsolationEnabled, isWizardStore, wizardAppNetworkName } from '@/modules/wizard-grants/wizard-grants.logic';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
 
 /**
@@ -108,9 +109,16 @@ export class DockerComposeBuilder {
         };
       }
 
-      if (xruntipiParams.is_main || xruntipiParams.add_to_main_network) {
+      // Wizard (WIZARD_APP_ISOLATION=1, spec/PERMISSIONS.md): Wizard apps use their own network instead of the shared
+      // one; granted apps are connected to it by WizardGrantsService. Traefik-exposed main services stay reachable.
+      const isolated = isWizardIsolationEnabled() && isWizardStore(appStoreId);
+      if (isolated && (xruntipiParams.is_main || xruntipiParams.add_to_main_network)) {
+        serviceCopy.networks[wizardAppNetworkName(appName)] = { gw_priority: 1 };
+      }
+      const exposedViaTraefik = xruntipiParams.is_main && (form.exposed || form.exposedLocal);
+      if ((xruntipiParams.is_main || xruntipiParams.add_to_main_network) && (!isolated || exposedViaTraefik)) {
         serviceCopy.networks.tipi_main_network = {
-          gw_priority: 1,
+          gw_priority: isolated ? 0 : 1,
         };
       }
     }
@@ -200,6 +208,10 @@ export class DockerComposeBuilder {
       name: dockerNetworkName,
       external: true,
     };
+
+    if (isWizardIsolationEnabled() && isWizardStore(appStoreId)) {
+      inputCopy.networks[wizardAppNetworkName(appName)] = { name: wizardAppNetworkName(appName), external: true };
+    }
 
     if (hasMultipleServices) {
       inputCopy.networks[`${appName}_${appStoreId}_network`] = {

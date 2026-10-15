@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
 import { createAppUrn } from '@/common/helpers/app-helpers';
@@ -597,6 +597,69 @@ volumes:
 
       const resultParsed = yaml.parse(result);
       expect(resultParsed.services.web.restart).toBe('no');
+    });
+  });
+
+  describe('Wizard app isolation (WIZARD_APP_ISOLATION)', () => {
+    const wizardUrn = createAppUrn('hermes-agent', 'wizardapps');
+    const doc = `x-runtipi:
+  schema_version: 2
+services:
+  hermes-agent:
+    image: python:3.12-alpine
+    x-runtipi:
+      is_main: true
+      internal_port: 9119
+  hermes-agent-engine:
+    image: hermes:latest
+    x-runtipi:
+      add_to_main_network: true
+  db:
+    image: postgres:16
+`;
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('is byte-identical to stock when the flag is off', () => {
+      vi.stubEnv('WIZARD_APP_ISOLATION', '');
+      const off = composeBuilder.getDockerCompose(yaml.parse(doc), {}, wizardUrn, subnet);
+      vi.stubEnv('WIZARD_APP_ISOLATION', '0');
+      expect(composeBuilder.getDockerCompose(yaml.parse(doc), {}, wizardUrn, subnet)).toBe(off);
+      const parsed = yaml.parse(off);
+      expect(parsed.services['hermes-agent'].networks.tipi_main_network).toEqual({ gw_priority: 1 });
+      expect(parsed.networks['wizard-app-hermes-agent']).toBeUndefined();
+    });
+
+    it('moves main and add_to_main_network services to wizard-app-<id> when on', () => {
+      vi.stubEnv('WIZARD_APP_ISOLATION', '1');
+      const parsed = yaml.parse(composeBuilder.getDockerCompose(yaml.parse(doc), {}, wizardUrn, subnet));
+      for (const svc of ['hermes-agent', 'hermes-agent-engine']) {
+        expect(parsed.services[svc].networks.tipi_main_network).toBeUndefined();
+        expect(parsed.services[svc].networks['wizard-app-hermes-agent']).toEqual({ gw_priority: 1 });
+        expect(parsed.services[svc].networks['hermes-agent_wizardapps_network']).toEqual({ gw_priority: 0 });
+      }
+      expect(parsed.services.db.networks).toEqual({ 'hermes-agent_wizardapps_network': { gw_priority: 0 } });
+      expect(parsed.networks['wizard-app-hermes-agent']).toEqual({ name: 'wizard-app-hermes-agent', external: true });
+      expect(parsed.networks['hermes-agent_wizardapps_network']).toEqual({ ipam: { config: [{ subnet }] } });
+    });
+
+    it('keeps a Traefik-exposed main service on the shared network so the proxy can reach it', () => {
+      vi.stubEnv('WIZARD_APP_ISOLATION', '1');
+      const parsed = yaml.parse(
+        composeBuilder.getDockerCompose(yaml.parse(doc), { exposedLocal: true, localSubdomain: 'hermes' }, wizardUrn, subnet),
+      );
+      expect(parsed.services['hermes-agent'].networks.tipi_main_network).toEqual({ gw_priority: 0 });
+      expect(parsed.services['hermes-agent'].networks['wizard-app-hermes-agent']).toEqual({ gw_priority: 1 });
+      expect(parsed.services['hermes-agent-engine'].networks.tipi_main_network).toBeUndefined();
+    });
+
+    it('leaves apps from other stores untouched when on', () => {
+      vi.stubEnv('WIZARD_APP_ISOLATION', '1');
+      const on = composeBuilder.getDockerCompose(yaml.parse(doc), {}, urn, subnet);
+      vi.stubEnv('WIZARD_APP_ISOLATION', '');
+      expect(on).toBe(composeBuilder.getDockerCompose(yaml.parse(doc), {}, urn, subnet));
     });
   });
 });

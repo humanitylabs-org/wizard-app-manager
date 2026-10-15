@@ -8,6 +8,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
+import { WizardGrantsService } from '../wizard-grants/wizard-grants.service';
 
 @Injectable()
 export class DockerService {
@@ -17,6 +18,7 @@ export class DockerService {
     private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
     private readonly appsService: AppsService,
+    private readonly wizardGrants: WizardGrantsService,
   ) {}
 
   /**
@@ -78,6 +80,15 @@ export class DockerService {
    * @param {string} command - Command to execute
    */
   public async composeApp(appUrn: AppUrn, command: string) {
+    // Wizard: no-ops unless WIZARD_APP_ISOLATION=1 (spec/PERMISSIONS.md)
+    const up = command.startsWith('up');
+    if (up) await this.wizardGrants.beforeUp(appUrn);
+    const result = await this.runCompose(appUrn, command);
+    if (up) await this.wizardGrants.afterUp(appUrn);
+    return result;
+  }
+
+  private async runCompose(appUrn: AppUrn, command: string) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
