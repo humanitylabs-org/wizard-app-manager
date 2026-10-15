@@ -722,7 +722,7 @@ def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
     from wam import cli
     c = cli.Config()
     c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
-    comp = tmp_path / "rt/apps" / cli.STORE / "cal/docker-compose.yml"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/cal/docker-compose.yml"   # not installed yet: store copy only
     comp.parent.mkdir(parents=True)
     comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n")
     (tmp_path / "home").mkdir()

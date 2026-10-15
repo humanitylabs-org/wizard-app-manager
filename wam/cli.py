@@ -268,11 +268,15 @@ def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
     """Apps built with the Wizard builder answer only hosts/origins they are told to trust
     (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). On an alongside box with Tailscale, trust the shell's
     tailnet origin, so the app opens inside Wizard instead of answering 'untrusted_host_or_site'."""
-    comp = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
-    try:
-        text = comp.read_text()
-    except OSError:
-        return {}
+    # Before install the recipe is only in Runtipi's store copy (repos/), after it also in apps/.
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
     if "WIZARD_TRUSTED_HOSTS" not in text:
         return {}
     al = alongside.load(c.home) or {}
