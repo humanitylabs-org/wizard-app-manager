@@ -269,6 +269,10 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
 def resolve_any(c: Config, ref: str) -> dict:
     """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
     or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    from . import test_catalog
+    pinned = test_catalog.resolve(ref)
+    if pinned:
+        return private.prepare(c.runtipi_root, STORE, pinned['repo'], release=pinned)
     try:
         return index.resolve(c.index, ref)
     except index.IndexError_ as e:
