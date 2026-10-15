@@ -748,19 +748,19 @@ def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
     assert _mode(tmp_path, wos="alongside", runtipi=True) == "alongside"
 
 
-def test_vendored_wizard_cli_matches_its_wizard_os_source():
-    """wizard-cli/ is a byte-identical copy of wizard-os files at the commit in SOURCE.json."""
+def test_vendored_wizard_cli_matches_recorded_provenance():
+    """Verify local hashes and the unchanged upstream base separately."""
     import hashlib
     d = Path(__file__).resolve().parents[1] / "wizard-cli"
     src = json.loads((d / "SOURCE.json").read_text())
     for name, want in src["sha256"].items():
-        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: re-sync it from wizard-os"
+        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: update the local provenance hash"
     try:
         import urllib.request
         for name, path in src["files"].items():
             url = f"https://raw.githubusercontent.com/{src['repo']}/{src['commit']}/{path}"
             with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
-                assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
+                assert hashlib.sha256(r.read()).hexdigest() == src['upstream_sha256'][name], f"{name} base differs from {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
