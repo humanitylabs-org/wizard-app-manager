@@ -39,6 +39,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import yaml
+
 from . import alongside, index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
 
@@ -519,6 +521,18 @@ def registry_apps(c: Config) -> dict[str, dict]:
         return {}
 
 
+def _app_image(c: Config, st: dict, app_id: str) -> str:
+    """The image an installed app runs: its alongside pin, else the first image in its installed compose."""
+    if alongside.pin(st, app_id):
+        return alongside.pin(st, app_id)
+    comp = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
+    try:
+        imgs = private.images(yaml.safe_load(comp.read_text()) or {})
+    except (OSError, ValueError, yaml.YAMLError):
+        return ""
+    return imgs[0] if imgs else ""
+
+
 def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None,
                   share_history: bool | None = None) -> dict:
     home = alongside.hermes_home(hermes_home)
@@ -546,6 +560,9 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = {a: r for a, r in apps.items() if (r != "bundle") == active} or apps
         for app_id, role in apps.items():
             alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+            if role != "shell":   # it now runs as the owner: hand it the state the recipe's uid wrote
+                if alongside.adopt_state(c.runtipi_root, STORE, app_id, _app_image(c, st, app_id)):
+                    out.setdefault("state_adopted", []).append(app_id)
         if apps:   # the service first, so the shell finds it when it starts
             order = sorted(apps, key=lambda a: apps[a] != "service")
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
