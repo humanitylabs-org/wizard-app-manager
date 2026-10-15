@@ -60,7 +60,9 @@ def route_status(config: dict, host: str, port: int, path: str, target: str) -> 
     """Only reuse an exact private HTTPS proxy; never take over another handler."""
     tcp = (config.get("TCP") or {}).get(str(port))
     web = (config.get("Web") or {}).get(f"{host}:{port}") or {}
-    handlers = web.get("Handlers") or {}
+    # Tailscale normalizes /app/ to /app in status JSON.
+    handlers = {(key.rstrip("/") or "/"): val for key, val in (web.get("Handlers") or {}).items()}
+    path = path.rstrip("/") or "/"
     if (config.get("AllowFunnel") or {}).get(f"{host}:{port}"):
         return "conflict"
     if tcp and not tcp.get("HTTPS"):

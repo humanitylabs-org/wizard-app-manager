@@ -913,7 +913,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if res["found"] else 3
         elif args.cmd == "links":
             from . import links
-            reg = write_registry(c)
+            if args.dry_run:
+                rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
+                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+            else:
+                reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
             res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run)
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
