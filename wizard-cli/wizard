@@ -862,6 +862,10 @@ def attest_legacy_plugin(home, rec):
             if plugin_tree_fingerprint(root / subdir) != plugin_fingerprint(home):
                 raise ValueError('plugin differs from its recorded upstream revision')
         rec['plugin_sha256'] = plugin_fingerprint(home)
+        # Pre-bundle link records omitted plugin_ref. Preserve an explicitly
+        # pinned stock install when migrating its attested ownership record.
+        if 'plugin_ref' not in rec and metadata.get('pinned'):
+            rec['plugin_ref'] = revision
         save_record(rec)
     except (KeyError, ValueError, OSError, subprocess.SubprocessError) as e:
         raise Fail('tool_error', f'Cannot attest existing wizard-os plugin; preserving it ({e}). '

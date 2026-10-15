@@ -261,3 +261,65 @@ def test_modified_legacy_copy_is_preserved_as_collision(homes):
     with pytest.raises(ValueError, match='Unmanaged'):
         bb.install(osh)
     assert p.read_text() == 'owner edits'
+
+
+@pytest.mark.parametrize('kind', ['relative-external', 'expanded-external', 'create-dir', 'relative-create-dir', 'flat-local'])
+def test_stock_discovery_collisions_refused_before_registration(homes, tmp_path, monkeypatch, kind):
+    osh, hh = homes
+    bb.install(osh)
+    root = hh / 'custom'
+    skills = {}
+    if kind == 'relative-external':
+        skills['external_dirs'] = ['custom']
+    elif kind == 'expanded-external':
+        monkeypatch.setenv('BUILDER_OWNER_SKILLS', str(root))
+        skills['external_dirs'] = ['${BUILDER_OWNER_SKILLS}']
+    elif kind == 'create-dir':
+        skills['create_dir'] = str(root)
+    elif kind == 'relative-create-dir':
+        skills['create_dir'] = 'custom'
+    else:
+        root = hh / 'skills'
+    skill = root / ('wizard-builder.md' if kind == 'flat-local' else 'wizard-builder/SKILL.md')
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: wizard-builder\n---\nowner')
+    cfgp = hh / 'config.yaml'
+    cfgp.write_text(yaml.safe_dump({'skills': skills}))
+    before = cfgp.read_bytes()
+    monkeypatch.chdir(tmp_path)  # deliberately outside HERMES_HOME
+    with pytest.raises(ValueError, match='collision'):
+        bb.register(hh, osh)
+    assert cfgp.read_bytes() == before
+    assert skill.read_text().endswith('owner')
+    assert any(not ok and 'collision' in detail for _, ok, detail in bb.health(osh, hh))
+
+
+@pytest.mark.parametrize('pinned', [True, False])
+def test_legacy_link_migrates_explicit_plugin_pin(homes, wizard, monkeypatch, tmp_path, pinned):
+    osh, hh = homes
+    w, calls = wizard
+    w.cmd_link(ns(hh))
+    rec = w.read_record()
+    rec.pop('plugin_ref', None)
+    rec.pop('plugin_sha256', None)
+    revision = '6db5046292daad9f34eefad7b06e49fe23fc22db'
+    metadata = {'revision': revision, 'source': w.PLUGIN_SOURCE, 'pinned': pinned}
+    (hh / 'plugins/.install-metadata.json').write_text(json.dumps({w.PLUGIN_NAME: metadata}))
+    original_run = subprocess.run
+    def fake_git(cmd, **kwargs):
+        if cmd[0] != 'git':
+            return original_run(cmd, **kwargs)
+        if 'checkout' in cmd:
+            checkout = Path(cmd[2]) / 'hermes-plugin/wizard-os'
+            shutil.copytree(hh / 'plugins/wizard-os', checkout)
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+    monkeypatch.setattr(subprocess, 'run', fake_git)
+    args = ns(hh); args.plugin_ref = None
+    w.refresh_owned_plugin(hh, rec, args)
+    last = calls[-1]
+    assert ('--ref' in last) is pinned
+    if pinned:
+        assert last[last.index('--ref') + 1] == revision
+        assert rec['plugin_ref'] == revision
+    else:
+        assert rec['plugin_ref'] is None

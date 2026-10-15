@@ -175,13 +175,28 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
     dirs = (cfg.get('skills') or {}).get('external_dirs') or []
     if not isinstance(dirs, list):
         raise ValueError('skills.external_dirs must be a list; preserving config')
+    def configured_path(value):
+        if not isinstance(value, str):
+            raise ValueError('Skill directory paths must be strings; preserving config')
+        path = Path(os.path.expanduser(os.path.expandvars(value)))
+        # Stock Hermes resolves relative external/create directories at its
+        # profile home, not at the installer's current working directory.
+        return path if path.is_absolute() else home / path
+
+    create_dir = (cfg.get('skills') or {}).get('create_dir')
+    roots = [home / 'skills', *[configured_path(d) for d in dirs]]
+    if create_dir:
+        roots.append(configured_path(create_dir))
     allowed = {(osh / 'system-skills').resolve()}
     if runtime:
         allowed.add(Path(runtime))
-    for root in [home / 'skills', *[Path(d).expanduser() for d in dirs]]:
+    for root in roots:
         if root.resolve() in allowed:
             continue
         if root.is_dir():
+            flat = root / 'wizard-builder.md'
+            if flat.exists() or flat.is_symlink():
+                raise ValueError(f'wizard-builder name collision at {flat}; preserving owner skill')
             named = root / 'wizard-builder'
             # The old manual installer created this precise symlink. Keep it
             # (including across unlink) but never accept a different target.
