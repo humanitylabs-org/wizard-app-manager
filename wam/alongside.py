@@ -322,12 +322,38 @@ AGENT_OUTPUT_DIRS = ("cache/images", "cache/audio", "cache/screenshots", "cache/
 def docker_rootless() -> bool:
     """Rootless Docker maps the owner's uid to uid 0 in the container (and the owner's 1000 to a subuid)."""
     import subprocess
+    host = os.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix:///run/user/"):
+        return True
     try:
         out = subprocess.run(["docker", "info", "--format", "{{json .SecurityOptions}}"],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
-        return False
+        # no docker on PATH (e.g. a minimal PATH): a per-user socket and no system one means rootless
+        return Path(f"/run/user/{os.getuid()}/docker.sock").exists() and not Path("/var/run/docker.sock").exists()
     return "rootless" in out
+
+
+def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootless: bool | None = None) -> bool:
+    """Switching an existing Agent Service to the owner's identity on rootless Docker (container uid 0): its saved
+    state was written by the recipe's uid 1000, and it can't chmod files it doesn't own, so it crash-looped on
+    start. Hand the folder to 0:1000 (group-writable) once, with a throwaway container of the app's own image.
+    Rootful Docker and fresh installs need nothing. Returns True when ownership was changed."""
+    import subprocess
+    if not (docker_rootless() if rootless is None else rootless):
+        return False
+    data = Path(runtipi_root) / "app-data" / store / app_id / "data"
+    if not data.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
+        return False
+    if not _SAFE_PATH.match(str(data)):
+        raise SystemExit(f"app data path {str(data)!r} has characters a command can't carry safely")
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+                        "--entrypoint", "sh", "-v", f"{data}:/state", image, "-c",
+                        "chown -R 0:1000 /state && chmod -R g+rwX /state"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise SystemExit(f"could not hand {app_id}'s saved state to the owner: {r.stderr.strip()[:200]}")
+    return True
 
 
 def container_user(a: dict, rootless: bool | None = None) -> str:

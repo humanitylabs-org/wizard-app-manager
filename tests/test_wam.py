@@ -337,6 +337,27 @@ def test_alongside_service_sees_agent_outputs_and_transcriber(tmp_path, monkeypa
     assert "volumes" not in p.read_text() and "ARTIFACT" not in p.read_text()
 
 
+def test_alongside_adopts_existing_service_state_on_rootless(tmp_path, monkeypatch):
+    """An Agent Service that already ran as the recipe's uid 1000 crash-loops once it runs as the owner (rootless
+    uid 0) because it can't chmod its own old files. adopt_state hands the folder over once, with the app's own
+    image; rootful Docker and an app with no saved state are left alone."""
+    from wam import alongside
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    rt = tmp_path / "rt"
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=True) is False  # no state yet
+    (rt / "app-data" / "wizardapps" / "wizard-agent-service" / "data").mkdir(parents=True)
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=False) is False
+    assert calls == []
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=True) is True
+    cmd = calls[-1]
+    assert cmd[:2] == ["docker", "run"] and "--network" in cmd and "none" in cmd and "img:1" in cmd
+    assert f"{rt}/app-data/wizardapps/wizard-agent-service/data:/state" in cmd
+    assert "chown -R 0:1000 /state" in cmd[-1]
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "bad image;rm", rootless=True) is False
+
+
 def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
     """DECISIONS #36 split: the Agent Service gets the host-Hermes override on its own loopback port (with the
     gateway token); the shell (wizard-ux) gets a UX-only override pointed at the service, no token, no mounts.
