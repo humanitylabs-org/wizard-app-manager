@@ -27,14 +27,26 @@ def fake_tailscale(tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.write_text(json.dumps({"BackendState": "Running", "Self": {"DNSName": "box.tail1234.ts.net."}}))
     served = tmp_path / "served"
-    served.write_text(json.dumps({"TCP": {"8794": {"HTTPS": True}}}))
-    (bin_dir / "tailscale").write_text(f"""#!/bin/sh
-echo "$@" >> {calls}
-case "$1 $2" in
-  "status --json") cat {state} ;;
-  "serve status") cat {served} ;;
-  "serve --bg") exit "${{SERVE_RC:-0}}" ;;
-esac
+    served.write_text(json.dumps({"TCP": {"8794": {"HTTPS": True}}, "Web": {
+        "box.tail1234.ts.net:8794": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8794"}}}}}))
+    (bin_dir / "tailscale").write_text(f"""#!{sys.executable}
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+p = Path({str(served)!r})
+with open({str(calls)!r}, 'a') as f: f.write(' '.join(args) + '\\n')
+if args[:2] == ['status', '--json']:
+    print(Path({str(state)!r}).read_text())
+elif args[:2] == ['serve', 'status']:
+    print(p.read_text())
+elif args[:2] == ['serve', '--bg']:
+    if os.environ.get('SERVE_RC'): sys.exit(int(os.environ['SERVE_RC']))
+    d = json.loads(p.read_text())
+    port = next(a.split('=',1)[1] for a in args if a.startswith('--https='))
+    path = next((a.split('=',1)[1] for a in args if a.startswith('--set-path=')), '/')
+    d.setdefault('TCP', {{}})[port] = {{'HTTPS': True}}
+    d.setdefault('Web', {{}}).setdefault('box.tail1234.ts.net:'+port, {{}}).setdefault('Handlers', {{}})[path] = {{'Proxy': args[-1]}}
+    p.write_text(json.dumps(d))
 """)
     (bin_dir / "tailscale").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -77,6 +89,7 @@ def test_dry_run_changes_nothing(tmp_path, fake_tailscale):
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"}, apply=False)
     assert len(res["links"]) == 2
     assert "serve" not in calls.read_text()
+    assert not (tmp_path / "home" / "links.json").exists()
 
 
 def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path, fake_tailscale, monkeypatch):
