@@ -288,7 +288,7 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert f"{view}:/hermes:ro" in text and (view / "cache" / "images").is_dir()
     assert sorted(x.name for x in view.rglob("*")) == ["cache", "images"]      # nothing else: no secrets
     vols = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["volumes"]
-    assert [v.split(":")[1] for v in vols] == ["/hermes", "/hermes/cache/images"]   # parent before child
+    assert [v.split(":")[1] for v in vols][:2] == ["/hermes", "/hermes/cache/images"]   # parent before child
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
@@ -299,6 +299,42 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
+
+
+def test_alongside_service_sees_agent_outputs_and_transcriber(tmp_path, monkeypatch):
+    """Pictures and voice replies: the host Hermes reports MEDIA:<host path> under its cache folders, so the Agent
+    Service mounts each read-only at that same path and trusts them as artifact roots. Voice: on the host network
+    the Transcriber is reached on its loopback port, not by its compose name. Rootless Docker runs it as uid 0
+    (the owner) with gid 1000, so it can read the owner's 0700 folders and still write the shared /media."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("platforms:\n  api_server:\n    extra:\n      port: 8650\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    rt = tmp_path / "rt"; (rt / "app-data" / "wizardapps" / "transcriber").mkdir(parents=True)
+    (rt / "app-data" / "wizardapps" / "transcriber" / "app.env").write_text("APP_PORT=8791\n")
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    monkeypatch.setattr(alongside, "docker_rootless", lambda: True)
+    alongside.enable(wh, hh, 18796)
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    svc = yaml.safe_load(p.read_text().replace("!reset", ""))["services"]["wizard-agent-service"]
+    env = svc["environment"]
+    assert env["WIZARD_STT_ORIGIN"] == "http://127.0.0.1:8791"
+    roots = env["WIZARD_AGENT_ARTIFACT_ROOTS"].split(":")
+    for rel in alongside.AGENT_OUTPUT_DIRS:
+        d = str(hh / rel)
+        assert d in roots and f"{d}:{d}:ro" in svc["volumes"] and Path(d).is_dir()
+    assert roots[-1] == "/media" and svc["user"] == "0:1000"
+    monkeypatch.setattr(alongside, "docker_rootless", lambda: False)
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    assert yaml.safe_load(p.read_text().replace("!reset", ""))["services"]["wizard-agent-service"]["user"] == f"{os.getuid()}:{os.getgid()}"
+    # no Transcriber installed: the recipe's default stays, nothing invented
+    (rt / "app-data" / "wizardapps" / "transcriber" / "app.env").unlink()
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    assert "WIZARD_STT_ORIGIN" not in p.read_text()
+    # the UX-only shell still mounts nothing and gets no agent paths
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-ux", wh, "shell")
+    assert "volumes" not in p.read_text() and "ARTIFACT" not in p.read_text()
 
 
 def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
