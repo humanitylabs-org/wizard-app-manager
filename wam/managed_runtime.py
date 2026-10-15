@@ -1,5 +1,5 @@
 """Mac-only executable supervision overlay; absent manifest leaves WAM unchanged."""
-import json,os,re
+import contextlib,fcntl,json,os,re,uuid
 from pathlib import Path
 import yaml
 from . import registry
@@ -13,6 +13,27 @@ def configuration():
  if not re.fullmatch(r'sha256:[a-f0-9]{64}',data.get('image','')):raise RuntimeError('unknown managed runtime image')
  if data.get('stock')!='f97608f178d1ffeca59860195ab7da295f7c8e5f':raise RuntimeError('unknown stock runtime contract')
  return data
+
+@contextlib.contextmanager
+def operation():
+ """Own an actual flock for the entire import/undo, not an env assertion.
+ Admission closes atomically against the supervisor's operation inventory.
+ """
+ if not configuration():
+  yield None;return
+ root=Path(STATE);reservation=None;path=None
+ try:
+  with (root/'admission.lock').open('r+') as gate:
+   fcntl.flock(gate,fcntl.LOCK_EX)
+   if (root/'lease.json').exists() or (root/'resume.json').exists():raise RuntimeError('maintenance_active')
+   path=root/'operations'/str(uuid.uuid4())
+   reservation=path.open('x+');fcntl.flock(reservation,fcntl.LOCK_EX)
+  yield reservation
+ finally:
+  if reservation and path is not None:
+   # Unlink while locked; a supervisor that already opened it still sees busy
+   # until close. On a crash the kernel releases ownership automatically.
+   path.unlink(missing_ok=True);reservation.close()
 
 def render(compose,engine):
  """Transform the owned template before its atomic ownership-checked write.
