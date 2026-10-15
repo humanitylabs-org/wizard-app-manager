@@ -706,3 +706,21 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
                 assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
+
+
+def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
+    """`wam app update X` goes through the App Manager API and leaves a running app running."""
+    from wam import cli
+    seen = []
+
+    class RT:
+        st = "running"
+        def app(self, urn): return {"app": {"status": self.st, "version": 2}}
+        def update(self, urn, perform_backup=True): seen.append(("update", urn)); self.st = "stopped"
+        def start(self, urn): seen.append(("start", urn)); self.st = "running"
+        def wait_status(self, urn, want, timeout=0): return self.st
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    res = cli.app_update(cli.Config(), "notifications")
+    assert seen == [("update", "notifications:wizardapps"), ("start", "notifications:wizardapps")]
+    assert res["status"] == "running" and res["restarted"] is True

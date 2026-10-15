@@ -767,6 +767,31 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
+    """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
+    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    rt = c.runtipi()
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    before = ((rt.app(urn) or {}).get("app") or {})
+    if not before:
+        raise SystemExit(f"{app_id} is not installed")
+    was_running = before.get("status") == "running"
+    rt.update(urn, perform_backup=backup)
+    time.sleep(3)
+    status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+    after = ((rt.app(urn) or {}).get("app") or {})
+    restarted = False
+    if was_running and status != "running":
+        rt.start(urn)
+        status = rt.wait_status(urn, {"running"}, 300)
+        restarted = True
+    out = {"id": app_id, "urn": urn, "status": status, "version": after.get("version"),
+           "from_version": before.get("version"), "restarted": restarted}
+    if status != "running" and was_running:
+        out["error"] = "the app did not come back; see `docker logs runtipi`"
+    return out
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
@@ -784,6 +809,10 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
+        res = app_update(Config(), argv[2], backup="--no-backup" not in argv)
+        print(json.dumps(res, indent=2))
+        return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
