@@ -35,7 +35,7 @@ def test_complete_bundle_runs_without_checkout_and_preserves_cwd(homes, tmp_path
     command = result['command']
     r = subprocess.run([command, 'new', 'proof-app', '--dev-root', 'dev'], cwd=tmp_path,
                        env=env, text=True, capture_output=True, check=True)
-    source = Path(json.loads(r.stdout)['source'])
+    source = tmp_path / Path(json.loads(r.stdout)['source'])
     assert source == tmp_path / 'dev/proof-app'
     assert (source / 'web/wizard-ui.css').is_file()
     subprocess.run([command, 'check', str(source)], cwd=tmp_path, env=env, check=True, capture_output=True)
@@ -137,26 +137,8 @@ def wizard(homes, monkeypatch):
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
-    def setkey(home, key, value):
-        p = home / 'config.yaml'
-        cfg = yaml.safe_load(p.read_text()) or {}
-        node = cfg
-        parts = key.split('.')
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = value
-        p.write_text(yaml.safe_dump(cfg))
-    def unset(home, key):
-        p = home / 'config.yaml'
-        cfg = yaml.safe_load(p.read_text()) or {}
-        node = cfg
-        parts = key.split('.')
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node.pop(parts[-1], None)
-        p.write_text(yaml.safe_dump(cfg))
-    monkeypatch.setattr(module, 'hcfg_set', setkey)
-    monkeypatch.setattr(module, 'hcfg_unset', unset)
+    pytest.importorskip('ruamel.yaml')
+    monkeypatch.setattr(module, 'editor_command', lambda home: [sys.executable, '-c', module._EDITOR])
     calls = []
     def run(home, *args, **kwargs):
         calls.append(args)
