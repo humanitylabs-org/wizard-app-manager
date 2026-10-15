@@ -29,6 +29,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -56,6 +57,18 @@ class Config:
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
         self.index = index.base(cfg)
+        self.private_apps: dict[str, str] = {}
+        pa = cfg.get("private_apps", {})
+        if not isinstance(pa, dict):
+            raise SystemExit("private_apps must be an object of app-id: owner/repo aliases")
+        for k, v in pa.items():
+            if not isinstance(k, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", k):
+                raise SystemExit(f"invalid private_apps alias: {k!r}")
+            # Accept the documented URL form, but never repair malformed identifiers.
+            repo = v.removeprefix("https://github.com/") if isinstance(v, str) else ""
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", repo) or repo.split("/")[-1] in (".", ".."):
+                raise SystemExit(f"private_apps[{k}] must be owner/repo or https://github.com/owner/repo")
+            self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
@@ -573,12 +586,21 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
 
 
 def resolve_any(c: Config, ref: str) -> dict:
-    """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
-    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    """Explicit pinned catalog first, owner aliases next, then the public index/private repo fallback.
+
+    An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
+    inside prepare before any image load/pull or store mutation.
+    """
     from . import test_catalog
     pinned = test_catalog.resolve(ref)
     if pinned:
         return private.prepare(c.runtipi_root, STORE, pinned['repo'], release=pinned)
+    if ref in c.private_apps:
+        repo = c.private_apps[ref]
+        try:
+            return private.prepare(c.runtipi_root, STORE, repo, expected_id=ref)
+        except private.PrivateError as pe:
+            raise SystemExit(f"{ref}: private_apps alias to {repo} failed: {pe}") from None
     try:
         return index.resolve(c.index, ref)
     except index.IndexError_ as e:
