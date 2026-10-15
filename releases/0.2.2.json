@@ -1,0 +1,122 @@
+{
+  "version": "0.2.2",
+  "name": "Wizard OS install snapshot 0.2.2",
+  "date": "2026-10-15",
+  "about": "Exact split UX / Agent Service / App Manager install snapshot. Component versions remain independent. This manifest proves source and public image identities, not fresh-box or production acceptance.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "The default raw GitHub release URL requires anonymous publication; a private repository returns 404. An authenticated local copy is usable with WIZARD_RELEASE_BASE=file:///absolute/path/to/releases and WIZARD_RELEASE=0.2.2. Fresh mode still installs the catalog defaults and reports image drift; alongside mode consumes the split image pins. No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "e39576a0e28e95b5eef996454a269288ba37e8c2",
+      "branch": "main"
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "eac2ea0fe8f81b2b1f8a1eb0217b7d3cfcd77764",
+      "branch": "main"
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "e5399b258eaea8c25f4ed890f7e788dafebb3a6b",
+      "branch": "daily",
+      "note": "Latest successfully published daily image at selection. Later daily commits have queued publications and are not represented by this digest."
+    },
+    "wizard-os": {
+      "repo": "humanitylabs-org/wizard-os",
+      "commit": "1a43b0ca26c29cdac41276299167dc0f17c8ce21",
+      "branch": "main",
+      "note": "Approved specs/style main before this release manifest. Not a claim of byte-identical WAM-vendored CLI."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.161-e39576a",
+      "digest": "sha256:6adc3f809ba3ec92b6809f8ad08caeb481e89ef33212a9233342ed8e111c2666",
+      "built_from": "wizard-app-manager",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/38785083062"
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-e5399b258eaea8c25f4ed890f7e788dafebb3a6b",
+      "digest": "sha256:2cf43d91ef170daefecf48b52bf1d6e57f302c4115d8e5bef93dea7bcb64953e",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/38774064343"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-eac2ea0fe8f81b2b1f8a1eb0217b7d3cfcd77764",
+      "digest": "sha256:6f35bf6be9b964f5a9ad198e1c9dab148bd2293e2e1f3487374ce5984f8ac7c9",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/38785072326"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "e5399b258eaea8c25f4ed890f7e788dafebb3a6b"
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "eac2ea0fe8f81b2b1f8a1eb0217b7d3cfcd77764"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-accounts": {
+      "app": "wizard-ai-accounts",
+      "repo": "oscarhenrycollins/ai-accounts",
+      "index_version": "0.1.1",
+      "commit": "ddc9dc5289d2af5654059ad4cbd49441ba166e58"
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard1",
+      "commit": "def6a08aa000c3cb034c4b50a2fa334b3f17bc51"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "304e61613d1fdc1c5df9b62bccd1f8b52790b642"
+    },
+    "notifications": null
+  }
+}

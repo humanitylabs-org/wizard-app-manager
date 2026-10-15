@@ -29,7 +29,8 @@
 # the index serves, so there a different shell digest is reported as DRIFT until the App Manager can pin it.
 set -euo pipefail
 REPO="${WAM_REPO:-https://github.com/humanitylabs-org/wizard-app-manager}"
-RELEASE_BASE="${WIZARD_RELEASE_BASE:-https://raw.githubusercontent.com/humanitylabs-org/wizard-os/main/releases}"
+# Release metadata is mirrored publicly; the canonical OS/spec repository stays private.
+RELEASE_BASE="${WIZARD_RELEASE_BASE:-https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases}"
 WUSER="${WIZARD_USER:-wizard}"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 tty_ok() { [ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null; }
