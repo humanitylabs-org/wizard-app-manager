@@ -236,7 +236,7 @@ if [ "${WIZARD_MODE:-fresh}" != "alongside" ] && [ "${WAM_NO_BOOTSTRAP:-0}" != "
   WAM_DOCKER="${DOCKER[*]}" "$HOME/.local/bin/wam" fresh-agent connect || DEGRADED+=("fresh agent gateway connection did not finish; run wam fresh-agent connect")
 fi
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
-python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" "${FAILED[@]}" "${DEGRADED[@]}" <<'PY' || true
+python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" ${FAILED[@]+"${FAILED[@]}"} ${DEGRADED[@]+"${DEGRADED[@]}"} <<'PY' || true
 import json, os, sys, time
 path, status, mode, nf, rest = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
 rec = {"status": status, "mode": mode, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

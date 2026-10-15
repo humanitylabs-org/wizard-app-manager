@@ -275,9 +275,15 @@ t="$dst/nginx.conf.template"; s="$dst/static.conf"
 grep -q '^    server_name _;$' "$t" && grep -q '^    location /wizard-os-home/ {$' "$t" \
   && grep -q "frame-ancestors 'none'" "$s" && grep -q 'X-Frame-Options "DENY"' "$s" \
   || { echo "wam adapter: the shell recipe's nginx files changed; regenerate the adapter" >&2; exit 3; }
-sed -i -e 's|^    server_name _;$|&\n    allow 127.0.0.1;\n    deny all;|' \
-  -e 's|^    location /wizard-os-home/ {$|    location ^~ /wizard-os-home/store-data/ {\n      limit_except GET { deny all; }\n      proxy_pass $wizard_api$request_uri; include /tmp/wizard-proxy.conf;\n    }\n&|' "$t"
-sed -i -e "s|frame-ancestors 'none'|frame-ancestors 'self'|" -e 's|X-Frame-Options "DENY"|X-Frame-Options "SAMEORIGIN"|' "$s"
+sed -e 's|^    server_name _;$|&\
+    allow 127.0.0.1;\
+    deny all;|' \
+  -e 's|^    location /wizard-os-home/ {$|    location ^~ /wizard-os-home/store-data/ {\
+      limit_except GET { deny all; }\
+      proxy_pass $wizard_api$request_uri; include /tmp/wizard-proxy.conf;\
+    }\
+&|' "$t" > "$t.new" && mv "$t.new" "$t"
+sed -e "s|frame-ancestors 'none'|frame-ancestors 'self'|" -e 's|X-Frame-Options "DENY"|X-Frame-Options "SAMEORIGIN"|' "$s" > "$s.new" && mv "$s.new" "$s"
 [ "$(grep -c '^    allow 127.0.0.1;$' "$t")" = 1 ] && [ "$(grep -c 'store-data' "$t")" = 1 ] && grep -q "frame-ancestors 'self'" "$s" \
   || { echo "wam adapter: adaptation did not apply" >&2; exit 3; }
 sed "s|/etc/wizard-shell/|$dst/|g" /usr/local/bin/wizard-shell-entrypoint > "$dst/entrypoint.sh"
