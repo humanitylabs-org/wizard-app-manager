@@ -24,7 +24,9 @@ def split_release(box):
 
 
 def test_dirty_checkout_is_rejected_before_install(box):
-    (box['src']/'install.sh').write_text('#!/bin/bash\ntouch "$HOME/dirty-was-run"\n')
+    initial, _ = box['run']()
+    assert initial.returncode == 0
+    (box['home']/'wam'/'install.sh').write_text('#!/bin/bash\ntouch "$HOME/dirty-was-run"\n')
     p,rec=box['run']()
     assert p.returncode==1 and 'local changes' in p.stderr
     assert not (box['home']/'dirty-was-run').exists()
