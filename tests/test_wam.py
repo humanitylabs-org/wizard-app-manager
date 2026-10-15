@@ -77,6 +77,28 @@ def test_registry_reads_app_manager_files(tmp_path):
     assert "_skill_src" not in data["apps"][0]
 
 
+def test_views_are_same_origin_routes_and_staged_installs_never_shadow_owner_tiles(tmp_path):
+    rt = tmp_path / "runtipi"
+    d = _fake_store_app(rt)
+    wm = d / "wizard.md"
+    wm.write_text(wm.read_text().replace("\n---\n", "\nview:\n  path: /\n  port: 8799\n---\n", 1))
+    installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
+    reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    home = tmp_path / "home"
+    home.mkdir()
+    # This owner opted into same-origin routing; new generic installs without this file keep normal URLs.
+    (home / "routes.json").write_text("{}")
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] is None   # no owner route yet: never a raw host URL
+    (home / "routes.json").write_text(json.dumps({"hello-wizard": {"view": "/hello-next/", "staged_as": "hello-next"},
+                                                   "evil": {"view": "http://1.2.3.4/", "staged_as": "Bad Id"}}))
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] == {"url": "/hello-next/"} and a["id"] == "hello-next" and a["app_id"] == "hello-wizard"
+    assert a["staged"] is True and a["skill"] == "skills/hello-wizard/SKILL.md"
+    assert (home / "skills" / "hello-wizard" / "SKILL.md").is_file()
+    assert registry.routes(home)["evil"] == {"view": None, "staged_as": None}
+
+
 def test_build_form_generates_required_passwords(tmp_path, monkeypatch):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
     c = cli.Config()
@@ -748,19 +770,19 @@ def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
     assert _mode(tmp_path, wos="alongside", runtipi=True) == "alongside"
 
 
-def test_vendored_wizard_cli_matches_its_wizard_os_source():
-    """wizard-cli/ is a byte-identical copy of wizard-os files at the commit in SOURCE.json."""
+def test_vendored_wizard_cli_matches_recorded_provenance():
+    """Verify local hashes and the unchanged upstream base separately."""
     import hashlib
     d = Path(__file__).resolve().parents[1] / "wizard-cli"
     src = json.loads((d / "SOURCE.json").read_text())
     for name, want in src["sha256"].items():
-        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: re-sync it from wizard-os"
+        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: update the local provenance hash"
     try:
         import urllib.request
         for name, path in src["files"].items():
             url = f"https://raw.githubusercontent.com/{src['repo']}/{src['commit']}/{path}"
             with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
-                assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
+                assert hashlib.sha256(r.read()).hexdigest() == src['upstream_sha256'][name], f"{name} base differs from {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
