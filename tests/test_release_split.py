@@ -23,6 +23,13 @@ def split_release(box):
     return apps
 
 
+def test_dirty_checkout_is_rejected_before_install(box):
+    (box['src']/'install.sh').write_text('#!/bin/bash\ntouch "$HOME/dirty-was-run"\n')
+    p,rec=box['run']()
+    assert p.returncode==1 and 'local changes' in p.stderr
+    assert not (box['home']/'dirty-was-run').exists()
+
+
 def test_split_images_validate_and_read_back_both(box):
     apps=split_release(box)
     p,rec=box['run'](APPS_JSON=json.dumps(apps),WIZARD_MODE='alongside')

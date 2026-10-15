@@ -322,7 +322,8 @@ try:
   check("wizard-app-manager commit", rel["components"]["wizard-app-manager"]["commit"], run("git", "-C", wam_dir, "rev-parse", "HEAD"), True)
   dirty = run("git", "-C", wam_dir, "status", "--porcelain", "--untracked-files=no")
   check("App Manager checkout clean", "clean", "clean" if not dirty else "modified: " + " ".join(dirty.split()[:6]), True)
-  digest_check("wizard-app-manager", "runtipi", True)
+  running_names = run(*docker, "ps", "--format", "{{.Names}}").split()
+  digest_check("wizard-app-manager", "runtipi" if "runtipi" in running_names else "", True)
   try:
       apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
   except (OSError, ValueError):
