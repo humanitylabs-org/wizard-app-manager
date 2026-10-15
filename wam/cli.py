@@ -240,6 +240,11 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
     status = rt.wait_status(urn, {"running", "stopped"}) if wait else "installing"
     reg = write_registry(c, rt)
+    if role == "shell" and status == "running" and alongside.load(c.home):
+        try:
+            store_data_cmd(c)
+        except Exception as e:  # noqa: BLE001 - the Store window is optional; never fail the shell install for it
+            print(f"note: App Store data not set up ({str(e)[:120]}); run `wam store-data`", file=sys.stderr)
     entry = next((a for a in reg["apps"] if a["id"] == app_id), {})
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
@@ -543,6 +548,25 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
     return out
 
 
+def store_data_cmd(c: Config, apply: bool = True) -> dict:
+    """Install/refresh the App Store browse-data service for the installed shell (alongside boxes)."""
+    from . import store_data
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes serve Store data from the shell image)"}
+    reg = write_registry(c, c.runtipi())
+    out = store_data.ensure(reg, apply=apply)
+    if out.get("state") == "ready" and apply and shutil.which("tailscale"):
+        shell_port = int((al.get("shell") or {}).get("port") or 0)
+        if shell_port:
+            try:
+                r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
+                out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
+            except (OSError, subprocess.TimeoutExpired) as e:
+                out["tailnet"] = str(e)[:200]
+    return out
+
+
 def resolve_any(c: Config, ref: str) -> dict:
     """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
     or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
@@ -798,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    sd = sub.add_parser("store-data", help="set up the App Store browse data for the installed shell (alongside)")
+    sd.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -832,6 +858,10 @@ def main(argv: list[str] | None = None) -> int:
             for n, ok, det in res:
                 print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
             return 0 if all(ok for _, ok, _ in res) else 1
+        elif args.cmd == "store-data":
+            res = store_data_cmd(c, apply=not args.dry_run)
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("state") in ("ready", "skipped") else 1
         elif args.cmd == "alongside":
             res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history)
             print(json.dumps(res, indent=2))
