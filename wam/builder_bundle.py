@@ -248,6 +248,8 @@ def health(os_home, hermes_home=None, runtime=None):
         digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
         if digest != manifest['sha256']:
             raise ValueError('bundle digest mismatch')
+        if shutil.which('git') is None:
+            raise ValueError('tooling unavailable: git is required for source scaffolding')
         p = subprocess.run([str(base / 'current/bin/wam'), 'new', '--help'], capture_output=True, text=True, timeout=15)
         if p.returncode:
             raise ValueError('tooling unavailable (Python 3.10+/PyYAML required): ' + p.stderr[-300:])
@@ -284,7 +286,7 @@ def runtime_health(c):
             raise ValueError('expected one running stock Hermes engine; found ' + str(len(ids)))
         backend = terminal.get('backend', 'local')
         if backend == 'local':
-            command = [RUNTIME + '/current/bin/wam', 'new', '--help']
+            command = [RUNTIME + '/current/bin/wam', 'builder-bundle', 'doctor']
         elif backend == 'ssh':
             host, user = terminal.get('ssh_host'), terminal.get('ssh_user')
             if not host or not user:
@@ -293,7 +295,7 @@ def runtime_health(c):
                        '-p', str(terminal.get('ssh_port', 22))]
             if terminal.get('ssh_key'):
                 command += ['-i', str(terminal['ssh_key'])]
-            command += [str(user) + '@' + str(host), '"$HOME/.wizard-os/bin/wam" new --help']
+            command += [str(user) + '@' + str(host), '"$HOME/.wizard-os/bin/wam" builder-bundle doctor']
         else:
             raise ValueError(f'backend {backend!r} needs builder provisioning on its execution worker')
         p = subprocess.run(['docker', 'exec', '-u', '1000:1000', ids[0], *command],
