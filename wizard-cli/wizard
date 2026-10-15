@@ -831,21 +831,51 @@ def builder_module():
 
 
 def plugin_fingerprint(home):
+    return plugin_tree_fingerprint(home / 'plugins' / PLUGIN_NAME)
+
+
+def plugin_tree_fingerprint(root):
     import hashlib
-    root = home / 'plugins' / PLUGIN_NAME
     files = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(root.rglob('*')) if p.is_file() and '.git' not in p.parts
              and '__pycache__' not in p.parts and p.suffix != '.pyc'}
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 
+def attest_legacy_plugin(home, rec):
+    """An old managed link has no fingerprint: compare against its recorded Git
+    revision, not today's upstream or a guessed owner path. Any difference stops.
+    """
+    import subprocess
+    import tempfile
+    try:
+        metadata = json.loads((home / 'plugins/.install-metadata.json').read_text())[PLUGIN_NAME]
+        revision, source = metadata['revision'], metadata['source']
+        if not re.fullmatch(r'[0-9a-f]{40}', revision) or source != PLUGIN_SOURCE:
+            raise ValueError('unknown source or unpinned installed revision')
+        repo, subdir = source.split('#', 1)
+        with tempfile.TemporaryDirectory(prefix='.plugin-attest-', dir=os_home()) as td:
+            root = Path(td)
+            for args in (['init', '-q', td], ['-C', td, 'fetch', '-q', '--depth=1', 'https://github.com/' + repo + '.git', revision],
+                         ['-C', td, 'checkout', '-q', '--detach', 'FETCH_HEAD']):
+                subprocess.run(['git', *args], check=True, capture_output=True, timeout=120)
+            if plugin_tree_fingerprint(root / subdir) != plugin_fingerprint(home):
+                raise ValueError('plugin differs from its recorded upstream revision')
+        rec['plugin_sha256'] = plugin_fingerprint(home)
+        save_record(rec)
+    except (KeyError, ValueError, OSError, subprocess.SubprocessError) as e:
+        raise Fail('tool_error', f'Cannot attest existing wizard-os plugin; preserving it ({e}). '
+                   'Review/back up the owner plugin before replacing it.') from None
+
+
 def refresh_owned_plugin(home, rec, ns):
     """Refresh only a plugin whose last installed bytes we can attest."""
     import shutil
     root = home / 'plugins' / PLUGIN_NAME
-    if not rec.get('plugin_installed') or not rec.get('plugin_sha256'):
-        raise Fail('tool_error', 'Existing wizard-os plugin has no managed fingerprint; preserving it. '
-                   'Review/back up that plugin, then wizard unlink and wizard link to install the stock version.')
+    if not rec.get('plugin_installed'):
+        raise Fail('tool_error', 'Existing wizard-os plugin is owner-managed; preserving it. Update it explicitly before relinking.')
+    if not rec.get('plugin_sha256'):
+        attest_legacy_plugin(home, rec)
     if plugin_fingerprint(home) != rec['plugin_sha256']:
         raise Fail('tool_error', 'Owner modified wizard-os plugin; preserving it. Review changes before upgrading.')
     backup = Path(rec['backup']) / 'plugin-before-refresh'
@@ -853,7 +883,7 @@ def refresh_owned_plugin(home, rec, ns):
         raise Fail('tool_error', f'Unfinished plugin refresh: preserved backup at {backup}; recover before retrying')
     shutil.copytree(root, backup, symlinks=True)
     try:
-        args = ['plugins', 'install', ns.plugin_source or PLUGIN_SOURCE, '--force', '--no-enable', '--no-deps']
+        args = ['plugins', 'install', ns.plugin_source or PLUGIN_SOURCE, '--force', '--no-enable']
         if ns.plugin_ref:
             args += ['--ref', ns.plugin_ref]
         run_hermes(home, *args)
@@ -894,6 +924,8 @@ def cmd_link(ns) -> dict:
     if not cfgp.is_file():
         raise Fail("usage", f"no Hermes config at {cfgp}")
     bb = builder_module()
+    if (home / 'plugins' / PLUGIN_NAME).exists() and not link_record() and not pending_record():
+        raise Fail('tool_error', 'Owner-managed wizard-os plugin already exists; preserving it. Review it before linking.')
     try:
         bb.check_collisions(home, os_home(), raw_config(home))
         builder = bb.install(os_home())
@@ -1134,7 +1166,11 @@ def cmd_unlink(ns) -> dict:
     bdir = Path(rec["backup"])
     untouched_since_link = sha256_file(cfgp) == rec.get("config_sha_after")
     if rec.get("plugin_installed"):
-        remove_installed_plugin(home, rec)
+        if rec.get('plugin_sha256') and plugin_fingerprint(home) != rec['plugin_sha256']:
+            rec['notes'].append('Owner-modified plugin preserved on unlink')
+            rec['plugin_installed'] = False
+        else:
+            remove_installed_plugin(home, rec)
     for e in reversed(rec["edits"]):
         reverse_edit(home, e)
     # Byte-for-byte: when nothing else changed since link (the reversed document means exactly what the backup

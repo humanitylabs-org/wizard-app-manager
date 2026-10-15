@@ -598,12 +598,16 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     if fix:
         try:
             builder_bundle.install(c.home)
+            if not alongside.load(c.home) and os.environ.get('WIZARD_MODE') != 'alongside':
+                builder_bundle.fresh(c)
         except (OSError, ValueError) as e:
             out.append(("Wizard builder repair", False, str(e)))
     al = alongside.load(c.home)
     hh = Path(al['agent']['hermes_home']) if al else c.runtipi_root / 'app-data' / STORE / 'hermes-agent/data'
     runtime = None if al else builder_bundle.RUNTIME + '/current/system-skills'
     out.extend(builder_bundle.health(c.home, hh, runtime))
+    if not al:
+        out.extend(builder_bundle.runtime_health(c))
     try:
         rt = c.runtipi()
         rt.installed()

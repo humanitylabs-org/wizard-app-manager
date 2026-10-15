@@ -74,11 +74,11 @@ def test_skill_lives_outside_generated_refresh(tmp_path):
     rec = builder.install_skill(os_home, hermes)
     skill = Path(rec['skill'])
     assert skill.is_relative_to(os_home / 'system-skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').read_text() == skill.read_text()
+    assert yaml.safe_load((hermes / 'config.yaml').read_text())['skills']['external_dirs'] == [str(os_home / 'system-skills')]
     (os_home / 'skills').mkdir()
     (os_home / 'skills' / 'generated').touch()
     shutil.rmtree(os_home / 'skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').is_file()
+    assert skill.is_file()
     assert builder.install_skill(os_home, hermes)['state'] == 'installed'
 
 

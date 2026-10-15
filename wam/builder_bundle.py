@@ -33,7 +33,7 @@ def _atomic(path, text):
     try:
         with os.fdopen(fd, 'w') as f:
             f.write(text)
-        os.chmod(tmp, 0o644)
+        os.chmod(tmp, path.stat().st_mode & 0o777 if path.exists() else 0o600)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -55,7 +55,7 @@ def install(os_home, source=SOURCE):
     """
     home, source = Path(os_home).resolve(), Path(source).resolve()
     base = home / 'builder'
-    if base.is_symlink() or (base.exists() and not (base / '.owner').is_file()):
+    if base.is_symlink() or (base.exists() and (not (base / '.owner').is_file() or (base / '.owner').read_text().strip() != MARKER)):
         raise ValueError(f'Unmanaged builder destination: {base}; preserving it')
     skill = home / 'system-skills' / 'wizard-builder'
     expected = base / 'current' / 'system-skills' / 'wizard-builder'
@@ -71,6 +71,7 @@ def install(os_home, source=SOURCE):
     releases.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.stage-', dir=base) as td:
         stage = Path(td)
+        stage.chmod(0o755)
         for name in ('wam', 'templates', 'system-skills', 'wizard-views'):
             shutil.copytree(source / name, stage / name,
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -118,7 +119,9 @@ def install(os_home, source=SOURCE):
 
 def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
     home, osh = Path(hermes_home), Path(os_home).resolve()
-    cfg = cfg if cfg is not None else yaml.safe_load((home / 'config.yaml').read_text()) or {}
+    cfg = cfg if cfg is not None else (yaml.safe_load((home / 'config.yaml').read_text()) or {} if (home / 'config.yaml').exists() else {})
+    if not isinstance(cfg, dict) or not isinstance(cfg.get('skills', {}), dict):
+        raise ValueError('Expected config/skills mapping; preserving config')
     dirs = (cfg.get('skills') or {}).get('external_dirs') or []
     if not isinstance(dirs, list):
         raise ValueError('skills.external_dirs must be a list; preserving config')
@@ -161,6 +164,8 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     receipt = install(c.home)
     data = c.runtipi_root / 'app-data' / store / app_id / 'data'
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
+    before = (override.read_bytes() if override.exists() else None,
+              (data / 'config.yaml').read_bytes() if (data / 'config.yaml').exists() else None)
     doc = yaml.safe_load(override.read_text()) or {} if override.exists() else {}
     service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
     mount = {'type': 'bind', 'source': str(Path(c.home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
@@ -169,17 +174,21 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
         target = v.get('target') if isinstance(v, dict) else str(v).split(':')[1] if ':' in str(v) else ''
         if target == RUNTIME and v != mount:
             raise ValueError(f'Builder mount collision in {override}; preserving override')
-    register(data, c.home, RUNTIME + '/current/system-skills')
-    if mount not in vols:
-        vols.append(mount)
     env = service.setdefault('environment', {})
     if not isinstance(env, dict):
         raise ValueError(f'Expected environment mapping in {override}; preserving override')
     if env.get('WIZARD_BUILDER_ROOT', RUNTIME) != RUNTIME:
         raise ValueError(f'Builder environment collision in {override}')
+    register(data, c.home, RUNTIME + '/current/system-skills')
+    if mount not in vols:
+        vols.append(mount)
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
     _atomic(override, yaml.safe_dump(doc, sort_keys=False))
-    return {**receipt, 'hermes_home': str(data), 'override': str(override), 'restart_required': True}
+    after = (override.read_bytes(), (data / 'config.yaml').read_bytes())
+    pending = Path(c.home) / 'builder/restart-required'
+    if before != after:
+        _atomic(pending, 'Builder discovery/mount changed; restart stock Hermes\n')
+    return {**receipt, 'hermes_home': str(data), 'override': str(override), 'restart_required': pending.exists()}
 
 
 def health(os_home, hermes_home=None, runtime=None):
@@ -212,11 +221,52 @@ def health(os_home, hermes_home=None, runtime=None):
     return rows
 
 
+def runtime_health(c):
+    """Probe the real stock container's configured terminal route, read-only.
+
+    Never claim host success proves a remote terminal. No backend/key changes.
+    Custom remote workers must provision WAM there; doctor names that failure.
+    """
+    label = 'Wizard builder agent terminal reachability'
+    try:
+        data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+        cfg = yaml.safe_load((data / 'config.yaml').read_text()) or {}
+        terminal = cfg.get('terminal') or {}
+        p = subprocess.run(['docker', 'ps', '-q', '--filter',
+                            'label=com.docker.compose.service=hermes-agent-engine'],
+                           capture_output=True, text=True, timeout=15, check=True)
+        ids = p.stdout.split()
+        if len(ids) != 1:
+            raise ValueError('expected one running stock Hermes engine; found ' + str(len(ids)))
+        backend = terminal.get('backend', 'local')
+        if backend == 'local':
+            command = [RUNTIME + '/current/bin/wam', 'new', '--help']
+        elif backend == 'ssh':
+            host, user = terminal.get('ssh_host'), terminal.get('ssh_user')
+            if not host or not user:
+                raise ValueError('SSH terminal has no configured host/user')
+            command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes',
+                       '-p', str(terminal.get('ssh_port', 22))]
+            if terminal.get('ssh_key'):
+                command += ['-i', str(terminal['ssh_key'])]
+            command += [str(user) + '@' + str(host), '"$HOME/.wizard-os/bin/wam" new --help']
+        else:
+            raise ValueError(f'backend {backend!r} needs builder provisioning on its execution worker')
+        p = subprocess.run(['docker', 'exec', '-u', '1000:1000', ids[0], *command],
+                           capture_output=True, text=True, timeout=20)
+        if p.returncode:
+            raise ValueError(f'{backend} terminal cannot execute builder: {p.stderr[-250:]}')
+        return [(label, True, f'{backend}: real engine tooling probe passed')]
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return [(label, False, str(e) + '; prepare: wam builder-bundle fresh; restart agent to adopt mount; SSH requires its configured trusted host/key')]
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog='wam builder-bundle')
     ap.add_argument('action', choices=['install', 'doctor', 'fresh'])
     ap.add_argument('--hermes-home', type=Path)
+    ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     a = ap.parse_args(argv)
     from .registry import home
     try:
@@ -226,7 +276,15 @@ def main(argv=None):
             return 0 if all(r[1] for r in rows) else 1
         if a.action == 'fresh':
             from .cli import Config
-            out = fresh(Config())
+            c = Config()
+            out = fresh(c)
+            if a.restart and out['restart_required']:
+                rt = c.runtipi()
+                rt.req('POST', '/app-lifecycle/hermes-agent:wizardapps/restart', {}, timeout=300)
+                rt.wait_status('hermes-agent:wizardapps', {'running'}, timeout=900)
+                (c.home / 'builder/restart-required').unlink(missing_ok=True)
+                out['restart_required'] = False
+                out['restarted'] = True
         else:
             if a.hermes_home:
                 check_collisions(a.hermes_home, home())

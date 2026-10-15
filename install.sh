@@ -122,7 +122,7 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
 "$HOME/.local/bin/wam" doctor --fix >/dev/null 2>&1 || true   # repairs what it can; the next run is the verdict
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
-"$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
+# The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
 sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
@@ -175,6 +175,10 @@ fi
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
   echo; "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
 fi
+if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
+  "$HOME/.local/bin/wam" builder-bundle fresh --restart || FAILED+=("stock Hermes could not adopt builder discovery/mount")
+fi
+"$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
 python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" "${FAILED[@]}" "${DEGRADED[@]}" <<'PY' || true
