@@ -301,9 +301,10 @@ def test_recursive_legacy_flat_collision(homes, relative):
     skill = hh / 'skills' / relative
     skill.parent.mkdir(parents=True)
     skill.write_text('---\nname: wizard-builder\n---\nowner')
+    before = (hh / 'config.yaml').read_bytes()
     with pytest.raises(ValueError, match='collision'):
         bb.register(hh, osh)
-    assert not (hh / 'config.yaml').exists()
+    assert (hh / 'config.yaml').read_bytes() == before
 
 
 @pytest.mark.parametrize('relative', ['wizard-builder.md', 'references/wizard-builder.md', 'nested/wizard-builder.md'])
