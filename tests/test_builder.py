@@ -208,7 +208,7 @@ def test_generated_view_defaults_to_containing_skin(tmp_path):
     assert 'window.__wizardCloseOverlay = () => false;' in app
     assert app.index('if (!hosted)') < app.index('history.pushState')
     client=(root/'web/theme-client.js').read_text()
-    assert "e.source!==parent" in client and "e.origin!==trustedHost" in client
+    assert "e.source !== parent" in client and "e.origin !== trustedHost" in client
     prov=json.loads((root/'appearance-provenance.json').read_text())
     assert prov['source_thread']=='wizard_1791807054943_dc70b2bccb22'
     compose=yaml.safe_load((root/'runtipi/docker-compose.yml').read_text())

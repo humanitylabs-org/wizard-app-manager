@@ -121,6 +121,23 @@ def check_app(root, proposal=False):
             'rules': rows, 'warnings': [r for r in rows if not r['ok'] and r['severity'] == 'warning']}
 
 
+def validate_style_snapshot(template):
+    """Fail closed on edits to the generated canonical style distribution assets."""
+    lock = json.loads((template / 'appearance-provenance.json').read_text())
+    mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
+               'style/boot.js': 'web/boot.js', 'style/appearance-client.js': 'web/theme-client.js'}
+    if (lock.get('schema') != 2 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
+            or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
+            or set(lock.get('files', {})) != set(mapping)):
+        raise ValueError('Invalid canonical style/ snapshot lock; refresh with tools/sync_wizard_style.py.')
+    for src, dst in mapping.items():
+        item = lock['files'][src]
+        path = template / dst
+        if (item.get('destination') != dst or not path.is_file() or path.is_symlink()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != item.get('sha256')):
+            raise ValueError('Canonical style/ snapshot drifted: ' + dst)
+
+
 def new_app(app_id, dev_root=None, request='', *, name=None):
     _id(app_id)
     dev_root = Path(dev_root) if dev_root is not None else _home() / 'dev'
@@ -131,6 +148,7 @@ def new_app(app_id, dev_root=None, request='', *, name=None):
     template = REPO / 'templates' / 'hello-wizard'
     if not template.is_dir():
         raise ValueError('Source bundle missing templates/hello-wizard; use the complete source checkout.')
+    validate_style_snapshot(template)
     display = name or app_id.replace('-', ' ').title()
     scratch = Path(tempfile.mkdtemp(prefix='.builder-', dir=dev_root))
     try:
