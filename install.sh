@@ -185,6 +185,13 @@ PY
 echo
 "$HOME/.local/bin/wam" slots || true
 echo
+# 4) Private links (wizard-app-manager#18): when this box is on the owner's Tailscale, each installed app page gets its
+#    own https://<box>.<tailnet>.ts.net:<port> with stock `tailscale serve`, and the links are printed here.
+#    Skipped on a failed install: there is nothing usable to link to.
+if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
+  "$HOME/.local/bin/wam" links || true
+  echo
+fi
 case "$status" in
   ok)
     echo "Wizard OS is installed (box-only: nothing listens on the public interface)."
