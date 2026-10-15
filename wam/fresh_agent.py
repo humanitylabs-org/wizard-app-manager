@@ -491,6 +491,27 @@ def _inspect(container: str, user: str, python: list[str], gateway: str | None =
                                              "gateway": gateway or ""})
 
 
+def maintenance_refresh(c):
+    """Refresh only packaging while the Mac supervisor holds runtime admission.
+    Existing accounts, config and the pinned plugin are not rewritten or invoked.
+    """
+    from .cli import STORE
+    from .managed_runtime import configuration
+    if not configuration() or not Path('/var/lib/wizard/managed/lease.json').is_file():
+        raise FreshError('managed_maintenance_required')
+    rt, have = _installed(c)
+    if AGENT_APP not in have: raise FreshError('agent_not_installed')
+    plugin = c.runtipi_root / 'app-data' / STORE / AGENT_APP / 'data/plugins/wizard-os'
+    for name, digest in plugin_hashes().items():
+        path = plugin / name
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise FreshError('plugin_mismatch', 'maintenance does not rewrite the stock plugin')
+    changed = [app for app in SERVICE_APPS if app in have and write_service_overlay(c.runtipi_root, STORE, app, c.home)]
+    if write_agent_overlay(c.runtipi_root, STORE, c.home): changed.append(AGENT_APP)
+    for app in changed: _restart(rt, STORE, app)
+    return {'maintenance_refresh': True, 'restarted': changed, 'plugin_preserved': True}
+
+
 def connect(c, restart: bool = True) -> dict:
     from .cli import STORE
     st = load(c.home)
