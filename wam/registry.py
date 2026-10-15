@@ -58,7 +58,8 @@ def routes(root: Path | None = None) -> dict:
         view = r.get("view")
         staged = r.get("staged_as")
         ok[app_id] = {
-            "view": view if isinstance(view, str) and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
+            "view": view if isinstance(view, str) and not view.startswith("//") and
+            ".." not in view.split("/") and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
             "staged_as": staged if isinstance(staged, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", staged) else None,
         }
     return ok

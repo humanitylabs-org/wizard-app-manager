@@ -85,6 +85,9 @@ def test_views_are_same_origin_routes_and_staged_installs_never_shadow_owner_til
     installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
     reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
     home = tmp_path / "home"
+    home.mkdir()
+    # This owner opted into same-origin routing; new generic installs without this file keep normal URLs.
+    (home / "routes.json").write_text("{}")
     a = json.loads(registry.write(reg, home).read_text())["apps"][0]
     assert a["view"] is None   # no owner route yet: never a raw host URL
     (home / "routes.json").write_text(json.dumps({"hello-wizard": {"view": "/hello-next/", "staged_as": "hello-next"},
