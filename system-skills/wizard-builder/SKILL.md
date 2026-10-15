@@ -32,6 +32,10 @@ A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML;
 ## Supported shell skins
 Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
 
+## Receives voice input
+
+For an app that owns spoken requests, declare `receives_voice_input: true` and register `WizardApp.voiceInput.register({snapshot, receive})` through the shared client. Read `references/voice-input.md`. The shell owns microphone, transcription and destination UX; keep responses in the app unless its workflow deliberately uses an agent thread. Preserve original request identity and verify durable acceptance before acknowledging. Add voice only when requested; existing typed controls remain usable without shell support.
+
 ## Build and verify
 1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.
 2. `terminal(command="wam new habit-tracker --request 'Build me a habit tracker'")` creates local source from hello-wizard. This template already includes daily habits, diagnostics, API, MCP and vanilla view. Other jobs require actual source edits; the request is recorded, not magically implemented by the CLI.

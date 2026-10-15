@@ -223,7 +223,7 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
                'url': f'http://127.0.0.1:{port}/', 'mcp_url': f'http://127.0.0.1:{port}/mcp',
                'project': project, 'trusted_origins': compose['services'][app_id]['environment']['WIZARD_TRUSTED_ORIGINS'].split(','),
                'lifecycle_owner': 'App installation lane',
-               **{k: doc[k] for k in ('api', 'mcp', 'view', 'backend', 'replaces_view', 'provides', 'uses', 'needs') if k in doc}}
+               **{k: doc[k] for k in ('api', 'mcp', 'view', 'backend', 'replaces_view', 'provides', 'uses', 'needs', 'receives_voice_input') if k in doc}}
         _json(scratch / 'stage.json', rec)
         stage.parent.mkdir(parents=True, exist_ok=True); scratch.rename(stage)
     finally:
