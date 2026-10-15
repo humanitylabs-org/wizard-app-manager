@@ -91,6 +91,12 @@ def test_health_missing_corrupt_incompatible(homes):
     manifest.write_text(json.dumps(doc))
     (osh / 'builder/current/templates/hello-wizard/web/boot.js').unlink()
     assert not bb.health(osh)[0][1]
+    damaged = (osh / 'builder/current').resolve()
+    repaired = bb.install(osh)
+    assert all(r[1] for r in bb.health(osh))
+    assert Path(repaired['preserved_modified_release']) == damaged
+    assert bb.install(osh)['release'] == repaired['release']
+    assert damaged.exists()
 
 
 def test_upgrade_retains_previous_release(homes, tmp_path):
@@ -106,6 +112,10 @@ def test_upgrade_retains_previous_release(homes, tmp_path):
     assert first['sha256'] != second['sha256']
     assert (osh / 'builder/releases' / first['sha256'] / 'bundle.json').is_file()
     assert (osh / 'system-skills/wizard-builder/references/build.md').read_text().endswith('New release reference\n')
+    assert bb.rollback(osh, first['release'])['sha256'] == first['sha256']
+    assert not (osh / 'system-skills/wizard-builder/references/build.md').read_text().endswith('New release reference\n')
+    with pytest.raises(ValueError):
+        bb.rollback(osh, '../escape')
 
 
 def test_fresh_merges_mounts_preserves_terminal_and_is_idempotent(homes, tmp_path):
@@ -187,6 +197,8 @@ def test_modified_plugin_refresh_is_refused(homes, wizard):
     with pytest.raises(w.Fail, match='modified'):
         w.cmd_link(ns(hh))
     assert p.read_text() == 'owner changes'
+    w.cmd_unlink(ns(hh))
+    assert p.read_text() == 'owner changes'
 
 
 def test_failed_link_rolls_back_discovery(homes, wizard, monkeypatch):
@@ -198,3 +210,25 @@ def test_failed_link_rolls_back_discovery(homes, wizard, monkeypatch):
         w.cmd_link(ns(hh))
     assert (hh / 'config.yaml').read_bytes() == before
     assert (osh / 'system-skills/wizard-builder/SKILL.md').is_file()
+
+
+@pytest.mark.parametrize('backend,returncode,ok', [('local', 0, True), ('ssh', 0, True), ('local', 1, False), ('docker', 0, False)])
+def test_runtime_health_probes_configured_route(homes, tmp_path, monkeypatch, backend, returncode, ok):
+    osh, _ = homes
+    c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
+    data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+    data.mkdir(parents=True)
+    (data / 'config.yaml').write_text(yaml.safe_dump({'terminal': {'backend': backend, 'ssh_host': 'worker', 'ssh_user': 'builder', 'ssh_key': '/opt/data/key'}}))
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ['docker', 'ps']:
+            return SimpleNamespace(stdout='candidate-id\n', returncode=0)
+        return SimpleNamespace(stdout='help', stderr='unreachable' if returncode else '', returncode=returncode)
+    monkeypatch.setattr(bb.subprocess, 'run', run)
+    assert bb.runtime_health(c)[0][1] is ok
+    if backend == 'ssh':
+        assert 'builder@worker' in calls[-1]
+        assert 'StrictHostKeyChecking=yes' in calls[-1]
+    elif backend == 'local':
+        assert bb.RUNTIME + '/current/bin/wam' in calls[-1]

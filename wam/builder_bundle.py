@@ -8,10 +8,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+import uuid
 
 import yaml
 
@@ -67,6 +70,10 @@ def install(os_home, source=SOURCE):
             raise ValueError(f'Incomplete source bundle: missing {name}; reinstall from a complete source release')
     base.mkdir(parents=True, exist_ok=True)
     _atomic(base / '.owner', MARKER + '\n')
+    # Non-login SSH/local terminal shells often omit the installer's venv/PATH.
+    # Keep this host-specific binding outside the portable release; containers
+    # deliberately select their own stock Hermes interpreter instead.
+    _atomic(base / 'python', sys.executable + '\n')
     releases = base / 'releases'
     releases.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.stage-', dir=base) as td:
@@ -79,11 +86,16 @@ def install(os_home, source=SOURCE):
         (stage / 'bin').mkdir()
         launcher = stage / 'bin' / 'wam'
         launcher.write_text('#!/bin/sh\n# wizard-builder-bundle-v1\n'
-                            'ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n'
+                            'ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
                             'export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"\n'
                             'export PYTHONDONTWRITEBYTECODE=1\n'
                             'PY=python3\n'
-                            '[ ! -x /opt/hermes/.venv/bin/python ] || PY=/opt/hermes/.venv/bin/python\n'
+                            'if [ -x /opt/hermes/.venv/bin/python ]; then\n'
+                            '  PY=/opt/hermes/.venv/bin/python\n'
+                            'elif [ -r "$ROOT/../../python" ]; then\n'
+                            '  IFS= read -r HOST_PY < "$ROOT/../../python"\n'
+                            '  [ ! -x "$HOST_PY" ] || PY=$HOST_PY\n'
+                            'fi\n'
                             'exec "$PY" -m wam "$@"\n')
         launcher.chmod(0o755)
         files = _files(stage)
@@ -91,15 +103,24 @@ def install(os_home, source=SOURCE):
         manifest = {'owner': MARKER, 'schema': SCHEMA, 'sha256': digest, 'files': files}
         (stage / 'bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
         dest = releases / digest
+        preserved = None
         if dest.exists():
-            if _files(dest) != files:
-                raise ValueError(f'Installed release was modified: {dest}; preserving it')
-        else:
+            try:
+                valid = _files(dest) == files and json.loads((dest / 'bundle.json').read_text()) == manifest
+            except (OSError, ValueError):
+                valid = False
+            if not valid:
+                preserved = str(dest)
+                repairs = sorted(releases.glob(digest + '-repair-*'))
+                dest = next((p for p in repairs if (p / 'bundle.json').is_file()
+                             and (p / 'bundle.json').read_text() == (stage / 'bundle.json').read_text()
+                             and _files(p) == files), releases / (digest + '-repair-' + uuid.uuid4().hex[:8]))
+        if not dest.exists():
             shutil.copytree(stage, dest)
     current = base / 'current'
     if current.exists() and not current.is_symlink():
         raise ValueError(f'Unmanaged builder current: {current}')
-    _switch(current, Path('releases') / digest)
+    _switch(current, Path('releases') / dest.name)
     skill.parent.mkdir(parents=True, exist_ok=True)
     if not skill.is_symlink():
         _switch(skill, expected)
@@ -114,7 +135,24 @@ def install(os_home, source=SOURCE):
     _atomic(cmd, script)
     cmd.chmod(0o755)
     return {'state': 'installed', 'sha256': digest, 'skill': str(skill / 'SKILL.md'),
-            'command': str(cmd), 'system_skills': str(skill.parent), 'schema': SCHEMA}
+            'command': str(cmd), 'system_skills': str(skill.parent), 'schema': SCHEMA,
+            'release': dest.name, 'preserved_modified_release': preserved}
+
+
+def rollback(os_home, revision):
+    """Select only a verified retained release; never delete source/user data."""
+    if not revision or not re.fullmatch(r'[0-9a-f]{64}(?:-repair-[0-9a-f]{8})?', revision):
+        raise ValueError('Expected exact retained release id from an install receipt')
+    base = Path(os_home) / 'builder'
+    dest = base / 'releases' / revision
+    manifest = json.loads((dest / 'bundle.json').read_text())
+    files = _files(dest)
+    digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+    if (manifest.get('schema') != SCHEMA or manifest.get('owner') != MARKER
+            or files != manifest.get('files') or digest != manifest.get('sha256')):
+        raise ValueError('Retained release is incompatible or modified; rollback refused')
+    _switch(base / 'current', Path('releases') / revision)
+    return {'state': 'rolled_back', 'sha256': digest, 'release': revision}
 
 
 def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
@@ -264,7 +302,8 @@ def runtime_health(c):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog='wam builder-bundle')
-    ap.add_argument('action', choices=['install', 'doctor', 'fresh'])
+    ap.add_argument('action', choices=['install', 'doctor', 'fresh', 'rollback'])
+    ap.add_argument('--revision', help='rollback: exact retained release id from install receipt')
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     a = ap.parse_args(argv)
@@ -274,7 +313,9 @@ def main(argv=None):
             rows = health(home(), a.hermes_home)
             print(json.dumps(rows, indent=2))
             return 0 if all(r[1] for r in rows) else 1
-        if a.action == 'fresh':
+        if a.action == 'rollback':
+            out = rollback(home(), a.revision)
+        elif a.action == 'fresh':
             from .cli import Config
             c = Config()
             out = fresh(c)

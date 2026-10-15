@@ -330,6 +330,7 @@ def main(argv=None):
     p = sub.add_parser('publish'); p.add_argument('source', type=Path); p.add_argument('--repo', required=True); p.add_argument('--output', type=Path); p.add_argument('--execute', action='store_true')
     up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
     sk = sub.add_parser('builder-skill'); sk.add_argument('--hermes-home', type=Path)
+    inline = sub.add_parser('package-inline'); inline.add_argument('source', type=Path)
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'new':
@@ -343,6 +344,10 @@ def main(argv=None):
             out = update_local(a.source, run=a.run)
         elif a.cmd == 'builder-skill':
             out = install_skill(hermes_home=a.hermes_home)
+        elif a.cmd == 'package-inline':
+            from .builder_assets import package_inline
+            package_inline(a.source)
+            out = {'state': 'packaged', 'source': str(a.source)}
         else:
             if a.execute:
                 raise ValueError('Public execution is approval-gated and delegated to release authority; only payload preparation is implemented.')

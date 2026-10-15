@@ -794,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "builder-bundle":
         from .builder_bundle import main as bundle_main
         return bundle_main(argv[1:])
-    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill"}:
+    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}:
         from .builder import main as builder_main
         return builder_main(argv)
     if argv and argv[0] == "views":

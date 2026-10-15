@@ -280,5 +280,5 @@ def test_production_install_is_never_rerouted_to_the_builder():
     src = inspect.getsource(cli.main)
     # Only the builder's own verbs route to it; `wam install <x>` always means a production install,
     # whatever folders happen to exist in the current directory.
-    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill"}' in src
+    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}' in src
     assert '"install-local", *argv' not in src and 'is_dir()' not in src
