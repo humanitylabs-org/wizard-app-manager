@@ -706,3 +706,37 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
                 assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
+
+
+def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypatch):
+    """wizard-ux `uses: [agent-service]` names a spot, not an app: install that spot's default (the Agent Service)
+    first, and skip it when something already provides the spot."""
+    from wam import cli
+    calls = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": urn.split(":")[0]}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    recs = {"wizard-ux": {"id": "wizard-ux", "uses": ["agent-service"]}, "wizard-agent-service": {"id": "wizard-agent-service", "uses": []}}
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: recs[ref])
+    provided = {"apps": []}
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: provided)
+
+    def stop(c, app_id, *a, **k):
+        calls.append(app_id); raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "build_form", stop)
+    try:
+        cli.install(cli.Config(), "wizard-ux")
+    except SystemExit:
+        pass
+    assert calls[0] == "wizard-agent-service"          # the service is installed before the screen
+    calls.clear()
+    provided["apps"] = [{"id": "other-service", "provides": ["agent-service"]}]
+    try:
+        cli.install(cli.Config(), "wizard-ux")
+    except SystemExit:
+        pass
+    assert calls == ["wizard-ux"]                      # spot already filled: no second service
