@@ -232,3 +232,32 @@ def test_runtime_health_probes_configured_route(homes, tmp_path, monkeypatch, ba
         assert 'StrictHostKeyChecking=yes' in calls[-1]
     elif backend == 'local':
         assert bb.RUNTIME + '/current/bin/wam' in calls[-1]
+
+
+def test_exact_legacy_manual_skill_is_migrated_with_alias_preserved(homes):
+    osh, hh = homes
+    target = osh / 'system-skills/wizard-builder'
+    fixture = Path(__file__).parent / 'fixtures/legacy-builder'
+    shutil.copytree(fixture, target)
+    alias = hh / 'skills/wizard-builder'
+    alias.parent.mkdir()
+    alias.symlink_to(target)
+    bb.check_collisions(hh, osh)
+    result = bb.install(osh)
+    bb.register(hh, osh)
+    assert target.is_symlink() and alias.is_symlink()
+    assert 'version: 0.2.0' in (alias / 'SKILL.md').read_text()
+    assert len(list((osh / 'builder').glob('legacy-skill-*'))) == 1
+    assert bb.install(osh)['sha256'] == result['sha256']
+    assert all(r[1] for r in bb.health(osh, hh))
+
+
+def test_modified_legacy_copy_is_preserved_as_collision(homes):
+    osh, hh = homes
+    target = osh / 'system-skills/wizard-builder'
+    shutil.copytree(Path(__file__).parent / 'fixtures/legacy-builder', target)
+    p = target / 'references/build.md'
+    p.write_text('owner edits')
+    with pytest.raises(ValueError, match='Unmanaged'):
+        bb.install(osh)
+    assert p.read_text() == 'owner edits'

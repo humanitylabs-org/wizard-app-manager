@@ -50,6 +50,14 @@ def _switch(link, target):
     tmp.replace(link)
 
 
+def _legacy_skill(path):
+    """Only the exact previously shipped manual installer copy is migratable."""
+    if not path.is_dir() or path.is_symlink() or any(p.is_symlink() for p in path.rglob('*')):
+        return False
+    expected = json.loads((Path(__file__).with_name('builder_legacy.json')).read_text())['files']
+    return _files(path) == expected
+
+
 def install(os_home, source=SOURCE):
     """Publish an immutable complete release, then atomically activate it.
 
@@ -62,8 +70,9 @@ def install(os_home, source=SOURCE):
         raise ValueError(f'Unmanaged builder destination: {base}; preserving it')
     skill = home / 'system-skills' / 'wizard-builder'
     expected = base / 'current' / 'system-skills' / 'wizard-builder'
+    legacy = _legacy_skill(skill)
     if skill.exists() or skill.is_symlink():
-        if not skill.is_symlink() or os.readlink(skill) != str(expected):
+        if not legacy and (not skill.is_symlink() or os.readlink(skill) != str(expected)):
             raise ValueError(f'Unmanaged wizard-builder skill: {skill}; preserving it')
     for name in ('wam', 'templates/hello-wizard', 'system-skills/wizard-builder', 'wizard-views'):
         if not (source / name).is_dir():
@@ -122,6 +131,9 @@ def install(os_home, source=SOURCE):
         raise ValueError(f'Unmanaged builder current: {current}')
     _switch(current, Path('releases') / dest.name)
     skill.parent.mkdir(parents=True, exist_ok=True)
+    if legacy:
+        saved = base / ('legacy-skill-' + uuid.uuid4().hex[:8])
+        skill.rename(saved)
     if not skill.is_symlink():
         _switch(skill, expected)
     bindir = home / 'bin'
@@ -171,12 +183,20 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
             continue
         if root.is_dir():
             named = root / 'wizard-builder'
+            # The old manual installer created this precise symlink. Keep it
+            # (including across unlink) but never accept a different target.
+            legacy_alias = named.is_symlink() and named.resolve() == (osh / 'system-skills/wizard-builder').resolve()
+            legacy_alias = legacy_alias and (_legacy_skill(osh / 'system-skills/wizard-builder')
+                or (osh / 'system-skills/wizard-builder').is_symlink())
             if named.exists() or named.is_symlink():
-                raise ValueError(f'wizard-builder name collision at {named}; preserving owner skill')
+                if not legacy_alias:
+                    raise ValueError(f'wizard-builder name collision at {named}; preserving owner skill')
             skills = list(root.rglob('SKILL.md'))
             skills += [p / 'SKILL.md' for p in root.rglob('*')
                        if p.is_symlink() and (p / 'SKILL.md').is_file()]
             for p in skills:
+                if legacy_alias and p.parent == named:
+                    continue
                 data = p.read_text()
                 try:
                     meta = yaml.safe_load(data.split('---', 2)[1]) if data.startswith('---') else {}
@@ -261,7 +281,10 @@ def health(os_home, hermes_home=None, runtime=None):
             cfg = yaml.safe_load((Path(hermes_home) / 'config.yaml').read_text()) or {}
             dirs = check_collisions(hermes_home, os_home, cfg, runtime)
             want = runtime or str(Path(os_home).resolve() / 'system-skills')
-            rows.append(('Hermes discovers wizard-builder', want in dirs, want))
+            enabled = 'wizard-builder' not in ((cfg.get('skills') or {}).get('disabled') or [])
+            binding = runtime is not None or (Path(want) / 'wizard-builder').resolve() == (base / 'current/system-skills/wizard-builder').resolve()
+            rows.append(('Hermes discovers wizard-builder', want in dirs and enabled and binding,
+                         want + ('' if enabled else '; disabled by owner config') + ('' if binding else '; system skill binding missing or replaced')))
         except (OSError, ValueError, yaml.YAMLError) as e:
             rows.append(('Hermes discovers wizard-builder', False, str(e)))
     return rows
