@@ -65,7 +65,7 @@ def preload(entry, tok):
         if digest != asset['sha256']:
             raise PrivateError('release archive checksum mismatch; refusing docker load')
         subprocess.run(['docker', 'load', '-i', str(archive)], capture_output=True, check=True, timeout=900)
-    r = subprocess.run(['docker', 'image', 'inspect', asset['image']], capture_output=True, text=True, check=True)
+    r = subprocess.run(['docker', 'image', 'inspect', asset['image_id']], capture_output=True, text=True, check=True)
     image = json.loads(r.stdout)[0]
     if image['Id'] != asset['image_id'] or image['Architecture'] != arch:
         raise PrivateError('loaded image identity/architecture mismatch')

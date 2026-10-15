@@ -59,3 +59,19 @@ def test_checksum_fails_before_docker_load(tmp_path):
         raise AssertionError('must not load a corrupt archive')
     with patch.object(cat.subprocess,'run',side_effect=run):
         with pytest.raises(private.PrivateError,match='checksum mismatch'): cat.preload(a,'not-a-token')
+
+
+def test_archived_tags_need_not_match_compose_tag():
+    import hashlib
+    a=entry(); identity='sha256:'+'1'*64
+    a.update(tag='v1',images={'arm64':{'asset':'image.tar.gz','sha256':hashlib.sha256(b'archive').hexdigest(),'image':'example/app:1','image_id':identity}})
+    def run(args,**kwargs):
+        if args[:2]==['docker','info']: return SimpleNamespace(stdout='aarch64\n')
+        if args[:3]==['gh','release','download']:
+            Path(args[-1],'image.tar.gz').write_bytes(b'archive'); return SimpleNamespace(returncode=0)
+        if args[:2]==['docker','load']: return SimpleNamespace(returncode=0)
+        assert args==['docker','image','inspect',identity]
+        return SimpleNamespace(stdout=json.dumps([{'Id':identity,'Architecture':'arm64'}]))
+    with patch.object(cat.subprocess,'run',side_effect=run):
+        assert cat.preload(a,'not-a-token')['image_id']==identity
+

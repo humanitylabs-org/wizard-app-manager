@@ -141,11 +141,15 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             from .test_catalog import preload
             loaded = preload(release, tok)
             if loaded:
+                matched = 0
                 for svc in compose.get('services', {}).values():
                     resolved = IMAGE_VAR.sub(lambda m: m.group(1) or '', str(svc.get('image', '')))
                     if resolved.split('@')[0] == loaded['image'].split('@')[0]:
                         svc['image'] = loaded['image_id']
                         svc['pull_policy'] = 'never'
+                        matched += 1
+                if not matched:
+                    raise PrivateError('catalog image does not match pinned Compose')
         for img in images(compose):
             pull(img, tok)
 
@@ -158,7 +162,7 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                 old_tipi = 0
         have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
         rec = {"id": app_id, "repo": repo, "uses": d.get("uses") or [], "private": True, "install": {"commit": commit}}
-        if have == commit:
+        if have == commit and not release:
             return rec
 
         cfg = json.loads(cfg_p.read_text())
