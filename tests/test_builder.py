@@ -74,11 +74,11 @@ def test_skill_lives_outside_generated_refresh(tmp_path):
     rec = builder.install_skill(os_home, hermes)
     skill = Path(rec['skill'])
     assert skill.is_relative_to(os_home / 'system-skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').read_text() == skill.read_text()
+    assert yaml.safe_load((hermes / 'config.yaml').read_text())['skills']['external_dirs'] == [str(os_home / 'system-skills')]
     (os_home / 'skills').mkdir()
     (os_home / 'skills' / 'generated').touch()
     shutil.rmtree(os_home / 'skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').is_file()
+    assert skill.is_file()
     assert builder.install_skill(os_home, hermes)['state'] == 'installed'
 
 
@@ -280,5 +280,5 @@ def test_production_install_is_never_rerouted_to_the_builder():
     src = inspect.getsource(cli.main)
     # Only the builder's own verbs route to it; `wam install <x>` always means a production install,
     # whatever folders happen to exist in the current directory.
-    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill"}' in src
+    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}' in src
     assert '"install-local", *argv' not in src and 'is_dir()' not in src

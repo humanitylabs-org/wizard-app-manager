@@ -1,7 +1,7 @@
 ---
 name: wizard-builder
 description: Use when building, porting or changing Wizard apps.
-version: 0.1.1
+version: 0.2.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -19,7 +19,7 @@ Use the smallest artifact that finishes the owner's job. This system skill lives
 - Start with an installed app's shipped skill for ordinary use; reach for the builder when code or packaging must change.
 
 ## Prerequisites
-A complete Wizard App Manager source bundle with `wam`, Python 3.10+ and PyYAML; Docker with Compose for local execution. Source-bundle install: `terminal(command="python3 -m pip install -e <source-folder>")`. Use the host's configured build worker for sustained builds/tests. Run everything in an isolated developer home; keep the owner's active apps intact.
+Wizard OS installs a complete, matching skill/tooling/templates bundle automatically. In `terminal`, run `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor` before building. This works with the stock local container terminal and the VM's configured SSH terminal: SSH executes on the host and uses its own `$HOME`, not a container-only path. Do not change the owner's terminal backend. Python 3.10+ and PyYAML are installed by Wizard OS (the container uses stock Hermes' Python); Docker with Compose is needed only to run a local app. If doctor fails, report the missing capability and repair with the Wizard installer, not a private checkout or personal skill. Use the configured build worker for sustained builds/tests. Keep the owner's active apps intact.
 
 ## Choose the lightest level
 1. Shell setting/theme/layout: use the shell's supported configuration.
@@ -45,10 +45,10 @@ Use the shell registry as the source of truth. The accepted set is **Nebula (def
 `terminal(command="wam publish <source> --repo owner/name --output <outside-source-plan.json>")` prepares the exact source hash, files, source patch, public GitHub settings/topic, catalog request and separate signing handoff. Read `references/publish.md`. Public repo creation, pushing, catalog publication and signing require the owner's explicit approval of that prepared artifact. `--execute` refuses: this candidate has no public executor. Never call prepared publication published.
 
 ## Pitfalls
-- Generated skills are managed by the app registry. Put the builder in `system-skills/` and link it to Hermes using `wam builder-skill`; no per-app MCP connection/restart.
+- Generated app skills are managed by the registry. The OS builder is separately registered through `skills.external_dirs`; `wizard link` handles alongside installs, and the installer prepares stock containers. `wam builder-bundle install` repairs the bundle; `wam builder-bundle fresh` prepares the stock container mount/discovery (restart the agent to adopt a new mount). Do not manually copy it into personal skills.
 - `<source>` placeholders are arguments the agent resolves, not commands to paste literally.
 - Local stage is a developer proof; production install, launcher refresh and same-origin routing belong to the lifecycle integration.
-- Current builder requires a complete source checkout; wheel-only installation does not include template assets yet.
+- The installed content-addressed bundle includes all templates, references, UI assets and Python modules; a source checkout is not needed during use. Bare third-party wheels without these assets are not a supported provisioning source.
 - Proposed view machinery, cheap-model evaluation and public publication stay open until their own evidence exists.
 
 ## Verification

@@ -111,12 +111,18 @@ FAILED=()
 DEGRADED=()
 OUTCOME="$HOME/.wizard-os/install-outcome.json"
 
+# Complete OS-owned skill, tooling and assets, never a private Hermes skill.
+"$HOME/.local/bin/wam" builder-bundle install || FAILED+=("could not install the stock Wizard builder bundle")
+if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ ${#FAILED[@]} -eq 0 ]; then
+  "$HOME/.local/bin/wam" builder-bundle fresh || FAILED+=("could not provision stock Hermes builder discovery and mount")
+fi
+
 healthy=0
 for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && { healthy=1; break; }; sleep 2; done
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
 "$HOME/.local/bin/wam" doctor --fix >/dev/null 2>&1 || true   # repairs what it can; the next run is the verdict
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
-"$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
+# The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
 sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
@@ -169,9 +175,13 @@ fi
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
   echo; "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
 fi
+if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
+  "$HOME/.local/bin/wam" builder-bundle fresh --restart || FAILED+=("stock Hermes could not adopt builder discovery/mount")
+fi
+"$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
-python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" "${FAILED[@]}" "${DEGRADED[@]}" <<'PY' || true
+python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" ${FAILED[@]+"${FAILED[@]}"} ${DEGRADED[@]+"${DEGRADED[@]}"} <<'PY' || true
 import json, os, sys, time
 path, status, mode, nf, rest = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
 rec = {"status": status, "mode": mode, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -191,14 +201,14 @@ case "$status" in
     echo "Next: run 'wam slots' or 'wam apps' as $(id -un). Re-run the same curl command any time to update." ;;
   degraded)
     echo "Wizard OS is installed, but not everything is working:"
-    printf '  - %s\n' "${DEGRADED[@]}"
+    printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"}
     echo "Re-run the same curl command to retry; 'wam doctor' shows the current state."
     # Unattended image builds keep working by default; WIZARD_STRICT=1 makes a degraded install exit non-zero.
     [ "${WIZARD_STRICT:-0}" != 1 ] || exit 3 ;;
   failed)
     echo "Wizard OS did NOT finish installing:" >&2
-    printf '  - %s\n' "${FAILED[@]}" >&2
-    [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' "${DEGRADED[@]}" >&2
+    printf '  - %s\n' ${FAILED[@]+"${FAILED[@]}"} >&2
+    [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"} >&2
     if [ -f "$OUTCOME" ]; then
       echo "Re-run the same curl command once it is fixed. Recorded in $OUTCOME." >&2
     else
