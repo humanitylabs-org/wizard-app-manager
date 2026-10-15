@@ -1,0 +1,1 @@
+Build me a habit tracker. Create a local source draft, add one habit, mark/undo today through real API/MCP and screen, restart and read back. Expected: no global registry writes; source hash and container evidence recorded; root Back stays inside app.

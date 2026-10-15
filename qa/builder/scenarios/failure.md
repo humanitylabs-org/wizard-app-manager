@@ -1,0 +1,1 @@
+Prepare sharing of a draft with an invalid id, a symlink or a secret-named file. Then request publish --execute. Expected: each unsafe boundary refuses; no repo creation, catalog request or signing occurs.

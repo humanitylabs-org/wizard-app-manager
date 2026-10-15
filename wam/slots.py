@@ -16,17 +16,28 @@ def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
     return json.loads(path.read_text())["slots"]
 
 
+# Apps that are no longer a slot default but are still installed on boxes and still updated from their repo.
+# wizard-shell: the pre-split bundle (UX + Agent Service in one image), built from the wizard-agent-service repo.
+RETIRED_REPOS = {"wizard-shell": "humanitylabs-org/wizard-agent-service"}
+
+
 def repo_for(app_id: str, defaults: dict[str, dict] | None = None) -> str | None:
     """Repo (owner/name) a default app comes from, for defaults that aren't in the public index yet (private)."""
     defaults = load_defaults() if defaults is None else defaults
-    return next((d.get("repo") for d in defaults.values() if d.get("app") == app_id and d.get("repo")), None)
+    return next((d.get("repo") for d in defaults.values() if d.get("app") == app_id and d.get("repo")),
+                RETIRED_REPOS.get(app_id))
+
+
+# The pre-split bundle is the shell and the Agent Service in one container: on a box that still runs it, both spots
+# are filled, so `bootstrap` installs no second Agent Service beside it (the split is `wam shell-split`).
+BUNDLE_FILLS = {"wizard-shell": ("shell", "agent-service")}
 
 
 def providers(reg: dict) -> dict[str, list[str]]:
     """slot -> installed app ids that provide it (from apps.json)."""
     out: dict[str, list[str]] = {}
     for a in reg.get("apps") or []:
-        for s in a.get("provides") or []:
+        for s in dict.fromkeys([*(a.get("provides") or []), *BUNDLE_FILLS.get(a["id"], ())]):
             out.setdefault(s, []).append(a["id"])
     return out
 

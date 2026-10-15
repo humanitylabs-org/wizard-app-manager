@@ -3,32 +3,40 @@ wizard: 0.2
 id: hello-wizard
 name: Hello Wizard
 type: service
-version: 0.1.0
-summary: The template Wizard app. Two MCP tools that prove an agent can reach an installed app.
-license: MIT
+category: app
+version: 0.2.0
+summary: Reference app with a daily habit list, documented HTTP API, MCP and editable view source.
+license: GPL-3.0-only
 source: https://github.com/humanitylabs-org/wizard-app-manager
 runtime:
   kind: runtipi
   config: runtipi/config.json
   compose: runtipi/docker-compose.yml
+api:
+  port: 8799
+  path: /api
+  spec: openapi.json
 mcp:
   path: /mcp
   port: 8799
   transport: streamable-http
 skill: skill/SKILL.md
-provides: [diagnostics]
+view:
+  path: /
+  port: 8799
+  source:
+    path: web
+    build: python3 app/build_view.py
+    dist: web
+provides: [diagnostics, habit-tracking]
 system: false
+uses: []
 needs: []
 health: /healthz
 ---
 
 # Hello Wizard
 
-Copy this folder to start a Wizard app. It has the four things every app needs:
+The builder base: an API and MCP over the same stdlib service layer, with a vanilla view that calls only the API. Add a habit, mark today done, undo it; SQLite persists in app-data. Original time/echo MCP jobs are preserved.
 
-1. `wizard.md` (this file): what the app is, how to run it, what it gives the agent.
-2. `runtipi/`: a stock Runtipi `config.json` and `docker-compose.yml`.
-3. An MCP endpoint (`/mcp`) the agent calls.
-4. `skill/SKILL.md`: when and how the agent should use the app.
-
-Ask your Wizard "what time is it on my server?" after installing, and it should call `wizard_time`.
+PR24 API/view-source declarations are proposed. The candidate checks them in explicit proposal mode while preserving approved checker compatibility. app/Dockerfile builds from the repository root; the Runtipi compose inlines the exact source for portable installation without publishing an image. Re-run template packaging after source edits.
