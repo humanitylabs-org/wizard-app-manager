@@ -1,8 +1,9 @@
 """Store "Get": install an app from the Wizard App Store window, without giving the browser the API token.
 
-Route: `wam serve` answers on a 0600 unix socket (~/.wizard-os/store.sock), not on the loopback API port, so no
-other local program can fake the identity header. `tailscale serve` maps the shell's tailnet origin
-`/wizard-os-home/store-install/<app>` to it and sets `Tailscale-User-Login` itself. A request is accepted only when ALL hold:
+Route: `wam serve` answers on its own loopback port (7791). `tailscale serve` maps the shell's tailnet origin
+`/wizard-os-home/store-install/<app>` to it and sets `Tailscale-User-Login` itself. A connection is served only
+when its local peer socket belongs to root, i.e. tailscaled: the owner's programs (and rootless containers, whose
+root maps to the owner) can't reach it with a forged identity header. Unix-socket serving would need root. A request is accepted only when ALL hold:
   - it came through Tailscale Serve as the box owner (`Tailscale-User-Login` == the owner's tailnet login),
   - its Origin is the shell's own tailnet origin (no cross-site posts),
   - it is JSON with the `X-Wizard-Store: 1` header (a simple form or image tag can't send that),
@@ -118,9 +119,26 @@ def status(app_id: str) -> tuple[int, dict]:
     return (200, job) if job else (404, {"error": "no install for that app"})
 
 
-def socket_path(home):
-    return home / "store.sock"
+PORT = 7791
 
 
-def route(shell_port: int, home) -> list[str]:
-    return ["tailscale", "serve", "--bg", f"--https={shell_port}", f"--set-path={PREFIX}", f"unix:{socket_path(home)}"]
+def peer_uid(peer_port: int, local_port: int = PORT) -> int | None:
+    """Owner uid of the loopback socket connected to us from peer_port (from /proc/net/tcp{,6})."""
+    for f in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = open(f).read().splitlines()[1:]
+        except OSError:
+            continue
+        for r in rows:
+            p = r.split()
+            if len(p) < 8:
+                continue
+            lport = int(p[1].rsplit(":", 1)[1], 16)
+            rport = int(p[2].rsplit(":", 1)[1], 16)
+            if lport == peer_port and rport == local_port:
+                return int(p[7])
+    return None
+
+
+def route(shell_port: int, port: int = PORT) -> list[str]:
+    return ["tailscale", "serve", "--bg", f"--https={shell_port}", f"--set-path={PREFIX}", f"http://127.0.0.1:{port}"]

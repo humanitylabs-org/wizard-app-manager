@@ -566,7 +566,7 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
                 r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
                 out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
                 from . import store_install
-                r2 = subprocess.run(store_install.route(shell_port, c.home), capture_output=True, text=True, timeout=60)
+                r2 = subprocess.run(store_install.route(shell_port), capture_output=True, text=True, timeout=60)
                 out["get"] = "routed" if r2.returncode == 0 else (r2.stderr or r2.stdout).strip()[:200]
             except (OSError, subprocess.TimeoutExpired) as e:
                 out["tailnet"] = str(e)[:200]
@@ -767,20 +767,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class StoreHandler(BaseHTTPRequestHandler):
-    """Store Get, on a 0600 unix socket that only `tailscale serve` (root) and the owner can reach. The path is the
-    app id (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
+    """Store Get on loopback :7791, served only to tailscaled (peer socket owned by root). The path is the app id
+    (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
     cfg: Config
 
     def log_message(self, fmt, *args):  # noqa: D401
         sys.stderr.write("wam store: " + (fmt % args) + "\n")
 
-    def address_string(self):
-        return "store-socket"
-
     _json = Handler._json
 
     def _go(self, method: str) -> None:
         from . import store_install as si
+        if si.peer_uid(self.client_address[1]) != 0:
+            return self._json(403, {"error": "only reachable through tailscale serve"})
         c = self.cfg
         al = alongside.load(c.home) or {}
         lp = c.home / "links.json"
@@ -927,24 +926,13 @@ def main(argv: list[str] | None = None) -> int:
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
             try:
-                import socketserver
-                from . import store_install
-                sock = store_install.socket_path(c.home)
-                sock.unlink(missing_ok=True)
-
-                class _Unix(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-                    daemon_threads = True
-                old_mask = os.umask(0o177)
-                try:
-                    usrv = _Unix(str(sock), StoreHandler)
-                finally:
-                    os.umask(old_mask)
-                os.chmod(sock, 0o600)
                 import threading
-                threading.Thread(target=usrv.serve_forever, daemon=True).start()
-                print(f"store installs on unix:{sock} (owner only, via tailscale serve)", flush=True)
+                from . import store_install
+                ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
+                threading.Thread(target=ssrv.serve_forever, daemon=True).start()
+                print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
-                print(f"note: store install socket not started ({e})", file=sys.stderr)
+                print(f"note: store install listener not started ({e})", file=sys.stderr)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
