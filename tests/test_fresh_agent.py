@@ -554,3 +554,18 @@ def test_cli_exposes_fresh_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "wos"))
     p = subprocess.run([sys.executable, "-m", "wam", "fresh-agent", "--help"], cwd=ROOT, capture_output=True, text=True)
     assert p.returncode == 0 and "prepare" in p.stdout and "disconnect" in p.stdout
+
+
+def test_agent_ssh_key_is_mounted_from_outside_app_data(fresh):
+    """Runtipi chmods an app's data folder a+rwx on every start; the box's agent key must live outside it."""
+    f = fresh
+    uc = f.c.runtipi_root / "user-config" / "wizardapps" / "hermes-agent"
+    fresh_agent.prepare(f.c)
+    assert fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)
+    plain = yaml.safe_load((uc / "docker-compose.yml").read_text())["services"]["hermes-agent-engine"]["volumes"]
+    assert len(plain) == 1   # no key folder on this box: nothing extra mounted
+    (f.c.home / "agent-ssh").mkdir(mode=0o700)
+    assert fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)
+    vols = yaml.safe_load((uc / "docker-compose.yml").read_text())["services"]["hermes-agent-engine"]["volumes"]
+    assert f"{f.c.home / 'agent-ssh'}:/opt/agent-ssh:ro" in vols
+    assert not fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)   # idempotent
