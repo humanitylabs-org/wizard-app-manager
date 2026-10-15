@@ -408,14 +408,19 @@ def write_agent_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
     # `chmod -R a+rwx` there on every start/stop, and ssh then refuses the key.
     ssh_dir = home / AGENT_SSH_DIR
     agent_ssh = f"\n      - {ssh_dir}:{CONTAINER_AGENT_SSH}:ro" if ssh_dir.is_dir() and _SAFE_PATH.fullmatch(str(ssh_dir)) else ""
-    return _write_overlay(runtipi_root, store, AGENT_APP,
-                          AGENT_OVERLAY.format(engine=ENGINE, os_home=CONTAINER_OS_HOME, agent_ssh=agent_ssh), {})
+    changed = _write_overlay(runtipi_root, store, AGENT_APP,
+                             AGENT_OVERLAY.format(engine=ENGINE, os_home=CONTAINER_OS_HOME, agent_ssh=agent_ssh), {})
+    from .managed_runtime import apply
+    return apply(runtipi_root, store, AGENT_APP, ENGINE) or changed
 
 
 def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Path) -> bool:
     """Called just before an install (cli.install, the lifecycle bridge) so the app starts already wired."""
     if not load(home) or alongside.load(home):
         return False
+    if app_id == 'transcriber':
+        from .managed_runtime import apply
+        return apply(runtipi_root, store, app_id, 'transcriber-engine')
     if app_id == AGENT_APP:
         return write_agent_overlay(runtipi_root, store, home)
     if app_id == SHELL_APP:
