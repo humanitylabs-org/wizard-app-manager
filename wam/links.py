@@ -75,15 +75,25 @@ def shell_first(rows: list[dict], shell_ids: set[str]) -> list[dict]:
     return sorted(rows, key=lambda r: (r["id"] not in shell_ids, r["category"] != "interface", r["name"].lower()))
 
 
-def gateway_paths() -> dict[str, dict]:
+def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     """Apps that declare a path on the Wizard origin (private test catalog `gateway`), e.g. /wisdom/. They are opened
-    inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js)."""
+    inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js).
+    Paths published before are kept (from links.json), so a later run without WAM_PRIVATE_CATALOG set (the API
+    service, an installer re-run) doesn't move the app back to a port of its own."""
+    out = {}
+    if home:
+        try:
+            for l in json.loads((home / "links.json").read_text()).get("links") or []:
+                o = str(l.get("open") or "")
+                if l.get("id") and o.startswith("/") and o.endswith("/") and l.get("gateway_strip") is not None:
+                    out[l["id"]] = {"path": o, "strip": bool(l["gateway_strip"])}
+        except (OSError, ValueError, AttributeError):
+            pass
     try:
         from . import test_catalog
         rows = test_catalog.load()
-    except (OSError, ValueError, KeyError):
-        return {}
-    out = {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return out
     for a in rows:
         g = a.get("gateway") or {}
         path = str(g.get("path") or "")
@@ -96,7 +106,7 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
-    gw = gateway_paths()
+    gw = gateway_paths(home)
     result: dict = {"provider": "tailscale", "state": ts["state"], "host": ts["host"], "links": [], "errors": {}}
     if ts["state"] != "Running" or not ts["host"]:
         result["note"] = ("Tailscale isn't connected yet, so nothing is on your private network. "
@@ -118,7 +128,8 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                     except (OSError, subprocess.TimeoutExpired) as e:
                         result["errors"][r["id"]] = str(e)[:200]
                         continue
-                result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{g['path']}", "open": g["path"]})
+                result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{g['path']}", "open": g["path"],
+                                        "gateway_strip": g["strip"]})
                 continue
             if apply and r["port"] not in already:
                 try:
