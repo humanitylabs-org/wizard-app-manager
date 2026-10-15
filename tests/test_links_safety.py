@@ -20,6 +20,11 @@ def test_unreadable_config_is_not_empty(tmp_path):
     assert not out['links'] and out['errors']['app']
     run.assert_not_called()
 
+def test_tailscale_normalized_path_is_reused():
+    config = {'TCP': {'9001': {'HTTPS': True}}, 'Web': {'box:9001': {'Handlers': {'/app': {'Proxy': 'http://127.0.0.1:9002'}}}}}
+    assert links.route_status(config, 'box', 9001, '/app/', 'http://127.0.0.1:9002') == 'match'
+
+
 def test_funnel_is_never_claimed_private():
     assert links.route_status({'AllowFunnel': {'box:9001': True}}, 'box', 9001, '/', 'x') == 'conflict'
 
