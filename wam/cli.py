@@ -243,6 +243,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         if want and not port_free(want):
             form["port"] = free_port(want + 1)
             print(f"note: port {want} is in use; {app_id} gets {form['port']}", file=sys.stderr)
+    trust_env = trusted_origin_env(c, app_id)
+    if trust_env:
+        write_user_env(c.runtipi_root, app_id, trust_env)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -259,6 +262,39 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
+    """Apps built with the Wizard builder answer only hosts/origins they are told to trust
+    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). On an alongside box with Tailscale, trust the shell's
+    tailnet origin, so the app opens inside Wizard instead of answering 'untrusted_host_or_site'."""
+    comp = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
+    try:
+        text = comp.read_text()
+    except OSError:
+        return {}
+    if "WIZARD_TRUSTED_HOSTS" not in text:
+        return {}
+    al = alongside.load(c.home) or {}
+    port = int((al.get("shell") or {}).get("port") or 0)
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+    except (OSError, ValueError):
+        host = ""
+    if not host or not port:
+        return {}
+    return {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+
+
+def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
+    """Merge KEY=VALUE pairs into the app's Runtipi user-config app.env (kept across updates), owner-only."""
+    p = runtipi_root / "user-config" / STORE / app_id / "app.env"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    keep = [l for l in (p.read_text().splitlines() if p.is_file() else [])
+            if l.partition("=")[0].strip() not in values]
+    p.write_text("\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n")
+    p.chmod(0o600)
+    return p
 
 
 def port_free(port: int) -> bool:
