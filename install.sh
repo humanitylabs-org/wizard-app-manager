@@ -7,6 +7,13 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
+# Alongside foundation snapshot: existing published images, no feature-source changes.
+# Pins are set here so get.sh's sudo/user handoff cannot drop them.
+if [ "${WIZARD_MODE:-fresh}" = alongside ]; then
+  export WAM_IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager@sha256:8afef790d701d8bdd6728187f943c5d4de50cd09da5dc29f245f636af32c1117}"
+  export WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-ghcr.io/humanitylabs-org/wizard-ux@sha256:f662feab8a9eab66340a7c9426e4279ee1ee764615fd2ce5cfbdd048a4ee1bf0}"
+  export WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-ghcr.io/humanitylabs-org/wizard-agent-service@sha256:6d3eae8ca20b41b1973fbd027efdc281aa59abea6deba96091e0a0243dd04f48}"
+fi
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
 # Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
