@@ -418,9 +418,7 @@ def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Pat
     """Called just before an install (cli.install, the lifecycle bridge) so the app starts already wired."""
     if not load(home) or alongside.load(home):
         return False
-    if app_id == 'transcriber':
-        from .managed_runtime import apply
-        return apply(runtipi_root, store, app_id, 'transcriber-engine')
+
     if app_id == AGENT_APP:
         return write_agent_overlay(runtipi_root, store, home)
     if app_id == SHELL_APP:
