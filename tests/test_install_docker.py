@@ -115,12 +115,12 @@ def test_a_failed_link_fails_the_install_and_leaves_hermes_alone(tmp_path):
 
 
 def test_failed_default_apps_are_reported_as_degraded(tmp_path):
-    boot = json.dumps({"installed": ["files"], "failed": {"wizard-ux": "image pull denied"}})
+    boot = json.dumps({"installed": ["files"], "failed": {"transcriber": "image pull denied"}})
     p, home, root, calls, outcome = sandbox(tmp_path, BOOTSTRAP_OUT=boot)
     assert p.returncode == 0, p.stdout + p.stderr        # default: unattended image builds keep going
     assert outcome["status"] == "degraded"
-    assert outcome["degraded"] == ["some default apps did not install: wizard-ux: image pull denied"]
-    assert "not everything is working" in p.stdout and "wizard-ux: image pull denied" in p.stdout
+    assert outcome["degraded"] == ["some default apps did not install: transcriber: image pull denied"]
+    assert "not everything is working" in p.stdout and "transcriber: image pull denied" in p.stdout
     assert "Wizard OS is installed (box-only" not in p.stdout
     p, *_ = sandbox(tmp_path / "strict", BOOTSTRAP_OUT=boot, WIZARD_STRICT="1")
     assert p.returncode == 3
@@ -158,15 +158,22 @@ def test_a_failed_install_never_links_the_owners_hermes(tmp_path):
 
 def test_a_failed_shell_or_agent_service_fails_the_install(tmp_path):
     # PR19 review P2: the shell / agent-service spots are the only way to use Wizard OS.
-    boot = json.dumps({"installed": ["files"], "failed": {"wizard-shell": "image pull denied",
-                                                          "browser": "timeout"}})
+    # read the spot defaults, so the test follows wam/defaults.json (shell + agent-service are separate apps now)
+    spots = json.loads((REPO / "wam/defaults.json").read_text())["slots"]
+    shell, service = spots["shell"]["app"], spots["agent-service"]["app"]
+    boot = json.dumps({"installed": ["files"], "failed": {shell: "image pull denied", "browser": "timeout"}})
     p, home, root, calls, outcome = sandbox(tmp_path, BOOTSTRAP_OUT=boot)
     assert p.returncode == 1, p.stdout + p.stderr
     assert outcome["status"] == "failed"
     assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so Wizard OS can't be used: "
-                                 "wizard-shell: image pull denied"]
+                                 f"{shell}: image pull denied"]
     assert outcome["degraded"] == ["some default apps did not install: browser: timeout"]
     assert "Wizard OS did NOT finish installing" in p.stderr
+    boot = json.dumps({"installed": [shell], "failed": {service: "health check timed out"}})
+    p, home, root, calls, outcome = sandbox(tmp_path / "service", BOOTSTRAP_OUT=boot)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so Wizard OS can't be used: "
+                                 f"{service}: health check timed out"]
 
 
 def test_the_outcome_path_is_printed_only_when_it_was_written(tmp_path):
