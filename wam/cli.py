@@ -566,7 +566,7 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
                 r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
                 out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
                 from . import store_install
-                r2 = subprocess.run(store_install.route(shell_port), capture_output=True, text=True, timeout=60)
+                r2 = subprocess.run(store_install.route(shell_port, c.home), capture_output=True, text=True, timeout=60)
                 out["get"] = "routed" if r2.returncode == 0 else (r2.stderr or r2.stdout).strip()[:200]
             except (OSError, subprocess.TimeoutExpired) as e:
                 out["tailnet"] = str(e)[:200]
@@ -719,8 +719,6 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self):  # noqa: N802
-        if self._store("GET"):
-            return
         c, u = self.cfg, urlparse(self.path)
         if u.path == "/healthz":
             return self._json(200, {"ok": True})
@@ -740,35 +738,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
 
-    def _store(self, method: str) -> bool:
-        """Store Get (/store/v1/...): authorised by the owner's Tailscale identity, never the API token."""
-        u = urlparse(self.path)
-        if not u.path.startswith("/store/v1/"):
-            return False
-        from . import store_install as si
-        c = self.cfg
-        al = alongside.load(c.home) or {}
-        ts = (json.loads((c.home / "links.json").read_text()) if (c.home / "links.json").is_file() else {}).get("host")
-        port = (al.get("shell") or {}).get("port")
-        origins = {f"https://{ts}:{port}"} if ts and port else set()
-        if port and ts and int(port) == 443:
-            origins.add(f"https://{ts}")
-        why = si.check_request(self.headers, si.owner_login(), origins) if method == "POST" else (
-            None if (self.headers.get("Tailscale-User-Login") or "").lower() == si.owner_login().lower() != "" else "owner only")
-        if why:
-            self._json(403, {"error": why})
-            return True
-        app_id = u.path[len("/store/v1/"):].strip("/")
-        if method == "POST":
-            code, body = si.start(c, app_id, lambda c_, a: install(c_, a), lambda: installed_ids(c.runtipi()))
-        else:
-            code, body = si.status(app_id)
-        self._json(code, body)
-        return True
-
     def do_POST(self):  # noqa: N802
-        if self._store("POST"):
-            return
         if not self._authorized():
             return
         c, path = self.cfg, urlparse(self.path).path
@@ -794,6 +764,48 @@ class Handler(BaseHTTPRequestHandler):
             except (RuntipiError, SystemExit, RuntimeError) as e:
                 return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
+
+
+class StoreHandler(BaseHTTPRequestHandler):
+    """Store Get, on a 0600 unix socket that only `tailscale serve` (root) and the owner can reach. The path is the
+    app id (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
+    cfg: Config
+
+    def log_message(self, fmt, *args):  # noqa: D401
+        sys.stderr.write("wam store: " + (fmt % args) + "\n")
+
+    def address_string(self):
+        return "store-socket"
+
+    _json = Handler._json
+
+    def _go(self, method: str) -> None:
+        from . import store_install as si
+        c = self.cfg
+        al = alongside.load(c.home) or {}
+        lp = c.home / "links.json"
+        ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
+        port = int((al.get("shell") or {}).get("port") or 0)
+        origins = {f"https://{ts}:{port}"} if ts and port else set()
+        owner = si.owner_login()
+        if method == "POST":
+            why = si.check_request(self.headers, owner, origins)
+        else:
+            why = None if owner and (self.headers.get("Tailscale-User-Login") or "").lower() == owner.lower() else "owner only"
+        if why:
+            return self._json(403, {"error": why})
+        app_id = urlparse(self.path).path.strip("/")
+        if method == "POST":
+            code, body = si.start(c, app_id, lambda c_, a: install(c_, a), lambda: installed_ids(c.runtipi()))
+        else:
+            code, body = si.status(app_id)
+        return self._json(code, body)
+
+    def do_GET(self):  # noqa: N802
+        self._go("GET")
+
+    def do_POST(self):  # noqa: N802
+        self._go("POST")
 
 
 # ---------------------------------------------------------------- main
@@ -913,6 +925,26 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
+            StoreHandler.cfg = c
+            try:
+                import socketserver
+                from . import store_install
+                sock = store_install.socket_path(c.home)
+                sock.unlink(missing_ok=True)
+
+                class _Unix(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+                    daemon_threads = True
+                old_mask = os.umask(0o177)
+                try:
+                    usrv = _Unix(str(sock), StoreHandler)
+                finally:
+                    os.umask(old_mask)
+                os.chmod(sock, 0o600)
+                import threading
+                threading.Thread(target=usrv.serve_forever, daemon=True).start()
+                print(f"store installs on unix:{sock} (owner only, via tailscale serve)", flush=True)
+            except OSError as e:
+                print(f"note: store install socket not started ({e})", file=sys.stderr)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
