@@ -236,6 +236,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
+    if "port" not in form:
+        # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
+        # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
+        want = int(info.get("port") or 0)
+        if want and not port_free(want):
+            form["port"] = free_port(want + 1)
+            print(f"note: port {want} is in use; {app_id} gets {form['port']}", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -252,6 +259,30 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def port_free(port: int) -> bool:
+    """Nothing listens on this TCP port on any local address (loopback, tailnet, all)."""
+    import socket
+    for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET, "127.0.0.1")):
+        with socket.socket(fam, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((addr, port))
+            except OSError:
+                return False
+    try:
+        rows = [l.split() for f in ("/proc/net/tcp", "/proc/net/tcp6") for l in open(f).read().splitlines()[1:]]
+    except OSError:
+        rows = []
+    return not any(len(r) > 3 and r[3] == "0A" and int(r[1].rsplit(":", 1)[1], 16) == port for r in rows)
+
+
+def free_port(start: int, stop: int = 65000) -> int:
+    for p in range(max(1024, start), stop):
+        if port_free(p):
+            return p
+    raise SystemExit("no free port for this app")
 
 
 def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid: int | None = None,

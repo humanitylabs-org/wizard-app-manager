@@ -706,3 +706,13 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
                 assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
+
+
+def test_free_port_skips_a_taken_port():
+    import socket
+    from wam import cli
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); s.listen()
+        taken = s.getsockname()[1]
+        assert not cli.port_free(taken)
+        assert cli.free_port(taken) != taken
