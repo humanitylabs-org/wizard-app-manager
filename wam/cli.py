@@ -220,6 +220,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     urn = f"{app_id}:{STORE}"
     if app_id in installed_ids(rt):
         return {"id": app_id, "urn": urn, "status": "already installed", "hint": f"wam app update {app_id}"}
+    if app_id == "hermes-agent" and not alongside.load(c.home):
+        from .builder_bundle import fresh
+        fresh(c, app_id, STORE)
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
@@ -591,6 +594,16 @@ def bootstrap(c: Config) -> dict:
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
+    from . import builder_bundle
+    if fix:
+        try:
+            builder_bundle.install(c.home)
+        except (OSError, ValueError) as e:
+            out.append(("Wizard builder repair", False, str(e)))
+    al = alongside.load(c.home)
+    hh = Path(al['agent']['hermes_home']) if al else c.runtipi_root / 'app-data' / STORE / 'hermes-agent/data'
+    runtime = None if al else builder_bundle.RUNTIME + '/current/system-skills'
+    out.extend(builder_bundle.health(c.home, hh, runtime))
     try:
         rt = c.runtipi()
         rt.installed()
@@ -774,6 +787,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "builder-bundle":
+        from .builder_bundle import main as bundle_main
+        return bundle_main(argv[1:])
     if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill"}:
         from .builder import main as builder_main
         return builder_main(argv)

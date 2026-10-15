@@ -111,6 +111,12 @@ FAILED=()
 DEGRADED=()
 OUTCOME="$HOME/.wizard-os/install-outcome.json"
 
+# Complete OS-owned skill, tooling and assets, never a private Hermes skill.
+"$HOME/.local/bin/wam" builder-bundle install || FAILED+=("could not install the stock Wizard builder bundle")
+if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ ${#FAILED[@]} -eq 0 ]; then
+  "$HOME/.local/bin/wam" builder-bundle fresh || FAILED+=("could not provision stock Hermes builder discovery and mount")
+fi
+
 healthy=0
 for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && { healthy=1; break; }; sleep 2; done
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
