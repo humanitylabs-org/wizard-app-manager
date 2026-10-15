@@ -294,6 +294,32 @@ def test_stock_discovery_collisions_refused_before_registration(homes, tmp_path,
     assert any(not ok and 'collision' in detail for _, ok, detail in bb.health(osh, hh))
 
 
+@pytest.mark.parametrize('relative', ['nested/wizard-builder.md', 'scripts/wizard-builder.md', 'a/b/wizard-builder.md'])
+def test_recursive_legacy_flat_collision(homes, relative):
+    osh, hh = homes
+    bb.install(osh)
+    skill = hh / 'skills' / relative
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: wizard-builder\n---\nowner')
+    with pytest.raises(ValueError, match='collision'):
+        bb.register(hh, osh)
+    assert not (hh / 'config.yaml').exists()
+
+
+@pytest.mark.parametrize('relative', ['wizard-builder.md', 'references/wizard-builder.md', 'nested/wizard-builder.md'])
+def test_package_owned_flat_markdown_is_not_a_skill_collision(homes, relative):
+    osh, hh = homes
+    bb.install(osh)
+    package = hh / 'skills/owner-skill'
+    package.mkdir(parents=True)
+    (package / 'SKILL.md').write_text('---\nname: owner-skill\n---\nowner')
+    note = package / relative
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text('builder reference material')
+    bb.register(hh, osh)
+    assert all(ok for _, ok, _ in bb.health(osh, hh))
+
+
 @pytest.mark.parametrize('pinned', [True, False])
 def test_legacy_link_migrates_explicit_plugin_pin(homes, wizard, monkeypatch, tmp_path, pinned):
     osh, hh = homes

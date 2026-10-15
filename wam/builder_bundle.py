@@ -194,9 +194,15 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
         if root.resolve() in allowed:
             continue
         if root.is_dir():
-            flat = root / 'wizard-builder.md'
-            if flat.exists() or flat.is_symlink():
-                raise ValueError(f'wizard-builder name collision at {flat}; preserving owner skill')
+            # Stock skill_view recursively accepts legacy flat names, except
+            # Markdown owned by an ancestor skill package (loaded via file_path).
+            for flat in root.rglob('wizard-builder.md'):
+                relative = flat.relative_to(root)
+                package_owned = any(
+                    (root.joinpath(*relative.parts[:depth]) / 'SKILL.md').is_file()
+                    for depth in range(1, len(relative.parts)))
+                if not package_owned:
+                    raise ValueError(f'wizard-builder name collision at {flat}; preserving owner skill')
             named = root / 'wizard-builder'
             # The old manual installer created this precise symlink. Keep it
             # (including across unlink) but never accept a different target.
