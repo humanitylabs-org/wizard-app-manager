@@ -170,7 +170,13 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
         if root.resolve() in allowed:
             continue
         if root.is_dir():
-            for p in root.rglob('SKILL.md'):
+            named = root / 'wizard-builder'
+            if named.exists() or named.is_symlink():
+                raise ValueError(f'wizard-builder name collision at {named}; preserving owner skill')
+            skills = list(root.rglob('SKILL.md'))
+            skills += [p / 'SKILL.md' for p in root.rglob('*')
+                       if p.is_symlink() and (p / 'SKILL.md').is_file()]
+            for p in skills:
                 data = p.read_text()
                 try:
                     meta = yaml.safe_load(data.split('---', 2)[1]) if data.startswith('---') else {}
@@ -321,7 +327,9 @@ def main(argv=None):
             out = fresh(c)
             if a.restart and out['restart_required']:
                 rt = c.runtipi()
-                rt.req('POST', '/app-lifecycle/hermes-agent:wizardapps/restart', {}, timeout=300)
+                rt.req('POST', '/app-lifecycle/hermes-agent:wizardapps/stop', {}, timeout=300)
+                rt.wait_status('hermes-agent:wizardapps', {'stopped'}, timeout=600)
+                rt.req('POST', '/app-lifecycle/hermes-agent:wizardapps/start', {}, timeout=300)
                 rt.wait_status('hermes-agent:wizardapps', {'running'}, timeout=900)
                 (c.home / 'builder/restart-required').unlink(missing_ok=True)
                 out['restart_required'] = False

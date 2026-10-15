@@ -6,7 +6,7 @@
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "b26bff63e24e035bba338ce047957a03326ba8906179310a5fec70132922f2ae",
+    "wizard": "e2551db0dbe5ae8b03d7bb9245c385fc91118a323b377c584be04b4c885a2d76",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
   "about": "Upstream base is pinned by commit and upstream_sha256. WAM maintains local stock-builder provisioning/link lifecycle changes in wizard; sha256 records the shipped files. Do not replace local changes with an unreviewed upstream sync.",

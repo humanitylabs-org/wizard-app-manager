@@ -884,15 +884,17 @@ def refresh_owned_plugin(home, rec, ns):
     shutil.copytree(root, backup, symlinks=True)
     try:
         args = ['plugins', 'install', ns.plugin_source or PLUGIN_SOURCE, '--force', '--no-enable']
-        if ns.plugin_ref:
-            args += ['--ref', ns.plugin_ref]
+        ref = ns.plugin_ref or rec.get('plugin_ref')
+        if ref:
+            args += ['--ref', ref]
         run_hermes(home, *args)
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
         shutil.copytree(backup, root, symlinks=True)
-        raise
-    finally:
         shutil.rmtree(backup)
+        raise
+    shutil.rmtree(backup)
+    rec['plugin_ref'] = ref
     rec['plugin_sha256'] = plugin_fingerprint(home)
     save_record(rec)
 
@@ -1027,6 +1029,7 @@ def cmd_link(ns) -> dict:
             fault("before:plugin")
             run_hermes(home, *args)
             rec['plugin_sha256'] = plugin_fingerprint(home)
+            rec['plugin_ref'] = ns.plugin_ref
             save_record(rec)
             produced()
             fault("after:plugin")
@@ -1166,8 +1169,8 @@ def cmd_unlink(ns) -> dict:
     bdir = Path(rec["backup"])
     untouched_since_link = sha256_file(cfgp) == rec.get("config_sha_after")
     if rec.get("plugin_installed"):
-        if rec.get('plugin_sha256') and plugin_fingerprint(home) != rec['plugin_sha256']:
-            rec['notes'].append('Owner-modified plugin preserved on unlink')
+        if not rec.get('plugin_sha256') or plugin_fingerprint(home) != rec['plugin_sha256']:
+            rec.setdefault('notes', []).append('Modified or unattested plugin preserved on unlink')
             rec['plugin_installed'] = False
         else:
             remove_installed_plugin(home, rec)

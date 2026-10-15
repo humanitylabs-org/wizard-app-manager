@@ -181,7 +181,7 @@ fi
 "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
-python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" "${FAILED[@]}" "${DEGRADED[@]}" <<'PY' || true
+python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" ${FAILED[@]+"${FAILED[@]}"} ${DEGRADED[@]+"${DEGRADED[@]}"} <<'PY' || true
 import json, os, sys, time
 path, status, mode, nf, rest = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
 rec = {"status": status, "mode": mode, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -201,14 +201,14 @@ case "$status" in
     echo "Next: run 'wam slots' or 'wam apps' as $(id -un). Re-run the same curl command any time to update." ;;
   degraded)
     echo "Wizard OS is installed, but not everything is working:"
-    printf '  - %s\n' "${DEGRADED[@]}"
+    printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"}
     echo "Re-run the same curl command to retry; 'wam doctor' shows the current state."
     # Unattended image builds keep working by default; WIZARD_STRICT=1 makes a degraded install exit non-zero.
     [ "${WIZARD_STRICT:-0}" != 1 ] || exit 3 ;;
   failed)
     echo "Wizard OS did NOT finish installing:" >&2
-    printf '  - %s\n' "${FAILED[@]}" >&2
-    [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' "${DEGRADED[@]}" >&2
+    printf '  - %s\n' ${FAILED[@]+"${FAILED[@]}"} >&2
+    [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"} >&2
     if [ -f "$OUTCOME" ]; then
       echo "Re-run the same curl command once it is fixed. Recorded in $OUTCOME." >&2
     else
