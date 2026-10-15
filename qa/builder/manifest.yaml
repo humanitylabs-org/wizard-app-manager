@@ -1,0 +1,13 @@
+name: wizard-builder
+class: skill
+requires_env: []
+optional_env: [WIZARD_OS_HOME, HERMES_HOME]
+requires_apps: []
+requires_tools: [python3, git, PyYAML, docker-compose]
+forbidden_leaks: [absolute-user-home-path, private-tailnet-hostname, developer-context]
+success_assertions:
+  - fresh stock Hermes discovers and loads builder
+  - source scaffold checks and isolated local stage preserves metadata
+  - API and MCP agree with screen and persist across restart
+  - second disposable VM installs the same source bundle
+  - publication preparation performs zero public writes
