@@ -40,6 +40,31 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
     return None
 
 
+def routes(root: Path | None = None) -> dict:
+    """Owner routing for app views, from <wizard-os home>/routes.json:
+        {"wisdom": {"view": "/wisdom-next/", "staged_as": "wisdom-next"}}
+    `view` is the same-origin path the box gateway serves the app at (phones never reach a raw host port).
+    `staged_as` lists a side-by-side install under its own launcher id until the owner cuts it over, so it never
+    shadows the owner's existing tile of the same id."""
+    f = (root or home()) / "routes.json"
+    try:
+        data = json.loads(f.read_text()) if f.is_file() else {}
+    except Exception:  # noqa: BLE001
+        return {}
+    ok = {}
+    for app_id, r in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(r, dict):
+            continue
+        view = r.get("view")
+        staged = r.get("staged_as")
+        ok[app_id] = {
+            "view": view if isinstance(view, str) and not view.startswith("//") and
+            ".." not in view.split("/") and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
+            "staged_as": staged if isinstance(staged, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", staged) else None,
+        }
+    return ok
+
+
 def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
     apps = []
     for row in installed:
@@ -108,7 +133,22 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
             reg["slots"][slot]["default"] = val["default"]
     tmp = root / "apps.json.tmp"
-    tmp.write_text(json.dumps(public_projection(reg), indent=2) + "\n")
+    owner = routes(root)
+    owner_routes_enabled = (root / "routes.json").exists()
+
+    def project(a: dict) -> dict:
+        out = {k: v for k, v in a.items() if not k.startswith("_")}
+        r = owner.get(a["id"]) or {}
+        if owner_routes_enabled and out.get("view") is not None:
+            # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
+            out["view"] = {"url": r["view"]} if r.get("view") else None
+        if r.get("staged_as"):
+            out.update({"id": r["staged_as"], "app_id": a["id"], "name": f"{out.get('name') or a['id']} (test)",
+                        "staged": True})
+        return out
+
+    public = {**reg, "apps": [project(a) for a in reg["apps"]]}
+    tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev
 
