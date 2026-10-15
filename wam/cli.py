@@ -206,7 +206,16 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     ensure_store(c, rt)
     have = installed_ids(rt)
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
+    defaults = slots.load_defaults()
     for dep in rec.get("uses") or []:
+        # `uses` may name a parking spot (e.g. agent-service) rather than an app: install the spot's default app,
+        # unless an installed app already provides that spot.
+        if dep in defaults:
+            spot = dep
+            providers = slots.providers(write_registry(c, rt)).get(spot) or []
+            if providers or spot in alongside.external_slots(c.home):
+                continue
+            dep = (defaults[spot] or {}).get("app") or dep
         if dep in have or dep in _seen:
             continue
         if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
