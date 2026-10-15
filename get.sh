@@ -140,7 +140,9 @@ fi
 export WIZARD_MODE="$MODE"
 DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" fetch -q origin "$REF" && git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
+  # Stop on either failure: never run install.sh from a stale checkout.
+  git -C "$DIR" fetch -q origin "$REF"
+  git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
 else
   git clone -q --branch "$REF" "$REPO" "$DIR"
 fi
