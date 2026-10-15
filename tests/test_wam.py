@@ -709,7 +709,7 @@ def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
 
 
 def test_vendored_wizard_cli_matches_its_wizard_os_source():
-    """wizard-cli/ is a byte-identical copy of wizard-os files at the commit in SOURCE.json."""
+    """Verify distributed hashes and upstream hashes, including explicitly declared local patches."""
     import hashlib
     d = Path(__file__).resolve().parents[1] / "wizard-cli"
     src = json.loads((d / "SOURCE.json").read_text())
@@ -719,7 +719,19 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
         import urllib.request
         for name, path in src["files"].items():
             url = f"https://raw.githubusercontent.com/{src['repo']}/{src['commit']}/{path}"
-            with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
-                assert hashlib.sha256(r.read()).hexdigest() == src["sha256"][name], f"{name} differs from {url}"
+            # The checked-in Mac composition declares a local patch separately; do not compare
+            # patched distributed bytes to unpatched upstream and call that source parity.
+            expected = src.get("upstream_sha256", {}).get(name, src["sha256"][name])
+            if os.environ.get("WIZARD_SOURCE_GITHUB_AUTH") == "1":
+                # Opt-in existing gh authentication; no token values enter logs or environment here.
+                # An authenticated lookup failure FAILS instead of skipping the source gate.
+                raw = subprocess.check_output(["gh", "api", f"repos/{src['repo']}/contents/{path}?ref={src['commit']}",
+                                               "-H", "Accept: application/vnd.github.raw+json"], timeout=30)
+            else:
+                with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
+                    raw = r.read()
+            assert hashlib.sha256(raw).hexdigest() == expected, f"{name} differs from pinned upstream {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
+        if os.environ.get("WIZARD_SOURCE_GITHUB_AUTH") == "1":
+            raise
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
