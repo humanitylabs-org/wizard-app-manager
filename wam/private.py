@@ -104,14 +104,16 @@ def pull(image: str, tok: str) -> None:
                            f"(or set GITHUB_TOKEN with read:packages), or ask the owner to make the package public")
 
 
-def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -> dict:
+def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None) -> dict:
     """Fetch `repo` (owner/name) at its newest commit into the Wizard store folder and pull its images.
     Returns an index-like record: {id, repo, uses, private: True, install: {commit}}."""
     tok = tok or token()
     if not tok:
         raise PrivateError(f"{repo} isn't in the public index and this box has no GitHub login. Run `gh auth login` "
                            f"with an account that can see it, or set GITHUB_TOKEN")
-    commit = head_commit(repo, tok)
+    if release and (release.get('repo') != repo or not re.fullmatch(r'[0-9a-f]{40}', release.get('commit', ''))):
+        raise PrivateError('invalid private source pin')
+    commit = release['commit'] if release else head_commit(repo, tok)
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Path(tmpdir) / "src"
         fetch(repo, commit, src, tok)
@@ -120,10 +122,14 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
             raise PrivateError(f"{repo}: no wizard.md")
         d = wizardmd.front_matter(wtext)
         app_id = str(d.get("id") or "")
+        if release and app_id != release['id']:
+            raise PrivateError('pinned app identity mismatch')
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", app_id):
             raise PrivateError(f"{repo}: bad id {app_id!r}")
         rt = d.get("runtime") or {}
         cfg_p, comp_p = src / str(rt.get("config", "")), src / str(rt.get("compose", ""))
+        if not cfg_p.resolve().is_relative_to(src.resolve()) or not comp_p.resolve().is_relative_to(src.resolve()):
+            raise PrivateError('runtime files must stay inside fetched source')
         if not cfg_p.is_file() or not comp_p.is_file():
             raise PrivateError(f"{repo}: wizard.md runtime.config/compose missing")
         ctext = comp_p.read_text()
@@ -131,6 +137,15 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
         if risks:
             raise PrivateError(f"{repo} asks for host-level access: {'; '.join(risks)}")
         compose = yaml.safe_load(ctext) or {}
+        if release:
+            from .test_catalog import preload
+            loaded = preload(release, tok)
+            if loaded:
+                for svc in compose.get('services', {}).values():
+                    resolved = IMAGE_VAR.sub(lambda m: m.group(1) or '', str(svc.get('image', '')))
+                    if resolved.split('@')[0] == loaded['image'].split('@')[0]:
+                        svc['image'] = loaded['image_id']
+                        svc['pull_policy'] = 'never'
         for img in images(compose):
             pull(img, tok)
 
