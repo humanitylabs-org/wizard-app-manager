@@ -70,7 +70,7 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &
   exec sudo -iu "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUID/bus" \
     WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WAM_REPO="$REPO" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" \
+    WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" \
     WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
@@ -118,7 +118,7 @@ if [ "$(id -u)" -eq 0 ]; then
   exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
     WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 WIZARD_MODE=fresh WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WAM_REPO="$REPO" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
+    WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
 fi
 
@@ -218,8 +218,13 @@ wam = (rel.get("components") or {}).get("wizard-app-manager") or {}
 sha = str(wam.get("commit", ""))
 if not re.fullmatch(r"[0-9a-f]{40}", sha):
     sys.exit(f"release {want}: wizard-app-manager commit {sha!r} is not a 40-char sha")
-for k, v in (("PIN_WAM_COMMIT", sha), ("PIN_WAM_IMAGE", image("wizard-app-manager")),
-             ("PIN_SHELL_IMAGE", image("wizard-shell"))):
+split = "wizard-ux" in (rel.get("images") or {}) or "wizard-agent-service" in (rel.get("images") or {})
+pairs = [("PIN_WAM_COMMIT", sha), ("PIN_WAM_IMAGE", image("wizard-app-manager"))]
+if split:
+    pairs += [("PIN_UX_IMAGE", image("wizard-ux")), ("PIN_AGENT_SERVICE_IMAGE", image("wizard-agent-service"))]
+else:
+    pairs += [("PIN_SHELL_IMAGE", image("wizard-shell"))]
+for k, v in pairs:
     print(f"{k}={shlex.quote(v)}")
 PY
 )" || { rm -f "$PINS.tmp"; exit 2; }
@@ -231,11 +236,18 @@ PY
     else
       [ -z "$PIN_WAM_IMAGE" ] || export WAM_IMAGE="$PIN_WAM_IMAGE"
     fi
-    if [ -n "${WIZARD_SHELL_IMAGE:-}" ] && [ "$WIZARD_SHELL_IMAGE" != "$PIN_SHELL_IMAGE" ]; then
-      echo "note: WIZARD_SHELL_IMAGE=$WIZARD_SHELL_IMAGE overrides the release's shell image"
-    else
-      [ -z "$PIN_SHELL_IMAGE" ] || export WIZARD_SHELL_IMAGE="$PIN_SHELL_IMAGE"
-    fi
+    for component in SHELL UX AGENT_SERVICE; do
+      pin_var="PIN_${component}_IMAGE"
+      override_var="WIZARD_${component}_IMAGE"
+      pin_value="${!pin_var:-}"
+      override_value="${!override_var:-}"
+      [ -n "$pin_value" ] || continue
+      if [ -n "$override_value" ] && [ "$override_value" != "$pin_value" ]; then
+        echo "note: $override_var overrides the release image"
+      else
+        export "$override_var=$pin_value"
+      fi
+    done
     say "Installing Wizard OS $REL (App Manager ${REF:0:12})"
   else
     echo "note: no Wizard OS stable release is published at $RELEASE_BASE/stable; installing the App Manager's main branch (unpinned)."
@@ -316,32 +328,40 @@ try:
   except (OSError, ValueError):
       apps = {}
   names = run(*docker, "ps", "--format", "{{.Names}}").split()
-  shell_app = ((rel.get("default_apps") or {}).get("shell") or {}).get("app", "wizard-shell")
-  shell_c = next((n for n in names if shell_app in n), "")
-  want_shell = (rel.get("images") or {}).get("wizard-shell", {}).get("digest")
-  if mode == "alongside" and want_shell and shell_c and want_shell not in digests_of(shell_c):
-      # The override already names the pinned digest; an existing shell only moves to it on an app update.
-      import shutil
-      wam = os.path.expanduser("~/.local/bin/wam")
-      wam = wam if os.access(wam, os.X_OK) else (shutil.which("wam") or wam)
-      print(f"updating {shell_app} to the release's image", flush=True)
-      queued = True
-      try:   # exits non-zero even when Runtipi takes the job (its CLI can't reach the queue port); judge by the result
-          subprocess.run([wam, "app", "update", shell_app], timeout=900)
-      except (OSError, subprocess.TimeoutExpired) as e:
-          queued = False
-          print(f"note: {wam} app update {shell_app} failed: {e}", flush=True)
-      # Runtipi applies the update from its queue, so wait (bounded) for the new container to run the pin.
-      for _ in range(int(os.environ.get("WIZARD_SHELL_WAIT", "60")) if queued else 0):
-          names = run(*docker, "ps", "--format", "{{.Names}}").split()
-          shell_c = next((n for n in names if shell_app in n), "")
-          if shell_c and want_shell in digests_of(shell_c):
-              break
-          time.sleep(5)
-  # Alongside applies the shell pin, so a different digest there is a mismatch. A fresh box takes the index's shell.
-  digest_check("wizard-shell", shell_c, mode == "alongside")
-  if mode == "alongside" and checks[-1]["name"] == "image wizard-shell" and not checks[-1]["ok"]:
-      checks[-1]["remedy"] = f"~/.local/bin/wam app update {shell_app}, then re-run this command"
+  def container_for(app):
+      # Exact Runtipi project boundary, not a substring that can match another app/test stack.
+      matches = [n for n in names if n.startswith(app + "_wizardapps-")]
+      return matches[0] if len(matches) == 1 else ""
+  image_apps = []
+  if "wizard-ux" in (rel.get("images") or {}):
+      image_apps = [("wizard-agent-service", "agent-service", "wizard-agent-service"),
+                    ("wizard-ux", "shell", "wizard-ux")]
+  else:
+      image_apps = [("wizard-shell", "shell", "wizard-shell")]
+  for image_name, slot, fallback in image_apps:
+      app_id = ((rel.get("default_apps") or {}).get(slot) or {}).get("app", fallback)
+      container = container_for(app_id)
+      want = (rel.get("images") or {}).get(image_name, {}).get("digest")
+      if install_rc == "0" and mode == "alongside" and want and container and want not in digests_of(container):
+          import shutil
+          wam = os.path.expanduser("~/.local/bin/wam")
+          wam = wam if os.access(wam, os.X_OK) else (shutil.which("wam") or wam)
+          print(f"updating {app_id} to the release's image", flush=True)
+          queued = True
+          try:
+              subprocess.run([wam, "app", "update", app_id], timeout=900)
+          except (OSError, subprocess.TimeoutExpired) as e:
+              queued = False
+              print(f"note: {wam} app update {app_id} failed: {e}", flush=True)
+          for _ in range(int(os.environ.get("WIZARD_SHELL_WAIT", "60")) if queued else 0):
+              names = run(*docker, "ps", "--format", "{{.Names}}").split()
+              container = container_for(app_id)
+              if container and want in digests_of(container):
+                  break
+              time.sleep(5)
+      digest_check(image_name, container, mode == "alongside")
+      if mode == "alongside" and checks[-1]["name"] == f"image {image_name}" and not checks[-1]["ok"]:
+          checks[-1]["remedy"] = f"~/.local/bin/wam app update {app_id}, then re-run this command"
   for slot, d in (rel.get("default_apps") or {}).items():
       if not d or (mode == "alongside" and d.get("alongside")):
           continue
