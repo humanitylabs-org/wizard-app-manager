@@ -79,6 +79,31 @@ def test_dry_run_changes_nothing(tmp_path, fake_tailscale):
     assert "serve" not in calls.read_text()
 
 
+def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path, fake_tailscale, monkeypatch):
+    """A private-test app with a catalog `gateway` path is served on the shell's tailnet port at that path (same
+    origin as the shell), and apps.json then carries addresses a phone can open instead of 127.0.0.1."""
+    calls, _ = fake_tailscale
+    cat = tmp_path / "cat.json"
+    cat.write_text(json.dumps({"schema": 1, "scope": "private-test", "apps": [
+        {"id": "wisdom", "repo": "o/wisdom", "commit": "a" * 40, "gateway": {"path": "/wisdom/", "strip_prefix": True}}]}))
+    monkeypatch.setenv("WAM_PRIVATE_CATALOG", str(cat))
+    reg = {"apps": REG["apps"] + [{"id": "wisdom", "name": "Wisdom", "category": "app", "status": "running",
+                                    "view": {"url": "http://127.0.0.1:9230/"}}]}
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    w = next(l for l in res["links"] if l["id"] == "wisdom")
+    assert w["url"] == "https://box.tail1234.ts.net:8796/wisdom/" and w["open"] == "/wisdom/"
+    log = calls.read_text()
+    assert "serve --bg --https=8796 --set-path=/wisdom/ http://127.0.0.1:9230" in log
+    assert "--https=9230" not in log                       # no port of its own
+    links.apply_to_registry(reg, tmp_path / "home")
+    by = {a["id"]: a for a in reg["apps"]}
+    assert by["wisdom"]["view"] == {"url": "/wisdom/", "local": "http://127.0.0.1:9230/"}
+    assert by["files"]["view"]["url"] == "https://box.tail1234.ts.net:8794/"
+    assert by["stopped-app"]["view"] == {"url": "http://127.0.0.1:8800/"}   # not published: unchanged
+    # re-running reads the box-only address, not the rewritten one
+    assert {r["id"]: r["port"] for r in links.pages(reg)}["wisdom"] == 9230
+
+
 def test_no_tailscale_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(links.shutil, "which", lambda _: None)
     res = links.publish(REG, tmp_path / "home")

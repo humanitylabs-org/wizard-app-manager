@@ -111,6 +111,8 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
+    from . import links
+    links.apply_to_registry(reg, c.home)   # published apps open at their private-network address, not loopback
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)

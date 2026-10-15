@@ -58,7 +58,8 @@ def pages(reg: dict) -> list[dict]:
     """Installed apps with a page: id, name, category, local port and path, from apps.json."""
     out = []
     for a in reg.get("apps") or []:
-        url = (a.get("view") or {}).get("url") or ""
+        v = a.get("view") or {}
+        url = v.get("local") or v.get("url") or ""
         if not url.startswith("http://") or a.get("status") not in (None, "running"):
             continue
         hostport, _, path = url[len("http://"):].partition("/")
@@ -74,17 +75,51 @@ def shell_first(rows: list[dict], shell_ids: set[str]) -> list[dict]:
     return sorted(rows, key=lambda r: (r["id"] not in shell_ids, r["category"] != "interface", r["name"].lower()))
 
 
+def gateway_paths() -> dict[str, dict]:
+    """Apps that declare a path on the Wizard origin (private test catalog `gateway`), e.g. /wisdom/. They are opened
+    inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js)."""
+    try:
+        from . import test_catalog
+        rows = test_catalog.load()
+    except (OSError, ValueError, KeyError):
+        return {}
+    out = {}
+    for a in rows:
+        g = a.get("gateway") or {}
+        path = str(g.get("path") or "")
+        if path.startswith("/") and path.endswith("/") and path.strip("/").replace("-", "").isalnum():
+            out[a["id"]] = {"path": path, "strip": g.get("strip_prefix", True) is not False}
+    return out
+
+
 def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
+    gw = gateway_paths()
     result: dict = {"provider": "tailscale", "state": ts["state"], "host": ts["host"], "links": [], "errors": {}}
     if ts["state"] != "Running" or not ts["host"]:
         result["note"] = ("Tailscale isn't connected yet, so nothing is on your private network. "
                           "Run `sudo tailscale up`, open the sign-in link with YOUR Tailscale account, then `wam links`.")
     else:
         already = served_ports() if apply else set()
+        shell_port = next((r["port"] for r in rows if r["id"] in (shell_ids or set())), None)
         for r in rows:
+            g = gw.get(r["id"])
+            if g and shell_port:
+                # Same origin as the shell: one path on the shell's tailnet port.
+                target = f"http://127.0.0.1:{r['port']}" + ("" if g["strip"] else g["path"])
+                if apply:
+                    try:
+                        p = _run(["tailscale", "serve", "--bg", f"--https={shell_port}", f"--set-path={g['path']}", target], 60)
+                        if p.returncode != 0:
+                            result["errors"][r["id"]] = (p.stderr or p.stdout).strip()[:200]
+                            continue
+                    except (OSError, subprocess.TimeoutExpired) as e:
+                        result["errors"][r["id"]] = str(e)[:200]
+                        continue
+                result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{g['path']}", "open": g["path"]})
+                continue
             if apply and r["port"] not in already:
                 try:
                     p = _run(["tailscale", "serve", "--bg", f"--https={r['port']}", f"http://127.0.0.1:{r['port']}"], 60)
@@ -94,12 +129,29 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                 except (OSError, subprocess.TimeoutExpired) as e:
                     result["errors"][r["id"]] = str(e)[:200]
                     continue
-            result["links"].append({**r, "url": f"https://{ts['host']}:{r['port']}{r['path']}"})
+            url = f"https://{ts['host']}:{r['port']}{r['path']}"
+            result["links"].append({**r, "url": url, "open": url})
     home.mkdir(parents=True, exist_ok=True)
     tmp = home / "links.json.tmp"
     tmp.write_text(json.dumps(result, indent=2) + "\n")
     tmp.replace(home / "links.json")
     return result
+
+
+def apply_to_registry(reg: dict, home: Path) -> dict:
+    """Give each published app the address a browser can open (links.json) as its view url, which is what the
+    Agent Service hands the shell. The box-only address stays in view.local for `wam links` and health checks."""
+    try:
+        saved = json.loads((home / "links.json").read_text())
+    except (OSError, ValueError):
+        return reg
+    opens = {l["id"]: l.get("open") or l.get("url") for l in saved.get("links") or [] if l.get("id")}
+    for a in reg.get("apps") or []:
+        v = a.get("view")
+        if v and opens.get(a["id"]):
+            v.setdefault("local", v.get("url"))
+            v["url"] = opens[a["id"]]
+    return reg
 
 
 def describe(result: dict) -> str:
