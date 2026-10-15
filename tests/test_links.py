@@ -119,6 +119,20 @@ def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path
     assert {r["id"]: r["port"] for r in links.pages(reg)}["wisdom"] == 9230
 
 
+def test_gateway_path_survives_a_run_without_the_catalog(tmp_path, fake_tailscale, monkeypatch):
+    """Once published at /wisdom/, a later `wam links` without WAM_PRIVATE_CATALOG keeps it there."""
+    cat = tmp_path / "cat.json"
+    cat.write_text(json.dumps({"schema": 1, "scope": "private-test", "apps": [
+        {"id": "wisdom", "repo": "o/wisdom", "commit": "a" * 40, "gateway": {"path": "/wisdom/", "strip_prefix": True}}]}))
+    monkeypatch.setenv("WAM_PRIVATE_CATALOG", str(cat))
+    reg = {"apps": REG["apps"] + [{"id": "wisdom", "name": "Wisdom", "category": "app", "status": "running",
+                                    "view": {"url": "http://127.0.0.1:9230/"}}]}
+    links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    monkeypatch.delenv("WAM_PRIVATE_CATALOG")
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "wisdom")["open"] == "/wisdom/"
+
+
 def test_no_tailscale_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(links.shutil, "which", lambda _: None)
     res = links.publish(REG, tmp_path / "home")
