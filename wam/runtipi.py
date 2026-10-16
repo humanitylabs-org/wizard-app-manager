@@ -125,6 +125,12 @@ class Runtipi:
     def start(self, urn: str) -> dict:
         return self.req("POST", f"/app-lifecycle/{urn}/start", {}, timeout=120)
 
+    def stop(self, urn: str) -> dict:
+        return self.req("POST", f"/app-lifecycle/{urn}/stop", {}, timeout=120)
+
+    def restart(self, urn: str) -> dict:
+        return self.req("POST", f"/app-lifecycle/{urn}/restart", {}, timeout=120)
+
     def uninstall(self, urn: str, remove_backups: bool = False) -> dict:
         return self.req("DELETE", f"/app-lifecycle/{urn}/uninstall", {"removeBackups": remove_backups}, timeout=120)
 

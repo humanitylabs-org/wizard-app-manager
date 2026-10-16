@@ -417,10 +417,30 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
     return src
 
 
+LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stopped"}}
+
+
+def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
+    """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
+    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
+    rt = c.runtipi()
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if not ((rt.app(urn) or {}).get("app") or {}):
+        raise SystemExit(f"{app_id} is not installed")
+    getattr(rt, verb)(urn)
+    time.sleep(2)
+    status = rt.wait_status(urn, LIFECYCLE_WANT[verb] | {"start_error", "stop_error", "restart_error", "missing"}, timeout)
+    out = {"id": app_id, "urn": urn, "action": verb, "status": status}
+    if status not in LIFECYCLE_WANT[verb]:
+        out["error"] = f"{verb} did not finish (status {status}); see `docker logs runtipi`"
+    return out
+
+
 def _app(c: Config, verb: str, app_id: str) -> None:
-    """Runtipi's own start/stop for one app (runtipi-cli, as `wam app start|stop <id>`)."""
-    if runtipi_cli(c.runtipi_root, ["app", verb, f"{app_id}:{STORE}"]) != 0:
-        raise SystemExit(f"runtipi-cli app {verb} {app_id} failed")
+    """Start/stop one app through the App Manager API (not runtipi-cli; see app_lifecycle)."""
+    res = app_lifecycle(c, verb, app_id)
+    if res.get("error"):
+        raise SystemExit(f"wam app {verb} {app_id} failed: {res['error']}")
 
 
 def _bundle_queue(port: int) -> dict | None:
@@ -1083,6 +1103,10 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
+        res = app_lifecycle(Config(), argv[1], argv[2])
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv)
         print(json.dumps(res, indent=2))
