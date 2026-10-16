@@ -714,6 +714,58 @@ def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monke
     assert alongside.enable(wh, hh, None, False)["shell"]["share_history"] is False
 
 
+def test_alongside_share_sessions_mounts_only_the_session_database(tmp_path, monkeypatch):
+    """--share-sessions: helper status needs Hermes's state.db. Mount only state.db + -wal/-shm read-only, never the
+    Hermes home (no .env/auth.json), and set WIZARD_HERMES_STATE_PATH. --share-history still wins when both are on."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("{}\n")
+    (hh / ".env").write_text("SECRET=1\n"); (hh / "auth.json").write_text("{}")
+    for n in alongside.SESSION_STATE_FILES:
+        (hh / n).write_bytes(b"x")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    st = alongside.enable(wh, hh, 18796, None, True)
+    assert st["shell"]["share_sessions"] is True and st["shell"]["share_history"] is False
+    text = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    svc = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-agent-service"]
+    assert svc["environment"]["WIZARD_HERMES_STATE_PATH"] == "/hermes/state.db"
+    vols = svc["volumes"]
+    for n in alongside.SESSION_STATE_FILES:
+        assert f"{hh}/{n}:/hermes/{n}:ro" in vols
+        assert (wh / "hermes-view" / n).is_file()                          # mount point inside the read-only view
+    assert f"{hh}:/hermes:ro" not in vols and not any(".env" in v or "auth.json" in v for v in vols)
+    assert all(v.endswith(":ro") for v in vols if "/hermes" in v.split(":")[1])
+    assert "credentials included" not in text and alongside.INODE_MARK in text
+    assert alongside.stale_session_mounts(text, str(hh)) == []
+    (hh / "new-wal").write_bytes(b"y"); (hh / "new-wal").replace(hh / "state.db-wal")   # Hermes recreated its WAL
+    assert alongside.stale_session_mounts(text, str(hh)) == ["state.db-wal"]
+    assert alongside.enable(wh, hh)["shell"]["share_sessions"] is True          # a re-run keeps the choice
+    # whole-home sharing supersedes it: no duplicate /hermes/state.db mounts
+    alongside.enable(wh, hh, None, True)
+    both = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    bvols = yaml.safe_load(both.replace("!reset", ""))["services"]["wizard-agent-service"]["volumes"]
+    assert f"{hh}:/hermes:ro" in bvols and not any(v.startswith(f"{hh}/state.db") for v in bvols)
+    alongside.enable(wh, hh, None, False, False)
+    off = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    assert 'WIZARD_HERMES_STATE_PATH: ""' in off and "state.db:" not in off
+
+
+def test_alongside_share_sessions_without_a_database_mounts_nothing(tmp_path, monkeypatch):
+    """No state.db yet: Docker would create root-owned directories in the Hermes home, so nothing is mounted and the
+    service stays on the HTTP-only path (state path blank)."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir(); (hh / "config.yaml").write_text("{}\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    alongside.enable(wh, hh, 18796, None, True)
+    text = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    assert 'WIZARD_HERMES_STATE_PATH: ""' in text and "state.db" not in text.split("volumes:")[1]
+    assert not (hh / "state.db").exists()
+
+
 GET_SH = Path(__file__).resolve().parents[1] / "get.sh"
 
 
@@ -787,34 +839,22 @@ def test_vendored_wizard_cli_matches_recorded_provenance():
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
 
-def test_free_port_skips_a_taken_port():
-    import socket
+def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
+    """`wam app update X` goes through the App Manager API and leaves a running app running."""
     from wam import cli
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); s.listen()
-        taken = s.getsockname()[1]
-        assert not cli.port_free(taken)
-        assert cli.free_port(taken) != taken
+    seen = []
 
-
-def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
-    from wam import cli
-    c = cli.Config()
-    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
-    comp = tmp_path / "rt/repos" / cli.STORE / "apps/cal/docker-compose.yml"   # not installed yet: store copy only
-    comp.parent.mkdir(parents=True)
-    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n")
-    (tmp_path / "home").mkdir()
-    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
-    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
-    env = cli.trusted_origin_env(c, "cal")
-    assert env == {"WIZARD_TRUSTED_HOSTS": "box.tail1.ts.net:8796,box.tail1.ts.net",
-                   "WIZARD_TRUSTED_ORIGINS": "https://box.tail1.ts.net:8796"}
-    f = cli.write_user_env(c.runtipi_root, "cal", {"OTHER": "1"})
-    cli.write_user_env(c.runtipi_root, "cal", env)
-    assert f.read_text().splitlines() == ["OTHER=1", *[f"{k}={v}" for k, v in env.items()]]
-    comp.write_text("plain: app\n")
-    assert cli.trusted_origin_env(c, "cal") == {}
+    class RT:
+        st = "running"
+        def app(self, urn): return {"app": {"status": self.st, "version": 2}}
+        def update(self, urn, perform_backup=True): seen.append(("update", urn)); self.st = "stopped"
+        def start(self, urn): seen.append(("start", urn)); self.st = "running"
+        def wait_status(self, urn, want, timeout=0): return self.st
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    res = cli.app_update(cli.Config(), "notifications")
+    assert seen == [("update", "notifications:wizardapps"), ("start", "notifications:wizardapps")]
+    assert res["status"] == "running" and res["restarted"] is True
 
 
 def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypatch):
@@ -849,3 +889,33 @@ def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypat
     except SystemExit:
         pass
     assert calls == ["wizard-ux"]                      # spot already filled: no second service
+
+
+def test_free_port_skips_a_taken_port():
+    import socket
+    from wam import cli
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); s.listen()
+        taken = s.getsockname()[1]
+        assert not cli.port_free(taken)
+        assert cli.free_port(taken) != taken
+
+
+def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
+    from wam import cli
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/cal/docker-compose.yml"   # not installed yet: store copy only
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    env = cli.trusted_origin_env(c, "cal")
+    assert env == {"WIZARD_TRUSTED_HOSTS": "box.tail1.ts.net:8796,box.tail1.ts.net",
+                   "WIZARD_TRUSTED_ORIGINS": "https://box.tail1.ts.net:8796"}
+    f = cli.write_user_env(c.runtipi_root, "cal", {"OTHER": "1"})
+    cli.write_user_env(c.runtipi_root, "cal", env)
+    assert f.read_text().splitlines() == ["OTHER=1", *[f"{k}={v}" for k, v in env.items()]]
+    comp.write_text("plain: app\n")
+    assert cli.trusted_origin_env(c, "cal") == {}
