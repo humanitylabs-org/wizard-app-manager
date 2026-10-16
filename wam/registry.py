@@ -153,6 +153,11 @@ def write(reg: dict, root: Path | None = None) -> Path:
     return prev
 
 
-def collisions(reg: dict) -> list[str]:
+def collisions(reg: dict, multi: set[str] | None = None) -> list[str]:
+    """Slots filled by more than one app. A `multi` slot (defaults.json) holds one app per provider by design,
+    e.g. `ai-connection` (Claude, ChatGPT, ...), so several apps there are not a collision."""
+    if multi is None:
+        from . import slots as _slots
+        multi = {k for k, v in _slots.load_defaults().items() if v.get("multi")}
     return [f"slot '{s}' has {len(v['candidates'])} apps ({', '.join(v['candidates'])}); default {v['default']}"
-            for s, v in reg.get("slots", {}).items() if len(v["candidates"]) > 1]
+            for s, v in reg.get("slots", {}).items() if len(v["candidates"]) > 1 and s not in multi]

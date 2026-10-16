@@ -943,3 +943,13 @@ def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
     assert f.read_text().splitlines() == ["OTHER=1", *[f"{k}={v}" for k, v in env.items()]]
     comp.write_text("plain: app\n")
     assert cli.trusted_origin_env(c, "cal") == {}
+
+
+def test_multi_provider_slot_is_not_a_collision():
+    from wam import registry, slots
+    reg = {"slots": {"ai-connection": {"default": "wizard-claude", "candidates": ["wizard-chatgpt", "wizard-claude"]},
+                     "browser": {"default": "browser", "candidates": ["browser", "other-browser"]}}}
+    assert registry.collisions(reg) == ["slot 'browser' has 2 apps (browser, other-browser); default browser"]
+    d = slots.load_defaults()
+    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-claude"
+    assert "ai-accounts" not in d   # AI Accounts retired: one connection app per provider (decision #61)

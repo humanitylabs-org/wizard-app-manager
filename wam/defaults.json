@@ -20,10 +20,12 @@
       "app": "hermes-agent",
       "required": true
     },
-    "ai-accounts": {
-      "name": "AI accounts",
-      "app": "wizard-ai-accounts",
-      "required": false
+    "ai-connection": {
+      "name": "AI connections",
+      "app": "wizard-claude",
+      "required": false,
+      "multi": true,
+      "note": "One app per AI provider (Claude, ChatGPT, ...), contract wizard.ai-connection/1. Several installed at once is normal; Resources shows them all. Replaces AI Accounts (decision #61)."
     },
     "files": {
       "name": "Files",
