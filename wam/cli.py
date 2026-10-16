@@ -290,6 +290,14 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
                          " (the App Manager removed it; see `docker logs runtipi`)")
     reg = write_registry(c, rt)
+    if status == "running" and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
+        try:   # e.g. ChatGPT: its sign-in runs through the agent's dashboard, which alongside lives on the host
+            dash = host_dashboard_cmd(c, rt)
+            if app_id in (dash.get("changed_apps") or []):
+                rt.update(urn, perform_backup=False)   # restart it with the dashboard address and login
+                rt.wait_status(urn, {"running", "stopped", "missing"})
+        except Exception as e:  # noqa: BLE001 - never fail the install for it
+            print(f"note: host dashboard not set up ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if role == "shell" and status == "running" and alongside.load(c.home):
         try:
             store_data_cmd(c)
@@ -654,6 +662,8 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         return alongside.detect(home)
     if off:
         was = alongside.disable(c.home)
+        from . import host_dashboard
+        host_dashboard.disable()
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
@@ -677,13 +687,36 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
             if role != "shell":   # it now runs as the owner: hand it the state the recipe's uid wrote
                 if alongside.adopt_state(c.runtipi_root, STORE, app_id, _app_image(c, st, app_id)):
                     out.setdefault("state_adopted", []).append(app_id)
-        if apps:   # the service first, so the shell finds it when it starts
-            order = sorted(apps, key=lambda a: apps[a] != "service")
+        order = sorted(apps, key=lambda a: apps[a] != "service") if apps else []   # the service first
+        dash = host_dashboard_cmd(c, rt)
+        if dash.get("state") != "skipped":
+            out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
+        order += [a for a in dash.get("changed_apps") or [] if a not in order]
+        if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
     return out
+
+
+def host_dashboard_consumers(c: Config, ids: set[str]) -> dict[str, list[str]]:
+    from . import host_dashboard
+    return host_dashboard.consumers(c.runtipi_root, STORE, ids)
+
+
+def host_dashboard_cmd(c: Config, rt: Runtipi | None = None, apply: bool = True) -> dict:
+    """Alongside: run the host Hermes dashboard for apps that sign in through it (e.g. ChatGPT) and point them at it."""
+    from . import host_dashboard
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes use the Hermes Agent app's dashboard)"}
+    rt = rt or c.runtipi()
+    try:
+        return host_dashboard.ensure(c.home, c.runtipi_root, STORE, installed_ids(rt), alongside.hermes_binary(),
+                                     al["agent"]["hermes_home"], write_user_env, apply=apply)
+    except OSError as e:
+        return {"state": "error", "error": str(e)[:200]}
 
 
 def store_data_cmd(c: Config, apply: bool = True) -> dict:
