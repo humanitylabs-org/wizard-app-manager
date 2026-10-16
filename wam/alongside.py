@@ -295,7 +295,7 @@ services:
     environment:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
-      HERMES_ORIGIN: {origin}{state_env}{media_env}
+      HERMES_ORIGIN: {origin}{state_env}{media_env}{artifact_env}{stt_env}
       WIZARD_APPS_MCP_ADDRESS: url
       WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
     healthcheck:
@@ -375,6 +375,66 @@ def stale_session_mounts(override_text: str, hermes_home: str) -> list[str]:
     return []
 
 
+# Folders where the host Hermes writes files it sends back with MEDIA:<host path> (pictures, voice replies,
+# screenshots, videos). The Agent Service gets each one read-only at the SAME path, so the path the agent reports
+# is the path the service opens; under /hermes it would not match and every picture/voice reply was dropped.
+AGENT_OUTPUT_DIRS = ("cache/images", "cache/audio", "cache/screenshots", "cache/videos")
+
+
+def docker_rootless() -> bool:
+    """Rootless Docker maps the owner's uid to uid 0 in the container (and the owner's 1000 to a subuid)."""
+    import subprocess
+    host = os.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix:///run/user/"):
+        return True
+    try:
+        out = subprocess.run(["docker", "info", "--format", "{{json .SecurityOptions}}"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        # no docker on PATH (e.g. a minimal PATH): a per-user socket and no system one means rootless
+        return Path(f"/run/user/{os.getuid()}/docker.sock").exists() and not Path("/var/run/docker.sock").exists()
+    return "rootless" in out
+
+
+def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootless: bool | None = None) -> bool:
+    """Switching an existing Agent Service to the owner's identity on rootless Docker (container uid 0): its saved
+    state was written by the recipe's uid 1000, and it can't chmod files it doesn't own, so it crash-looped on
+    start. Hand the folder to 0:1000 (group-writable) once, with a throwaway container of the app's own image.
+    Rootful Docker and fresh installs need nothing. Returns True when ownership was changed."""
+    import subprocess
+    if not (docker_rootless() if rootless is None else rootless):
+        return False
+    data = Path(runtipi_root) / "app-data" / store / app_id / "data"
+    if not data.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
+        return False
+    if not _SAFE_PATH.match(str(data)):
+        raise SystemExit(f"app data path {str(data)!r} has characters a command can't carry safely")
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+                        "--entrypoint", "sh", "-v", f"{data}:/state", image, "-c",
+                        "chown -R 0:1000 /state && chmod -R g+rwX /state"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise SystemExit(f"could not hand {app_id}'s saved state to the owner: {r.stderr.strip()[:200]}")
+    return True
+
+
+def container_user(a: dict, rootless: bool | None = None) -> str:
+    """The uid that reads the owner's Hermes files. On rootful Docker that's the owner's own uid; on rootless Docker
+    the owner IS container uid 0 (no capabilities), with gid 1000 so it can still write the shared /media folder
+    that the other apps (uid 1000) own."""
+    if docker_rootless() if rootless is None else rootless:
+        return "0:1000"
+    return f'{int(a["uid"])}:{int(a["gid"])}'
+
+
+def transcriber_origin(runtipi_root: Path, store: str = "wizardapps") -> str | None:
+    """The Transcriber on the host's loopback. On the host network the recipe's http://transcriber:8000 doesn't
+    resolve, so voice showed "Voice unavailable"."""
+    envp = Path(runtipi_root) / "app-data" / store / "transcriber" / "app.env"
+    port = (read_env(envp).get("APP_PORT") if envp.is_file() else "") or ""
+    return f"http://127.0.0.1:{int(port)}" if port.isdigit() else None
+
+
 UX_OVERRIDE = """\
 # Written by wam (alongside mode): the Wizard shell (UX only) on the host network, bound to 127.0.0.1, talking to the
 # Agent Service on its own loopback port. It holds no Hermes credentials and mounts nothing.
@@ -400,7 +460,8 @@ def service_port(st: dict) -> int:
 
 
 def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle",
-                   media_root: Path | None = None) -> str:
+                   media_root: Path | None = None, stt_origin: str | None = None,
+                   rootless: bool | None = None) -> str:
     """The override for the app that talks to the host Hermes: the Agent Service, or the pre-split bundle (which
     also serves the UX, so it keeps the shell's port). `media_root`: the host path of the /media both recipes mount,
     handed to the host Hermes (wizard-agent-service#12); the UX-only shell mounts no media and gets none."""
@@ -447,6 +508,24 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         for src, dst in mounted:
             volumes += f"\n      - {src}:{dst}:ro"
         sessions = bool(mounted)
+    # The agent's output folders at their real host paths (see AGENT_OUTPUT_DIRS), plus /media.
+    roots = []
+    for rel in AGENT_OUTPUT_DIRS:
+        d = Path(hh, rel)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if not volumes:
+            volumes = "\n    volumes:"
+        volumes += f"\n      - {d}:{d}:ro"
+        roots.append(str(d))
+    artifact_env = f'\n      WIZARD_AGENT_ARTIFACT_ROOTS: "{":".join(roots + ["/media"])}"' if roots else ""
+    stt_env = ""
+    if stt_origin:
+        if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", stt_origin):
+            raise SystemExit(f"Transcriber address {stt_origin!r} is not a loopback origin")
+        stt_env = f"\n      WIZARD_STT_ORIGIN: {stt_origin}"
     return SHELL_OVERRIDE.format(
         app=app_id, origin=a["origin"], port=port,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
@@ -456,9 +535,9 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
                 if sessions else "The shell sees only the agent's images folder, not the Hermes home\n"
                 "# (opt in to session history: wam alongside --share-sessions, or --share-history for the whole home)."),
         image=image_lines(st, app_id),
-        user=f'\n    user: "{int(a["uid"])}:{int(a["gid"])}"',
+        user=f'\n    user: "{container_user(a, rootless)}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share or sessions else ""}"',
-        media_env=media_env, volumes=volumes)
+        media_env=media_env, artifact_env=artifact_env, stt_env=stt_env, volumes=volumes)
 
 
 def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path,
@@ -471,7 +550,8 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role,
-                                                         None if role == "shell" else host_media_root(runtipi_root)))
+                                                         None if role == "shell" else host_media_root(runtipi_root),
+                                                         None if role == "shell" else transcriber_origin(runtipi_root, store)))
     if role == "shell":   # the UX holds no gateway token
         (d / "app.env").unlink(missing_ok=True)
         return d / "docker-compose.yml"

@@ -74,11 +74,11 @@ def test_skill_lives_outside_generated_refresh(tmp_path):
     rec = builder.install_skill(os_home, hermes)
     skill = Path(rec['skill'])
     assert skill.is_relative_to(os_home / 'system-skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').read_text() == skill.read_text()
+    assert yaml.safe_load((hermes / 'config.yaml').read_text())['skills']['external_dirs'] == [str(os_home / 'system-skills')]
     (os_home / 'skills').mkdir()
     (os_home / 'skills' / 'generated').touch()
     shutil.rmtree(os_home / 'skills')
-    assert (hermes / 'skills' / 'wizard-builder' / 'SKILL.md').is_file()
+    assert skill.is_file()
     assert builder.install_skill(os_home, hermes)['state'] == 'installed'
 
 
@@ -198,19 +198,19 @@ def test_generated_view_defaults_to_containing_skin(tmp_path):
     root=builder.new_app('skin-app',tmp_path,'Small app')
     html=(root/'web/index.html').read_text();kit=(root/'web/wizard-ui.css').read_text()
     assert html.index('boot.js') < html.index('wizard-ui.css') < html.index('styles.css')
-    assert html.index('theme-client.js') < html.index('app.js')
+    assert html.index('/wizard-os-home/core/app-client.js') < html.index('app.js')
     assert 'data-app="skin-app"' in html
     # Colours come only from appearance roles; a hosted app paints no canvas of its own.
     assert '--wz-text' in kit and '--wz-accent' in kit and '--wz-border' in kit
     assert 'body { font: 15px/1.4 var(--font); color: var(--ink); background: transparent;' in kit
     assert 'html[data-presentation="standalone"]:not(.wz-hosted) body { background: var(--canvas); }' in kit
     app=(root/'web/app.js').read_text()
-    assert 'window.__wizardCloseOverlay = () => false;' in app
-    assert app.index('if (!hosted)') < app.index('history.pushState')
-    client=(root/'web/theme-client.js').read_text()
-    assert "e.source!==parent" in client and "e.origin!==trustedHost" in client
-    prov=json.loads((root/'appearance-provenance.json').read_text())
-    assert prov['source_thread']=='wizard_1791807054943_dc70b2bccb22'
+    assert 'WizardApp.back.register' in app
+    assert 'back.useHistory({ isRoot: () => true })' not in app
+    assert 'history.pushState' not in app
+    assert not (root/'web/theme-client.js').exists()
+    assert json.loads((root/'appearance-provenance.json').read_text())['schema'] == 3
+    assert 'prefers-color-scheme: light' in (root/'web/standalone.css').read_text()
     compose=yaml.safe_load((root/'runtipi/docker-compose.yml').read_text())
     assert compose['services']['skin-app']['command'][0]=='python'
     import base64,re
@@ -280,5 +280,5 @@ def test_production_install_is_never_rerouted_to_the_builder():
     src = inspect.getsource(cli.main)
     # Only the builder's own verbs route to it; `wam install <x>` always means a production install,
     # whatever folders happen to exist in the current directory.
-    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill"}' in src
+    assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}' in src
     assert '"install-local", *argv' not in src and 'is_dir()' not in src
