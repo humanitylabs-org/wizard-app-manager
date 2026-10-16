@@ -16,6 +16,7 @@ Wizard additions:
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
+  wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam doctor [--fix]            check the whole chain
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
@@ -28,6 +29,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -37,6 +39,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+import yaml
 
 from . import alongside, index, private, registry, slots
 from .runtipi import Runtipi, RuntipiError, read_env
@@ -53,6 +57,18 @@ class Config:
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
         self.index = index.base(cfg)
+        self.private_apps: dict[str, str] = {}
+        pa = cfg.get("private_apps", {})
+        if not isinstance(pa, dict):
+            raise SystemExit("private_apps must be an object of app-id: owner/repo aliases")
+        for k, v in pa.items():
+            if not isinstance(k, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", k):
+                raise SystemExit(f"invalid private_apps alias: {k!r}")
+            # Accept the documented URL form, but never repair malformed identifiers.
+            repo = v.removeprefix("https://github.com/") if isinstance(v, str) else ""
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", repo) or repo.split("/")[-1] in (".", ".."):
+                raise SystemExit(f"private_apps[{k}] must be owner/repo or https://github.com/owner/repo")
+            self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
@@ -110,11 +126,15 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
+    from . import links
+    links.apply_to_registry(reg, c.home)   # published apps open at their private-network address, not loopback
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    return registry.public_projection(reg)
+    # Return the exact owner-route projection we persisted, including staged view IDs.
+    # Internal _skill_src remains available for both copy passes, never in API/CLI output.
+    return json.loads((c.home / "apps.json").read_text())
 
 
 def share_registry(c: Config) -> bool:
@@ -206,7 +226,16 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     ensure_store(c, rt)
     have = installed_ids(rt)
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
+    defaults = slots.load_defaults()
     for dep in rec.get("uses") or []:
+        # `uses` may name a parking spot (e.g. agent-service) rather than an app: install the spot's default app,
+        # unless an installed app already provides that spot.
+        if dep in defaults:
+            spot = dep
+            providers = slots.providers(write_registry(c, rt)).get(spot) or []
+            if providers or spot in alongside.external_slots(c.home):
+                continue
+            dep = (defaults[spot] or {}).get("app") or dep
         if dep in have or dep in _seen:
             continue
         if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
@@ -220,6 +249,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     urn = f"{app_id}:{STORE}"
     if app_id in installed_ids(rt):
         return {"id": app_id, "urn": urn, "status": "already installed", "hint": f"wam app update {app_id}"}
+    if app_id == "hermes-agent" and not alongside.load(c.home):
+        from .builder_bundle import fresh
+        fresh(c, app_id, STORE)
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
@@ -507,6 +539,18 @@ def registry_apps(c: Config) -> dict[str, dict]:
         return {}
 
 
+def _app_image(c: Config, st: dict, app_id: str) -> str:
+    """The image an installed app runs: its alongside pin, else the first image in its installed compose."""
+    if alongside.pin(st, app_id):
+        return alongside.pin(st, app_id)
+    comp = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
+    try:
+        imgs = private.images(yaml.safe_load(comp.read_text()) or {})
+    except (OSError, ValueError, yaml.YAMLError):
+        return ""
+    return imgs[0] if imgs else ""
+
+
 def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None,
                   share_history: bool | None = None) -> dict:
     home = alongside.hermes_home(hermes_home)
@@ -534,6 +578,9 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = {a: r for a, r in apps.items() if (r != "bundle") == active} or apps
         for app_id, role in apps.items():
             alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+            if role != "shell":   # it now runs as the owner: hand it the state the recipe's uid wrote
+                if alongside.adopt_state(c.runtipi_root, STORE, app_id, _app_image(c, st, app_id)):
+                    out.setdefault("state_adopted", []).append(app_id)
         if apps:   # the service first, so the shell finds it when it starts
             order = sorted(apps, key=lambda a: apps[a] != "service")
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
@@ -544,12 +591,21 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
 
 
 def resolve_any(c: Config, ref: str) -> dict:
-    """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
-    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    """Explicit pinned catalog first, owner aliases next, then the public index/private repo fallback.
+
+    An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
+    inside prepare before any image load/pull or store mutation.
+    """
     from . import test_catalog
     pinned = test_catalog.resolve(ref)
     if pinned:
         return private.prepare(c.runtipi_root, STORE, pinned['repo'], release=pinned)
+    if ref in c.private_apps:
+        repo = c.private_apps[ref]
+        try:
+            return private.prepare(c.runtipi_root, STORE, repo, expected_id=ref)
+        except private.PrivateError as pe:
+            raise SystemExit(f"{ref}: private_apps alias to {repo} failed: {pe}") from None
     try:
         return index.resolve(c.index, ref)
     except index.IndexError_ as e:
@@ -595,6 +651,20 @@ def bootstrap(c: Config) -> dict:
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
+    from . import builder_bundle
+    if fix:
+        try:
+            builder_bundle.install(c.home)
+            if not alongside.load(c.home) and os.environ.get('WIZARD_MODE') != 'alongside':
+                builder_bundle.fresh(c)
+        except (OSError, ValueError) as e:
+            out.append(("Wizard builder repair", False, str(e)))
+    al = alongside.load(c.home)
+    hh = Path(al['agent']['hermes_home']) if al else c.runtipi_root / 'app-data' / STORE / 'hermes-agent/data'
+    runtime = None if al else builder_bundle.RUNTIME + '/current/system-skills'
+    out.extend(builder_bundle.health(c.home, hh, runtime))
+    if not al:
+        out.extend(builder_bundle.runtime_health(c))
     try:
         rt = c.runtipi()
         rt.installed()
@@ -803,7 +873,10 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
-    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill"}:
+    if argv and argv[0] == "builder-bundle":
+        from .builder_bundle import main as bundle_main
+        return bundle_main(argv[1:])
+    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}:
         from .builder import main as builder_main
         return builder_main(argv)
     if argv and argv[0] == "views":
@@ -827,6 +900,7 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -866,6 +940,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
+        elif args.cmd == "links":
+            from . import links
+            if args.dry_run:
+                rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
+                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+            else:
+                reg = write_registry(c)
+            shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run)
+            print(json.dumps(res, indent=2) if args.json else links.describe(res))
+            return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
