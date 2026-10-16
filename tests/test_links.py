@@ -27,14 +27,26 @@ def fake_tailscale(tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.write_text(json.dumps({"BackendState": "Running", "Self": {"DNSName": "box.tail1234.ts.net."}}))
     served = tmp_path / "served"
-    served.write_text(json.dumps({"TCP": {"8794": {"HTTPS": True}}}))
-    (bin_dir / "tailscale").write_text(f"""#!/bin/sh
-echo "$@" >> {calls}
-case "$1 $2" in
-  "status --json") cat {state} ;;
-  "serve status") cat {served} ;;
-  "serve --bg") exit "${{SERVE_RC:-0}}" ;;
-esac
+    served.write_text(json.dumps({"TCP": {"8794": {"HTTPS": True}}, "Web": {
+        "box.tail1234.ts.net:8794": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8794"}}}}}))
+    (bin_dir / "tailscale").write_text(f"""#!{sys.executable}
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+p = Path({str(served)!r})
+with open({str(calls)!r}, 'a') as f: f.write(' '.join(args) + '\\n')
+if args[:2] == ['status', '--json']:
+    print(Path({str(state)!r}).read_text())
+elif args[:2] == ['serve', 'status']:
+    print(p.read_text())
+elif args[:2] == ['serve', '--bg']:
+    if os.environ.get('SERVE_RC'): sys.exit(int(os.environ['SERVE_RC']))
+    d = json.loads(p.read_text())
+    port = next(a.split('=',1)[1] for a in args if a.startswith('--https='))
+    path = next((a.split('=',1)[1] for a in args if a.startswith('--set-path=')), '/')
+    d.setdefault('TCP', {{}})[port] = {{'HTTPS': True}}
+    d.setdefault('Web', {{}}).setdefault('box.tail1234.ts.net:'+port, {{}}).setdefault('Handlers', {{}})[path] = {{'Proxy': args[-1]}}
+    p.write_text(json.dumps(d))
 """)
     (bin_dir / "tailscale").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -67,6 +79,8 @@ def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
 
 def test_failed_serve_is_reported_not_listed(tmp_path, fake_tailscale, monkeypatch):
     monkeypatch.setenv("SERVE_RC", "1")
+    which = links.shutil.which
+    monkeypatch.setattr(links.shutil, "which", lambda name: None if name == "sudo" else which(name))
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"})
     assert [l["id"] for l in res["links"]] == ["files"]
     assert "wizard-shell" in res["errors"]
@@ -77,6 +91,7 @@ def test_dry_run_changes_nothing(tmp_path, fake_tailscale):
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"}, apply=False)
     assert len(res["links"]) == 2
     assert "serve" not in calls.read_text()
+    assert not (tmp_path / "home" / "links.json").exists()
 
 
 def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path, fake_tailscale, monkeypatch):
@@ -102,6 +117,20 @@ def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path
     assert by["stopped-app"]["view"] == {"url": "http://127.0.0.1:8800/"}   # not published: unchanged
     # re-running reads the box-only address, not the rewritten one
     assert {r["id"]: r["port"] for r in links.pages(reg)}["wisdom"] == 9230
+
+
+def test_gateway_path_survives_a_run_without_the_catalog(tmp_path, fake_tailscale, monkeypatch):
+    """Once published at /wisdom/, a later `wam links` without WAM_PRIVATE_CATALOG keeps it there."""
+    cat = tmp_path / "cat.json"
+    cat.write_text(json.dumps({"schema": 1, "scope": "private-test", "apps": [
+        {"id": "wisdom", "repo": "o/wisdom", "commit": "a" * 40, "gateway": {"path": "/wisdom/", "strip_prefix": True}}]}))
+    monkeypatch.setenv("WAM_PRIVATE_CATALOG", str(cat))
+    reg = {"apps": REG["apps"] + [{"id": "wisdom", "name": "Wisdom", "category": "app", "status": "running",
+                                    "view": {"url": "http://127.0.0.1:9230/"}}]}
+    links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    monkeypatch.delenv("WAM_PRIVATE_CATALOG")
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "wisdom")["open"] == "/wisdom/"
 
 
 def test_no_tailscale_installed(tmp_path, monkeypatch):

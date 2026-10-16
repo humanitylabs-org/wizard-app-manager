@@ -45,13 +45,33 @@ def tailnet() -> dict:
     return {"state": d.get("BackendState") or "unknown", "host": host}
 
 
-def served_ports() -> set[int]:
-    try:
-        r = _run(["tailscale", "serve", "status", "--json"])
-        d = json.loads(r.stdout or "{}")
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return set()
-    return {int(p) for p in (d.get("TCP") or {}) if str(p).isdigit()}
+def serve_status() -> dict:
+    """Fail closed: an unreadable Serve configuration is not an empty one."""
+    r = _run(["tailscale", "serve", "status", "--json"])
+    if r.returncode:
+        raise ValueError("could not read Tailscale Serve configuration")
+    d = json.loads(r.stdout or "{}")
+    if not isinstance(d, dict):
+        raise ValueError("invalid Tailscale Serve configuration")
+    return d
+
+
+def route_status(config: dict, host: str, port: int, path: str, target: str) -> str:
+    """Only reuse an exact private HTTPS proxy; never take over another handler."""
+    tcp = (config.get("TCP") or {}).get(str(port))
+    web = (config.get("Web") or {}).get(f"{host}:{port}") or {}
+    # Tailscale normalizes /app/ to /app in status JSON.
+    handlers = {(key.rstrip("/") or "/"): val for key, val in (web.get("Handlers") or {}).items()}
+    path = path.rstrip("/") or "/"
+    if (config.get("AllowFunnel") or {}).get(f"{host}:{port}"):
+        return "conflict"
+    if tcp and not tcp.get("HTTPS"):
+        return "conflict"
+    if path in handlers:
+        return "match" if handlers[path] == {"Proxy": target} else "conflict"
+    if tcp and not handlers:
+        return "conflict"
+    return "missing"
 
 
 def pages(reg: dict) -> list[dict]:
@@ -64,7 +84,9 @@ def pages(reg: dict) -> list[dict]:
             continue
         hostport, _, path = url[len("http://"):].partition("/")
         port = hostport.rpartition(":")[2]
-        if not port.isdigit() or int(port) in ADMIN_PORTS:
+        if hostport.rpartition(":")[0] not in ("127.0.0.1", "localhost", "[::1]"):
+            continue
+        if not port.isdigit() or not 1 <= int(port) <= 65535 or int(port) in ADMIN_PORTS:
             continue
         out.append({"id": a["id"], "name": a.get("name") or a["id"], "category": a.get("category"),
                     "port": int(port), "path": "/" + path})
@@ -75,15 +97,25 @@ def shell_first(rows: list[dict], shell_ids: set[str]) -> list[dict]:
     return sorted(rows, key=lambda r: (r["id"] not in shell_ids, r["category"] != "interface", r["name"].lower()))
 
 
-def gateway_paths() -> dict[str, dict]:
+def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     """Apps that declare a path on the Wizard origin (private test catalog `gateway`), e.g. /wisdom/. They are opened
-    inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js)."""
+    inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js).
+    Paths published before are kept (from links.json), so a later run without WAM_PRIVATE_CATALOG set (the API
+    service, an installer re-run) doesn't move the app back to a port of its own."""
+    out = {}
+    if home:
+        try:
+            for l in json.loads((home / "links.json").read_text()).get("links") or []:
+                o = str(l.get("open") or "")
+                if l.get("id") and o.startswith("/") and o.endswith("/") and l.get("gateway_strip") is not None:
+                    out[l["id"]] = {"path": o, "strip": bool(l["gateway_strip"])}
+        except (OSError, ValueError, AttributeError):
+            pass
     try:
         from . import test_catalog
         rows = test_catalog.load()
-    except (OSError, ValueError, KeyError):
-        return {}
-    out = {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return out
     for a in rows:
         g = a.get("gateway") or {}
         path = str(g.get("path") or "")
@@ -96,41 +128,40 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
-    gw = gateway_paths()
+    gw = gateway_paths(home)
     result: dict = {"provider": "tailscale", "state": ts["state"], "host": ts["host"], "links": [], "errors": {}}
     if ts["state"] != "Running" or not ts["host"]:
         result["note"] = ("Tailscale isn't connected yet, so nothing is on your private network. "
                           "Run `sudo tailscale up`, open the sign-in link with YOUR Tailscale account, then `wam links`.")
     else:
-        already = served_ports() if apply else set()
         shell_port = next((r["port"] for r in rows if r["id"] in (shell_ids or set())), None)
         for r in rows:
-            g = gw.get(r["id"])
-            if g and shell_port:
-                # Same origin as the shell: one path on the shell's tailnet port.
-                target = f"http://127.0.0.1:{r['port']}" + ("" if g["strip"] else g["path"])
-                if apply:
-                    try:
-                        p = _run(["tailscale", "serve", "--bg", f"--https={shell_port}", f"--set-path={g['path']}", target], 60)
-                        if p.returncode != 0:
-                            result["errors"][r["id"]] = (p.stderr or p.stdout).strip()[:200]
-                            continue
-                    except (OSError, subprocess.TimeoutExpired) as e:
-                        result["errors"][r["id"]] = str(e)[:200]
-                        continue
-                result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{g['path']}", "open": g["path"]})
-                continue
-            if apply and r["port"] not in already:
+            g = gw.get(r["id"]) if shell_port else None
+            port = int(shell_port or r["port"]) if g else int(r["port"])
+            path = g["path"] if g else "/"
+            target = f"http://127.0.0.1:{r['port']}" + (g["path"] if g and not g["strip"] else "")
+            if apply:
                 try:
-                    p = _run(["tailscale", "serve", "--bg", f"--https={r['port']}", f"http://127.0.0.1:{r['port']}"], 60)
-                    if p.returncode != 0:
-                        result["errors"][r["id"]] = (p.stderr or p.stdout).strip()[:200]
-                        continue
-                except (OSError, subprocess.TimeoutExpired) as e:
+                    status = route_status(serve_status(), ts["host"], port, path, target)
+                    if status == "conflict":
+                        raise ValueError(f"existing Serve route on {port}{path} differs; left untouched")
+                    if status == "missing":
+                        args = ["tailscale", "serve", "--bg", f"--https={port}"]
+                        if g:
+                            args.append(f"--set-path={path}")
+                        p = _run([*args, target], 60)
+                        if p.returncode != 0:
+                            raise ValueError((p.stderr or p.stdout).strip() or "Tailscale Serve failed")
+                        if route_status(serve_status(), ts["host"], port, path, target) != "match":
+                            raise ValueError("Serve route readback did not match requested private proxy")
+                except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                     result["errors"][r["id"]] = str(e)[:200]
                     continue
-            url = f"https://{ts['host']}:{r['port']}{r['path']}"
-            result["links"].append({**r, "url": url, "open": url})
+            url = f"https://{ts['host']}:{port}{g['path'] if g else r['path']}"
+            result["links"].append({**r, "url": url, "open": g["path"] if g else url,
+                                    **({"gateway_strip": g["strip"]} if g else {})})
+    if not apply:
+        return {**result, "dry_run": True}
     home.mkdir(parents=True, exist_ok=True)
     tmp = home / "links.json.tmp"
     tmp.write_text(json.dumps(result, indent=2) + "\n")

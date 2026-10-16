@@ -45,6 +45,19 @@ def test_write_registry_returns_public_data(config):
     assert_public_and_skills(c, source, cli.write_registry(c))
 
 
+def test_owner_route_projection_matches_return_and_shared_registry(config):
+    c, source = config
+    c.home.mkdir(parents=True)
+    (c.home / "routes.json").write_text(json.dumps({
+        "hello-wizard": {"view": "/hello-wizard-next/", "staged_as": "hello-wizard-next"}
+    }))
+    result = cli.write_registry(c)
+    assert_public_and_skills(c, source, result)
+    assert result["apps"][0]["id"] == "hello-wizard-next"
+    assert result["apps"][0]["view"] == {"url": "/hello-wizard-next/"}
+    assert result["apps"][0]["app_id"] == "hello-wizard"
+
+
 def test_apps_cli_serializes_public_data(config, capsys):
     c, source = config
     assert cli.main(["apps", "--json"]) == 0
