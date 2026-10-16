@@ -119,6 +119,12 @@ class Runtipi:
     def install(self, urn: str, form: dict | None = None) -> dict:
         return self.req("POST", f"/app-lifecycle/{urn}/install", form or {}, timeout=120)
 
+    def update(self, urn: str, perform_backup: bool = True) -> dict:
+        return self.req("PATCH", f"/app-lifecycle/{urn}/update", {"performBackup": perform_backup}, timeout=120)
+
+    def start(self, urn: str) -> dict:
+        return self.req("POST", f"/app-lifecycle/{urn}/start", {}, timeout=120)
+
     def uninstall(self, urn: str, remove_backups: bool = False) -> dict:
         return self.req("DELETE", f"/app-lifecycle/{urn}/uninstall", {"removeBackups": remove_backups}, timeout=120)
 
