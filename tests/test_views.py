@@ -171,17 +171,17 @@ def test_own_version_uses_the_api_survives_updates_reverts_and_restarts(box):
 
     # An update that breaks the owner's build: last working version stays, note explains.
     kept = v['serving']
-    box.upstream_update(lambda w: (w / 'theme-client.js').unlink())
+    box.upstream_update(lambda w: (w / 'boot.js').unlink())
     v = views.update('habit-tracker', box.home)
     assert v['state'] == 'update_build_failed' and v['serving'] == kept and 'no longer builds' in v['note']
     assert box.get('/views/habit-tracker/')[0] == 200
     # The owner (agent) fixes the build; the update completes.
     (box.home / 'views/habit-tracker/src/app/build_view.py').write_text(
-        (box.home / 'views/habit-tracker/src/app/build_view.py').read_text().replace("'theme-client.js', ", ''))
+        (box.home / 'views/habit-tracker/src/app/build_view.py').read_text().replace("'boot.js', ", ''))
     with pytest.raises(views.ViewError, match='Only the screen source'):
         views.apply('habit-tracker', box.home)  # build script lives outside the screen folder: refused
     subprocess.run(['git', '-C', str(box.home / 'views/habit-tracker/src'), 'checkout', '--', 'app'], check=True)
-    (box.home / 'views/habit-tracker/src/web/theme-client.js').write_text('/* owner restored */\n')
+    (box.home / 'views/habit-tracker/src/web/boot.js').write_text('/* owner restored */\n')
     fixed = views.apply('habit-tracker', box.home)
     assert fixed['state'] == 'active' and fixed['pending'] is None and fixed['base'] == views.app_record('habit-tracker', box.home)['version']
 
