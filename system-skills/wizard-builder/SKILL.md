@@ -35,6 +35,9 @@ Use the shell registry as the source of truth. The accepted set is **Nebula (def
 ## Shared system functions (James-approved, mandatory)
 Read `references/system-functions.md` **before** editing any view. Always reuse `WizardApp` from `/wizard-os-home/core/app-client.js`; apps own task state/domain callbacks, never capture, sharing, root exit guards, system theme storage, SW or install implementations. This reference and its executable gate ship in the installed builder skill, so future agents load the rule automatically. No new `wizard.md` field is approved by this work.
 
+## App-owned AI workflows
+Read `references/app-model-workflows.md` before adding or changing AI generation. Package the exact process model/provider, versioned prompt and acceptance checks with the app. Use that contract on every installation; the conversation/default model is only an orchestrator. Substitution requires an explicit, scoped owner approval before execution. Missing model access or prompt files blocks the process; verify actual runtime model evidence and clean-install discovery. This is distinct from the manifest check and does not add a new schema field.
+
 ## Build and verify
 1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.
 2. `terminal(command="wam new habit-tracker --request 'Build me a habit tracker'")` creates local source from hello-wizard. This template already includes daily habits, diagnostics, API, MCP and vanilla view. Other jobs require actual source edits; the request is recorded, not magically implemented by the CLI.
