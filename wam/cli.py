@@ -267,6 +267,16 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
+    if "port" not in form:
+        # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
+        # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
+        want = int(info.get("port") or 0)
+        if want and not port_free(want):
+            form["port"] = free_port(want + 1)
+            print(f"note: port {want} is in use; {app_id} gets {form['port']}", file=sys.stderr)
+    trust_env = trusted_origin_env(c, app_id)
+    if trust_env:
+        write_user_env(c.runtipi_root, app_id, trust_env)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -289,6 +299,67 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
+    """Apps built with the Wizard builder answer only hosts/origins they are told to trust
+    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). On an alongside box with Tailscale, trust the shell's
+    tailnet origin, so the app opens inside Wizard instead of answering 'untrusted_host_or_site'."""
+    # Before install the recipe is only in Runtipi's store copy (repos/), after it also in apps/.
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
+    if "WIZARD_TRUSTED_HOSTS" not in text:
+        return {}
+    al = alongside.load(c.home) or {}
+    port = int((al.get("shell") or {}).get("port") or 0)
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+    except (OSError, ValueError):
+        host = ""
+    if not host or not port:
+        return {}
+    return {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+
+
+def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
+    """Merge KEY=VALUE pairs into the app's Runtipi user-config app.env (kept across updates), owner-only."""
+    p = runtipi_root / "user-config" / STORE / app_id / "app.env"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    keep = [l for l in (p.read_text().splitlines() if p.is_file() else [])
+            if l.partition("=")[0].strip() not in values]
+    p.write_text("\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n")
+    p.chmod(0o600)
+    return p
+
+
+def port_free(port: int) -> bool:
+    """Nothing listens on this TCP port on any local address (loopback, tailnet, all)."""
+    import socket
+    for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET, "127.0.0.1")):
+        with socket.socket(fam, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((addr, port))
+            except OSError:
+                return False
+    try:
+        rows = [l.split() for f in ("/proc/net/tcp", "/proc/net/tcp6") for l in open(f).read().splitlines()[1:]]
+    except OSError:
+        rows = []
+    return not any(len(r) > 3 and r[3] == "0A" and int(r[1].rsplit(":", 1)[1], 16) == port for r in rows)
+
+
+def free_port(start: int, stop: int = 65000) -> int:
+    for p in range(max(1024, start), stop):
+        if port_free(p):
+            return p
+    raise SystemExit("no free port for this app")
 
 
 def install_failure_reason(urn: str) -> str:
@@ -629,6 +700,9 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
             try:
                 r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
                 out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
+                from . import store_install
+                r2 = subprocess.run(store_install.route(shell_port), capture_output=True, text=True, timeout=60)
+                out["get"] = "routed" if r2.returncode == 0 else (r2.stderr or r2.stdout).strip()[:200]
             except (OSError, subprocess.TimeoutExpired) as e:
                 out["tailnet"] = str(e)[:200]
     return out
@@ -859,6 +933,47 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+class StoreHandler(BaseHTTPRequestHandler):
+    """Store Get on loopback :7791, served only to tailscaled (peer socket owned by root). The path is the app id
+    (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
+    cfg: Config
+
+    def log_message(self, fmt, *args):  # noqa: D401
+        sys.stderr.write("wam store: " + (fmt % args) + "\n")
+
+    _json = Handler._json
+
+    def _go(self, method: str) -> None:
+        from . import store_install as si
+        if si.peer_uid(self.client_address[1]) != 0:
+            return self._json(403, {"error": "only reachable through tailscale serve"})
+        c = self.cfg
+        al = alongside.load(c.home) or {}
+        lp = c.home / "links.json"
+        ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
+        port = int((al.get("shell") or {}).get("port") or 0)
+        origins = {f"https://{ts}:{port}"} if ts and port else set()
+        owner = si.owner_login()
+        if method == "POST":
+            why = si.check_request(self.headers, owner, origins)
+        else:
+            why = None if owner and (self.headers.get("Tailscale-User-Login") or "").lower() == owner.lower() else "owner only"
+        if why:
+            return self._json(403, {"error": why})
+        app_id = urlparse(self.path).path.strip("/")
+        if method == "POST":
+            code, body = si.start(c, app_id, lambda c_, a: install(c_, a), lambda: installed_ids(c.runtipi()))
+        else:
+            code, body = si.status(app_id)
+        return self._json(code, body)
+
+    def do_GET(self):  # noqa: N802
+        self._go("GET")
+
+    def do_POST(self):  # noqa: N802
+        self._go("POST")
+
+
 # ---------------------------------------------------------------- main
 
 def _sets(pairs: list[str]) -> dict[str, str]:
@@ -1015,6 +1130,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
             Handler.cfg, Handler.token = c, c.api_token()
+            StoreHandler.cfg = c
+            try:
+                import threading
+                from . import store_install
+                ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
+                threading.Thread(target=ssrv.serve_forever, daemon=True).start()
+                print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
+            except OSError as e:
+                print(f"note: store install listener not started ({e})", file=sys.stderr)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()

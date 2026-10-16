@@ -913,3 +913,33 @@ def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monke
     with pytest.raises(SystemExit, match="install failed: pull access denied"):
         cli.install(cli.Config(), "x")
     assert "missing" in waits[0]
+
+
+def test_free_port_skips_a_taken_port():
+    import socket
+    from wam import cli
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); s.listen()
+        taken = s.getsockname()[1]
+        assert not cli.port_free(taken)
+        assert cli.free_port(taken) != taken
+
+
+def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
+    from wam import cli
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/cal/docker-compose.yml"   # not installed yet: store copy only
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    env = cli.trusted_origin_env(c, "cal")
+    assert env == {"WIZARD_TRUSTED_HOSTS": "box.tail1.ts.net:8796,box.tail1.ts.net",
+                   "WIZARD_TRUSTED_ORIGINS": "https://box.tail1.ts.net:8796"}
+    f = cli.write_user_env(c.runtipi_root, "cal", {"OTHER": "1"})
+    cli.write_user_env(c.runtipi_root, "cal", env)
+    assert f.read_text().splitlines() == ["OTHER=1", *[f"{k}={v}" for k, v in env.items()]]
+    comp.write_text("plain: app\n")
+    assert cli.trusted_origin_env(c, "cal") == {}
