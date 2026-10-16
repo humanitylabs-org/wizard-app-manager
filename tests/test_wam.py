@@ -889,3 +889,27 @@ def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypat
     except SystemExit:
         pass
     assert calls == ["wizard-ux"]                      # spot already filled: no second service
+
+
+def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monkeypatch):
+    """A failed install deletes the app record; wam reports it right away instead of polling for 15 minutes."""
+    from wam import cli
+    import pytest
+    waits = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": "x"}}
+        def install(self, urn, form): pass
+        def wait_status(self, urn, want, timeout=900): waits.append(set(want)); return "missing"
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    monkeypatch.setattr(cli.alongside, "load", lambda h: None)
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: {"id": "x", "repo": "o/x", "uses": []})
+    monkeypatch.setattr(cli, "build_form", lambda *a, **k: ({}, []))
+    monkeypatch.setattr(cli, "alongside_role", lambda rec, i: None)
+    monkeypatch.setattr(cli, "install_failure_reason", lambda urn: "pull access denied")
+    with pytest.raises(SystemExit, match="install failed: pull access denied"):
+        cli.install(cli.Config(), "x")
+    assert "missing" in waits[0]

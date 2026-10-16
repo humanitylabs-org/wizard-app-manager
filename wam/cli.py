@@ -272,7 +272,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     rt.install(urn, form)
     if role == "service" and alongside.load(c.home):
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
-    status = rt.wait_status(urn, {"running", "stopped"}) if wait else "installing"
+    # A failed install (e.g. an image that can't be pulled) deletes the app record, so "missing" means failed:
+    # stop waiting then instead of polling for the full timeout.
+    status = rt.wait_status(urn, {"running", "stopped", "missing"}) if wait else "installing"
+    if status == "missing":
+        reason = install_failure_reason(urn)
+        raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
+                         " (the App Manager removed it; see `docker logs runtipi`)")
     reg = write_registry(c, rt)
     if role == "shell" and status == "running" and alongside.load(c.home):
         try:
@@ -283,6 +289,18 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def install_failure_reason(urn: str) -> str:
+    """Best effort: the App Manager's last logged error line for this app."""
+    try:
+        p = subprocess.run(["docker", "logs", "--since", "30m", "runtipi"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    name = urn.split(":")[0]
+    hits = [l.strip() for l in (p.stdout + p.stderr).splitlines()
+            if name in l and any(w in l.lower() for w in ("error", "denied", "failed", "not found", "manifest"))]
+    return hits[-1][-300:] if hits else ""
 
 
 def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid: int | None = None,
