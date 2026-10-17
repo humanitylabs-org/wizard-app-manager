@@ -47,6 +47,9 @@ def hermes_home(explicit: str | None = None) -> Path:
 
 
 def hermes_binary() -> str | None:
+    pinned = os.environ.get("WIZARD_HERMES_BIN")   # get.sh: the found Hermes when it is not on PATH
+    if pinned and os.access(pinned, os.X_OK):
+        return pinned
     found = shutil.which("hermes")
     if found:
         return found

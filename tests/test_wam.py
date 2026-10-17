@@ -772,7 +772,7 @@ GET_SH = Path(__file__).resolve().parents[1] / "get.sh"
 def _mode(tmp_path, *, mode="auto", hermes=True, wos=None, wizard_user_wos=None, runtipi=False):
     """Run get.sh's mode helpers (has_hermes .. want_alongside) with stub getent/docker; return the picked mode."""
     src = GET_SH.read_text()
-    funcs = src[src.index("has_hermes() {"):src.index("# Root with an existing Hermes")]
+    funcs = src[src.index("# ---- Hermes detection"):src.index("# ---- end mode helpers ----")]
     homes = {}
     for user, state in (("owner", wos), ("wizard", wizard_user_wos)):
         h = tmp_path / user; h.mkdir(exist_ok=True); homes[user] = h
@@ -789,11 +789,14 @@ def _mode(tmp_path, *, mode="auto", hermes=True, wos=None, wizard_user_wos=None,
     script = f"""
 set -u
 MODE={mode}; WUSER=wizard
-getent() {{ case "$2" in owner) echo "owner:x:1:1::{homes['owner']}:/bin/sh";; wizard) echo "wizard:x:2:2::{homes['wizard']}:/bin/sh";; esac; }}
+getent() {{ case "${{2:-}}" in owner) echo "owner:x:1001:1001::{homes['owner']}:/bin/sh";; wizard) echo "wizard:x:1002:1002::{homes['wizard']}:/bin/sh";;
+  "") echo "owner:x:1001:1001::{homes['owner']}:/bin/sh"; echo "wizard:x:1002:1002::{homes['wizard']}:/bin/sh";; esac; }}
 docker() {{ {"echo runtipi" if runtipi else "true"}; }}
 sudo() {{ return 1; }}
 id() {{ echo owner; }}
+SYSUNIT_DIR={tmp_path}/no-units
 {funcs}
+_ps() {{ :; }}
 if [ "$(wos_mode owner)" = alongside ]; then echo alongside; elif want_alongside owner; then echo alongside; else echo fresh; fi
 """
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})

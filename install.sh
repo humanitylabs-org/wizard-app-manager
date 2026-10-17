@@ -128,6 +128,29 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
   || FAILED+=("could not install the wizard command")
 
+# Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
+# agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
+# reply. Then everything else finishes first, and the restart is scheduled detached, after the summary.
+# wizard-install: defers-hermes-restart   (get.sh checks this marker before an agent-run install)
+RESTART_NOW=1
+[ "${WIZARD_AGENT_SAFE:-0}" = 1 ] && RESTART_NOW=""
+RESTART_LATER=""
+schedule_hermes_restart() {  # outside this process tree (its own systemd unit), so it survives the restart it does
+  local delay="${WIZARD_RESTART_DELAY:-20}" hermes log="$HOME/.wizard-os/hermes-restart.log" job
+  case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
+  hermes="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
+  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$hermes' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  local -a run=(systemd-run --user)
+  [ "$(id -u)" -eq 0 ] && run=(systemd-run)
+  if command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \
+      --on-active="${delay}s" --setenv=HOME="$HOME" --setenv=PATH="$PATH" \
+      /bin/bash -c "exec >>'$log' 2>&1; $job" >/dev/null 2>&1; then
+    return 0
+  fi
+  # No systemd: a detached session of its own.
+  setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
+}
+
 # 2b) Alongside an existing Hermes (WIZARD_MODE=alongside, set by get.sh): the host's Hermes fills the agent spot
 #     and is linked to the apps; the hermes-agent app is never installed. `wizard unlink` reverses the link.
 #     A failed link rolls itself back (Hermes is left exactly as it was) and fails the install.
@@ -138,9 +161,11 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
     FAILED+=("could not record alongside mode (wam alongside)")
-  elif ! "$HOME/.local/bin/wizard" link --restart ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
+  elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
       ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"}; then
     FAILED+=("'wizard link' failed (its message is above); your Hermes was left as it was. Fix it, then re-run the install")
+  elif [ -z "$RESTART_NOW" ]; then
+    RESTART_LATER=1   # agent-safe: the gateway restarts after this script has printed its summary
   else
     # Hermes' API server answers once the gateway has restarted with its key.
     ORIGIN="$("$HOME/.local/bin/wam" alongside --detect 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_origin"])' || echo http://127.0.0.1:8642)"
@@ -172,8 +197,14 @@ print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")
   fi
 fi
+PENDING=()
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
-  echo; "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
+  if [ -n "$RESTART_LATER" ]; then
+    # Hermes has not loaded the link yet (its restart comes last), so FAIL lines here may only mean "not yet".
+    echo; "$HOME/.local/bin/wizard" doctor || PENDING+=("wizard doctor: some checks pass only after the Hermes restart; run 'wizard doctor' again in a minute")
+  else
+    echo; "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
+  fi
 fi
 if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
   "$HOME/.local/bin/wam" builder-bundle fresh --restart || FAILED+=("stock Hermes could not adopt builder discovery/mount")
@@ -200,6 +231,13 @@ echo
 #    Skipped on a failed install: there is nothing usable to link to.
 if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
   "$HOME/.local/bin/wam" links || true
+  echo
+fi
+[ ${#PENDING[@]} -eq 0 ] || { printf 'Pending: %s\n' "${PENDING[@]}"; echo; }
+if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
+  schedule_hermes_restart
+  echo "Hermes will restart in ~${WIZARD_RESTART_DELAY:-20}s to load Wizard OS (this chat pauses briefly; send any"
+  echo "message after a minute). The restart and a fresh 'wizard doctor' are logged in ~/.wizard-os/hermes-restart.log."
   echo
 fi
 case "$status" in
