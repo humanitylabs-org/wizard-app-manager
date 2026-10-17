@@ -130,8 +130,7 @@ def test_fresh_first_recursive_dependency_uses_source_and_image_pins(install_box
         assert (row['repo'], row['commit']) in fetched
         if app in doc['images']:
             assert image == release_pins.image_ref(doc['images'][app])
-            assert image in pulled
-    assert not any(':catalog' in im for im in pulled if 'wizard-ux' in im or 'wizard-agent-service' in im)
+    assert pulled == []  # public release pulls use Runtipi, not the fresh user's Docker socket
 
 
 def test_missing_index_default_is_materialized_without_credentials(install_box):
@@ -139,6 +138,15 @@ def test_missing_index_default_is_materialized_without_credentials(install_box):
     cli.install(c, 'wizard-ai-accounts')
     assert calls[0][0] == 'wizard-ai-accounts'
     assert fetched == [('oscarhenrycollins/ai-accounts', manifest()['default_apps']['ai-accounts']['commit'])]
+
+
+def test_explicit_image_override_applies_on_initial_fresh_dependency(install_box, monkeypatch):
+    c, calls, _, _ = install_box
+    override = 'ghcr.io/example/service@sha256:' + 'a' * 64
+    monkeypatch.setenv('WIZARD_AGENT_SERVICE_IMAGE', override)
+    cli.install(c, 'wizard-ux')
+    assert next(image for app, image, _ in calls if app == 'wizard-agent-service') == override
+    # get.sh independently reads running digests; an override is never exact-release proof.
 
 
 def test_alongside_skips_external_hermes_and_keeps_host_override(install_box, monkeypatch):
@@ -180,8 +188,8 @@ def test_installer_keeps_manager_digest_and_starts_pin_view_first(pins, tmp_path
     assert '!override' in text and '127.0.0.1:8480:80' in text
     assert 'ports:' not in text.split('  wizard-release-index:')[1]
     log = calls.read_text()
-    assert log.index('up -d --wait wizard-release-index') < log.index('up -d --no-deps runtipi')
-    assert log.index('up -d --no-deps runtipi') < log.index('wam -m wam bootstrap')
+    assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps runtipi')
+    assert log.index('up -d --force-recreate --no-deps runtipi') < log.index('wam -m wam bootstrap')
     assert f'WIZARD_RELEASE_PINS={pins}' in (home / '.config/systemd/user/wizard-app-manager-api.service').read_text()
 
 
@@ -196,6 +204,34 @@ def test_compose_roundtrip_preserves_tags_owner_settings_and_unpinned_mode(pins,
     text = path.read_text()
     assert 'WIZARD_INDEX_URL' not in text and 'wizard-release-index' not in text
     assert '!override' in text and '!reset' in text and 'OWNER: keep' in text
+
+
+@pytest.mark.parametrize('drift', [False, True])
+def test_candidate_helper_preserves_original_and_never_greens_source_exception(box, tmp_path, drift):
+    import importlib.util
+    from test_release_pins import OTHER
+    spec = importlib.util.spec_from_file_location('candidate_qa', REPO / 'scripts/qa-release-candidate.py')
+    qa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qa)
+    original = json.loads((box['rel'] / '9.9.9.json').read_text())
+    original['components']['wizard-app-manager']['commit'] = '1' * 40
+    path = tmp_path / 'original.json'
+    raw = json.dumps(original).encode()
+    path.write_bytes(raw)
+    rel, record, releases = qa.stage(path, box['pinned'], tmp_path / 'evidence')
+    assert path.read_bytes() == raw
+    assert (releases.parent / 'original-release.json').read_bytes() == raw
+    rel['components']['wizard-app-manager']['commit'] = '1' * 40
+    assert rel == original  # exactly one selector changes, not the image or default pins
+    env = {'WIZARD_RELEASE_BASE': releases.as_uri(), 'WIZARD_RELEASE': '9.9.9', 'WIZARD_STRICT': '1'}
+    if drift: env['SHELL_DIGEST'] = OTHER
+    result, receipt = box['run'](**env)
+    assert result.returncode == (3 if drift else 0)
+    final = qa.record_readback(record, receipt, box['pinned'])
+    assert final['status'] == 'mismatch' and final['release_exact'] is False
+    source = next(c for c in final['checks'] if c['name'] == 'wizard-app-manager commit')
+    assert source == {'name': 'wizard-app-manager commit', 'expected': '1' * 40, 'observed': box['pinned'], 'ok': False, 'core': True}
+    assert record['candidate_checks_passed'] is (not drift)
 
 
 def test_real_node_index_pin_lookup_and_unrelated_fallback(pins, tmp_path):

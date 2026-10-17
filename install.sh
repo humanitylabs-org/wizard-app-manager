@@ -55,11 +55,14 @@ OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
 if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
+RECREATE=()
 if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   # The released manager image consumes its usual index protocol; start the local pin view first.
-  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --wait wizard-release-index)
+  # Pins are atomically replaced; recreate the file mount and clear the manager's index cache.
+  RECREATE=(--force-recreate)
+  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
-(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"

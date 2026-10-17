@@ -171,8 +171,11 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                         matched += 1
                 if not matched:
                     raise PrivateError('catalog image does not match pinned Compose')
-        for img in images(compose):
-            pull(img, tok)
+        # Runtipi pulls public release images through its normal install path. A fresh
+        # sudo user need not have Docker socket access or a registry login on the CLI.
+        if not source_pin:
+            for img in images(compose):
+                pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
         old_tipi = 0
