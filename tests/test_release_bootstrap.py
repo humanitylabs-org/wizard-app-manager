@@ -243,6 +243,9 @@ def test_real_node_index_pin_lookup_and_unrelated_fallback(pins, tmp_path):
         def do_GET(self):
             hits.append(self.path)
             self.send_response(200); self.end_headers()
+            if self.path == '/v1/search?q=wizard':
+                self.wfile.write(b'{"apps":[{"id":"wizard-ux","name":"Wizard","summary":"Keep this description","install":{"commit":"live"}}]}')
+                return
             self.wfile.write(b'{"apps":[{"id":"unrelated","install":{"commit":"live"}}],"next_offset":null}')
         def log_message(self, *a): pass
     upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
@@ -270,6 +273,9 @@ def test_real_node_index_pin_lookup_and_unrelated_fallback(pins, tmp_path):
         assert hits == []  # removed app and every release pin bypass live catalog entirely
         assert get('/v1/search?id=unrelated')['apps'][0]['install']['commit'] == 'live'
         assert hits == ['/v1/search?id=unrelated']
+        browse = get('/v1/search?q=wizard')['apps'][0]
+        assert browse['name'] == 'Wizard' and browse['summary'] == 'Keep this description'
+        assert browse['install']['commit'] == manifest()['default_apps']['shell']['commit']
     finally:
         proc.terminate(); proc.communicate(timeout=5)
         upstream.shutdown(); upstream.server_close()

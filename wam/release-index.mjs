@@ -37,7 +37,10 @@ const server = createServer(async (req, res) => {
     const data = await response.json();
     // Browsing keeps the catalog's ordering/metadata but never advertises a different
     // source commit for an installed release default. Unpinned entries pass through.
-    if (Array.isArray(data.apps)) data.apps = data.apps.map(a => pins.has(a.id) ? { ...a, ...pins.get(a.id) } : a);
+    if (Array.isArray(data.apps)) data.apps = data.apps.map(a => {
+      const pin = pins.get(a.id);
+      return pin ? { ...a, repo: pin.repo, version: pin.version, install: pin.install } : a;
+    });
     send(response.status, data);
   } catch {
     send(502, { error: 'public index unavailable' });
