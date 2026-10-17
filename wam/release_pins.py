@@ -139,14 +139,31 @@ def configure_manager(path, image, pins):
         if env.get("WIZARD_INDEX_URL") not in (None, endpoint):
             raise ValueError("remove the custom runtipi WIZARD_INDEX_URL before applying release pins")
         env["WIZARD_INDEX_URL"] = endpoint
+        # Bind public adapter assets, not mode-0600 owner manifest/source files.
+        # The image runs as uid 1000, which need not equal the installer owner.
+        public = load(pins)
+        public = {"version": public.get("version"), "default_apps": {
+            slot: {key: row[key] for key in ("app", "repo", "commit", "index_version") if key in row}
+            for slot, row in public.get("default_apps", {}).items() if row and row.get("commit")}}
+        assets = path.parent / ".wizard-release-index"
+        if assets.is_symlink():
+            raise ValueError("release index assets must not be a symlink")
+        assets.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for name, content in (("release-index.mjs", Path(__file__).with_name("release-index.mjs").read_text()),
+                              ("release-pins.json", json.dumps(public) + "\n")):
+            asset = assets / name
+            if asset.is_symlink():
+                raise ValueError("release index asset must not be a symlink")
+            asset.write_text(content)
+            asset.chmod(0o644)
         services["wizard-release-index"] = {
             "x-wizard-release-pins": True, "image": image, "pull_policy": "if_not_present",
             "entrypoint": ["node", "/release-index.mjs"], "command": [],
             "restart": "unless-stopped", "read_only": True, "user": "1000:1000",
             "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
             "networks": ["tipi_main_network"],
-            "volumes": [f"{Path(__file__).with_name('release-index.mjs').resolve()}:/release-index.mjs:ro",
-                        f"{Path(pins).resolve()}:/release-pins.json:ro"],
+            "volumes": [f"{(assets / 'release-index.mjs').resolve()}:/release-index.mjs:ro",
+                        f"{(assets / 'release-pins.json').resolve()}:/release-pins.json:ro"],
             "healthcheck": {"test": ["CMD", "node", "-e",
                 "fetch('http://127.0.0.1:7789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"],
                 "interval": "2s", "timeout": "5s", "retries": 30}}
