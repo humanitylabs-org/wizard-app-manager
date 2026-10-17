@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots
+from . import alongside, index, private, registry, slots, release_pins
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -53,6 +53,7 @@ STORE_NAME = "Wizard Apps"
 
 class Config:
     def __init__(self) -> None:
+        release_pins.load()  # reject malformed pins before creating state or contacting Runtipi
         self.home = registry.home()
         self.home.mkdir(parents=True, exist_ok=True)
         cfg_file = self.home / "app-manager.json"
@@ -218,6 +219,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
             _split: bool = False) -> dict:
+    release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
@@ -767,6 +769,9 @@ def resolve_any(c: Config, ref: str) -> dict:
     An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
     inside prepare before any image load/pull or store mutation.
     """
+    pinned = release_pins.resolve(ref)
+    if pinned:
+        return private.prepare(c.runtipi_root, STORE, pinned['repo'], source_pin=pinned)
     from . import test_catalog
     pinned = test_catalog.resolve(ref)
     if pinned:
@@ -808,6 +813,7 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
 
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
+    release_pins.load()
     rt = c.runtipi()
     reg = write_registry(c, rt)
     done, failed = [], {}
