@@ -62,6 +62,8 @@ def head_commit(repo: str, tok: str) -> str:
 
 def _git_env(tok: str) -> dict:
     """Pass the login as an HTTP header through git's env config, so it never shows in the process list."""
+    if not tok:
+        return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     basic = base64.b64encode(f"x-access-token:{tok}".encode()).decode()
     return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader", "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}"}
@@ -74,6 +76,10 @@ def fetch(repo: str, commit: str, dest: Path, tok: str) -> None:
         r = subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest, env=env, capture_output=True, text=True, timeout=300)
         if r.returncode:
             raise PrivateError(f"git {args[0]} {repo}: {r.stderr.strip()[:200]}")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, env=env,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    if head != commit:
+        raise PrivateError(f"{repo}: fetched {head}, expected {commit}")
 
 
 def images(compose: dict) -> list[str]:
@@ -105,16 +111,19 @@ def pull(image: str, tok: str) -> None:
 
 
 def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None,
-            expected_id: str | None = None) -> dict:
+            expected_id: str | None = None, source_pin: dict | None = None) -> dict:
     """Fetch `repo` (owner/name) at its newest commit into the Wizard store folder and pull its images.
     Returns an index-like record: {id, repo, uses, private: True, install: {commit}}."""
     tok = tok or token()
-    if not tok:
+    if not tok and not source_pin:
         raise PrivateError(f"{repo} isn't in the public index and this box has no GitHub login. Run `gh auth login` "
                            f"with an account that can see it, or set GITHUB_TOKEN")
     if release and (release.get('repo') != repo or not re.fullmatch(r'[0-9a-f]{40}', release.get('commit', ''))):
         raise PrivateError('invalid private source pin')
-    commit = release['commit'] if release else head_commit(repo, tok)
+    if source_pin and (source_pin.get('repo') != repo or
+                       not re.fullmatch(r'[0-9a-f]{40}', source_pin.get('commit', ''))):
+        raise PrivateError('invalid release source pin')
+    commit = source_pin['commit'] if source_pin else release['commit'] if release else head_commit(repo, tok)
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Path(tmpdir) / "src"
         fetch(repo, commit, src, tok)
@@ -127,6 +136,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             raise PrivateError(f"alias {expected_id!r} does not match manifest id {app_id!r}; nothing installed")
         if release and app_id != release['id']:
             raise PrivateError('pinned app identity mismatch')
+        if source_pin and app_id != source_pin['id']:
+            raise PrivateError('release app identity mismatch')
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", app_id):
             raise PrivateError(f"{repo}: bad id {app_id!r}")
         rt = d.get("runtime") or {}
@@ -140,6 +151,13 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         if risks:
             raise PrivateError(f"{repo} asks for host-level access: {'; '.join(risks)}")
         compose = yaml.safe_load(ctext) or {}
+        if source_pin and source_pin.get('image'):
+            mains = [svc for svc in compose.get('services', {}).values()
+                     if (svc.get('x-runtipi') or {}).get('is_main')]
+            if len(mains) != 1:
+                raise PrivateError('release image requires exactly one main Compose service')
+            mains[0]['image'] = source_pin['image']
+            mains[0]['pull_policy'] = 'if_not_present'
         if release:
             from .test_catalog import preload
             loaded = preload(release, tok)
@@ -165,7 +183,7 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                 old_tipi = 0
         have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
         rec = {"id": app_id, "repo": repo, "uses": d.get("uses") or [], "private": True, "install": {"commit": commit}}
-        if have == commit and not release:
+        if have == commit and not release and not source_pin:
             return rec
 
         cfg = json.loads(cfg_p.read_text())

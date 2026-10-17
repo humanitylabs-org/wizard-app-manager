@@ -9,6 +9,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
+# Fail before private access, Docker, files or services change. Validation needs no YAML dependency.
+(cd "$HERE" && python3 -m wam.release_pins)
+
 # Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
 bash "$HERE/scripts/setup-private-access.sh"
 
@@ -47,34 +50,22 @@ mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUN
 mkdir -p "$RUNTIPI_ROOT/user-config"
 OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 [ -f "$OVR" ] && cp "$OVR" "$OVR.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-# Text edit (the file may use compose tags like !override that a YAML round-trip would drop).
-python3 - "$OVR" "$IMAGE" <<'PY'
-import re, sys, pathlib
-p, image = pathlib.Path(sys.argv[1]), sys.argv[2]
-s = p.read_text() if p.is_file() else ""
-lines = s.splitlines()
-if not any(re.match(r"^services:\s*$", l) for l in lines):
-    lines += ["services:"]
-i = next((n for n, l in enumerate(lines) if re.match(r"^  runtipi:\s*$", l)), None)
-if i is None:
-    lines += ["  runtipi:", f"    image: {image}", "    pull_policy: if_not_present"]
-else:
-    j = i + 1
-    while j < len(lines) and (lines[j].startswith("    ") or not lines[j].strip()):
-        j += 1
-    block = [l for l in lines[i + 1:j] if not re.match(r"^    (image|pull_policy):", l)]
-    lines[i + 1:j] = [f"    image: {image}", "    pull_policy: if_not_present"] + block
-p.write_text("\n".join(lines) + "\n")
-PY
+# Preserve owner settings and Compose tags (!override/!reset), including box-only bindings.
+(cd "$HERE" && python3 -m wam.release_pins "$OVR" "$IMAGE")
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
 if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
+if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
+  # The released manager image consumes its usual index protocol; start the local pin view first.
+  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --wait wizard-release-index)
+fi
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
 cat > "$HOME/.local/bin/wam" <<EOF
 #!/usr/bin/env bash
+export WIZARD_RELEASE_PINS="\${WIZARD_RELEASE_PINS-${WIZARD_RELEASE_PINS:-}}"
 cd "$HERE" && exec python3 -m wam "\$@"
 EOF
 chmod +x "$HOME/.local/bin/wam"
@@ -86,6 +77,7 @@ After=network-online.target
 
 [Service]
 Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+Environment=WIZARD_RELEASE_PINS=${WIZARD_RELEASE_PINS:-}
 WorkingDirectory=$HERE
 ExecStart=/usr/bin/env python3 -m wam serve
 Restart=on-failure
