@@ -74,12 +74,17 @@ def box(tmp_path):
     (bin_dir / "docker").chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
+    # Alongside preflight needs an actual sandbox Hermes, not the developer's host install.
+    hh = home / ".hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("model: fixture\n")
+    hermes = bin_dir / "hermes"
+    hermes.write_text("#!/bin/sh\nexit 0\n"); hermes.chmod(0o755)
     apps = {"apps": [{"id": "wizard-shell", "version": "0.2.0"}, {"id": "files", "version": "2.63.23"},
                      {"id": "hermes-agent", "version": "1"}]}
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home), "WIZARD_MODE": "fresh",
            "WAM_REPO": str(src), "WIZARD_RELEASE_BASE": f"file://{rel}", "WAM_DIR": str(home / "wam"),
            "RUNTIPI_DIGEST": WAM_DIGEST, "SHELL_DIGEST": SHELL_DIGEST, "APPS_JSON": json.dumps(apps),
-           "GIT_CONFIG_NOSYSTEM": "1"}
+           "GIT_CONFIG_NOSYSTEM": "1", "HERMES_HOME": str(hh), "WIZARD_HERMES_BIN": str(hermes)}
 
     def run(**extra):
         e = {**env, **{k: v for k, v in extra.items() if v is not None}}

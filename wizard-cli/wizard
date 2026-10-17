@@ -450,7 +450,7 @@ def hermes_home_path(arg: str | None = None) -> Path:
 
 def hermes_bin() -> str:
     import shutil
-    found = shutil.which("hermes") or str(Path.home() / ".local" / "bin" / "hermes")
+    found = os.environ.get("WIZARD_HERMES_BIN") or shutil.which("hermes") or str(Path.home() / ".local" / "bin" / "hermes")
     if not Path(found).is_file():
         raise Fail("usage", "no `hermes` command on this box (link needs an existing Hermes)")
     return found

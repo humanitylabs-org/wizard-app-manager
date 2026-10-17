@@ -3,9 +3,15 @@
 #
 #   curl -fsSL aiwizards.com/os.sh | bash
 #
-# Already running Hermes on this box? Run the same command as the user who owns that Hermes: Wizard OS installs
-# *alongside* it (the App Manager, the apps, and the Wizard shell pointed at your Hermes; your agent is linked to the
-# apps with `wizard link`, reversible with `wizard unlink`). Nothing in your Hermes is migrated or moved.
+# Already running Hermes on this box? The same command finds it, whichever Linux user owns it (root or any named
+# user), and installs Wizard OS *alongside* it as that user (the App Manager, the apps, and the Wizard shell pointed at
+# your Hermes; your agent is linked to the apps with `wizard link`, reversible with `wizard unlink`). Nothing in your
+# Hermes is migrated or moved. Several Hermes installs: WIZARD_HERMES_USER=<user> or HERMES_HOME=<path> picks one.
+#
+# Look first, change nothing:  curl -fsSL aiwizards.com/os.sh | WIZARD_CHECK=1 bash   (or: bash get.sh --check)
+#
+# Safe to run from a Hermes agent (e.g. asked in a Telegram chat): the Hermes restart the link needs is scheduled
+# detached, ~20s after the install has printed its summary (WIZARD_RESTART_DELAY), never in the middle of the run.
 #
 # What it does:
 #   1. As root: installs Docker, git, gh and python3-yaml, and creates the `wizard` user (docker group,
@@ -16,7 +22,8 @@
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
 # Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: on a first install, alongside when an
-# existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN.
+# existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN,
+# WIZARD_CHECK=1 (read-only preflight), WIZARD_HERMES_USER / HERMES_HOME (which Hermes), WIZARD_AGENT_SAFE=1|0.
 #
 # Release pins (wizard-os#27): the install follows one Wizard OS release file, wizard-os/releases/<version>.json,
 # which names the App Manager commit and the image digests. WIZARD_RELEASE=<version> picks one; without it the
@@ -37,16 +44,138 @@ tty_ok() { [ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null; }
 MODE="${WIZARD_MODE:-auto}"
 case "$MODE" in auto|alongside|fresh) ;; *) echo "WIZARD_MODE must be auto, alongside or fresh" >&2; exit 2 ;; esac
 REF="${WAM_REF:-main}"
-# An existing Hermes = the `hermes` command plus ~/.hermes/config.yaml, for the given user (default: this one).
-has_hermes() {  # has_hermes [user]
-  local h; h="$(getent passwd "${1:-$(id -un)}" | cut -d: -f6)"
-  [ -n "$h" ] && [ -f "${HERMES_HOME:-$h/.hermes}/config.yaml" ] && { [ -x "$h/.local/bin/hermes" ] || { [ -z "${1:-}" ] && command -v hermes >/dev/null; }; }
+# ---- Hermes detection (read-only; get.sh --check prints it) ----
+# An existing Hermes = <hermes home>/config.yaml plus a `hermes` command, owned by ANY Linux user (root included).
+# Found by: each account's ~/.hermes (root and uid >= 1000), hermes-gateway systemd units (system and user, incl. a
+# custom HERMES_HOME), and running `hermes gateway` processes. Wizard OS installs alongside as the user that owns
+# that Hermes; nothing in it is moved. Several found: WIZARD_HERMES_USER=<user> or HERMES_HOME=<path> picks one.
+SYSUNIT_DIR="${WIZARD_SYSTEMD_DIR:-/etc/systemd/system}"
+SUDOERS_DIR="${WIZARD_SUDOERS_DIR:-/etc/sudoers.d}"
+PROC="${WIZARD_PROC_ROOT:-/proc}"   # (tests point these three at fakes)
+home_of() { getent passwd "$1" | cut -d: -f6; }
+hermes_bin_for() {  # hermes_bin_for <user> <home> <hermes home>: the user's `hermes` command, or fail
+  local c
+  if [ -n "${WIZARD_HERMES_BIN:-}" ] && [ -x "$WIZARD_HERMES_BIN" ]; then echo "$WIZARD_HERMES_BIN"; return 0; fi
+  for c in "$2/.local/bin/hermes" "$3/hermes-agent/venv/bin/hermes" "$3/hermes-agent/.venv/bin/hermes" \
+      "$3/hermes-agent/.hermes/bin/hermes" "$3/bin/hermes" "$2/.local/share/pipx/venvs/hermes-agent/bin/hermes" \
+      "$2/.local/pipx/venvs/hermes-agent/bin/hermes" "$2/.local/share/uv/tools/hermes-agent/bin/hermes" \
+      /usr/local/bin/hermes /usr/bin/hermes; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  [ "$1" = "$(id -un)" ] && command -v hermes 2>/dev/null && return 0
+  return 1
 }
+_unit_value() {  # _unit_value <unit file> <Key> [env var]: last Key= value (Environment=VAR=... when a var is given)
+  local v
+  if [ -n "${3:-}" ]; then
+    v="$(grep -E "^Environment=\"?$3=" "$1" 2>/dev/null | tail -1 | sed -E "s/^Environment=\"?$3=([^\" ]*).*/\\1/")"
+  else
+    v="$(grep -E "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  fi
+  printf '%s' "$v"
+}
+_root_of() {  # a profile home (<root>/profiles/<name>) belongs to its root Hermes
+  case "$1" in */profiles/*) printf '%s' "${1%/profiles/*}" ;; *) printf '%s' "${1%/}" ;; esac
+}
+# One line per Hermes home: user|hermes home|how it was found. Duplicates are merged by hermes_scan.
+_hermes_sightings() {
+  local name uid home f u hh line pid
+  if [ -n "${HERMES_HOME:-}" ]; then
+    u="$(stat -c %U "$HERMES_HOME" 2>/dev/null || id -un)"
+    echo "$u|$HERMES_HOME|HERMES_HOME"
+  fi
+  while IFS=: read -r name _ uid _ _ home _; do
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    { [ "$uid" -eq 0 ] || { [ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ]; }; } || continue
+    [ -n "$home" ] && [ -d "$home" ] || continue
+    [ -f "$home/.hermes/config.yaml" ] && echo "$name|$home/.hermes|home"
+    for f in "$home"/.config/systemd/user/hermes-gateway*.service; do
+      [ -f "$f" ] || continue
+      hh="$(_unit_value "$f" "" HERMES_HOME)"
+      echo "$name|${hh:-$home/.hermes}|systemd-user:$(basename "$f")"
+    done
+  done < <(getent passwd)
+  for f in "$SYSUNIT_DIR"/hermes-gateway*.service; do
+    [ -f "$f" ] || continue
+    u="$(_unit_value "$f" User)"; u="${u:-root}"
+    hh="$(_unit_value "$f" "" HERMES_HOME)"
+    echo "$u|${hh:-$(home_of "$u")/.hermes}|systemd-system:$(basename "$f")"
+  done
+  # Running gateways on the host (not in a container). Root sees everyone's HERMES_HOME; others their own only.
+  while read -r u pid _; do
+    is_gateway_pid "$pid" || continue
+    hh="$(_penv "$pid" | sed -n 's/^HERMES_HOME=//p' | head -1)"
+    echo "$u|${hh:-$(home_of "$u")/.hermes}|process:$pid"
+  done < <(_ps)
+}
+# Process probes (functions so tests can stub them).
+_ps() { ps -eo user:32=,pid=,comm= 2>/dev/null; }
+_pcmd() { { tr '\0' '\n' < "$PROC/$1/cmdline"; } 2>/dev/null; }
+_penv() { { tr '\0' '\n' < "$PROC/$1/environ"; } 2>/dev/null; }
+_pcgroup() { { cat "$PROC/$1/cgroup"; } 2>/dev/null; }
+# A `hermes gateway run` process on the host: argv has "gateway" then "run", a hermes path, and no container cgroup.
+is_gateway_pid() {
+  local argv; argv="$(_pcmd "$1")"
+  printf '%s\n' "$argv" | grep -q hermes || return 1
+  printf '%s\n' "$argv" | awk 'p && $0 == "run" { f = 1 } { p = ($0 == "gateway") } END { exit !f }' || return 1
+  ! _pcgroup "$1" | grep -qE 'docker|containerd|libpod|kubepods|lxc'
+}
+# The parent pid of a process (stubbable).
+_ppid() { { awk '{print $4}' "$PROC/$1/stat"; } 2>/dev/null; }
+# Fills HERMES_FOUND (lines user|home|binary|sources|verified), merged by root Hermes home, filtered by
+# WIZARD_HERMES_USER / HERMES_HOME. A home is kept when its config.yaml is readable and a `hermes` command exists,
+# or when a gateway is running from it (unverified: it belongs to someone this user can't read).
+hermes_scan() {
+  local u hh src key bin h ok
+  declare -A users=() homes=() srcs=()
+  local -a order=()
+  while IFS='|' read -r u hh src; do
+    [ -n "$u" ] && [ -n "$hh" ] || continue
+    if [ -n "${WIZARD_HERMES_USER:-}" ] && [ "$u" != "$WIZARD_HERMES_USER" ]; then continue; fi
+    key="$(_root_of "$hh")"
+    if [ -n "${HERMES_HOME:-}" ] && [ "$key" != "$(_root_of "$HERMES_HOME")" ]; then continue; fi
+    if [ -z "${users[$key]:-}" ]; then order+=("$key"); users[$key]="$u"; homes[$key]="$hh"; srcs[$key]="$src"
+    else
+      case ",${srcs[$key]}," in *",$src,"*) ;; *) srcs[$key]="${srcs[$key]},$src" ;; esac
+      [ "$src" = HERMES_HOME ] && homes[$key]="$hh"   # an explicit (profile) home is the one to link
+    fi
+  done < <(_hermes_sightings)
+  HERMES_FOUND=""
+  for key in ${order[@]+"${order[@]}"}; do
+    u="${users[$key]}"; hh="${homes[$key]}"; h="$(home_of "$u")"; ok=""
+    if [ -f "$hh/config.yaml" ] && bin="$(hermes_bin_for "$u" "$h" "$hh")"; then ok=yes
+    else bin="?"; ok=unverified; fi
+    HERMES_FOUND="$HERMES_FOUND$u|$hh|$bin|${srcs[$key]}|$ok"$'\n'
+  done
+  HERMES_FOUND="${HERMES_FOUND%$'\n'}"
+}
+# pick_hermes: sets H_USER H_HOME H_BIN H_SRC H_OK. 0 = one Hermes, 1 = none, 2 = several (HERMES_FOUND lists them).
+# Several installs always require an explicit selector; existing Wizard records are not selectors.
+pick_hermes() {
+  local n line
+  H_USER=""; H_HOME=""; H_BIN=""; H_SRC=""; H_OK=""
+  hermes_scan
+  [ -n "$HERMES_FOUND" ] || return 1
+  n="$(printf '%s\n' "$HERMES_FOUND" | wc -l)"
+  line="$HERMES_FOUND"
+  if [ "$n" -gt 1 ]; then
+    line=""
+    return 2
+  fi
+  IFS='|' read -r H_USER H_HOME H_BIN H_SRC H_OK <<<"$line"
+  return 0
+}
+# has_hermes [user]: an existing Hermes owned by that user (default: whoever owns the one Hermes found).
+has_hermes() {
+  local rc=0; pick_hermes || rc=$?
+  [ "$rc" -eq 0 ] && [ "$H_OK" = yes ] && { [ -z "${1:-}" ] || [ "$H_USER" = "$1" ]; }
+}
+# ---- end Hermes detection ----
 
 # Which Wizard OS does this user already have? alongside | fresh | none. Re-running the command updates a box, and
 # an update must keep the box's mode: a fresh box whose owner also runs Hermes on the host stays fresh.
 wos_mode() {  # wos_mode user
-  local h; h="$(getent passwd "$1" | cut -d: -f6)"
+  local h; h="$(home_of "$1")"
   if [ -n "$h" ] && [ -f "$h/.wizard-os/alongside.json" ]; then echo alongside
   elif [ -n "$h" ] && [ -f "$h/.wizard-os/apps.json" ]; then echo fresh
   else echo none; fi
@@ -58,24 +187,124 @@ fresh_box() {  # fresh_box [user]
   [ "$(wos_mode "$u")" = fresh ] || [ "$(wos_mode "$WUSER")" = fresh ] && return 0
   { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
 }
+# Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
+alongside_users() {
+  local name uid home
+  while IFS=: read -r name _ uid _ _ home _; do
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    { [ "$uid" -eq 0 ] || { [ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ]; }; } || continue
+    [ -n "$home" ] && [ -f "$home/.wizard-os/alongside.json" ] && echo "$name"
+  done < <(getent passwd)
+  return 0
+}
 # Auto mode picks alongside only on a first install next to a Hermes; WIZARD_MODE=alongside forces it.
 want_alongside() {  # want_alongside [user]
   [ "$MODE" = alongside ] && return 0
   [ "$MODE" = auto ] && has_hermes "${1:-}" && ! fresh_box "${1:-}"
 }
+# ---- end mode helpers ----
 
-# Root with an existing Hermes owned by the sudo user: install alongside as that user, not as a new wizard user.
-if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && want_alongside "$SUDO_USER"; then
-  say "Found Hermes for $SUDO_USER; installing Wizard OS alongside it as $SUDO_USER"
-  SUID="$(id -u "$SUDO_USER")"
-  exec sudo -iu "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUID/bus" \
-    WIZARD_MODE=alongside WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
+# Running inside a Hermes agent (a chat asked its agent to install Wizard OS)? Then the install must never restart
+# the Hermes gateway synchronously: that kills the agent running this script and its reply. WIZARD_AGENT_SAFE=1|0
+# forces it either way.
+in_hermes_agent() {
+  case "${WIZARD_AGENT_SAFE:-}" in 1) return 0 ;; 0) return 1 ;; esac
+  [ "${_HERMES_GATEWAY:-}" = 1 ] || [ -n "${HERMES_SESSION_PLATFORM:-}" ] || [ -n "${HERMES_GATEWAY_SESSION:-}" ] \
+    || [ "${HERMES_AGENT:-}" = true ] && return 0
+  local pid=$$ _i
+  for _i in $(seq 1 40); do   # or any ancestor process is a Hermes gateway
+    pid="$(_ppid "$pid")"
+    case "$pid" in ''|0|1) return 1 ;; esac
+    is_gateway_pid "$pid" && return 0
+  done
+  return 1
+}
+docker_mode() {  # rootless | rootful | none, for user $1
+  local uid; uid="$(getent passwd "${1:-$(id -un)}" | cut -d: -f3)"
+  if [ -S "/run/user/${uid:-x}/docker.sock" ] || case "${DOCKER_HOST:-}" in unix:///run/user/*) true ;; *) false ;; esac; then
+    echo rootless
+  elif [ -S /var/run/docker.sock ] || command -v docker >/dev/null 2>&1; then echo rootful
+  else echo none; fi
+}
+
+# Read-only preflight: what the installer found and what it would do. Changes nothing.
+preflight() {
+  local rc=0 plan ver svc
+  say "Wizard OS preflight (read-only: nothing is installed or changed)"
+  echo "running as:        $(id -un) (uid $(id -u))${SUDO_USER:+, via sudo from $SUDO_USER}"
+  if in_hermes_agent; then echo "run by an agent:   yes (a Hermes agent started this; its gateway restart will be deferred)"
+  else echo "run by an agent:   no"; fi
+  pick_hermes || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "Hermes found:      SEVERAL (pick one with WIZARD_HERMES_USER=<user> or HERMES_HOME=<path>):"
+    printf '%s\n' "$HERMES_FOUND" | while IFS='|' read -r u hh b s _; do echo "  - user $u, home $hh, command $b ($s)"; done
+    plan="stop: several Hermes installs, none picked"
+  elif [ "$rc" -eq 1 ]; then
+    echo "Hermes found:      none"
+  else
+    echo "Hermes owner:      $H_USER"
+    echo "Hermes home:       $H_HOME"
+    echo "hermes command:    $H_BIN"
+    svc="$(printf '%s' "$H_SRC" | tr ',' '\n' | { grep -E '^(systemd|process)' || true; } | tr '\n' ' ')"
+    echo "service:           ${svc:-not running as a service}"
+    if [ "$H_OK" = yes ] && { [ "$H_USER" = "$(id -un)" ] || [ "$(id -u)" -eq 0 ]; }; then
+      if [ "$H_USER" = "$(id -un)" ]; then ver="$(HERMES_HOME="$H_HOME" timeout 20 "$H_BIN" --version 2>/dev/null </dev/null | head -1 || true)"
+      else ver="$(timeout 20 runuser -u "$H_USER" -- env HERMES_HOME="$H_HOME" "$H_BIN" --version 2>/dev/null </dev/null | head -1 || true)"; fi
+      echo "Hermes version:    ${ver:-unknown}"
+      # Informational only: the installer never resets the owner's settings.
+      if [ -r "$H_HOME/config.yaml" ]; then
+        grep -qE '^[[:space:]]*api_server:' "$H_HOME/config.yaml" && echo "note:              config.yaml has its own platforms.api_server block (kept as is)"
+        grep -qE '^mcp_servers:' "$H_HOME/config.yaml" && echo "note:              config.yaml already has mcp_servers (the wizard entry is added next to them)"
+        [ -e "$H_HOME/plugins/wizard-os" ] && echo "note:              a wizard-os plugin already exists in $H_HOME/plugins"
+        [ -d "$H_HOME/profiles" ] && echo "note:              Hermes profiles exist; the home above is the one linked"
+      fi
+    elif [ "$H_OK" = unverified ]; then
+      echo "note:              a gateway runs as $H_USER, but $(id -un) can't read its home; run this as $H_USER or root"
+    fi
+  fi
+  echo "docker:            $(docker_mode "${H_USER:-$(id -un)}")"
+  echo "existing Wizard OS: $(wos_mode "$(id -un)") for $(id -un)$( [ "$(id -un)" = "$WUSER" ] || echo ", $(wos_mode "$WUSER") for $WUSER")"
+  if [ -z "${plan:-}" ] && [ "$MODE" != fresh ]; then
+    if [ "$rc" -eq 0 ] && [ "$H_OK" != yes ]; then plan="stop: existing Hermes cannot be verified"
+    elif [ "$rc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; then
+      plan="stop: selected Hermes was not found"
+    fi
+  fi
+  if [ -z "${plan:-}" ]; then
+    if [ "$MODE" = fresh ]; then plan="fresh (WIZARD_MODE=fresh)"
+    elif [ "$rc" -eq 0 ] && [ "$(wos_mode "$H_USER")" = alongside ]; then plan="alongside as $H_USER (re-run: keeps alongside)"
+    elif [ "$rc" -eq 0 ] && [ "$H_OK" = yes ] && want_alongside "$H_USER"; then
+      if [ "$H_USER" = "$(id -un)" ] || [ "$(id -u)" -eq 0 ]; then plan="alongside as $H_USER, next to $H_HOME"
+      else plan="stop: this Hermes belongs to $H_USER; run the command as $H_USER or as root"; fi
+    elif [ "$rc" -eq 0 ] && [ "$H_OK" = unverified ] && [ "$MODE" = auto ] && ! fresh_box; then
+      plan="stop: Hermes runs as $H_USER; run the command as $H_USER or as root"
+    elif [ "$(id -u)" -eq 0 ]; then plan="fresh, as the $WUSER user (created if missing)"
+    else plan="fresh, as $(id -un)"; fi
+  fi
+  echo "would install:     $plan"
+  echo
+  echo "Nothing was changed. To install: curl -fsSL aiwizards.com/os.sh | bash"
+}
+
+# Forwarded to every re-exec of this script (sudo -i drops the environment).
+fwd_env() {
+  printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" \
-    WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
-fi
-
-if [ "$(id -u)" -eq 0 ]; then
+    WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
+    WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
+    WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}"
+}
+# as_user <user> <mode> [HERMES_HOME]: run this installer again as <user> (a user session bus, no root left over).
+as_user() {
+  local u="$1" m="$2" uid; uid="$(id -u "$u")"
+  local -a env; mapfile -t env < <(fwd_env)
+  loginctl enable-linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
+  for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+  exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
+    bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+}
+prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
@@ -84,14 +313,79 @@ if [ "$(id -u)" -eq 0 ]; then
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
   systemctl enable --now docker >/dev/null 2>&1 || true
+}
+stop_several() {
+  echo "Found more than one Hermes on this box, so Wizard OS doesn't know which one to install next to:" >&2
+  printf '%s\n' "$HERMES_FOUND" | while IFS='|' read -r u hh _ s _; do echo "  - user $u, Hermes home $hh ($s)" >&2; done
+  echo "Pick one and run the command again, e.g.:" >&2
+  echo "  curl -fsSL aiwizards.com/os.sh | WIZARD_HERMES_USER=<user> bash      (or HERMES_HOME=<path>)" >&2
+  echo "Nothing was changed. 'WIZARD_CHECK=1' shows what the installer finds without changing anything." >&2
+  exit 2
+}
+
+[ -n "${HOME:-}" ] || { HOME="$(home_of "$(id -un)")"; export HOME; }   # a system service may run us without HOME/USER
+[ -n "${USER:-}" ] || { USER="$(id -un)"; export USER; }
+AGENT_SAFE=0; in_hermes_agent && AGENT_SAFE=1
+export WIZARD_AGENT_SAFE="$AGENT_SAFE"
+case "${1:-}" in --check|check) WIZARD_CHECK=1 ;; esac
+if [ "${WIZARD_CHECK:-0}" = 1 ]; then preflight; exit 0; fi
+
+if [ "$MODE" != fresh ]; then
+  prc=0; pick_hermes || prc=$?
+  if [ "$prc" -eq 2 ]; then stop_several; fi
+  if { [ "$prc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; } ||
+     { [ "$prc" -eq 0 ] && [ "$H_OK" != yes ]; }; then
+    echo "Cannot verify the selected/existing Hermes; refusing to install a second agent. Check owner, HERMES_HOME, config.yaml and executable. Nothing was changed." >&2
+    exit 2
+  fi
+  if [ "$prc" -eq 0 ] && [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; then MODE=alongside; fi
+fi
+
+if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
+  # Alongside the Hermes on this box, as the user that owns it (root included). A re-run keeps the box's mode.
+  ALONG_USER=""; ALONG_HOME=""
+  if [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ] || ! fresh_box root; then
+    prc=0; pick_hermes || prc=$?
+    if [ "$prc" -eq 2 ]; then stop_several; fi
+    if [ "$prc" -eq 0 ] && [ "$H_OK" = yes ]; then
+      ALONG_USER="$H_USER"; ALONG_HOME="$H_HOME"
+    elif [ "$MODE" = alongside ]; then
+      echo "WIZARD_MODE=alongside, but no Hermes was found on this box (WIZARD_CHECK=1 shows what was looked at)." >&2
+      exit 2
+    fi
+  fi
+  if [ -n "$ALONG_USER" ]; then
+    say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing Wizard OS alongside it as $ALONG_USER"
+    if [ "$ALONG_USER" != root ] && ! sudo -n -u "$ALONG_USER" sudo -n true 2>/dev/null; then
+      echo "Alongside requires administrator-provisioned sudo for $ALONG_USER; refusing to grant passwordless root access automatically. Nothing was changed." >&2
+      exit 2
+    fi
+    prepare_server
+    if [ "$ALONG_USER" != root ]; then
+      if [ "$(docker_mode "$ALONG_USER")" = rootful ] && ! id -nG "$ALONG_USER" | tr ' ' '\n' | grep -qx docker; then
+        usermod -aG docker "$ALONG_USER" && echo "added $ALONG_USER to the docker group"
+      fi
+      as_user "$ALONG_USER" alongside "$ALONG_HOME"
+    fi
+    # Root owns this Hermes: Wizard OS runs as root too. Its user units need root's user manager (linger).
+    loginctl enable-linger root >/dev/null 2>&1 || true
+    for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S /run/user/0/bus ] && break; sleep 1; done
+    export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
+    [ -z "$ALONG_HOME" ] || export HERMES_HOME="$ALONG_HOME"
+    MODE=alongside
+  fi
+fi
+
+if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
+  prepare_server
 
   if ! id "$WUSER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$WUSER"
     echo "created user $WUSER"
   fi
   usermod -aG docker "$WUSER"
-  echo "$WUSER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-wizard-$WUSER"
-  chmod 0440 "/etc/sudoers.d/90-wizard-$WUSER"
+  echo "$WUSER ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_DIR/90-wizard-$WUSER"
+  chmod 0440 "$SUDOERS_DIR/90-wizard-$WUSER"
   # Root's SSH keys also let you in as the wizard user.
   if [ -s /root/.ssh/authorized_keys ] && [ ! -s "/home/$WUSER/.ssh/authorized_keys" ]; then
     install -d -m 700 -o "$WUSER" -g "$WUSER" "/home/$WUSER/.ssh"
@@ -99,7 +393,7 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
   loginctl enable-linger "$WUSER"
   WUID="$(id -u "$WUSER")"
-  for _ in $(seq 1 30); do [ -S "/run/user/$WUID/bus" ] && break; sleep 1; done
+  for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$WUID/bus" ] && break; sleep 1; done
 
   as_wizard() { sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" "$@"; }
   # GitHub login for private defaults, kept by the wizard user so later updates of those apps work too.
@@ -116,11 +410,7 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
 
   say "Installing Wizard OS as $WUSER"
-  exec sudo -iu "$WUSER" env XDG_RUNTIME_DIR="/run/user/$WUID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$WUID/bus" \
-    WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WIZARD_GITHUB=0 WIZARD_MODE=fresh WAM_REF="${WAM_REF:-}" \
-    WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
-    WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
-    bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+  as_user "$WUSER" fresh
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
@@ -137,13 +427,26 @@ fi
 if [ "$MODE" = auto ]; then
   if [ "$(wos_mode "$(id -un)")" = alongside ]; then
     MODE=alongside
-  elif ! want_alongside; then
+  elif ! want_alongside "$(id -un)"; then
     MODE=fresh
-    has_hermes && echo "Found Hermes on this box, but Wizard OS is already installed fresh here: keeping fresh mode (WIZARD_MODE=alongside switches)."
+    if has_hermes "$(id -un)"; then
+      echo "Found Hermes on this box, but Wizard OS is already installed fresh here: keeping fresh mode (WIZARD_MODE=alongside switches)."
+    elif ! fresh_box; then
+      # A Hermes that belongs to someone else (root or another user): installing fresh here would run a second
+      # agent next to it. Say so instead; root (or that user) installs alongside it.
+      prc=0; pick_hermes || prc=$?
+      if [ "$prc" -eq 2 ]; then stop_several; fi
+      if [ "$prc" -eq 0 ] && [ "$H_USER" != "$(id -un)" ]; then
+        echo "Hermes on this box belongs to $H_USER${H_HOME:+ ($H_HOME)}, not $(id -un). Run the command as $H_USER," >&2
+        echo "or as root (curl -fsSL aiwizards.com/os.sh | sudo bash): Wizard OS then installs alongside it as $H_USER." >&2
+        echo "WIZARD_MODE=fresh installs a separate Wizard OS for $(id -un) instead. Nothing was changed." >&2
+        exit 2
+      fi
+    fi
   else
     MODE=alongside
     if tty_ok; then
-      say "Found Hermes on this box (${HERMES_HOME:-$HOME/.hermes})"
+      say "Found Hermes on this box (${H_HOME:-${HERMES_HOME:-$HOME/.hermes}})"
       printf "Install Wizard OS alongside it? Your Hermes stays as it is and gets linked to the apps. [Y/n] " >/dev/tty
       read -r -t 120 ans </dev/tty || ans=y
       case "${ans:-y}" in n|N|no|NO) MODE=fresh ;; esac
@@ -153,6 +456,17 @@ if [ "$MODE" = auto ]; then
   fi
 fi
 export WIZARD_MODE="$MODE"
+if [ "$MODE" = alongside ]; then   # the linked Hermes, for install.sh / wam / wizard (a `hermes` off PATH included)
+  prc=0; pick_hermes || prc=$?
+  if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
+    export HERMES_HOME="${HERMES_HOME:-$H_HOME}"
+    export WIZARD_HERMES_BIN="$H_BIN"
+    PATH="$(dirname "$H_BIN"):$PATH"; export PATH  # older pinned wam/wizard discover Hermes through PATH
+  else
+    echo "Alongside requires a verified Hermes owned by $(id -un); refusing this target." >&2
+    exit 2
+  fi
+fi
 DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
 
 # Which release? (wizard-os#27) WAM_REF set = developer override, unpinned. Otherwise WIZARD_RELEASE, else the
@@ -278,9 +592,55 @@ elif [ -d "$DIR/.git" ]; then
 else
   git clone -q --branch "$REF" "$REPO" "$DIR"
 fi
+# Started by a Hermes agent: the gateway restart that linking needs must come after this run, never during it (it
+# would kill the agent running this). install.sh defers it itself (its defers-hermes-restart marker). An older install.sh (a
+# release from before that) restarts synchronously: there a `hermes` shim on PATH turns that one call into a
+# deferred restart, scheduled once install.sh is done; every other hermes command goes to the real one.
+DEFER_SHIM=""
+export WIZARD_OUTER_INSTALL=1
+real="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
+rm -f "$HOME/.wizard-os/hermes-restart.pending"
+if [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] && ! grep -q "^# wizard-install: defers-hermes-restart" "$DIR/install.sh"; then
+  real="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
+  DEFER_SHIM="$(mktemp -d "$HOME/.wizard-os/agent-safe-bin.XXXXXX")"
+  cat > "$DEFER_SHIM/hermes" <<SHIM
+#!/bin/sh
+# Written by the Wizard OS installer for an agent-run install.
+# Kept afterwards (a unit may have recorded this path) and then always runs the real hermes.
+if [ -f "$HOME/.wizard-os/agent-safe.active" ] && [ "\$1" = gateway ] && [ "\$2" = restart ]; then
+  echo deferred > "$HOME/.wizard-os/hermes-restart.pending"; exit 0
+fi
+exec '$real' "\$@"
+SHIM
+  chmod +x "$DEFER_SHIM/hermes"
+  export PATH="$DEFER_SHIM:$PATH" WIZARD_HERMES_BIN="$DEFER_SHIM/hermes"
+  rm -f "$HOME/.wizard-os/hermes-restart.pending"
+  touch "$HOME/.wizard-os/agent-safe.active"
+fi
+deferred_restart() {  # after an older install.sh under an agent: schedule the restart it asked for, detached
+  [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
+  rm -f "$HOME/.wizard-os/agent-safe.active"
+  [ -z "$DEFER_SHIM" ] || export PATH="${PATH#"$DEFER_SHIM:"}"
+  [ -f "$HOME/.wizard-os/hermes-restart.pending" ] || return 0
+  rm -f "$HOME/.wizard-os/hermes-restart.pending"
+  local delay="${WIZARD_RESTART_DELAY:-20}" log="$HOME/.wizard-os/hermes-restart.log" job
+  case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
+  job="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$real' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  local -a run=(systemd-run --user); [ "$(id -u)" -eq 0 ] && run=(systemd-run)
+  if ! { command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \
+      --on-active="${delay}s" --setenv=HOME="$HOME" /bin/bash -c "exec >>'$log' 2>&1; $job" >/dev/null 2>&1; }; then
+    setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
+  fi
+  echo
+  echo "Hermes will restart in ~${delay}s to load Wizard OS (this chat pauses briefly; send any message after a"
+  echo "minute). Then run 'wizard doctor'. Logged in $log."
+}
 if [ -z "$PINS" ]; then
   [ -z "$UNPINNED" ] || record_unpinned
-  exec bash "$DIR/install.sh"
+  rc=0; bash "$DIR/install.sh" || rc=$?
+  rm -f "$HOME/.wizard-os/agent-safe.active"
+  [ "$rc" -ne 0 ] || deferred_restart
+  exit "$rc"
 fi
 
 rc=0
@@ -386,5 +746,7 @@ for c in checks:
 print(f"  -> {status}; recorded in {out_path}")
 sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
+rm -f "$HOME/.wizard-os/agent-safe.active"
+if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; fi
 [ "$rc" -eq 0 ] || exit "$rc"
 exit "$vrc"
