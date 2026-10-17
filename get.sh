@@ -81,7 +81,7 @@ _root_of() {  # a profile home (<root>/profiles/<name>) belongs to its root Herm
 _hermes_sightings() {
   local name uid home f u hh line pid
   if [ -n "${HERMES_HOME:-}" ]; then
-    u="${WIZARD_HERMES_USER:-$(stat -c %U "$HERMES_HOME" 2>/dev/null || id -un)}"
+    u="$(stat -c %U "$HERMES_HOME" 2>/dev/null || id -un)"
     echo "$u|$HERMES_HOME|HERMES_HOME"
   fi
   while IFS=: read -r name _ uid _ _ home _; do
@@ -144,17 +144,15 @@ hermes_scan() {
   for key in ${order[@]+"${order[@]}"}; do
     u="${users[$key]}"; hh="${homes[$key]}"; h="$(home_of "$u")"; ok=""
     if [ -f "$hh/config.yaml" ] && bin="$(hermes_bin_for "$u" "$h" "$hh")"; then ok=yes
-    elif case "${srcs[$key]}" in *process:*) true ;; *) false ;; esac; then bin="?"; ok=unverified
-    else continue; fi
+    else bin="?"; ok=unverified; fi
     HERMES_FOUND="$HERMES_FOUND$u|$hh|$bin|${srcs[$key]}|$ok"$'\n'
   done
   HERMES_FOUND="${HERMES_FOUND%$'\n'}"
 }
 # pick_hermes: sets H_USER H_HOME H_BIN H_SRC H_OK. 0 = one Hermes, 1 = none, 2 = several (HERMES_FOUND lists them).
-# Several: the one with a Wizard OS alongside record, else the sudo user's, else this non-root user's own, else
-# ambiguous (root never guesses between users).
+# Several installs always require an explicit selector; existing Wizard records are not selectors.
 pick_hermes() {
-  local n line pref
+  local n line
   H_USER=""; H_HOME=""; H_BIN=""; H_SRC=""; H_OK=""
   hermes_scan
   [ -n "$HERMES_FOUND" ] || return 1
@@ -162,15 +160,7 @@ pick_hermes() {
   line="$HERMES_FOUND"
   if [ "$n" -gt 1 ]; then
     line=""
-    # an existing alongside record wins (a re-run), then the sudo user, then this (non-root) user's own Hermes
-    for pref in $(printf '%s\n' "$HERMES_FOUND" | cut -d'|' -f1 | sort -u | while read -r u; do
-        [ "$(wos_mode "$u")" = alongside ] && echo "$u"; done) "${SUDO_USER:-}" "$(id -un | grep -vx root)"; do
-      [ -n "$pref" ] || continue
-      if [ "$(printf '%s\n' "$HERMES_FOUND" | grep -c "^$pref|")" = 1 ]; then
-        line="$(printf '%s\n' "$HERMES_FOUND" | grep "^$pref|")"; break
-      fi
-    done
-    [ -n "$line" ] || return 2
+    return 2
   fi
   IFS='|' read -r H_USER H_HOME H_BIN H_SRC H_OK <<<"$line"
   return 0
@@ -258,8 +248,8 @@ preflight() {
     svc="$(printf '%s' "$H_SRC" | tr ',' '\n' | { grep -E '^(systemd|process)' || true; } | tr '\n' ' ')"
     echo "service:           ${svc:-not running as a service}"
     if [ "$H_OK" = yes ] && { [ "$H_USER" = "$(id -un)" ] || [ "$(id -u)" -eq 0 ]; }; then
-      if [ "$H_USER" = "$(id -un)" ]; then ver="$(HERMES_HOME="$H_HOME" timeout 20 "$H_BIN" --version 2>/dev/null </dev/null | head -1)"
-      else ver="$(timeout 20 runuser -u "$H_USER" -- env HERMES_HOME="$H_HOME" "$H_BIN" --version 2>/dev/null </dev/null | head -1)"; fi
+      if [ "$H_USER" = "$(id -un)" ]; then ver="$(HERMES_HOME="$H_HOME" timeout 20 "$H_BIN" --version 2>/dev/null </dev/null | head -1 || true)"
+      else ver="$(timeout 20 runuser -u "$H_USER" -- env HERMES_HOME="$H_HOME" "$H_BIN" --version 2>/dev/null </dev/null | head -1 || true)"; fi
       echo "Hermes version:    ${ver:-unknown}"
       # Informational only: the installer never resets the owner's settings.
       if [ -r "$H_HOME/config.yaml" ]; then
@@ -274,6 +264,12 @@ preflight() {
   fi
   echo "docker:            $(docker_mode "${H_USER:-$(id -un)}")"
   echo "existing Wizard OS: $(wos_mode "$(id -un)") for $(id -un)$( [ "$(id -un)" = "$WUSER" ] || echo ", $(wos_mode "$WUSER") for $WUSER")"
+  if [ -z "${plan:-}" ] && [ "$MODE" != fresh ]; then
+    if [ "$rc" -eq 0 ] && [ "$H_OK" != yes ]; then plan="stop: existing Hermes cannot be verified"
+    elif [ "$rc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; then
+      plan="stop: selected Hermes was not found"
+    fi
+  fi
   if [ -z "${plan:-}" ]; then
     if [ "$MODE" = fresh ]; then plan="fresh (WIZARD_MODE=fresh)"
     elif [ "$rc" -eq 0 ] && [ "$(wos_mode "$H_USER")" = alongside ]; then plan="alongside as $H_USER (re-run: keeps alongside)"
@@ -334,14 +330,21 @@ export WIZARD_AGENT_SAFE="$AGENT_SAFE"
 case "${1:-}" in --check|check) WIZARD_CHECK=1 ;; esac
 if [ "${WIZARD_CHECK:-0}" = 1 ]; then preflight; exit 0; fi
 
+if [ "$MODE" != fresh ]; then
+  prc=0; pick_hermes || prc=$?
+  if [ "$prc" -eq 2 ]; then stop_several; fi
+  if { [ "$prc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; } ||
+     { [ "$prc" -eq 0 ] && [ "$H_OK" != yes ]; }; then
+    echo "Cannot verify the selected/existing Hermes; refusing to install a second agent. Check owner, HERMES_HOME, config.yaml and executable. Nothing was changed." >&2
+    exit 2
+  fi
+  if [ "$prc" -eq 0 ] && [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; then MODE=alongside; fi
+fi
+
 if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
   # Alongside the Hermes on this box, as the user that owns it (root included). A re-run keeps the box's mode.
   ALONG_USER=""; ALONG_HOME=""
-  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && [ "$(wos_mode "$SUDO_USER")" = alongside ]; then
-    ALONG_USER="$SUDO_USER"
-  elif [ "$(alongside_users | wc -l)" -eq 1 ]; then
-    ALONG_USER="$(alongside_users)"   # a re-run: the box already runs Wizard OS alongside, as this user
-  elif [ "$MODE" = alongside ] || ! fresh_box root; then
+  if [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ] || ! fresh_box root; then
     prc=0; pick_hermes || prc=$?
     if [ "$prc" -eq 2 ]; then stop_several; fi
     if [ "$prc" -eq 0 ] && [ "$H_OK" = yes ]; then
@@ -353,14 +356,12 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
   fi
   if [ -n "$ALONG_USER" ]; then
     say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing Wizard OS alongside it as $ALONG_USER"
+    if [ "$ALONG_USER" != root ] && ! sudo -n -u "$ALONG_USER" sudo -n true 2>/dev/null; then
+      echo "Alongside requires administrator-provisioned sudo for $ALONG_USER; refusing to grant passwordless root access automatically. Nothing was changed." >&2
+      exit 2
+    fi
     prepare_server
     if [ "$ALONG_USER" != root ]; then
-      # The installer needs sudo (Runtipi's setup, tailscale serve) and Docker, as the fresh wizard user gets them.
-      if ! sudo -n -u "$ALONG_USER" sudo -n true 2>/dev/null; then
-        echo "$ALONG_USER ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_DIR/90-wizard-$ALONG_USER"
-        chmod 0440 "$SUDOERS_DIR/90-wizard-$ALONG_USER"
-        echo "gave $ALONG_USER passwordless sudo ($SUDOERS_DIR/90-wizard-$ALONG_USER), as Wizard OS needs"
-      fi
       if [ "$(docker_mode "$ALONG_USER")" = rootful ] && ! id -nG "$ALONG_USER" | tr ' ' '\n' | grep -qx docker; then
         usermod -aG docker "$ALONG_USER" && echo "added $ALONG_USER to the docker group"
       fi
@@ -459,7 +460,11 @@ if [ "$MODE" = alongside ]; then   # the linked Hermes, for install.sh / wam / w
   prc=0; pick_hermes || prc=$?
   if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
     export HERMES_HOME="${HERMES_HOME:-$H_HOME}"
-    command -v hermes >/dev/null || export WIZARD_HERMES_BIN="$H_BIN"
+    export WIZARD_HERMES_BIN="$H_BIN"
+    PATH="$(dirname "$H_BIN"):$PATH"; export PATH  # older pinned wam/wizard discover Hermes through PATH
+  else
+    echo "Alongside requires a verified Hermes owned by $(id -un); refusing this target." >&2
+    exit 2
   fi
 fi
 DIR="${WAM_DIR:-$HOME/wizard-app-manager}"
@@ -592,10 +597,12 @@ fi
 # release from before that) restarts synchronously: there a `hermes` shim on PATH turns that one call into a
 # deferred restart, scheduled once install.sh is done; every other hermes command goes to the real one.
 DEFER_SHIM=""
+export WIZARD_OUTER_INSTALL=1
+real="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
+rm -f "$HOME/.wizard-os/hermes-restart.pending"
 if [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] && ! grep -q "^# wizard-install: defers-hermes-restart" "$DIR/install.sh"; then
   real="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
-  DEFER_SHIM="$HOME/.wizard-os/agent-safe-bin"
-  mkdir -p "$DEFER_SHIM"
+  DEFER_SHIM="$(mktemp -d "$HOME/.wizard-os/agent-safe-bin.XXXXXX")"
   cat > "$DEFER_SHIM/hermes" <<SHIM
 #!/bin/sh
 # Written by the Wizard OS installer for an agent-run install.
@@ -611,8 +618,9 @@ SHIM
   touch "$HOME/.wizard-os/agent-safe.active"
 fi
 deferred_restart() {  # after an older install.sh under an agent: schedule the restart it asked for, detached
-  [ -n "$DEFER_SHIM" ] || return 0
-  rm -f "$HOME/.wizard-os/agent-safe.active"; export PATH="${PATH#"$DEFER_SHIM:"}"
+  [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
+  rm -f "$HOME/.wizard-os/agent-safe.active"
+  [ -z "$DEFER_SHIM" ] || export PATH="${PATH#"$DEFER_SHIM:"}"
   [ -f "$HOME/.wizard-os/hermes-restart.pending" ] || return 0
   rm -f "$HOME/.wizard-os/hermes-restart.pending"
   local delay="${WIZARD_RESTART_DELAY:-20}" log="$HOME/.wizard-os/hermes-restart.log" job
@@ -629,9 +637,9 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
 }
 if [ -z "$PINS" ]; then
   [ -z "$UNPINNED" ] || record_unpinned
-  [ -n "$DEFER_SHIM" ] || exec bash "$DIR/install.sh"
   rc=0; bash "$DIR/install.sh" || rc=$?
-  deferred_restart
+  rm -f "$HOME/.wizard-os/agent-safe.active"
+  [ "$rc" -ne 0 ] || deferred_restart
   exit "$rc"
 fi
 
@@ -738,6 +746,7 @@ for c in checks:
 print(f"  -> {status}; recorded in {out_path}")
 sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
-deferred_restart
+rm -f "$HOME/.wizard-os/agent-safe.active"
+if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; fi
 [ "$rc" -eq 0 ] || exit "$rc"
 exit "$vrc"

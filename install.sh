@@ -235,10 +235,15 @@ if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailsca
 fi
 [ ${#PENDING[@]} -eq 0 ] || { printf 'Pending: %s\n' "${PENDING[@]}"; echo; }
 if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
-  schedule_hermes_restart
-  echo "Hermes will restart in ~${WIZARD_RESTART_DELAY:-20}s to load Wizard OS (this chat pauses briefly; send any"
-  echo "message after a minute). The restart and a fresh 'wizard doctor' are logged in ~/.wizard-os/hermes-restart.log."
-  echo
+  if [ "${WIZARD_OUTER_INSTALL:-0}" = 1 ]; then
+    echo deferred > "$HOME/.wizard-os/hermes-restart.pending"
+    echo "Hermes restart is pending the outer installer's release verification."
+  else
+    schedule_hermes_restart
+    echo "Hermes will restart in ~${WIZARD_RESTART_DELAY:-20}s to load Wizard OS (this chat pauses briefly; send any"
+    echo "message after a minute). The restart and a fresh 'wizard doctor' are logged in ~/.wizard-os/hermes-restart.log."
+    echo
+  fi
 fi
 case "$status" in
   ok)

@@ -17,7 +17,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 GET_SH = REPO / "get.sh"
 INSTALL_SH = REPO / "install.sh"
-GW, RS = "gate" + "way", "re" + "start"   # (keeps the agent-host's own lifecycle guard out of the way)
+GW, RS = "gateway", "restart"  # Only stub executables are used by these sandbox tests.
 
 STUBS = {
     # id [-u|-un|-g|-nG] [user]
@@ -226,13 +226,16 @@ def test_fresh_box_with_a_root_hermes_stays_fresh_on_rerun(box):
     assert box.handoff().startswith("sudo -iu wizard ") and _env_of(box.handoff())["WIZARD_MODE"] == "fresh"
 
 
-def test_rerun_keeps_an_alongside_box_alongside_even_with_two_hermes(box):
+def test_rerun_with_two_hermes_requires_explicit_selection(box):
     for name, uid in (("alice", 1001), ("bob", 1002)):
         box.add_user(name, uid); box.hermes(name)
     box.wos("bob", "alongside")
     p = box.run("root")
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert not box.handoff()
+    p = box.run("root", WIZARD_HERMES_USER="alice")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert box.handoff().startswith("sudo -iu bob ")
+    assert box.handoff().startswith("sudo -iu alice ")
 
 
 def test_wizard_mode_fresh_is_respected_as_root(box):
@@ -343,7 +346,7 @@ def test_terminal_install_keeps_the_synchronous_restart(box, tmp_path):
     assert "systemd-run" not in box.log.read_text()
 
 
-def _install_alongside_block(tmp: Path, agent_safe: str) -> tuple[subprocess.CompletedProcess, str]:
+def _install_alongside_block(tmp: Path, agent_safe: str, outer: str = "0") -> tuple[subprocess.CompletedProcess, str]:
     """Run install.sh's alongside block (agent-safe gate .. bootstrap) with stub wam/wizard; return the call log."""
     src = INSTALL_SH.read_text()
     block = src[src.index("# Run by a Hermes agent"):src.index("# 3) Fill every empty")]
@@ -359,7 +362,8 @@ def _install_alongside_block(tmp: Path, agent_safe: str) -> tuple[subprocess.Com
     (stub / "curl").write_text("#!/bin/sh\nexit 0\n"); (stub / "curl").chmod(0o755)
     script = f"set -uo pipefail\nFAILED=(); DEGRADED=(); OUTCOME={home}/.wizard-os/outcome.json\n{block}\n{tail}\necho RESTART_LATER=$RESTART_LATER\n"
     env = {"PATH": f"{stub}:/usr/bin:/bin", "HOME": str(home), "WIZARD_MODE": "alongside",
-           "WIZARD_AGENT_SAFE": agent_safe, "WIZARD_HERMES_BIN": "/opt/h/hermes", "WIZARD_PRIVATE_ACCESS": "none"}
+           "WIZARD_AGENT_SAFE": agent_safe, "WIZARD_HERMES_BIN": "/opt/h/hermes", "WIZARD_PRIVATE_ACCESS": "none",
+           "WIZARD_OUTER_INSTALL": outer}
     p = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
     return p, log.read_text() if log.exists() else ""
 
