@@ -322,9 +322,20 @@ def runtime_health(c):
         data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
         cfg = yaml.safe_load((data / 'config.yaml').read_text()) or {}
         terminal = cfg.get('terminal') or {}
-        p = subprocess.run(['docker', 'ps', '-q', '--filter',
-                            'label=com.docker.compose.service=hermes-agent-engine'],
-                           capture_output=True, text=True, timeout=15, check=True)
+        docker = ['docker']
+        ps = ['ps', '-q', '--filter', 'label=com.docker.compose.service=hermes-agent-engine']
+        try:
+            p = subprocess.run(docker + ps, capture_output=True, text=True, timeout=15, check=True)
+        except subprocess.CalledProcessError as error:
+            # Fresh installs use passwordless sudo before Docker group membership
+            # is active. Probe the same local daemon; never switch a remote/rootless
+            # context or prompt for credentials from doctor.
+            detail = (error.stderr or '').lower()
+            if (os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT')
+                    or 'permission denied' not in detail or '/var/run/docker.sock' not in detail):
+                raise
+            docker = ['sudo', '-n', 'docker']
+            p = subprocess.run(docker + ps, capture_output=True, text=True, timeout=15, check=True)
         ids = p.stdout.split()
         if len(ids) != 1:
             raise ValueError('expected one running stock Hermes engine; found ' + str(len(ids)))
@@ -342,7 +353,7 @@ def runtime_health(c):
             command += [str(user) + '@' + str(host), '"$HOME/.wizard-os/bin/wam" builder-bundle doctor']
         else:
             raise ValueError(f'backend {backend!r} needs builder provisioning on its execution worker')
-        p = subprocess.run(['docker', 'exec', '-u', '1000:1000', ids[0], *command],
+        p = subprocess.run(docker + ['exec', '-u', '1000:1000', ids[0], *command],
                            capture_output=True, text=True, timeout=20)
         if p.returncode:
             raise ValueError(f'{backend} terminal cannot execute builder: {p.stderr[-250:]}')

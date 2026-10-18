@@ -32,8 +32,7 @@
 # developer override: it installs that App Manager ref unpinned. Afterwards the installer reads back what actually
 # runs (App Manager commit and image, shell image, default app versions) and records it in ~/.wizard-os/release.json.
 # WIZARD_STRICT=1 makes any drift from the release exit non-zero, and refuses unpinned installs (incl. WAM_REF).
-# Alongside mode applies the shell pin (and updates a shell left on an older digest); a fresh box takes the shell
-# the index serves, so there a different shell digest is reported as DRIFT until the App Manager can pin it.
+# Release default source pins and core images apply before direct AND dependency installs in either mode.
 set -euo pipefail
 REPO="${WAM_REPO:-https://github.com/humanitylabs-org/wizard-app-manager}"
 # Release metadata is mirrored publicly; the canonical OS/spec repository stays private.
@@ -534,6 +533,23 @@ sha = str(wam.get("commit", ""))
 if not re.fullmatch(r"[0-9a-f]{40}", sha):
     sys.exit(f"release {want}: wizard-app-manager commit {sha!r} is not a 40-char sha")
 split = "wizard-ux" in (rel.get("images") or {}) or "wizard-agent-service" in (rel.get("images") or {})
+seen = set()
+defaults = rel.get("default_apps", {})
+if not isinstance(defaults, dict):
+    sys.exit("release default_apps must be an object")
+for slot, row in defaults.items():
+    if row is None:
+        continue
+    if not isinstance(row, dict):
+        sys.exit(f"release default app {slot}: expected object or null")
+    if "repo" not in row and "commit" not in row:  # older version-only manifests
+        continue
+    app, repo, commit = (row.get(k, "") for k in ("app", "repo", "commit"))
+    if (not isinstance(app, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", app) or app in seen
+        or not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repo)
+        or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)):
+        sys.exit(f"release default app {slot}: invalid/duplicate app, owner/repo or full commit")
+    seen.add(app)
 pairs = [("PIN_WAM_COMMIT", sha), ("PIN_WAM_IMAGE", image("wizard-app-manager"))]
 if split:
     pairs += [("PIN_UX_IMAGE", image("wizard-ux")), ("PIN_AGENT_SERVICE_IMAGE", image("wizard-agent-service"))]
@@ -545,6 +561,7 @@ PY
 )" || { rm -f "$PINS.tmp"; exit 2; }
     eval "$PIN_ENV"
     mv "$PINS.tmp" "$PINS"
+    export WIZARD_RELEASE_PINS="$PINS"
     REF="$PIN_WAM_COMMIT"
     if [ -n "${WAM_IMAGE:-}" ] && [ "$WAM_IMAGE" != "$PIN_WAM_IMAGE" ]; then
       echo "note: WAM_IMAGE=$WAM_IMAGE overrides the release's App Manager image"
@@ -636,6 +653,7 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
   echo "minute). Then run 'wizard doctor'. Logged in $log."
 }
 if [ -z "$PINS" ]; then
+  unset WIZARD_RELEASE_PINS  # WAM_REF stays unpinned; old receipts cannot silently activate pins
   [ -z "$UNPINNED" ] || record_unpinned
   rc=0; bash "$DIR/install.sh" || rc=$?
   rm -f "$HOME/.wizard-os/agent-safe.active"
@@ -731,6 +749,8 @@ try:
       a = apps.get(app_id)
       check(f"default app {slot}", f"{app_id} {d.get('index_version')}",
             f"{app_id} {a.get('version')}" if a else f"{app_id} not installed", False)
+      if d.get("commit"):
+          check(f"default app source {slot}", d["commit"], (a or {}).get("commit") or "not installed", True)
 except Exception as e:   # never leave a run without a record
     check("read-back", "completed", f"error: {type(e).__name__}: {e}"[:200], True)
 core_bad = [c for c in checks if c["core"] and not c["ok"]]

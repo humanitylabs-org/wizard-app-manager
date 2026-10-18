@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots
+from . import alongside, index, private, registry, slots, release_pins
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -53,6 +53,7 @@ STORE_NAME = "Wizard Apps"
 
 class Config:
     def __init__(self) -> None:
+        release_pins.load()  # reject malformed pins before creating state or contacting Runtipi
         self.home = registry.home()
         self.home.mkdir(parents=True, exist_ok=True)
         cfg_file = self.home / "app-manager.json"
@@ -146,12 +147,25 @@ def share_registry(c: Config) -> bool:
     shared = c.runtipi_root / "app-data" / "wizard-os"
     try:
         shared.mkdir(parents=True, exist_ok=True)
+        # The share holds no secrets and is read by app containers running as other users, so its
+        # modes are explicit: a caller's restrictive umask (0600 apps.json) must not hide every app
+        # from the Agent Service. The owner's own ~/.wizard-os copy keeps whatever mode it has.
+        os.chmod(shared, 0o755)
         tmp = shared / "apps.json.tmp"
-        shutil.copy2(c.home / "apps.json", tmp)
+        shutil.copyfile(c.home / "apps.json", tmp)
+        os.chmod(tmp, 0o644)
         tmp.replace(shared / "apps.json")
         if (c.home / "skills").is_dir():
             shutil.rmtree(shared / "skills", ignore_errors=True)
-            shutil.copytree(c.home / "skills", shared / "skills")
+            # Links stay links (never copied as their target's contents) and are never chmod-ed,
+            # so widening modes can only ever touch the regular skill files WAM itself wrote.
+            shutil.copytree(c.home / "skills", shared / "skills", symlinks=True, copy_function=shutil.copyfile)
+            for dirpath, dirnames, filenames in os.walk(shared / "skills"):
+                os.chmod(dirpath, 0o755)
+                for name in filenames:
+                    f = os.path.join(dirpath, name)
+                    if not os.path.islink(f):
+                        os.chmod(f, 0o644)
         return True
     except OSError as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
@@ -218,6 +232,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
             _split: bool = False) -> dict:
+    release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
@@ -298,6 +313,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                 rt.wait_status(urn, {"running", "stopped", "missing"})
         except Exception as e:  # noqa: BLE001 - never fail the install for it
             print(f"note: host dashboard not set up ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
+    if app_id in ("hermes-agent", "wizard-agent-service") and status == "running" and not alongside.load(c.home) \
+            and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
+        try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
+            from .agent_link import link as agent_link
+            agent_link(c, STORE)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
+            print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
     if role == "shell" and status == "running" and alongside.load(c.home):
         try:
             store_data_cmd(c)
@@ -767,6 +789,9 @@ def resolve_any(c: Config, ref: str) -> dict:
     An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
     inside prepare before any image load/pull or store mutation.
     """
+    pinned = release_pins.resolve(ref)
+    if pinned:
+        return private.prepare(c.runtipi_root, STORE, pinned['repo'], source_pin=pinned)
     from . import test_catalog
     pinned = test_catalog.resolve(ref)
     if pinned:
@@ -808,6 +833,7 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
 
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
+    release_pins.load()
     rt = c.runtipi()
     reg = write_registry(c, rt)
     done, failed = [], {}
@@ -1094,6 +1120,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "agent-link":
+        from .agent_link import main as agent_link_main
+        return agent_link_main(argv[1:])
     if argv and argv[0] == "builder-bundle":
         from .builder_bundle import main as bundle_main
         return bundle_main(argv[1:])

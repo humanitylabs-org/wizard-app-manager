@@ -13,7 +13,8 @@ DEFAULTS_FILE = Path(__file__).with_name("defaults.json")
 
 
 def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
-    return json.loads(path.read_text())["slots"]
+    from .release_pins import defaults
+    return defaults(json.loads(path.read_text())["slots"])
 
 
 # Apps that are no longer a slot default but are still installed on boxes and still updated from their repo.
