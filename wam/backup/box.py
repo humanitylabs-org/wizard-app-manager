@@ -326,15 +326,62 @@ class HermesRunner:
 
     # ---- container agents
     def image(self, agent: Agent) -> str:
+        """The agent app's Hermes image: from its container when there is one, else from its installed compose file
+        (Runtipi's stop is `compose down`, so a stopped app has no container)."""
         project = (agent.urn or "").replace(":", "_")
         ids = self._run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
+        if ids:
+            info = json.loads(self._run(["docker", "inspect", *ids]) or "[]")
+            for c in info:
+                if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
+                    return c["Config"]["Image"]
+        img = self.compose_image(agent)
+        if img:
+            return img
         if not ids:
-            raise HermesError(f"the agent app {agent.urn} has no container on this box")
-        info = json.loads(self._run(["docker", "inspect", *ids]) or "[]")
-        for c in info:
-            if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
-                return c["Config"]["Image"]
+            raise HermesError(f"the agent app {agent.urn} has no container and no compose file on this box")
         raise HermesError(f"no container of {agent.urn} mounts an agent home at /opt/data")
+
+    def compose_image(self, agent: Agent) -> str | None:
+        if not agent.urn:
+            return None
+        app_id, store = agent.urn.split(":")
+        rt = self.box.runtipi_root
+        env = {}
+        try:
+            for line in (rt / "app-data" / store / app_id / "app.env").read_text().splitlines():
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip()
+        except OSError:
+            pass
+        docs = []
+        for f in (rt / "apps" / store / app_id / "docker-compose.generated.yml", rt / "apps" / store / app_id /
+                  "docker-compose.yml", rt / "user-config" / store / app_id / "docker-compose.yml"):
+            try:
+                import yaml
+                d = yaml.safe_load(f.read_text()) or {}
+                if isinstance(d, dict):
+                    docs.append(d)
+            except Exception:  # noqa: BLE001 - missing or unreadable: that file declares nothing
+                continue
+        images: dict[str, str] = {}
+        homes: set[str] = set()
+        for d in docs:
+            for name, svc in (d.get("services") or {}).items():
+                svc = svc if isinstance(svc, dict) else {}
+                if svc.get("image") and name not in images:
+                    images[name] = str(svc["image"])
+                for v in svc.get("volumes") or []:
+                    target = v.get("target") if isinstance(v, dict) else (str(v).split(":")[1] if ":" in str(v) else "")
+                    if target == "/opt/data":
+                        homes.add(name)
+        for name in sorted(homes):
+            img = images.get(name)
+            if img:
+                return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}",
+                              lambda m: env.get(m.group(1)) or m.group(2) or "", img)
+        return None
 
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:

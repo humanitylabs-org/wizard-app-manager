@@ -239,7 +239,8 @@ class FakeRuntipi:
     def _save_docker(self):
         st = {}
         for urn, a in self.apps.items():
-            if urn in self.agent_homes:
+            # Runtipi's stop is `compose down`: a stopped app has no containers
+            if urn in self.agent_homes and a.get("status") == "running":
                 st[urn.replace(":", "_")] = {"id": "c-" + urn.split(":")[0], "image": IMAGE, "home": str(self.agent_homes[urn])}
         self.docker_state.write_text(json.dumps(st))
 
@@ -285,6 +286,7 @@ class FakeRuntipi:
     def start(self, urn):
         self.calls.append(("start", urn))
         self.apps[urn]["status"] = "running"
+        self._save_docker()
         # like Runtipi's setAppDataDirPermissions after every `compose up`: chmod -Rf a+rwx on the app's data
         data = self._paths(urn)[0]
         for dp, dns, fns in os.walk(data):
@@ -299,6 +301,7 @@ class FakeRuntipi:
     def stop(self, urn):
         self.calls.append(("stop", urn))
         self.apps[urn]["status"] = "stopped"
+        self._save_docker()
         return {}
 
     def restart(self, urn):
@@ -369,7 +372,12 @@ def _w(p: Path, text: str, mode: int | None = None) -> Path:
 def _package(root: Path, store: str, app_id: str, tipi: int, version: str, kind: str = "app") -> None:
     for base in (root / "repos" / store / "apps" / app_id,):
         _w(base / "config.json", json.dumps({"id": app_id, "tipi_version": tipi, "version": version}))
-        _w(base / "docker-compose.yml", f"services:\n  {app_id}:\n    image: example/{app_id}:{version}\n")
+        if kind == "agent":     # like the real agent apps: a sidecar plus the Hermes engine mounting the home
+            _w(base / "docker-compose.yml", f"services:\n  {app_id}:\n    image: python:3.12-alpine\n"
+               f"  {app_id}-engine:\n    image: ghcr.io/example/hermes-agent:${{APP_IMAGE_TAG:-test}}\n"
+               f"    volumes:\n      - ${{APP_DATA_DIR}}/data:/opt/data\n")
+        else:
+            _w(base / "docker-compose.yml", f"services:\n  {app_id}:\n    image: example/{app_id}:{version}\n")
         _w(base / "wizard.md", f"---\nid: {app_id}\nname: {app_id}\ntype: {kind}\nversion: {version}\n---\n")
         _w(base / ".wizard-commit", (app_id[0] * 40) + "\n")
 
