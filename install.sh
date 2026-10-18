@@ -155,6 +155,10 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
 "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 
+# restic for scheduled backups: pinned official release, sha256-checked (wam/backup/restic.py).
+# Older boxes also install it on demand through `wam backup schedule set` / `run`.
+"$HOME/.local/bin/wam" backup restic-install >/dev/null || DEGRADED+=("could not install restic for scheduled backups (wam backup restic-install)")
+
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
 sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
   || FAILED+=("could not install the wizard command")

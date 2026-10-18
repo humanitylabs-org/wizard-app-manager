@@ -16,6 +16,7 @@ Wizard additions:
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
+  wam backup                   encrypted backups: export, import, undo, schedule (--help)
   wam doctor [--fix]            check the whole chain
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
@@ -780,6 +781,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "backup":
+        from .backup.cli import main as backup_main
+        return backup_main(argv[1:])
     # Builder lives in its own module; lifecycle/global registry remains separate.
     if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill"}:
         from .builder import main as builder_main

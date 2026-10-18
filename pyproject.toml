@@ -13,7 +13,7 @@ test = ["pytest>=8", "ruamel.yaml>=0.18", "PyJWT>=2"]
 wam = "wam.cli:main"
 
 [tool.setuptools]
-packages = ["wam", "wam.vendor", "wam.vendor.wizard_os_plugin"]
+packages = ["wam", "wam.backup", "wam.vendor", "wam.vendor.wizard_os_plugin"]
 
 [tool.setuptools.package-data]
 "wam" = ["defaults.json"]
