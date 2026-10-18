@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import stat
 import tarfile
 import time
@@ -203,8 +204,9 @@ def check_member(m: tarfile.TarInfo) -> str:
 
 
 def check_inner_archive(fileobj, mode: str = "r|gz") -> dict:
-    """A Runtipi per-app backup (tar.gz of app-data/, app/, user-config/): only files and folders with safe relative
-    names, the same rule Runtipi's own restore applies. Reads it to the end."""
+    """A Runtipi per-app backup (tar.gz of app-data/, app/, user-config/): files and folders with safe relative
+    names, plus symlinks inside app-data/ that resolve inside app-data/ (the rule Runtipi's own restore applies:
+    backup.manager.ts validateRestoreDirectory). Hard links, devices and FIFOs are refused. Reads it to the end."""
     n = size = 0
     try:
         with tarfile.open(fileobj=fileobj, mode=mode) as t:
@@ -219,6 +221,11 @@ def check_inner_archive(fileobj, mode: str = "r|gz") -> dict:
                     raise Unsafe(f"an app data archive holds an unsafe name: {name[:120]!r}")
                 if parts[0] not in ("app-data", "app", "user-config"):
                     raise Unsafe(f"an app data archive holds an unexpected entry: {name[:120]!r}")
+                if m.issym() and parts[0] == "app-data" and not m.linkname.startswith("/"):
+                    target = posixpath.normpath(posixpath.join(posixpath.dirname(name.rstrip("/")), m.linkname))
+                    if target == "app-data" or target.startswith("app-data/"):
+                        n += 1
+                        continue
                 if not (m.isreg() or m.isdir()) or m.issparse():
                     raise Unsafe(f"an app data archive holds a link or special file: {name[:120]!r}")
                 n += 1

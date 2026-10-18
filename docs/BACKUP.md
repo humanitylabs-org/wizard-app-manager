@@ -145,8 +145,13 @@ Choices the contract left open, as built in `wam/backup/`:
   `wizard-import-hermes`).
 - **Travels in `wizard-os/`**: `secrets/` (per-app passwords, `backup-key.json`, `backup-target.json`) and
   `backup.json`. Entries of `secrets/` and `app-tokens/` for apps the backup doesn't carry stay on the box.
-- **Apps** stopped at export stay stopped after import; apps the backup doesn't carry are left alone. Runtipi's
-  uninstall keeps `user-config/<store>/<id>`, so undo removes the one the restore brought.
+- **Apps** stopped at export stay stopped after import; apps the backup doesn't carry are left alone. An app this
+  box already has gets the bundle's `app-data/` and package but keeps **this box's** `user-config/` (wam writes the
+  box's wiring there: alongside overrides, trusted origins, ports); it is taken from the Runtipi snapshot made just
+  before. An app the restore installs gets the bundle's `user-config/`. Runtipi's uninstall keeps
+  `user-config/<store>/<id>`, so undo removes the one the restore brought.
+- **App archives** follow Runtipi's own restore rule: files and folders, plus symlinks inside `app-data/` that
+  resolve inside it; hard links, devices, FIFOs and anything else are refused at verify.
 - **Agent wiring kept** on import: `terminal`, `mcp_servers.wizard`, the wizard `skills.external_dirs`, Wizard's
   plugins, `platforms.api_server` and the `.env` keys `API_SERVER_*`, `WIZARD_*`, `HERMES_DASHBOARD*` of this box's
   agent. A new extra agent keeps its imported ones (they match its `runtime.key`).

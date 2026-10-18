@@ -28,6 +28,7 @@ import errno
 import json
 import os
 import shutil
+import tarfile
 import time
 import uuid
 from pathlib import Path
@@ -340,6 +341,39 @@ def _runtipi_restore(box: Box, urn: str, archive: Path, name: str) -> str:
     return st
 
 
+def _uc(name: str) -> bool:
+    while name.startswith("./"):
+        name = name[2:]
+    return name == "user-config" or name.startswith("user-config/")
+
+
+def _keep_box_user_config(box: Box, urn: str, arch: Path, snapshot: str, stage: Path) -> Path:
+    """The bundle's app-data/ and app/ with this box's own user-config/, taken from the Runtipi snapshot made just
+    before (readable even when Runtipi wrote the live files as root)."""
+    app_id, store = urn.split(":")
+    snap = box.runtipi_root / "backups" / store / app_id / snapshot
+    tmp_snap = None
+    if not (snap.is_file() and os.access(snap, os.R_OK)):
+        tmp_snap = stage / f"snapshot-{app_id}.tar.gz"
+        box.rt.download_backup(urn, snapshot, tmp_snap)
+        snap = tmp_snap
+    out = arch.with_name("data-boxconfig.tar.gz")
+    try:
+        with tarfile.open(out, "w:gz") as w:
+            for src, keep in ((arch, lambda n: not _uc(n)), (snap, _uc)):
+                with tarfile.open(src, "r:gz") as t:
+                    for m in t:
+                        if keep(m.name):
+                            w.addfile(m, t.extractfile(m) if m.isreg() else None)
+        with open(out, "rb") as f:
+            bundle.check_inner_archive(f)
+    finally:
+        if tmp_snap:
+            tmp_snap.unlink(missing_ok=True)
+    arch.unlink()
+    return out
+
+
 def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     """Install a bundled app that this box doesn't have, from the bundled package at the same version."""
     urn, app_id, store = rec["urn"], rec["id"], rec["store"]
@@ -419,13 +453,17 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         if a["urn"] not in installed:
             log(f"app {a['id']}: installing the bundled version")
             _install_app(box, r, a)
+    snapshots = {s["urn"]: s["backup"] for s in r.journal["steps"] if s["kind"] == "app_snapshot"}
     for a in data_apps:
         arch = stage / "apps" / a["id"] / "data.tar.gz"
         if arch.is_file():
+            if a["urn"] in snapshots:
+                # user-config/ is this box's wiring (alongside overrides, trusted origins, ports): keep it
+                arch = _keep_box_user_config(box, a["urn"], arch, snapshots[a["urn"]], stage)
             log(f"app {a['id']}: restoring its data with Runtipi")
             _runtipi_restore(box, a["urn"], arch, f"{a['id']}-wizard-restore-{r.stamp}.tar.gz")
             r.step(kind="app_restored", urn=a["urn"])
-            arch.unlink()
+            arch.unlink(missing_ok=True)
 
     # Wizard home (identity entries never come from a bundle, and the box keeps its own)
     src = stage / "wizard-os"

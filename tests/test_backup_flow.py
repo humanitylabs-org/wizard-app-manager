@@ -239,6 +239,8 @@ def test_import_onto_fresh_box_then_undo_then_reimport_and_activate(world):
     assert (rt / "user-config/wizardapps/notes-app/app.env").read_text() == "NOTES_EXTRA=1\n"
     assert new.rt.apps["notes-app:wizardapps"]["version"] == 3
     assert (rt / "app-data/wizardapps/files-app/data/index.json").read_text() == "old files index"
+    # a replaced app keeps this box's user-config (wiring), from the Runtipi snapshot
+    assert (rt / "user-config/wizardapps/files-app/app.env").read_text() == "WIZARD_TRUSTED_ORIGINS=http://new-box\n"
     assert (rt / "app-data/wizardapps/whoami/data/x").read_text() == "whoami data"   # left alone
     assert rec["apps"]["notes-app"] == "running" and rec["apps"]["files-app"] == "stopped"
     # files

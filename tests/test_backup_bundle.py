@@ -180,3 +180,18 @@ def test_writer_and_scan_round_trip_through_encryption(tmp_path):
     res = bundle.scan(r, bundle.StageSink(stage, tmp_path / "fs"))
     assert (tmp_path / "fs" / "a" / "b" / "f.txt").read_text() == "hello"
     assert res["files"] == 3
+
+
+def test_app_archive_symlinks_follow_runtipis_rule():
+    """Runtipi's restore accepts symlinks inside app-data/ that stay inside it; so does verify."""
+    def arch(linkname, where="./app-data/db/current"):
+        inner = io.BytesIO()
+        with tarfile.open(fileobj=inner, mode="w:gz") as t:
+            t.addfile(_ti("./app-data/db/v1", b"x"), io.BytesIO(b"x"))
+            t.addfile(_ti(where, kind=tarfile.SYMTYPE, linkname=linkname))
+        return inner.getvalue()
+    ok = arch("v1")
+    assert bundle.scan(io.BytesIO(_tar([(_ti("apps/x/data.tar.gz", ok), ok)])))["files"] == 2
+    for bad in (arch("../../../etc"), arch("/etc/passwd"), arch("v1", "./app/link")):
+        with pytest.raises(bundle.Unsafe):
+            bundle.scan(io.BytesIO(_tar([(_ti("apps/x/data.tar.gz", bad), bad)])))
