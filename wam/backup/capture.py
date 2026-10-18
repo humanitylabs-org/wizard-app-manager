@@ -90,6 +90,21 @@ def _runtipi_archive(box: Box, urn: str, work: Path, status_before: str | None) 
     return tmp, name, True
 
 
+def _stream_app_archive(box: Box, bw, app_id: str, urn: str, status: str | None, work: Path) -> None:
+    """Runtipi's archive of one app, written into the stream decompressed, then deleted (file and Runtipi entry)."""
+    log(f"app {app_id}: Runtipi backup")
+    path, name, tmp = _runtipi_archive(box, urn, work, status)
+    try:
+        bw.add_gunzipped(f"apps/{app_id}/data.tar", path)
+    finally:
+        if tmp:
+            path.unlink(missing_ok=True)
+        try:
+            box.rt.delete_backup(urn, name)
+        except RuntipiError as e:
+            log(f"note: could not delete Runtipi's temporary backup of {urn}: {e}")
+
+
 def _du(path: Path) -> int:
     return bundle.tree_size(path)["bytes"] if path.is_dir() else 0
 
@@ -187,7 +202,12 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             except RuntipiError:
                 full = {}
             form = ((full.get("app") or {}).get("config")) or {}
-            if not is_agent:
+            if not is_agent and plain_stream is not None:
+                # streamed run: each app's archive is made while the stream reaches it and deleted right after,
+                # so at most one app archive is on disk at a time
+                rec["bytes"] = None
+                app_files[app_id] = (urn, info.get("status"))
+            elif not is_agent:
                 log(f"app {app_id}: Runtipi backup")
                 path, name, tmp = _runtipi_archive(box, urn, work, info.get("status"))
                 runtipi_made.append((urn, name))
@@ -243,7 +263,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                     bw.add_dir(f"apps/{app_id}/package")
                     bw.add_tree(f"apps/{app_id}/package", pkg)
                 if app_id in app_files and plain_stream is not None:
-                    bw.add_gunzipped(f"apps/{app_id}/data.tar", app_files[app_id])
+                    _stream_app_archive(box, bw, app_id, *app_files[app_id], work)
                 elif app_id in app_files:
                     bw.add_file(f"apps/{app_id}/data.tar.gz", app_files[app_id])
             if include_files and files_root.is_dir():

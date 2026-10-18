@@ -429,3 +429,21 @@ def test_read_data_check_is_weekly(world):
     assert r3["read_data"]["at"] >= r1["read_data"]["at"] and r3["read_data"] is not r1["read_data"]
     st = json.loads((world["old"].home / "backup-status.json").read_text())
     assert st["read_data"]["ok"] is True
+
+
+@needs_restic
+def test_streamed_run_keeps_at_most_one_app_archive_on_disk(world):
+    assert _set(world)[0] == 0
+    fb = world["old"]
+    seen = []
+    real = fb.rt.backup_app
+
+    def backup_app(urn):
+        seen.append(len(list((fb.runtipi / "backups").rglob("*.tar.gz"))))
+        return real(urn)
+    fb.rt.backup_app = backup_app
+    code, r = _cli(_box(fb), "run")
+    assert code == 0, r
+    assert len(seen) >= 2 and max(seen) == 0, seen          # every earlier archive was gone before the next
+    assert not list((fb.runtipi / "backups").rglob("*.tar.gz"))
+    assert r["peak_extra_disk_bytes"] >= 0
