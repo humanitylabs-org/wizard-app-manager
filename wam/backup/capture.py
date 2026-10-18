@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import socket
+import tempfile
 import time
 from pathlib import Path
 
@@ -115,9 +116,6 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     if out.exists():
         raise ExportError(f"{out} already exists")
     out.parent.mkdir(parents=True, exist_ok=True)
-    work = Path(box.work_dir()) / f"export-{os.getpid()}-{int(t0)}"
-    work.mkdir(parents=True, mode=0o700)
-
     installed = box.installed()
     rows = box.registry_rows()
     agents = box.agents(installed)
@@ -134,6 +132,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
     need_space(box, out.parent, est + MARGIN, "the backup file")
     log(f"about {human(est)} to back up")
+    work = Path(tempfile.mkdtemp(prefix="export-", dir=box.work_dir()))
 
     temps: list[Path] = []
     runtipi_made: list[tuple[str, str]] = []

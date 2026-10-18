@@ -32,7 +32,7 @@ from . import EXT, capture, fmt, keys as keylib, restore
 from .box import Box, human, is_test_env, log
 from .s3 import S3, S3Error
 
-CONFIG, TARGET_SECRET, STATUS, LOCK = "backup.json", "backup-target.json", "backup-status.json", "backup.lock"
+CONFIG, TARGET_SECRET, STATUS = "backup.json", "backup-target.json", "backup-status.json"
 UNIT = "wizard-backup"
 EVERY = {"hourly": "hourly", "daily": "*-*-* {at}:00", "weekly": "Mon *-*-* {at}:00"}
 
@@ -256,16 +256,16 @@ class Busy(RuntimeError):
 
 @contextmanager
 def lock(box: Box):
-    """One backup engine run at a time on this box (run, import, undo, activate)."""
+    """One backup engine run at a time on this box (run, import, undo, activate). The lock is a flock on the Wizard
+    home folder itself, so taking it creates nothing (a refused import leaves the box byte-for-byte unchanged) and
+    the kernel drops it when the process dies."""
     box.home.mkdir(parents=True, exist_ok=True)
-    fd = os.open(box.home / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(box.home, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Busy("another backup or restore is running on this box") from None
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode())
         yield
     finally:
         os.close(fd)

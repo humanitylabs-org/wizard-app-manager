@@ -347,13 +347,18 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     pkg = stage / "package"
     meta = json.loads((stage / "app.json").read_text()) if (stage / "app.json").is_file() else {}
     repo_pkg = box.store_package(store, app_id)
+    placed = False
     if pkg.is_dir() and not repo_pkg.exists():
         try:   # the App Manager writes this folder for its own store; Runtipi installs from it
             shutil.copytree(pkg, repo_pkg)
+            placed = True
         except OSError as e:
             log(f"note: could not place the bundled package for {app_id}: {e}")
+    uc = _highest_missing(box.runtipi_root / "user-config" / store / app_id, box.runtipi_root)
+    info = {"user_config_new": str(uc) if uc else None, "package_placed": str(repo_pkg) if placed else None}
+    r.step(kind="app_installing", urn=urn, **info)
     box.rt.install(urn, meta.get("form") or {})
-    r.step(kind="app_installed", urn=urn)
+    r.step(kind="app_installed", urn=urn, **info)
     st = box.wait_status(urn, {"running", "stopped"}, timeout=1800)
     if st not in ("running", "stopped"):
         raise RestoreError(f"installing {app_id} did not finish (status {st})")
@@ -407,6 +412,9 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     r.save()
 
     # 5) apply ----------------------------------------------------------------
+    for k, a in targets.items():
+        if k not in existing:
+            _prepare_agent_folder(r, k, a)
     for a in apps:
         if a["urn"] not in installed:
             log(f"app {a['id']}: installing the bundled version")
@@ -460,6 +468,12 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             except RuntipiError as e:
                 notes.append(f"{a['id']}: start failed: {e}")
             st = box.wait_status(a["urn"], {"running"}, timeout=600)
+        elif a.get("status") == "stopped" and st == "running" and a.get("data") != "agent":
+            try:   # the owner had it stopped at export: keep it that way
+                box.rt.stop(a["urn"])
+            except RuntipiError as e:
+                notes.append(f"{a['id']}: stop failed: {e}")
+            st = box.wait_status(a["urn"], {"stopped"}, timeout=300)
         health[a["id"]] = st
     for k, a in targets.items():
         try:
@@ -514,18 +528,40 @@ def _regenerate(box: Box) -> list[str]:
         return [f"regenerating apps.json/skills failed: {e}; run `wam apps`"]
 
 
+def _highest_missing(path: Path, stop: Path) -> Path | None:
+    """The outermost folder of `path` (below `stop`) that doesn't exist yet: what creating `path` adds."""
+    path, stop = Path(path), Path(stop)
+    if path.exists():
+        return None
+    top = path
+    while top.parent != stop and top.parent != top.parent.parent and not top.parent.exists():
+        top = top.parent
+    return top
+
+
+def _prepare_agent_folder(r: _Restore, k: str, a: Agent) -> None:
+    """A new extra agent: its folder and home exist before its app is installed (so the bind mount is the owner's),
+    and its small files come from the bundle (runtime.key etc. match the imported .env)."""
+    if not a.folder:
+        if not a.home.exists():
+            a.home.mkdir(parents=True)
+            r.step(kind="agent_folder_created", agent=k, path=str(a.home))
+        return
+    if not a.folder.exists():
+        top = _highest_missing(a.folder, r.box.home)
+        a.folder.mkdir(parents=True, mode=0o700)
+        r.step(kind="agent_folder_created", agent=k, path=str(top or a.folder))
+    fsrc = r.root / "stage" / "agents" / k / "folder"
+    for n in sorted(os.listdir(fsrc)) if fsrc.is_dir() else []:
+        if not (a.folder / n).exists():
+            _move(fsrc / n, a.folder / n)
+    a.home.mkdir(parents=True, exist_ok=True)
+
+
 def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, installed: dict) -> dict:
     stage = r.root / "stage" / "agents" / k
     zip_in = stage / "hermes-backup.zip"
     rep: dict = {"target": a.runtime, "app": (a.urn or ":").split(":")[0] or None}
-    if k not in existing and a.folder:
-        # a new extra agent: its folder comes from the bundle (runtime.key etc. match the imported .env)
-        a.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        r.step(kind="agent_folder_created", agent=k, path=str(a.folder))
-        fsrc = stage / "folder"
-        for n in sorted(os.listdir(fsrc)) if fsrc.is_dir() else []:
-            if not (a.folder / n).exists():
-                _move(fsrc / n, a.folder / n)
     if a.folder and (stage / "agent.json").is_file():
         meta = json.loads((stage / "agent.json").read_text())
         if isinstance(meta, dict) and meta.get("id") == k:
@@ -615,7 +651,7 @@ def undo(box: Box) -> dict:
                 _move(before / "agents" / k / "agent.json", a.folder / "agent.json")
     for s in steps:
         if s["kind"] == "agent_folder_created" and Path(s["path"]).exists():
-            _move(Path(s["path"]), undone / "agent-folders" / s["agent"])
+            _move(Path(s["path"]), undone / "agent-folders" / s["agent"] / Path(s["path"]).name)
     # files
     if "files" in areas:
         for n in _files_entries(files_root):
@@ -624,14 +660,27 @@ def undo(box: Box) -> dict:
         for n in sorted(os.listdir(fb)) if fb.is_dir() else []:
             _move(fb / n, files_root / n)
     # apps: uninstall what the restore installed, put back what it replaced
+    done = {s["urn"] for s in steps if s["kind"] == "app_installed"}
     for s in reversed(steps):
-        if s["kind"] == "app_installed":
-            log(f"uninstalling {s['urn']} (installed by the restore)")
-            try:
-                box.rt.uninstall(s["urn"])
-                box.wait_status(s["urn"], {"missing"}, timeout=900)
-            except RuntipiError as e:
-                notes.append(f"{s['urn']}: uninstall failed: {e}")
+        if s["kind"] in ("app_installed", "app_installing") and (s["kind"] == "app_installed" or s["urn"] not in done):
+            if s["kind"] == "app_installing" and box.app_status(s["urn"]) == "missing":
+                pass   # the install never registered
+            else:
+                log(f"uninstalling {s['urn']} (installed by the restore)")
+                try:
+                    box.rt.uninstall(s["urn"])
+                    box.wait_status(s["urn"], {"missing"}, timeout=900)
+                except RuntipiError as e:
+                    notes.append(f"{s['urn']}: uninstall failed: {e}")
+            # Runtipi's uninstall keeps user-config/; the restore brought it, so it goes too
+            uc = Path(s["user_config_new"]) if s.get("user_config_new") else None
+            if uc and uc.exists():
+                try:
+                    shutil.rmtree(uc)
+                except OSError as e:
+                    notes.append(f"{s['urn']}: could not remove {uc}: {e}")
+            if s.get("package_placed"):
+                shutil.rmtree(s["package_placed"], ignore_errors=True)
     for s in steps:
         if s["kind"] == "app_snapshot":
             log(f"putting back {s['urn']}")
