@@ -349,7 +349,7 @@ install_running() {  # true while a runner holds the install lock
 STATUS_PY='
 import json, os, re, sys, time
 path, log_path = sys.argv[1], sys.argv[2]
-mode = sys.argv[3] if len(sys.argv) > 3 else "stream"
+mode = sys.argv[3]
 def load():
     try:
         with open(path) as f: return json.load(f)
@@ -384,30 +384,45 @@ if mode == "end":
     st["message"] = msg
     save(st); sys.exit(0)
 st = load()
-with open(log_path, "a") as log:
-    for raw in sys.stdin:
-        line = ansi.sub("", raw.rstrip("\n"))
-        log.write(line + "\n"); log.flush()
-        s, changed = line.strip(), True
-        if s.startswith("==> "):
-            st["step"] = s[4:]
-        elif s.startswith("[wizard-os] owner-action:"):
-            m = url.search(s)
-            st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
-            st["message"] = s.split(":", 1)[1].strip()
-        elif s.startswith("[wizard-os] owner-action-done"):
-            st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
-        elif s.startswith("[wizard-os] wizard-url:"):
-            m = url.search(s)
-            st["wizard_url"] = m.group(0) if m else None
-        elif s.startswith("[wizard-os] note:"):
-            note = s.split(":", 1)[1].strip()
-            if note not in st.setdefault("notes", []): st["notes"].append(note)
-        elif s.startswith("Hermes will restart in"):
-            st["restart_pending"] = True
-        else:
-            changed = False
-        if changed: save(st)
+pid = int(sys.argv[4])   # follow the log get.sh writes until that process is gone (a leftover child cannot hold this)
+def alive():
+    try: os.kill(pid, 0); return True
+    except ProcessLookupError: return False
+    except PermissionError: return True
+def handle(line):
+    s, changed = ansi.sub("", line).strip(), True
+    if s.startswith("==> "):
+        st["step"] = s[4:]
+    elif s.startswith("[wizard-os] owner-action:"):
+        m = url.search(s)
+        st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
+        st["message"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-action-done"):
+        st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
+    elif s.startswith("[wizard-os] wizard-url:"):
+        m = url.search(s)
+        st["wizard_url"] = m.group(0) if m else None
+    elif s.startswith("[wizard-os] note:"):
+        note = s.split(":", 1)[1].strip()
+        if note not in st.setdefault("notes", []): st["notes"].append(note)
+    elif s.startswith("Hermes will restart in"):
+        st["restart_pending"] = True
+    else:
+        changed = False
+    if changed: save(st)
+with open(log_path, errors="replace") as log:
+    buf = ""
+    while True:
+        chunk = log.readline()
+        if chunk:
+            buf += chunk
+            if buf.endswith("\n"): handle(buf); buf = ""
+            continue
+        if not alive():
+            rest = log.read()
+            for line in (buf + rest).splitlines(): handle(line)
+            break
+        time.sleep(0.3)
 '
 install_status() {  # the short block for the owner's agent
   if [ ! -f "$STATUS_FILE" ]; then
@@ -442,7 +457,7 @@ else:
 PY
   if [ "$state" = failed ] || [ "$state" = stopped ]; then
     echo "Last 20 lines of $INSTALL_LOG:"
-    tail -n 20 "$INSTALL_LOG" 2>/dev/null || true
+    tail -n 20 "$INSTALL_LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' || true
   fi
 }
 install_runner() {  # internal: the detached runner. One at a time (flock); the final status is written before it exits.
@@ -452,11 +467,14 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
   export WIZARD_DETACHED=1 WIZARD_INSTALL_RUNNER_PID=$$
   : > "$INSTALL_LOG"; chmod 600 "$INSTALL_LOG"
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" begin $$
-  local rc=0
-  set +e
-  bash "$WOS_DIR/get.sh" </dev/null 2>&1 9>&- | python3 -u -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG"
-  rc=${PIPESTATUS[0]}
-  set -e
+  local rc=0 gpid fpid
+  bash "$WOS_DIR/get.sh" </dev/null >>"$INSTALL_LOG" 2>&1 9>&- &
+  gpid=$!
+  python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" follow "$gpid" </dev/null 9>&- &
+  fpid=$!
+  wait "$gpid" || rc=$?
+  wait "$fpid" || true
+  # The final state is written before this runner exits; a deferred Hermes restart waits for that exit.
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
   exit 0
 }
@@ -496,8 +514,8 @@ for k in sorted(os.environ):
   fi
   # Its own unit, outside the agent's process tree: the Hermes restart at the end cannot take the install with it.
   if [ ${#run[@]} -eq 0 ] || ! "${run[@]}" --setenv=HOME="$HOME" --setenv=USER="$USER" --setenv=PATH="$PATH" \
-      /bin/bash "$WOS_DIR/get.sh" __runner >/dev/null 2>&1; then
-    setsid nohup /bin/bash "$WOS_DIR/get.sh" __runner </dev/null >/dev/null 2>&1 &
+      /bin/bash "$WOS_DIR/get.sh" __runner >/dev/null 2>&1 8>&-; then
+    setsid nohup /bin/bash "$WOS_DIR/get.sh" __runner </dev/null >/dev/null 2>&1 8>&- &
   fi
   for _ in $(seq 1 40); do install_running && [ -f "$STATUS_FILE" ] && break; sleep 0.25; done
   echo "Wizard OS install started in the background (it can take 10-20 minutes)."

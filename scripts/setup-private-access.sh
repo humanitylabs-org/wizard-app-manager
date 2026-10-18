@@ -97,7 +97,10 @@ if [ "$current" = "NeedsLogin" ]; then
     fi
     sleep 2
   done
-  wait "$up_pid" 2>/dev/null || true   # bounded by its own --timeout (the same deadline)
+  # Connected: let `up` finish on its own. Out of time: stop the CLI (the daemon keeps the pending login, so the
+  # same link still works later; nothing is reset).
+  [ "$current" = Running ] || kill "$up_pid" 2>/dev/null || true
+  wait "$up_pid" 2>/dev/null || true
   rm -f "$out"
   [ -z "$shown" ] || echo "[wizard-os] owner-action-done"
   current="$(state)"

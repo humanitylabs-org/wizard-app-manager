@@ -45,7 +45,7 @@ up)
   echo "To authenticate, visit:"
   echo "login link from mock"
   if [ "${UP_STATE:-NeedsLogin}" = "Running" ]; then echo Running > "$STATE_FILE"; exit 0; fi
-  if [ -n "${LOGIN_AFTER:-}" ]; then n=$(cat "$STATE_FILE.n" 2>/dev/null || echo 0); echo $((n+1)) > "$STATE_FILE.n"; fi
+  if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
   exit 1
   ;;
 esac
@@ -131,3 +131,38 @@ def test_invalid_provider_fails_without_mutations(sandbox):
     _, log, _, _, _ = sandbox
     assert run(sandbox, WIZARD_PRIVATE_ACCESS="invalid").returncode != 0
     assert not log.exists()
+
+
+def test_login_link_is_the_one_owner_action_and_is_waited_for(sandbox):
+    """Logged out, no terminal, detached: `up` runs in the background, its AuthURL is surfaced as the owner action,
+    and the install continues once the owner has signed in."""
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="3")
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.splitlines()
+    link = "https://login.tailscale.com/a/abc123"
+    assert f"[wizard-os] owner-action: Open this link to connect your Wizard to your Tailscale: {link}" in out
+    assert out.index(link) < out.index("[wizard-os] owner-action-done")
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
+    calls = log.read_text()
+    assert "tailscale up --timeout=" in calls and "--auth-key" not in calls and "--reset" not in calls
+
+
+def test_no_terminal_plain_run_does_not_wait_for_login(sandbox):
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, LOGIN_AFTER="30")
+    assert p.returncode == 0, p.stderr
+    assert "tailscale up --timeout=1s" in log.read_text()
+
+
+@pytest.mark.parametrize("env,what", [({"MAGICDNS": "false"}, "MagicDNS"), ({"CERTS": "off"}, "HTTPS certificates")])
+def test_tailnet_without_magicdns_or_https_finishes_box_only_with_the_admin_link(sandbox, env, what):
+    _, log, home, _, _ = sandbox
+    p = run(sandbox, **env)
+    assert p.returncode == 0, p.stderr
+    assert "https://login.tailscale.com/admin/dns" in p.stdout
+    assert f"[wizard-os] note: {what} is off" in p.stdout
+    assert "tailscale up" not in log.read_text(), "a logged-in node is never re-authenticated"
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is False
