@@ -246,10 +246,11 @@ class AppData:
         return p.stdout
 
     # ------------------------------------------------------------ archive
-    def archive(self, store: str, app_id: str, out: Path, *, volumes: list[str] | None = None) -> dict:
+    def archive(self, store: str, app_id: str, out: Path, *, volumes: list[str] | None = None,
+                parts=PARTS) -> dict:
         """Archive the app (stopped by the caller) into `out` (tar.gz) with `volumes` (default: every named volume
         its compose file declares that exists). Returns {entries, bytes, volumes, skipped, kept_in_place}."""
-        paths = {k: p for k, p in self.paths(store, app_id).items() if p.is_dir()}
+        paths = {k: p for k, p in self.paths(store, app_id).items() if p.is_dir() and k in parts}
         if not paths:
             raise AppDataError(f"{app_id} has no folders under Runtipi")
         vols = list(self.volumes(store, app_id) if volumes is None else volumes)
@@ -370,6 +371,15 @@ class AppData:
         self._helper([f"{self.box.runtipi_root / 'repos'}:/repos"], {"STORE": store, "APP": app_id}, PLACE_SH, feed)
 
 
+    def remove_runtipi_path(self, path: Path) -> None:
+        """Remove a folder the engine put under Runtipi's user-config/ or repos/ (as root: it may hold root's or
+        the bundle's owners)."""
+        rel = Path(path).relative_to(self.box.runtipi_root).as_posix()
+        parts = rel.split("/")
+        if parts[0] not in ("user-config", "repos") or len(parts) < 2 or any(x in ("", ".", "..") for x in parts):
+            raise AppDataError(f"refusing to remove {rel!r}")
+        self._helper([f"{self.box.runtipi_root}:/rt"], {"REL": rel}, 'rm -rf "/rt/$REL"')
+
     def remove_package(self, store: str, app_id: str) -> None:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
             raise AppDataError(f"bad app id {app_id!r}")
@@ -377,8 +387,10 @@ class AppData:
                      'rm -rf "/repos/$STORE/apps/$APP"')
 
     # ------------------------------------------------------------ restore
-    def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS) -> dict:
-        """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced."""
+    def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS, rewrite=()) -> dict:
+        """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced. `rewrite`
+        ((old, new) text pairs, most specific first) is applied to user-config/ files: compose overrides there name
+        the source box's own paths (an extra agent's home mount)."""
         parts = set(parts)
         keep = self.keep_in_place(store, app_id)
         vols: list[str] = []
@@ -419,6 +431,13 @@ class AppData:
                         if m.issym():
                             links.append(f"{int(m.uid)}:{int(m.gid)}".encode() + b"\0" + name.encode(
                                 "utf-8", "surrogateescape") + b"\0")
+                        if m.isreg() and rewrite and top == "user-config" and m.size <= 1 << 20:
+                            data = t.extractfile(m).read()
+                            for a, b in rewrite:
+                                data = data.replace(a.encode(), b.encode())
+                            m.size = len(data)
+                            w.addfile(m, io.BytesIO(data))
+                            continue
                         w.addfile(m, t.extractfile(m) if m.isreg() else None)
                     if links:
                         data = b"".join(links)

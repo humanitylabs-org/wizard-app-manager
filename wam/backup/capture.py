@@ -96,12 +96,20 @@ def _app_archive(box: Box, urn: str, info: dict, work: Path, volumes: list[str])
     return out, rep
 
 
-def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: list[str], work: Path,
+def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: list[str] | None, work: Path,
                       plain: bool, skipped: list[str]) -> None:
     """Archive one app (stopped and started again around it), put it into the bundle, delete it. A plain (restic)
-    stream gets it decompressed as apps/<id>/data.tar, the file as apps/<id>/data.tar.gz."""
-    log(f"app {app_id}: archiving its data")
-    path, rep = _app_archive(box, urn, info, work, vols)
+    stream gets it decompressed as apps/<id>/data.tar, the file as apps/<id>/data.tar.gz. vols=None: an agent app,
+    only its user-config/ (static: no stop)."""
+    if vols is None:
+        path = work / f"app-{app_id}.tar.gz"
+        try:
+            rep = box.appdata.archive(info["store"], app_id, path, volumes=[], parts=("user-config",))
+        except AppDataError as e:
+            raise ExportError(f"app {app_id}: {e}") from None
+    else:
+        log(f"app {app_id}: archiving its data")
+        path, rep = _app_archive(box, urn, info, work, vols)
     try:
         if plain:
             bw.add_gunzipped(f"apps/{app_id}/data.tar", path)
@@ -210,6 +218,12 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             except RuntipiError:
                 full = {}
             form = ((full.get("app") or {}).get("config")) or {}
+            uc_dir = box.runtipi_root / "user-config" / store / app_id
+            if is_agent and uc_dir.is_dir() and any(uc_dir.iterdir()):
+                # an agent app's home travels as the agent; its user-config/ (compose override: the home mount)
+                # travels as a small archive, put in place before Runtipi installs the app on the new box
+                rec["user_config"] = True
+                app_files[app_id] = (urn, info, None)
             if not is_agent:
                 # each app is archived just in time, while the file reaches it, and deleted right after: at most one
                 # app archive is on disk at a time. Its named volumes are known now (the manifest comes first).

@@ -201,7 +201,10 @@ class Box:
 
     def source(self) -> dict:
         return {"arch": platform.machine(), "os": platform.system().lower(), "mode": self.mode(),
-                "versions": self.versions()}
+                "versions": self.versions(),
+                # where this box keeps things: an import rewrites them in carried compose overrides (user-config/)
+                "paths": {"agents_root": str(self.agents_root()), "runtipi_root": str(self.runtipi_root),
+                          "wizard_home": str(self.home), "home": str(self.home.parent)}}
 
     def registry_rows(self) -> dict[str, dict]:
         try:
@@ -568,8 +571,8 @@ def box_digest(box: Box, agents: list[Agent] | None = None) -> dict:
         return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
             or rel.endswith(".lock")
 
-    def rt_skip(rel, is_dir):
-        return rel == "wizard-os" or rel.startswith("wizard-os/") and not rel.startswith("wizard-os/agents")
+    def rt_skip(rel, is_dir):   # app-data/wizard-os is regenerated, except an agents/ folder there
+        return rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/"))
 
     out = {"wizard-os": tree_digest(box.home, home_skip)[0]}
     # Runtipi runs `chmod -Rf a+rwx` on an app's data folder every time it starts the app, so permission bits there

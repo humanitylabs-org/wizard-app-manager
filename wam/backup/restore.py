@@ -360,10 +360,20 @@ def _snapshot_volumes(box: Box, r: "_Restore", a: dict, taken: set[str]) -> None
     r.step(kind="volume_snapshot", urn=a["urn"], archive=str(out), volumes=vols)
 
 
-def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS) -> dict:
+def _path_rewrite(box: Box, m: dict) -> list[tuple[str, str]]:
+    """(source path, this box's path) pairs, most specific first, for compose overrides carried in user-config/."""
+    src = ((m.get("source") or {}).get("paths")) or {}
+    here = {"agents_root": str(box.agents_root()), "runtipi_root": str(box.runtipi_root),
+            "wizard_home": str(box.home), "home": str(box.home.parent)}
+    pairs = [(src[k], here[k]) for k in ("agents_root", "runtipi_root", "wizard_home", "home")
+             if src.get(k) and src[k] != here[k] and len(src[k]) > 1]
+    return sorted(pairs, key=lambda p: -len(p[0]))
+
+
+def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS, rewrite=()) -> dict:
     store, app_id = urn.split(":")[1], urn.split(":")[0]
     try:
-        return box.appdata.restore(store, app_id, archive, parts=parts)
+        return box.appdata.restore(store, app_id, archive, parts=parts, rewrite=rewrite)
     except AppDataError as e:
         raise RestoreError(str(e)) from None
 
@@ -388,6 +398,11 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     uc = _highest_missing(box.runtipi_root / "user-config" / store / app_id, box.runtipi_root)
     info = {"user_config_new": str(uc) if uc else None, "package_placed": str(repo_pkg) if placed else None}
     r.step(kind="app_installing", urn=urn, **info)
+    arch = stage / "data.tar.gz"
+    if arch.is_file():
+        # the bundle's user-config/ goes in first: Runtipi's install starts the app with its compose override (an
+        # extra agent's home mount, say); without it the first start creates folders at the package's defaults
+        _put_back(box, urn, arch, ("user-config",), _path_rewrite(box, r.journal["manifest"]))
     box.rt.install(urn, meta.get("form") or {})
     r.step(kind="app_installed", urn=urn, **info)
     st = box.wait_status(urn, {"running", "stopped"}, timeout=1800)
@@ -471,7 +486,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             parts = [x for x in APP_ROOTS if not (x == "user-config" and a["urn"] in installed)]
             _stop_app(box, a["urn"])
             log(f"app {a['id']}: putting its data back")
-            got = _put_back(box, a["urn"], arch, parts)
+            got = _put_back(box, a["urn"], arch, parts, _path_rewrite(box, m))
             r.step(kind="app_restored", urn=a["urn"], entries=got["entries"], volumes=got["volumes"])
             arch.unlink(missing_ok=True)
 
@@ -722,10 +737,10 @@ def undo(box: Box) -> dict:
                     notes.append(f"{s['urn']}: uninstall failed: {e}")
             # Runtipi's uninstall keeps user-config/; the restore brought it, so it goes too
             uc = Path(s["user_config_new"]) if s.get("user_config_new") else None
-            if uc and uc.exists():
+            if uc and (uc.exists() or uc.is_symlink()):
                 try:
-                    shutil.rmtree(uc)
-                except OSError as e:
+                    box.appdata.remove_runtipi_path(uc)       # put there as root (the bundle's owners)
+                except AppDataError as e:
                     notes.append(f"{s['urn']}: could not remove {uc}: {e}")
             if s.get("package_placed"):
                 try:

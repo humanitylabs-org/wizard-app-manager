@@ -180,3 +180,45 @@ def test_undo_matches_although_apps_rewrite_files_when_they_start(realbox):
     assert code == 0, rec
     code, res = _cli(new.box(), "undo")
     assert code == 0 and res["digest_match"], res
+
+
+def test_new_app_gets_its_user_config_before_runtipi_installs_it(realbox):
+    """Runtipi's install starts the app at once: an extra agent whose home mount lives in its user-config override
+    would otherwise create a stray home at the package's default path on its first start."""
+    old, new = realbox["old"], realbox["new"]
+    home = old.runtipi / "app-data/wizardapps/wizard-agent-service/data/wizard-os/agents/research/home"
+    _w(old.runtipi / "user-config/wizardapps/agent-research/docker-compose.yml",
+       f"services: {{agent-research-engine: {{volumes: ['{home}:/opt/data']}}}}\n")
+    out = realbox["tmp"] / "d.wizardbackup"
+    capture.export(old.box(), out)
+    seen = {}
+    real = new.rt.install
+
+    def install(urn, form=None):
+        uc = new.runtipi / "user-config/wizardapps" / urn.split(":")[0] / "docker-compose.yml"
+        seen[urn] = uc.read_text() if uc.is_file() else None
+        return real(urn, form)
+    new.rt.install = install
+    before = box_digest(new.box())
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 0, rec
+    # carried, with the old box's paths rewritten to this box's (the two fake boxes live in different folders)
+    nhome = new.runtipi / "app-data/wizardapps/wizard-agent-service/data/wizard-os/agents/research/home"
+    assert seen["agent-research:wizardapps"] == f"services: {{agent-research-engine: {{volumes: ['{nhome}:/opt/data']}}}}\n"
+    assert str(old.base) not in seen["agent-research:wizardapps"]
+    code, res = _cli(new.box(), "undo")
+    assert code == 0 and res["digest_match"], res
+    assert box_digest(new.box()) == before
+    assert not (new.runtipi / "user-config/wizardapps/agent-research").exists()
+
+
+def test_digest_sees_agent_homes_under_runtipi_wizard_os(realbox):
+    """app-data/wizard-os is regenerated (apps.json, skills, hermes-view) except an agents/ folder: a stray agent
+    home left there must show up in the undo comparison."""
+    b = realbox["new"]
+    _w(b.runtipi / "app-data/wizard-os/apps.json", "one")
+    before = box_digest(b.box())
+    _w(b.runtipi / "app-data/wizard-os/apps.json", "regenerated")
+    assert box_digest(b.box()) == before
+    _w(b.runtipi / "app-data/wizard-os/agents/stray/home/.env", "SECRET=1")
+    assert box_digest(b.box()) != before
