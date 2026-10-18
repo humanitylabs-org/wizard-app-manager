@@ -15,7 +15,7 @@ def sandbox(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     # Only allowlisted utilities: no real host tailscale can leak into the fresh-install test.
-    for utility in ("bash", "sh", "cat", "mkdir", "mktemp", "rm", "cp", "chmod"):
+    for utility in ("bash", "sh", "cat", "mkdir", "mktemp", "rm", "cp", "chmod", "date", "sleep", "grep", "tail", "touch"):
         (bin_dir / utility).symlink_to(shutil.which(utility))
     (bin_dir / "python3").symlink_to(sys.executable)
     log = tmp_path / "calls"
@@ -34,10 +34,23 @@ def sandbox(tmp_path):
     tool("systemctl", 'printf "systemctl %s\\n" "$*" >> "$CALLS"; exit "${SERVICE_RC:-0}"\n')
     tailscale_body = '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 case "$1" in
-status) printf '{"BackendState":"%s"}\\n' "$(cat "$STATE_FILE")" ;;
+status)
+  st="$(cat "$STATE_FILE")"; url=""
+  if [ "$st" = NeedsLogin ] && [ -f "$STATE_FILE.up" ]; then url="https://login.tailscale.com/a/${LINK_ID:-abc123}"; fi
+  certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || certs=null
+  printf '{"BackendState":"%s","AuthURL":"%s","CurrentTailnet":{"MagicDNSEnabled":%s},"CertDomains":%s}\\n' \\
+    "$st" "$url" "${MAGICDNS:-true}" "$certs" ;;
+login)
+  touch "$STATE_FILE.up"; echo "login keeps settings"
+  if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
+  exit 1 ;;
 up)
+  if [ -n "${NONDEFAULT:-}" ]; then echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags"; exit 1; fi
+  touch "$STATE_FILE.up"
+  echo "To authenticate, visit:"
   echo "login link from mock"
   if [ "${UP_STATE:-NeedsLogin}" = "Running" ]; then echo Running > "$STATE_FILE"; exit 0; fi
+  if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
   exit 1
   ;;
 esac
@@ -74,7 +87,7 @@ def test_existing_connection_is_not_reconfigured(sandbox):
     assert "package installed" not in calls
     assert "enable --now tailscaled" in calls
     assert json.loads((home / ".wizard-os/private-access.json").read_text()) == {
-        "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True}
+        "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
 
 
 def test_fresh_install_can_leave_login_pending(sandbox):
@@ -123,3 +136,48 @@ def test_invalid_provider_fails_without_mutations(sandbox):
     _, log, _, _, _ = sandbox
     assert run(sandbox, WIZARD_PRIVATE_ACCESS="invalid").returncode != 0
     assert not log.exists()
+
+
+def test_login_link_is_the_one_owner_action_and_is_waited_for(sandbox):
+    """Logged out, no terminal, detached: `up` runs in the background, its AuthURL is surfaced as the owner action,
+    and the install continues once the owner has signed in."""
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="3")
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.splitlines()
+    link = "https://login.tailscale.com/a/abc123"
+    assert f"[wizard-os] owner-action: Open this link to connect your Wizard to your Tailscale: {link}" in out
+    assert out.index(link) < out.index("[wizard-os] owner-action-done")
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
+    calls = log.read_text()
+    assert "tailscale up --timeout=" in calls and "--auth-key" not in calls and "--reset" not in calls
+
+
+def test_no_terminal_plain_run_does_not_wait_for_login(sandbox):
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, LOGIN_AFTER="30")
+    assert p.returncode == 0, p.stderr
+    assert "tailscale up --timeout=1s" in log.read_text()
+
+
+@pytest.mark.parametrize("env,what", [({"MAGICDNS": "false"}, "MagicDNS"), ({"CERTS": "off"}, "HTTPS certificates")])
+def test_tailnet_without_magicdns_or_https_finishes_box_only_with_the_admin_link(sandbox, env, what):
+    _, log, home, _, _ = sandbox
+    p = run(sandbox, **env)
+    assert p.returncode == 0, p.stderr
+    assert "https://login.tailscale.com/admin/dns" in p.stdout
+    assert f"[wizard-os] note: {what} is off" in p.stdout
+    assert "tailscale up" not in log.read_text(), "a logged-in node is never re-authenticated"
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is False
+
+
+def test_logged_out_node_with_custom_settings_signs_in_without_changing_them(sandbox):
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="2", NONDEFAULT="1")
+    assert p.returncode == 0, p.stderr
+    assert "tailscale login --timeout=" in log.read_text()
+    assert "https://login.tailscale.com/a/abc123" in p.stdout
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
