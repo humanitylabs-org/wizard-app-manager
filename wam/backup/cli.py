@@ -283,7 +283,9 @@ def _dispatch(args, box: Box) -> dict:
         try:
             _, j = restore.last_restore(box)
             sh["last_restore"] = {"stamp": j.get("stamp"), "status": j.get("status"),
-                                  "activated": bool(j.get("activated_at"))}
+                                  "activated": bool(j.get("activated_at")),
+                                  "undo_failed": bool(j.get("undo_error")) and j.get("status") != "undone",
+                                  "undo_digest_match": j.get("undo_digest_match")}
         except restore.RestoreError:
             sh["last_restore"] = None
         return sh
