@@ -313,6 +313,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                 rt.wait_status(urn, {"running", "stopped", "missing"})
         except Exception as e:  # noqa: BLE001 - never fail the install for it
             print(f"note: host dashboard not set up ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
+    if app_id in ("hermes-agent", "wizard-agent-service") and status == "running" and not alongside.load(c.home) \
+            and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
+        try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
+            from .agent_link import link as agent_link
+            agent_link(c, STORE)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
+            print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
     if role == "shell" and status == "running" and alongside.load(c.home):
         try:
             store_data_cmd(c)
@@ -1113,6 +1120,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "agent-link":
+        from .agent_link import main as agent_link_main
+        return agent_link_main(argv[1:])
     if argv and argv[0] == "builder-bundle":
         from .builder_bundle import main as bundle_main
         return bundle_main(argv[1:])
