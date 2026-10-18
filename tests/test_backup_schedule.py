@@ -436,13 +436,17 @@ def test_streamed_run_keeps_at_most_one_app_archive_on_disk(world):
     assert _set(world)[0] == 0
     fb = world["old"]
     seen = []
-    real = fb.rt.backup_app
+    from wam.backup.appdata import AppData
+    real = AppData.archive
 
-    def backup_app(urn):
-        seen.append(len(list((fb.runtipi / "backups").rglob("*.tar.gz"))))
-        return real(urn)
-    fb.rt.backup_app = backup_app
-    code, r = _cli(_box(fb), "run")
+    def archive(self, store, app_id, out, **kw):             # app archives are made in the work folder
+        seen.append(len(list(Path(out).parent.glob("app-*.tar.gz"))))
+        return real(self, store, app_id, out, **kw)
+    AppData.archive = archive
+    try:
+        code, r = _cli(_box(fb), "run")
+    finally:
+        AppData.archive = real
     assert code == 0, r
     assert len(seen) >= 2 and max(seen) == 0, seen          # every earlier archive was gone before the next
     assert not list((fb.runtipi / "backups").rglob("*.tar.gz"))
