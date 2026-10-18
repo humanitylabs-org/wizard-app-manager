@@ -53,6 +53,8 @@ def realbox(tmp_path):
     new = make_fresh(tmp_path, tools)
     _service_layout(old, "OLD-SERVICE-MCP")
     _service_layout(new, "NEW-SERVICE-MCP")
+    # an extra agent's package is private to its box: the new box's store folder does not have it
+    shutil.rmtree(new.runtipi / "repos/wizardapps/apps/agent-research")
     rt = old.runtipi
     nd = rt / "app-data/wizardapps/notes-app/data"
     # a model cache: snapshot files are relative symlinks into blobs/
@@ -121,6 +123,11 @@ def test_real_box_layout_round_trip(realbox):
     assert os.stat(nd / "hub/blobs/hardcopy").st_ino == os.stat(nd / "hub/blobs/abc123").st_ino
     assert (nd / "backups/2026-10-01.db").read_text() == "the app's own backups folder"
     assert not (nd / "escape-link").exists() and not (nd / "live.sock").exists()
+    assert not (nd.parent / ".wizard-links").exists()                   # link owners applied, record removed
+    runs = [c["argv"] for c in new.tool_calls() if c["tool"] == "docker" and c["argv"][0] == "run"]
+    # the private extra agent's package went into Runtipi's (root-owned) store folder as root, from the bundle
+    assert any(any(x.endswith(":/repos") for x in r) for r in runs)
+    assert (new.runtipi / "repos/wizardapps/apps/agent-research/config.json").is_file()
     assert (new.base / "volumes" / VOL / "credentials.json").read_text() == "OLD-LOGIN"
     svc = new.runtipi / SVC / "wizard-os"
     assert (svc / "mcp-token").read_text() == "NEW-SERVICE-MCP"           # this box's wiring kept
@@ -135,6 +142,8 @@ def test_real_box_layout_round_trip(realbox):
     code, res = _cli(new.box(), "undo")
     assert code == 0 and res["digest_match"], res
     assert box_digest(new.box()) == before_new
+    for app in ("agent-research", "notes-app"):                          # undo removed what it placed
+        assert not (new.runtipi / "repos/wizardapps/apps" / app).exists(), res
     assert (new.base / "volumes" / VOL / "credentials.json").read_text() == "NEW-EMPTY-LOGIN"
 
     # a second import after undo works the same
@@ -151,3 +160,23 @@ def test_free_space_adds_up_per_filesystem(realbox, tmp_path):
     with pytest.raises(SpaceError) as e:
         need_spaces(box, [(tmp_path / "a", 200, "the backup file"), (tmp_path / "b", 200, "the work folder")])
     assert "the backup file and the work folder" in str(e.value)
+
+
+def test_undo_matches_although_apps_rewrite_files_when_they_start(realbox):
+    """filebrowser rewrites its database at every start, agents their heartbeats: import digests after stopping,
+    undo before starting, so the comparison is exact."""
+    old, new = realbox["old"], realbox["new"]
+    out = realbox["tmp"] / "c.wizardbackup"
+    capture.export(old.box(), out)
+    n = {"i": 0}
+
+    def rewrite(urn, data):
+        n["i"] += 1
+        if urn.startswith("files-app:"):
+            _w(data / "data" / "db.sqlite", f"rewritten at start {n['i']}")
+    new.rt.on_start = rewrite
+    new.rt.start("files-app:wizardapps")
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 0, rec
+    code, res = _cli(new.box(), "undo")
+    assert code == 0 and res["digest_match"], res

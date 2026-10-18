@@ -377,10 +377,13 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     repo_pkg = box.store_package(store, app_id)
     placed = False
     if pkg.is_dir() and not repo_pkg.exists():
-        try:   # the App Manager writes this folder for its own store; Runtipi installs from it
-            shutil.copytree(pkg, repo_pkg)
+        # Runtipi installs from its store folder (repos/<store>/apps/<id>). A public app is fetched there from the
+        # App Index at install time; a private or local app (an extra agent's package) exists only in the bundle.
+        # The folder is root's on a fresh box, so the package is placed as root.
+        try:
+            box.appdata.place_package(store, app_id, pkg)
             placed = True
-        except OSError as e:
+        except AppDataError as e:
             log(f"note: could not place the bundled package for {app_id}: {e}")
     uc = _highest_missing(box.runtipi_root / "user-config" / store / app_id, box.runtipi_root)
     info = {"user_config_new": str(uc) if uc else None, "package_placed": str(repo_pkg) if placed else None}
@@ -401,19 +404,31 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     r.journal["installed_before"] = {u: {"status": i.get("status")} for u, i in installed.items()}
     existing = {a.id: a for a in current_agents}
     targets = {a["id"]: _target_agent(box, a, existing) for a in _bundle_agents(r)}
-    r.journal["digest_before"] = box_digest(box, current_agents)
     r.journal["agents"] = {k: {"home": str(a.home), "runtime": a.runtime, "urn": a.urn, "existed": k in existing,
                                "folder": str(a.folder) if a.folder else None, "main": a.main}
                            for k, a in targets.items()}
-    r.save()
-
-    # 4) set aside ------------------------------------------------------------
     apps = [a for a in m.get("apps", [])]
     data_apps = [a for a in apps if a.get("data") in DATA_KINDS]
     replaced = [a for a in data_apps if a["urn"] in installed]
     if replaced:
         need = sum(bundle.tree_size(box.runtipi_root / "app-data" / a["store"] / a["id"])["bytes"] for a in replaced)
         need_space(box, r.root, need + MARGIN, "the undo copies of the apps this restore replaces")
+    r.save()
+
+    # 4) set aside ------------------------------------------------------------
+    # Everything the restore replaces is stopped first and only then digested: a running app keeps rewriting its
+    # files (heartbeats; some rewrite their database at every start), so only a stopped box can be compared exactly.
+    # undo takes its digest at the same point (put back, not yet started).
+    stopped = []
+    for k, a in targets.items():
+        if k in existing and _stop_agent(box, a, installed):
+            stopped.append(k)
+    r.journal["stopped_agents"] = stopped
+    r.save()
+    for a in replaced:
+        _stop_app(box, a["urn"])
+    r.journal["digest_before"] = box_digest(box, current_agents)
+    r.save()
     vols_taken: set[str] = set()
     for a in replaced:
         log(f"app {a['id']}: keeping an undo copy")
@@ -422,12 +437,6 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     for a in data_apps:
         if a["urn"] not in installed:
             _snapshot_volumes(box, r, a, vols_taken)
-    stopped = []
-    for k, a in targets.items():
-        if k in existing and _stop_agent(box, a, installed):
-            stopped.append(k)
-    r.journal["stopped_agents"] = stopped
-    r.save()
     for n in _home_entries(box.home):
         _move(box.home / n, before / "wizard-os" / n)
     r.step(kind="set_aside", area="wizard-os")
@@ -719,7 +728,11 @@ def undo(box: Box) -> dict:
                 except OSError as e:
                     notes.append(f"{s['urn']}: could not remove {uc}: {e}")
             if s.get("package_placed"):
-                shutil.rmtree(s["package_placed"], ignore_errors=True)
+                try:
+                    st, aid = s["urn"].split(":")[1], s["urn"].split(":")[0]
+                    box.appdata.remove_package(st, aid)
+                except AppDataError as e:
+                    notes.append(f"{s['urn']}: could not remove the package the restore placed: {e}")
     for s in steps:
         if s["kind"] in ("app_snapshot", "volume_snapshot") and s.get("archive"):
             log(f"putting back {s['urn']}" + (" (its volumes)" if s["kind"] == "volume_snapshot" else ""))
@@ -737,6 +750,9 @@ def undo(box: Box) -> dict:
                 box.rt.delete_backup(s["urn"], s["backup"])
             except RuntipiError as e:
                 notes.append(f"{s['urn']}: restore of the snapshot failed: {e}")
+    # compare now, before anything starts again and rewrites its files (import digested at the same point)
+    current = [a for a in box.agents() if a.id in targets or a.runtime == "host"]
+    after = box_digest(box, current)
     # start what ran before
     was = j.get("installed_before") or {}
     for urn, info in was.items():
@@ -756,14 +772,15 @@ def undo(box: Box) -> dict:
             notes.append(f"regenerating apps.json failed: {e}")
     else:
         notes += _regenerate(box)
-    current = [a for a in box.agents() if a.id in targets or a.runtime == "host"]
-    after = box_digest(box, current)
     want = j.get("digest_before") or {}
     mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
     j["status"] = "undone"
     j["undone_at"] = int(time.time())
     j["undo_digest_match"] = not mismatch
     _write_json(root / "journal.json", j)
+    # staging is never needed after an undo, whatever the digest says
+    shutil.rmtree(root / "stage", ignore_errors=True)
+    shutil.rmtree(froot / "stage", ignore_errors=True)
     if not mismatch:
         shutil.rmtree(undone, ignore_errors=True)
         shutil.rmtree(before, ignore_errors=True)

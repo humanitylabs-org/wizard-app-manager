@@ -175,10 +175,14 @@ elif a[0] == "run":
                             sys.stderr.write(f"tar: {base}/{n}: socket ignored\n"); continue
                         t.add(pth, base + "/" + n, recursive=False)
         sys.exit(0)
-    if entry == "sh":       # appdata restore script: RT/V point at the host folders standing in for the mounts
-        envs["RT"] = mounts["/rt"]
-        envs["V"] = os.environ["FAKE_VOLUMES"]
-        r = subprocess.run(["/bin/sh", "-c", rest[1]], env={**os.environ, **envs}, stdin=sys.stdin)
+    if entry == "sh":       # appdata helper scripts: container paths mapped onto the host folders they mount
+        script = rest[1]
+        for dst, src in mounts.items():
+            script = script.replace(f'"{dst}/', f'"{src}/')
+            envs = {k: (src if v == dst else v) for k, v in envs.items()}
+        if "V" in envs:
+            envs["V"] = os.environ["FAKE_VOLUMES"]
+        r = subprocess.run(["/bin/sh", "-c", script], env={**os.environ, **envs}, stdin=sys.stdin)
         sys.exit(r.returncode)
     assert image == os.environ["FAKE_IMAGE"], image
     def host(p):
@@ -221,6 +225,7 @@ class FakeRuntipi:
 
     def __init__(self, root: Path, docker_state: Path, agent_homes: dict[str, Path]) -> None:
         self.root, self.docker_state, self.agent_homes = root, docker_state, agent_homes
+        self.on_start = None    # (urn, app-data folder): an app that rewrites its files whenever it starts
         self.apps: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self._save_docker()
@@ -287,6 +292,8 @@ class FakeRuntipi:
                 q = Path(dp) / n
                 if not q.is_symlink() and (q.is_dir() or q.is_file()):
                     q.chmod(q.stat().st_mode | 0o777)
+        if self.on_start:
+            self.on_start(urn, data)
         return {}
 
     def stop(self, urn):

@@ -21,6 +21,7 @@ nothing below a symlink. Anything else is refused.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import posixpath
@@ -151,6 +152,11 @@ rm -rf "$S"
 mkdir -p "$S"
 chmod 700 "$S"
 tar -xpf - --numeric-owner -C "$S"
+if [ -f "$S/.wizard-links" ]; then
+  # busybox tar does not set a symlink's owner: "uid:gid<NUL>path<NUL>" records from the engine
+  (cd "$S" && xargs -0 -n 2 chown -h < .wizard-links)
+  rm -f "$S/.wizard-links"
+fi
 live="$RT/app-data/$STORE/$APP"
 if [ -d "$S/app-data" ]; then
   printf '%s\n' "$KEEP" | while IFS= read -r e; do
@@ -313,6 +319,63 @@ class AppData:
         os.replace(part, out)
         return {"entries": g.entries, "bytes": g.bytes, "volumes": vols, "skipped": skipped, "kept_in_place": keep}
 
+    def _helper(self, mounts: list[str], env: dict[str, str], script: str, stdin_tar=None) -> None:
+        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0"]
+        for mnt in mounts:
+            cmd += ["-v", mnt]
+        for k, v in env.items():
+            cmd += ["-e", f"{k}={v}"]
+        cmd += ["--entrypoint", "sh", self.image(), "-c", script]
+        with tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err, env=self.box.env)
+            try:
+                if stdin_tar is not None:
+                    stdin_tar(proc.stdin)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            rc = proc.wait()
+            err.seek(0)
+            msg = err.read().decode(errors="replace").strip()
+        if rc:
+            raise AppDataError(msg[-300:] or f"exit {rc}")
+
+
+    def place_package(self, store: str, app_id: str, src: Path) -> None:
+        """Copy a bundled Runtipi package into repos/<store>/apps/<id> (root-owned, as Runtipi's own entries are).
+        Regular files and folders only."""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
+            raise AppDataError(f"bad app id {app_id!r}")
+
+        def feed(stdin):
+            with tarfile.open(fileobj=stdin, mode="w|") as w:
+                for dp, dns, fns in os.walk(src):
+                    dns.sort()
+                    for n in sorted(dns + fns):
+                        q = Path(dp) / n
+                        if q.is_symlink() or not (q.is_dir() or q.is_file()):
+                            continue
+                        ti = w.gettarinfo(str(q), q.relative_to(src).as_posix())
+                        ti.uid = ti.gid = 0
+                        ti.uname = ti.gname = ""
+                        if ti.isreg():
+                            with open(q, "rb") as f:
+                                w.addfile(ti, f)
+                        else:
+                            w.addfile(ti)
+        self._helper([f"{self.box.runtipi_root / 'repos'}:/repos"], {"STORE": store, "APP": app_id}, PLACE_SH, feed)
+
+
+    def remove_package(self, store: str, app_id: str) -> None:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
+            raise AppDataError(f"bad app id {app_id!r}")
+        self._helper([f"{self.box.runtipi_root / 'repos'}:/repos"], {"STORE": store, "APP": app_id},
+                     'rm -rf "/repos/$STORE/apps/$APP"')
+
     # ------------------------------------------------------------ restore
     def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS) -> dict:
         """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced."""
@@ -336,6 +399,7 @@ class AppData:
         cmd += ["--entrypoint", "sh", self.image(), "-c", RESTORE_SH]
         g = MemberGuard()
         kept_out = ["app-data/" + k for k in keep]
+        links: list[bytes] = []
         with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as outf:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=outf, stderr=err, env=self.box.env)
             failed: BaseException | None = None
@@ -352,7 +416,15 @@ class AppData:
                         if m.islnk():
                             m.linkname = _clean(m.linkname)
                         m.uname = m.gname = ""
+                        if m.issym():
+                            links.append(f"{int(m.uid)}:{int(m.gid)}".encode() + b"\0" + name.encode(
+                                "utf-8", "surrogateescape") + b"\0")
                         w.addfile(m, t.extractfile(m) if m.isreg() else None)
+                    if links:
+                        data = b"".join(links)
+                        ti = tarfile.TarInfo(".wizard-links")
+                        ti.size, ti.mode = len(data), 0o600
+                        w.addfile(ti, io.BytesIO(data))
             except (BrokenPipeError, ConnectionResetError) as e:
                 failed = e
             except BaseException:
@@ -372,6 +444,19 @@ class AppData:
         if rc or failed or not done:
             raise AppDataError(f"putting back {app_id} failed: {msg[-300:] or failed or f'exit {rc}'}")
         return {"entries": g.entries, "bytes": g.bytes, "volumes": vols, "kept_in_place": keep}
+
+
+PLACE_SH = r'''
+set -eu
+D="/repos/$STORE/apps"
+mkdir -p "$D"
+rm -rf "$D/.$APP.wizard-new"
+mkdir "$D/.$APP.wizard-new"
+tar -xf - -C "$D/.$APP.wizard-new"
+[ ! -e "$D/$APP" ] || { rm -rf "$D/.$APP.wizard-new"; echo "exists" >&2; exit 3; }
+mv "$D/.$APP.wizard-new" "$D/$APP"
+echo placed
+'''
 
 
 def _skip_reason(m: tarfile.TarInfo, name: str, g: MemberGuard) -> str | None:
