@@ -119,6 +119,25 @@ installed, start, and compare the digest with the one taken before the restore.
 The old machine is never changed by export: it stays the rollback copy. The new one runs nothing on its own until
 the owner switches over.
 
+## Moving between a split and a bundled Wizard shell
+
+Some Wizards use two system apps (`wizard-ux` for the shell and `wizard-agent-service` for agents). Older Mac
+Wizards use `wizard-shell`, which does both jobs. Import keeps the destination's providers: it does not install the
+other layout beside them or replace the Mac shell that its native bridge needs. The plan lists these decisions in
+`kept_here` and explains them in plain-language warnings. Matching providers are restored normally; empty slots still
+receive the backup's apps. An app is omitted only when all the slots it provides are already kept here. If a partial
+layout would leave two Agent Services installed, import stops rather than start a second one.
+
+Agent Service state travels between layouts: only the archive's `app-data/data/` folder is placed in the destination
+provider's `data/` folder. Its package, app environment and user-config stay here, as do its agent homes and MCP token.
+The separate shell's data is not copied across. The destination provider is stopped and snapshotted first, so Undo
+restores its previous data. It stays stopped after import; `wam backup activate --old-is-off` starts it after checking
+there is only one Agent Service provider. Import also checks before installing apps and again before starting them.
+
+Undo records its notes in `restores/<stamp>/journal.json` as `undo_notes`. If a failed install has disappeared from
+Runtipi, Undo skips that uninstall and removes only that app's leftover Compose containers and install folders. It
+reports the cleanup, continues restoring the snapshots, and still checks the before/after digest.
+
 ## Scheduled backups
 
 Scheduled runs store the capture in a **restic repository** on the target, encrypted with this box's recovery key, so

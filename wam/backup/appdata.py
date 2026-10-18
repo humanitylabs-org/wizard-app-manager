@@ -37,7 +37,8 @@ ROOTS = PARTS + ("volumes",)
 VOLUME_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 AGENT_SERVICE_APP = "wizard-agent-service"   # = box.AGENT_SERVICE_APP
 # Parts of an app's data that belong to this box and never travel (relative to its app-data folder).
-KEEP_IN_PLACE = {AGENT_SERVICE_APP: ("data/wizard-os/agents", "data/wizard-os/mcp-token")}
+KEEP_IN_PLACE = {app: ("data/wizard-os/agents", "data/wizard-os/mcp-token")
+                 for app in (AGENT_SERVICE_APP, "wizard-shell")}
 
 
 class AppDataError(RuntimeError):
@@ -109,6 +110,57 @@ def link_inside(name: str, target: str) -> bool:
     return resolved == root or resolved.startswith(root + "/")
 
 
+def _data_member(m: tarfile.TarInfo, name: str) -> bool:
+    """A cross-provider restore carries only app-data/data, with a tighter link boundary than a full archive.
+
+    Archives use app-relative names, not app ids: no textual path substitution is necessary. The destination
+    app id selects the live root; the same checked data/ subtree can be placed under either provider.
+    """
+    root = "app-data/data"
+    if name != root and not name.startswith(root + "/"):
+        return False
+    if name == root and not m.isdir():
+        raise UnsafeMember("mapped app data must be a directory")
+    if m.issym():
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(name), m.linkname))
+        if not (target == root or target.startswith(root + "/")):
+            raise UnsafeMember("mapped app data symlink leaves the data folder")
+    if m.islnk() and not _clean(m.linkname).startswith(root + "/"):
+        raise UnsafeMember("mapped app data hard link leaves the data folder")
+    return True
+
+
+def _check_data_links(links: dict[str, str], kept: list[str]) -> None:
+    """Lexical normalization alone is insufficient: `alias/../x` can escape through `alias -> .`.
+
+    Resolve archive symlink chains component by component, including forward references. Links into kept local
+    trees are refused: their targets are not described or validated by this archive.
+    """
+    for name, target in links.items():
+        stack = name.split("/")[:-1]
+        pending = target.split("/")
+        hops = 0
+        while pending:
+            part, *pending = pending
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if len(stack) <= 2:
+                    raise UnsafeMember("mapped app data symlink chain leaves the data folder")
+                stack.pop()
+                continue
+            stack.append(part)
+            path = "/".join(stack)
+            if any(path == k or path.startswith(k + "/") for k in kept):
+                raise UnsafeMember("mapped app data symlink enters a kept local tree")
+            if path in links:
+                hops += 1
+                if hops > 40:
+                    raise UnsafeMember("mapped app data symlink chain loops or is too long")
+                pending = links[path].split("/") + pending
+                stack.pop()
+
+
 def check_archive(fileobj, mode: str = "r|gz") -> dict:
     """Read a whole app archive and check every member. Returns {entries, bytes}."""
     g = MemberGuard()
@@ -146,6 +198,10 @@ def compose_volumes(package: Path, project: str) -> list[str]:
 
 RESTORE_SH = r'''
 set -eu
+# Never traverse symlinked destination ancestors (including the data subtree we preserve entries from).
+for p in "$RT/app-data" "$RT/app-data/$STORE" "$RT/app-data/$STORE/$APP"; do
+  [ ! -L "$p" ] || { echo "symlinked app data destination" >&2; exit 1; }
+done
 S="$RT/app-data/$STORE/.$APP.wizard-new"
 trap 'rm -rf "$S"' EXIT
 rm -rf "$S"
@@ -159,6 +215,17 @@ if [ -f "$S/.wizard-links" ]; then
 fi
 live="$RT/app-data/$STORE/$APP"
 if [ -d "$S/app-data" ]; then
+  # Check every kept entry's parents before moving anything, on both sides of the swap.
+  printf '%s\n' "$KEEP" | while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    parent="$(dirname "$e")"
+    while [ "$parent" != "." ]; do
+      for base in "$live" "$S/app-data"; do
+        [ ! -L "$base/$parent" ] || { echo "symlinked kept-data parent" >&2; exit 1; }
+      done
+      parent="$(dirname "$parent")"
+    done
+  done
   printf '%s\n' "$KEEP" | while IFS= read -r e; do
     [ -n "$e" ] || continue
     if [ -e "$live/$e" ] || [ -L "$live/$e" ]; then
@@ -175,7 +242,11 @@ swap() {
   mv "$1" "$2"
   rm -rf "$2.wizard-old"
 }
-swap "$S/app-data" "$live"
+if [ "$DATA_ONLY" = "1" ]; then
+  swap "$S/app-data/data" "$live/data"
+else
+  swap "$S/app-data" "$live"
+fi
 swap "$S/app" "$RT/apps/$STORE/$APP"
 swap "$S/user-config" "$RT/user-config/$STORE/$APP"
 for v in $VOLS; do
@@ -386,26 +457,72 @@ class AppData:
         self._helper([f"{self.box.runtipi_root / 'repos'}:/repos"], {"STORE": store, "APP": app_id},
                      'rm -rf "/repos/$STORE/apps/$APP"')
 
+    def remove_missing_app(self, store: str, app_id: str) -> None:
+        """Undo a restore install absent from Runtipi. Only its exact Compose project may be removed.
+
+        The caller must first confirm absence through a successful installed-list request, not app_status's
+        error fallback. Require BOTH the Compose label and the `<id>_<store>-` name prefix.
+        """
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
+            raise AppDataError("bad app/store id for orphan cleanup")
+        project = f"{app_id}_{store}"
+        rows = self._run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+                          "--format", "{{.ID}} {{.Names}}"])
+        ids = []
+        for row in rows.splitlines():
+            fields = row.split()
+            if len(fields) == 2 and fields[1].startswith(project + "-") and re.fullmatch(r"[A-Za-z0-9_-]+", fields[0]):
+                ids.append(fields[0])
+            elif row.strip():
+                raise AppDataError("refusing to clean a compose project with unexpected container names")
+        if ids:
+            self._run(["docker", "rm", "-f", *ids])
+        self._helper([f"{self.box.runtipi_root}:/rt"], {"STORE": store, "APP": app_id}, r'''
+set -eu
+for part in app-data apps; do
+  [ ! -L "/rt/$part" ] && [ ! -L "/rt/$part/$STORE" ] || exit 1
+  rm -rf "/rt/$part/$STORE/$APP"
+done
+''')
+
     # ------------------------------------------------------------ restore
-    def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS, rewrite=()) -> dict:
+    def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS, rewrite=(), data_only=False) -> dict:
         """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced. `rewrite`
         ((old, new) text pairs, most specific first) is applied to user-config/ files: compose overrides there name
-        the source box's own paths (an extra agent's home mount)."""
-        parts = set(parts)
+        the source box's own paths (an extra agent's home mount). `data_only` maps only app-data/data into this
+        app's data folder, preserving its environment, package, user-config and volumes."""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
+            raise UnsafeMember("bad app/store id for restore")
+        parts = {"app-data"} if data_only else set(parts)
         keep = self.keep_in_place(store, app_id)
+        kept_out = ["app-data/" + k for k in keep]
         vols: list[str] = []
+        # Validate BEFORE launching a helper; malformed archives cannot cause a partial swap.
+        guard, selected = MemberGuard(), MemberGuard()
+        data_links = {}
         with tarfile.open(archive, "r|gz") as t:
             for m in t:
-                n = _clean(m.name).split("/")
+                name = guard.check(m)
+                if name is None:
+                    continue
+                n = name.split("/")
                 if n[0] == "volumes" and len(n) > 1 and n[1] not in vols:
                     vols.append(n[1])
+                included = _data_member(m, name) if data_only else n[0] in parts
+                if included and not any(name == k or name.startswith(k + "/") for k in kept_out):
+                    selected.check(m)
+                    if data_only and m.issym():
+                        data_links[name] = m.linkname
+        if data_only:
+            _check_data_links(data_links, kept_out)
         vols = [v for v in vols if "volumes" in parts]
         for v in vols:
             if not VOLUME_NAME.match(v):
                 raise UnsafeMember(f"bad volume name {v[:60]!r}")
         cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0",
                "-v", f"{self.box.runtipi_root}:/rt", "-e", "RT=/rt", "-e", "V=/v", "-e", f"STORE={store}",
-               "-e", f"APP={app_id}", "-e", "KEEP=" + "\n".join(keep), "-e", "VOLS=" + " ".join(vols)]
+               "-e", f"APP={app_id}", "-e", f"DATA_ONLY={int(data_only)}",
+               "-e", "KEEP=" + "\n".join(keep), "-e", "VOLS=" + " ".join(vols)]
         for v in vols:
             cmd += ["-v", f"{v}:/v/{v}"]
         cmd += ["--entrypoint", "sh", self.image(), "-c", RESTORE_SH]
@@ -422,6 +539,8 @@ class AppData:
                         if name is None:
                             continue
                         top = link_root(name).split("/")[0]
+                        if data_only and not _data_member(m, name):
+                            continue
                         if top not in parts or any(name == k or name.startswith(k + "/") for k in kept_out):
                             continue
                         m.name = name

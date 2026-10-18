@@ -34,6 +34,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .. import slots
 from . import agents as agentlib, bundle, fmt
 from .box import managed_operation
 from .appdata import ROOTS as APP_ROOTS, AppDataError
@@ -127,9 +128,34 @@ def summary(m: dict) -> dict:
 
 # ---------------------------------------------------------------- plan
 
+SYSTEM_SLOTS = {"shell", "agent-service"}
+
+
+def _app_slots(a: dict) -> set[str]:
+    # Old registries/archives can predate `provides`; known default ids still fill their slots.
+    fallback = {"wizard-ux": ("shell",), "wizard-agent-service": ("agent-service",)}
+    return set(a.get("provides") or ()) | set(slots.BUNDLE_FILLS.get(a["id"], ())) | set(fallback.get(a["id"], ()))
+
+
+def _here_apps(box: Box, installed: dict, extra=()) -> list[dict]:
+    rows = box.registry_rows()
+    for a in [*extra, *installed.values()]:
+        previous = rows.get(a["id"], {})
+        rows[a["id"]] = {**previous, **a,
+                          "provides": sorted(_app_slots(previous) | _app_slots(a)) if previous else sorted(_app_slots(a))}
+    return [{**rows[a["id"]], **a, "provides": rows[a["id"]]["provides"]} for a in installed.values()]
+
+
+def _one_agent_service(apps: list[dict]) -> None:
+    providers = sorted({a["urn"] for a in apps if "agent-service" in _app_slots(a)})
+    if len(providers) > 1:
+        raise RestoreError("more than one Agent Service would be installed: " + ", ".join(providers) +
+                           "; keep one provider before restoring or activating")
+
+
 def plan(box: Box, m: dict, probe: bool = True) -> dict:
     out = {"mode_here": None, "mode_bundle": (m.get("source") or {}).get("mode"), "install": [], "replace": [],
-           "leave": [], "agents": [], "warnings": []}
+           "leave": [], "agents": [], "warnings": [], "kept_here": []}
     try:
         out["mode_here"] = box.mode()
         here = box.installed() if probe else {}
@@ -137,10 +163,26 @@ def plan(box: Box, m: dict, probe: bool = True) -> dict:
         if probe:
             raise RestoreError(f"cannot reach Runtipi on this box: {e}") from None
         here = {}
-    want = {a["urn"]: a for a in m.get("apps", [])}
+    here_apps = _here_apps(box, here)
+    have = {s: sorted({a["id"] for a in here_apps if s in _app_slots(a)}) for s in SYSTEM_SLOTS}
+    want = {}
+    for a in m.get("apps", []):
+        provided = _app_slots(a)
+        kept = set()
+        for s in sorted(provided & SYSTEM_SLOTS):
+            if have[s] and a["id"] not in have[s]:
+                dest = have[s][0]
+                out["kept_here"].append({"slot": s, "here": dest, "bundle": a["id"]})
+                out["warnings"].append(f"keeping this box's {dest} for {s} instead of the backup's {a['id']}")
+                kept.add(s)
+        if not provided or not provided <= kept:
+            want[a["urn"]] = a
     for urn, a in sorted(want.items()):
         (out["replace"] if urn in here else out["install"]).append(a["id"])
-    out["leave"] = sorted(info["id"] for urn, info in here.items() if urn not in want)
+    mapped = {k["here"] for k in out["kept_here"] if k["slot"] == "agent-service"}
+    out["leave"] = sorted(info["id"] for urn, info in here.items() if urn not in want and info["id"] not in mapped)
+    for dest in sorted(mapped):
+        out["warnings"].append(f"the backup's Agent Service data will go into {dest}; it stays stopped until activate")
     out["agents"] = [a.get("id") for a in m.get("agents", [])]
     arch = (m.get("source") or {}).get("arch")
     import platform as _p
@@ -376,10 +418,10 @@ def _path_rewrite(box: Box, m: dict) -> list[tuple[str, str]]:
     return sorted(pairs, key=lambda p: -len(p[0]))
 
 
-def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS, rewrite=()) -> dict:
+def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS, rewrite=(), *, data_only=False) -> dict:
     store, app_id = urn.split(":")[1], urn.split(":")[0]
     try:
-        return box.appdata.restore(store, app_id, archive, parts=parts, rewrite=rewrite)
+        return box.appdata.restore(store, app_id, archive, parts=parts, rewrite=rewrite, data_only=data_only)
     except AppDataError as e:
         raise RestoreError(str(e)) from None
 
@@ -428,9 +470,25 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     r.journal["agents"] = {k: {"home": str(a.home), "runtime": a.runtime, "urn": a.urn, "existed": k in existing,
                                "folder": str(a.folder) if a.folder else None, "main": a.main}
                            for k, a in targets.items()}
-    apps = [a for a in m.get("apps", [])]
+    apps = [a for a in m.get("apps", []) if a["id"] in p["install"] + p["replace"]]
+    here_apps = _here_apps(box, installed)
+    # Runtipi install starts containers: reject conflicts BEFORE even the first install, then check again below.
+    projected = {a["urn"]: a for a in here_apps}
+    projected.update({a["urn"]: a for a in apps})
+    _one_agent_service(_here_apps(box, projected, [*here_apps, *apps]))
+    mappings = []
+    for kept in p["kept_here"]:
+        if kept["slot"] != "agent-service":
+            continue
+        source = next(a for a in m["apps"] if a["id"] == kept["bundle"])
+        dest = next(a for a in here_apps if a["id"] == kept["here"])
+        if source.get("data") in DATA_KINDS:
+            mappings.append((source, dest))
+    if len(mappings) > 1:
+        raise RestoreError("the backup has multiple Agent Service states; choose one before restoring")
     data_apps = [a for a in apps if a.get("data") in DATA_KINDS]
-    replaced = [a for a in data_apps if a["urn"] in installed]
+    replaced = list({a["urn"]: a for a in [
+        *[a for a in data_apps if a["urn"] in installed], *[dest for _, dest in mappings]]}.values())
     if replaced:
         need = sum(bundle.tree_size(box.runtipi_root / "app-data" / a["store"] / a["id"])["bytes"] for a in replaced)
         need_space(box, r.root, need + MARGIN, "the undo copies of the apps this restore replaces")
@@ -505,6 +563,15 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             r.step(kind="app_restored", urn=a["urn"], entries=got["entries"], volumes=got["volumes"])
             arch.unlink(missing_ok=True)
 
+    for source, dest in mappings:
+        arch = stage / "apps" / source["id"] / "data.tar.gz"
+        if not arch.is_file():
+            raise RestoreError(f"missing Agent Service state for {source['id']}")
+        _stop_app(box, dest["urn"])
+        got = _put_back(box, dest["urn"], arch, ("app-data",), data_only=True)
+        r.step(kind="app_data_mapped", urn=dest["urn"], source=source["id"], entries=got["entries"])
+        arch.unlink(missing_ok=True)
+
     # Wizard home (identity entries never come from a bundle, and the box keeps its own)
     src = stage / "wizard-os"
     if src.is_dir():
@@ -535,6 +602,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         r.step(kind="placed", area="files")
 
     # 7) start and check -----------------------------------------------------
+    _one_agent_service(_here_apps(box, box.installed(), [*here_apps, *apps]))
     notes = []
     if box.after_restore is not None:
         try:
@@ -543,7 +611,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             notes.append(f"regenerating apps.json/skills failed: {e}")
     else:
         notes += _regenerate(box)
-    health = {}
+    health = {dest["id"]: box.app_status(dest["urn"]) for _, dest in mappings}
     for a in apps:
         want_running = a.get("status") == "running"
         st = box.app_status(a["urn"])
@@ -754,8 +822,20 @@ def undo(box: Box) -> dict:
     done = {s["urn"] for s in steps if s["kind"] == "app_installed"}
     for s in reversed(steps):
         if s["kind"] in ("app_installed", "app_installing") and (s["kind"] == "app_installed" or s["urn"] not in done):
-            if s["kind"] == "app_installing" and box.app_status(s["urn"]) == "missing":
-                pass   # the install never registered
+            # app_status also returns "missing" for API errors: require a successful installed-list read
+            # before removing an orphan's compose project or folders.
+            try:
+                missing = s["urn"] not in box.installed()
+            except (RuntipiError, OSError) as e:
+                notes.append(f"{s['urn']}: cannot confirm Runtipi record; skipped uninstall/cleanup: {e}")
+                continue
+            if missing:
+                notes.append(f"{s['urn']}: missing from Runtipi; skipped uninstall, cleaning restore leftovers")
+                try:
+                    aid, st = s["urn"].split(":")
+                    box.appdata.remove_missing_app(st, aid)
+                except AppDataError as e:
+                    notes.append(f"{s['urn']}: leftover cleanup failed: {e}")
             else:
                 log(f"uninstalling {s['urn']} (installed by the restore)")
                 try:
@@ -830,6 +910,7 @@ def undo(box: Box) -> dict:
     j["undone_at"] = int(time.time())
     j["undo_digest_match"] = not mismatch
     j["undo_differences"] = differences
+    j["undo_notes"] = notes
     _write_json(root / "journal.json", j)
     # staging is never needed after an undo, whatever the digest says
     shutil.rmtree(root / "stage", ignore_errors=True)
@@ -875,6 +956,7 @@ def activate(box: Box, old_is_off: bool) -> dict:
         raise RestoreError(f"the last restore is {j.get('status')}; nothing to activate")
     if j.get("activated_at"):
         raise RestoreError("this restore was already activated")
+    _one_agent_service(_here_apps(box, box.installed(), (j.get("manifest") or {}).get("apps", [])))
     active = (j.get("manifest") or {}).get("active") or {}
     out = {"ok": True, "stamp": j["stamp"], "agents": {}, "schedule": False, "notes": []}
     for k, v in (j.get("agents") or {}).items():
@@ -890,6 +972,9 @@ def activate(box: Box, old_is_off: bool) -> dict:
                 box.rt.restart(a.urn)
         except (RuntipiError, HermesError) as e:
             out["notes"].append(f"agent {k}: restart: {e}")
+    for urn in sorted({s["urn"] for s in j.get("steps", []) if s["kind"] == "app_data_mapped"}):
+        if box.app_status(urn) != "running":
+            box.rt.start(urn)
     if active.get("schedule"):
         from . import schedule
         out["schedule"] = schedule.enable(box)["enabled"]
