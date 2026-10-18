@@ -104,12 +104,15 @@ def _docker():
 
 
 def _container(docker, service):
-    p = subprocess.run(docker + ['ps', '-q', '--filter', f'label=com.docker.compose.service={service}'],
+    """(id, compose service name) of the one running container whose compose service is `service`
+    (Runtipi may suffix it, e.g. hermes-agent-engine). The compose service name is its network alias."""
+    p = subprocess.run(docker + ['ps', '--format', '{{.ID}} {{.Label "com.docker.compose.service"}}'],
                        capture_output=True, text=True, timeout=15, check=True)
-    ids = p.stdout.split()
-    if len(ids) != 1:
-        raise ValueError(f'expected one running {service}; found {len(ids)}')
-    return ids[0]
+    rows = [l.split(None, 1) for l in p.stdout.splitlines() if len(l.split(None, 1)) == 2]
+    hits = [r for r in rows if r[1] == service] or [r for r in rows if r[1].startswith(service + '-')]
+    if len(hits) != 1:
+        raise ValueError(f'expected one running {service}; found {len(hits)}')
+    return hits[0][0], hits[0][1]
 
 
 def skills_mount(c, store='wizardapps'):
@@ -144,7 +147,8 @@ def link(c, store='wizardapps', restart=True):
     if alongside.load(c.home):
         raise ValueError('alongside mode: the owner\'s Hermes is connected with `wizard link`')
     docker = _docker()
-    svc = _container(docker, SERVICE_APP)
+    svc, alias = _container(docker, SERVICE_APP)
+    url = GATEWAY_URL.replace('wizard-agent-service', alias, 1)
     p = subprocess.run(docker + ['exec', svc, 'sh', '-c',
                                  'if [ -n "$WIZARD_MCP_TOKEN" ]; then printf %s "$WIZARD_MCP_TOKEN"; '
                                  'else cat "${WIZARD_OS_HOME:-/state/wizard-os}/mcp-token"; fi'],
@@ -155,9 +159,9 @@ def link(c, store='wizardapps', restart=True):
     mount_changed = add_skills_mount(c, store)
 
     def edit(probe):
-        eng = _container(docker, AGENT_APP + '-engine')
+        eng = _container(docker, AGENT_APP + '-engine')[0]
         q = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', eng, HERMES_PY, '-c', EDIT,
-                                     GATEWAY_URL, MCP_NAME, SKILLS_TARGET] + (['probe'] if probe else []),
+                                     url, MCP_NAME, SKILLS_TARGET] + (['probe'] if probe else []),
                            input=token + '\n', capture_output=True, text=True, timeout=90)
         if q.returncode:
             raise ValueError('agent config not linked: ' + (q.stderr or q.stdout)[-300:])
@@ -175,7 +179,7 @@ def link(c, store='wizardapps', restart=True):
         rt.wait_status(urn, {'running'}, timeout=900)
         restarted = True
     check = edit(probe=True)
-    return {'gateway': GATEWAY_URL, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed,
+    return {'gateway': url, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed,
             'config_changed': first['config_changed'], 'env_changed': first['env_changed'],
             'restart_required': changed and not restarted, 'restarted': restarted,
             'gateway_status': check.get('gateway_status'), 'skills_visible': check.get('skills_visible'),

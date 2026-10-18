@@ -119,7 +119,7 @@ def test_link_reads_service_token_edits_restarts_and_probes(tmp_path, monkeypatc
         if argv[-2:] == ['ps', '-q']:
             return SimpleNamespace(returncode=0, stdout='', stderr='')
         if 'ps' in argv:
-            return SimpleNamespace(returncode=0, stdout='cid-' + argv[-1].split('=')[-1] + '\n', stderr='')
+            return SimpleNamespace(returncode=0, stdout='a1 wizard-agent-service\nb2 hermes-agent-engine\nc3 defleur-video\n', stderr='')
         if 'sh' in argv:
             return SimpleNamespace(returncode=0, stdout='svc-token', stderr='')
         return SimpleNamespace(returncode=0, stdout=json.dumps(next(edits)) + '\n', stderr='')
@@ -133,6 +133,8 @@ def test_link_reads_service_token_edits_restarts_and_probes(tmp_path, monkeypatc
     monkeypatch.setattr(agent_link.subprocess, 'run', fake_run)
     out = agent_link.link(c)
     assert out['linked'] and out['restarted'] and out['gateway_status'] == 200
+    assert out['gateway'] == 'http://wizard-agent-service:8787/wizard/mcp'
+    assert all(a[a.index('exec') + 4] == 'b2' for a, _ in calls if agent_link.HERMES_PY in a)
     assert lifecycle == ['/app-lifecycle/hermes-agent:wizardapps/stop', 'stopped',
                          '/app-lifecycle/hermes-agent:wizardapps/start', 'running']
     edits_run = [(a, i) for a, i in calls if agent_link.HERMES_PY in a]
