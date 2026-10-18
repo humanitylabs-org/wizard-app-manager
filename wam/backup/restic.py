@@ -249,7 +249,11 @@ class Repo:
         if rc == RC_NO_REPO or "repository does not exist" in tail:
             return NoRepo(f"there is no backup repository at {self.url}")
         if re.search(r"Access Denied|AccessDenied|WORM protected|ObjectLocked|object is locked", tail, re.I):
-            return Refused(f"restic {what}: the storage refused it ({tail.splitlines()[-1][:200] if tail else ''})")
+            first = next((ln for ln in tail.splitlines() if re.search(r"Access Denied|AccessDenied|WORM|locked", ln,
+                                                                       re.I)), "")
+            m = re.search(r"\"message\":\s*\"([^\"\\]+)", first)
+            first = (m.group(1) if m else first).strip()[:200]
+            return Refused(f"restic {what}: the storage refused a delete or overwrite ({first})")
         return ResticError(f"restic {what} failed (exit {rc}): {tail}")
 
     def run(self, args: list[str], *, timeout: int = 6 * 3600, what: str | None = None) -> str:

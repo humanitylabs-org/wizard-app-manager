@@ -145,8 +145,11 @@ back a share of the data within the last week. One run at a time; a second run e
 **Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
 agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, one at a time,
 and Runtipi's per-app archive of each app (Runtipi stops the app briefly for it, as for an export), one at a time,
-deleted right after it is read. The run samples this and records the peak as `peak_extra_disk_bytes`; restic's local
-cache (`~/.cache/wizard-backup/restic`, `restic_cache_bytes`) comes on top.
+deleted right after it is read (and its Runtipi backup entry removed) before the next app's is made. So the peak is
+about the largest single app archive plus the agents' archives; on a test box whose transcriber app holds ~0.97 GB of
+model files that was 0.94 GB of a 1.03 GB capture. The run samples this and records the peak as
+`peak_extra_disk_bytes`; restic's local cache (`~/.cache/wizard-backup/restic`, `restic_cache_bytes`, tens of KB)
+comes on top. Reading app data in place instead would need root (Runtipi's app files belong to container users).
 
 **Dedupe-friendly capture.** restic splits the stream into content-defined chunks (512 KiB–8 MiB, about 1 MiB on
 average) and stores each chunk once, so compressed members would defeat it. The stream therefore holds agent archives
@@ -191,6 +194,19 @@ keeps boxes apart by restic host).
   --s3-credentials-file <owner credential>` on a slower cadence (only data older than the lock window can go). The
   owner adds a lifecycle rule that expires noncurrent versions some days after the lock window, so deleted data
   eventually leaves the bucket.
+- *What was proven* (MinIO, versioned bucket with Object Lock, box policy as above incl. the `DeleteObject` deny): with
+  the box's own credential `restic forget <id> --prune`, plain and versioned deletes of snapshot, pack and key
+  objects, `--bypass` deletes, recursive deletes, bucket lock/versioning/lifecycle changes were all refused.
+  Overwrites are accepted as **new versions** (S3 cannot refuse a PUT the box needs for new backups), which makes
+  the current repository unreadable, so the owner restores it by copying the original, still-locked versions back
+  (`mc cp --version-id <v> <obj> <obj>`, or the provider's "restore previous version"); after that `restic check
+  --read-data` passed and an old snapshot restored a marker file intact. With `s3:DeleteObject` allowed, restic's
+  own `forget --prune` succeeds but only writes delete markers; every version stays recoverable.
+- *GOVERNANCE vs COMPLIANCE*: on MinIO the box's credential could **clear** a GOVERNANCE retention even with
+  `s3:PutObjectRetention` / `s3:BypassGovernanceRetention` denied (shortening was refused); the data stayed safe only
+  because `s3:DeleteObjectVersion` was denied too. COMPLIANCE retention could not be cleared, shortened or
+  bypassed by anyone, root included. Use COMPLIANCE where the provider offers it (and keep the IAM denies either way);
+  pick its window knowing the owner cannot shorten it either.
 - *Cloudflare R2*: R2 has no object versioning; use an R2 **bucket lock rule** (retention by age) on the repository
   prefix's `data/`, `index/`, `snapshots/`, `keys/` and `config` (not `locks/`), and an R2 API token scoped to that
   bucket with Object Read & Write. A locked object's delete or overwrite is refused outright, so set `--object-lock`

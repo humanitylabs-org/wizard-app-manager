@@ -451,3 +451,14 @@ def test_streamed_run_keeps_at_most_one_app_archive_on_disk(world):
     assert len(seen) >= 2 and max(seen) == 0, seen          # every earlier archive was gone before the next
     assert not list((fb.runtipi / "backups").rglob("*.tar.gz"))
     assert r["peak_extra_disk_bytes"] >= 0
+
+
+def test_storage_refusals_become_refused_with_a_short_reason(tmp_path):
+    from wam.backup.box import Box
+    bx = Box(home=tmp_path / "h", runtipi_root=tmp_path / "rt", env={"HOME": str(tmp_path), "WAM_BACKUP_TEST": "1"})
+    repo = restic.Repo(bx, {"kind": "path", "path": str(tmp_path / "r")}, "pw", binary="/bin/false")
+    err = repo._fail("forget", 3, 'Remove(<snapshot/4c6e>) failed: client.RemoveObject: Access Denied.\n'
+                                   '{"message_type":"exit_error","code":3,"message":"failed to remove\\nmain.init"}')
+    assert isinstance(err, restic.Refused) and "Access Denied" in str(err) and "main.init" not in str(err)
+    assert isinstance(repo._fail("open", 12, "Fatal: wrong password or no key found"), restic.WrongKey)
+    assert isinstance(repo._fail("open", 10, "Fatal: repository does not exist"), restic.NoRepo)
