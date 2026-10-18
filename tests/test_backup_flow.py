@@ -385,3 +385,42 @@ def test_cli_key_commands_never_put_keys_on_argv(world, tmp_path):
     assert mode(new.home / "secrets" / "backup-key.json") == 0o600
     code, res = _cli(new.box(), "key", "set", "--key-file", str(world["keyfile"]), "--force")
     assert code == 0 and res["key_id"] == crypto.key_id(world["key"])
+
+
+def test_undo_is_exact_when_agents_are_still_starting_and_rewrote_runtime_files(world):
+    """Real boxes: Runtipi reports an agent app "starting" until its health check passes, and an agent left up
+    re-creates its bind-mounted home (restart policy) once the folder moves; the main agent's runtime entries
+    (logs/, backups/, -wal/-shm, gateway_state.json) are rewritten by the import's own run."""
+    out, _ = _export(world)
+    new = world["new"]
+    before = box_digest(new.box())
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(world["keyfile"]))
+    assert code == 0, rec
+    rt = new.runtipi
+    main_home = rt / "app-data/wizardapps/hermes-agent/data"
+    (main_home / "logs").mkdir(exist_ok=True)
+    (main_home / "logs/gateway.log").write_text("written while the import ran\n")
+    (main_home / "backups/config").mkdir(parents=True, exist_ok=True)
+    (main_home / "backups/config/config.yaml.good.20261018").write_text("x")
+    (main_home / "state.db-wal").write_text("wal")
+    (main_home / "gateway_state.json").write_text("{}")
+    for urn in ("hermes-agent:wizardapps", "agent-research:wizardapps"):
+        new.rt.apps[urn]["status"] = "starting"
+    real_uninstall = new.rt.uninstall
+
+    def uninstall(urn, remove_backups=False):
+        # a container still up when its home folder moved: docker re-creates the bind-mount source and the agent
+        # seeds a fresh home there
+        if urn in new.rt.agent_homes and new.rt.apps.get(urn, {}).get("status") != "stopped":
+            h = new.rt.agent_homes[urn]
+            h.mkdir(parents=True, exist_ok=True)
+            (h / "lazy-packages").mkdir(exist_ok=True)
+            (h / "lazy-packages/seeded.py").write_text("seeded")
+        return real_uninstall(urn, remove_backups)
+
+    new.rt.uninstall = uninstall
+    code, res = _cli(new.box(), "undo")
+    assert code == 0 and res["digest_match"] is True, res
+    assert res["differences"]["total"] == 0
+    assert ("stop", "agent-research:wizardapps") in new.rt.calls
+    assert box_digest(new.box()) == before

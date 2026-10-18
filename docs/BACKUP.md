@@ -282,6 +282,12 @@ Choices the contract left open, as built in `wam/backup/`:
   at the stopped comparison points. `undo --json` reports `differences.paths` (first 50 relative paths with
   `missing`, `extra`, `content`, `mode`, or `owner` kinds), `total` and `truncated`; never file bodies.
   New digests include uid/gid. Journals from older versions retain their original owner-insensitive comparison.
+- **What undo promises to keep**: everything the digest covers, which leaves out each agent home's per-machine
+  entries (`logs/`, `backups/`, `runtime/`, caches, `*.pid`, SQLite `-wal`/`-shm`, `gateway_state.json`; the same
+  list import never captures, moves or overwrites), for container agents in app-data as for host agents. The agent
+  rewrites them whenever it runs, the import's own run included. Undo stops every agent app in any live state
+  (Runtipi says `starting` until a health check passes) and removes a new agent's folder only after its app is
+  uninstalled, so a container's restart policy cannot re-create the home.
 - **Lock**: a `flock` on the Wizard home folder, so taking it creates nothing.
 - **Files root**: Runtipi's `media/` (or `RUNTIPI_MEDIA_PATH/media`; `WIZARD_FILES_ROOT` overrides).
 

@@ -303,7 +303,7 @@ def discard(r: _Restore) -> None:
 def _stop_agent(box: Box, a: Agent, installed: dict) -> bool:
     if a.runtime == "host":
         return box.runner.gateway(a, "stop")
-    if a.urn in installed and installed[a.urn].get("status") == "running":
+    if a.urn in installed and installed[a.urn].get("status") in LIVE:
         box.rt.stop(a.urn)
         box.wait_status(a.urn, {"stopped"}, timeout=300)
         return True
@@ -320,9 +320,13 @@ def _start_agent(box: Box, a: Agent) -> None:
 DATA_KINDS = ("archive", "runtipi-backup")     # "runtipi-backup": bundles made before appdata.py
 
 
+# An app Runtipi reports in any of these states has containers up (it says "starting" until health checks pass).
+LIVE = ("running", "starting", "updating")
+
+
 def _stop_app(box: Box, urn: str) -> str:
     st = box.app_status(urn)
-    if st in ("running", "starting", "updating"):
+    if st in LIVE:
         box.rt.stop(urn)
         st = box.wait_status(urn, {"stopped"}, timeout=600)
         if st != "stopped":
@@ -638,7 +642,7 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
         if not rec:
             raise RestoreError(f"agent {k}: its app {a.urn} is neither on this box nor in the backup")
         _install_app(box, r, rec)
-    if a.runtime == "container" and box.app_status(a.urn) == "running":
+    if a.runtime == "container" and box.app_status(a.urn) in LIVE:
         box.rt.stop(a.urn)
         box.wait_status(a.urn, {"stopped"}, timeout=300)
     # wiring: what this box's own agent home had (read from the set-aside copy)
@@ -691,7 +695,9 @@ def undo(box: Box) -> dict:
         try:
             if a.runtime == "host":
                 box.runner.gateway(a, "stop")
-            elif box.app_status(a.urn) == "running":
+            elif box.app_status(a.urn) in LIVE:
+                # a container agent left up keeps writing its home while it is put back, and its restart policy
+                # re-creates a removed home: every live state is stopped, "starting" included
                 box.rt.stop(a.urn)
                 box.wait_status(a.urn, {"stopped"}, timeout=300)
         except (RuntipiError, HermesError) as e:
@@ -714,9 +720,6 @@ def undo(box: Box) -> dict:
                 if (a.folder / "agent.json").exists():
                     _move(a.folder / "agent.json", undone / "agents" / k / "agent.json")
                 _move(before / "agents" / k / "agent.json", a.folder / "agent.json")
-    for s in steps:
-        if s["kind"] == "agent_folder_created" and Path(s["path"]).exists():
-            _move(Path(s["path"]), undone / "agent-folders" / s["agent"] / Path(s["path"]).name)
     # files
     if "files" in areas:
         for n in _files_entries(files_root):
@@ -750,6 +753,11 @@ def undo(box: Box) -> dict:
                     box.appdata.remove_package(st, aid)
                 except AppDataError as e:
                     notes.append(f"{s['urn']}: could not remove the package the restore placed: {e}")
+    # folders the restore made for new agents go only after their apps are uninstalled: a container still up
+    # would re-create its bind-mounted home as soon as the folder moved
+    for s in steps:
+        if s["kind"] == "agent_folder_created" and (Path(s["path"]).exists() or Path(s["path"]).is_symlink()):
+            _move(Path(s["path"]), undone / "agent-folders" / s["agent"] / Path(s["path"]).name)
     for s in steps:
         if s["kind"] in ("app_snapshot", "volume_snapshot") and s.get("archive"):
             log(f"putting back {s['urn']}" + (" (its volumes)" if s["kind"] == "volume_snapshot" else ""))

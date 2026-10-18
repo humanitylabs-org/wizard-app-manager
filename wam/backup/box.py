@@ -578,8 +578,24 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
         return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
             or rel.endswith(".lock")
 
+    from .agents import keep_in_place
+    agent_list = agents if agents is not None else box.agents()
+    # Container agents' homes live in app-data. Their per-machine entries (logs/, backups/, runtime/, caches, *.pid,
+    # SQLite -wal/-shm, gateway_state.json: agents.keep_in_place) are never captured, set aside or put back, and the
+    # agent rewrites them whenever it runs, so they are no part of what import and undo promise to keep.
+    app_data = box.runtipi_root / "app-data"
+    homes = []
+    for a in agent_list:
+        if a.runtime != "host":
+            try:
+                homes.append(Path(a.home).relative_to(app_data).as_posix() + "/")
+            except ValueError:
+                pass
+
     def rt_skip(rel, is_dir):   # app-data/wizard-os is regenerated, except an agents/ folder there
-        return rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/"))
+        if rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/")):
+            return True
+        return any(rel.startswith(h) and keep_in_place(rel[len(h):]) for h in homes)
 
     def digest(name, root, skip=None, **kw):
         detail = {} if entries is not None else None
@@ -596,8 +612,7 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
                                         rt_skip if part == "app-data" else None, modes=part != "app-data")
     out["files"] = digest("files", box.files_root(),
                           lambda rel, d: rel == RESTORE_DIR or rel.startswith(RESTORE_DIR + "/"), content=False)
-    from .agents import keep_in_place
-    for a in agents if agents is not None else box.agents():
+    for a in agent_list:
         if a.runtime == "host":
             out[f"agent/{a.id}"] = digest(f"agent/{a.id}", a.home, lambda rel, d: keep_in_place(rel))
     return out
