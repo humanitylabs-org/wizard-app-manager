@@ -130,7 +130,7 @@ pack, index and snapshot (AES-256-CTR + Poly1305) before upload.
 
 **One run** (`wam backup run`, what the systemd `--user` timer runs with `--scheduled`): lock → restic present →
 open (or create) the repository → **capture**: the same entries as a file export (manifest first, agents via stock
-`hermes backup`, apps' packages + data + pins via Runtipi's per-app backup, the Wizard home, the files tree,
+`hermes backup`, apps' packages + data + pins (each app's data archived as for an export), the Wizard home, the files tree,
 `checksums.json` last) written as one plain tar straight into `restic backup --stdin` as `/wizard.tar`, restic
 host `wizard-<box-id>` → **retention** `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`
 (`--keep-daily/--keep-weekly/--keep-monthly`; the old `keep: N` / `--keep N` maps onto keep-daily) → `restic check`
@@ -143,23 +143,24 @@ back a share of the data within the last week. One run at a time; a second run e
 `peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`.
 
 **Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
-agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, one at a time,
-and Runtipi's per-app archive of each app (Runtipi stops the app briefly for it, as for an export), one at a time,
-deleted right after it is read (and its Runtipi backup entry removed) before the next app's is made. So the peak is
-about the largest single app archive plus the agents' archives; on a test box whose transcriber app holds ~0.97 GB of
-model files that was 0.94 GB of a 1.03 GB capture. The run samples this and records the peak as
-`peak_extra_disk_bytes`; restic's local cache (`~/.cache/wizard-backup/restic`, `restic_cache_bytes`, tens of KB)
-comes on top. Reading app data in place instead would need root (Runtipi's app files belong to container users).
+agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, and each app's
+data archive (made with the app stopped, as for an export), one app at a time, deleted right after it is read. So the
+peak is about the largest single app archive plus the agents' archives. On a test box whose transcriber app holds
+~0.97 GB of model files the peak was 0.99 GB for a 1.08 GB capture: that one app dominates. The run samples this and
+records the peak as `peak_extra_disk_bytes`; restic's local cache (`~/.cache/wizard-backup/restic`,
+`restic_cache_bytes`, tens of KB on that box) comes on top. Next step if this matters: stream each app's tar straight
+into the capture (one counting pass for the tar header's size, one streaming pass, app still stopped), which brings
+the peak down to the agents' archives.
 
 **Dedupe-friendly capture.** restic splits the stream into content-defined chunks (512 KiB–8 MiB, about 1 MiB on
 average) and stores each chunk once, so compressed members would defeat it. The stream therefore holds agent archives
 rewritten with **stored** (uncompressed) zip members (stock `hermes backup` has no stored mode; the rewrite keeps names,
-dates and modes, so stock `hermes import` reads it unchanged) and Runtipi's `.tar.gz` app archives **decompressed** to
-`apps/<id>/data.tar` (gzip'd back into Runtipi's format on restore). restic compresses chunks itself (zstd).
-Tradeoffs: an app's data passes through Runtipi's archive (that keeps Runtipi's stop/backup/start cycle and restore
-rules exactly as for a file export) instead of restic reading the data tree in place; and because restic sees one big
-file, each changed spot (a new file, a changed database page, the manifest) costs about one chunk (~1 MiB) instead
-of only the changed file.
+dates and modes, so stock `hermes import` reads it unchanged) and app data archives **decompressed** to
+`apps/<id>/data.tar` (gzip'd back into `data.tar.gz` on restore, then the file import path). restic compresses chunks
+itself (zstd). Measured on the test box (1.08 GB capture, two agents, ten apps): run 1 added 573 MB (529 MB packed);
+after a new owner file and a new agent session, run 2 added 12.5 MB (6.3 MB packed); bucket 529.1 MB → 535.4 MB.
+Tradeoff: restic sees one big file, so each changed spot (a new file, a changed database page, the manifest) costs
+about one chunk (~1 MiB) rather than only the changed bytes.
 
 **restic itself** is the official static release (github.com/restic/restic, BSD-2-Clause, see
 `THIRD_PARTY_NOTICES.md`), pinned by version and sha256 in `wam/backup/restic.py` (0.19.1, linux amd64/arm64).
@@ -207,6 +208,14 @@ keeps boxes apart by restic host).
   because `s3:DeleteObjectVersion` was denied too. COMPLIANCE retention could not be cleared, shortened or
   bypassed by anyone, root included. Use COMPLIANCE where the provider offers it (and keep the IAM denies either way);
   pick its window knowing the owner cannot shorten it either.
+- *Which prune route restic tolerates* (tested): **A**, box may `DeleteObject` (not versions): `restic forget
+  --prune` runs normally and only writes delete markers; a compromised box can hide snapshots but every version stays
+  recoverable within the lock window. **B**, box may not `DeleteObject` outside `locks/`: the box's `forget` is
+  refused (`wam backup run` records it as deferred and still succeeds; restic's own lock files keep working), and
+  `wam backup prune --s3-credentials-file <owner credential>` (`--prune-by owner` to stop the box trying) forgets and
+  prunes; the forgotten objects get delete markers while their locked versions stay until the lock and a
+  noncurrent-version lifecycle rule let them go. Recommended: B for S3 with versioning (the box cannot even hide
+  snapshots), A where the owner wants the box to keep pruning itself.
 - *Cloudflare R2*: R2 has no object versioning; use an R2 **bucket lock rule** (retention by age) on the repository
   prefix's `data/`, `index/`, `snapshots/`, `keys/` and `config` (not `locks/`), and an R2 API token scoped to that
   bucket with Object Read & Write. A locked object's delete or overwrite is refused outright, so set `--object-lock`
