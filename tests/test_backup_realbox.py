@@ -77,6 +77,12 @@ def realbox(tmp_path):
     compose.write_text(yaml.safe_dump(doc))
     _w(old.base / "volumes" / VOL / "credentials.json", "OLD-LOGIN")
     _w(new.base / "volumes" / VOL / "credentials.json", "NEW-EMPTY-LOGIN")
+    # this box's own install in the Wizard home: never travels, never replaced
+    for bx, tag in ((old, "OLD"), (new, "NEW")):
+        _w(bx.home / "builder/releases/r1/bundle.json", tag)
+        os.symlink("releases/r1", bx.home / "builder/current")
+        _w(bx.home / "release.json", tag)
+        _w(bx.home / "bin/wam", tag)
     key = crypto.new_recovery_key()
     keylib.store_key(old.home, key)
     kf = tmp_path / "recovery.key"
@@ -104,6 +110,7 @@ def test_real_box_layout_round_trip(realbox):
     assert not any("wizard-os/agents" in n for n in svc), "the agent travels once, as an agent"
     assert not any(n.endswith("mcp-token") for n in svc), "the service's MCP token is this box's"
     assert "app-data/data/wizard-os/settings.json" in svc
+    assert not any(n.startswith(("wizard-os/builder", "wizard-os/bin", "wizard-os/release.json")) for n in c)
 
     before_new = box_digest(new.box())
     code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
@@ -122,6 +129,8 @@ def test_real_box_layout_round_trip(realbox):
     jobs = json.loads((rhome / "cron/jobs.json").read_text())["jobs"]
     assert [j["state"] for j in jobs] == ["paused"]                         # the extra agent went through import
     assert (svc / "agents/research/runtime.key").read_text() == "research-runtime-key"
+    assert (new.home / "builder/current/bundle.json").read_text() == "NEW"
+    assert (new.home / "release.json").read_text() == "NEW" and (new.home / "bin/wam").read_text() == "NEW"
 
     code, res = _cli(new.box(), "undo")
     assert code == 0 and res["digest_match"], res
