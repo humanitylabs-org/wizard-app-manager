@@ -63,6 +63,22 @@ def _keep_parent(rel: str) -> bool:
     return any(k.startswith(rel + "/") for k in KEEP_DIRS)
 
 
+def root_files(root: Path) -> list[str]:
+    """The Agent Service's own files beside the agent folders (`.agent-grants.json`, `.main-agent.json`,
+    `.apps-seen.json`): plain top-level files of the agents root, without temporary or lock files."""
+    try:
+        names = sorted(os.listdir(root))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    out = []
+    for n in names:
+        p = Path(root) / n
+        if p.is_symlink() or not p.is_file() or ".tmp" in n or KEEP_RE.search(n):
+            continue
+        out.append(n)
+    return out
+
+
 def movable_entries(home: Path) -> list[str]:
     """Relative paths to set aside so only per-machine entries stay: top-level entries, descending into a folder that
     holds a kept entry (plugins/ keeps plugins/wizard-os)."""

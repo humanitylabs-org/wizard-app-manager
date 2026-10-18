@@ -473,6 +473,13 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         for n in _files_entries(r.files_root):
             _move(r.files_root / n, r.froot / "before" / n)
         r.step(kind="set_aside", area="files")
+    aroot = box.agents_root()
+    held = agentlib.root_files(aroot)
+    if held or (stage / "agents-root").is_dir():
+        r.journal["agents_root"] = str(aroot)
+        for n in held:
+            _move(aroot / n, before / "agents-root" / n)
+        r.step(kind="set_aside", area="agents-root")
     r.journal["status"] = "applying"
     r.save()
 
@@ -508,6 +515,13 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     r.step(kind="placed", area="wizard-os")
 
     # agents
+    src = stage / "agents-root"
+    if src.is_dir():
+        aroot = Path(r.journal.get("agents_root") or box.agents_root())
+        aroot.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for n in agentlib.root_files(src):
+            _move(src / n, aroot / n)
+        r.step(kind="placed", area="agents-root")
     agent_reports = {}
     for k, a in targets.items():
         agent_reports[k] = _import_agent(box, r, k, a, existing, installed)
@@ -720,6 +734,12 @@ def undo(box: Box) -> dict:
                 if (a.folder / "agent.json").exists():
                     _move(a.folder / "agent.json", undone / "agents" / k / "agent.json")
                 _move(before / "agents" / k / "agent.json", a.folder / "agent.json")
+    if "agents-root" in areas and j.get("agents_root"):
+        aroot = Path(j["agents_root"])
+        for n in agentlib.root_files(aroot):
+            _move(aroot / n, undone / "agents-root" / n)
+        for n in agentlib.root_files(before / "agents-root"):
+            _move(before / "agents-root" / n, aroot / n)
     # files
     if "files" in areas:
         for n in _files_entries(files_root):

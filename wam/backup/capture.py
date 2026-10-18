@@ -268,6 +268,13 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                     bw.add_dir(f"agents/{a.id}/folder")
                     bw.add_tree(f"agents/{a.id}/folder", a.folder,
                                 lambda rel, d: rel.split("/")[0] in ("home", "upload-staging", "agent.json"))
+            shared = agentlib.root_files(box.agents_root())
+            if shared:
+                # the Agent Service's files beside the agent folders: agent-data grants, the main agent's app
+                # choices, the apps already offered to agents
+                bw.add_dir("agents-root")
+                for n in shared:
+                    bw.add_file(f"agents-root/{n}", box.agents_root() / n)
             for rec in app_rows:
                 app_id = rec["id"]
                 bw.add_dir(f"apps/{app_id}")

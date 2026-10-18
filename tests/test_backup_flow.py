@@ -424,3 +424,30 @@ def test_undo_is_exact_when_agents_are_still_starting_and_rewrote_runtime_files(
     assert res["differences"]["total"] == 0
     assert ("stop", "agent-research:wizardapps") in new.rt.calls
     assert box_digest(new.box()) == before
+
+
+def test_agent_service_root_files_travel_and_undo_puts_this_boxs_back(world):
+    """Agent-data grants and the main agent's app choices live beside the agent folders; they travel in the file,
+    and undo puts back exactly what this box had (here: the Agent Service's record of apps already offered)."""
+    old, new = world["old"], world["new"]
+    (old.home / "agents/.agent-grants.json").write_text('{"schema": 1, "grants": [["research", "main"]]}')
+    (old.home / "agents/.main-agent.json").write_text('{"schema": 1, "wizard_apps": ["notes-app"], "agent_apps": []}')
+    (old.home / "agents/.agent-grants.json.tmp-1").write_text("half written")
+    (new.home / "agents").mkdir(exist_ok=True)
+    (new.home / "agents/.apps-seen.json").write_text('{"schema": 1, "apps": ["files-app"]}')
+    out, _ = _export(world)
+    names = set(_contents(out, world["key"]))
+    assert {"agents-root/.agent-grants.json", "agents-root/.main-agent.json"} <= names
+    assert "agents-root/.agent-grants.json.tmp-1" not in names
+    before = box_digest(new.box())
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(world["keyfile"]))
+    assert code == 0, rec
+    a = new.home / "agents"
+    assert json.loads((a / ".agent-grants.json").read_text())["grants"] == [["research", "main"]]
+    assert json.loads((a / ".main-agent.json").read_text())["wizard_apps"] == ["notes-app"]
+    assert not (a / ".apps-seen.json").exists()
+    code, res = _cli(new.box(), "undo")
+    assert code == 0 and res["digest_match"] is True, res
+    assert (a / ".apps-seen.json").read_text() == '{"schema": 1, "apps": ["files-app"]}'
+    assert not (a / ".agent-grants.json").exists() and not (a / ".main-agent.json").exists()
+    assert box_digest(new.box()) == before

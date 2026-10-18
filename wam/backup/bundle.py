@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .fmt import Damaged
 
-ROOTS = ("wizard-os/", "agents/", "apps/", "files/")
+ROOTS = ("wizard-os/", "agents/", "agents-root/", "apps/", "files/")
 MANIFEST, CHECKSUMS = "manifest.json", "checksums.json"
 COPY = 1 << 20
 MAX_JSON = 64 << 20
