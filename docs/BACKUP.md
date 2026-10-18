@@ -16,8 +16,10 @@ provisioned by the same `os.sh`), so one engine serves all of them; the Mac app 
   (Telegram, Slack, ...) off and scheduled backups off, so it never runs alongside the original.
   **Make this my active Wizard** turns back on exactly what was on at export, after the owner confirms the old one
   is off.
-- **Scheduled backups**: off-machine to any S3-compatible storage (Cloudflare R2, AWS S3, Backblaze B2, MinIO) or a
-  local/external folder; daily by default; keeps the newest N (default 7); every upload is read back and verified.
+- **Scheduled backups**: off-machine into an encrypted restic repository on any S3-compatible storage (Cloudflare R2,
+  AWS S3, Backblaze B2, MinIO), an SFTP server or a local/external folder; daily by default; only changes upload
+  after the first run; keeps 7 daily, 4 weekly and 6 monthly snapshots; checked after every run and read back
+  weekly.
 
 ## The key
 
@@ -100,31 +102,124 @@ the owner switches over.
 
 ## Scheduled backups
 
-`~/.wizard-os/backup.json` (no secrets) + `~/.wizard-os/secrets/backup-target.json` (0600, S3 keys):
+Scheduled runs store the capture in a **restic repository** on the target, encrypted with this box's recovery key, so
+after the first run only changed data is uploaded and every kept day is a full, restorable snapshot. The
+`.wizardbackup` file stays the format for export, move and hand-carried copies; both are opened by the same key.
+
+`~/.wizard-os/backup.json` (no secrets) + `~/.wizard-os/secrets/backup-target.json` (0600, S3 keys only):
 
 ```json
-{"schema": 1, "enabled": true, "every": "daily", "at": "03:30", "keep": 7,
- "target": {"kind": "s3", "endpoint": "https://<account>.r2.cloudflarestorage.com", "bucket": "…", "prefix": "wizard/<box-id>/", "region": "auto"}}
+{"schema": 2, "engine": "restic", "enabled": true, "every": "daily", "at": "03:30",
+ "retention": {"daily": 7, "weekly": 4, "monthly": 6}, "verify": {"read_data_subset": "10%", "every_days": 7},
+ "prune_by": "box", "box_id": "<12 hex>",
+ "target": {"kind": "s3", "endpoint": "https://<account>.r2.cloudflarestorage.com", "bucket": "…",
+            "prefix": "wizard/<box-id>/", "region": "auto", "path_style": false, "object_lock": false}}
 ```
 
-`target.kind` is `s3` or `path`. A systemd timer runs `wam backup run --scheduled`: export → upload (S3 multipart,
-SigV4, stdlib only) → read back and verify the uploaded object's header and size → **restore drill**: stream the stored
-object through a full verify (decrypt + every checksum) → prune to the newest `keep` → write `backup-status.json`
-(last success, size, duration, drill, error). One run at a time (lock). After a restore the schedule is copied but
-**off**, and the box id is new, so two boxes never write to the same prefix.
+**Targets** (`target.kind`): `s3` (any S3-compatible store: R2, AWS, B2, MinIO; restic `s3:<endpoint>/<bucket>/<prefix>`,
+`--region`, `--path-style` for MinIO), `path` (a local or mounted external folder) and `sftp` (`user@host:/path`,
+using the box's own ssh config and keys). S3 keys reach restic only as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in
+restic's own process environment.
 
+**The key.** The repository password is the recovery key's canonical text (`WZRK-…`). restic gets it only through
+`RESTIC_PASSWORD_FILE`: a 0600 file in a 0700 folder made for that one command and deleted afterwards; never argv,
+never the environment, never a log or the status file. A passphrase cannot open a repository; the recovery key opens
+both a repository and a `.wizardbackup` file. Nothing readable leaves the box: restic encrypts and authenticates every
+pack, index and snapshot (AES-256-CTR + Poly1305) before upload.
+
+**One run** (`wam backup run`, what the systemd `--user` timer runs with `--scheduled`): lock → restic present →
+open (or create) the repository → **capture**: the same entries as a file export (manifest first, agents via stock
+`hermes backup`, apps' packages + data + pins via Runtipi's per-app backup, the Wizard home, the files tree,
+`checksums.json` last) written as one plain tar straight into `restic backup --stdin` as `/wizard.tar`, restic
+host `wizard-<box-id>` → **retention** `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`
+(`--keep-daily/--keep-weekly/--keep-monthly`; the old `keep: N` / `--keep N` maps onto keep-daily) → `restic check`
+→ weekly `restic check --read-data-subset=10%` (time of the last one kept in the status file) → `restic stats --mode
+raw-data` → `backup-status.json`. "Verified" means restic checked the repository structure that run and actually read
+back a share of the data within the last week. One run at a time; a second run exits at once.
+
+`backup-status.json`: `ok`, `snapshot`, `data_added` (new bytes this run, before restic's compression),
+`data_added_packed`, `capture_bytes`, `repository_bytes`, `snapshots`, `retention`, `check`, `read_data`,
+`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`.
+
+**Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
+agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, one at a time,
+and Runtipi's per-app archive of each app (Runtipi stops the app briefly for it, as for an export), one at a time,
+deleted right after it is read. The run samples this and records the peak as `peak_extra_disk_bytes`; restic's local
+cache (`~/.cache/wizard-backup/restic`, `restic_cache_bytes`) comes on top.
+
+**Dedupe-friendly capture.** restic splits the stream into content-defined chunks (512 KiB–8 MiB, about 1 MiB on
+average) and stores each chunk once, so compressed members would defeat it. The stream therefore holds agent archives
+rewritten with **stored** (uncompressed) zip members (stock `hermes backup` has no stored mode; the rewrite keeps names,
+dates and modes, so stock `hermes import` reads it unchanged) and Runtipi's `.tar.gz` app archives **decompressed** to
+`apps/<id>/data.tar` (gzip'd back into Runtipi's format on restore). restic compresses chunks itself (zstd).
+Tradeoffs: an app's data passes through Runtipi's archive (that keeps Runtipi's stop/backup/start cycle and restore
+rules exactly as for a file export) instead of restic reading the data tree in place; and because restic sees one big
+file, each changed spot (a new file, a changed database page, the manifest) costs about one chunk (~1 MiB) instead
+of only the changed file.
+
+**restic itself** is the official static release (github.com/restic/restic, BSD-2-Clause, see
+`THIRD_PARTY_NOTICES.md`), pinned by version and sha256 in `wam/backup/restic.py` (0.19.1, linux amd64/arm64).
+`install.sh` installs it (`wam backup restic-install`); `schedule set` and `run` install it themselves when it is
+missing (boxes made before), into `~/.local/bin/restic` (or `~/.local/share/wizard-backup/bin/` when the owner has
+another restic there). A download whose sha256 differs is refused and nothing is installed.
+
+**Timer.** `~/.config/systemd/user/wizard-backup.{service,timer}` (`Persistent=true`, a randomised delay). A user timer
+only fires while the user has a systemd instance, so `schedule set` runs `loginctl enable-linger` for the box user
+(skipped under tests).
+
+**Restore from the repository.** `wam backup import --from-repo [SNAPSHOT|latest]` (target from `backup.json`, or
+`--s3/--path/--sftp` plus `--s3-credentials-file` / `WIZARD_S3_*` / a prompt on a new box; key by the usual rules)
+reads the snapshot with `restic dump` straight into the **same** verify-and-stage pass as a file import (member
+rules, every checksum, free space) and then follows exactly the file path: plan, set aside, apply, paused start, Undo,
+`activate`. A new box needs only the recovery key and the target's credentials. `wam backup snapshots` lists them.
+After a restore the schedule is copied but **off**, with a new box id (a new S3 prefix; a shared folder repository
+keeps boxes apart by restic host).
+
+**Old snapshots a compromised box cannot destroy.** Protection must live in the storage, not on the box:
+
+- *S3 with Object Lock* (preferred). A bucket with versioning + Object Lock and a default retention (GOVERNANCE or
+  COMPLIANCE, e.g. 30 days), and a box credential that may read, write and delete objects but may **not**
+  `s3:DeleteObjectVersion`, `s3:PutObjectRetention`, `s3:PutObjectLegalHold`, `s3:BypassGovernanceRetention`,
+  `s3:PutBucketVersioning`, `s3:PutBucketObjectLockConfiguration`, `s3:PutLifecycleConfiguration`,
+  `s3:PutBucketPolicy` or `s3:DeleteBucket`. A delete from the box then only adds a delete marker, an overwrite only
+  adds a newer version, and every locked version stays recoverable by the owner. Set `--object-lock` on the schedule:
+  the box's prune deletes only completely unused packs (`--max-unused unlimited`, so nothing is rewritten) and a
+  delete the storage refuses is recorded as deferred, not as a failed run. Optionally also deny `s3:DeleteObject`
+  except on `<prefix>/locks/*` (restic must clear its own lock files): then the box cannot even hide snapshots behind
+  delete markers, but it cannot forget any either; use `--prune-by owner` and run `wam backup prune
+  --s3-credentials-file <owner credential>` on a slower cadence (only data older than the lock window can go). The
+  owner adds a lifecycle rule that expires noncurrent versions some days after the lock window, so deleted data
+  eventually leaves the bucket.
+- *Cloudflare R2*: R2 has no object versioning; use an R2 **bucket lock rule** (retention by age) on the repository
+  prefix's `data/`, `index/`, `snapshots/`, `keys/` and `config` (not `locks/`), and an R2 API token scoped to that
+  bucket with Object Read & Write. A locked object's delete or overwrite is refused outright, so set `--object-lock`
+  (refused deletes are deferred) or `--prune-by owner`.
+- *AWS S3*: create the bucket with Object Lock (versioning is then on), set a default retention, and give the box an
+  IAM user/role whose policy allows `s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetObject`, `s3:PutObject`,
+  `s3:DeleteObject` on the bucket/prefix and explicitly denies the actions listed above.
+- *Home disk / SFTP*: run `restic rest-server --append-only` on the storage machine and point the box at it (`rest:`
+  repositories are a small addition to `target.kind`); the box can add snapshots but not delete or rewrite them.
+- *A second copy*: `restic copy` into another repository (another provider or the owner's disk) is the planned way to
+  keep two targets; not built yet.
+
+## CLI
 ## CLI
 
 ```
 wam backup export   [-o FILE] [--passphrase] [--no-files]      # also prints the size and what went in
 wam backup verify   FILE                                        # decrypt + check everything, change nothing
 wam backup import   FILE [--yes]                                # restore / move here (verify first, undo kept)
+wam backup import   --from-repo [SNAPSHOT|latest] [--s3 URL | --path DIR | --sftp T] [--yes]   # same, from restic
+wam backup snapshots [--s3 URL | --path DIR | --sftp T]           # the repository's Wizard snapshots
 wam backup undo                                                 # put back what was here before the last import
 wam backup activate --old-is-off                                # resume what was active at export
 wam backup key      new|show-id|set [--out FILE] [--key-file F] # recovery key (shown once)
-wam backup schedule set|show|off  [--s3 https://<endpoint>/<bucket>[/<prefix>] | --path DIR]
-                    [--keep N] [--at HH:MM] [--every hourly|daily|weekly] [--region R] [--s3-credentials-file F]
+wam backup schedule set|show|off  [--s3 https://<endpoint>/<bucket>[/<prefix>] | --path DIR | --sftp user@host:/path]
+                    [--keep-daily 7 --keep-weekly 4 --keep-monthly 6] [--object-lock] [--prune-by box|owner]
+                    [--at HH:MM] [--every hourly|daily|weekly] [--region R] [--path-style] [--s3-credentials-file F]
 wam backup run      [--scheduled]                               # one run now (--scheduled: skip when off)
+wam backup prune    [--s3-credentials-file F]                    # forget + prune with an owner credential
+wam backup restic-install                                       # the pinned, checksum-checked restic
 wam backup status   [--json]
 ```
 
