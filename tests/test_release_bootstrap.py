@@ -260,11 +260,11 @@ def test_real_node_index_pin_lookup_and_unrelated_fallback(pins, tmp_path):
         with urllib.request.urlopen(f'http://127.0.0.1:{port}' + path, timeout=2) as r:
             return json.load(r)
     try:
-        for _ in range(50):
+        for _ in range(200):  # node startup on a busy CI runner can take seconds, not 1s
             try:
                 get('/healthz'); break
             except OSError:
-                time.sleep(.02)
+                time.sleep(.05)
         for row in manifest()['default_apps'].values():
             if not row: continue
             rec = get('/v1/search?id=' + row['app'])['apps'][0]
