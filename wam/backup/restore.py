@@ -761,6 +761,22 @@ def last_restore(box: Box) -> tuple[Path, dict]:
 
 @managed_operation
 def undo(box: Box) -> dict:
+    try:
+        return _undo(box)
+    except Exception as e:
+        # Undo that stops part way leaves the box mixed: say why in the journal, which status shows.
+        try:
+            root, j = last_restore(box)
+            if j.get("status") != "undone":
+                j["undo_error"] = f"{type(e).__name__}: {e}"[:500]
+                j["undo_failed_at"] = int(time.time())
+                _write_json(root / "journal.json", j)
+        except Exception:  # noqa: BLE001 - the original error is the one to raise
+            pass
+        raise
+
+
+def _undo(box: Box) -> dict:
     root, j = last_restore(box)
     if j.get("status") == "undone":
         raise RestoreError(f"the last restore ({j['stamp']}) was already undone")
