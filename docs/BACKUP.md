@@ -278,6 +278,10 @@ Choices the contract left open, as built in `wam/backup/`:
 - **Agent wiring kept** on import: `terminal`, `mcp_servers.wizard`, the wizard `skills.external_dirs`, Wizard's
   plugins, `platforms.api_server` and the `.env` keys `API_SERVER_*`, `WIZARD_*`, `HERMES_DASHBOARD*` of this box's
   agent. A new extra agent keeps its imported ones (they match its `runtime.key`).
+- **Undo diagnostics**: each new import keeps private `digest-before.json` / `digest-after.json` fingerprints
+  at the stopped comparison points. `undo --json` reports `differences.paths` (first 50 relative paths with
+  `missing`, `extra`, `content`, `mode`, or `owner` kinds), `total` and `truncated`; never file bodies.
+  New digests include uid/gid. Journals from older versions retain their original owner-insensitive comparison.
 - **Lock**: a `flock` on the Wizard home folder, so taking it creates nothing.
 - **Files root**: Runtipi's `media/` (or `RUNTIPI_MEDIA_PATH/media`; `WIZARD_FILES_ROOT` overrides).
 

@@ -309,6 +309,7 @@ def test_import_onto_fresh_box_then_undo_then_reimport_and_activate(world):
     # 5. undo restores the pre-import digest exactly (and uninstalls what the restore installed)
     code, res = _cli(new.box(), "undo")
     assert code == 0 and res["digest_match"] is True, res
+    assert res["differences"] == {"paths": [], "total": 0, "truncated": False}
     assert box_digest(new.box()) == before
     assert ("uninstall", "notes-app:wizardapps") in new.rt.calls
     assert ("uninstall", "agent-research:wizardapps") in new.rt.calls

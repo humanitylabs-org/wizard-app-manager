@@ -148,13 +148,14 @@ def test_api_requires_token_for_changes(tmp_path, monkeypatch):
         srv.shutdown()
 
 
-def test_template_mcp_server_speaks_mcp():
+def test_template_mcp_server_speaks_mcp(tmp_path):
     import subprocess
     src = (TEMPLATE / "app" / "server.py").read_text()
     import socket
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
-    proc = subprocess.Popen([sys.executable, "-c", src], env={"PORT": str(port), "PATH": "/usr/bin:/bin"})
+    proc = subprocess.Popen([sys.executable, "-c", src], cwd=tmp_path,
+                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "DATA_DIR": str(tmp_path / "data")})
     try:
         for _ in range(50):
             try:

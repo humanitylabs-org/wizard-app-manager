@@ -513,7 +513,7 @@ def human(n: float) -> str:
 DIGEST_HASH_MAX = 4 << 20
 
 
-def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True) -> tuple[str, int]:
+def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True, *, entries=None, owners=True) -> tuple[str, int]:
     """sha256 over every entry under root: path, type, mode and, for files, the size plus the content hash (always
     with content=True; else only up to 4 MiB, larger files by mtime, which a rename keeps). Links are recorded by
     target, unreadable files as such. Returns (hex, entry count)."""
@@ -559,11 +559,18 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True)
                         line += "\0unreadable"
                 else:
                     line += f"\0{st.st_mtime_ns}"
+            # Keep field-level fingerprints, never file bodies, for an actionable undo report.
+            if entries is not None:
+                fields = line.split("\0")
+                entries[rel] = {"type": fields[1], "mode": fields[2],
+                                "owner": f"{st.st_uid}:{st.st_gid}", "content": fields[3:]}
+            if owners:
+                line += f"\0{st.st_uid}:{st.st_gid}"
             h.update(line.encode("utf-8", "surrogateescape") + b"\n")
     return h.hexdigest(), n
 
 
-def box_digest(box: Box, agents: list[Agent] | None = None) -> dict:
+def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, owners=True) -> dict:
     """What an import may change, as digests: the Wizard home (owner state), Runtipi app-data/user-config/apps, the
     owner's files and each agent home. Regenerated and engine-owned entries are left out."""
     def home_skip(rel, is_dir):
@@ -574,16 +581,41 @@ def box_digest(box: Box, agents: list[Agent] | None = None) -> dict:
     def rt_skip(rel, is_dir):   # app-data/wizard-os is regenerated, except an agents/ folder there
         return rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/"))
 
-    out = {"wizard-os": tree_digest(box.home, home_skip)[0]}
+    def digest(name, root, skip=None, **kw):
+        detail = {} if entries is not None else None
+        result = tree_digest(root, skip, entries=detail, owners=owners, **kw)[0]
+        if entries is not None:
+            entries[name] = detail
+        return result
+
+    out = {"wizard-os": digest("wizard-os", box.home, home_skip)}
     # Runtipi runs `chmod -Rf a+rwx` on an app's data folder every time it starts the app, so permission bits there
     # are not state an import or undo can keep: app-data is compared without them.
     for part in ("app-data", "user-config", "apps"):
-        out[f"runtipi/{part}"] = tree_digest(box.runtipi_root / part, rt_skip if part == "app-data" else None,
-                                             modes=part != "app-data")[0]
-    out["files"] = tree_digest(box.files_root(), lambda rel, d: rel == RESTORE_DIR or rel.startswith(RESTORE_DIR + "/"),
-                               content=False)[0]
+        out[f"runtipi/{part}"] = digest(f"runtipi/{part}", box.runtipi_root / part,
+                                        rt_skip if part == "app-data" else None, modes=part != "app-data")
+    out["files"] = digest("files", box.files_root(),
+                          lambda rel, d: rel == RESTORE_DIR or rel.startswith(RESTORE_DIR + "/"), content=False)
     from .agents import keep_in_place
     for a in agents if agents is not None else box.agents():
         if a.runtime == "host":
-            out[f"agent/{a.id}"] = tree_digest(a.home, lambda rel, d: keep_in_place(rel))[0]
+            out[f"agent/{a.id}"] = digest(f"agent/{a.id}", a.home, lambda rel, d: keep_in_place(rel))
     return out
+
+
+def digest_differences(before: dict, after: dict, limit: int = 50) -> dict:
+    """First N changed relative paths with kinds; no file contents or link targets in the result."""
+    changed = []
+    total = 0
+    for tree in sorted(set(before) | set(after)):
+        a, b = before.get(tree, {}), after.get(tree, {})
+        for path in sorted(set(a) | set(b)):
+            kinds = (["extra"] if path not in a else ["missing"] if path not in b else
+                     [kind for field, kind in (("type", "content"), ("content", "content"),
+                                               ("mode", "mode"), ("owner", "owner"))
+                      if a[path].get(field) != b[path].get(field)])
+            if kinds:
+                total += 1
+                if len(changed) < limit:
+                    changed.append({"tree": tree, "path": path, "kinds": sorted(set(kinds))})
+    return {"paths": changed, "total": total, "truncated": total > len(changed)}

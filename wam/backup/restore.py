@@ -37,7 +37,7 @@ from pathlib import Path
 from . import agents as agentlib, bundle, fmt
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
-                  box_digest, human, log, need_space, skip_home_entry)
+                  box_digest, digest_differences, human, log, need_space, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -442,7 +442,9 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     r.save()
     for a in replaced:
         _stop_app(box, a["urn"])
-    r.journal["digest_before"] = box_digest(box, current_agents)
+    detail = {}
+    r.journal["digest_before"] = box_digest(box, current_agents, entries=detail)
+    _write_json(r.root / "digest-before.json", detail)
     r.save()
     vols_taken: set[str] = set()
     for a in replaced:
@@ -767,7 +769,11 @@ def undo(box: Box) -> dict:
                 notes.append(f"{s['urn']}: restore of the snapshot failed: {e}")
     # compare now, before anything starts again and rewrites its files (import digested at the same point)
     current = [a for a in box.agents() if a.id in targets or a.runtime == "host"]
-    after = box_digest(box, current)
+    detail = {}
+    after = box_digest(box, current, entries=detail, owners=(root / "digest-before.json").is_file())
+    _write_json(root / "digest-after.json", detail)
+    detail_before = root / "digest-before.json"
+    differences = digest_differences(json.loads(detail_before.read_text()), detail) if detail_before.is_file() else None
     # start what ran before
     was = j.get("installed_before") or {}
     for urn, info in was.items():
@@ -792,6 +798,7 @@ def undo(box: Box) -> dict:
     j["status"] = "undone"
     j["undone_at"] = int(time.time())
     j["undo_digest_match"] = not mismatch
+    j["undo_differences"] = differences
     _write_json(root / "journal.json", j)
     # staging is never needed after an undo, whatever the digest says
     shutil.rmtree(root / "stage", ignore_errors=True)
@@ -806,7 +813,7 @@ def undo(box: Box) -> dict:
             except OSError:
                 pass
     return {"ok": not mismatch, "stamp": stamp, "digest_match": not mismatch, "mismatch": mismatch,
-            "notes": notes, "kept": None if not mismatch else str(undone)}
+            "differences": differences, "notes": notes, "kept": None if not mismatch else str(undone)}
 
 
 def _walk_back(held: Path) -> list[str]:
