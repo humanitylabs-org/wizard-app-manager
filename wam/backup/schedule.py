@@ -104,6 +104,8 @@ def _read_s3_secret(box: Box, creds_file: str | None) -> dict | None:
 def set_schedule(box: Box, *, s3: str | None = None, path: str | None = None, region: str | None = None,
                  keep: int | None = None, at: str | None = None, every: str | None = None,
                  creds_file: str | None = None) -> dict:
+    if not keylib.stored_key(box.home):
+        raise ScheduleError("scheduled backups need this box's recovery key: run `wam backup key new` first")
     cur = load(box) or {}
     cfg = {"schema": 1, "enabled": True, "every": every or cur.get("every") or "daily",
            "at": at or cur.get("at") or "03:30", "keep": int(keep if keep is not None else cur.get("keep") or 7),
@@ -135,8 +137,6 @@ def set_schedule(box: Box, *, s3: str | None = None, path: str | None = None, re
                                 "or use --s3-credentials-file")
     else:
         Path(cfg["target"]["path"]).mkdir(parents=True, exist_ok=True)
-    if not keylib.stored_key(box.home):
-        raise ScheduleError("scheduled backups need this box's recovery key: run `wam backup key new` first")
     save(box, cfg)
     units = write_units(box, cfg)
     sysd = systemctl(box, ["daemon-reload"]) and systemctl(box, ["enable", "--now", f"{UNIT}.timer"])

@@ -73,6 +73,24 @@ Wizard additions:
 | `wam apps [--json]` | Installed apps with their MCP addresses; writes `~/.wizard-os/apps.json` + `skills/` for agents |
 | `wam doctor [--fix]` | Check the whole chain |
 | `wam serve` | Box-only HTTP API on `127.0.0.1:7790` (the `wizard-app-manager-api` user service runs it) |
+| `wam backup export\|verify\|import\|undo\|activate\|key\|schedule\|run\|status` | Back up, restore or move the whole Wizard (see below) |
+
+## Backup, restore and move
+
+`wam backup` writes the whole Wizard (settings, every agent, every app with its data, the owner's files) into one
+encrypted `.wizardbackup` file, and restores it onto this or another box. The whole file is checked before anything
+changes; the previous Wizard is kept so `wam backup undo` puts it back; a restored copy stays paused (messaging off,
+scheduled jobs paused) until `wam backup activate --old-is-off`. Scheduled backups go to any S3-compatible bucket or a
+folder, and every upload is read back and fully verified.
+
+```bash
+wam backup key new                 # once: the recovery key (shown once; save it)
+wam backup export -o ~/my.wizardbackup
+wam backup import ~/my.wizardbackup --yes     # on the other box
+wam backup schedule set --s3 https://<account>.r2.cloudflarestorage.com/<bucket> --keep 7
+```
+
+The file format, what travels and what stays, and every command: [docs/BACKUP.md](docs/BACKUP.md).
 
 ## Building
 

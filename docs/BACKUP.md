@@ -1,6 +1,6 @@
 # Wizard backup and move
 
-**Status:** v1 contract, being built (try-wizard issues #3 and #7). Engine: `wam backup` in this repo.
+**Status:** v1 contract; engine `wam backup` in this repo (`wam/backup/`). Tests: `python3 -m pytest tests/test_backup_*.py`.
 
 One encrypted file holds a whole Wizard. The same file backs a Wizard up, restores it onto a fresh install, and moves
 it to another machine (VPS ↔ Mac app ↔ home machine). Every Wizard host runs the same Linux stack (the Mac app's VM is
@@ -63,8 +63,8 @@ Crypto: AES-256-GCM from the system OpenSSL `libcrypto` (always present: Python'
 |---|---|
 | `manifest.json` (first) | format, created_at, source (`arch`, `os`, `mode`: `full` / `alongside`, Wizard versions: wam commit, Runtipi version, Agent Service/shell version), `agents[]`, `apps[]`, `files` totals, `active` (which cron jobs, messaging platforms and backup schedule were on). No secrets. |
 | `wizard-os/…` | The Wizard home (`~/.wizard-os`): settings, launcher, subjects, routes, app bindings, grants, devices, links/aliases, app secrets. Excluded: caches, `*.bak*`, regenerated `skills/` and `apps.json`, agent homes (captured below), and per-machine identity (`api-token`, `mcp-token`, `runtipi-operator.json`, `agent-runtime/`). |
-| `agents/<id>/agent.json`, `agents/<id>/hermes-backup.zip` | Every agent. The home is captured with stock `hermes backup` (SQLite backup API, Hermes' own excludes). The main agent is `hermes` whether it is the box's Runtipi `hermes-agent` app (full) or the host Hermes (alongside). Credentials stay inside the encrypted file. |
-| `apps/<id>/app.json`, `apps/<id>/package/…`, `apps/<id>/data.tar` | Every installed app: its `apps.json` row (repo, commit, version, urn), the exact Runtipi package installed on the box (`runtipi/apps/<store>/<id>`), and its data (`runtipi/app-data/<store>/<id>` + `user-config/<store>/<id>`), captured with the app stopped. |
+| `agents/<id>/agent.json`, `agents/<id>/hermes-backup.zip`, `agents/<id>/folder/…` | Every agent. The home is captured with stock `hermes backup` (SQLite backup API, Hermes' own excludes). The main agent is `hermes` whether it is the box's Runtipi `hermes-agent` app (full) or the host Hermes (alongside). Extra agents also carry their small Wizard files (`runtime.key`, `gateway.key`, `service-state.json`, `package/`; not `home/` or `upload-staging/`) so a new agent's keys match its imported `.env`. Credentials stay inside the encrypted file. |
+| `apps/<id>/app.json`, `apps/<id>/package/…`, `apps/<id>/data.tar.gz` | Every installed app: its `apps.json` row (repo, commit, version, urn), Runtipi's status/version and install form, the exact Runtipi package installed on the box (`runtipi/apps/<store>/<id>`), and its data as **Runtipi's own per-app backup** (`app-data/` + `app/` + `user-config/`, made by Runtipi as root with the app stopped, and restarted after). Agent apps (`hermes-agent`, `agent-<id>`) carry no data archive: their home is the agent's `hermes-backup.zip`. |
 | `files/…` | The owner's files (Runtipi `media/`), one opaque tree. No layout is assumed. |
 | `checksums.json` (last) | sha256 and size of every entry, entry count, total bytes. |
 
@@ -80,7 +80,10 @@ refused.
 3. **Plan**: compare manifest with this box (mode, installed apps, image architectures). Report what will change.
 4. **Set aside** (undo snapshot): stop the affected apps and agents and move their current data aside
    (`rename`, same filesystem, exact and instant) into `restores/<stamp>/before/`, with a digest of everything
-   moved. Record which apps were installed before.
+   moved. Record which apps were installed before. App data belongs to the app containers and only Runtipi (root)
+   may move it, so each app the restore replaces gets a Runtipi per-app backup instead (a copy, not a rename). The
+   owner's files are set aside inside the files folder itself (`media/.wizard-restore/<stamp>/`): on a Mac it is a
+   mounted Mac folder that cannot be renamed. Every step is journaled, so undo also works after a crash half way.
 5. **Apply**: install missing apps from the bundled packages at the same versions; swap app data in; import each agent
    (main agent into this box's agent home, keeping this box's Wizard wiring, as "Bring My Hermes into Wizard" does);
    swap the Wizard home items and files in. Keep this box's own machine identity (tokens, tailnet name).
@@ -104,10 +107,11 @@ the owner switches over.
  "target": {"kind": "s3", "endpoint": "https://<account>.r2.cloudflarestorage.com", "bucket": "…", "prefix": "wizard/<box-id>/", "region": "auto"}}
 ```
 
-`target.kind` is `s3` or `path`. A systemd timer runs `wam backup run`: export → upload (S3 multipart, SigV4, stdlib
-only) → read back and verify the uploaded object's header and size → prune to the newest `keep` → write
-`backup-status.json` (last success, size, duration, error). One run at a time (lock). After a restore the schedule is
-copied but **off**, and the box id is new, so two boxes never write to the same prefix.
+`target.kind` is `s3` or `path`. A systemd timer runs `wam backup run --scheduled`: export → upload (S3 multipart,
+SigV4, stdlib only) → read back and verify the uploaded object's header and size → **restore drill**: stream the stored
+object through a full verify (decrypt + every checksum) → prune to the newest `keep` → write `backup-status.json`
+(last success, size, duration, drill, error). One run at a time (lock). After a restore the schedule is copied but
+**off**, and the box id is new, so two boxes never write to the same prefix.
 
 ## CLI
 
@@ -117,10 +121,40 @@ wam backup verify   FILE                                        # decrypt + chec
 wam backup import   FILE [--yes]                                # restore / move here (verify first, undo kept)
 wam backup undo                                                 # put back what was here before the last import
 wam backup activate --old-is-off                                # resume what was active at export
-wam backup key      new|show-id|set                             # recovery key (shown once)
-wam backup schedule set|show|off  [--s3 … | --path DIR] [--keep N] [--at HH:MM]
-wam backup run                                                  # one scheduled run now
+wam backup key      new|show-id|set [--out FILE] [--key-file F] # recovery key (shown once)
+wam backup schedule set|show|off  [--s3 https://<endpoint>/<bucket>[/<prefix>] | --path DIR]
+                    [--keep N] [--at HH:MM] [--every hourly|daily|weekly] [--region R] [--s3-credentials-file F]
+wam backup run      [--scheduled]                               # one run now (--scheduled: skip when off)
 wam backup status   [--json]
 ```
 
-Every command prints one JSON object with `--json`.
+Every command prints one JSON object with `--json` (human text otherwise; progress on stderr). Keys come from
+`--key-file`, `WIZARD_BACKUP_KEY` / `WIZARD_BACKUP_PASSPHRASE`, this box's stored key, or a TTY prompt; S3 keys
+from `WIZARD_S3_ACCESS_KEY_ID` / `WIZARD_S3_SECRET_ACCESS_KEY`, `--s3-credentials-file` or a TTY prompt.
+
+## Engine notes (v1)
+
+Choices the contract left open, as built in `wam/backup/`:
+
+- **Recovery slot**: wrap key = HKDF-SHA256(recovery key, salt = slot salt, info = "wizard-backup slot").
+- **Per-machine** (never captured, never replaced): `api-token`, `mcp-token`, `runtipi-operator.json`,
+  `agent-runtime/`, plus `alongside.json`, `linked.json`, `app-manager.json`, `github-token`, `host-dashboard.env`
+  (this box's mode, Hermes links, App Manager config and logins). Regenerated: `apps.json`, `skills/`,
+  `system-skills/`, `cache/`, `dev/`, `staged-apps/`. Agent homes keep their own `bin/`, `logs/`, `runtime/`,
+  caches, locks, the Hermes code checkout and Wizard's plugins (rules adapted from try-wizard
+  `wizard-import-hermes`).
+- **Travels in `wizard-os/`**: `secrets/` (per-app passwords, `backup-key.json`, `backup-target.json`) and
+  `backup.json`. Entries of `secrets/` and `app-tokens/` for apps the backup doesn't carry stay on the box.
+- **Apps** stopped at export stay stopped after import; apps the backup doesn't carry are left alone. Runtipi's
+  uninstall keeps `user-config/<store>/<id>`, so undo removes the one the restore brought.
+- **Agent wiring kept** on import: `terminal`, `mcp_servers.wizard`, the wizard `skills.external_dirs`, Wizard's
+  plugins, `platforms.api_server` and the `.env` keys `API_SERVER_*`, `WIZARD_*`, `HERMES_DASHBOARD*` of this box's
+  agent. A new extra agent keeps its imported ones (they match its `runtime.key`).
+- **Lock**: a `flock` on the Wizard home folder, so taking it creates nothing.
+- **Files root**: Runtipi's `media/` (or `RUNTIPI_MEDIA_PATH/media`; `WIZARD_FILES_ROOT` overrides).
+
+Real-box checks that the fakes in `tests/test_backup_*.py` cannot prove: Runtipi's per-app backup/restore of a
+running app (status transitions, files owned by container users), the agent image's paths
+(`/opt/hermes/.venv/bin/{hermes,python}`), `docker run -u <home owner>` writing into the agent home, stock
+`hermes backup`/`import --force` on a live home, user-level systemd timers (needs `loginctl enable-linger` to run
+while logged out), a real S3/R2 bucket, and a Mac VM where `media/` is a mounted Mac folder.
