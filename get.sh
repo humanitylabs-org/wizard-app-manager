@@ -291,7 +291,9 @@ fwd_env() {
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
-    WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}"
+    WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
+    WIZARD_DETACHED="${WIZARD_DETACHED:-}" WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-}" \
+    WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}"
 }
 # as_user <user> <mode> [HERMES_HOME]: run this installer again as <user> (a user session bus, no root left over).
 as_user() {
@@ -324,6 +326,190 @@ stop_several() {
 
 [ -n "${HOME:-}" ] || { HOME="$(home_of "$(id -un)")"; export HOME; }   # a system service may run us without HOME/USER
 [ -n "${USER:-}" ] || { USER="$(id -un)"; export USER; }
+# ---- detached install for agents: `| bash -s start` and `| bash -s status` ----
+# An agent's command has no terminal and a time limit (a full install takes longer). `start` hands the normal install
+# to a detached runner (a transient systemd unit; setsid nohup without systemd) and returns within seconds. The runner
+# writes ~/.wizard-os/install.log and ~/.wizard-os/install-status.json (state running|needs_owner|done|failed, step,
+# tailscale_login_url, wizard_url, message); `status` prints a short block from them. Scripts that run as another
+# user report through marker lines in the output ("[wizard-os] owner-action: ...", "[wizard-os] wizard-url: ..."),
+# so the runner stays the only writer of the status file.
+WOS_DIR="$HOME/.wizard-os"
+STATUS_FILE="$WOS_DIR/install-status.json"
+INSTALL_LOG="$WOS_DIR/install.log"
+INSTALL_LOCK="$WOS_DIR/install.lock"
+START_CMD="curl -fsSL https://aiwizards.com/os.sh | bash -s start"
+STATUS_CMD="curl -fsSL https://aiwizards.com/os.sh | bash -s status"
+install_running() {  # true while a runner holds the install lock
+  [ -e "$INSTALL_LOCK" ] || return 1
+  command -v flock >/dev/null || return 1
+  ! flock -n "$INSTALL_LOCK" true 2>/dev/null
+}
+# The runner's line processor: append each line to install.log (without colors) and keep install-status.json current.
+# shellcheck disable=SC2016
+STATUS_PY='
+import json, os, re, sys, time
+path, log_path = sys.argv[1], sys.argv[2]
+mode = sys.argv[3] if len(sys.argv) > 3 else "stream"
+def load():
+    try:
+        with open(path) as f: return json.load(f)
+    except (OSError, ValueError): return {}
+def save(st):
+    st["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f: json.dump(st, f, indent=2); f.write("\n")
+    os.chmod(tmp, 0o600); os.replace(tmp, path)
+ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+url = re.compile(r"https://\S+")
+if mode == "begin":
+    save({"state": "running", "step": "starting", "tailscale_login_url": None, "wizard_url": None, "message": "",
+          "notes": [], "restart_pending": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          "pid": int(sys.argv[4])})
+    sys.exit(0)
+if mode == "end":
+    st, rc = load(), int(sys.argv[4])
+    st["tailscale_login_url"] = st.get("tailscale_login_url") if rc else None
+    st["state"] = "done" if rc == 0 else "failed"
+    st["exit_code"] = rc
+    if rc == 0:
+        msg = "Wizard OS is installed."
+        if not st.get("wizard_url"):
+            msg += " It is box-only for now (no private Wizard link yet)."
+    else:
+        msg = "Wizard OS did not finish installing (exit %d). The last log lines show why." % rc
+    notes = st.get("notes") or []
+    if notes: msg += " " + " ".join(notes)
+    if rc == 0 and st.get("restart_pending"):
+        msg += " Hermes restarts once in about 20 seconds; the chat goes quiet for about a minute."
+    st["message"] = msg
+    save(st); sys.exit(0)
+st = load()
+with open(log_path, "a") as log:
+    for raw in sys.stdin:
+        line = ansi.sub("", raw.rstrip("\n"))
+        log.write(line + "\n"); log.flush()
+        s, changed = line.strip(), True
+        if s.startswith("==> "):
+            st["step"] = s[4:]
+        elif s.startswith("[wizard-os] owner-action:"):
+            m = url.search(s)
+            st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
+            st["message"] = s.split(":", 1)[1].strip()
+        elif s.startswith("[wizard-os] owner-action-done"):
+            st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
+        elif s.startswith("[wizard-os] wizard-url:"):
+            m = url.search(s)
+            st["wizard_url"] = m.group(0) if m else None
+        elif s.startswith("[wizard-os] note:"):
+            note = s.split(":", 1)[1].strip()
+            if note not in st.setdefault("notes", []): st["notes"].append(note)
+        elif s.startswith("Hermes will restart in"):
+            st["restart_pending"] = True
+        else:
+            changed = False
+        if changed: save(st)
+'
+install_status() {  # the short block for the owner's agent
+  if [ ! -f "$STATUS_FILE" ]; then
+    echo "Wizard OS install: not started on this box for $(id -un)."
+    echo "Start it with:"; echo "$START_CMD"; return 0
+  fi
+  local state
+  state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$STATUS_FILE" 2>/dev/null || true)"
+  if { [ "$state" = running ] || [ "$state" = needs_owner ]; } && ! install_running; then
+    state=stopped   # the runner is gone without a final status (killed, or the box rebooted)
+  fi
+  python3 - "$STATUS_FILE" "$state" <<'PY'
+import json, sys
+st, state = json.load(open(sys.argv[1])), sys.argv[2]
+print(f"Wizard OS install: {state}")
+if state in ("running", "needs_owner"):
+    print(f"Step: {st.get('step') or 'starting'}")
+    if st.get("tailscale_login_url"):
+        print("Owner action: Open this link to connect your Wizard to your Tailscale:")
+        print(st["tailscale_login_url"])
+    elif state == "needs_owner" and st.get("message"):
+        print(f"Owner action: {st['message']}")
+elif state == "done":
+    print(st.get("message") or "Wizard OS is installed.")
+    if st.get("wizard_url"):
+        print("Your private Wizard link (open it on a device signed in to your Tailscale):")
+        print(st["wizard_url"])
+elif state == "stopped":
+    print("The install stopped before it finished (the runner is gone). Run the start command again to retry.")
+else:
+    print(st.get("message") or "Wizard OS did not finish installing.")
+PY
+  if [ "$state" = failed ] || [ "$state" = stopped ]; then
+    echo "Last 20 lines of $INSTALL_LOG:"
+    tail -n 20 "$INSTALL_LOG" 2>/dev/null || true
+  fi
+}
+install_runner() {  # internal: the detached runner. One at a time (flock); the final status is written before it exits.
+  exec 9>"$INSTALL_LOCK"
+  flock -n 9 || { echo "A Wizard OS install is already running." >&2; exit 0; }
+  [ ! -f "$WOS_DIR/install-env" ] || { set -a; . "$WOS_DIR/install-env"; set +a; rm -f "$WOS_DIR/install-env"; }
+  export WIZARD_DETACHED=1 WIZARD_INSTALL_RUNNER_PID=$$
+  : > "$INSTALL_LOG"; chmod 600 "$INSTALL_LOG"
+  python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" begin $$
+  local rc=0
+  set +e
+  bash "$WOS_DIR/get.sh" </dev/null 2>&1 9>&- | python3 -u -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG"
+  rc=${PIPESTATUS[0]}
+  set -e
+  python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
+  exit 0
+}
+install_start() {
+  command -v python3 >/dev/null || { echo "The detached install needs python3 (apt-get install -y python3), then run the start command again." >&2; exit 1; }
+  command -v flock >/dev/null || { echo "The detached install needs flock (util-linux), then run the start command again." >&2; exit 1; }
+  mkdir -p "$WOS_DIR"; chmod 700 "$WOS_DIR" 2>/dev/null || true
+  exec 8>"$WOS_DIR/install.start.lock"   # two starts at once: the second waits here, then sees the first running
+  flock -w 30 8 || { echo "Another start is in progress; run the status command." >&2; exit 0; }
+  if install_running; then
+    echo "A Wizard OS install is already running; not starting a second one."
+    install_status; return 0
+  fi
+  # This exact installer runs detached: this file when run from a file, else the same source the command came from.
+  local src="${BASH_SOURCE[0]:-}"
+  if [ -n "$src" ] && [ -f "$src" ]; then cp "$src" "$WOS_DIR/get.sh.tmp"
+  else curl -fsSL "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" -o "$WOS_DIR/get.sh.tmp"; fi
+  mv "$WOS_DIR/get.sh.tmp" "$WOS_DIR/get.sh"
+  # The settings this command was given, for the runner only (0600, deleted once read; never printed).
+  # Detached is for agents: the Hermes restart is always deferred (WIZARD_AGENT_SAFE=0 still forces it off).
+  local safe=1; [ "${WIZARD_AGENT_SAFE:-}" = 0 ] && safe=0
+  ( umask 077; WIZARD_AGENT_SAFE="$safe" python3 -c '
+import os, re, shlex
+skip = {"WIZARD_DETACHED", "WIZARD_INSTALL_RUNNER_PID", "WIZARD_CHECK"}
+for k in sorted(os.environ):
+    if (re.fullmatch(r"(WIZARD|WAM)_[A-Z0-9_]+", k) or k in ("HERMES_HOME", "GITHUB_TOKEN")) and k not in skip:
+        print(f"{k}={shlex.quote(os.environ[k])}")' > "$WOS_DIR/install-env" )
+  rm -f "$STATUS_FILE"
+  local -a run=(); local unit; unit="wizard-os-install-$(date +%s)"
+  local xdg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if command -v systemd-run >/dev/null; then
+    if [ "$(id -u)" -eq 0 ]; then run=(systemd-run --quiet --collect --unit "$unit")
+    elif [ -S "$xdg/bus" ]; then
+      run=(env XDG_RUNTIME_DIR="$xdg" DBUS_SESSION_BUS_ADDRESS="unix:path=$xdg/bus" systemd-run --user --quiet --collect
+           --unit "$unit" --setenv=XDG_RUNTIME_DIR="$xdg" --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$xdg/bus")
+    fi
+  fi
+  # Its own unit, outside the agent's process tree: the Hermes restart at the end cannot take the install with it.
+  if [ ${#run[@]} -eq 0 ] || ! "${run[@]}" --setenv=HOME="$HOME" --setenv=USER="$USER" --setenv=PATH="$PATH" \
+      /bin/bash "$WOS_DIR/get.sh" __runner >/dev/null 2>&1; then
+    setsid nohup /bin/bash "$WOS_DIR/get.sh" __runner </dev/null >/dev/null 2>&1 &
+  fi
+  for _ in $(seq 1 40); do install_running && [ -f "$STATUS_FILE" ] && break; sleep 0.25; done
+  echo "Wizard OS install started in the background (it can take 10-20 minutes)."
+  echo "Check on it with:"
+  echo "$STATUS_CMD"
+}
+case "${1:-}" in
+  start) install_start; exit 0 ;;
+  status) install_status; exit 0 ;;
+  __runner) install_runner ;;
+esac
+# ---- end detached install ----
 AGENT_SAFE=0; in_hermes_agent && AGENT_SAFE=1
 export WIZARD_AGENT_SAFE="$AGENT_SAFE"
 case "${1:-}" in --check|check) WIZARD_CHECK=1 ;; esac
@@ -634,6 +820,15 @@ SHIM
   rm -f "$HOME/.wizard-os/hermes-restart.pending"
   touch "$HOME/.wizard-os/agent-safe.active"
 fi
+report_wizard_url() {  # one marker line with the private Wizard link (the shell's page), for `bash -s status`
+  [ -f "$HOME/.wizard-os/links.json" ] || return 0
+  python3 - "$HOME/.wizard-os/links.json" <<'PY' || true
+import json, sys
+links = json.load(open(sys.argv[1])).get("links") or []
+if links and str(links[0].get("url", "")).startswith("https://"):
+    print(f"[wizard-os] wizard-url: {links[0]['url']}")
+PY
+}
 deferred_restart() {  # after an older install.sh under an agent: schedule the restart it asked for, detached
   [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
   rm -f "$HOME/.wizard-os/agent-safe.active"
@@ -643,6 +838,9 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
   local delay="${WIZARD_RESTART_DELAY:-20}" log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
   job="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$real' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  # Detached install: restart only once its runner has written the final status and exited (bounded to 30 min).
+  local runner="${WIZARD_INSTALL_RUNNER_PID:-}"
+  case "$runner" in ''|*[!0-9]*) ;; *) job="for _ in \$(seq 1 900); do [ -d /proc/$runner ] || break; sleep 2; done; $job" ;; esac
   local -a run=(systemd-run --user); [ "$(id -u)" -eq 0 ] && run=(systemd-run)
   if ! { command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \
       --on-active="${delay}s" --setenv=HOME="$HOME" /bin/bash -c "exec >>'$log' 2>&1; $job" >/dev/null 2>&1; }; then
@@ -657,6 +855,7 @@ if [ -z "$PINS" ]; then
   [ -z "$UNPINNED" ] || record_unpinned
   rc=0; bash "$DIR/install.sh" || rc=$?
   rm -f "$HOME/.wizard-os/agent-safe.active"
+  [ "$rc" -ne 0 ] || report_wizard_url
   [ "$rc" -ne 0 ] || deferred_restart
   exit "$rc"
 fi
@@ -767,6 +966,7 @@ print(f"  -> {status}; recorded in {out_path}")
 sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
 rm -f "$HOME/.wizard-os/agent-safe.active"
+[ "$rc" -ne 0 ] || report_wizard_url
 if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; fi
 [ "$rc" -eq 0 ] || exit "$rc"
 exit "$vrc"

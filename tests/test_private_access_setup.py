@@ -15,7 +15,7 @@ def sandbox(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     # Only allowlisted utilities: no real host tailscale can leak into the fresh-install test.
-    for utility in ("bash", "sh", "cat", "mkdir", "mktemp", "rm", "cp", "chmod"):
+    for utility in ("bash", "sh", "cat", "mkdir", "mktemp", "rm", "cp", "chmod", "date", "sleep", "grep", "tail", "touch"):
         (bin_dir / utility).symlink_to(shutil.which(utility))
     (bin_dir / "python3").symlink_to(sys.executable)
     log = tmp_path / "calls"
@@ -34,10 +34,18 @@ def sandbox(tmp_path):
     tool("systemctl", 'printf "systemctl %s\\n" "$*" >> "$CALLS"; exit "${SERVICE_RC:-0}"\n')
     tailscale_body = '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 case "$1" in
-status) printf '{"BackendState":"%s"}\\n' "$(cat "$STATE_FILE")" ;;
+status)
+  st="$(cat "$STATE_FILE")"; url=""
+  if [ "$st" = NeedsLogin ] && [ -f "$STATE_FILE.up" ]; then url="https://login.tailscale.com/a/${LINK_ID:-abc123}"; fi
+  certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || certs=null
+  printf '{"BackendState":"%s","AuthURL":"%s","CurrentTailnet":{"MagicDNSEnabled":%s},"CertDomains":%s}\\n' \\
+    "$st" "$url" "${MAGICDNS:-true}" "$certs" ;;
 up)
+  touch "$STATE_FILE.up"
+  echo "To authenticate, visit:"
   echo "login link from mock"
   if [ "${UP_STATE:-NeedsLogin}" = "Running" ]; then echo Running > "$STATE_FILE"; exit 0; fi
+  if [ -n "${LOGIN_AFTER:-}" ]; then n=$(cat "$STATE_FILE.n" 2>/dev/null || echo 0); echo $((n+1)) > "$STATE_FILE.n"; fi
   exit 1
   ;;
 esac
@@ -74,7 +82,7 @@ def test_existing_connection_is_not_reconfigured(sandbox):
     assert "package installed" not in calls
     assert "enable --now tailscaled" in calls
     assert json.loads((home / ".wizard-os/private-access.json").read_text()) == {
-        "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True}
+        "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
 
 
 def test_fresh_install_can_leave_login_pending(sandbox):
