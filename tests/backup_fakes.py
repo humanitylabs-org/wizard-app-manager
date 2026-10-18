@@ -114,7 +114,11 @@ if a[0] == "ps":
     tag = "label=com.docker.compose.project="
     proj = [x[len(tag):] for x in a if x.startswith(tag)][0]
     c = state.get(proj)
-    print(c["id"] if c else "")
+    if c:
+        print(c["id"] + (" " + c.get("name", proj + "-main-1") if "--format" in a else ""))
+elif a[0] == "rm":
+    state = {p: c for p, c in state.items() if c["id"] not in a[1:]}
+    Path(os.environ["FAKE_DOCKER_STATE"]).write_text(json.dumps(state))
 elif a[0] == "inspect" and "--format" in a:          # the App Manager's own image (appdata.AppData.image)
     print(os.environ.get("FAKE_HELPER_IMAGE", "example/wam:helper"))
 elif a[0] == "volume" and a[1] == "inspect":
@@ -237,7 +241,8 @@ class FakeRuntipi:
                 self.root / "user-config" / store / app_id, self.root / "backups" / store / app_id)
 
     def _save_docker(self):
-        st = {}
+        st = {p: c for p, c in json.loads(self.docker_state.read_text()).items() if c.get("orphan")} \
+            if self.docker_state.exists() else {}
         for urn, a in self.apps.items():
             # Runtipi's stop is `compose down`: a stopped app has no containers
             if urn in self.agent_homes and a.get("status") == "running":

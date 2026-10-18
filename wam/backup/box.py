@@ -168,16 +168,20 @@ class Box:
 
     def agents_root(self) -> Path:
         """Where extra agents' folders live: the Agent Service keeps them in its own app data (its /state volume:
-        app-data/<store>/wizard-agent-service/data/wizard-os/agents); older layouts used the Wizard home or a shared
-        app-data/wizard-os. The first that exists wins; on a box with none yet, the Agent Service's when it is
-        installed."""
+        app-data/<store>/wizard-agent-service/data/wizard-os/agents, or the same path under the pre-split bundle).
+        Older layouts used the Wizard home or a shared app-data/wizard-os. The first that exists wins; on a box
+        with none yet, use the provider whose data folder exists."""
+        from ..slots import BUNDLE_FILLS
         service = self.runtipi_root / "app-data" / STORE / AGENT_SERVICE_APP / "data" / "wizard-os" / "agents"
+        bundled = [self.runtipi_root / "app-data" / STORE / app / "data" / "wizard-os" / "agents"
+                   for app, fills in BUNDLE_FILLS.items() if "agent-service" in fills]
+        providers = [service, *bundled]
         own = self.home / "agents"
         stock = self.runtipi_root / "app-data" / "wizard-os" / "agents"
-        for p in (service, own, stock):
+        for p in (*providers, own, stock):
             if p.is_dir():
                 return p
-        return service if service.parent.parent.is_dir() else own
+        return next((p for p in providers if p.parent.parent.is_dir()), own)
 
     @property
     def appdata(self):
