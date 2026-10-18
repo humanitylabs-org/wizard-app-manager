@@ -214,12 +214,8 @@ def test_verify_before_change_wrong_key_and_tampered(world):
     assert code == 0 and res["ok"] and res["plan"]["install"] and box_digest(new.box()) == before
 
 
-def test_import_onto_fresh_box_then_undo_then_reimport_and_activate(world):
-    out, exp = _export(world)
-    new = world["new"]
-    before = box_digest(new.box())
-    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(world["keyfile"]))
-    assert code == 0, rec
+def check_imported(new, rec):
+    """What a successful import onto the fresh box must have done (shared with the restic --from-repo test)."""
     h, rt = new.home, new.runtipi
     # owner state reproduced
     assert json.loads((h / "settings.json").read_text())["name"] == "oldbox"
@@ -279,12 +275,24 @@ def test_import_onto_fresh_box_then_undo_then_reimport_and_activate(world):
     # schedule copied but off, new box id; receipt written; archives deleted
     sched = json.loads((h / "backup.json").read_text())
     assert sched["enabled"] is False and sched["box_id"] != "oldboxid0001"
-    assert sched["target"]["prefix"] == f"wizard/{sched['box_id']}/"
+    if sched["target"]["kind"] == "s3":
+        assert sched["target"]["prefix"] == f"wizard/{sched['box_id']}/"
     stamp = rec["stamp"]
     assert json.loads((h / "restores" / stamp / "receipt.json").read_text())["ok"] is True
     assert not list((h / "restores" / stamp).rglob("*.zip"))
     assert not (h / "restores" / stamp / "stage").exists()
     assert not list((rt / "backups").rglob("*wizard-restore*"))
+    return home
+
+
+def test_import_onto_fresh_box_then_undo_then_reimport_and_activate(world):
+    out, exp = _export(world)
+    new = world["new"]
+    before = box_digest(new.box())
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(world["keyfile"]))
+    assert code == 0, rec
+    home = check_imported(new, rec)
+    h, rt = new.home, new.runtipi
 
     # 6. activate needs --old-is-off
     code, res = _cli(new.box(), "activate")

@@ -11,8 +11,9 @@ Modules:
   agents    agent import rules (adapted from try-wizard wizard-import-hermes)
   capture   `wam backup export`
   restore   `wam backup verify|import|undo|activate`
-  s3        a stdlib S3 client (SigV4, multipart, ranged GET, list, delete)
-  schedule  `wam backup schedule|run|status`: timer units, upload, read-back, prune, status
+  restic    the pinned restic binary (sha256-checked install) and one repository, key via a 0600 password file
+  snapshot  a capture streamed into / read back from a restic snapshot (`run`, `import --from-repo`, `snapshots`)
+  schedule  `wam backup schedule|run|status|prune`: timer units, retention, checks, status
   cli       the `wam backup ...` command line
 """
 

@@ -122,6 +122,9 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
 "$HOME/.local/bin/wam" doctor --fix >/dev/null 2>&1 || true   # repairs what it can; the next run is the verdict
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
+# restic for scheduled backups: the pinned official release, sha256-checked (wam/backup/restic.py); `wam backup
+# schedule set` / `run` install it themselves on boxes made before this line existed.
+"$HOME/.local/bin/wam" backup restic-install >/dev/null || DEGRADED+=("could not install restic for scheduled backups (wam backup restic-install)")
 # The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
