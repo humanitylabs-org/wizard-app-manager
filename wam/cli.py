@@ -24,6 +24,8 @@ Wizard additions:
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
+  wam backup export|verify|import|undo|activate|key|schedule|run|status
+                                one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
 from __future__ import annotations
 
@@ -1103,6 +1105,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
+        from .backup.cli import main as backup_main
+        return backup_main(argv[1:])
     if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
         res = app_lifecycle(Config(), argv[1], argv[2])
         print(json.dumps(res, indent=2))
