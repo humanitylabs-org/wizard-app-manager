@@ -182,16 +182,25 @@ def test_writer_and_scan_round_trip_through_encryption(tmp_path):
     assert res["files"] == 3
 
 
-def test_app_archive_symlinks_follow_runtipis_rule():
-    """Runtipi's restore accepts symlinks inside app-data/ that stay inside it; so does verify."""
-    def arch(linkname, where="./app-data/db/current"):
+def test_app_archive_links_stay_inside_their_root():
+    """App data archives keep symlinks that stay inside the root they live in (a Hugging Face model cache:
+    snapshots/<rev>/model.bin -> ../../blobs/<sha>) and hard links to earlier files; nothing else."""
+    def arch(linkname, where="./app-data/db/current", kind=tarfile.SYMTYPE, extra=()):
         inner = io.BytesIO()
         with tarfile.open(fileobj=inner, mode="w:gz") as t:
             t.addfile(_ti("./app-data/db/v1", b"x"), io.BytesIO(b"x"))
-            t.addfile(_ti(where, kind=tarfile.SYMTYPE, linkname=linkname))
+            t.addfile(_ti(where, kind=kind, linkname=linkname))
+            for ti in extra:
+                t.addfile(ti, io.BytesIO(b"y") if ti.isreg() else None)
         return inner.getvalue()
-    ok = arch("v1")
-    assert bundle.scan(io.BytesIO(_tar([(_ti("apps/x/data.tar.gz", ok), ok)])))["files"] == 2
-    for bad in (arch("../../../etc"), arch("/etc/passwd"), arch("v1", "./app/link")):
+    for ok in (arch("v1"), arch("../db/v1"), arch("app-data/db/v1", "./app-data/db/hard", tarfile.LNKTYPE),
+               arch("../../x", "./volumes/vol1/a/b/link", extra=[_ti("volumes/vol1/x", b"y")]),
+               arch("config.json", "./app/link")):
+        assert bundle.scan(io.BytesIO(_tar([(_ti("apps/x/data.tar.gz", ok), ok)])))["files"] == 2
+    below = _ti("./app-data/db/current/escape", b"y")
+    for bad in (arch("../../../etc"), arch("/etc/passwd"), arch("../app-data/db/v1", "./app/link"),
+                arch("../../vol2", "./volumes/vol1/link"), arch("app-data/nope", "./app-data/h", tarfile.LNKTYPE),
+                arch("", "./app-data/fifo", tarfile.FIFOTYPE), arch("v1", extra=[below]),
+                arch("v1", "./volumes/bad name/x")):
         with pytest.raises(bundle.Unsafe):
             bundle.scan(io.BytesIO(_tar([(_ti("apps/x/data.tar.gz", bad), bad)])))

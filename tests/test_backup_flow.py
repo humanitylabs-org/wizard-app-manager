@@ -93,7 +93,7 @@ def test_export_against_a_fake_box(world):
     apps = {a["id"]: a for a in m["apps"]}
     assert {"notes-app", "files-app", "hermes-agent", "agent-research"} <= set(apps)
     assert apps["notes-app"]["version"] == "1.4.0" and apps["notes-app"]["commit"] == "n" * 40
-    assert apps["notes-app"]["tipi_version"] == 3 and apps["notes-app"]["data"] == "runtipi-backup"
+    assert apps["notes-app"]["tipi_version"] == 3 and apps["notes-app"]["data"] == "archive"
     assert apps["hermes-agent"]["data"] == "agent"
     assert m["files"] == {"included": True, "count": 3, "bytes": len("the owner's plan") + 900 + len("dotfile")}
     act = m["active"]
@@ -117,11 +117,11 @@ def test_export_against_a_fake_box(world):
     # agents: stock hermes backup zips
     z = zipfile.ZipFile(io.BytesIO(c["agents/hermes/hermes-backup.zip"]))
     assert "config.yaml" in z.namelist() and "memories/MEMORY.md" in z.namelist()
-    # apps: package + Runtipi's own per-app archive (app-data + app + user-config)
+    # apps: package + the app's own archive (app-data + app + user-config), made as root with the app stopped
     assert "apps/notes-app/package/config.json" in c
     with tarfile.open(fileobj=io.BytesIO(c["apps/notes-app/data.tar.gz"])) as t:
         inner = t.getnames()
-    assert "./app-data/data/notes.db" in inner and "./user-config/app.env" in inner and "./app/config.json" in inner
+    assert "app-data/data/notes.db" in inner and "user-config/app.env" in inner and "app/config.json" in inner
     assert "apps/hermes-agent/data.tar.gz" not in c
     app_json = json.loads(c["apps/notes-app/app.json"])
     assert app_json["form"] == {"SOME_FORM": "value"}
@@ -132,15 +132,22 @@ def test_export_against_a_fake_box(world):
     # export changed nothing on the old box and cleaned up after itself
     assert box_digest(old.box()) == before
     assert not list((old.runtipi / "backups").rglob("*.tar.gz"))
-    assert not any((old.home / "backup-work").iterdir())
+    assert not (old.home / "backup-work").exists() or not any((old.home / "backup-work").iterdir())
     # stock hermes ran in the agent's own image with the home mounted; no key on any command line
     calls = old.tool_calls()
     runs = [c["argv"] for c in calls if c["tool"] == "docker" and c["argv"][0] == "run"]
-    assert len(runs) == 2 and all("ghcr.io/example/hermes-agent:test" in r for r in runs)
+    hermes_runs = [r for r in runs if "ghcr.io/example/hermes-agent:test" in r]
+    tar_runs = [r for r in runs if "example/wam:helper" in r]
+    assert len(hermes_runs) == 2 and len(tar_runs) == 2 and len(runs) == 4
     assert all("--network" in r and "none" in r for r in runs)
     assert not any("WZRK" in " ".join(c["argv"]) for c in calls)
-    # Runtipi did the app data capture (as root, with its own stop/start), files-app stayed stopped
-    assert ("backup", "notes-app:wizardapps") in old.rt.calls and ("backup", "files-app:wizardapps") in old.rt.calls
+    # app data: archived as root by the App Manager's image with every app folder mounted read-only; never Runtipi's
+    # per-app backup. notes-app was stopped through Runtipi and started again; files-app stayed stopped.
+    assert all(all(m.endswith(":ro") for m in (r[i + 1] for i, x in enumerate(r) if x == "-v")) for r in tar_runs)
+    assert not any(c[0] == "backup" for c in old.rt.calls)
+    assert ("stop", "notes-app:wizardapps") in old.rt.calls and ("start", "notes-app:wizardapps") in old.rt.calls
+    assert ("stop", "files-app:wizardapps") not in old.rt.calls
+    assert old.rt.apps["notes-app:wizardapps"]["status"] == "running"
     assert old.rt.apps["files-app:wizardapps"]["status"] == "stopped"
 
 
@@ -347,18 +354,19 @@ def test_import_failure_part_way_can_be_undone(world, monkeypatch):
     out, _ = _export(world)
     new = world["new"]
     before = box_digest(new.box())
-    real = new.rt.restore_backup
+    from wam.backup.appdata import AppData, AppDataError
+    real = AppData.restore
     calls = {"n": 0}
 
-    def flaky(urn, filename):
+    def flaky(self, *a, **kw):
         calls["n"] += 1
         if calls["n"] == 2:
-            raise restore.RuntipiError("simulated Runtipi failure")
-        return real(urn, filename)
-    monkeypatch.setattr(new.rt, "restore_backup", flaky)
+            raise AppDataError("simulated failure putting app data back")
+        return real(self, *a, **kw)
+    monkeypatch.setattr(AppData, "restore", flaky)
     code, res = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(world["keyfile"]))
     assert code == 1 and "wam backup undo" in res["error"]
-    monkeypatch.setattr(new.rt, "restore_backup", real)
+    monkeypatch.setattr(AppData, "restore", real)
     code, res = _cli(new.box(), "undo")
     assert code == 0 and res["digest_match"], res
     assert box_digest(new.box()) == before

@@ -8,18 +8,20 @@ Order of work, and what each step may touch:
                removes the staging and leaves the box exactly as it was.
  3. plan       manifest against this box: apps to install, apps to replace, apps left alone, agents, architecture.
  4. set aside  the undo snapshot. Wizard home entries, agent home entries and the owner's files are renamed into
-               before/ (same filesystem, instant). App data belongs to the app containers and only Runtipi (root) may
-               move it, so each app the restore replaces gets a Runtipi per-app backup first. Every step is written to
-               journal.json before the next, so `undo` also works after a crash half way.
- 5. apply      install missing apps from the bundled package, restore app data with Runtipi's own restore, import
+               before/ (same filesystem, instant). App data belongs to the app containers (root), so each app the
+               restore replaces is stopped and archived as root first (appdata.py), and so is every named volume the
+               restore will overwrite. Every step is written to journal.json before the next, so `undo` also works
+               after a crash half way.
+ 5. apply      install missing apps from the bundled package, put app data back as root (this box keeps its own
+               user-config/ for apps it already had, and the Agent Service keeps its agents folder), import
                each agent with stock `hermes import --force` (keeping this box's Wizard wiring), move the Wizard home
                items and files in. This box's identity (api-token, mcp-token, runtipi-operator.json, agent-runtime/,
                alongside.json, linked.json, app-manager.json) is never replaced.
  6. one copy   messaging off (tokens kept), cron paused, scheduled backups copied but off with a new box id.
  7. start      regenerate apps.json/skills, start what ran at export, health-check, write receipt.json.
 
-`undo` stops, moves the restored entries aside, moves before/ back, uninstalls apps the restore installed, restores
-the replaced apps from their Runtipi snapshots, starts, and compares the digest with the one taken before.
+`undo` stops, moves the restored entries aside, moves before/ back, uninstalls apps the restore installed, puts the
+replaced apps and volumes back from their snapshots, starts, and compares the digest with the one taken before.
 `activate --old-is-off` turns on exactly the messaging platforms, cron jobs and backup schedule that were on at export.
 """
 from __future__ import annotations
@@ -28,12 +30,12 @@ import errno
 import json
 import os
 import shutil
-import tarfile
 import time
 import uuid
 from pathlib import Path
 
 from . import agents as agentlib, bundle, fmt
+from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
                   box_digest, human, log, need_space, skip_home_entry)
 
@@ -315,72 +317,55 @@ def _start_agent(box: Box, a: Agent) -> None:
         box.rt.start(a.urn)
 
 
-def _runtipi_snapshot(box: Box, urn: str) -> str:
-    before = {b.get("id") for b in box.rt.list_backups(urn)}
-    box.rt.backup_app(urn)
-    st = box.wait_status(urn, set(), timeout=3 * 3600, not_in={"backing_up"})
-    new = [b for b in box.rt.list_backups(urn) if b.get("id") not in before]
-    if not new:
-        raise RestoreError(f"Runtipi could not back up {urn} before the restore (status {st}); nothing replaced")
-    return sorted(new, key=lambda b: b.get("date") or 0)[-1]["id"]
+DATA_KINDS = ("archive", "runtipi-backup")     # "runtipi-backup": bundles made before appdata.py
 
 
-def _runtipi_restore(box: Box, urn: str, archive: Path, name: str) -> str:
-    app_id, store = urn.split(":")
-    dst_dir = box.runtipi_root / "backups" / store / app_id
-    try:   # Runtipi's backups folder, when this user may write it; else Runtipi's own upload endpoint
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(archive, dst_dir / name)
-        placed = True
-    except PermissionError:
-        placed = False
-    if not placed:
-        box.rt.upload_backup(urn, archive, name)
-    prior = box.app_status(urn)
-    box.rt.restore_backup(urn, name)
-    st = box.wait_status(urn, set(), timeout=3 * 3600, not_in={"restoring"})
-    try:
-        box.rt.delete_backup(urn, name)
-    except RuntipiError:
-        pass
-    if prior == "running" and st != "running":
-        st = box.wait_status(urn, {"running"}, timeout=600)
-        if st != "running":
-            raise RestoreError(f"Runtipi's restore of {urn} did not finish (status {st}); see Runtipi's app log")
+def _stop_app(box: Box, urn: str) -> str:
+    st = box.app_status(urn)
+    if st in ("running", "starting", "updating"):
+        box.rt.stop(urn)
+        st = box.wait_status(urn, {"stopped"}, timeout=600)
+        if st != "stopped":
+            raise RestoreError(f"{urn} did not stop (status {st}); nothing of it was replaced")
     return st
 
 
-def _uc(name: str) -> bool:
-    while name.startswith("./"):
-        name = name[2:]
-    return name == "user-config" or name.startswith("user-config/")
-
-
-def _keep_box_user_config(box: Box, urn: str, arch: Path, snapshot: str, stage: Path) -> Path:
-    """The bundle's app-data/ and app/ with this box's own user-config/, taken from the Runtipi snapshot made just
-    before (readable even when Runtipi wrote the live files as root)."""
-    app_id, store = urn.split(":")
-    snap = box.runtipi_root / "backups" / store / app_id / snapshot
-    tmp_snap = None
-    if not (snap.is_file() and os.access(snap, os.R_OK)):
-        tmp_snap = stage / f"snapshot-{app_id}.tar.gz"
-        box.rt.download_backup(urn, snapshot, tmp_snap)
-        snap = tmp_snap
-    out = arch.with_name("data-boxconfig.tar.gz")
+def _snapshot_app(box: Box, r: "_Restore", a: dict) -> None:
+    """The undo copy of an app this restore replaces: stopped, then its folders and named volumes archived as root
+    into before/apps/ (inside the Wizard home, so on the same disk as the restore's other set-aside copies)."""
+    store, app_id = a["urn"].split(":")[1], a["urn"].split(":")[0]
+    _stop_app(box, a["urn"])
+    out = r.root / "before" / "apps" / f"{app_id}.tar.gz"
+    out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        with tarfile.open(out, "w:gz") as w:
-            for src, keep in ((arch, lambda n: not _uc(n)), (snap, _uc)):
-                with tarfile.open(src, "r:gz") as t:
-                    for m in t:
-                        if keep(m.name):
-                            w.addfile(m, t.extractfile(m) if m.isreg() else None)
-        with open(out, "rb") as f:
-            bundle.check_inner_archive(f)
-    finally:
-        if tmp_snap:
-            tmp_snap.unlink(missing_ok=True)
-    arch.unlink()
-    return out
+        rep = box.appdata.archive(store, app_id, out)
+    except AppDataError as e:
+        raise RestoreError(f"could not keep an undo copy of {app_id}: {e}; nothing of it was replaced") from None
+    r.step(kind="app_snapshot", urn=a["urn"], archive=str(out), volumes=rep["volumes"], skipped=len(rep["skipped"]))
+
+
+def _snapshot_volumes(box: Box, r: "_Restore", a: dict, taken: set[str]) -> None:
+    """Named volumes an app the restore installs would overwrite, when this box already has them (shared with an
+    app it keeps, an AI account login say)."""
+    vols = [v for v in (a.get("volumes") or []) if v not in taken and box.appdata.volume_exists(v)]
+    if not vols:
+        return
+    out = r.root / "before" / "volumes" / f"{a['id']}.tar.gz"
+    out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        box.appdata.archive_volumes(vols, out)
+    except AppDataError as e:
+        raise RestoreError(f"could not keep an undo copy of volumes {', '.join(vols)}: {e}") from None
+    taken.update(vols)
+    r.step(kind="volume_snapshot", urn=a["urn"], archive=str(out), volumes=vols)
+
+
+def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS) -> dict:
+    store, app_id = urn.split(":")[1], urn.split(":")[0]
+    try:
+        return box.appdata.restore(store, app_id, archive, parts=parts)
+    except AppDataError as e:
+        raise RestoreError(str(e)) from None
 
 
 def _install_app(box: Box, r: _Restore, rec: dict) -> str:
@@ -424,12 +409,19 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
 
     # 4) set aside ------------------------------------------------------------
     apps = [a for a in m.get("apps", [])]
-    data_apps = [a for a in apps if a.get("data") == "runtipi-backup"]
+    data_apps = [a for a in apps if a.get("data") in DATA_KINDS]
+    replaced = [a for a in data_apps if a["urn"] in installed]
+    if replaced:
+        need = sum(bundle.tree_size(box.runtipi_root / "app-data" / a["store"] / a["id"])["bytes"] for a in replaced)
+        need_space(box, r.root, need + MARGIN, "the undo copies of the apps this restore replaces")
+    vols_taken: set[str] = set()
+    for a in replaced:
+        log(f"app {a['id']}: keeping an undo copy")
+        _snapshot_app(box, r, a)
+        vols_taken.update(r.journal["steps"][-1].get("volumes") or [])
     for a in data_apps:
-        if a["urn"] in installed:
-            log(f"app {a['id']}: Runtipi snapshot for undo")
-            name = _runtipi_snapshot(box, a["urn"])
-            r.step(kind="app_snapshot", urn=a["urn"], backup=name)
+        if a["urn"] not in installed:
+            _snapshot_volumes(box, r, a, vols_taken)
     stopped = []
     for k, a in targets.items():
         if k in existing and _stop_agent(box, a, installed):
@@ -462,16 +454,16 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         if a["urn"] not in installed:
             log(f"app {a['id']}: installing the bundled version")
             _install_app(box, r, a)
-    snapshots = {s["urn"]: s["backup"] for s in r.journal["steps"] if s["kind"] == "app_snapshot"}
     for a in data_apps:
         arch = stage / "apps" / a["id"] / "data.tar.gz"
         if arch.is_file():
-            if a["urn"] in snapshots:
-                # user-config/ is this box's wiring (alongside overrides, trusted origins, ports): keep it
-                arch = _keep_box_user_config(box, a["urn"], arch, snapshots[a["urn"]], stage)
-            log(f"app {a['id']}: restoring its data with Runtipi")
-            _runtipi_restore(box, a["urn"], arch, f"{a['id']}-wizard-restore-{r.stamp}.tar.gz")
-            r.step(kind="app_restored", urn=a["urn"])
+            # user-config/ of an app this box already had is this box's wiring (alongside overrides, trusted
+            # origins, ports): it stays
+            parts = [x for x in APP_ROOTS if not (x == "user-config" and a["urn"] in installed)]
+            _stop_app(box, a["urn"])
+            log(f"app {a['id']}: putting its data back")
+            got = _put_back(box, a["urn"], arch, parts)
+            r.step(kind="app_restored", urn=a["urn"], entries=got["entries"], volumes=got["volumes"])
             arch.unlink(missing_ok=True)
 
     # Wizard home (identity entries never come from a bundle, and the box keeps its own)
@@ -729,14 +721,19 @@ def undo(box: Box) -> dict:
             if s.get("package_placed"):
                 shutil.rmtree(s["package_placed"], ignore_errors=True)
     for s in steps:
-        if s["kind"] == "app_snapshot":
-            log(f"putting back {s['urn']}")
+        if s["kind"] in ("app_snapshot", "volume_snapshot") and s.get("archive"):
+            log(f"putting back {s['urn']}" + (" (its volumes)" if s["kind"] == "volume_snapshot" else ""))
             try:
-                prior = box.app_status(s["urn"])
+                if s["kind"] == "app_snapshot":
+                    _stop_app(box, s["urn"])
+                _put_back(box, s["urn"], Path(s["archive"]),
+                          APP_ROOTS if s["kind"] == "app_snapshot" else ("volumes",))
+            except (RuntipiError, RestoreError) as e:
+                notes.append(f"{s['urn']}: putting back its undo copy failed: {e}")
+        elif s["kind"] == "app_snapshot" and s.get("backup"):   # a journal from before appdata.py
+            try:
                 box.rt.restore_backup(s["urn"], s["backup"])
-                st = box.wait_status(s["urn"], set(), timeout=3 * 3600, not_in={"restoring"})
-                if prior == "running" and st != "running":
-                    box.wait_status(s["urn"], {"running"}, timeout=600)
+                box.wait_status(s["urn"], set(), timeout=3 * 3600, not_in={"restoring"})
                 box.rt.delete_backup(s["urn"], s["backup"])
             except RuntipiError as e:
                 notes.append(f"{s['urn']}: restore of the snapshot failed: {e}")

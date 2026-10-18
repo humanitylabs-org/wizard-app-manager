@@ -63,7 +63,8 @@ def test_alongside_host_agent_round_trip(tmp_path):
     assert code == 0 and res["agents"] == ["hermes"], res
     hermes_calls = [c["argv"] for c in old.tool_calls() if c["tool"] == "hermes"]
     assert hermes_calls and hermes_calls[0][0] == "backup"
-    assert not any(c["tool"] == "docker" for c in old.tool_calls())
+    # the host agent goes through the host `hermes`, never a container (docker only archives app data)
+    assert not any(c["tool"] == "docker" and "/opt/hermes/.venv/bin/hermes" in c["argv"] for c in old.tool_calls())
 
     before = box_digest(new.box())
     code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(kf))

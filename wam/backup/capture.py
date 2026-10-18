@@ -9,13 +9,15 @@ lands on disk outside the box's own folders. What goes in, in order:
   agents/<id>/folder/...    their small Wizard files (runtime.key, gateway.key, service-state.json, package/)
   apps/<id>/app.json        the app's apps.json row, Runtipi urn/version/status and install form
   apps/<id>/package/...     the exact Runtipi package installed (runtipi/apps/<store>/<id>)
-  apps/<id>/data.tar.gz     Runtipi's own per-app backup (app-data + installed package + user-config), made by Runtipi
-                            as root with the app stopped and restarted after
+  apps/<id>/data.tar.gz     the app's data (app-data + installed package + user-config, plus the named Docker volumes
+                            its compose file declares under volumes/<name>/), archived as root with the app stopped and
+                            started again after (appdata.py: Runtipi's own per-app backup loses data on a real box)
   files/...                 the owner's files (Runtipi media/), one opaque tree
   checksums.json            sha256 and size of every entry
 
-Export never changes the box beyond the brief per-app stop Runtipi's backup needs; the Runtipi archives it asked for
-and the agent zips are deleted again once they are in the file.
+Export never changes the box beyond the brief per-app stop and start (Runtipi regenerates app.env and opens up
+the app folder's permissions whenever it starts an app); the app archives and agent zips are written to a work
+folder and deleted again once they are in the file.
 """
 from __future__ import annotations
 
@@ -29,7 +31,8 @@ import time
 from pathlib import Path
 
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
-from .box import (MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log, need_space,
+from .appdata import AppDataError
+from .box import (MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log, need_space, need_spaces,
                   skip_home_entry)
 
 MARGIN = 256 << 20
@@ -67,42 +70,46 @@ def schedule_on(box: Box) -> bool:
         return False
 
 
-def _runtipi_archive(box: Box, urn: str, work: Path, status_before: str | None) -> tuple[Path, str, bool]:
-    """Ask Runtipi for a per-app backup and return (path, file name, is_temp_copy). Runtipi stops the app, archives
-    app-data + app + user-config as root, and starts it again if it was running."""
-    store, app_id = urn.split(":")[1], urn.split(":")[0]
-    before = {b.get("id") for b in box.rt.list_backups(urn)}
-    box.rt.backup_app(urn)
-    st = box.wait_status(urn, set(), timeout=3 * 3600, not_in={"backing_up"})
-    if st in ("missing", "unknown"):
-        raise ExportError(f"Runtipi lost track of {urn} while backing it up")
-    new = [b for b in box.rt.list_backups(urn) if b.get("id") not in before]
-    if not new:
-        raise ExportError(f"Runtipi's backup of {urn} failed (status {st}); see Runtipi's app log")
-    name = sorted(new, key=lambda b: b.get("date") or 0)[-1]["id"]
-    if status_before == "running" and st != "running":
-        box.wait_status(urn, {"running"}, timeout=600)
-    direct = box.runtipi_root / "backups" / store / app_id / name
-    if direct.is_file() and os.access(direct, os.R_OK):
-        return direct, name, False
-    tmp = work / f"{app_id}-{name}"
-    box.rt.download_backup(urn, name, tmp)
-    return tmp, name, True
-
-
-def _stream_app_archive(box: Box, bw, app_id: str, urn: str, status: str | None, work: Path) -> None:
-    """Runtipi's archive of one app, written into the stream decompressed, then deleted (file and Runtipi entry)."""
-    log(f"app {app_id}: Runtipi backup")
-    path, name, tmp = _runtipi_archive(box, urn, work, status)
+def _app_archive(box: Box, urn: str, info: dict, work: Path, volumes: list[str]) -> tuple[Path, dict]:
+    """Stop the app through Runtipi, archive its folders and named volumes as root (appdata.AppData), start it again
+    if it was running. Returns (archive path, report)."""
+    store, app_id = info["store"], info["id"]
+    was_running = info.get("status") == "running"
+    if was_running:
+        box.rt.stop(urn)
+        st = box.wait_status(urn, {"stopped"}, timeout=600)
+        if st != "stopped":
+            raise ExportError(f"{app_id} did not stop for its backup (status {st})")
+    out = work / f"app-{app_id}.tar.gz"
     try:
-        bw.add_gunzipped(f"apps/{app_id}/data.tar", path)
+        rep = box.appdata.archive(store, app_id, out, volumes=volumes)
+    except AppDataError as e:
+        raise ExportError(f"app {app_id}: {e}") from None
     finally:
-        if tmp:
-            path.unlink(missing_ok=True)
-        try:
-            box.rt.delete_backup(urn, name)
-        except RuntipiError as e:
-            log(f"note: could not delete Runtipi's temporary backup of {urn}: {e}")
+        if was_running:
+            try:
+                box.rt.start(urn)
+                if box.wait_status(urn, {"running"}, timeout=900) != "running":
+                    log(f"note: {app_id} did not report running again after its backup")
+            except RuntipiError as e:
+                log(f"note: could not start {app_id} again after its backup: {e}")
+    return out, rep
+
+
+def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: list[str], work: Path,
+                      plain: bool, skipped: list[str]) -> None:
+    """Archive one app (stopped and started again around it), put it into the bundle, delete it. A plain (restic)
+    stream gets it decompressed as apps/<id>/data.tar, the file as apps/<id>/data.tar.gz."""
+    log(f"app {app_id}: archiving its data")
+    path, rep = _app_archive(box, urn, info, work, vols)
+    try:
+        if plain:
+            bw.add_gunzipped(f"apps/{app_id}/data.tar", path)
+        else:
+            bw.add_file(f"apps/{app_id}/data.tar.gz", path)
+    finally:
+        path.unlink(missing_ok=True)
+    skipped += [f"{app_id}: {x}" for x in rep["skipped"]]
 
 
 def _du(path: Path) -> int:
@@ -147,21 +154,22 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
     home_size = bundle.tree_size(box.home, skip_home_entry)
     est = files_size["bytes"] + home_size["bytes"]
-    for a in agents:
-        est += _du(a.home)
-    for urn, info in installed.items():
-        if urn not in agent_urns:
-            est += _du(box.runtipi_root / "app-data" / info["store"] / info["id"]) + \
-                _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
+    agents_bytes = sum(_du(a.home) for a in agents)
+    app_sizes = [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
+                 + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
+                 for urn, info in installed.items() if urn not in agent_urns]
+    est += agents_bytes + sum(app_sizes)
+    # the work folder holds every agent's zip (twice for a stream: snapshot + stored rewrite) and ONE app archive at
+    # a time; the output and the work folder may share a disk, so the needs are added per filesystem
+    work_need = (2 if plain_stream is not None else 1) * agents_bytes + max(app_sizes, default=0) + MARGIN
     if plain_stream is None:
-        need_space(box, out.parent, est + MARGIN, "the backup file")
-    else:   # only the agents' database snapshots (and their stored rewrite) are written on this box
-        need_space(box, box.work_dir(), 2 * sum(_du(a.home) for a in agents) + MARGIN, "the agents' snapshots")
+        need_spaces(box, [(out.parent, est + MARGIN, "the backup file"), (box.work_dir(), work_need, "the work folder")])
+    else:
+        need_space(box, box.work_dir(), work_need, "the work folder")
     log(f"about {human(est)} to back up")
     work = Path(tempfile.mkdtemp(prefix="export-", dir=box.work_dir()))
 
     temps: list[Path] = []
-    runtipi_made: list[tuple[str, str]] = []
     part = out.with_name(out.name + ".part") if plain_stream is None else None
     try:
         # 1) agents: stock `hermes backup` into the work folder (the manifest needs their active record)
@@ -183,8 +191,8 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             agent_zips[a.id] = z
             agent_rows.append({**a.describe(), "bytes": z.stat().st_size, "active": agentlib.active_from_zip(z)})
 
-        # 2) apps: Runtipi's per-app backup (agent apps carry no data here: their home is the agent above)
-        app_rows, app_files = [], {}
+        # 2) apps: each app's folders and volumes (agent apps carry no data here: their home is the agent above)
+        app_rows, app_files, app_skipped, volumes_taken = [], {}, [], set()
         for urn in sorted(installed):
             info = installed[urn]
             app_id, store = info["id"], info["store"]
@@ -196,25 +204,20 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                    "commit": (row or {}).get("commit"), "repo": (row or {}).get("repo"),
                    "tipi_version": info.get("version"), "status": info.get("status"),
                    "provides": (row or {}).get("provides") or [], "package": pkg.is_dir(),
-                   "data": "agent" if is_agent else "runtipi-backup"}
+                   "data": "agent" if is_agent else "archive"}
             try:
                 full = box.rt.app(urn) or {}
             except RuntipiError:
                 full = {}
             form = ((full.get("app") or {}).get("config")) or {}
-            if not is_agent and plain_stream is not None:
-                # streamed run: each app's archive is made while the stream reaches it and deleted right after,
-                # so at most one app archive is on disk at a time
+            if not is_agent:
+                # each app is archived just in time, while the file reaches it, and deleted right after: at most one
+                # app archive is on disk at a time. Its named volumes are known now (the manifest comes first).
+                vols = [v for v in box.appdata.volumes(store, app_id) if v not in volumes_taken]
+                volumes_taken.update(vols)
                 rec["bytes"] = None
-                app_files[app_id] = (urn, info.get("status"))
-            elif not is_agent:
-                log(f"app {app_id}: Runtipi backup")
-                path, name, tmp = _runtipi_archive(box, urn, work, info.get("status"))
-                runtipi_made.append((urn, name))
-                if tmp:
-                    temps.append(path)
-                rec["bytes"] = path.stat().st_size
-                app_files[app_id] = path
+                rec["volumes"] = vols
+                app_files[app_id] = (urn, info, vols)
             app_rows.append(rec)
             rec["_form"] = form
             rec["_row"] = row
@@ -262,10 +265,9 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 if pkg.is_dir():
                     bw.add_dir(f"apps/{app_id}/package")
                     bw.add_tree(f"apps/{app_id}/package", pkg)
-                if app_id in app_files and plain_stream is not None:
-                    _stream_app_archive(box, bw, app_id, *app_files[app_id], work)
-                elif app_id in app_files:
-                    bw.add_file(f"apps/{app_id}/data.tar.gz", app_files[app_id])
+                if app_id in app_files:
+                    _emit_app_archive(box, bw, app_id, *app_files[app_id], work, plain_stream is not None,
+                                      app_skipped)
             if include_files and files_root.is_dir():
                 log(f"files: {files_size['count']} files, {human(files_size['bytes'])}")
                 bw.add_dir("files")
@@ -287,20 +289,26 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         for p in temps:
             p.unlink(missing_ok=True)
         shutil.rmtree(work, ignore_errors=True)
-        for urn, name in runtipi_made:
-            try:
-                box.rt.delete_backup(urn, name)
-            except RuntipiError as e:
-                log(f"note: could not delete Runtipi's temporary backup of {urn}: {e}")
+        try:   # the work folder's parent, when this run made it and left nothing else in it
+            box.work_dir().rmdir()
+        except OSError:
+            pass
     size = out.stat().st_size if plain_stream is None else sums["bytes"]
     res = {"ok": True, "file": str(out) if plain_stream is None else None, "bytes": size, "size": human(size),
            "seconds": round(time.time() - t0, 1),
            "key_ids": w.key_ids if w is not None else [], "slots": w.slot_kinds if w is not None else [],
            "entries": sums["count"], "content_bytes": sums["bytes"],
            "agents": [a["id"] for a in manifest["agents"]], "apps": [a["id"] for a in manifest["apps"]],
-           "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20]}
+           "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20],
+           "skipped_in_apps": app_skipped[:50], "skipped_in_apps_count": len(app_skipped)}
     if bw.changed:
         log(f"note: {len(bw.changed)} files changed while being read (their new size was cut/padded)")
+    if bw.skipped:
+        log(f"note: {len(bw.skipped)} links were left out (a backup holds no links outside app data): "
+            + ", ".join(bw.skipped[:5]))
+    if app_skipped:
+        log(f"note: {len(app_skipped)} entries in app data were left out (sockets, devices, links leaving their "
+            "folder): " + ", ".join(app_skipped[:5]))
     return res
 
 
