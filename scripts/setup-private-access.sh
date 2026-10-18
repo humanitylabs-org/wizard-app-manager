@@ -75,7 +75,13 @@ if [ "$current" = "NeedsLogin" ]; then
   out="$(mktemp)"
   deadline=$(( $(date +%s) + wait_s ))
   # Plain `tailscale up` (no flags, so no setting changes), in the background: its link is read from status/output.
-  start_up() { ( root tailscale up --timeout="$(( deadline - $(date +%s) > 1 ? deadline - $(date +%s) : 1 ))s" >"$out" 2>&1 || true ) & up_pid=$!; }
+  # A node logged out with earlier non-default settings (e.g. --ssh) makes a bare `up` refuse; `login` keeps them.
+  start_up() {
+    local left=$(( deadline - $(date +%s) > 1 ? deadline - $(date +%s) : 1 ))
+    ( root tailscale up --timeout="${left}s" >"$out" 2>&1 \
+        || { grep -qi "non-default" "$out" && root tailscale login --timeout="${left}s" >>"$out" 2>&1; } || true ) &
+    up_pid=$!
+  }
   start_up
   shown=""
   while :; do

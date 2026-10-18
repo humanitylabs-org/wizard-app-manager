@@ -10,6 +10,13 @@
 #
 # Look first, change nothing:  curl -fsSL aiwizards.com/os.sh | WIZARD_CHECK=1 bash   (or: bash get.sh --check)
 #
+# From an agent (no terminal, a command time limit; a full install takes longer):
+#   curl -fsSL aiwizards.com/os.sh | bash -s start    the same install, detached; returns within seconds
+#   curl -fsSL aiwizards.com/os.sh | bash -s status   state, step, the one owner action (a Tailscale link), the Wizard
+#                                                      link when done, or the last 20 log lines on failure
+# (~/.wizard-os/install.log and install-status.json; a second start while one runs does not start another.)
+# Agent instructions: https://aiwizards.com/os.md
+#
 # Safe to run from a Hermes agent (e.g. asked in a Telegram chat): the Hermes restart the link needs is scheduled
 # detached, ~20s after the install has printed its summary (WIZARD_RESTART_DELAY), never in the middle of the run.
 #
@@ -283,6 +290,7 @@ preflight() {
   echo "would install:     $plan"
   echo
   echo "Nothing was changed. To install: curl -fsSL aiwizards.com/os.sh | bash"
+  echo "From an agent (no terminal, command time limits): $START_CMD, then $STATUS_CMD"
 }
 
 # Forwarded to every re-exec of this script (sudo -i drops the environment).

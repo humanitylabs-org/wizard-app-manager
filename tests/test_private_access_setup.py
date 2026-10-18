@@ -40,7 +40,12 @@ status)
   certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || certs=null
   printf '{"BackendState":"%s","AuthURL":"%s","CurrentTailnet":{"MagicDNSEnabled":%s},"CertDomains":%s}\\n' \\
     "$st" "$url" "${MAGICDNS:-true}" "$certs" ;;
+login)
+  touch "$STATE_FILE.up"; echo "login keeps settings"
+  if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
+  exit 1 ;;
 up)
+  if [ -n "${NONDEFAULT:-}" ]; then echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags"; exit 1; fi
   touch "$STATE_FILE.up"
   echo "To authenticate, visit:"
   echo "login link from mock"
@@ -166,3 +171,13 @@ def test_tailnet_without_magicdns_or_https_finishes_box_only_with_the_admin_link
     assert f"[wizard-os] note: {what} is off" in p.stdout
     assert "tailscale up" not in log.read_text(), "a logged-in node is never re-authenticated"
     assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is False
+
+
+def test_logged_out_node_with_custom_settings_signs_in_without_changing_them(sandbox):
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="2", NONDEFAULT="1")
+    assert p.returncode == 0, p.stderr
+    assert "tailscale login --timeout=" in log.read_text()
+    assert "https://login.tailscale.com/a/abc123" in p.stdout
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
