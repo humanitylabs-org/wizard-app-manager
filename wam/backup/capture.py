@@ -19,6 +19,7 @@ and the agent zips are deleted again once they are in the file.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -94,9 +95,15 @@ def _du(path: Path) -> int:
 
 
 def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, passphrase: str | None = None,
-           include_files: bool = True, key_file: str | None = None, scrypt_n: int = crypto.SCRYPT_N) -> dict:
+           include_files: bool = True, key_file: str | None = None, scrypt_n: int = crypto.SCRYPT_N,
+           plain_stream=None) -> dict:
+    """With `plain_stream` (a writable stream; the scheduled run's pipe into `restic backup --stdin`) the same
+    entries go into it as a plain tar, in a dedupe-friendly form: agent archives rewritten with stored members and
+    Runtipi's app archives as `apps/<id>/data.tar` (decompressed); restic encrypts it. No file is written."""
     t0 = time.time()
-    if keys is None:
+    if plain_stream is not None:
+        keys = keys or fmt.Keys()
+    elif keys is None:
         keys = fmt.Keys()
         if key_file:
             keylib.parse_secret(Path(key_file).expanduser().read_text(), keys)
@@ -107,15 +114,16 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             keys.recovery.append(stored)
     if passphrase:
         keys.passphrases.append(passphrase)
-    if not keys.recovery and not keys.passphrases:
+    if plain_stream is None and not keys.recovery and not keys.passphrases:
         raise ExportError("no backup key on this box: run `wam backup key new` (or give --passphrase)")
-    out = Path(out) if out else default_output(box)
-    if out.is_dir():
-        out = default_output(box, out)
-    out = out.expanduser().absolute()
-    if out.exists():
-        raise ExportError(f"{out} already exists")
-    out.parent.mkdir(parents=True, exist_ok=True)
+    if plain_stream is None:
+        out = Path(out) if out else default_output(box)
+        if out.is_dir():
+            out = default_output(box, out)
+        out = out.expanduser().absolute()
+        if out.exists():
+            raise ExportError(f"{out} already exists")
+        out.parent.mkdir(parents=True, exist_ok=True)
     installed = box.installed()
     rows = box.registry_rows()
     agents = box.agents(installed)
@@ -130,13 +138,16 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         if urn not in agent_urns:
             est += _du(box.runtipi_root / "app-data" / info["store"] / info["id"]) + \
                 _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
-    need_space(box, out.parent, est + MARGIN, "the backup file")
+    if plain_stream is None:
+        need_space(box, out.parent, est + MARGIN, "the backup file")
+    else:   # only the agents' database snapshots (and their stored rewrite) are written on this box
+        need_space(box, box.work_dir(), 2 * sum(_du(a.home) for a in agents) + MARGIN, "the agents' snapshots")
     log(f"about {human(est)} to back up")
     work = Path(tempfile.mkdtemp(prefix="export-", dir=box.work_dir()))
 
     temps: list[Path] = []
     runtipi_made: list[tuple[str, str]] = []
-    part = out.with_name(out.name + ".part")
+    part = out.with_name(out.name + ".part") if plain_stream is None else None
     try:
         # 1) agents: stock `hermes backup` into the work folder (the manifest needs their active record)
         agent_rows, agent_zips = [], {}
@@ -148,6 +159,12 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             except HermesError as e:
                 raise ExportError(f"agent {a.id}: {e}") from None
             temps.append(z)
+            if plain_stream is not None:
+                stored = work / f"agent-{a.id}-stored.zip"
+                bundle.zip_stored(z, stored)
+                temps.append(stored)
+                z.unlink()
+                z = stored
             agent_zips[a.id] = z
             agent_rows.append({**a.describe(), "bytes": z.stat().st_size, "active": agentlib.active_from_zip(z)})
 
@@ -193,10 +210,11 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         }
 
         # 3) the file: encrypted straight into <out>.part
-        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as raw:
-            w = fmt.Writer(raw, keys, scrypt_n=scrypt_n)
-            bw = bundle.BundleWriter(w)
+        if plain_stream is None:
+            fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with (os.fdopen(fd, "wb") if plain_stream is None else contextlib.nullcontext(plain_stream)) as raw:
+            w = fmt.Writer(raw, keys, scrypt_n=scrypt_n) if plain_stream is None else None
+            bw = bundle.BundleWriter(w if w is not None else raw)
             bw.add_json(bundle.MANIFEST, manifest)
             log("wizard home")
             bw.add_dir("wizard-os")
@@ -224,19 +242,26 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 if pkg.is_dir():
                     bw.add_dir(f"apps/{app_id}/package")
                     bw.add_tree(f"apps/{app_id}/package", pkg)
-                if app_id in app_files:
+                if app_id in app_files and plain_stream is not None:
+                    bw.add_gunzipped(f"apps/{app_id}/data.tar", app_files[app_id])
+                elif app_id in app_files:
                     bw.add_file(f"apps/{app_id}/data.tar.gz", app_files[app_id])
             if include_files and files_root.is_dir():
                 log(f"files: {files_size['count']} files, {human(files_size['bytes'])}")
                 bw.add_dir("files")
                 bw.add_tree("files", files_root, _files_skip, progress=log)
             sums = bw.finish()
-            w.close()
-            raw.flush()
-            os.fsync(raw.fileno())
-        os.replace(part, out)
+            if w is not None:
+                w.close()
+                raw.flush()
+                os.fsync(raw.fileno())
+            else:
+                raw.flush()
+        if plain_stream is None:
+            os.replace(part, out)
     except BaseException:
-        part.unlink(missing_ok=True)
+        if part is not None:
+            part.unlink(missing_ok=True)
         raise
     finally:
         for p in temps:
@@ -247,9 +272,11 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 box.rt.delete_backup(urn, name)
             except RuntipiError as e:
                 log(f"note: could not delete Runtipi's temporary backup of {urn}: {e}")
-    size = out.stat().st_size
-    res = {"ok": True, "file": str(out), "bytes": size, "size": human(size), "seconds": round(time.time() - t0, 1),
-           "key_ids": w.key_ids, "slots": w.slot_kinds, "entries": sums["count"], "content_bytes": sums["bytes"],
+    size = out.stat().st_size if plain_stream is None else sums["bytes"]
+    res = {"ok": True, "file": str(out) if plain_stream is None else None, "bytes": size, "size": human(size),
+           "seconds": round(time.time() - t0, 1),
+           "key_ids": w.key_ids if w is not None else [], "slots": w.slot_kinds if w is not None else [],
+           "entries": sums["count"], "content_bytes": sums["bytes"],
            "agents": [a["id"] for a in manifest["agents"]], "apps": [a["id"] for a in manifest["apps"]],
            "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20]}
     if bw.changed:

@@ -9,14 +9,18 @@ it also writes each member into staging; without one it changes nothing (`wam ba
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
 import os
 import posixpath
+import shutil
 import stat
 import tarfile
 import time
+import zipfile
+import zlib
 from pathlib import Path
 
 from .fmt import Damaged
@@ -95,6 +99,26 @@ class BundleWriter:
         self.bytes += st.st_size
         return st.st_size
 
+    def add_gunzipped(self, name: str, path: Path) -> int:
+        """A .tar.gz stored decompressed (a plain tar), so a repository that deduplicates by content (restic) only
+        keeps what changed. Two passes over the archive (the tar header needs the size first); no copy on disk."""
+        size = 0
+        try:
+            with gzip.open(path, "rb") as g:
+                while b := g.read(COPY):
+                    size += len(b)
+            st = os.stat(path)
+            with gzip.open(path, "rb") as g:
+                r = _SizedReader(g, size)
+                self.tar.addfile(self._info(name, size, 0o600, st.st_mtime), r)
+        except (OSError, EOFError, zlib.error) as e:
+            raise ValueError(f"cannot read {path.name} ({str(e)[:100]})") from None
+        if r.changed:
+            raise ValueError(f"{path.name} changed while it was being read")
+        self.sums[name] = {"sha256": r.h.hexdigest(), "size": size}
+        self.bytes += size
+        return size
+
     def add_tree(self, prefix: str, root: Path, skip=None, progress=None) -> dict:
         """Every regular file and directory under `root` as `prefix/<rel>`. Links and special files are skipped and
         listed (they never travel). `skip(rel, is_dir)` excludes entries."""
@@ -147,6 +171,31 @@ class BundleWriter:
         self.tar.addfile(ti, io.BytesIO(data))
         self.tar.close()
         return body
+
+
+def zip_stored(src: Path, dst: Path) -> int:
+    """Rewrite a zip with every member stored (uncompressed), same names, dates and modes: a stock `hermes backup`
+    archive becomes dedupe-friendly for restic and still imports with stock `hermes import`. Returns dst's size."""
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED, allowZip64=True) as zout:
+        for info in zin.infolist():
+            ni = zipfile.ZipInfo(info.filename, info.date_time)
+            ni.external_attr, ni.create_system, ni.compress_type = info.external_attr, info.create_system, \
+                zipfile.ZIP_STORED
+            if info.is_dir():
+                zout.writestr(ni, b"")
+                continue
+            with zin.open(info) as s, zout.open(ni, "w", force_zip64=info.file_size >= (1 << 31)) as d:
+                shutil.copyfileobj(s, d, COPY)
+    os.chmod(dst, 0o600)
+    return dst.stat().st_size
+
+
+def gzip_file(src: Path, dst: Path) -> None:
+    """Plain tar → .tar.gz (an app archive read back from a restic repository, for Runtipi's restore)."""
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with open(src, "rb") as s, os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6,
+                                                                          mtime=0) as g:
+        shutil.copyfileobj(s, g, COPY)
 
 
 def tree_size(root: Path, skip=None) -> dict:
@@ -362,8 +411,14 @@ def scan(stream, sink: StageSink | None = None, on_manifest=None, progress=None)
                 if name.endswith("/data.tar.gz") and name.startswith("apps/"):
                     with open(dst, "rb") as f:
                         check_inner_archive(f)
+                elif name.endswith("/data.tar") and name.startswith("apps/"):    # from a restic repository
+                    with open(dst, "rb") as f:
+                        check_inner_archive(f, "r|")
             elif name.endswith("/data.tar.gz") and name.startswith("apps/"):
                 check_inner_archive(src)
+                src.drain()
+            elif name.endswith("/data.tar") and name.startswith("apps/"):
+                check_inner_archive(src, "r|")
                 src.drain()
             else:
                 src.drain()

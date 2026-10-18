@@ -190,16 +190,22 @@ def _existing(p: Path) -> Path:
 def stage(box: Box, path: Path, keys: fmt.Keys, stamp: str | None = None) -> tuple[_Restore, dict]:
     """Unlock, verify and stage. On any failure everything this created is removed again."""
     f, reader = _open(path, keys)     # wrong key: raises here, nothing created yet
+    with f:
+        return stage_stream(box, reader, stamp)
+
+
+def stage_stream(box: Box, stream, stamp: str | None = None) -> tuple[_Restore, dict]:
+    """Verify and stage a plain bundle stream (the decrypted file, or a snapshot read back from the restic
+    repository). On any failure everything this created is removed again."""
     r = _Restore(box, stamp)
     created = [p for p in (box.home / "restores", r.files_root / RESTORE_DIR, r.files_root) if not p.exists()]
     try:
-        with f:
-            def on_manifest(m):
-                _space_check(box, r, m)
-                r.root.mkdir(parents=True, mode=0o700)
-                r.froot.mkdir(parents=True, mode=0o700)
-            sink = bundle.StageSink(r.root / "stage", r.froot / "stage")
-            res = bundle.scan(reader, sink, on_manifest=on_manifest, progress=log)
+        def on_manifest(m):
+            _space_check(box, r, m)
+            r.root.mkdir(parents=True, mode=0o700)
+            r.froot.mkdir(parents=True, mode=0o700)
+        sink = bundle.StageSink(r.root / "stage", r.froot / "stage")
+        res = bundle.scan(stream, sink, on_manifest=on_manifest, progress=log)
         r.journal["manifest"] = res["manifest"]
         return r, res
     except BaseException:
@@ -245,11 +251,14 @@ def _target_agent(box: Box, a: dict, existing: dict[str, Agent]) -> Agent:
     return Agent(a["id"], False, folder / "home", "container", f"{a.get('app') or 'agent-' + a['id']}:{STORE}", folder)
 
 
-def import_bundle(box: Box, path: Path, keys: fmt.Keys, *, yes: bool = False, confirm=None) -> dict:
+def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
+                  stager=None) -> dict:
+    """`stager()` (optional) replaces the file's unlock+stage with another verified source (a restic snapshot:
+    wam/backup/snapshot.py); everything after staging is the same path."""
     t0 = time.time()
     before_digest_agents = box.agents()
     log("checking the whole file before changing anything")
-    r, res = stage(box, path, keys)
+    r, res = stager() if stager is not None else stage(box, path, keys)
     m = r.journal["manifest"]
     try:
         p = plan(box, m)
