@@ -105,6 +105,8 @@ else:
 DOCKER_PY = r'''
 import json, os, subprocess, sys
 from pathlib import Path
+def _mk(tarfile, name):
+    ti = tarfile.TarInfo(name); ti.type = tarfile.DIRTYPE; ti.mode = 0o755; return ti
 state = json.loads(Path(os.environ["FAKE_DOCKER_STATE"]).read_text())
 a = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as f: f.write(json.dumps({"tool": "docker", "argv": a}) + "\n")
@@ -113,6 +115,10 @@ if a[0] == "ps":
     proj = [x[len(tag):] for x in a if x.startswith(tag)][0]
     c = state.get(proj)
     print(c["id"] if c else "")
+elif a[0] == "inspect" and "--format" in a:          # the App Manager's own image (appdata.AppData.image)
+    print(os.environ.get("FAKE_HELPER_IMAGE", "example/wam:helper"))
+elif a[0] == "volume" and a[1] == "inspect":
+    sys.exit(0 if (Path(os.environ["FAKE_VOLUMES"]) / a[2]).is_dir() else 1)
 elif a[0] == "inspect":
     out = []
     for c in state.values():
@@ -121,18 +127,59 @@ elif a[0] == "inspect":
                         "Mounts": [{"Source": c["home"], "Destination": "/opt/data"}]})
     print(json.dumps(out))
 elif a[0] == "run":
-    mounts, envs, i = {}, {}, 1
+    mounts, envs, tmpfs, i = {}, {}, [], 1
     while i < len(a):
         if a[i] == "-v":
-            parts = a[i + 1].split(":"); mounts[parts[1]] = parts[0]; i += 2
+            parts = a[i + 1].split(":")
+            src = parts[0] if parts[0].startswith("/") else str(Path(os.environ["FAKE_VOLUMES"]) / parts[0])
+            mounts[parts[1]] = src; i += 2
         elif a[i] == "-e":
             k, v = a[i + 1].split("=", 1); envs[k] = v; i += 2
+        elif a[i] == "--mount":
+            tmpfs.append(dict(x.split("=", 1) for x in a[i + 1].split(","))["destination"]); i += 2
         elif a[i] in ("-u", "--network"):
             i += 2
         elif a[i] == "--entrypoint":
             entry, image, rest = a[i + 1], a[i + 2], a[i + 3:]; break
         else:
             i += 1
+    if entry == "tar":      # busybox tar -cf - -C /w NAMES... (appdata archive), as root with numeric owners
+        assert image == os.environ.get("FAKE_HELPER_IMAGE", "example/wam:helper"), image
+        import stat as _st, tarfile
+        names = rest[rest.index("-C") + 2:]
+        hosts = {}
+        for n in names:
+            if n == "volumes":
+                for dst, src in mounts.items():
+                    if dst.startswith("/w/volumes/"):
+                        hosts["volumes/" + dst[len("/w/volumes/"):]] = src
+            else:
+                hosts[n] = mounts["/w/" + n]
+        masked = {t[len("/w/"):] for t in tmpfs}
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as t:
+            if any(k.startswith("volumes/") for k in hosts):
+                t.addfile(_mk(tarfile, "volumes"))
+            for arc, src in sorted(hosts.items()):
+                for dp, dns, fns in os.walk(src):
+                    rel = os.path.relpath(dp, src)
+                    base = arc if rel == "." else arc + "/" + rel
+                    if base in masked:
+                        dns[:] = []
+                        t.addfile(_mk(tarfile, base))
+                        continue
+                    t.add(dp, base, recursive=False)
+                    dns.sort()
+                    for n in sorted(fns + [d for d in dns if os.path.islink(os.path.join(dp, d))]):
+                        pth = os.path.join(dp, n)
+                        if _st.S_ISSOCK(os.lstat(pth).st_mode):
+                            sys.stderr.write(f"tar: {base}/{n}: socket ignored\n"); continue
+                        t.add(pth, base + "/" + n, recursive=False)
+        sys.exit(0)
+    if entry == "sh":       # appdata restore script: RT/V point at the host folders standing in for the mounts
+        envs["RT"] = mounts["/rt"]
+        envs["V"] = os.environ["FAKE_VOLUMES"]
+        r = subprocess.run(["/bin/sh", "-c", rest[1]], env={**os.environ, **envs}, stdin=sys.stdin)
+        sys.exit(r.returncode)
     assert image == os.environ["FAKE_IMAGE"], image
     def host(p):
         for dst, src in sorted(mounts.items(), key=lambda kv: -len(kv[0])):
@@ -233,6 +280,13 @@ class FakeRuntipi:
     def start(self, urn):
         self.calls.append(("start", urn))
         self.apps[urn]["status"] = "running"
+        # like Runtipi's setAppDataDirPermissions after every `compose up`: chmod -Rf a+rwx on the app's data
+        data = self._paths(urn)[0]
+        for dp, dns, fns in os.walk(data):
+            for n in [*dns, *fns]:
+                q = Path(dp) / n
+                if not q.is_symlink() and (q.is_dir() or q.is_file()):
+                    q.chmod(q.stat().st_mode | 0o777)
         return {}
 
     def stop(self, urn):
@@ -362,10 +416,12 @@ class FakeBox:
                     "PATH": f"{tools['bin']}:{os.environ.get('PATH', '/usr/bin:/bin')}",
                     "FAKE_LOG": str(self.log), "FAKE_DOCKER_STATE": str(self.docker_state), "FAKE_IMAGE": IMAGE,
                     "FAKE_HERMES_MODS": str(tools["mods"]), "FAKE_HERMES_PY": str(tools["hermes_py"]),
+                    "FAKE_VOLUMES": str(self.base / "volumes"), "FAKE_HELPER_IMAGE": "example/wam:helper",
                     "PYTHONDONTWRITEBYTECODE": "1", "WAM_BACKUP_TEST": "1",
                     "WIZARD_HERMES_BIN": str(tools["bin"] / "hermes"), "WIZARD_HERMES_PYTHON": sys.executable,
                     "PYTHONPATH": str(tools["mods"])}
         (self.base / "tmp").mkdir()
+        (self.base / "volumes").mkdir()
         self.agent_homes = {"hermes-agent:wizardapps": self.runtipi / "app-data/wizardapps/hermes-agent/data",
                             "agent-research:wizardapps": self.home / "agents/research/home"}
         self.rt = FakeRuntipi(self.runtipi, self.docker_state, self.agent_homes)

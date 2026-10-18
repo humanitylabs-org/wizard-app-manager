@@ -64,7 +64,7 @@ Crypto: AES-256-GCM from the system OpenSSL `libcrypto` (always present: Python'
 | `manifest.json` (first) | format, created_at, source (`arch`, `os`, `mode`: `full` / `alongside`, Wizard versions: wam commit, Runtipi version, Agent Service/shell version), `agents[]`, `apps[]`, `files` totals, `active` (which cron jobs, messaging platforms and backup schedule were on). No secrets. |
 | `wizard-os/…` | The Wizard home (`~/.wizard-os`): settings, launcher, subjects, routes, app bindings, grants, devices, links/aliases, app secrets. Excluded: caches, `*.bak*`, regenerated `skills/` and `apps.json`, agent homes (captured below), and per-machine identity (`api-token`, `mcp-token`, `runtipi-operator.json`, `agent-runtime/`). |
 | `agents/<id>/agent.json`, `agents/<id>/hermes-backup.zip`, `agents/<id>/folder/…` | Every agent. The home is captured with stock `hermes backup` (SQLite backup API, Hermes' own excludes). The main agent is `hermes` whether it is the box's Runtipi `hermes-agent` app (full) or the host Hermes (alongside). Extra agents also carry their small Wizard files (`runtime.key`, `gateway.key`, `service-state.json`, `package/`; not `home/` or `upload-staging/`) so a new agent's keys match its imported `.env`. Credentials stay inside the encrypted file. |
-| `apps/<id>/app.json`, `apps/<id>/package/…`, `apps/<id>/data.tar.gz` | Every installed app: its `apps.json` row (repo, commit, version, urn), Runtipi's status/version and install form, the exact Runtipi package installed on the box (`runtipi/apps/<store>/<id>`), and its data as **Runtipi's own per-app backup** (`app-data/` + `app/` + `user-config/`, made by Runtipi as root with the app stopped, and restarted after). Agent apps (`hermes-agent`, `agent-<id>`) carry no data archive: their home is the agent's `hermes-backup.zip`. |
+| `apps/<id>/app.json`, `apps/<id>/package/…`, `apps/<id>/data.tar.gz` | Every installed app: its `apps.json` row (repo, commit, version, urn), Runtipi's status/version and install form, the exact Runtipi package installed on the box (`runtipi/apps/<store>/<id>`), and its data (`app-data/` + `app/` + `user-config/`, plus `volumes/<name>/` for each named Docker volume its compose file declares, such as an AI account login), archived as root by a one-off container of the App Manager's own image with the app stopped through Runtipi and started again after. Owners, modes, hard links and symlinks that stay inside their folder are kept; sockets and links leaving the folder are skipped and listed in the export result. (Not Runtipi's per-app backup: on a real box it silently drops data after the first socket, skips paths containing `backups`, and its restore refuses archives with symlinks, so an app with a model cache could never come back.) The Agent Service's archive leaves out its `agents/` folder (each agent travels as an agent) and its MCP token (this box's). Agent apps (`hermes-agent`, `agent-<id>`) carry no data archive: their home is the agent's `hermes-backup.zip`. |
 | `files/…` | The owner's files (Runtipi `media/`), one opaque tree. No layout is assumed. |
 | `checksums.json` (last) | sha256 and size of every entry, entry count, total bytes. |
 
@@ -80,8 +80,9 @@ refused.
 3. **Plan**: compare manifest with this box (mode, installed apps, image architectures). Report what will change.
 4. **Set aside** (undo snapshot): stop the affected apps and agents and move their current data aside
    (`rename`, same filesystem, exact and instant) into `restores/<stamp>/before/`, with a digest of everything
-   moved. Record which apps were installed before. App data belongs to the app containers and only Runtipi (root)
-   may move it, so each app the restore replaces gets a Runtipi per-app backup instead (a copy, not a rename). The
+   moved. Record which apps were installed before. App data belongs to the app containers (root), so each app the
+   restore replaces is stopped and archived as root into `before/apps/` (a copy, not a rename), and so are named
+   volumes an app the restore installs would overwrite (`before/volumes/`). The
    owner's files are set aside inside the files folder itself (`media/.wizard-restore/<stamp>/`): on a Mac it is a
    mounted Mac folder that cannot be renamed. Every step is journaled, so undo also works after a crash half way.
 5. **Apply**: install missing apps from the bundled packages at the same versions; swap app data in; import each agent
@@ -147,19 +148,21 @@ Choices the contract left open, as built in `wam/backup/`:
   `backup.json`. Entries of `secrets/` and `app-tokens/` for apps the backup doesn't carry stay on the box.
 - **Apps** stopped at export stay stopped after import; apps the backup doesn't carry are left alone. An app this
   box already has gets the bundle's `app-data/` and package but keeps **this box's** `user-config/` (wam writes the
-  box's wiring there: alongside overrides, trusted origins, ports); it is taken from the Runtipi snapshot made just
-  before. An app the restore installs gets the bundle's `user-config/`. Runtipi's uninstall keeps
+  box's wiring there: alongside overrides, trusted origins, ports); it is left in place when app data is put back. An app the restore installs gets the bundle's `user-config/`. Runtipi's uninstall keeps
   `user-config/<store>/<id>`, so undo removes the one the restore brought.
-- **App archives** follow Runtipi's own restore rule: files and folders, plus symlinks inside `app-data/` that
-  resolve inside it; hard links, devices, FIFOs and anything else are refused at verify.
+- **App archives**: safe relative names under `app-data/`, `app/`, `user-config/` and `volumes/<name>/`; files,
+  folders, hard links to earlier files, and relative symlinks that resolve inside the root they live in (a model
+  cache's `snapshots/<rev>/x -> ../../blobs/<sha>`), nothing below a symlink. Devices, FIFOs and anything else are
+  refused at verify. Putting back extracts as root into a staging folder beside the app's data, carries over what
+  this box keeps (the Agent Service's `agents/` and MCP token), then swaps folders with renames.
 - **Agent wiring kept** on import: `terminal`, `mcp_servers.wizard`, the wizard `skills.external_dirs`, Wizard's
   plugins, `platforms.api_server` and the `.env` keys `API_SERVER_*`, `WIZARD_*`, `HERMES_DASHBOARD*` of this box's
   agent. A new extra agent keeps its imported ones (they match its `runtime.key`).
 - **Lock**: a `flock` on the Wizard home folder, so taking it creates nothing.
 - **Files root**: Runtipi's `media/` (or `RUNTIPI_MEDIA_PATH/media`; `WIZARD_FILES_ROOT` overrides).
 
-Real-box checks that the fakes in `tests/test_backup_*.py` cannot prove: Runtipi's per-app backup/restore of a
-running app (status transitions, files owned by container users), the agent image's paths
+Real-box checks that the fakes in `tests/test_backup_*.py` cannot prove: archiving and putting back a running
+app's data as root (files owned by container users), the agent image's paths
 (`/opt/hermes/.venv/bin/{hermes,python}`), `docker run -u <home owner>` writing into the agent home, stock
 `hermes backup`/`import --force` on a live home, user-level systemd timers (needs `loginctl enable-linger` to run
 while logged out), a real S3/R2 bucket, and a Mac VM where `media/` is a mounted Mac folder.

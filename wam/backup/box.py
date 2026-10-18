@@ -34,6 +34,7 @@ from ..runtipi import Runtipi, RuntipiError, read_env
 STORE = "wizardapps"
 MAIN_AGENT = "hermes"
 MAIN_APP = "hermes-agent"
+AGENT_SERVICE_APP = "wizard-agent-service"
 AGENT_ID = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 APP_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 RESTORE_DIR = ".wizard-restore"
@@ -94,6 +95,7 @@ class Box:
                                  or Path.home() / "runtipi").expanduser()
         self._rt = rt
         self._runner = runner
+        self._appdata = None
         self.systemctl = systemctl
         self.disk_free = disk_free or (lambda p: shutil.disk_usage(p).free)
         self.after_restore = after_restore
@@ -162,9 +164,24 @@ class Box:
         return self.runtipi_root / "media"
 
     def agents_root(self) -> Path:
-        stock = self.runtipi_root / "app-data" / "wizard-os" / "agents"
+        """Where extra agents' folders live: the Agent Service keeps them in its own app data (its /state volume:
+        app-data/<store>/wizard-agent-service/data/wizard-os/agents); older layouts used the Wizard home or a shared
+        app-data/wizard-os. The first that exists wins; on a box with none yet, the Agent Service's when it is
+        installed."""
+        service = self.runtipi_root / "app-data" / STORE / AGENT_SERVICE_APP / "data" / "wizard-os" / "agents"
         own = self.home / "agents"
-        return stock if (stock.is_dir() and not own.is_dir()) else own
+        stock = self.runtipi_root / "app-data" / "wizard-os" / "agents"
+        for p in (service, own, stock):
+            if p.is_dir():
+                return p
+        return service if service.parent.parent.is_dir() else own
+
+    @property
+    def appdata(self):
+        if self._appdata is None:
+            from .appdata import AppData
+            self._appdata = AppData(self)
+        return self._appdata
 
     def work_dir(self) -> Path:
         d = Path(self.env.get("WAM_BACKUP_WORK") or self.home / "backup-work")
@@ -398,12 +415,34 @@ class HermesRunner:
 # ---------------------------------------------------------------- free space, digests
 
 def need_space(box: Box, path: Path, need: int, what: str) -> None:
+    need_spaces(box, [(path, need, what)])
+
+
+def _existing_parent(path: Path) -> Path:
     p = Path(path)
     while not p.exists() and p != p.parent:
         p = p.parent
-    free = box.disk_free(p)
-    if free < need:
-        raise SpaceError(f"not enough free space for {what}: need {human(need)}, {human(free)} free at {p}")
+    return p
+
+
+def need_spaces(box: Box, wants: list[tuple[Path, int, str]]) -> None:
+    """Several writes that happen at the same time: needs on the same filesystem add up (the work folder and the
+    output can be one disk or two)."""
+    by_dev: dict[int, list] = {}
+    for path, need, what in wants:
+        p = _existing_parent(path)
+        try:
+            dev = os.stat(p).st_dev
+        except OSError:
+            dev = hash(str(p))
+        by_dev.setdefault(dev, []).append((p, need, what))
+    for items in by_dev.values():
+        p = items[0][0]
+        need = sum(i[1] for i in items)
+        free = box.disk_free(p)
+        if free < need:
+            what = " and ".join(i[2] for i in items)
+            raise SpaceError(f"not enough free space for {what}: need {human(need)}, {human(free)} free at {p}")
 
 
 class SpaceError(RuntimeError):
@@ -421,7 +460,7 @@ def human(n: float) -> str:
 DIGEST_HASH_MAX = 4 << 20
 
 
-def tree_digest(root: Path, skip=None, content: bool = True) -> tuple[str, int]:
+def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True) -> tuple[str, int]:
     """sha256 over every entry under root: path, type, mode and, for files, the size plus the content hash (always
     with content=True; else only up to 4 MiB, larger files by mtime, which a rename keeps). Links are recorded by
     target, unreadable files as such. Returns (hex, entry count)."""
@@ -451,7 +490,7 @@ def tree_digest(root: Path, skip=None, content: bool = True) -> tuple[str, int]:
             except FileNotFoundError:
                 continue
             n += 1
-            line = f"{rel}\0{stat.S_IFMT(st.st_mode)}\0{stat.S_IMODE(st.st_mode)}"
+            line = f"{rel}\0{stat.S_IFMT(st.st_mode)}\0{stat.S_IMODE(st.st_mode) if modes else ''}"
             if stat.S_ISLNK(st.st_mode):
                 line += "\0" + os.readlink(p)
             elif stat.S_ISREG(st.st_mode):
@@ -483,8 +522,11 @@ def box_digest(box: Box, agents: list[Agent] | None = None) -> dict:
         return rel == "wizard-os" or rel.startswith("wizard-os/") and not rel.startswith("wizard-os/agents")
 
     out = {"wizard-os": tree_digest(box.home, home_skip)[0]}
+    # Runtipi runs `chmod -Rf a+rwx` on an app's data folder every time it starts the app, so permission bits there
+    # are not state an import or undo can keep: app-data is compared without them.
     for part in ("app-data", "user-config", "apps"):
-        out[f"runtipi/{part}"] = tree_digest(box.runtipi_root / part, rt_skip if part == "app-data" else None)[0]
+        out[f"runtipi/{part}"] = tree_digest(box.runtipi_root / part, rt_skip if part == "app-data" else None,
+                                             modes=part != "app-data")[0]
     out["files"] = tree_digest(box.files_root(), lambda rel, d: rel == RESTORE_DIR or rel.startswith(RESTORE_DIR + "/"),
                                content=False)[0]
     from .agents import keep_in_place
