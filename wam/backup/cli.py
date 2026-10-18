@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from . import capture, crypto, fmt, keys as keylib, restore, schedule
-from .box import Box, SpaceError, human
+from .box import Box, HermesError, RuntipiError, SpaceError, human
 from .crypto import BackupCryptoError
 from .s3 import S3Error
 
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     except schedule.Busy as e:
         res, code = ({"ok": True, "skipped": str(e)}, 0) if args.cmd == "run" else ({"ok": False, "error": str(e)}, 1)
     except (BackupCryptoError, restore.RestoreError, capture.ExportError, SpaceError, schedule.ScheduleError,
-            S3Error, OSError, ValueError) as e:
+            S3Error, RuntipiError, HermesError, OSError, ValueError) as e:
         res, code = {"ok": False, "error": str(e), "kind": type(e).__name__}, 1
     if args.json:
         print(json.dumps(res, sort_keys=True))
@@ -145,8 +145,19 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     return code
 
 
-def _keys_to_open(box: Box, key_file: str | None) -> fmt.Keys:
-    ks = keylib.gather(box.home, key_file, env=box.env)
+def _keys_to_open(box: Box, key_file: str | None, path: Path) -> fmt.Keys:
+    """Every key given, plus this box's own. In a terminal, when none of them opens the file (a backup from another
+    box), ask for its recovery key or passphrase."""
+    ks = keylib.gather(box.home, key_file, env=box.env, prompt=False)
+    if sys.stdin.isatty():
+        try:
+            with open(path, "rb") as f:
+                header, signed, mac = fmt.read_header(f)
+                fmt.unlock(header, signed, mac, ks)
+        except fmt.WrongKey:
+            got = keylib._tty_prompt("Recovery key or passphrase for this file: ")
+            if got:
+                keylib.parse_secret(got, ks)
     if not ks:
         raise BackupCryptoError("no key given: use --key-file, WIZARD_BACKUP_KEY / WIZARD_BACKUP_PASSPHRASE, or run "
                                 "it in a terminal to be asked")
@@ -162,9 +173,9 @@ def _dispatch(args, box: Box) -> dict:
         return capture.export(box, Path(args.output) if args.output else None, passphrase=pw,
                               include_files=not args.no_files, key_file=args.key_file)
     if c == "verify":
-        return restore.verify(box, Path(args.file), _keys_to_open(box, args.key_file))
+        return restore.verify(box, Path(args.file), _keys_to_open(box, args.key_file, Path(args.file)))
     if c == "import":
-        ks = _keys_to_open(box, args.key_file)
+        ks = _keys_to_open(box, args.key_file, Path(args.file))
         with schedule.lock(box):
             return restore.import_bundle(box, Path(args.file), ks, yes=args.yes, confirm=_confirm)
     if c == "undo":
