@@ -147,12 +147,25 @@ def share_registry(c: Config) -> bool:
     shared = c.runtipi_root / "app-data" / "wizard-os"
     try:
         shared.mkdir(parents=True, exist_ok=True)
+        # The share holds no secrets and is read by app containers running as other users, so its
+        # modes are explicit: a caller's restrictive umask (0600 apps.json) must not hide every app
+        # from the Agent Service. The owner's own ~/.wizard-os copy keeps whatever mode it has.
+        os.chmod(shared, 0o755)
         tmp = shared / "apps.json.tmp"
-        shutil.copy2(c.home / "apps.json", tmp)
+        shutil.copyfile(c.home / "apps.json", tmp)
+        os.chmod(tmp, 0o644)
         tmp.replace(shared / "apps.json")
         if (c.home / "skills").is_dir():
             shutil.rmtree(shared / "skills", ignore_errors=True)
-            shutil.copytree(c.home / "skills", shared / "skills")
+            # Links stay links (never copied as their target's contents) and are never chmod-ed,
+            # so widening modes can only ever touch the regular skill files WAM itself wrote.
+            shutil.copytree(c.home / "skills", shared / "skills", symlinks=True, copy_function=shutil.copyfile)
+            for dirpath, dirnames, filenames in os.walk(shared / "skills"):
+                os.chmod(dirpath, 0o755)
+                for name in filenames:
+                    f = os.path.join(dirpath, name)
+                    if not os.path.islink(f):
+                        os.chmod(f, 0o644)
         return True
     except OSError as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
