@@ -279,7 +279,8 @@ Choices the contract left open, as built in `wam/backup/`:
 
 - **Recovery slot**: wrap key = HKDF-SHA256(recovery key, salt = slot salt, info = "wizard-backup slot").
 - **Per-machine** (never captured, never replaced): `api-token`, `mcp-token`, `runtipi-operator.json`,
-  `agent-runtime/`, plus `alongside.json`, `linked.json`, `app-manager.json`, `github-token`, `host-dashboard.env`
+  `agent-runtime/`, `agent-ssh/` (the agent's terminal key for this box on a Mac), plus `alongside.json`, `linked.json`,
+  `app-manager.json`, `github-token`, `host-dashboard.env`
   (this box's mode, Hermes links, App Manager config and logins). Regenerated: `apps.json`, `skills/`,
   `system-skills/`, `cache/`, `dev/`, `staged-apps/`. Agent homes keep their own `bin/`, `logs/`, `runtime/`,
   caches, locks, the Hermes code checkout and Wizard's plugins (rules adapted from try-wizard
