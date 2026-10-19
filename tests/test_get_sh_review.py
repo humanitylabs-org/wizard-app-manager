@@ -52,12 +52,12 @@ def test_unverified_gateway_stops_without_new_agent(box):
 def test_existing_user_is_not_granted_passwordless_sudo(box):
     box.add_user('alice', 1001)
     box.hermes('alice')
-    (box.bin / 'sudo').write_text('#!/bin/sh\nexit 1\n')
+    (box.bin / 'sudo').write_text('#!/bin/sh\n[ "$1" = -iu ] || exit 1\necho "sudo $*" >> "$FAKE_LOG"\n')
     p = box.run('root')
-    assert p.returncode == 2, p.stdout + p.stderr
-    assert 'refusing to grant' in p.stderr
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert 'scripts/prepare-named-user.sh' in box.log.read_text()
+    assert box.handoff().startswith('sudo -iu alice ')
     assert not list(box.sudoers.iterdir())
-    assert not box.log.read_text()
 
 
 @pytest.mark.parametrize('user', ['root', 'alice'])
