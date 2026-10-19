@@ -183,6 +183,9 @@ has_hermes() {
 wos_mode() {  # wos_mode user
   local h; h="$(home_of "$1")"
   if [ -n "$h" ] && [ -f "$h/.wizard-os/alongside.json" ]; then echo alongside
+  # An alongside attempt that failed before `wam alongside` wrote its record still leaves the App Manager running:
+  # its release read-back says alongside, so a re-run finishes that install instead of starting a fresh one.
+  elif [ -n "$h" ] && grep -qE '"mode": *"alongside"' "$h/.wizard-os/release.json" 2>/dev/null; then echo alongside
   elif [ -n "$h" ] && [ -f "$h/.wizard-os/apps.json" ]; then echo fresh
   else echo none; fi
 }

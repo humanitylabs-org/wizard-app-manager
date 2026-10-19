@@ -226,6 +226,22 @@ def test_fresh_box_with_a_root_hermes_stays_fresh_on_rerun(box):
     assert box.handoff().startswith("sudo -iu wizard ") and _env_of(box.handoff())["WIZARD_MODE"] == "fresh"
 
 
+def test_rerun_after_a_failed_alongside_install_stays_alongside(box, tmp_path):
+    """Demo, 0.3.0: the first alongside run failed after Runtipi came up but before `wam alongside` recorded the
+    mode. The re-run saw a running runtipi and planned a fresh install as a new wizard user."""
+    box.hermes("root", where="launcher")
+    d = box.users["root"][1] / ".wizard-os"; d.mkdir(parents=True, exist_ok=True)
+    (d / "release.json").write_text('{"release": "0.3.0", "mode": "alongside", "status": "install-failed"}')
+    (box.bin / "docker").write_text('#!/bin/sh\ncase "$1" in version) echo 29.0.0 ;; ps) echo runtipi ;; esac\nexit 0\n')
+    p = box.run("root", WIZARD_CHECK="1")
+    assert "would install:     alongside as root" in p.stdout, p.stdout
+    src = _local_wam(tmp_path)
+    p = box.run("root", WAM_REPO=str(src), WAM_REF="main", WAM_DIR=str(tmp_path / "wam"))
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "useradd" not in box.log.read_text() and not box.handoff()
+    assert _env_of((tmp_path / "install-env").read_text())["WIZARD_MODE"] == "alongside"
+
+
 def test_rerun_with_two_hermes_requires_explicit_selection(box):
     for name, uid in (("alice", 1001), ("bob", 1002)):
         box.add_user(name, uid); box.hermes(name)
