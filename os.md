@@ -18,6 +18,8 @@ Tell the owner in one line what it found.
 curl -fsSL https://aiwizards.com/os.sh | bash -s start
 ```
 
+If it asks for administrator approval, send the exact command it prints to the owner. They run it once in their own terminal; never ask for their password or add passwordless sudo. The installer keeps the selected Hermes owner/home, and you can keep using the normal status command below. Rootful Docker access is administrator-equivalent; unsupported rootless preparation stops safely instead of migrating Docker.
+
 Tell the owner it can take 10-20 minutes.
 
 4. Check progress about once a minute:

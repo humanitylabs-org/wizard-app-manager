@@ -421,6 +421,20 @@ def handle(line):
     else:
         changed = False
     if changed: save(st)
+if mode == "stream":
+    # This projection runs AS the selected owner, never root. User-controlled paths/symlinks cannot
+    # redirect a privileged write, and the agent can monitor its own normal status command.
+    import fcntl
+    lock = open(os.path.join(os.path.dirname(path), "install.lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    st = {"state": "running", "step": "administrator host preparation", "tailscale_login_url": None,
+          "wizard_url": None, "message": "", "notes": [], "restart_pending": False, "pid": pid}
+    save(st)
+    with open(log_path, "w") as projected:
+        os.chmod(log_path, 0o600)
+        for line in sys.stdin:
+            projected.write(line); projected.flush(); handle(line)
+    sys.exit(0)
 with open(log_path, errors="replace") as log:
     buf = ""
     while True:
@@ -479,6 +493,25 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
   : > "$INSTALL_LOG"; chmod 600 "$INSTALL_LOG"
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" begin $$
   local rc=0 gpid fpid
+  if [ "$(id -u)" -eq 0 ] && [ -n "${WIZARD_HERMES_USER:-}" ] &&
+     [ "$WIZARD_HERMES_USER" != root ] && pick_hermes && [ "$H_OK" = yes ]; then
+    # Keep administrator state root-owned, but stream a progress projection under the owner's UID.
+    # Never source scripts/env or write as root through a directory controlled by the named account.
+    local oh; oh="$(home_of "$H_USER")/.wizard-os"
+    runuser -u "$H_USER" -- mkdir -p "$oh"
+    runuser -u "$H_USER" -- chmod 700 "$oh"
+    local -a codes
+    set +e
+    bash "$WOS_DIR/get.sh" </dev/null 2>&1 9>&- | tee -a "$INSTALL_LOG" |
+      runuser -u "$H_USER" -- /usr/bin/python3 -c "$STATUS_PY" "$oh/install-status.json" "$oh/install.log" stream $$ 9>&-
+    codes=("${PIPESTATUS[@]}")
+    set -e
+    rc="${codes[0]}"
+    [ "${codes[1]}" = 0 ] && [ "${codes[2]}" = 0 ] || rc=1
+    runuser -u "$H_USER" -- /usr/bin/python3 -c "$STATUS_PY" "$oh/install-status.json" "$oh/install.log" end "$rc"
+    python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
+    return 0
+  fi
   bash "$WOS_DIR/get.sh" </dev/null >>"$INSTALL_LOG" 2>&1 9>&- &
   gpid=$!
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" follow "$gpid" </dev/null 9>&- &
@@ -543,11 +576,12 @@ named_host_ready() {
 # and retain the exact selected owner/home in the ONE command the owner runs in their own terminal.
 if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] &&
    [[ "${1:-}" != status && "${1:-}" != check && "${1:-}" != --check ]] &&
-   ! sudo -n true 2>/dev/null && ! named_host_ready; then
+   ! sudo -n true 2>/dev/null && ! named_host_ready &&
+   ! { [ "${1:-}" = start ] && install_running; }; then
   prc=0; pick_hermes || prc=$?
   if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
     echo "Wizard OS needs one administrator approval for host packages and services. No passwordless sudo is required or granted." >&2
-    echo "Run this in your own terminal (sudo asks there, never in chat), then use sudo for the status command:" >&2
+    echo "Run this in your own terminal (sudo asks there, never in chat); your agent can then check normal status:" >&2
     printf 'curl -fsSL https://aiwizards.com/os.sh | sudo env WIZARD_HERMES_USER=%q HERMES_HOME=%q WIZARD_AGENT_SAFE=1 bash -s start\n' "$H_USER" "$H_HOME" >&2
     exit 2
   fi
