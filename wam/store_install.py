@@ -122,12 +122,15 @@ def _links(c) -> None:
     """Publish the new app on the tailnet so Wizard can open it (best effort)."""
     try:
         from . import links
-        from .cli import write_registry
+        from .cli import write_registry, share_registry
         reg = write_registry(c)
         links.publish(reg, c.home, {a["id"] for a in reg.get("apps") or [] if "shell" in (a.get("provides") or [])})
         links.apply_to_registry(reg, c.home)
         from . import registry
         registry.write(reg, c.home)
+        # The Agent Service consumes the shared projection, not the owner's file.
+        # Publish it again after URL rewriting, including the very last install.
+        share_registry(c)
     except Exception:  # noqa: BLE001
         pass
 
