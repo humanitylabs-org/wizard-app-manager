@@ -592,7 +592,7 @@ fi
 case "${1:-}" in
   start) install_start; exit 0 ;;
   status) install_status; exit 0 ;;
-  __runner) install_runner ;;
+  __runner) install_runner; exit 0 ;;
 esac
 # ---- end detached install ----
 AGENT_SAFE=0; in_hermes_agent && AGENT_SAFE=1
