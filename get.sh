@@ -931,10 +931,6 @@ try:
   check("App Manager checkout clean", "clean", "clean" if not dirty else "modified: " + " ".join(dirty.split()[:6]), True)
   running_names = run(*docker, "ps", "--format", "{{.Names}}").split()
   digest_check("wizard-app-manager", "runtipi" if "runtipi" in running_names else "", True)
-  try:
-      apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
-  except (OSError, ValueError):
-      apps = {}
   names = run(*docker, "ps", "--format", "{{.Names}}").split()
   def container_for(app):
       # Exact Runtipi project boundary, not a substring that can match another app/test stack.
@@ -970,6 +966,12 @@ try:
       digest_check(image_name, container, mode == "alongside")
       if mode == "alongside" and checks[-1]["name"] == f"image {image_name}" and not checks[-1]["ok"]:
           checks[-1]["remedy"] = f"~/.local/bin/wam app update {app_id}, then re-run this command"
+  # app update regenerates apps.json. Re-read it AFTER all queued core updates; the pre-update
+  # projection otherwise falsely reports old source commits even when the new images are running.
+  try:
+      apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
+  except (OSError, ValueError):
+      apps = {}
   for slot, d in (rel.get("default_apps") or {}).items():
       if not d or (mode == "alongside" and d.get("alongside")):
           continue

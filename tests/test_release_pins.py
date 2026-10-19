@@ -219,6 +219,31 @@ def test_strict_failure_leaves_the_previous_record_alone(box):
     assert p.returncode == 3 and rec["status"] == "pinned"
 
 
+def test_alongside_source_readback_uses_registry_after_image_update(box):
+    """A landed update changes both the running digest and the registry source commit."""
+    new_commit, old_commit = "d" * 40, "e" * 40
+    release_path = box["rel"] / "9.9.9.json"
+    release = json.loads(release_path.read_text())
+    release["default_apps"]["shell"].update(repo="humanitylabs-org/wizard-shell", commit=new_commit)
+    release_path.write_text(json.dumps(release))
+    before = json.loads(json.dumps(box["apps"]))
+    before["apps"][0]["commit"] = old_commit
+    after = json.loads(json.dumps(before))
+    after["apps"][0]["commit"] = new_commit
+    wam = box["home"] / ".local" / "bin" / "wam"
+    wam.parent.mkdir(parents=True, exist_ok=True)
+    wam.write_text('#!/usr/bin/env bash\n' +
+                   f'printf "%s\\n" "{SHELL_DIGEST}" > "$HOME/shell-now"\n' +
+                   "printf '%s\\n' '" + json.dumps(after) + "' > \"$HOME/.wizard-os/apps.json\"\n")
+    wam.chmod(0o755)
+    docker = box["home"].parent / "bin" / "docker"
+    docker.write_text(docker.read_text().replace('$SHELL_DIGEST', '$(cat "$HOME/shell-now" 2>/dev/null || echo $SHELL_DIGEST)'))
+    p, rec = box["run"](APPS_JSON=json.dumps(before), SHELL_DIGEST=OTHER, WIZARD_MODE="alongside")
+    assert p.returncode == 0 and rec["status"] == "pinned", p.stdout + p.stderr
+    source = next(c for c in rec["checks"] if c["name"] == "default app source shell")
+    assert source["ok"] and source["observed"] == new_commit
+
+
 def test_a_failed_release_fetch_leaves_the_previous_record_alone(box):
     p, rec = box["run"]()
     p, rec = box["run"](WIZARD_RELEASE_BASE="http://127.0.0.1:9/releases")
