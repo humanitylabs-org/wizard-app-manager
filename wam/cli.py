@@ -831,6 +831,9 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
     return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]]}
 
 
+BOOTSTRAP_RETRY_DELAY = 10
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -840,6 +843,16 @@ def bootstrap(c: Config) -> dict:
     for app_id in slots.to_install(reg):
         try:
             done.append(install(c, app_id)["id"])
+        except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
+            failed[app_id] = str(e)[:200]
+    # One retry for apps the App Manager removed after a failed `compose up` (seen live: a pull cancelled mid-way
+    # on a fresh box); a second attempt on the same box then succeeded. Anything failing twice is reported.
+    for app_id in [a for a in list(failed) if "install failed" in failed[a]]:
+        time.sleep(BOOTSTRAP_RETRY_DELAY)
+        try:
+            print(f"retrying {app_id} once", file=sys.stderr)
+            done.append(install(c, app_id)["id"])
+            del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
     reg = write_registry(c, rt)
@@ -974,7 +987,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self._json(403, {"error": "cross_site_refused"})
             try:
-                return self._json(200, resources.read(c.runtipi()))
+                return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
                 return self._json(503, {"error": "server_resources_unavailable"})
         if u.path == "/api/apps":

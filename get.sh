@@ -488,7 +488,17 @@ PY
     tail -n 20 "$INSTALL_LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' || true
   fi
 }
+docker_group_member() {  # the account is in the docker group (/etc/group), whether or not this process has it yet
+  getent group docker 2>/dev/null | cut -d: -f4 | tr ',' '\n' | grep -qx "$(id -un)"
+}
 install_runner() {  # internal: the detached runner. One at a time (flock); the final status is written before it exits.
+  # After the one-time administrator approval, the owner's systemd user manager (and so this transient unit) can
+  # predate the new docker group membership until the next login/reboot. Pick the group up here instead of failing.
+  if [ "$(id -u)" -ne 0 ] && [ -z "${WIZARD_RUNNER_SG:-}" ] && ! docker info >/dev/null 2>&1 &&
+     docker_group_member && command -v sg >/dev/null; then
+    export WIZARD_RUNNER_SG=1
+    exec sg docker -c "exec /bin/bash $(printf '%q' "$WOS_DIR/get.sh") __runner"
+  fi
   exec 9>"$INSTALL_LOCK"
   flock -n 9 || { echo "A Wizard OS install is already running." >&2; exit 0; }
   [ ! -f "$WOS_DIR/install-env" ] || { set -a; . "$WOS_DIR/install-env"; set +a; rm -f "$WOS_DIR/install-env"; }
@@ -565,12 +575,19 @@ for k in sorted(os.environ):
     setsid nohup /bin/bash "$WOS_DIR/get.sh" __runner </dev/null >/dev/null 2>&1 8>&- &
   fi
   for _ in $(seq 1 40); do install_running && [ -f "$STATUS_FILE" ] && break; sleep 0.25; done
+  if [ ! -f "$STATUS_FILE" ] && ! install_running; then
+    echo "The Wizard OS install did not start (its background runner exited at once). Nothing new was installed." >&2
+    echo "Run the start command again; if it repeats, run: curl -fsSL https://aiwizards.com/os.sh | bash" >&2
+    exit 1
+  fi
   echo "Wizard OS install started in the background (it can take 10-20 minutes)."
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
 named_host_ready() {
-  [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] && docker info >/dev/null 2>&1 || return 1
+  [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
+  docker info >/dev/null 2>&1 || { docker_group_member && command -v sg >/dev/null &&
+    sg docker -c 'docker info' >/dev/null 2>&1; } || return 1
   [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" != tailscale ] ||
     { systemctl is-active --quiet tailscaled && tailscale debug prefs 2>/dev/null |
       python3 -c 'import json,os,sys; sys.exit(json.load(sys.stdin).get("OperatorUser") != os.environ.get("USER"))'; }
