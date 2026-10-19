@@ -1,0 +1,140 @@
+{
+  "version": "0.3.8",
+  "name": "Wizard OS install snapshot 0.3.8",
+  "date": "2026-10-19",
+  "about": "Installer-only follow-up to 0.3.7: App Store data treats a cached adapter as complete only when every module it imports is present, and every alongside run (re)installs the Store data service, so a rerun repairs a box left with a failed Store data unit. Keeps 0.3.7's named-owner rerun (sg docker), host disk, and default-app retry fixes. All official image/default-app pins unchanged.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "instructions": "https://aiwizards.com/os.md",
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Alongside mode consumes the split image pins. Fresh mode still installs catalog defaults and reports image drift. No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "bef699e8e5aeacc27f25c3e1d32ed4b58a7f316c",
+      "branch": "main",
+      "note": "Merged WAM #79 on top of #77: stale Store-data cache refetch + store-data on every alongside run. New regression fails on 34431a1 and passes on the fix; 400 local tests passed / 7 skipped; CI green."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "1012536512b8ccae647f2e04712a2ba71dd9f7a8",
+      "branch": "main",
+      "note": "Latest successfully published official main at selection; supports the compact session-list API without a private database mount."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "62539161037fd6bf33979c7cb5d5177f43c6d97d",
+      "branch": "main",
+      "note": "Latest successfully published official daily at selection; compact session-list client."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.161-e39576a",
+      "digest": "sha256:6adc3f809ba3ec92b6809f8ad08caeb481e89ef33212a9233342ed8e111c2666",
+      "built_from": "wizard-app-manager",
+      "source_commit": "e39576a0e28e95b5eef996454a269288ba37e8c2",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/38785083062",
+      "note": "Latest official App Manager image. Its build inputs (packages/, Dockerfile, package.json, bun.lock, turbo.json, image workflow) are unchanged between e39576a and the pinned installer commit; later changes are installer/CLI only and come from the pinned checkout."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-62539161037fd6bf33979c7cb5d5177f43c6d97d",
+      "digest": "sha256:d30685f77e9f6bcdc43d29d13047b22c9ede2f7f097bb38de6fb961a5f902df7",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/39198917952"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-1012536512b8ccae647f2e04712a2ba71dd9f7a8",
+      "digest": "sha256:7c641ed8674d915e8867442195eac3ef3ad193604f527d7114fb5276df69b62b",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/39191450093"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "62539161037fd6bf33979c7cb5d5177f43c6d97d"
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "1012536512b8ccae647f2e04712a2ba71dd9f7a8"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.1.4",
+      "commit": "f87d5ddc449535418ee92ebeb24aaec36cc58058",
+      "note": "Host Hermes owns and renews its sign-in; the connection app reads sanitized usage through the wizard-os dashboard plugin. Existing Claude remains installed; no Claude sign-in is assumed."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard1",
+      "commit": "def6a08aa000c3cb034c4b50a2fa334b3f17bc51"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "304e61613d1fdc1c5df9b62bccd1f8b52790b642"
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    }
+  }
+}
