@@ -65,3 +65,20 @@ def test_missing_imported_module_fails_cleanly(tmp_path):
     with pytest.raises(RuntimeError, match="no tools/gone.mjs"):
         store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: files.get(n))
     assert not any(tmp_path.iterdir())
+
+
+def test_a_cache_missing_an_imported_module_is_refetched(tmp_path):
+    """Live 0.3.7 rerun: a 0.3.6 cache (no wizard-alpha.mjs) was reused as complete and the unit kept failing."""
+    tools = tmp_path / SHA / "tools"
+    tools.mkdir(parents=True)
+    for n in ("store-data-origin.mjs", "store-index-views.mjs", "system-overview.mjs"):
+        (tools / n).write_text("// old")
+    (tools / "store-private-catalog.mjs").write_text("import {cached} from './wizard-alpha.mjs';")
+    files = {"store-data-origin.mjs": b"// new", "store-index-views.mjs": b"", "system-overview.mjs": b"",
+             "store-private-catalog.mjs": b"import {cached} from './wizard-alpha.mjs';", "wizard-alpha.mjs": b"//"}
+    asked = []
+    out = store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
+    assert (out / "wizard-alpha.mjs").is_file() and asked
+    asked.clear()
+    store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
+    assert asked == [], "a complete cache is reused without refetching"
