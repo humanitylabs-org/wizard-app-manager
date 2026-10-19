@@ -38,3 +38,18 @@ def test_install_routes_reach_aliases_and_preserve_conflicts(tmp_path,monkeypatc
     for port in [8796,8806]:assert cfg['Web'][f'box.ts.net:{port}']['Handlers']['/sample']['Proxy']=='http://127.0.0.1:9000'
     assert not any('--https=7000' in a for a in calls)
     assert next(x for x in result['links'] if x['id']=='sample')['open']=='/sample/'
+
+
+def test_last_store_install_shares_rewritten_launcher(tmp_path, monkeypatch):
+    import json
+    from wam import cli, store_install
+    c=SimpleNamespace(home=tmp_path/'home',runtipi_root=tmp_path/'rt')
+    c.home.mkdir()
+    reg={'schema':2,'apps':[{'id':'sample','view':{'url':'http://127.0.0.1:9000/'}}]}
+    monkeypatch.setattr(cli,'write_registry',lambda c:reg)
+    monkeypatch.setattr(links,'publish',lambda *a:None)
+    def apply(reg,home):reg['apps'][0]['view']['url']='/sample/'
+    monkeypatch.setattr(links,'apply_to_registry',apply)
+    store_install._links(c)
+    shared=json.loads((c.runtipi_root/'app-data/wizard-os/apps.json').read_text())
+    assert shared['apps'][0]['view']['url']=='/sample/'
