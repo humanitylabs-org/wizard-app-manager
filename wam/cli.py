@@ -231,14 +231,14 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 # ---------------------------------------------------------------- commands
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
-            _split: bool = False) -> dict:
+            _split: bool = False, _record: dict | None = None) -> dict:
     release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
     _seen.add(app_id)
     rt = c.runtipi()
-    rec = resolve_any(c, app_id)
+    rec = _record if _record is not None else resolve_any(c, app_id)
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
@@ -1052,11 +1052,9 @@ class StoreHandler(BaseHTTPRequestHandler):
         if si.peer_uid(self.client_address[1]) != 0:
             return self._json(403, {"error": "only reachable through tailscale serve"})
         c = self.cfg
-        al = alongside.load(c.home) or {}
         lp = c.home / "links.json"
         ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
-        port = int((al.get("shell") or {}).get("port") or 0)
-        origins = {f"https://{ts}:{port}"} if ts and port else set()
+        origins = si.served_origins(ts) if ts else set()
         owner = si.owner_login()
         if method == "POST":
             why = si.check_request(self.headers, owner, origins)
@@ -1066,7 +1064,19 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
         if method == "POST":
-            code, body = si.start(c, app_id, lambda c_, a: install(c_, a), lambda: installed_ids(c.runtipi()))
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4096:
+                    return self._json(400, {"error": "invalid selection body size"})
+                selection = json.loads(self.rfile.read(size))
+                from . import store_selection
+                if not si.ID.fullmatch(app_id):
+                    raise ValueError("bad app id")
+                selection = store_selection.resolve(c, app_id, selection)
+                code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
+                                      lambda: installed_ids(c.runtipi()), selection=selection)
+            except (ValueError, OSError, index.IndexError_) as e:
+                return self._json(400, {"error": str(e)})
         else:
             code, body = si.status(app_id)
         return self._json(code, body)

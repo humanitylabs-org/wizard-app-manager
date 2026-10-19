@@ -155,6 +155,17 @@ export class WizardIndexStore extends AppStoreFilesManager {
 
   private async materialize(appName: string, fresh: boolean) {
     if (!ID.test(appName)) return;
+    // Written only by the owner-local Store installer after resolving an authorized
+    // exact release. Never replace a prepared private/channel selection with an
+    // index lookup (including during copyAppFromRepoToInstalled's fresh lookup).
+    const selected = path.join(this.getAppStoreFolder(), appName, '.wizard-selection');
+    if (await this.filesystem.isFile(selected)) {
+      const pin = JSON.parse((await this.filesystem.readTextFile(selected)) ?? '{}');
+      const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
+      if (!SHA.test(pin.commit ?? '') || pin.commit !== await this.localCommit(appName) || pin.repo !== source.repo)
+        throw new Error('invalid owner-local selection pin');
+      return;
+    }
     const rec = await this.lookup(appName, fresh);
     if (!rec || !SHA.test(rec.install?.commit ?? '')) return;
     const have = await this.localCommit(appName);
