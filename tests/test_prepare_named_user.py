@@ -39,3 +39,13 @@ def test_admin_preparation_rejects_nonroot_before_any_other_command(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode == 2
     assert 'requires an administrator' in result.stderr
+
+
+def test_named_owner_preparation_does_not_accept_root_as_the_target(tmp_path):
+    bindir = tmp_path / 'bin'; bindir.mkdir()
+    executable = bindir / 'id'; executable.write_text('#!/bin/sh\necho 0\n'); executable.chmod(0o755)
+    result = subprocess.run(['bash', str(SCRIPT), 'root'], env={'PATH': f'{bindir}:/usr/bin:/bin'},
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'existing named owner, not root' in result.stderr
+

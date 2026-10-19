@@ -4,7 +4,10 @@
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo 'Host preparation requires an administrator.' >&2; exit 2; }
 owner="${1:?selected Hermes owner required}"
-[ "$owner" != root ] && id "$owner" >/dev/null
+if [ "$owner" = root ] || ! id "$owner" >/dev/null 2>&1; then
+  echo 'Host preparation requires an existing named owner, not root.' >&2
+  exit 2
+fi
 home="$(getent passwd "$owner" | cut -d: -f6)"
 [ -n "$home" ] && [ -d "$home" ] || { echo 'Selected owner has no home directory.' >&2; exit 2; }
 uid="$(id -u "$owner")"; gid="$(id -g "$owner")"
