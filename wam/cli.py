@@ -198,6 +198,23 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     return None
 
 
+def shell_origins(c: Config) -> set[str]:
+    """Existing private HTTPS shell mounts, never inferred from a request Origin."""
+    from . import links, store_install
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+        port = int(((alongside.load(c.home) or {}).get("shell") or {}).get("port") or 0)
+        config = links.serve_status()
+        origins = store_install.served_origins(host)
+        # Also support CLI-only boxes without the Store listener mount.
+        for authority, site in config.get("Web", {}).items():
+            if authority.rsplit(":", 1)[0] == host and port and site.get("Handlers", {}).get("/", {}).get("Proxy") == f"http://127.0.0.1:{port}":
+                origins.add(f"https://{authority}")
+        return {o for o in origins if not config.get("AllowFunnel", {}).get(o.removeprefix("https://"))}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+
 def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
@@ -215,6 +232,10 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             form[var] = v
         elif "default" in f:
             continue
+        elif f.get("required") and f.get("type") == "url" and var.endswith("_ALLOWED_ORIGINS") and (origins := shell_origins(c)):
+            # Origin-list configuration is distinct from arbitrary required URLs
+            # (provider endpoints etc.). Only existing owner Serve mounts qualify.
+            form[var] = ",".join(sorted(origins))
         elif f.get("required") and f.get("type") == "password":
             form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
