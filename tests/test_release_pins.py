@@ -72,6 +72,8 @@ def box(tmp_path):
     bin_dir.mkdir()
     (bin_dir / "docker").write_text(FAKE_DOCKER)
     (bin_dir / "docker").chmod(0o755)
+    (bin_dir / "sudo").write_text("#!/bin/sh\n# Authentication is out of scope for this release-only sandbox.\nexit 0\n")
+    (bin_dir / "sudo").chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
     # Alongside preflight needs an actual sandbox Hermes, not the developer's host install.

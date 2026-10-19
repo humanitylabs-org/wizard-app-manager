@@ -85,7 +85,8 @@ def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_acc
     privilege = "0" if docker_access else "1"
     assert all(line.startswith(f"docker sudo={privilege} ") for line in docker_calls[1:])
     assert "tailscale up" not in "\n".join(log)
-    assert any("enable --now tailscaled" in line for line in log)
+    assert any("is-active --quiet tailscaled" in line for line in log)
+    assert not any("enable --now tailscaled" in line for line in log)
     assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
     assert log.index("tailscale status --json") < log.index("docker sudo=0 info")
     compose = (root / "user-config/tipi-compose.yml").read_text()

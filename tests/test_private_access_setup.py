@@ -30,7 +30,7 @@ def sandbox(tmp_path):
         p.chmod(0o755)
 
     tool("id", 'echo 1000\n')
-    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; exec "$@"\n')
+    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; [ "${1:-}" != -n ] || shift; exec "$@"\n')
     tool("systemctl", 'printf "systemctl %s\\n" "$*" >> "$CALLS"; exit "${SERVICE_RC:-0}"\n')
     tailscale_body = '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 case "$1" in
@@ -89,9 +89,23 @@ def test_existing_connection_is_not_reconfigured(sandbox):
     calls = log.read_text()
     assert "tailscale up" not in calls
     assert "package installed" not in calls
-    assert "enable --now tailscaled" in calls
+    assert "is-active --quiet tailscaled" in calls
+    assert "enable --now tailscaled" not in calls
+    assert "sudo -n systemctl" not in calls, "a running daemon needs no privileged systemctl"
     assert json.loads((home / ".wizard-os/private-access.json").read_text()) == {
         "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
+
+
+def test_operator_without_sudo_reuses_daemon_and_runs_each_up_only_once(sandbox):
+    bindir, log, _, state, _ = sandbox
+    (bindir / "sudo").write_text('#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$CALLS"\nexit 1\n')
+    state.write_text("NeedsLogin")
+    p = run(sandbox, NONDEFAULT="1", WIZARD_TAILSCALE_WAIT="0")
+    assert p.returncode == 0, p.stderr
+    calls = log.read_text()
+    assert "sudo -n tailscale" not in calls and "enable --now tailscaled" not in calls
+    assert sum(line.startswith("tailscale up ") for line in calls.splitlines()) == 2
+    assert "--accept-dns=false --accept-routes --hostname=fixture" in calls
 
 
 def test_fresh_install_can_leave_login_pending(sandbox):
