@@ -8,7 +8,7 @@ You are the owner's agent. Follow these steps in order. Keep every message to th
 curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash
 ```
 
-Tell the owner in one line what it found. Before starting, also say: "Wizard's private interface reads your Hermes session database so chats appear; provider credentials are not shared with the interface."
+Tell the owner in one line what it found.
 
 2. If the check says to stop, send the owner its message word for word. Then stop.
 

@@ -11,9 +11,9 @@ import pytest
 from wam import cli, links, resources, slots
 
 
-def test_installer_shares_only_sessions_for_new_thread_list():
+def test_installer_keeps_database_sharing_opt_in():
     script = (Path(__file__).parents[1] / 'install.sh').read_text()
-    assert '"$HOME/.local/bin/wam" alongside --share-sessions ' in script
+    assert '"$HOME/.local/bin/wam" alongside --share-sessions ' not in script
     assert '"$HOME/.local/bin/wam" alongside --share-history' not in script
 
 
