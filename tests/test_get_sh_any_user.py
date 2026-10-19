@@ -218,6 +218,27 @@ def test_no_hermes_root_still_makes_the_wizard_user_fresh(box):
     assert (box.sudoers / "90-wizard-wizard").exists()
 
 
+@pytest.mark.parametrize("record", ["none", "alongside", "failed"])
+def test_running_runtipi_is_not_a_fresh_receipt_for_named_owner(box, record):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    if record == "alongside":
+        box.wos("alice", "alongside")
+    elif record == "failed":
+        state = box.users["alice"][1] / ".wizard-os"
+        state.mkdir()
+        (state / "release.json").write_text('{"mode":"alongside","status":"install-failed"}')
+    (box.bin / "docker").write_text('#!/bin/sh\ncase "$1" in version) echo 29.9.1;; ps) echo runtipi;; esac\nexit 0\n')
+    checked = box.run("root", "--check")
+    assert "would install:     alongside as alice" in checked.stdout, checked.stdout
+    result = box.run("root")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert box.handoff().startswith("sudo -iu alice "), box.log.read_text()
+    assert _env_of(box.handoff())["WIZARD_MODE"] == "alongside"
+    assert "useradd" not in box.log.read_text()
+    assert list(box.sudoers.iterdir()) == []
+
+
 def test_fresh_box_with_a_root_hermes_stays_fresh_on_rerun(box):
     box.hermes("root")
     box.add_user("wizard", 1000)

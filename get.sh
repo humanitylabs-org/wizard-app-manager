@@ -194,6 +194,9 @@ fresh_box() {  # fresh_box [user]
   local u="${1:-$(id -un)}"
   [ "$(wos_mode "$u")" = alongside ] && return 1
   [ "$(wos_mode "$u")" = fresh ] || [ "$(wos_mode "$WUSER")" = fresh ] && return 0
+  # Runtipi is also started by alongside host preparation. Without an explicit fresh receipt, a verified
+  # existing host Hermes wins over that container heuristic (including root reruns for a named owner).
+  has_hermes && return 1
   { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
 }
 # Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
