@@ -103,7 +103,8 @@ class Box:
         e = {"PATH": f"{self.bin}:{home}/.local/bin:/usr/bin:/bin", "HOME": str(home), "USER": user, "LANG": "C.UTF-8",
              "FAKE_USER": user, "FAKE_PASSWD": str(self.tmp / "passwd"), "FAKE_PS": str(self.ps),
              "FAKE_LOG": str(self.log), "WIZARD_SYSTEMD_DIR": str(self.units), "WIZARD_SUDOERS_DIR": str(self.sudoers),
-             "WIZARD_PROC_ROOT": str(self.proc), "WIZARD_BUS_WAIT": "0", "WIZARD_PRIVATE_ACCESS": "none"}
+             "WIZARD_PROC_ROOT": str(self.proc), "WIZARD_RUN_ROOT": str(self.tmp / "run-user"),
+             "WIZARD_BUS_WAIT": "0", "WIZARD_PRIVATE_ACCESS": "none"}
         e.update({k: v for k, v in extra.items() if v is not None})
         return e
 
@@ -400,3 +401,20 @@ def test_install_sh_restarts_synchronously_from_a_terminal(tmp_path):
     assert p.returncode == 0, p.stderr
     assert "--" + RS in next(l for l in calls.splitlines() if l.startswith("wizard link"))
     assert "systemd-run" not in calls and "RESTART_LATER=\n" in p.stdout + "\n"
+
+
+@pytest.mark.parametrize("entry", [(), ("start",)])
+def test_passwordful_user_gets_exact_one_time_admin_command_without_writes(box, entry):
+    box.add_user("alice", 1001)
+    hh = box.hermes("alice", home_dir=box.tmp / "custom-hermes-home")
+    (box.bin / "sudo").write_text('#!/bin/sh\necho "sudo $*" >> "$FAKE_LOG"\nexit 1\n')
+    p = box.run("alice", *entry, HERMES_HOME=str(hh), FAKE_STAT_OWNER="alice")
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert "sudo env WIZARD_HERMES_USER=alice" in p.stderr
+    assert f"HERMES_HOME={hh}" in p.stderr
+    assert "WIZARD_AGENT_SAFE=1 bash -s start" in p.stderr
+    assert "No passwordless sudo is required or granted" in p.stderr
+    assert not (box.users["alice"][1] / ".wizard-os").exists()
+    assert list(box.sudoers.iterdir()) == []
+    assert "apt-get" not in box.log.read_text() and "systemd-run" not in box.log.read_text()
+

@@ -230,7 +230,7 @@ in_hermes_agent() {
 }
 docker_mode() {  # rootless | rootful | none, for user $1
   local uid; uid="$(getent passwd "${1:-$(id -un)}" | cut -d: -f3)"
-  if [ -S "/run/user/${uid:-x}/docker.sock" ] || case "${DOCKER_HOST:-}" in unix:///run/user/*) true ;; *) false ;; esac; then
+  if [ -S "${WIZARD_RUN_ROOT:-/run/user}/${uid:-x}/docker.sock" ] || case "${DOCKER_HOST:-}" in unix:///run/user/*) true ;; *) false ;; esac; then
     echo rootless
   elif [ -S /var/run/docker.sock ] || command -v docker >/dev/null 2>&1; then echo rootful
   else echo none; fi
@@ -533,6 +533,25 @@ for k in sorted(os.environ):
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
+named_host_ready() {
+  [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] && docker info >/dev/null 2>&1 || return 1
+  [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" != tailscale ] ||
+    { systemctl is-active --quiet tailscaled && tailscale debug prefs 2>/dev/null |
+      python3 -c 'import json,os,sys; sys.exit(json.load(sys.stdin).get("OperatorUser") != os.environ.get("USER"))'; }
+}
+# Noninteractive agents cannot authenticate sudo. Stop before creating detached state or changing anything,
+# and retain the exact selected owner/home in the ONE command the owner runs in their own terminal.
+if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] &&
+   [[ "${1:-}" != status && "${1:-}" != check && "${1:-}" != --check ]] &&
+   ! sudo -n true 2>/dev/null && ! named_host_ready; then
+  prc=0; pick_hermes || prc=$?
+  if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
+    echo "Wizard OS needs one administrator approval for host packages and services. No passwordless sudo is required or granted." >&2
+    echo "Run this in your own terminal (sudo asks there, never in chat), then use sudo for the status command:" >&2
+    printf 'curl -fsSL https://aiwizards.com/os.sh | sudo env WIZARD_HERMES_USER=%q HERMES_HOME=%q WIZARD_AGENT_SAFE=1 bash -s start\n' "$H_USER" "$H_HOME" >&2
+    exit 2
+  fi
+fi
 case "${1:-}" in
   start) install_start; exit 0 ;;
   status) install_status; exit 0 ;;
@@ -570,15 +589,18 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
   fi
   if [ -n "$ALONG_USER" ]; then
     say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing Wizard OS alongside it as $ALONG_USER"
-    if [ "$ALONG_USER" != root ] && ! sudo -n -u "$ALONG_USER" sudo -n true 2>/dev/null; then
-      echo "Alongside requires administrator-provisioned sudo for $ALONG_USER; refusing to grant passwordless root access automatically. Nothing was changed." >&2
+    if [ "$ALONG_USER" != root ] && [ "$(docker_mode "$ALONG_USER")" = rootless ]; then
+      echo "The selected Hermes owner uses rootless Docker. The one-time host preparation does not support that layout yet; existing Docker and Hermes were not changed." >&2
       exit 2
     fi
     prepare_server
     if [ "$ALONG_USER" != root ]; then
-      if [ "$(docker_mode "$ALONG_USER")" = rootful ] && ! id -nG "$ALONG_USER" | tr ' ' '\n' | grep -qx docker; then
-        usermod -aG docker "$ALONG_USER" && echo "added $ALONG_USER to the docker group"
-      fi
+      # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
+      # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
+      helper="$(mktemp)"
+      curl -fsSL "$REPO/raw/$REF/scripts/prepare-named-user.sh" -o "$helper"
+      bash "$helper" "$ALONG_USER"
+      rm -f "$helper"
       as_user "$ALONG_USER" alongside "$ALONG_HOME"
     fi
     # Root owns this Hermes: Wizard OS runs as root too. Its user units need root's user manager (linger).

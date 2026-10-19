@@ -28,7 +28,15 @@ esac
 if [ "$(id -u)" -eq 0 ]; then
   root() { "$@"; }
 else
-  root() { sudo "$@"; }
+  root() {
+    # Use the supported operator interface when sudo is unavailable; never prompt or retry a
+    # failed `up` as a second user, since its exact preservation diagnostic must remain intact.
+    if [ "$1" = tailscale ] && ! sudo -n true 2>/dev/null; then
+      "$@"
+    else
+      sudo -n "$@"
+    fi
+  }
 fi
 
 if ! command -v tailscale >/dev/null; then
@@ -40,7 +48,8 @@ if ! command -v tailscale >/dev/null; then
   rm -f "$script"
   trap - EXIT
 fi
-root systemctl enable --now tailscaled
+# A running, administrator-prepared daemon needs no second elevation from its named owner.
+systemctl is-active --quiet tailscaled || root systemctl enable --now tailscaled
 
 ADMIN_DNS="https://login.tailscale.com/admin/dns"
 # status_field <field>: BackendState | AuthURL | serve (MagicDNS and HTTPS certificates: on|magicdns-off|https-off)

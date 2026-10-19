@@ -30,7 +30,7 @@ def sandbox(tmp_path):
         p.chmod(0o755)
 
     tool("id", 'echo 1000\n')
-    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; exec "$@"\n')
+    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; [ "${1:-}" != -n ] || shift; exec "$@"\n')
     tool("systemctl", 'printf "systemctl %s\\n" "$*" >> "$CALLS"; exit "${SERVICE_RC:-0}"\n')
     tailscale_body = '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 case "$1" in
@@ -89,7 +89,9 @@ def test_existing_connection_is_not_reconfigured(sandbox):
     calls = log.read_text()
     assert "tailscale up" not in calls
     assert "package installed" not in calls
-    assert "enable --now tailscaled" in calls
+    assert "is-active --quiet tailscaled" in calls
+    assert "enable --now tailscaled" not in calls
+    assert "sudo -n systemctl" not in calls, "a running daemon needs no privileged systemctl"
     assert json.loads((home / ".wizard-os/private-access.json").read_text()) == {
         "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
 
