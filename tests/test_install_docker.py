@@ -36,6 +36,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
 if [ "$1" = image ]; then exit 1; fi
+case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
 ''')
     for name in ("systemctl", "loginctl"):
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
@@ -51,6 +52,9 @@ if [ "$1" = image ]; then exit 1; fi
   printf "wam %s\\n" "$*" >> "$CALLS"
   if [ "${3:-}" = bootstrap ]; then
     if [ -n "${BOOTSTRAP_OUT:-}" ]; then printf '%s\\n' "$BOOTSTRAP_OUT"; else echo '{"installed": [], "failed": {}}'; fi
+  fi
+  if [ "${3:-}" = recover ]; then
+    if [ -n "${RECOVER_OUT:-}" ]; then printf '%s\\n' "$RECOVER_OUT"; else echo '{"started": [], "failed": {}, "core": []}'; fi
   fi
   exit 0
 fi
@@ -75,11 +79,16 @@ def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_acc
     docker_calls = [line for line in log if line.startswith("docker ")]
     assert docker_calls[0] == "docker sudo=0 info"
     actual = [line.split(" ", 2)[2] for line in docker_calls[1:]]
-    assert actual[0].startswith("exec runtipi-db psql ")
-    assert actual[1:] == [
+    assert actual[0] == ("compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate "
+                         "--wait runtipi-db runtipi-queue")
+    assert actual[1].startswith("exec runtipi-db psql ") and "status = 'running'" in actual[1]
+    assert actual[2].startswith("exec runtipi-db psql ")
+    assert actual[3:] == [
         "image inspect ghcr.io/humanitylabs-org/wizard-app-manager:latest",
         "pull ghcr.io/humanitylabs-org/wizard-app-manager:latest",
         "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi",
+        "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps "
+        "runtipi-reverse-proxy",
         "rm -f wizard-store wizard-skin",
     ]
     privilege = "0" if docker_access else "1"
@@ -213,3 +222,37 @@ def test_a_python3_without_yaml_first_on_path_is_skipped(tmp_path):
     unit = (home / ".config/systemd/user/wizard-app-manager-api.service").read_text()
     assert f"ExecStart={system} -m wam serve" in unit
     assert (home / ".local/bin/wizard").read_text().splitlines()[0] == f"#!{system}"
+
+
+# ---- wam#95: records survive, base and app containers are gone
+
+def test_a_rerun_recreates_missing_base_containers_before_the_app_manager(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, RUNNING_ROWS="files:wizardapps\nwizard-ux:wizardapps\n")
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    base = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --wait runtipi-db runtipi-queue"))
+    manager = next(i for i, l in enumerate(log) if l.endswith("up -d --no-deps runtipi"))
+    proxy = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --no-deps runtipi-reverse-proxy"))
+    intent = next(i for i, l in enumerate(log) if "status = 'running'" in l)
+    assert base < intent < manager < proxy
+    # Installed apps whose containers vanished are started after the App Manager answers, before bootstrap; only the
+    # apps recorded running before the App Manager's status sync could mark them stopped.
+    rec = next(i for i, l in enumerate(log) if l.startswith("wam -m wam recover"))
+    assert log[rec] == "wam -m wam recover --running files:wizardapps --running wizard-ux:wizardapps"
+    assert rec < next(i for i, l in enumerate(log) if l.startswith("wam -m wam bootstrap"))
+    assert outcome["status"] == "ok"
+
+
+def test_failed_core_recovery_fails_the_install_and_other_apps_degrade(tmp_path):
+    out = json.dumps({"started": [], "failed": {"wizard-ux": "start did not finish", "files": "start_error"},
+                      "core": ["wizard-ux", "wizard-agent-service"]})
+    p, home, root, calls, outcome = sandbox(tmp_path, RECOVER_OUT=out)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert outcome["failed"] == ["the Wizard shell / Agent Service containers could not be restarted: "
+                                 "wizard-ux: start did not finish"]
+    assert outcome["degraded"] == ["some installed apps could not be restarted: files: start_error"]
+
+
+def test_recovery_is_skipped_when_the_app_manager_never_answers(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down")
+    assert not any(l.startswith("wam -m wam recover") for l in calls.read_text().splitlines())
