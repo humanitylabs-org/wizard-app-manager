@@ -412,7 +412,7 @@ def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootles
         return False
     if not _SAFE_PATH.match(str(data)):
         raise SystemExit(f"app data path {str(data)!r} has characters a command can't carry safely")
-    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
                         "--entrypoint", "sh", "-v", f"{data}:/state", image, "-c",
                         "chown -R 0:1000 /state && chmod -R g+rwX /state"],
                        capture_output=True, text=True, timeout=300)
@@ -427,13 +427,15 @@ def adopt_media(runtipi_root: Path, image: str, user: str) -> bool:
     but the first on rootful Docker) got EACCES on every upload, which the phone shows as "Wizard Files is
     unavailable (502)". Hand just those two Wizard folders to the service's identity (group-writable, so the uid-1000
     apps still read them), once, with a throwaway container of the app's own image. Returns True when it ran."""
+    # The image is the release pin, which an upgrade has not pulled yet (`wam app update` comes after this), so
+    # pull the pinned image when it is missing; `--pull never` failed every upgrade with "No such image".
     import subprocess
     media = Path(runtipi_root) / "media"
     if not media.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image) or not re.fullmatch(r"\d+:\d+", user):
         return False
     if not _SAFE_PATH.match(str(media)):
         raise SystemExit(f"media path {str(media)!r} has characters a command can't carry safely")
-    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
                         "--entrypoint", "sh", "-v", f"{media}:/media", image, "-c",
                         "mkdir -p /media/Inbox /media/.wizard-uploads"
                         f" && chown -R {user} /media/Inbox /media/.wizard-uploads"
