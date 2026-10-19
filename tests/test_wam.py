@@ -984,3 +984,23 @@ def test_bootstrap_retries_an_app_the_manager_removed_once(monkeypatch):
     out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None))
     assert out["installed"] == ["files", "wizard-chatgpt"]
     assert list(out["failed"]) == ["broken"] and tries == {"files": 1, "wizard-chatgpt": 2, "broken": 2}
+
+
+def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
+    """Uploads failed with EACCES (phone: "Wizard Files is unavailable (502)") when the owner's uid doesn't own
+    Runtipi's media folder. adopt_media hands only Inbox/ and .wizard-uploads/ to the service identity."""
+    from wam import alongside
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    rt = tmp_path / "rt"
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    (rt / "media").mkdir(parents=True)
+    assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
+    assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False
+    assert calls == []
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is True
+    cmd = calls[-1]
+    assert cmd[:2] == ["docker", "run"] and "none" in cmd and f"{rt}/media:/media" in cmd
+    assert "chown -R 1001:1001 /media/Inbox /media/.wizard-uploads" in cmd[-1]
+    assert "chown -R 1001:1001 /media " not in cmd[-1] and not cmd[-1].endswith("/media")   # never the whole tree

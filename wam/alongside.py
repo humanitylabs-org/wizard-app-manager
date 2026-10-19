@@ -421,6 +421,29 @@ def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootles
     return True
 
 
+def adopt_media(runtipi_root: Path, image: str, user: str) -> bool:
+    """Attachments land in the shared media folder (Inbox/<date>/, staged in .wizard-uploads/), but the Agent Service
+    runs as the owner (`user`), and Runtipi made that folder for its own uid. An owner who is not that uid (any user
+    but the first on rootful Docker) got EACCES on every upload, which the phone shows as "Wizard Files is
+    unavailable (502)". Hand just those two Wizard folders to the service's identity (group-writable, so the uid-1000
+    apps still read them), once, with a throwaway container of the app's own image. Returns True when it ran."""
+    import subprocess
+    media = Path(runtipi_root) / "media"
+    if not media.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image) or not re.fullmatch(r"\d+:\d+", user):
+        return False
+    if not _SAFE_PATH.match(str(media)):
+        raise SystemExit(f"media path {str(media)!r} has characters a command can't carry safely")
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+                        "--entrypoint", "sh", "-v", f"{media}:/media", image, "-c",
+                        "mkdir -p /media/Inbox /media/.wizard-uploads"
+                        f" && chown -R {user} /media/Inbox /media/.wizard-uploads"
+                        " && chmod -R u+rwX,g+rwX /media/Inbox /media/.wizard-uploads"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise SystemExit(f"could not give the Agent Service its attachment folders: {r.stderr.strip()[:200]}")
+    return True
+
+
 def container_user(a: dict, rootless: bool | None = None) -> str:
     """The uid that reads the owner's Hermes files. On rootful Docker that's the owner's own uid; on rootless Docker
     the owner IS container uid 0 (no capabilities), with gid 1000 so it can still write the shared /media folder
