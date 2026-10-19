@@ -96,6 +96,18 @@ def test_existing_connection_is_not_reconfigured(sandbox):
         "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
 
 
+def test_operator_without_sudo_reuses_daemon_and_runs_each_up_only_once(sandbox):
+    bindir, log, _, state, _ = sandbox
+    (bindir / "sudo").write_text('#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$CALLS"\nexit 1\n')
+    state.write_text("NeedsLogin")
+    p = run(sandbox, NONDEFAULT="1", WIZARD_TAILSCALE_WAIT="0")
+    assert p.returncode == 0, p.stderr
+    calls = log.read_text()
+    assert "sudo -n tailscale" not in calls and "enable --now tailscaled" not in calls
+    assert sum(line.startswith("tailscale up ") for line in calls.splitlines()) == 2
+    assert "--accept-dns=false --accept-routes --hostname=fixture" in calls
+
+
 def test_fresh_install_can_leave_login_pending(sandbox):
     bin_dir, log, home, state, _ = sandbox
     state.write_text("NeedsLogin")

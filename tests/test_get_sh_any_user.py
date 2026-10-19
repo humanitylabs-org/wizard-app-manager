@@ -403,6 +403,16 @@ def test_install_sh_restarts_synchronously_from_a_terminal(tmp_path):
     assert "systemd-run" not in calls and "RESTART_LATER=\n" in p.stdout + "\n"
 
 
+def test_admin_preparation_refuses_rootless_before_host_changes(box):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    p = box.run("root", DOCKER_HOST="unix:///run/user/1001/docker.sock")
+    assert p.returncode == 2
+    assert "uses rootless Docker" in p.stderr
+    assert "apt-get" not in box.log.read_text() and not box.handoff()
+    assert list(box.sudoers.iterdir()) == []
+
+
 @pytest.mark.parametrize("entry", [(), ("start",)])
 def test_passwordful_user_gets_exact_one_time_admin_command_without_writes(box, entry):
     box.add_user("alice", 1001)

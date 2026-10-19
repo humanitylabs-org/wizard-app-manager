@@ -27,6 +27,7 @@ if [ ! -f "$base/.env" ]; then
 fi
 # Membership is activated by get.sh's fresh login. This is explicitly the rootful Docker administration
 # group, not a sudo grant; no sudoers file or cached authentication timestamp is created.
+echo "Administrator approval grants $owner rootful Docker group access (administrator-equivalent); it does not grant passwordless sudo."
 usermod -aG docker "$owner"
 loginctl enable-linger "$owner"
 # Tailscale's host package/daemon needs root. Owner login is still a genuine owner action.
