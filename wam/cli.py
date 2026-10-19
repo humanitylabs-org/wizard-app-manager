@@ -1004,6 +1004,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/slots":
             p = c.home / "apps.json"
             return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
+        if u.path == "/api/updates":
+            from . import updates
+            return self._json(200, updates.status())
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -1020,6 +1023,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
+            if path == "/api/updates":            # {"mode": "auto"|"ask"}: the owner's choice
+                from . import updates
+                return self._json(200, updates.set_mode(str(self._body().get("mode", ""))))
+            if path == "/api/updates/apply":      # the Update button
+                from . import updates
+                return self._json(200, updates.apply())
         except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
@@ -1187,7 +1196,18 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    up = sub.add_parser("updates", help="update check, and the owner's choice: --auto or --ask (default)")
+    upg = up.add_mutually_exclusive_group()
+    upg.add_argument("--auto", action="store_true"); upg.add_argument("--ask", action="store_true")
+    upg.add_argument("--apply", action="store_true"); upg.add_argument("--apply-if-auto", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd == "updates":
+        from . import updates
+        res = (updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
+               else updates.apply() if args.apply else updates.apply_if_auto() if args.apply_if_auto
+               else updates.status())
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     c = Config()
     try:
         if args.cmd == "search":
