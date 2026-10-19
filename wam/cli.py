@@ -729,6 +729,8 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
             if role != "shell":   # it now runs as the owner: hand it the state the recipe's uid wrote
                 if alongside.adopt_state(c.runtipi_root, STORE, app_id, _app_image(c, st, app_id)):
                     out.setdefault("state_adopted", []).append(app_id)
+                if alongside.adopt_media(c.runtipi_root, _app_image(c, st, app_id), alongside.container_user(st["agent"])):
+                    out.setdefault("media_adopted", []).append(app_id)
         order = sorted(apps, key=lambda a: apps[a] != "service") if apps else []   # the service first
         dash = host_dashboard_cmd(c, rt)
         if dash.get("state") != "skipped":
