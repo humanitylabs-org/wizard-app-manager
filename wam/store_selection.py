@@ -50,6 +50,11 @@ def resolve(c, app_id, body):
     if not SHA.fullmatch(pin):
         raise ValueError('selected release has no immutable commit; refresh the Store')
     # Copy only server-resolved metadata, never browser-supplied URLs/commands/images.
+    if entry.get('architectures'):
+        try:
+            test_catalog.check_architecture(entry)
+        except RuntimeError as e:
+            raise ValueError(str(e)) from None
     return {'source': source, 'repo': repo, 'commit': pin, 'operation': operation, 'entry': entry}
 
 

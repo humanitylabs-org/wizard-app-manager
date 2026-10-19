@@ -45,7 +45,7 @@ def test_gateway_has_no_listener():
 
 def test_architecture_fails_before_download():
     with patch.object(cat.subprocess,'run',return_value=SimpleNamespace(stdout='x86_64\n')) as run:
-        with pytest.raises(private.PrivateError,match='does not support'): cat.preload(entry(),'not-a-token')
+        with pytest.raises(private.PrivateError,match='not this Wizard'): cat.preload(entry(),'not-a-token')
         assert run.call_count==1
 
 
