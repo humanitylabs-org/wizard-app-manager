@@ -218,6 +218,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             shutil.copytree(cfg_p.parent / "data", tmp / "data")
         (tmp / ".wizard-commit").write_text(commit + "\n")
         (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True}) + "\n")
+        if release or source_pin:
+            (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
         shutil.rmtree(dst, ignore_errors=True)
         tmp.rename(dst)
     return rec
