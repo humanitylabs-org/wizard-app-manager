@@ -63,6 +63,13 @@ OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 [ -f "$OVR" ] && cp "$OVR" "$OVR.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 # Preserve owner settings and Compose tags (!override/!reset), including box-only bindings.
 (cd "$HERE" && "$PY" -m wam.release_pins "$OVR" "$IMAGE")
+# wam#95: the runtime records (.env, database files, app records) can survive while the base containers are gone
+# (Docker reinstalled, containers removed). Start the database and queue from those records before anything talks to
+# them; --no-recreate leaves running ones exactly as they are, so a rerun on a healthy box changes nothing.
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --wait runtipi-db runtipi-queue)
+# Apps the owner left running, read before the App Manager starts: its status sync marks an app whose containers are
+# gone as stopped, which would lose that intent. `wam recover` restarts these; apps the owner stopped stay stopped.
+RUNNING_APPS="$("${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -Atc "SELECT app_name || ':' || app_store_slug FROM app WHERE status = 'running'" 2>/dev/null || true)"
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
 if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
@@ -74,6 +81,8 @@ if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
+# The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
@@ -126,6 +135,26 @@ fi
 healthy=0
 for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && { healthy=1; break; }; sleep 2; done
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
+# wam#95: installed apps whose containers are gone (records kept) are not reinstalled by bootstrap. Start the Wizard
+# shell / Agent Service and every app the owner left running; owner-stopped apps stay stopped. No-op when all run.
+if [ "$healthy" = 1 ]; then
+  REC_ARGS=()
+  while IFS= read -r u; do [ -z "$u" ] || REC_ARGS+=(--running "$u"); done <<<"$RUNNING_APPS"
+  if rec="$("$HOME/.local/bin/wam" recover ${REC_ARGS[@]+"${REC_ARGS[@]}"})"; then
+    split="$(printf '%s' "$rec" | python3 -c 'import json,sys
+try: r = json.load(sys.stdin)
+except ValueError: print("\n(unreadable recover result)"); raise SystemExit
+f, core = r.get("failed") or {}, set(r.get("core") or [])
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k in core))
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' 2>/dev/null || printf '\n(unreadable recover result)')"
+    rec_core="$(printf '%s\n' "$split" | sed -n 1p)"
+    rec_rest="$(printf '%s\n' "$split" | sed -n 2p)"
+    [ -z "$rec_core" ] || FAILED+=("the Wizard shell / Agent Service containers could not be restarted: $rec_core")
+    [ -z "$rec_rest" ] || DEGRADED+=("some installed apps could not be restarted: $rec_rest")
+  else
+    DEGRADED+=("could not restart installed apps whose containers are missing (wam recover failed)")
+  fi
+fi
 "$HOME/.local/bin/wam" doctor --fix >/dev/null 2>&1 || true   # repairs what it can; the next run is the verdict
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
 # The verdict is after bootstrap: a fresh agent cannot answer before it exists.

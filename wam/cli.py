@@ -886,6 +886,52 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "failed": failed, "spots": slots.table(reg)}
 
 
+def _app_container_states(urn: str) -> list[str]:
+    """Docker states of the containers Runtipi labelled for one app (empty when they are all gone)."""
+    from .agent_link import _docker
+    p = subprocess.run(_docker() + ["ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format", "{{.State}}"],
+                       capture_output=True, text=True, timeout=30)
+    if p.returncode:
+        raise RuntimeError(f"docker ps failed: {(p.stderr or p.stdout).strip()[:160]}")
+    return p.stdout.split()
+
+
+def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
+    """wam#95: start installed apps whose containers are missing or not running while their records survive.
+    Only the Wizard shell / Agent Service and the apps named in `running` (recorded running before this rerun) are
+    started: an app the owner stopped stays stopped. Apps whose containers all run are left alone (healthy no-op)."""
+    rt = c.runtipi()
+    defaults = slots.load_defaults()
+    core = [(defaults.get(s) or {}).get("app") for s in ("shell", "agent-service")]
+    core = [a for a in core if a]
+    installed = {}
+    for row in rt.installed():
+        urn = (row.get("info") or {}).get("urn") or ""
+        if urn:
+            installed[urn] = (row.get("app") or {}).get("status")
+    want = [f"{a}:{STORE}" for a in core] + [u if ":" in u else f"{u}:{STORE}" for u in running]
+    started, failed, skipped = [], {}, []
+    for urn in dict.fromkeys(want):
+        app_id = urn.split(":", 1)[0]
+        if urn not in installed:
+            skipped.append(app_id)
+            continue
+        try:
+            states = _app_container_states(urn)
+            if states and all(s == "running" for s in states):
+                continue
+            res = app_lifecycle(c, "start", urn)
+            if res.get("error"):
+                failed[app_id] = res["error"][:200]
+            else:
+                started.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, subprocess.SubprocessError) as e:
+            failed[app_id] = str(e)[:200]
+    if started:
+        write_registry(c, rt)
+    return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
+
+
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
     from . import builder_bundle
@@ -1208,6 +1254,8 @@ def main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
+    rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
+    rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
     ss = sub.add_parser("shell-split", help="move this box from the wizard-shell bundle to the split Agent Service + shell")
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
@@ -1240,6 +1288,8 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
+        elif args.cmd == "recover":
+            print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":
             print(json.dumps(shell_split(c, rollback=args.rollback, force=args.force), indent=2))
         elif args.cmd == "apps":

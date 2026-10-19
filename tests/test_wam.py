@@ -1007,3 +1007,48 @@ def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
     # an upgrade runs this before `wam app update` pulls the new pin: "--pull never" failed with "No such image"
     assert cmd[cmd.index("--pull") + 1] == "missing"
     assert "chown -R 1001:1001 /media " not in cmd[-1] and not cmd[-1].endswith("/media")   # never the whole tree
+
+
+# ---- wam#95: `wam recover` starts only missing core apps and apps recorded running
+
+def _recover_env(tmp_path, monkeypatch, installed, states):
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": u}, "app": {"status": s}} for u, s in installed]})()
+    c.runtipi = lambda: rt
+    started, written = [], []
+    monkeypatch.setattr(cli, "_app_container_states", lambda urn: states.get(urn, []))
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: started.append((verb, urn)) or {"status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: written.append(1) or {})
+    return c, started, written
+
+
+def test_recover_starts_missing_core_and_recorded_running_apps_only(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "stopped"), ("wizard-agent-service:wizardapps", "stopped"),
+                 ("files:wizardapps", "stopped"), ("browser:wizardapps", "stopped")]
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, {})
+    res = cli.recover(c, ["files:wizardapps"])
+    # browser was stopped by its owner (not recorded running): it stays stopped
+    assert [u for _, u in started] == ["wizard-ux:wizardapps", "wizard-agent-service:wizardapps", "files:wizardapps"]
+    assert res["started"] == ["wizard-ux", "wizard-agent-service", "files"] and res["failed"] == {}
+    assert set(res["core"]) == {"wizard-ux", "wizard-agent-service"} and written
+
+
+def test_recover_is_a_no_op_when_every_container_runs(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running"),
+                 ("files:wizardapps", "running")]
+    states = {u: ["running", "running"] for u, _ in installed}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    res = cli.recover(c, ["files:wizardapps", "gone:wizardapps"])
+    assert started == [] and not written
+    assert res == {"started": [], "failed": {}, "not_installed": ["gone"], "core": ["wizard-ux", "wizard-agent-service"]}
+
+
+def test_recover_starts_an_app_with_a_stopped_container_and_reports_failures(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running")]
+    states = {"wizard-ux:wizardapps": ["running", "exited"], "wizard-agent-service:wizardapps": []}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: {"status": "start_error", "error": "boom"}
+                        if "agent" in urn else started.append(urn) or {"status": "running"})
+    res = cli.recover(c)
+    assert started == ["wizard-ux:wizardapps"]
+    assert res["failed"] == {"wizard-agent-service": "boom"}
