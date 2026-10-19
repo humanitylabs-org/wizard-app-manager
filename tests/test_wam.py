@@ -377,6 +377,7 @@ def test_alongside_adopts_existing_service_state_on_rootless(tmp_path, monkeypat
     assert cmd[:2] == ["docker", "run"] and "--network" in cmd and "none" in cmd and "img:1" in cmd
     assert f"{rt}/app-data/wizardapps/wizard-agent-service/data:/state" in cmd
     assert "chown -R 0:1000 /state" in cmd[-1]
+    assert cmd[cmd.index("--pull") + 1] == "missing"   # the new pin may not be pulled yet on an upgrade
     assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "bad image;rm", rootless=True) is False
 
 
@@ -1003,4 +1004,6 @@ def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
     cmd = calls[-1]
     assert cmd[:2] == ["docker", "run"] and "none" in cmd and f"{rt}/media:/media" in cmd
     assert "chown -R 1001:1001 /media/Inbox /media/.wizard-uploads" in cmd[-1]
+    # an upgrade runs this before `wam app update` pulls the new pin: "--pull never" failed with "No such image"
+    assert cmd[cmd.index("--pull") + 1] == "missing"
     assert "chown -R 1001:1001 /media " not in cmd[-1] and not cmd[-1].endswith("/media")   # never the whole tree
