@@ -24,3 +24,9 @@ The canonical manifest’s private-URL caveat records its original publication b
 - This is source/image identity, not a fresh-box or alongside acceptance run.
 
 Future releases copy only reviewed release JSONs and advance `stable` through a pull request. Preserve old versioned manifests byte-for-byte.
+
+## 0.3.1 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.1.json`. Byte-identical SHA-256: `dc4ead2696d0f6f8a59a83577e4bcf197bacf980aa4b092ba18b38a495823983`.
+- 0.3.0 plus App Manager #62 (`f7f52b4`): install.sh runs wam and the wizard CLI with a python3 that has PyYAML. The first live agent-run root install failed because the agent's bundled Python came first on PATH.
+- Images and default apps are identical to 0.3.0.
