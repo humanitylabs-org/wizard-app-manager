@@ -38,11 +38,17 @@ def test_public_selection_uses_repo_not_first_id(c, monkeypatch):
 
 
 def test_legacy_id_only_is_public_unambiguous_and_pinned(c,monkeypatch):
+    monkeypatch.setattr(ss.test_catalog,'resolve',lambda app:None)
     monkeypatch.setattr(ss.index,'search',lambda *args,**kwargs:[ENTRY])
     result=ss.resolve(c,'demo',{})
     assert result['source']=='standard' and result['commit']==PIN and result['operation']=='install'
     monkeypatch.setattr(ss.index,'search',lambda *args,**kwargs:[ENTRY,{**ENTRY,'repo':'foreign/demo'}])
     with pytest.raises(ValueError,match='ambiguous'):ss.resolve(c,'demo',{})
+
+
+def test_legacy_private_identity_never_reaches_public_index(c,monkeypatch):
+    monkeypatch.setattr(ss.index,'search',lambda *args,**kwargs:pytest.fail('private ID must stay local'))
+    with pytest.raises(ValueError,match='source-qualified'):ss.resolve(c,'demo',{})
 
 def test_alpha_requires_subscription_and_exact_pin(c, monkeypatch):
     home=c.home/'alpha'; home.mkdir(); monkeypatch.setenv('WIZARD_ALPHA_HOME',str(home))
