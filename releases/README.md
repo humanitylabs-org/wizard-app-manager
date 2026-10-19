@@ -30,3 +30,8 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.1.json`. Byte-identical SHA-256: `dc4ead2696d0f6f8a59a83577e4bcf197bacf980aa4b092ba18b38a495823983`.
 - 0.3.0 plus App Manager #62 (`f7f52b4`): install.sh runs wam and the wizard CLI with a python3 that has PyYAML. The first live agent-run root install failed because the agent's bundled Python came first on PATH.
 - Images and default apps are identical to 0.3.0.
+
+## 0.3.6 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.6.json`. Byte-identical SHA-256: `5d509d49b2271aaac8a52891b9e991e3ee1f21772098e95c4179bb78fd3f4b4f`.
+- 0.3.5 plus App Manager #74 (`6bac949`): detached administrator runners no longer fall through into another installation.
