@@ -954,5 +954,5 @@ def test_multi_provider_slot_is_not_a_collision():
                      "browser": {"default": "browser", "candidates": ["browser", "other-browser"]}}}
     assert registry.collisions(reg) == ["slot 'browser' has 2 apps (browser, other-browser); default browser"]
     d = slots.load_defaults()
-    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-claude"
+    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-chatgpt"
     assert "ai-accounts" not in d   # AI Accounts retired: one connection app per provider (decision #61)
