@@ -17,12 +17,12 @@ Release 0.3.11 pins merged WAM `e3974ff6cfce92d5d689b56371c704b1d7bc750f`, offic
 | Unprivileged installer prints exact one-time administrator command and exits 2 | PASS | `owner-admin-gate.json`, `owner-start.log` in each run directory |
 | Exact default administrator command executed by root | PASS on 0.3.10 | First run `admin-start.log`; no actual human password entry |
 | Candidate 0.3.11 administrator phase | PASS | Candidate root command additionally selects `WIZARD_RELEASE=0.3.11`; it was not yet stable |
-| Fresh Wizard runtime after supported unlink, no Docker, exact core images removed | PASS on 0.3.11 | `fresh-wizard.json`, `core-image-cache-removed.json`, `official-install.log` |
+| Fresh Wizard runtime after supported unlink, no Docker, exact core images removed | PASS on 0.3.11 | `fresh-wizard.json`, `core-image-cache-removed.json`, `fresh-no-docker-install.log` |
 | Port pressure from pre-existing private routes | FAIL old / PASS new | Old fresh log selects Files 8797 and service restart-loops; candidate log selects Files 8798 and bridge remains on 8797 |
 | Real 0.3.10 → 0.3.11 official-image upgrade | PASS | First run `upgrade-0310-to-0311.{json,log}`; all release checks pass and original snapshot hashes match |
 | Duplicate start while a detached install is running | PASS on 0.3.10 | First run `duplicate-start.log`, `recovery.json` |
 | Kill actual detached runner unit, detect `stopped`, rerun | PASS on 0.3.10 | First run `killed-runner-status.log`, `interrupted-install.log`, successful following install |
-| Safe ordinary repeat | PASS on 0.3.10; 0.3.11 upgrade re-readback PASS | First run logs; stable default repeat is checked separately after promotion |
+| Safe ordinary repeat | PASS on 0.3.10 and default stable 0.3.11 | Candidate `stable-default-repeat.{json,log}`: no release override, all checks pass |
 | All customized config, personality, memory, fixture skills, notes, original provider values | PASS | Candidate `verify.json`; exact config and all non-env fixture hashes; env differs only in Wizard-owned API/MCP link credentials after intentional reset |
 | Supported unlink reverses custom config | PASS | `unlink-preservation.json`: config byte-identical to pre-Wizard original; no original env value removed/changed; pre-existing Hermes-added default names remain |
 | Actual HTTPS resumable PNG upload + completed-file download | PASS | Candidate `http-acceptance.json`: 99-byte PNG, SHA-256 and bytes identical after round trip |
@@ -52,4 +52,4 @@ All run-directory paths above are under `/root/` on the demo. Logs, backups, fix
 
 `scripts/demo-http-acceptance.py` creates a clearly synthetic PNG over the actual HTTPS upload API, reads it back, and records metrics/thread-list results. `scripts/demo-browser-acceptance.mjs` checks the returned image through an explicitly loopback-bound CDP browser and closes its tab. Neither proves a provider-backed chat run.
 
-Recommendation: supported, supervised private pilot for existing Hermes owners on the tested Ubuntu layout; not yet a public/unattended recovery guarantee. Real owner enrollment/device/provider gates and missing-container recovery remain explicit follow-up work. Keep the homepage install pill and public `/os.md` disabled.
+Recommendation: supported, supervised private pilot for existing Hermes owners on the tested Ubuntu layout; not yet a public/unattended recovery guarantee. Missing-container recovery is tracked in [WAM #95](https://github.com/humanitylabs-org/wizard-app-manager/issues/95). Real owner enrollment/device/provider gates remain explicit follow-up work. Keep the homepage install pill and public `/os.md` disabled.

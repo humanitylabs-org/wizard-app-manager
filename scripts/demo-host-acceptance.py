@@ -22,6 +22,8 @@ def output(args):
 def receipt(name, data):
     data.update(at=datetime.datetime.now(datetime.timezone.utc).isoformat(), case=name)
     (P / (name + '.json')).write_text(json.dumps(data, indent=2) + '\n')
+    with (P/'receipts.jsonl').open('a') as history:
+        history.write(json.dumps(data)+'\n')
     print(json.dumps(data), flush=True)
 
 def owner_env_hash():
@@ -110,8 +112,11 @@ def main():
             if f.exists():
                 st=json.loads(f.read_text())
                 if st.get('state') in ('done','failed'):
+                    tag=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+                    st['evidence_log']='official-install-'+tag+'.log'
+                    command(['cp',str(OWNER/'.wizard-os/install.log'),str(P/st['evidence_log'])],'save-install-log')
+                    command(['cp',str(P/st['evidence_log']),str(P/'official-install.log')],'save-install-log')
                     receipt('install-finish',st)
-                    command(['cp',str(OWNER/'.wizard-os/install.log'),str(P/'official-install.log')],'save-install-log')
                     if st['state']!='done': raise RuntimeError('Official installer failed')
                     return
             time.sleep(5)
