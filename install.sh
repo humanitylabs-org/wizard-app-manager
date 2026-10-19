@@ -171,7 +171,9 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
   echo "Alongside mode: the install already failed, so your Hermes (${HERMES_HOME:-$HOME/.hermes}) was not touched."
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
-  if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
+  # The new thread list needs the session database too, not just the old archive/helper UI.
+  # Share only state.db + WAL read-only, never the Hermes home or provider credential files.
+  if ! "$HOME/.local/bin/wam" alongside --share-sessions ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
     FAILED+=("could not record alongside mode (wam alongside)")
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
       ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"}; then

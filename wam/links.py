@@ -124,7 +124,8 @@ def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     return out
 
 
-def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True) -> dict:
+def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True,
+            api_port: int = 7790) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
@@ -160,6 +161,12 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
             url = f"https://{ts['host']}:{port}{g['path'] if g else r['path']}"
             result["links"].append({**r, "url": url, "open": g["path"] if g else url,
                                     **({"gateway_strip": g["strip"]} if g else {})})
+        if shell_port:
+            from . import resources
+            try:
+                result["resources"] = resources.publish(ts["host"], shell_port, api_port, apply)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                result["errors"]["resources"] = "Private resource route unavailable; existing routes left untouched"
     if not apply:
         return {**result, "dry_run": True}
     home.mkdir(parents=True, exist_ok=True)
