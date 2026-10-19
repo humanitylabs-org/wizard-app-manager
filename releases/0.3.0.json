@@ -1,0 +1,139 @@
+{
+  "version": "0.3.0",
+  "name": "Wizard OS install snapshot 0.3.0",
+  "date": "2026-10-18",
+  "about": "Split UX / Agent Service / App Manager install snapshot with the agent-run installer (get.sh start/status, Tailscale owner action, deferred Hermes restart) and the AI connection slot replacing AI Accounts. Component versions remain independent. This manifest proves source and public image identities, not fresh-box or production acceptance.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "instructions": "https://aiwizards.com/os.md",
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Alongside mode consumes the split image pins. Fresh mode still installs catalog defaults and reports image drift. No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "a5b8fce7a67c9c5580d4be81dd8b6f0b884b1586",
+      "branch": "main",
+      "note": "Merge of PR #59 (detached start/status, Tailscale in every state, os.md) on top of #56/#57/#58."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "f7536b5423856a3d0b3c9bca28a6e835c43b0b9d",
+      "branch": "main",
+      "note": "Latest main merge with a successfully published public image at selection (run 39119278763). Later main commits (through a1caa69) were still publishing and are not represented by this digest."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "a0d442555b2be8df53da709212509bf8f8230b30",
+      "branch": "daily",
+      "note": "Latest daily merge with a successfully published public image at selection (run 39147450188). Later daily commits had queued publications and are not represented by this digest."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.161-e39576a",
+      "digest": "sha256:6adc3f809ba3ec92b6809f8ad08caeb481e89ef33212a9233342ed8e111c2666",
+      "built_from": "wizard-app-manager",
+      "source_commit": "e39576a0e28e95b5eef996454a269288ba37e8c2",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/38785083062",
+      "note": "Latest official App Manager image. Its build inputs (packages/, Dockerfile, package.json, bun.lock, turbo.json, image workflow) are unchanged between e39576a and the pinned installer commit; later changes are installer/CLI only and come from the pinned checkout."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-a0d442555b2be8df53da709212509bf8f8230b30",
+      "digest": "sha256:7ec315cf6384dba5298ff1e6c202dc445024f9a6b5ee33e15f5054ccfcbe7ed0",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/39147450188"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-f7536b5423856a3d0b3c9bca28a6e835c43b0b9d",
+      "digest": "sha256:b9b4108c30fbf24cd803ca2855f6cc36a2b8e146485e79b676a36ea45eea960e",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/39119278763"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "a0d442555b2be8df53da709212509bf8f8230b30"
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "f7536b5423856a3d0b3c9bca28a6e835c43b0b9d"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.1.2",
+      "commit": "3b2d6186b86a896f254150ad056b9eaa495e738e"
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard1",
+      "commit": "def6a08aa000c3cb034c4b50a2fa334b3f17bc51"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "304e61613d1fdc1c5df9b62bccd1f8b52790b642"
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    }
+  }
+}

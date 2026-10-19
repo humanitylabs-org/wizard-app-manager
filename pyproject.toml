@@ -11,3 +11,6 @@ wam = "wam.cli:main"
 
 [tool.setuptools]
 packages = ["wam", "wam.backup"]
+
+[tool.setuptools.package-data]
+wam = ["release-index.mjs"]
