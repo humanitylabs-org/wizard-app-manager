@@ -584,10 +584,12 @@ def human(n: float) -> str:
 DIGEST_HASH_MAX = 4 << 20
 
 
-def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True, *, entries=None, owners=True) -> tuple[str, int]:
+def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True, *, entries=None, owners=True,
+                hide=None) -> tuple[str, int]:
     """sha256 over every entry under root: path, type, mode and, for files, the size plus the content hash (always
     with content=True; else only up to 4 MiB, larger files by mtime, which a rename keeps). Links are recorded by
-    target, unreadable files as such. Returns (hex, entry count)."""
+    target, unreadable files as such. `hide(rel)` leaves a folder itself out while still walking what is inside it.
+    Returns (hex, entry count)."""
     h = hashlib.sha256()
     n = 0
     root = Path(root)
@@ -608,6 +610,8 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
             rel = name if rel_dir == "." else f"{rel_dir}/{name}"
             p = dp / name
             if name in filenames and skip and skip(rel, False):
+                continue
+            if hide and name in keep and hide(rel):
                 continue
             try:
                 st = os.lstat(p)
@@ -668,6 +672,11 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
             return True
         return any(rel.startswith(h) and keep_in_place(rel[len(h):]) for h in homes)
 
+    from .agents import _keep_parent
+
+    def rt_hide(rel):   # an agent home's plugins/ folder holds this machine's Wizard plugin: only its contents count
+        return any(rel.startswith(h) and _keep_parent(rel[len(h):]) for h in homes)
+
     def digest(name, root, skip=None, **kw):
         detail = {} if entries is not None else None
         result = tree_digest(root, skip, entries=detail, owners=owners, **kw)[0]
@@ -680,12 +689,14 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
     # are not state an import or undo can keep: app-data is compared without them.
     for part in ("app-data", "user-config", "apps"):
         out[f"runtipi/{part}"] = digest(f"runtipi/{part}", box.runtipi_root / part,
-                                        rt_skip if part == "app-data" else None, modes=part != "app-data")
+                                        rt_skip if part == "app-data" else None, modes=part != "app-data",
+                                        hide=rt_hide if part == "app-data" else None)
     out["files"] = digest("files", box.files_root(),
                           lambda rel, d: rel == RESTORE_DIR or rel.startswith(RESTORE_DIR + "/"), content=False)
     for a in agent_list:
         if a.runtime == "host":
-            out[f"agent/{a.id}"] = digest(f"agent/{a.id}", a.home, lambda rel, d: keep_in_place(rel))
+            out[f"agent/{a.id}"] = digest(f"agent/{a.id}", a.home, lambda rel, d: keep_in_place(rel),
+                                            hide=_keep_parent)
     return out
 
 
