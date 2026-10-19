@@ -16,6 +16,8 @@ def resolve(c, app_id, body):
     if body == {}:
         # Backward-compatible old Standard Get. Never let an ID-only caller opt into
         # a private source, first-result repository, update or channel switch.
+        if test_catalog.resolve(app_id):
+            raise ValueError('private apps require an exact source-qualified selection; refresh the Store')
         rows = index.search(c.index, id=app_id)
         if len(rows) != 1 or rows[0].get('id') != app_id:
             raise ValueError('ambiguous or unavailable Standard app; refresh the Store')
