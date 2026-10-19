@@ -770,7 +770,8 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
     if not al:
         return {"state": "skipped", "note": "not an alongside box (fresh boxes serve Store data from the shell image)"}
     reg = write_registry(c, c.runtipi())
-    out = store_data.ensure(reg, apply=apply)
+    svc_port = int((al.get("service") or {}).get("port") or 0)
+    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
     if out.get("state") == "ready" and apply and shutil.which("tailscale"):
         shell_port = int((al.get("shell") or {}).get("port") or 0)
         if shell_port:

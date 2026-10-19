@@ -26,6 +26,7 @@ PORT = 9584
 PREFIX = "/wizard-os-home/store-data"
 UNIT = "wizard-store-data.service"
 SHA = re.compile(r"^[0-9a-f]{40}$")
+SERVICE = re.compile(r"^http://127\.0\.0\.1:\d{1,5}$")
 # Sibling-module imports in the adapter: `from './x.mjs'` / `import('./x.mjs')`. Plain names only (no paths).
 LOCAL_IMPORT = re.compile(r"""(?:from|import\s*\(?)\s*['"]\./([A-Za-z0-9_.-]+\.mjs)['"]""")
 
@@ -112,8 +113,12 @@ def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
     return final
 
 
-def unit_text(node: str, tools: Path, sha: str, port: int = PORT, catalog: str | None = None) -> str:
+def unit_text(node: str, tools: Path, sha: str, port: int = PORT, catalog: str | None = None,
+              service: str | None = None) -> str:
     env = f"Environment=WAM_PRIVATE_CATALOG={catalog}\n" if catalog else ""
+    # The adapter reads the shell app list from the Agent Service; alongside boxes run it on their own port.
+    if service and SERVICE.match(service):
+        env += f"Environment=WIZARD_STORE_SERVICE_ORIGIN={service}\n"
     return (f"[Unit]\nDescription=Wizard App Store browse data (read-only, loopback :{port}) from wizard-ux {sha}\n"
             f"After=network-online.target\n\n[Service]\n{env}"
             f"ExecStart={node} {tools}/store-data-origin.mjs {port}\nRestart=on-failure\nNoNewPrivileges=true\n\n"
@@ -125,7 +130,7 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
 
 
 def ensure(reg: dict, data_root: Path | None = None, unit_dir: Path | None = None, port: int = PORT,
-           apply: bool = True) -> dict:
+           apply: bool = True, service: str | None = None) -> dict:
     """Install/refresh the Store data service for the installed shell's commit. Returns a result dict."""
     sha = shell_commit(reg)
     if not sha:
@@ -140,7 +145,7 @@ def ensure(reg: dict, data_root: Path | None = None, unit_dir: Path | None = Non
     except (RuntimeError, ValueError, OSError) as e:
         return {"state": "error", "error": str(e)}
     cat = os.environ.get("WAM_PRIVATE_CATALOG")
-    text = unit_text(node, tools, sha, port, cat if cat and Path(cat).is_file() else None)
+    text = unit_text(node, tools, sha, port, cat if cat and Path(cat).is_file() else None, service)
     unit = unit_dir / UNIT
     changed = not unit.is_file() or unit.read_text() != text
     out = {"state": "ready", "commit": sha, "port": port, "node": node, "unit": str(unit), "changed": changed}
