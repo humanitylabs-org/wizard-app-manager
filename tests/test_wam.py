@@ -816,9 +816,13 @@ def test_get_sh_rerun_on_a_fresh_box_stays_fresh(tmp_path):
     d = tmp_path / "b"; d.mkdir()
     assert _mode(d, wizard_user_wos="fresh") == "fresh"          # installed under the wizard user
     d = tmp_path / "c"; d.mkdir()
-    assert _mode(d, runtipi=True) == "fresh"                      # a running Runtipi, home not readable
+    assert _mode(d, runtipi=True, hermes=False) == "fresh"         # no verified host Hermes or readable owner receipt
     d = tmp_path / "e"; d.mkdir()
     assert _mode(d, wos="fresh", mode="alongside") == "alongside"  # explicit WIZARD_MODE=alongside still switches
+
+
+def test_get_sh_verified_host_hermes_beats_a_running_runtipi_without_receipt(tmp_path):
+    assert _mode(tmp_path, runtipi=True) == "alongside"
 
 
 def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
