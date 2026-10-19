@@ -21,7 +21,7 @@ Only session counts/schema and the new Wizard test conversation were inspected.
 
 ## Fix shape
 
-- `wam resources` implementation is an exact six-number GET projection through the existing host WAM
+- The `wam.resources` implementation is an exact six-number GET projection through the existing host WAM
   API. `wam links` publishes only `/api/system/load` on the shell's existing private Tailscale origin,
   reads back the exact route, refuses conflicting owner routes and Funnel, and never publishes the
   App Manager API root or credential files. Browser headers are not forwarded to Runtipi.
@@ -50,6 +50,11 @@ Only session counts/schema and the new Wizard test conversation were inspected.
 - WAM tests exercise actual HTTP payload, secret/nonnumeric stripping, generic error states,
   cross-site and unsafe-method denial, additive provider bootstrap, and exact route readback/conflicts.
 - Service latest-source compact-list contract tests: 12 passed (HTTP proxy plus list view/window tests).
+- A separate no-history-mount contract smoke returns one synthetic thread through both legacy and compact
+  APIs on the latest service. It fails on the installed f7536b5 service with a real `404 not_found` on
+  the compact API. Resource HTTP and additive-provider regressions both fail on old WAM 4bdd7b3.
+- Chromium loads the unchanged official UX resource module against the real WAM HTTP projection:
+  numeric widget, capacity dialog, Back to Home, and absence of the injected synthetic secret all pass.
 - Tailscale route tests here are deterministic **simulations**, not a real-node onboarding matrix.
 - Required user-run acceptance after release: rerun the public installer via the original Hermes TUI;
   do not repair demo by hand. Reopen Wizard, confirm the existing new test thread appears and opens,
