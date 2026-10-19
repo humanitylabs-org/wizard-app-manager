@@ -186,3 +186,29 @@ def test_the_outcome_path_is_printed_only_when_it_was_written(tmp_path):
     assert "Recorded in" not in p.stderr
     p, *_ = sandbox(tmp_path / "ok", HEALTH="down", WIZARD_HEALTH_TRIES="2")
     assert "Recorded in" in p.stderr
+
+
+# ---- An agent's own bundled python3 (no PyYAML) first on PATH must not break the install (demo root run, 0.3.0)
+
+def test_a_python3_without_yaml_first_on_path_is_skipped(tmp_path):
+    system = tmp_path / "system-python3"
+    block = tmp_path / "noyaml"
+
+    def agent_python_first(home):
+        (tmp_path / "bin" / "python3").rename(system)    # the sandbox's stand-in python3 becomes "the system one"
+        block.mkdir()
+        (block / "yaml.py").write_text("raise ImportError('No module named yaml')\n")
+        bad = tmp_path / "bin" / "python3"               # a real Python that cannot import yaml, like Hermes' bundled one
+        bad.write_text('#!/bin/bash\nprintf "agent-python %s\\n" "$*" >> "$CALLS"\n'
+                       f'PYTHONPATH="{block}" exec "{sys.executable}" "$@"\n')
+        bad.chmod(0o755)
+
+    p, home, root, calls, outcome = sandbox(tmp_path, before=agent_python_first, WIZARD_PYTHON=str(system))
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text()
+    assert "agent-python -m wam " not in log            # no wam work ran under the yaml-less python
+    assert "wam " in log
+    assert f'exec "{system}" -m wam' in (home / ".local/bin/wam").read_text()
+    unit = (home / ".config/systemd/user/wizard-app-manager-api.service").read_text()
+    assert f"ExecStart={system} -m wam serve" in unit
+    assert (home / ".local/bin/wizard").read_text().splitlines()[0] == f"#!{system}"

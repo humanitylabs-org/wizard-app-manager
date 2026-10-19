@@ -37,7 +37,18 @@ YML
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
   sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
 fi
-python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+# The Python that runs wam needs PyYAML. Do not trust whichever python3 is first on PATH: a Hermes agent puts its own
+# bundled Python (no PyYAML) first for the commands it runs, and wam would then fail mid-install. Pick the first
+# python3 that imports yaml (PATH first, then the system one); otherwise install python3-yaml for the system Python.
+pick_py() {
+  local c
+  for c in "${WIZARD_PYTHON:-}" "$(command -v python3 2>/dev/null || true)" /usr/bin/python3 /bin/python3; do
+    [ -n "$c" ] && [ -x "$c" ] && "$c" -c 'import yaml' 2>/dev/null && { echo "$c"; return 0; }
+  done
+  return 1
+}
+PY="$(pick_py)" || { sudo apt-get install -y python3-yaml >/dev/null; PY="$(pick_py)"; } \
+  || { echo "Wizard OS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again." >&2; exit 1; }
 command -v git >/dev/null || sudo apt-get install -y git
 # An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
 # the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
@@ -51,7 +62,7 @@ mkdir -p "$RUNTIPI_ROOT/user-config"
 OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 [ -f "$OVR" ] && cp "$OVR" "$OVR.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 # Preserve owner settings and Compose tags (!override/!reset), including box-only bindings.
-(cd "$HERE" && python3 -m wam.release_pins "$OVR" "$IMAGE")
+(cd "$HERE" && "$PY" -m wam.release_pins "$OVR" "$IMAGE")
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
 if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
@@ -69,7 +80,7 @@ mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
 cat > "$HOME/.local/bin/wam" <<EOF
 #!/usr/bin/env bash
 export WIZARD_RELEASE_PINS="\${WIZARD_RELEASE_PINS-${WIZARD_RELEASE_PINS:-}}"
-cd "$HERE" && exec python3 -m wam "\$@"
+cd "$HERE" && exec "$PY" -m wam "\$@"
 EOF
 chmod +x "$HOME/.local/bin/wam"
 
@@ -82,7 +93,7 @@ After=network-online.target
 Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
 Environment=WIZARD_RELEASE_PINS=${WIZARD_RELEASE_PINS:-}
 WorkingDirectory=$HERE
-ExecStart=/usr/bin/env python3 -m wam serve
+ExecStart=$PY -m wam serve
 Restart=on-failure
 
 [Install]
@@ -120,8 +131,14 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 # The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
-sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
-  || FAILED+=("could not install the wizard command")
+WIZ_CLI="$HOME/.local/bin/wizard"
+if ! PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1; then
+  WIZ_CLI="$HOME/.local/bin/wizard-os"
+  PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os || { WIZ_CLI=""; FAILED+=("could not install the wizard command"); }
+fi
+# Same interpreter as wam: under an agent, `env python3` can be the agent's bundled Python, which lacks PyYAML, and
+# `wizard link` would then misread the owner's config.yaml as empty.
+[ -z "$WIZ_CLI" ] || sed -i "1s|.*|#!$PY|" "$WIZ_CLI"
 
 # Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
 # agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
