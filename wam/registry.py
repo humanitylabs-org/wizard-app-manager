@@ -36,7 +36,8 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
             src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
             commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit}
+            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
+                    "private": src.get("private") is True}
     return None
 
 
@@ -71,11 +72,15 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if st != store:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             continue
-        meta = app_meta(runtipi_root, store, name)
-        if not meta:
+        meta = app_meta(runtipi_root, st, name)
+        if not meta or (st != store and not meta.get("private")):
             continue
+        # A fork can retain its canonical app id in a Git-backed store without the
+        # public index replacing its recipe. Project its actual installed identity.
+        if any(a["id"] == name for a in apps):
+            raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None
