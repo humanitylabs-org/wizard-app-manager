@@ -285,10 +285,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
+        # Dependencies can be installed before the shell/service starts listening. Reserve their
+        # recorded ports as well as live listeners, or a dependency can steal the host bridge port.
+        reserved = {int((al.get(part) or {}).get("port") or 0) for part in ("shell", "service")} if al else set()
         want = int(info.get("port") or 0)
-        if want and not port_free(want):
-            form["port"] = free_port(want + 1)
-            print(f"note: port {want} is in use; {app_id} gets {form['port']}", file=sys.stderr)
+        if want and (want in reserved or not port_free(want)):
+            form["port"] = free_port(want + 1, avoid=reserved)
+            print(f"note: port {want} is in use or reserved; {app_id} gets {form['port']}", file=sys.stderr)
     trust_env = trusted_origin_env(c, app_id)
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
@@ -385,9 +388,9 @@ def port_free(port: int) -> bool:
     return not any(len(r) > 3 and r[3] == "0A" and int(r[1].rsplit(":", 1)[1], 16) == port for r in rows)
 
 
-def free_port(start: int, stop: int = 65000) -> int:
+def free_port(start: int, stop: int = 65000, *, avoid: set[int] | None = None) -> int:
     for p in range(max(1024, start), stop):
-        if port_free(p):
+        if p not in (avoid or set()) and port_free(p):
             return p
     raise SystemExit("no free port for this app")
 
