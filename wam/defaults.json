@@ -22,7 +22,8 @@
     },
     "ai-connection": {
       "name": "AI connections",
-      "app": "wizard-claude",
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
       "required": false,
       "multi": true,
       "note": "One app per AI provider (Claude, ChatGPT, ...), contract wizard.ai-connection/1. Several installed at once is normal; Resources shows them all. Replaces AI Accounts (decision #61)."
