@@ -210,6 +210,13 @@ print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")
   fi
 fi
+# Alongside: (re)install the App Store data service for the installed shell on every run, so a rerun repairs a
+# failed/outdated one (bootstrap only sets it up when it installs the shell itself).
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ "$healthy" = 1 ]; then
+  sd="$("$HOME/.local/bin/wam" store-data 2>/dev/null || true)"
+  printf '%s' "$sd" | python3 -c 'import json,sys; sys.exit(json.load(sys.stdin).get("state") not in ("ready", "skipped"))' 2>/dev/null \
+    || DEGRADED+=("the App Store data service could not be set up (wam store-data)")
+fi
 PENDING=()
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
   if [ -n "$RESTART_LATER" ]; then

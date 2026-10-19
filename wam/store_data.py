@@ -66,13 +66,28 @@ def _fetch(sha: str, name: str, timeout: int = 20) -> bytes | None:
         return None
 
 
+def _complete(tools: Path) -> bool:
+    """A cached adapter is usable only if the required files AND every sibling module they import are present
+    (a cache written before sibling imports were fetched lacks wizard-alpha.mjs and fails at node start)."""
+    if not all((tools / f).is_file() for f in REQUIRED):
+        return False
+    for f in tools.glob("*.mjs"):
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            return False
+        if any(not (tools / m).is_file() for m in LOCAL_IMPORT.findall(text)):
+            return False
+    return True
+
+
 def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
     """Download the adapter at `sha` into dest_root/<sha>/tools (idempotent, atomic)."""
     fetch = fetch or _fetch
     if not SHA.match(sha):
         raise ValueError("shell commit must be a full 40-char sha")
     final = dest_root / sha / "tools"
-    if all((final / f).is_file() for f in REQUIRED):
+    if _complete(final):
         return final
     tmp = dest_root / f".{sha}.partial"
     shutil.rmtree(tmp, ignore_errors=True)
