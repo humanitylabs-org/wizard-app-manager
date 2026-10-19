@@ -107,3 +107,17 @@ def test_resource_route_readback_and_funnel_fail_closed(monkeypatch):
     monkeypatch.setattr(links, 'serve_status', lambda: {'AllowFunnel': {'test.ts.net:8796': True}})
     with pytest.raises(ValueError, match='left untouched'):
         resources.publish('test.ts.net', 8796, 7790)
+
+
+def test_resource_disk_fields_come_from_the_host_when_the_manager_reports_zero(tmp_path, monkeypatch):
+    """Live 0.3.6 named-user box: Runtipi's container sees no host disk and returns diskSize 0 / diskUsed 0."""
+    zero = dict(cpuLoad=12.0, percentUsedMemory=25, percentUsed=0, memoryTotal=8, diskUsed=0, diskSize=0)
+    rt = SimpleNamespace(req=lambda *a, **k: dict(zero))
+    gib = 1024 ** 3
+    monkeypatch.setattr(resources.shutil, 'disk_usage',
+                        lambda p: SimpleNamespace(total=96 * gib, used=12 * gib, free=84 * gib))
+    got = resources.read(rt, tmp_path)
+    assert got == dict(cpuLoad=12.0, percentUsedMemory=25, percentUsed=12, memoryTotal=8, diskUsed=12, diskSize=96)
+    assert resources.read(rt) == zero   # no host path: the manager's numbers are passed through unchanged
+    real = dict(zero, diskUsed=5, diskSize=50, percentUsed=10)
+    assert resources.read(SimpleNamespace(req=lambda *a, **k: dict(real)), tmp_path) == real

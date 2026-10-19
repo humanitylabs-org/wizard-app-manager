@@ -960,3 +960,27 @@ def test_multi_provider_slot_is_not_a_collision():
     d = slots.load_defaults()
     assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-chatgpt"
     assert "ai-accounts" not in d   # AI Accounts retired: one connection app per provider (decision #61)
+
+
+def test_bootstrap_retries_an_app_the_manager_removed_once(monkeypatch):
+    """Live 0.3.6: wizard-chatgpt's first `compose up` failed (pull cancelled); a second attempt succeeded."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    monkeypatch.setattr(release_pins, "load", lambda: None)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: ["files", "wizard-chatgpt", "broken"])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    tries = {}
+
+    def install(c, app_id):
+        tries[app_id] = tries.get(app_id, 0) + 1
+        if app_id == "wizard-chatgpt" and tries[app_id] == 1:
+            raise SystemExit("wizard-chatgpt: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        if app_id == "broken":
+            raise SystemExit("broken: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        return {"id": app_id}
+    monkeypatch.setattr(cli, "install", install)
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None))
+    assert out["installed"] == ["files", "wizard-chatgpt"]
+    assert list(out["failed"]) == ["broken"] and tries == {"files": 1, "wizard-chatgpt": 2, "broken": 2}

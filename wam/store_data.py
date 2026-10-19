@@ -26,6 +26,8 @@ PORT = 9584
 PREFIX = "/wizard-os-home/store-data"
 UNIT = "wizard-store-data.service"
 SHA = re.compile(r"^[0-9a-f]{40}$")
+# Sibling-module imports in the adapter: `from './x.mjs'` / `import('./x.mjs')`. Plain names only (no paths).
+LOCAL_IMPORT = re.compile(r"""(?:from|import\s*\(?)\s*['"]\./([A-Za-z0-9_.-]+\.mjs)['"]""")
 
 
 def find_node() -> str | None:
@@ -75,14 +77,20 @@ def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
     tmp = dest_root / f".{sha}.partial"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    for name in FILES:
+    queue, seen = list(FILES), set()
+    while queue:   # the listed files plus every sibling module they import (e.g. wizard-alpha.mjs), at the same sha
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
         body = fetch(sha, name)
         if body is None:
-            if name in REQUIRED:
+            if name in REQUIRED or name not in FILES:   # an imported module is required by its importer
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise RuntimeError(f"wizard-ux {sha[:9]} has no tools/{name}; this shell version has no Store data")
             continue
         (tmp / name).write_bytes(body)
+        queue += [m for m in LOCAL_IMPORT.findall(body.decode("utf-8", "replace")) if m not in seen]
     final.parent.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(final, ignore_errors=True)
     tmp.rename(final)
