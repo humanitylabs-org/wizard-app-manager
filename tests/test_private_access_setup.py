@@ -100,7 +100,8 @@ def test_operator_without_sudo_reuses_daemon_and_runs_each_up_only_once(sandbox)
     bindir, log, _, state, _ = sandbox
     (bindir / "sudo").write_text('#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$CALLS"\nexit 1\n')
     state.write_text("NeedsLogin")
-    p = run(sandbox, NONDEFAULT="1", WIZARD_TAILSCALE_WAIT="0")
+    # Let the successful preserved invocation complete instead of racing a zero-second deadline.
+    p = run(sandbox, NONDEFAULT="1", WIZARD_TAILSCALE_WAIT="2", UP_STATE="Running")
     assert p.returncode == 0, p.stderr
     calls = log.read_text()
     assert "sudo -n tailscale" not in calls and "enable --now tailscaled" not in calls
