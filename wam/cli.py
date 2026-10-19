@@ -968,6 +968,15 @@ class Handler(BaseHTTPRequestHandler):
         c, u = self.cfg, urlparse(self.path)
         if u.path == "/healthz":
             return self._json(200, {"ok": True})
+        if u.path == "/api/system/load":
+            # Exact read-only numeric projection; never proxy arbitrary manager paths or credentials.
+            from . import resources
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
+            try:
+                return self._json(200, resources.read(c.runtipi()))
+            except Exception:
+                return self._json(503, {"error": "server_resources_unavailable"})
         if u.path == "/api/apps":
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
@@ -1211,7 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
-            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run)
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
