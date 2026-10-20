@@ -1052,3 +1052,31 @@ def test_recover_starts_an_app_with_a_stopped_container_and_reports_failures(tmp
     res = cli.recover(c)
     assert started == ["wizard-ux:wizardapps"]
     assert res["failed"] == {"wizard-agent-service": "boom"}
+
+
+def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(monkeypatch, tmp_path):
+    """Live 0.3.12 -> 0.3.14 upgrade on demo: Files stayed on 0.3.12's commit (its `.wizard-selection` locks it), so
+    the read-back failed `default app source files`. Bootstrap must move release defaults installed from the
+    release's own repo, and leave an owner-chosen source and an up-to-date app alone."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    new, old = "8" * 40, "d" * 40
+    doc = {"default_apps": {"files": {"app": "files", "repo": "o/files", "commit": new},
+                            "browser": {"app": "browser", "repo": "o/browser", "commit": new},
+                            "notes": {"app": "notes", "repo": "o/notes", "commit": new}}}
+    monkeypatch.setattr(release_pins, "load", lambda: doc)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: [])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"files", "browser", "notes"})
+    for app, commit, repo in (("files", old, "o/files"), ("browser", new, "o/browser"), ("notes", old, "me/notes")):
+        d = tmp_path / "apps" / cli.STORE / app
+        d.mkdir(parents=True)
+        (d / ".wizard-commit").write_text(commit + "\n")
+        (d / ".wizard-source").write_text(json.dumps({"repo": repo}))
+    calls = []
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: calls.append(("prepare", ref)) or {"id": ref})
+    monkeypatch.setattr(cli, "app_update", lambda c, a: calls.append(("update", a)) or {"status": "running"})
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
+    assert calls == [("prepare", "files"), ("update", "files")]
+    assert out["updated"] == ["files"] and out["failed"] == {}

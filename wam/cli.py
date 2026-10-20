@@ -882,8 +882,45 @@ def bootstrap(c: Config) -> dict:
             del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
+    updated = release_updates(c, rt, failed)
     reg = write_registry(c, rt)
-    return {"installed": done, "failed": failed, "spots": slots.table(reg)}
+    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg)}
+
+
+def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+    """Move installed release defaults to the release's source commit on an upgrade rerun.
+
+    A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
+    e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
+    Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    """
+    doc = release_pins.load() or {}
+    if not doc.get("default_apps"):
+        return []
+    have = installed_ids(rt)
+    out = []
+    for row in (doc.get("default_apps") or {}).values():
+        if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        app_id = row["app"]
+        live = c.runtipi_root / "apps" / STORE / app_id
+        try:
+            commit = (live / ".wizard-commit").read_text().strip()
+            source = json.loads((live / ".wizard-source").read_text()).get("repo")
+        except (OSError, ValueError):
+            continue
+        if commit == row["commit"] or source != row["repo"]:
+            continue
+        try:
+            print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
+            resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            res = app_update(c, app_id)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            out.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, private.PrivateError) as e:
+            failed[app_id] = f"update to release source failed: {e}"[:200]
+    return out
 
 
 def _app_container_states(urn: str) -> list[str]:
