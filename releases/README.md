@@ -54,3 +54,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.18.json`. Byte-identical SHA-256: `81065c20771b1531b1144beea6f959515b72050d08d09245a3ddf84e5cebcedd`.
 - 0.3.17 plus App Manager #116 (`1068428`, fixes #113): `wam app update` and `wam alongside` reconcile the alongside image pin from the selected release (explicit developer overrides still win) before queuing a core update, so the Agent Service no longer stays on a stale image.
 - Every other pin is identical to 0.3.17; the App Manager image is unchanged from 0.3.12.
+
+## 0.3.19 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.19.json`. Byte-identical SHA-256: `9c903594b3f009b6a73a1fafa9e2b3bbffcc92a12ad5dfe0fa412a682759fae2`.
+- 0.3.18 plus App Manager #118 (`c595834`): Store Get no longer fails with a bare "Install failed (502)" when the App Manager service can't run `docker info`; the architecture check falls back to `sudo -n docker`, then the machine's CPU, and unexpected errors answer with a plain reason.
+- Every other pin is identical to 0.3.18; the App Manager image is unchanged from 0.3.12.
