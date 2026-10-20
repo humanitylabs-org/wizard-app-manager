@@ -1321,6 +1321,10 @@ def main(argv: list[str] | None = None) -> int:
                 reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
             res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
+            if not args.dry_run:
+                # The installer calls links last. Rebuild/share after publishing,
+                # otherwise a fresh Agent Service still receives loopback URLs.
+                write_registry(c)
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
