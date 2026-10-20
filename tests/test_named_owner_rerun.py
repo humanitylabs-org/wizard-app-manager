@@ -84,16 +84,40 @@ def test_runner_not_in_docker_group_is_not_reexeced(box, tmp_path):
 
 
 def test_start_reports_a_runner_that_exits_at_once(box, tmp_path):
-    """The live failure: `start` passes the gate, its runner then hits it and exits 2 before writing any status."""
+    """The live failure: `start` hands off, but its runner exits before writing any status."""
     box.add_user("dana", 1000)
     box.hermes("dana")
-    # sudo -n works for `start` itself but not once the runner's settings file exists (= inside the runner).
-    _stub(box, "sudo", '#!/bin/sh\necho "sudo $*" >> "$FAKE_LOG"\n[ -f "$HOME/.wizard-os/install-env" ] && exit 1\nexit 0\n')
+    _stub(box, "sudo", '#!/bin/sh\necho "sudo $*" >> "$FAKE_LOG"\nexit 0\n')
+    # The unit "starts" but its runner never comes up (exits at once, writes nothing).
+    _stub(box, "systemd-run", '#!/bin/sh\necho "systemd-run $*" >> "$FAKE_LOG"\nexit 0\n')
+    _stub(box, "setsid", '#!/bin/sh\nexit 0\n')
     src = _local_wam(tmp_path, "echo should-not-run\n")
     p = box.run("dana", "start", WAM_REPO=str(src), WAM_REF="main", WAM_DIR=str(tmp_path / "wam"))
     assert p.returncode == 1, p.stdout + p.stderr
     assert "did not start" in p.stderr
     assert "started in the background" not in p.stdout
+
+
+def test_runner_that_loses_sudo_reports_the_admin_command_instead_of_vanishing(box, tmp_path):
+    """Same live failure, now handled: the runner hits the gate, but records needs_admin and the one command."""
+    box.add_user("dana", 1000)
+    box.hermes("dana")
+    # sudo -n works for `start` itself but not once the runner's settings file exists (= inside the runner).
+    _stub(box, "sudo", '#!/bin/sh\necho "sudo $*" >> "$FAKE_LOG"\n[ -f "$HOME/.wizard-os/install-status.json" ] && exit 1\nexit 0\n')
+    src = _local_wam(tmp_path, "echo should-not-run\n")
+    env = dict(WAM_REPO=str(src), WAM_REF="main", WAM_DIR=str(tmp_path / "wam"))
+    p = box.run("dana", "start", **env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    end = time.time() + 30
+    out = []
+    while time.time() < end:
+        out = box.run("dana", "status", **env).stdout.splitlines()
+        if out and out[0] == "Wizard OS install: needs_admin":
+            break
+        time.sleep(0.2)
+    assert out[0] == "Wizard OS install: needs_admin", out
+    assert "An administrator of this server must run this once" in out[1]
+    assert "sudo env WIZARD_HERMES_USER=dana" in out[2]
 
 
 def _named_host_ready_script(bus: Path) -> str:
