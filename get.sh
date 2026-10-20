@@ -693,9 +693,13 @@ def decrypt(pem, rid, ct):
 def elevate(pw):
     mark = "WIZARD-ELEVATED-" + secrets.token_hex(8)
     # Root runs the official installer from its source, never a file this account can write.
+    # The bytes must equal the installer this runner is (main can move while the owner opens the link).
     argv = ["sudo", "-S", "-k", "-p", "", "--", "/bin/bash", "-c",
-            "echo " + mark + "; set -o pipefail; curl -fsSL \"$1\" | env \"${@:2}\" /bin/bash", "_",
-            cfg["getsh"], *cfg["root_env"]]
+            "echo " + mark + "; t=$(mktemp) || exit 4; curl -fsSL \"$1\" -o \"$t\" &&"
+            " [ \"$(sha256sum < \"$t\" | head -c 64)\" = \"$2\" ] || { rm -f \"$t\";"
+            " echo \"The installer changed while waiting for the approval; run the start command again.\"; exit 4; };"
+            " env \"${@:3}\" /bin/bash \"$t\"; rc=$?; rm -f \"$t\"; exit $rc", "_",
+            cfg["getsh"], cfg["getsh_sha"], *cfg["root_env"]]
     p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          env={**os.environ, "LC_ALL": "C"})
     try: p.stdin.write(bytes(pw) + b"\n"); p.stdin.close()
@@ -780,10 +784,10 @@ owner_approval() {  # in the detached runner: ask for the one-time approval, run
   local cfg
   cfg="$(python3 -c 'import json, sys; a = sys.argv
 print(json.dumps({"relay": a[1], "host": a[2], "user": a[3], "needs": [x for x in a[4].split() if x], "tries": a[5],
-  "interval": a[6], "down_after": a[7], "admin_cmd": a[8], "getsh": a[9], "root_env": a[10:]}))' \
+  "interval": a[6], "down_after": a[7], "admin_cmd": a[8], "getsh": a[9], "getsh_sha": a[10], "root_env": a[11:]}))' \
     "${WIZARD_APPROVE_URL:-https://www.aiwizards.com/os-approve}" "$(hostname -s 2>/dev/null || hostname)" "$(id -un)" "$needs" \
     "${WIZARD_APPROVE_TRIES:-3}" "${WIZARD_APPROVE_INTERVAL:-3}" "${WIZARD_APPROVE_DOWN_AFTER:-300}" "$(admin_command)" \
-    "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" "WIZARD_HERMES_USER=$H_USER" "HERMES_HOME=$H_HOME" WIZARD_HOST_PREP_ONLY=1 WIZARD_AGENT_SAFE=1 \
+    "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" "$(sha256sum < "$WOS_DIR/get.sh" | cut -d' ' -f1)" "WIZARD_HERMES_USER=$H_USER" "HERMES_HOME=$H_HOME" WIZARD_HOST_PREP_ONLY=1 WIZARD_AGENT_SAFE=1 \
     "WAM_REPO=$REPO" ${WAM_REF:+"WAM_REF=$WAM_REF"} "WIZARD_PRIVATE_ACCESS=${WIZARD_PRIVATE_ACCESS:-tailscale}")"
   local rc=0; python3 -c "$APPROVE_PY" "$cfg" || rc=$?
   [ "$rc" -eq 0 ] || exit "$rc"

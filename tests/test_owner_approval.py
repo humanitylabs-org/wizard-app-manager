@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from test_get_sh_any_user import Box, _local_wam
+from test_get_sh_any_user import GET_SH, Box, _local_wam
 
 PASSWORD = "correct horse 7!"  # a test fixture value, not a real credential
 LABEL = "wizard-os-approve/v1:"
@@ -104,19 +104,22 @@ while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done; shift
 if [ -n "${FAKE_NOT_SUDOER:-}" ]; then echo "$USER is not in the sudoers file." >&2; exit 1; fi
 if [ "$pw" != "$FAKE_SUDO_PASS" ]; then echo "Sorry, try again." >&2; echo "sudo: 1 incorrect password attempt" >&2; exit 1; fi
 echo "sudo-S ok: $*" >> "$FAKE_LOG"
-exec env SUDO_FAKE_ROOT=1 "$@"
+exec env SUDO_FAKE_ROOT=1 FAKE_USER=root HOME="$FAKE_ROOT_HOME" "$@"
 """
-# curl: the root step's official get.sh is a fake host preparation; everything else is recorded.
+# curl: the root step fetches the REAL get.sh (file:// here); its prepare-named-user.sh is a recording double.
 CURL = r"""#!/bin/bash
 echo "curl $*" >> "$FAKE_LOG"
-for a; do :; done
-case "$a" in *prep-get.sh) cat "$FAKE_PREP" ;; esac
-exit 0
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done
+case "$url" in
+  file://*) src="${url#file://}" ;;
+  */scripts/prepare-named-user.sh) src="$FAKE_PREP" ;;
+  *) exit 0 ;;
+esac
+if [ -n "$out" ]; then cat "$src" > "$out"; else cat "$src"; fi
 """
-PREP = r"""echo "PREP owner=$WIZARD_HERMES_USER only=$WIZARD_HOST_PREP_ONLY root=$SUDO_FAKE_ROOT" >> "$FAKE_LOG"
-echo "==> Preparing the server"
+PREP = r"""echo "PREP owner=$1 only=$WIZARD_HOST_PREP_ONLY root=$SUDO_FAKE_ROOT uid=$(id -u)" >> "$FAKE_LOG"
 mkdir -p "$FAKE_OWNER_HOME/runtipi" && echo X=1 > "$FAKE_OWNER_HOME/runtipi/.env"
-echo "Administrator host preparation finished; continuing as $WIZARD_HERMES_USER."
 exit ${FAKE_PREP_RC:-0}
 """
 
@@ -147,7 +150,8 @@ def box(tmp_path):
 def _env(box: Box, tmp: Path, relay_url: str, **extra) -> dict:
     src = _local_wam(tmp, "echo '==> Installing the App Manager'\necho \"installed as $(id -un)\"\n")
     e = {"WAM_REPO": str(src), "WAM_REF": "main", "WAM_DIR": str(tmp / "wam"), "WIZARD_APPROVE_URL": relay_url,
-         "WIZARD_APPROVE_INTERVAL": "0.1", "WIZARD_APPROVE_DOWN_AFTER": "1", "WIZARD_GET_SH_URL": "file:///prep-get.sh",
+         "WIZARD_APPROVE_INTERVAL": "0.1", "WIZARD_APPROVE_DOWN_AFTER": "1", "WIZARD_GET_SH_URL": "file://" + str(GET_SH),
+         "FAKE_ROOT_HOME": str(box.users["root"][1]),
          "FAKE_PREP": str(tmp / "prep.sh"), "FAKE_OWNER_HOME": str(box.users["dana"][1]), "FAKE_GROUPS": "sudo",
          "FAKE_SUDO_PASS": PASSWORD}
     e.update(extra)
@@ -202,9 +206,9 @@ def test_approved_link_runs_only_the_root_step_then_finishes_as_owner(box, relay
                                                        "Wizard OS install: needs_admin"))
     assert out[0] == "Wizard OS install: done", "\n".join(out)
     log = box.log.read_text()
-    assert "PREP owner=dana only=1 root=1" in log
+    assert "PREP owner=dana only=1 root=1 uid=0" in log, log
     sudo_calls = [l for l in log.splitlines() if l.startswith("sudo-S ok:")]
-    assert len(sudo_calls) == 1 and "prep-get.sh" in sudo_calls[0]
+    assert len(sudo_calls) == 1 and "file://" + str(GET_SH) in sudo_calls[0]
     ilog = (box.users["dana"][1] / ".wizard-os/install.log").read_text()
     assert "installed as dana" in ilog and "Administrator host preparation" in ilog
     assert row["state"] == "approved" and row["ct"] is None, "the relay keeps no ciphertext after pickup"
@@ -323,3 +327,16 @@ def test_preflight_names_exactly_the_pieces_that_need_root(box, relay, tmp_path)
     line = next(l for l in pre.stdout.splitlines() if l.startswith("needs root once:"))
     assert line == "needs root once:   runtipi (the agent's start shows the owner a one-time approval link)"
     assert not (box.users["dana"][1] / ".wizard-os").exists()
+
+
+def test_installer_changed_while_waiting_is_not_run_as_root(box, relay, tmp_path):
+    other = tmp_path / "other-get.sh"
+    other.write_text(GET_SH.read_text() + "\n# moved on\n")
+    env = _env(box, tmp_path, relay.url, WIZARD_GET_SH_URL="file://" + str(other), WIZARD_APPROVE_TRIES="1")
+    assert box.run("dana", "start", **env).returncode == 0
+    cap = _link(_wait_for(box, env, lambda o: any(l.startswith("Owner action: Open this link") for l in o)), relay)
+    relay.submit(cap, PASSWORD, tmp_path)
+    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed"))
+    assert out[0] == "Wizard OS install: failed"
+    assert "PREP owner=" not in box.log.read_text()
+    assert "The installer changed while waiting" in (box.users["dana"][1] / ".wizard-os/install.log").read_text()
