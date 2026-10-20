@@ -1165,6 +1165,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/slots":
             p = c.home / "apps.json"
             return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
+        if u.path == "/api/updates":
+            from . import updates
+            return self._json(200, updates.status())
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -1181,6 +1184,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
+            if path == "/api/updates":            # {"mode": "auto"|"ask"}: the owner's choice
+                from . import updates
+                return self._json(200, updates.set_mode(str(self._body().get("mode", ""))))
+            if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
+                from . import updates
+                return self._json(200, updates.apply(force=self._body().get("force") is True))
         except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
@@ -1223,6 +1232,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         if why:
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
+        if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
+            return self._updates(method)
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1241,11 +1252,37 @@ class StoreHandler(BaseHTTPRequestHandler):
             code, body = si.status(app_id)
         return self._json(code, body)
 
+    def _updates(self, method: str) -> None:
+        """GET: installed vs stable and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
+        POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
+        an unpinned box refuses."""
+        from . import updates
+        if method == "GET":
+            return self._json(200, updates.status())
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise ValueError("expected an object")
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        if body.get("action") == "apply" and set(body) == {"action"}:
+            res = updates.apply()
+            return self._json(200 if res.get("started") or not res.get("error") else 409, res)
+        if set(body) == {"mode"} and body["mode"] in updates.MODES:
+            return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"} or {"action": "apply"}'})
+
     def do_GET(self):  # noqa: N802
         self._go("GET")
 
     def do_POST(self):  # noqa: N802
         self._go("POST")
+
+
+UPDATES_PATH = "_updates"
 
 
 # ---------------------------------------------------------------- main
@@ -1360,7 +1397,23 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    up = sub.add_parser("updates", help="update check, and the owner's choice: --auto (default) or --ask")
+    upg = up.add_mutually_exclusive_group()
+    upg.add_argument("--auto", action="store_true"); upg.add_argument("--ask", action="store_true")
+    upg.add_argument("--apply", action="store_true"); upg.add_argument("--apply-if-auto", action="store_true")
+    upg.add_argument("--ensure-timer", action="store_true", help="installer: make the nightly timer match the mode")
+    up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     args = ap.parse_args(argv)
+    if args.cmd == "updates":
+        from . import updates
+        if args.force and not args.apply:
+            print("--force only goes with --apply", file=sys.stderr)
+            return 2
+        res = (updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
+               else updates.apply(force=args.force) if args.apply else updates.apply_if_auto() if args.apply_if_auto
+               else updates.ensure_timer() if args.ensure_timer else updates.status(fresh=True))
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     c = Config()
     try:
         if args.cmd == "search":
