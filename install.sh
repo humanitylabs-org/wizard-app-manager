@@ -119,6 +119,9 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
+# Updates (wam/updates.py): Automatic unless the owner chose Ask me. Every install and rerun makes the nightly
+# update timer match that mode; it never writes the owner's choice, so an explicit Ask me is kept.
+"$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
 # happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
