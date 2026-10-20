@@ -82,3 +82,12 @@ def test_a_cache_missing_an_imported_module_is_refetched(tmp_path):
     asked.clear()
     store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
     assert asked == [], "a complete cache is reused without refetching"
+
+
+def test_unit_points_the_adapter_at_the_boxs_agent_service(tmp_path):
+    tools = tmp_path / "tools"
+    unit = store_data.unit_text("/usr/bin/node", tools, SHA, service="http://127.0.0.1:8798")
+    assert "Environment=WIZARD_STORE_SERVICE_ORIGIN=http://127.0.0.1:8798\n" in unit
+    for bad in ("https://example.com", "http://10.0.0.5:8798", "http://127.0.0.1:8798/x\nExecStart=/bin/sh"):
+        assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA, service=bad)
+    assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA)

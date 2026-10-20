@@ -18,7 +18,7 @@ Tell the owner in one line what it found.
 curl -fsSL https://aiwizards.com/os.sh | bash -s start
 ```
 
-If it asks for administrator approval, send the exact command it prints to the owner. They run it once in their own terminal; never ask for their password or add passwordless sudo. The installer keeps the selected Hermes owner/home, and you can keep using the normal status command below. Rootful Docker access is administrator-equivalent; unsupported rootless preparation stops safely instead of migrating Docker.
+If it prints a command for an administrator instead, send that exact command and its message to the owner. They run it once in their own terminal. Never ask for their password in chat and never add passwordless sudo. You can keep using the normal status command below. Rootful Docker access is administrator-equivalent; unsupported rootless preparation stops safely instead of migrating Docker.
 
 Tell the owner it can take 10-20 minutes.
 
@@ -28,7 +28,7 @@ Tell the owner it can take 10-20 minutes.
 curl -fsSL https://aiwizards.com/os.sh | bash -s status
 ```
 
-If it shows a Tailscale link, send that link alone to the owner, then keep checking.
+If it shows an owner action with a link (an approval link or a Tailscale link), send the owner action line and its link word for word, then keep checking. The owner types their server password only on that page, never in chat. If it shows a command for an administrator, send its message and the command word for word.
 
 5. Tell the owner: Hermes restarts once at the end, so this chat goes quiet for about a minute.
 

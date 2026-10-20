@@ -28,10 +28,19 @@
       "multi": true,
       "note": "One app per AI provider (Claude, ChatGPT, ...), contract wizard.ai-connection/1. Several installed at once is normal; Resources shows them all. Replaces AI Accounts (decision #61)."
     },
+    "claude-subscription": {
+      "name": "Claude connection",
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "required": false,
+      "note": "The Claude connection app ships on every box next to ChatGPT: it holds the agent's own Claude Code sign-in (fresh: the shared Claude volume; alongside: the host Hermes' Claude login folder), renews it when it expires and offers Connect/Test. Without it an expired Claude sign-in only shows up as a failed chat."
+    },
     "files": {
       "name": "Files",
       "app": "files",
-      "required": true
+      "repo": "oscarhenrycollins/files",
+      "required": true,
+      "gateway": {"path": "/files/", "strip_prefix": false}
     },
     "transcription": {
       "name": "Transcription",

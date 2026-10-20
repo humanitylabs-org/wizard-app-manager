@@ -41,13 +41,21 @@ def resolve(ref):
     return next((a for a in load() if ref in (a['id'], a['repo'], 'https://github.com/' + a['repo'])), None)
 
 
-def preload(entry, tok):
-    """Download with existing GitHub authorization; verify archive AND loaded image on the target daemon."""
+def check_architecture(entry):
+    """Reject incompatible pinned releases before source or asset downloads."""
     from .private import PrivateError
     r = subprocess.run(['docker', 'info', '--format', '{{.Architecture}}'], capture_output=True, text=True, check=True)
     arch = {'aarch64': 'arm64', 'x86_64': 'amd64'}.get(r.stdout.strip(), r.stdout.strip())
-    if arch not in entry['architectures']:
-        raise PrivateError(f"{entry['id']}: release does not support {arch}")
+    supported = entry.get('architectures') or []
+    if supported and arch not in supported:
+        raise PrivateError(f"{entry['id']}: this release runs on {', '.join(supported)}, not this Wizard ({arch}). Choose a compatible release.")
+    return arch
+
+
+def preload(entry, tok):
+    """Download with existing GitHub authorization; verify archive AND loaded image on the target daemon."""
+    from .private import PrivateError
+    arch = check_architecture(entry)
     if not entry.get('images'):
         return
     asset = entry['images'].get(arch)

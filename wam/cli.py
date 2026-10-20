@@ -198,6 +198,23 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     return None
 
 
+def shell_origins(c: Config) -> set[str]:
+    """Existing private HTTPS shell mounts, never inferred from a request Origin."""
+    from . import links, store_install
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+        port = int(((alongside.load(c.home) or {}).get("shell") or {}).get("port") or 0)
+        config = links.serve_status()
+        origins = store_install.served_origins(host)
+        # Also support CLI-only boxes without the Store listener mount.
+        for authority, site in config.get("Web", {}).items():
+            if authority.rsplit(":", 1)[0] == host and port and site.get("Handlers", {}).get("/", {}).get("Proxy") == f"http://127.0.0.1:{port}":
+                origins.add(f"https://{authority}")
+        return {o for o in origins if not config.get("AllowFunnel", {}).get(o.removeprefix("https://"))}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+
 def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
@@ -215,6 +232,10 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             form[var] = v
         elif "default" in f:
             continue
+        elif f.get("required") and f.get("type") == "url" and var.endswith("_ALLOWED_ORIGINS") and (origins := shell_origins(c)):
+            # Origin-list configuration is distinct from arbitrary required URLs
+            # (provider endpoints etc.). Only existing owner Serve mounts qualify.
+            form[var] = ",".join(sorted(origins))
         elif f.get("required") and f.get("type") == "password":
             form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
@@ -231,14 +252,14 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 # ---------------------------------------------------------------- commands
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
-            _split: bool = False) -> dict:
+            _split: bool = False, _record: dict | None = None) -> dict:
     release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
     _seen.add(app_id)
     rt = c.runtipi()
-    rec = resolve_any(c, app_id)
+    rec = _record if _record is not None else resolve_any(c, app_id)
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
@@ -285,13 +306,24 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
+        # Dependencies can be installed before the shell/service starts listening. Reserve their
+        # recorded ports as well as live listeners, or a dependency can steal the host bridge port.
+        reserved = {int((al.get(part) or {}).get("port") or 0) for part in ("shell", "service")} if al else set()
         want = int(info.get("port") or 0)
-        if want and not port_free(want):
-            form["port"] = free_port(want + 1)
-            print(f"note: port {want} is in use; {app_id} gets {form['port']}", file=sys.stderr)
+        if want and (want in reserved or not port_free(want)):
+            form["port"] = free_port(want + 1, avoid=reserved)
+            print(f"note: port {want} is in use or reserved; {app_id} gets {form['port']}", file=sys.stderr)
     trust_env = trusted_origin_env(c, app_id)
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
+    if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
+        try:
+            for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
+                if r.get("state") == "error":
+                    print(f"note: {name} keeps its own Claude sign-in ({r.get('error')}); run `wam alongside`",
+                          file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; `wam alongside` repairs it
+            print(f"note: Claude login not linked ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -385,9 +417,9 @@ def port_free(port: int) -> bool:
     return not any(len(r) > 3 and r[3] == "0A" and int(r[1].rsplit(":", 1)[1], 16) == port for r in rows)
 
 
-def free_port(start: int, stop: int = 65000) -> int:
+def free_port(start: int, stop: int = 65000, *, avoid: set[int] | None = None) -> int:
     for p in range(max(1024, start), stop):
-        if port_free(p):
+        if p not in (avoid or set()) and port_free(p):
             return p
     raise SystemExit("no free port for this app")
 
@@ -708,6 +740,7 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         host_dashboard.disable()
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
+        removed += [a for a in claude_login_off(c) if a not in removed]
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
     st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
@@ -736,12 +769,56 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         if dash.get("state") != "skipped":
             out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
         order += [a for a in dash.get("changed_apps") or [] if a not in order]
+        reg_apps = registry_apps(c)
+        login = claude_login_cmd(c, {a: (reg_apps.get(a) or {}).get("provides") or [] for a in installed_ids(rt)})
+        if login.get("apps"):
+            out["claude_login"] = login
+        order += [a for a in login.get("changed_apps") or [] if a not in order]
         if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
     return out
+
+
+def claude_login_cmd(c: Config, apps: dict[str, list]) -> dict:
+    """Alongside: point each installed Claude connection app at the host Hermes' own Claude Code login folder
+    (wam/claude_login.py), so its auto-renew and Connect/Test keep the agent signed in. Never copies a token.
+    `apps` = app id -> provides. Returns {apps: {id: result}, changed_apps: [...]} (changed apps need an update)."""
+    from . import claude_login
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes share the Claude volume)"}
+    a = al.get("agent") or {}
+    if not a.get("hermes_home") or a.get("uid") is None or a.get("gid") is None:
+        return {"state": "skipped", "note": "alongside state names no host Hermes; run `wam alongside`"}
+    hh = Path(a["hermes_home"])
+    cfg = alongside._config(hh)
+    out: dict = {"apps": {}, "changed_apps": []}
+    rootless = None
+    for app_id, provides in sorted(apps.items()):
+        if not claude_login.is_consumer(app_id, provides):
+            continue
+        if rootless is None:
+            rootless = alongside.docker_rootless()
+        try:
+            r = claude_login.ensure(c.runtipi_root, STORE, app_id, provides, hh, int(a["uid"]), int(a["gid"]),
+                                    rootless, cfg)
+        except (ValueError, OSError) as e:
+            r = {"state": "error", "error": str(e)[:200], "changed": False}
+        out["apps"][app_id] = {k: v for k, v in r.items() if k != "changed"}
+        if r.get("changed"):
+            out["changed_apps"].append(app_id)
+    return out
+
+
+def claude_login_off(c: Config) -> list[str]:
+    """`wam alongside --off`: Claude apps go back to their own volume (only what claude_login wrote is removed)."""
+    from . import claude_login
+    base = c.runtipi_root / "user-config" / STORE
+    return [d.name for d in sorted(base.iterdir()) if d.is_dir() and claude_login.remove(d / "docker-compose.yml")] \
+        if base.is_dir() else []
 
 
 def host_dashboard_consumers(c: Config, ids: set[str]) -> dict[str, list[str]]:
@@ -770,7 +847,8 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
     if not al:
         return {"state": "skipped", "note": "not an alongside box (fresh boxes serve Store data from the shell image)"}
     reg = write_registry(c, c.runtipi())
-    out = store_data.ensure(reg, apply=apply)
+    svc_port = int((al.get("service") or {}).get("port") or 0)
+    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
     if out.get("state") == "ready" and apply and shutil.which("tailscale"):
         shell_port = int((al.get("shell") or {}).get("port") or 0)
         if shell_port:
@@ -857,8 +935,91 @@ def bootstrap(c: Config) -> dict:
             del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
+    updated = release_updates(c, rt, failed)
     reg = write_registry(c, rt)
-    return {"installed": done, "failed": failed, "spots": slots.table(reg)}
+    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg)}
+
+
+def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+    """Move installed release defaults to the release's source commit on an upgrade rerun.
+
+    A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
+    e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
+    Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    """
+    doc = release_pins.load() or {}
+    if not doc.get("default_apps"):
+        return []
+    have = installed_ids(rt)
+    out = []
+    for row in (doc.get("default_apps") or {}).values():
+        if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        app_id = row["app"]
+        live = c.runtipi_root / "apps" / STORE / app_id
+        try:
+            commit = (live / ".wizard-commit").read_text().strip()
+            source = json.loads((live / ".wizard-source").read_text()).get("repo")
+        except (OSError, ValueError):
+            continue
+        if commit == row["commit"] or source != row["repo"]:
+            continue
+        try:
+            print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
+            resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            res = app_update(c, app_id)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            out.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, private.PrivateError) as e:
+            failed[app_id] = f"update to release source failed: {e}"[:200]
+    return out
+
+
+def _app_container_states(urn: str) -> list[str]:
+    """Docker states of the containers Runtipi labelled for one app (empty when they are all gone)."""
+    from .agent_link import _docker
+    p = subprocess.run(_docker() + ["ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format", "{{.State}}"],
+                       capture_output=True, text=True, timeout=30)
+    if p.returncode:
+        raise RuntimeError(f"docker ps failed: {(p.stderr or p.stdout).strip()[:160]}")
+    return p.stdout.split()
+
+
+def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
+    """wam#95: start installed apps whose containers are missing or not running while their records survive.
+    Only the Wizard shell / Agent Service and the apps named in `running` (recorded running before this rerun) are
+    started: an app the owner stopped stays stopped. Apps whose containers all run are left alone (healthy no-op)."""
+    rt = c.runtipi()
+    defaults = slots.load_defaults()
+    core = [(defaults.get(s) or {}).get("app") for s in ("shell", "agent-service")]
+    core = [a for a in core if a]
+    installed = {}
+    for row in rt.installed():
+        urn = (row.get("info") or {}).get("urn") or ""
+        if urn:
+            installed[urn] = (row.get("app") or {}).get("status")
+    want = [f"{a}:{STORE}" for a in core] + [u if ":" in u else f"{u}:{STORE}" for u in running]
+    started, failed, skipped = [], {}, []
+    for urn in dict.fromkeys(want):
+        app_id = urn.split(":", 1)[0]
+        if urn not in installed:
+            skipped.append(app_id)
+            continue
+        try:
+            states = _app_container_states(urn)
+            if states and all(s == "running" for s in states):
+                continue
+            res = app_lifecycle(c, "start", urn)
+            if res.get("error"):
+                failed[app_id] = res["error"][:200]
+            else:
+                started.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, subprocess.SubprocessError) as e:
+            failed[app_id] = str(e)[:200]
+    if started:
+        write_registry(c, rt)
+    return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
@@ -1060,11 +1221,9 @@ class StoreHandler(BaseHTTPRequestHandler):
         if si.peer_uid(self.client_address[1]) != 0:
             return self._json(403, {"error": "only reachable through tailscale serve"})
         c = self.cfg
-        al = alongside.load(c.home) or {}
         lp = c.home / "links.json"
         ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
-        port = int((al.get("shell") or {}).get("port") or 0)
-        origins = {f"https://{ts}:{port}"} if ts and port else set()
+        origins = si.served_origins(ts) if ts else set()
         owner = si.owner_login()
         if method == "POST":
             why = si.check_request(self.headers, owner, origins)
@@ -1074,7 +1233,19 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
         if method == "POST":
-            code, body = si.start(c, app_id, lambda c_, a: install(c_, a), lambda: installed_ids(c.runtipi()))
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4096:
+                    return self._json(400, {"error": "invalid selection body size"})
+                selection = json.loads(self.rfile.read(size))
+                from . import store_selection
+                if not si.ID.fullmatch(app_id):
+                    raise ValueError("bad app id")
+                selection = store_selection.resolve(c, app_id, selection)
+                code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
+                                      lambda: installed_ids(c.runtipi()), selection=selection)
+            except (ValueError, OSError, index.IndexError_) as e:
+                return self._json(400, {"error": str(e)})
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
@@ -1182,6 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
+    rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
+    rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
     ss = sub.add_parser("shell-split", help="move this box from the wizard-shell bundle to the split Agent Service + shell")
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
@@ -1225,6 +1398,8 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
+        elif args.cmd == "recover":
+            print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":
             print(json.dumps(shell_split(c, rollback=args.rollback, force=args.force), indent=2))
         elif args.cmd == "apps":
@@ -1256,6 +1431,10 @@ def main(argv: list[str] | None = None) -> int:
                 reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
             res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
+            if not args.dry_run:
+                # The installer calls links last. Rebuild/share after publishing,
+                # otherwise a fresh Agent Service still receives loopback URLs.
+                write_registry(c)
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":

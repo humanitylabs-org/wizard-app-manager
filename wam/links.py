@@ -102,7 +102,12 @@ def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js).
     Paths published before are kept (from links.json), so a later run without WAM_PRIVATE_CATALOG set (the API
     service, an installer re-run) doesn't move the app back to a port of its own."""
-    out = {}
+    # First-party defaults must work on a fresh box, without a private catalog
+    # or a links.json copied from somebody else's installation.
+    defaults = json.loads(Path(__file__).with_name("defaults.json").read_text())["slots"]
+    out = {d["app"]: {"path": d["gateway"]["path"], "strip": d["gateway"].get("strip_prefix", True),
+                      "local_path": d["gateway"]["path"]}
+           for d in defaults.values() if d.get("app") and d.get("gateway")}
     if home:
         try:
             for l in json.loads((home / "links.json").read_text()).get("links") or []:
@@ -124,6 +129,27 @@ def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     return out
 
 
+def gateway_shell_ports(config: dict, host: str, shell_port: int) -> list[int]:
+    """Owner-configured shell aliases, never arbitrary ports supplied by a browser."""
+    import re
+    from .store_install import PREFIX, PORT
+    ports = {shell_port}
+    for authority, site in (config.get("Web") or {}).items():
+        name, _, port = authority.rpartition(":")
+        if name != host or not port.isdigit() or not 1 <= int(port) <= 65535:
+            continue
+        if (config.get("AllowFunnel") or {}).get(authority) or not (config.get("TCP", {}).get(port) or {}).get("HTTPS"):
+            continue
+        handlers = site.get("Handlers") or {}
+        root = (handlers.get("/") or {}).get("Proxy", "")
+        if root == f"http://127.0.0.1:{shell_port}" or (
+            re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", root) and
+            (handlers.get(PREFIX) or {}).get("Proxy") == f"http://127.0.0.1:{PORT}"
+        ):
+            ports.add(int(port))
+    return sorted(ports)
+
+
 def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True,
             api_port: int = 7790) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
@@ -138,25 +164,36 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
         shell_port = next((r["port"] for r in rows if r["id"] in (shell_ids or set())), None)
         for r in rows:
             g = gw.get(r["id"]) if shell_port else None
+            # Old release-pinned recipes still serve at /. Do not route those
+            # through /files/ until their matching app update is installed.
+            if g and g.get("local_path") and r["path"] != g["local_path"]:
+                g = None
             port = int(shell_port or r["port"]) if g else int(r["port"])
             path = g["path"] if g else "/"
             target = f"http://127.0.0.1:{r['port']}" + (g["path"] if g and not g["strip"] else "")
             if apply:
                 try:
-                    status = route_status(serve_status(), ts["host"], port, path, target)
-                    if status == "conflict":
-                        raise ValueError(f"existing Serve route on {port}{path} differs; left untouched")
-                    if status == "missing":
-                        args = ["tailscale", "serve", "--bg", f"--https={port}"]
-                        if g:
-                            args.append(f"--set-path={path}")
-                        p = _run([*args, target], 60)
-                        if p.returncode != 0:
-                            raise ValueError((p.stderr or p.stdout).strip() or "Tailscale Serve failed")
-                        if route_status(serve_status(), ts["host"], port, path, target) != "match":
-                            raise ValueError("Serve route readback did not match requested private proxy")
+                    publish_ports = gateway_shell_ports(serve_status(), ts["host"], port) if g else [port]
                 except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                     result["errors"][r["id"]] = str(e)[:200]
+                    continue
+                for publish_port in publish_ports:
+                    try:
+                        status = route_status(serve_status(), ts["host"], publish_port, path, target)
+                        if status == "conflict":
+                            raise ValueError(f"existing Serve route on {publish_port}{path} differs; left untouched")
+                        if status == "missing":
+                            args = ["tailscale", "serve", "--bg", f"--https={publish_port}"]
+                            if g:
+                                args.append(f"--set-path={path}")
+                            p = _run([*args, target], 60)
+                            if p.returncode != 0:
+                                raise ValueError((p.stderr or p.stdout).strip() or "Tailscale Serve failed")
+                            if route_status(serve_status(), ts["host"], publish_port, path, target) != "match":
+                                raise ValueError("Serve route readback did not match requested private proxy")
+                    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+                        result["errors"][r["id"] if publish_port == port else f"{r['id']}@{publish_port}"] = str(e)[:200]
+                if r["id"] in result["errors"]:
                     continue
             url = f"https://{ts['host']}:{port}{g['path'] if g else r['path']}"
             result["links"].append({**r, "url": url, "open": g["path"] if g else url,

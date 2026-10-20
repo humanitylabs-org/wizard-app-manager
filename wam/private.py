@@ -123,6 +123,9 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
     if source_pin and (source_pin.get('repo') != repo or
                        not re.fullmatch(r'[0-9a-f]{40}', source_pin.get('commit', ''))):
         raise PrivateError('invalid release source pin')
+    if release:
+        from .test_catalog import check_architecture
+        check_architecture(release)
     commit = source_pin['commit'] if source_pin else release['commit'] if release else head_commit(repo, tok)
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Path(tmpdir) / "src"
@@ -191,6 +194,9 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
 
         cfg = json.loads(cfg_p.read_text())
         cfg["id"] = app_id
+        # Runtipi requires source even when a valid private manifest omitted it.
+        # Bind it to the fetched repository, never to a catalog/browser URL.
+        cfg["source"] = f"https://github.com/{repo}"
         cat = d.get("category")
         cfg["categories"] = [cat if cat in CATEGORIES else ("agent" if d.get("type") == "agent" else "app")]
         cfg["tipi_version"] = max(int(cfg.get("tipi_version") or 1), old_tipi + 1 if have else old_tipi)   # new commit = update
@@ -218,6 +224,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             shutil.copytree(cfg_p.parent / "data", tmp / "data")
         (tmp / ".wizard-commit").write_text(commit + "\n")
         (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True}) + "\n")
+        if release or source_pin:
+            (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
         shutil.rmtree(dst, ignore_errors=True)
         tmp.rename(dst)
     return rec

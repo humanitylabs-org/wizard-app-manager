@@ -12,7 +12,7 @@ from wam import links  # noqa: E402
 REG = {"apps": [
     {"id": "wizard-shell", "name": "Wizard", "category": "interface", "status": "running",
      "view": {"url": "http://127.0.0.1:8796/wizard-ux/"}},
-    {"id": "files", "name": "Files", "category": "system", "status": "running", "view": {"url": "http://127.0.0.1:8794/"}},
+    {"id": "files", "name": "Files", "category": "system", "status": "running", "view": {"url": "http://127.0.0.1:8794/files/"}},
     {"id": "secret-drop", "name": "Secret Drop", "category": "system", "status": "running", "view": None},
     {"id": "stopped-app", "name": "Stopped", "category": "app", "status": "stopped", "view": {"url": "http://127.0.0.1:8800/"}},
     {"id": "admin", "name": "Admin", "category": "system", "status": "running", "view": {"url": "http://127.0.0.1:8480/"}},
@@ -58,7 +58,9 @@ def test_publishes_only_app_pages_shell_first(tmp_path, fake_tailscale):
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"})
     assert [l["id"] for l in res["links"]] == ["wizard-shell", "files"]
     assert res["links"][0]["url"] == "https://box.tail1234.ts.net:8796/wizard-ux/"
-    assert res["links"][1]["url"] == "https://box.tail1234.ts.net:8794/"
+    assert res["links"][1]["url"] == "https://box.tail1234.ts.net:8796/files/"
+    assert res["links"][1]["open"] == "/files/"
+    assert res["links"][1]["gateway_strip"] is False
     log = calls.read_text()
     assert "serve --bg --https=8796 http://127.0.0.1:8796" in log
     assert "--https=8794" not in log          # already served: left alone
@@ -82,7 +84,8 @@ def test_failed_serve_is_reported_not_listed(tmp_path, fake_tailscale, monkeypat
     which = links.shutil.which
     monkeypatch.setattr(links.shutil, "which", lambda name: None if name == "sudo" else which(name))
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"})
-    assert [l["id"] for l in res["links"]] == ["files"]
+    assert res["links"] == []
+    assert "files" in res["errors"]
     assert "wizard-shell" in res["errors"]
 
 
@@ -113,7 +116,7 @@ def test_gateway_app_shares_shell_origin_and_registry_gets_openable_url(tmp_path
     links.apply_to_registry(reg, tmp_path / "home")
     by = {a["id"]: a for a in reg["apps"]}
     assert by["wisdom"]["view"] == {"url": "/wisdom/", "local": "http://127.0.0.1:9230/"}
-    assert by["files"]["view"]["url"] == "https://box.tail1234.ts.net:8794/"
+    assert by["files"]["view"]["url"] == "/files/"
     assert by["stopped-app"]["view"] == {"url": "http://127.0.0.1:8800/"}   # not published: unchanged
     # re-running reads the box-only address, not the rewritten one
     assert {r["id"]: r["port"] for r in links.pages(reg)}["wisdom"] == 9230
