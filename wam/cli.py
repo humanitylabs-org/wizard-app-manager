@@ -316,6 +316,14 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     trust_env = trusted_origin_env(c, app_id)
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
+    if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
+        try:
+            for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
+                if r.get("state") == "error":
+                    print(f"note: {name} keeps its own Claude sign-in ({r.get('error')}); run `wam alongside`",
+                          file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; `wam alongside` repairs it
+            print(f"note: Claude login not linked ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
@@ -732,6 +740,7 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         host_dashboard.disable()
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
+        removed += [a for a in claude_login_off(c) if a not in removed]
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
     st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
@@ -760,12 +769,56 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         if dash.get("state") != "skipped":
             out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
         order += [a for a in dash.get("changed_apps") or [] if a not in order]
+        reg_apps = registry_apps(c)
+        login = claude_login_cmd(c, {a: (reg_apps.get(a) or {}).get("provides") or [] for a in installed_ids(rt)})
+        if login.get("apps"):
+            out["claude_login"] = login
+        order += [a for a in login.get("changed_apps") or [] if a not in order]
         if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
     return out
+
+
+def claude_login_cmd(c: Config, apps: dict[str, list]) -> dict:
+    """Alongside: point each installed Claude connection app at the host Hermes' own Claude Code login folder
+    (wam/claude_login.py), so its auto-renew and Connect/Test keep the agent signed in. Never copies a token.
+    `apps` = app id -> provides. Returns {apps: {id: result}, changed_apps: [...]} (changed apps need an update)."""
+    from . import claude_login
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes share the Claude volume)"}
+    a = al.get("agent") or {}
+    if not a.get("hermes_home") or a.get("uid") is None or a.get("gid") is None:
+        return {"state": "skipped", "note": "alongside state names no host Hermes; run `wam alongside`"}
+    hh = Path(a["hermes_home"])
+    cfg = alongside._config(hh)
+    out: dict = {"apps": {}, "changed_apps": []}
+    rootless = None
+    for app_id, provides in sorted(apps.items()):
+        if not claude_login.is_consumer(app_id, provides):
+            continue
+        if rootless is None:
+            rootless = alongside.docker_rootless()
+        try:
+            r = claude_login.ensure(c.runtipi_root, STORE, app_id, provides, hh, int(a["uid"]), int(a["gid"]),
+                                    rootless, cfg)
+        except (ValueError, OSError) as e:
+            r = {"state": "error", "error": str(e)[:200], "changed": False}
+        out["apps"][app_id] = {k: v for k, v in r.items() if k != "changed"}
+        if r.get("changed"):
+            out["changed_apps"].append(app_id)
+    return out
+
+
+def claude_login_off(c: Config) -> list[str]:
+    """`wam alongside --off`: Claude apps go back to their own volume (only what claude_login wrote is removed)."""
+    from . import claude_login
+    base = c.runtipi_root / "user-config" / STORE
+    return [d.name for d in sorted(base.iterdir()) if d.is_dir() and claude_login.remove(d / "docker-compose.yml")] \
+        if base.is_dir() else []
 
 
 def host_dashboard_consumers(c: Config, ids: set[str]) -> dict[str, list[str]]:
