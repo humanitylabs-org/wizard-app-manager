@@ -121,6 +121,27 @@ def test_rerun_resolves_the_same_bits(box):
     assert git("rev-parse", "HEAD", cwd=box["home"] / "wam") == box["pinned"]
 
 
+def test_rerun_follows_current_stable_but_explicit_release_stays_pinned(box):
+    first, rec1 = box["run"]()
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert rec1["release"] == "9.9.9"
+    newer = json.loads((box["rel"] / "9.9.9.json").read_text())
+    newer["version"] = "9.9.10"
+    next_commit = git("rev-parse", "main", cwd=box["src"])
+    newer["components"]["wizard-app-manager"]["commit"] = next_commit
+    (box["rel"] / "9.9.10.json").write_text(json.dumps(newer))
+    (box["rel"] / "stable").write_text("9.9.10\n")
+    second, rec2 = box["run"]()
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert rec2["release"] == "9.9.10" and rec2["status"] == "pinned"
+    assert git("rev-parse", "HEAD", cwd=box["home"] / "wam") == next_commit
+    assert "moved-on" in second.stdout
+    explicit, rec3 = box["run"](WIZARD_RELEASE="9.9.9")
+    assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+    assert rec3["release"] == "9.9.9" and rec3["status"] == "pinned"
+    assert git("rev-parse", "HEAD", cwd=box["home"] / "wam") == box["pinned"]
+
+
 def test_default_app_drift_is_reported_and_strict_fails(box):
     apps = json.loads(json.dumps(box["apps"]))
     apps["apps"][1]["version"] = "2.70.0"
