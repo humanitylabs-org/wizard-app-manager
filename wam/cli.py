@@ -1325,6 +1325,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     if not before:
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
+    app, store = urn.split(":", 1)
+    if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
+        # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
+        role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
+        alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
     rt.update(urn, perform_backup=backup)
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
