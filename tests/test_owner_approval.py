@@ -195,7 +195,9 @@ def test_approved_link_runs_only_the_root_step_then_finishes_as_owner(box, relay
     p = box.run("dana", "start", **env)
     assert p.returncode == 0, p.stdout + p.stderr
     assert "sudo env" not in p.stderr, "the agent no longer gets the terminal command first"
-    out = _wait_for(box, env, lambda o: any(l.startswith("Owner action: Open this link") for l in o))
+    # the link can be shown a moment before the state flips to needs_owner; wait for both (CI race)
+    out = _wait_for(box, env, lambda o: o[:1] == ["Wizard OS install: needs_owner"]
+                    and any(l.startswith("Owner action: Open this link") for l in o))
     assert out[0] == "Wizard OS install: needs_owner"
     assert "Owner action: Open this link and enter your server password once to approve the Wizard OS install:" in out
     cap = _link(out, relay)
