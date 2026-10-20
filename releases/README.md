@@ -35,3 +35,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.6.json`. Byte-identical SHA-256: `5d509d49b2271aaac8a52891b9e991e3ee1f21772098e95c4179bb78fd3f4b4f`.
 - 0.3.5 plus App Manager #74 (`6bac949`): detached administrator runners no longer fall through into another installation.
+
+## 0.3.16 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.16.json`. Byte-identical SHA-256: `969cba6e7f85f54564a06b47c0ca8a6bc6f438ac5c14b2be524a2bbb38192041`.
+- 0.3.15 plus App Manager #110 (`e076a31`): the Claude connection app is a default on every box (new `claude-subscription` slot) and, in alongside mode, is wired to the host agent's own Claude login; Agent Service #60 (`1f3fa4f`): a signed-out provider is reported in `wizard_reconnect`; Wizard UX #200 (`45ef8f6`): 'Claude is signed out' panel with an Open/Get Claude button.
+- New Agent Service and UX images (multi-arch, pinned by digest); the App Manager image is unchanged from 0.3.12.
