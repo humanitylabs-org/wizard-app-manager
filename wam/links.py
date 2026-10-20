@@ -102,7 +102,12 @@ def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     inside the shell at that path, so they share its origin (and its /wizard-os-home/core/app-client.js).
     Paths published before are kept (from links.json), so a later run without WAM_PRIVATE_CATALOG set (the API
     service, an installer re-run) doesn't move the app back to a port of its own."""
-    out = {}
+    # First-party defaults must work on a fresh box, without a private catalog
+    # or a links.json copied from somebody else's installation.
+    defaults = json.loads(Path(__file__).with_name("defaults.json").read_text())["slots"]
+    out = {d["app"]: {"path": d["gateway"]["path"], "strip": d["gateway"].get("strip_prefix", True),
+                      "local_path": d["gateway"]["path"]}
+           for d in defaults.values() if d.get("app") and d.get("gateway")}
     if home:
         try:
             for l in json.loads((home / "links.json").read_text()).get("links") or []:
@@ -159,6 +164,10 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
         shell_port = next((r["port"] for r in rows if r["id"] in (shell_ids or set())), None)
         for r in rows:
             g = gw.get(r["id"]) if shell_port else None
+            # Old release-pinned recipes still serve at /. Do not route those
+            # through /files/ until their matching app update is installed.
+            if g and g.get("local_path") and r["path"] != g["local_path"]:
+                g = None
             port = int(shell_port or r["port"]) if g else int(r["port"])
             path = g["path"] if g else "/"
             target = f"http://127.0.0.1:{r['port']}" + (g["path"] if g and not g["strip"] else "")

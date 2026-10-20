@@ -31,7 +31,9 @@
     "files": {
       "name": "Files",
       "app": "files",
-      "required": true
+      "repo": "oscarhenrycollins/files",
+      "required": true,
+      "gateway": {"path": "/files/", "strip_prefix": false}
     },
     "transcription": {
       "name": "Transcription",
