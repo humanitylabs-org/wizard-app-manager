@@ -63,3 +63,51 @@ def test_peer_uid_reads_proc(tmp_path, monkeypatch):
 
 def test_route_targets_the_store_port():
     assert si.route(8796)[-1] == "http://127.0.0.1:7791" and "--set-path=/wizard-os-home/store-install" in si.route(8796)
+
+
+def _serve_store(monkeypatch, cfg):
+    import http.client, json as _j
+    from http.server import ThreadingHTTPServer
+    from wam import cli
+    monkeypatch.setattr(si, "peer_uid", lambda p: 0)
+    monkeypatch.setattr(si, "owner_login", lambda: "o@x")
+    monkeypatch.setattr(si, "served_origins", lambda h: {"https://b"})
+    monkeypatch.setattr(si, "check_request", lambda *a: None)
+    monkeypatch.setattr(cli.StoreHandler, "cfg", cfg, raising=False)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.StoreHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    body = _j.dumps({"source": "standard", "repo": "org/app", "commit": "a" * 40, "operation": "install"})
+    h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    h.request("POST", "/app", body, {"Content-Type": "application/json", "Content-Length": str(len(body))})
+    r = h.getresponse(); out = (r.status, _j.loads(r.read() or b"{}")); srv.shutdown(); return out
+
+
+def test_store_get_without_docker_access_still_resolves(monkeypatch, tmp_path):
+    """A manager service that can't run `docker info` (fresh box, docker group not active yet) used to crash the
+    request, which the phone showed as "Install failed (502)"."""
+    import subprocess, platform
+    from wam import index, test_catalog
+    real = subprocess.run
+    def no_docker(argv, **kw):
+        if "docker" in argv[:3]:
+            raise subprocess.CalledProcessError(1, argv, "", "permission denied")
+        return real(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", no_docker)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    assert test_catalog.host_architecture() == "amd64"
+    monkeypatch.setattr(index, "resolve", lambda i, r: {"id": "app", "repo": "org/app", "commit": "a" * 40,
+                                                       "architectures": ["amd64"]})
+    monkeypatch.setattr(si, "start", lambda *a, **k: (202, {"app": "app", "state": "installing"}))
+    class C: index = "x"; home = tmp_path
+    code, body = _serve_store(monkeypatch, C())
+    assert code == 202 and body["state"] == "installing"
+
+
+def test_store_get_unexpected_error_answers_json(monkeypatch, tmp_path):
+    from wam import store_selection
+    def boom(*a):
+        raise KeyError("surprise")
+    monkeypatch.setattr(store_selection, "resolve", boom)
+    class C: index = "x"; home = tmp_path
+    code, body = _serve_store(monkeypatch, C())
+    assert code == 500 and "Update Wizard" in body["error"]
