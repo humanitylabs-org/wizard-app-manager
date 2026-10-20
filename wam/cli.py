@@ -1248,6 +1248,10 @@ class StoreHandler(BaseHTTPRequestHandler):
                                       lambda: installed_ids(c.runtipi()), selection=selection)
             except (ValueError, OSError, index.IndexError_) as e:
                 return self._json(400, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+                sys.stderr.write(f"wam store: {app_id} selection failed: {type(e).__name__}: {e}\n")
+                return self._json(500, {"error": f"The App Manager couldn't prepare this install ({type(e).__name__}). "
+                                                 "Update Wizard and try again."})
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
