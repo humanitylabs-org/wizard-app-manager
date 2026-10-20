@@ -41,3 +41,10 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.16.json`. Byte-identical SHA-256: `969cba6e7f85f54564a06b47c0ca8a6bc6f438ac5c14b2be524a2bbb38192041`.
 - 0.3.15 plus App Manager #110 (`e076a31`): the Claude connection app is a default on every box (new `claude-subscription` slot) and, in alongside mode, is wired to the host agent's own Claude login; Agent Service #60 (`1f3fa4f`): a signed-out provider is reported in `wizard_reconnect`; Wizard UX #200 (`45ef8f6`): 'Claude is signed out' panel with an Open/Get Claude button.
 - New Agent Service and UX images (multi-arch, pinned by digest); the App Manager image is unchanged from 0.3.12.
+
+## 0.3.17 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.17.json`. Byte-identical SHA-256: `ae450b3a7a4e98fa5fa10d640c54b3edc6df4585ea6264c94847de4a0cf5f2c9`.
+- 0.3.16 plus box auto-updates: App Manager #83 (`bcdf461`): `wam updates` (Automatic by default, an explicit Ask me is kept, unpinned boxes never update unless forced) and install.sh runs `wam updates --ensure-timer` on every install and rerun; Wizard UX #211 (`7e929b9`): Settings → Updates.
+- My skin: Agent Service #62 (`e7bfd6d`) serves the owner's own skin layer from Files (Skins/My skin.css); Wizard UX #212 (`c1656a9`) applies it on top of the picked skin.
+- New Agent Service and UX images (multi-arch, pinned by digest); the App Manager image is unchanged from 0.3.12.
