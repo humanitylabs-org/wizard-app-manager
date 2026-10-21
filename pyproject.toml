@@ -13,4 +13,4 @@ wam = "wam.cli:main"
 packages = ["wam"]
 
 [tool.setuptools.package-data]
-wam = ["release-index.mjs"]
+wam = ["release-index.mjs", "defaults.json"]

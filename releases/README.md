@@ -48,3 +48,52 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - 0.3.16 plus box auto-updates: App Manager #83 (`bcdf461`): `wam updates` (Automatic by default, an explicit Ask me is kept, unpinned boxes never update unless forced) and install.sh runs `wam updates --ensure-timer` on every install and rerun; Wizard UX #211 (`7e929b9`): Settings → Updates.
 - My skin: Agent Service #62 (`e7bfd6d`) serves the owner's own skin layer from Files (Skins/My skin.css); Wizard UX #212 (`c1656a9`) applies it on top of the picked skin.
 - New Agent Service and UX images (multi-arch, pinned by digest); the App Manager image is unchanged from 0.3.12.
+
+## 0.3.18 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.18.json`. Byte-identical SHA-256: `81065c20771b1531b1144beea6f959515b72050d08d09245a3ddf84e5cebcedd`.
+- 0.3.17 plus App Manager #116 (`1068428`, fixes #113): `wam app update` and `wam alongside` reconcile the alongside image pin from the selected release (explicit developer overrides still win) before queuing a core update, so the Agent Service no longer stays on a stale image.
+- Every other pin is identical to 0.3.17; the App Manager image is unchanged from 0.3.12.
+
+## 0.3.19 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.19.json`. Byte-identical SHA-256: `9c903594b3f009b6a73a1fafa9e2b3bbffcc92a12ad5dfe0fa412a682759fae2`.
+- 0.3.18 plus App Manager #118 (`c595834`): Store Get no longer fails with a bare "Install failed (502)" when the App Manager service can't run `docker info`; the architecture check falls back to `sudo -n docker`, then the machine's CPU, and unexpected errors answer with a plain reason.
+- Every other pin is identical to 0.3.18; the App Manager image is unchanged from 0.3.12.
+
+## 0.3.20 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.20.json`. Byte-identical SHA-256: `28c20be9958417598cdebbf8b16324d1f377ae1e167cf7d1f445b93386fd1795`.
+- 0.3.19 plus App Manager #123 (`cb81d8f`, wizard-os#90): an update cut short by a reboot (or a killed installer) is marked `interrupted` with its stale install.lock released, so the Update button or the nightly Automatic check retries instead of reporting "installing" forever. Main also carries #122 (private provider metadata kept in apps.json).
+- `secrets` default app moves to secret-drop `690b277` (engine image digest-pinned, same bytes); `install.note` now describes what both install modes actually pin and read back (wizard-os#27).
+- Every other pin is identical to 0.3.19; the App Manager image is unchanged from 0.3.12.
+
+## 0.3.21 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.21.json`. Byte-identical SHA-256: `a97a6c9acc38ae88712a66a355e16dff908557b12de01ac9ec3015c84c3e5a7a`.
+- 0.3.20 plus Wizard UX main `7dbef20`: app badges (#226), app title-bar tools (#232, used by Morning Report 0.4.0), slim phone title bars and the Update burst on Dark/Light/Landscapes (#233), and fixes #234–#242.
+- Every other pin is identical to 0.3.20; the App Manager and Agent Service images are unchanged.
+
+## 0.3.22 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.22.json`. Byte-identical SHA-256: `4f13a86f4e2eb94c67121ca0a9c7688215c7af70c787b63295f92bf0ed0312ab`.
+- 0.3.21 plus App Manager #130 (`0b2a702`, wizard-os#93): every install and rerun sets up the working Troubleshooter (native user service at `/troubleshoot/` on the owner's shell addresses) from the new pinned component `wizard-troubleshooter` `c434bbe`. The owner gate is the box's own tailnet login and the guardian is report-only. Main also carries #128 (routing skills kept on registry rewrite).
+- Every other pin is identical to 0.3.21. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.23 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.23.json`. Byte-identical SHA-256: `8ab124cf9a9073c9dcdeec0aa9a8592fdfc1f99d1ef2105b9015ec0baacd9f9f`.
+- 0.3.22 plus wizard-troubleshooter #9 (`4b1f0ef`, wizard-os#93): the Troubleshooter's Sign in and Open … app links now open the connection app this box really has. The address comes from apps.json, or the app's App Store page when it isn't installed. Before, they went to a not_found page. A box without Claude Code now gets plain guidance instead of a dead Claude button. First snapshot with the required `hermes` pin (carried over, v2026.9.24).
+- Every other pin is identical to 0.3.22. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.24 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.24.json`. Byte-identical SHA-256: `766e30a7c644f7d5098076c23850e2bfa6cbc10433a618115d22fdb22286bec1`.
+- 0.3.23 plus App Manager #135 (`5005f6b`, wizard-os#87): a fresh install no longer fails before Runtipi exists when an earlier install left a root-owned `/tmp/runtipi-setup.sh` (curl exit 23). The Runtipi setup now downloads to a private temp dir. Main also carries #133 (owner screens through the shared view projection).
+- Every other pin is identical to 0.3.23. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.25 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.25.json`. Byte-identical SHA-256: `9fbbde5313e44a3973317e8bdd9f49653d906560747a2882616c8d6d48de5689`.
+- 0.3.24 plus App Manager #137 (`40e59d8`, wizard-os#87): a fresh install on a box whose new `wizard` user is not uid 1000 no longer fails at the end with Errno 13 on the stock Hermes `config.yaml`. The builder step reads and replaces it through the installer's passwordless sudo, keeping the agent's owner and mode.
+- Every other pin is identical to 0.3.24. The App Manager, Wizard UX and Agent Service images are unchanged.

@@ -383,10 +383,14 @@ def save(st):
     os.chmod(tmp, 0o600); os.replace(tmp, path)
 ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 url = re.compile(r"https://\S+")
+def boot_id():   # a reader that sees another boot id knows this run was cut short by a reboot (wam updates)
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f: return f.read().strip() or None
+    except OSError: return None
 if mode == "begin":
     save({"state": "running", "step": "starting", "tailscale_login_url": None, "wizard_url": None, "message": "",
           "notes": [], "restart_pending": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-          "pid": int(sys.argv[4])})
+          "pid": int(sys.argv[4]), "boot_id": boot_id()})
     sys.exit(0)
 if mode == "end":
     st, rc = load(), int(sys.argv[4])
@@ -454,7 +458,8 @@ if mode == "stream":
     lock = open(os.path.join(os.path.dirname(path), "install.lock"), "w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     st = {"state": "running", "step": "administrator host preparation", "tailscale_login_url": None,
-          "wizard_url": None, "message": "", "notes": [], "restart_pending": False, "pid": pid}
+          "wizard_url": None, "message": "", "notes": [], "restart_pending": False, "pid": pid,
+          "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "boot_id": boot_id()}
     save(st)
     with open(log_path, "w") as projected:
         os.chmod(log_path, 0o600)
@@ -508,12 +513,12 @@ elif state == "done":
 elif state == "needs_admin":
     print(f"Owner action: {st.get('message')}")
     print(st.get("admin_command") or "")
-elif state == "stopped":
-    print("The install stopped before it finished (the runner is gone). Run the start command again to retry.")
+elif state in ("stopped", "interrupted"):
+    print("The install stopped before it finished (the runner is gone, e.g. the box restarted). Run the start command again to retry.")
 else:
     print(st.get("message") or "Wizard OS did not finish installing.")
 PY
-  if [ "$state" = failed ] || [ "$state" = stopped ]; then
+  if [ "$state" = failed ] || [ "$state" = stopped ] || [ "$state" = interrupted ]; then
     echo "Last 20 lines of $INSTALL_LOG:"
     tail -n 20 "$INSTALL_LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' || true
   fi

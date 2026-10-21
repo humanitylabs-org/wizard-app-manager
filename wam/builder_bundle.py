@@ -30,8 +30,52 @@ def _files(root):
             and '__pycache__' not in p.parts and p.suffix != '.pyc'}
 
 
+def _foreign(path):
+    """A file another uid owns. The stock Hermes container remaps its user to the recipe's HERMES_UID (1000) and keeps
+    config.yaml 0640, so on a box whose Wizard user is not uid 1000 (the default `wizard` user created next to an
+    existing uid-1000 account) the installer can neither read it nor replace it without changing its owner."""
+    try:
+        return path.exists() and path.stat().st_uid != os.geteuid()
+    except OSError:
+        return False
+
+
+def _sudo(args, **kw):
+    """The fresh installer's passwordless sudo (the same fallback the Docker probe uses); never prompts."""
+    try:
+        return subprocess.run(['sudo', '-n', *args], capture_output=True, timeout=30, check=True, **kw)
+    except (OSError, subprocess.SubprocessError) as e:
+        detail = getattr(e, 'stderr', b'') or b''
+        detail = detail.decode(errors='replace') if isinstance(detail, bytes) else str(detail)
+        raise PermissionError(f'{args[-1]} belongs to another user and sudo -n is unavailable: {detail.strip()[-200:] or e}')
+
+
+def _read_bytes(path):
+    try:
+        return path.read_bytes()
+    except PermissionError:
+        return _sudo(['cat', '--', str(path)]).stdout
+
+
+def _read_text(path):
+    return _read_bytes(path).decode()
+
+
 def _atomic(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if _foreign(path):
+        # Keep the agent's own owner and mode: replacing it as this user would lock the agent out of its config.
+        st = path.stat()
+        d = tempfile.mkdtemp()
+        try:
+            src = Path(d) / path.name
+            src.write_text(text)
+            stage = path.with_name(f'.{path.name}.{os.getpid()}.wam')
+            _sudo(['install', '-o', str(st.st_uid), '-g', str(st.st_gid), '-m', oct(st.st_mode & 0o777)[2:], str(src), str(stage)])
+            _sudo(['mv', '-f', '--', str(stage), str(path)])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        return
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
     try:
         with os.fdopen(fd, 'w') as f:
@@ -169,7 +213,7 @@ def rollback(os_home, revision):
 
 def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
     home, osh = Path(hermes_home), Path(os_home).resolve()
-    cfg = cfg if cfg is not None else (yaml.safe_load((home / 'config.yaml').read_text()) or {} if (home / 'config.yaml').exists() else {})
+    cfg = cfg if cfg is not None else (yaml.safe_load(_read_text(home / 'config.yaml')) or {} if (home / 'config.yaml').exists() else {})
     if not isinstance(cfg, dict) or not isinstance(cfg.get('skills', {}), dict):
         raise ValueError('Expected config/skills mapping; preserving config')
     dirs = (cfg.get('skills') or {}).get('external_dirs') or []
@@ -231,7 +275,7 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
 def register(hermes_home, os_home, runtime=None):
     home = Path(hermes_home)
     cfgp = home / 'config.yaml'
-    cfg = yaml.safe_load(cfgp.read_text()) or {} if cfgp.exists() else {}
+    cfg = yaml.safe_load(_read_text(cfgp)) or {} if cfgp.exists() else {}
     dirs = check_collisions(home, os_home, cfg, runtime)
     path = runtime or str(Path(os_home).resolve() / 'system-skills')
     if path not in dirs:
@@ -250,7 +294,7 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     data = c.runtipi_root / 'app-data' / store / app_id / 'data'
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
     before = (override.read_bytes() if override.exists() else None,
-              (data / 'config.yaml').read_bytes() if (data / 'config.yaml').exists() else None)
+              _read_bytes(data / 'config.yaml') if (data / 'config.yaml').exists() else None)
     doc = yaml.safe_load(override.read_text()) or {} if override.exists() else {}
     service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
     mount = {'type': 'bind', 'source': str(Path(c.home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
@@ -269,7 +313,7 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
         vols.append(mount)
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
     _atomic(override, yaml.safe_dump(doc, sort_keys=False))
-    after = (override.read_bytes(), (data / 'config.yaml').read_bytes())
+    after = (override.read_bytes(), _read_bytes(data / 'config.yaml'))
     pending = Path(c.home) / 'builder/restart-required'
     if before != after:
         _atomic(pending, 'Builder discovery/mount changed; restart stock Hermes\n')
@@ -299,7 +343,7 @@ def health(os_home, hermes_home=None, runtime=None):
         rows.append(('Wizard builder bundle and host tooling', False, str(e) + '; repair: wam builder-bundle install'))
     if hermes_home:
         try:
-            cfg = yaml.safe_load((Path(hermes_home) / 'config.yaml').read_text()) or {}
+            cfg = yaml.safe_load(_read_text(Path(hermes_home) / 'config.yaml')) or {}
             dirs = check_collisions(hermes_home, os_home, cfg, runtime)
             want = runtime or str(Path(os_home).resolve() / 'system-skills')
             enabled = 'wizard-builder' not in ((cfg.get('skills') or {}).get('disabled') or [])
@@ -320,7 +364,7 @@ def runtime_health(c):
     label = 'Wizard builder agent terminal reachability'
     try:
         data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
-        cfg = yaml.safe_load((data / 'config.yaml').read_text()) or {}
+        cfg = yaml.safe_load(_read_text(data / 'config.yaml')) or {}
         terminal = cfg.get('terminal') or {}
         docker = ['docker']
         ps = ['ps', '-q', '--filter', 'label=com.docker.compose.service=hermes-agent-engine']

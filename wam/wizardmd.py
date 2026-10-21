@@ -18,6 +18,7 @@ CATEGORIES = {"agent", "interface", "app", "system"}
 BAD_CAPS = {"ALL", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_RAWIO", "NET_ADMIN", "DAC_READ_SEARCH", "BPF", "PERFMON"}
 HOST_PATH = re.compile(r"^/(etc|root|boot|proc|sys|dev|var/run|run|home|usr|lib|bin|sbin)(/|$)")
 NEEDS = {"mic", "system-audio", "camera", "notifications", "files"}
+DEFAULTS_FILE = Path(__file__).with_name("defaults.json")
 SPECS = {0.1, 0.2}
 SLOT = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
 NPUB = re.compile(r"npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}")
@@ -63,6 +64,22 @@ def compose_risks(text: str) -> list[str]:
             elif src == "/" or HOST_PATH.match(src):
                 risks.append(f"{name}: mounts host path {src}")
     return risks
+
+
+def known_dependencies() -> set[str]:
+    """Offline vocabulary, not installed availability or permission to install.
+
+    Read source defaults, not a box's selected release: a pinned box must still
+    be able to check a newer app. Null placeholders are not known providers.
+    Only explicit wizard.md capability snapshots count, never slot aliases or
+    the candidate's own declarations.
+    """
+    known = set(NEEDS)
+    for app in json.loads(DEFAULTS_FILE.read_text())["slots"].values():
+        if app.get("app"):
+            known.add(app["app"])
+            known.update(app.get("provides") or [])
+    return known
 
 
 def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
@@ -122,7 +139,8 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
     if t == "view":
         v = d.get("view") or {}
         rule("view declared", bool(v.get("path")) and bool(v.get("port")), json.dumps(v))
-    bad = [n for n in d.get("needs") or [] if n not in NEEDS and not str(n).startswith("credentials:")]
+    known = known_dependencies()
+    bad = [n for n in d.get("needs") or [] if n not in known and not str(n).startswith("credentials:")]
     rule("needs known", not bad, ", ".join(map(str, bad)))
     if d.get("provides") is not None:
         pv = d.get("provides")

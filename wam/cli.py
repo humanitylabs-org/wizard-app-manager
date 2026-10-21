@@ -17,6 +17,7 @@ Wizard additions:
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
+  wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                 [--share-sessions|--no-share-sessions]
@@ -166,6 +167,10 @@ def share_registry(c: Config) -> bool:
                     f = os.path.join(dirpath, name)
                     if not os.path.islink(f):
                         os.chmod(f, 0o644)
+        from .view_share import publish
+        for metadata in (c.home / "views").glob("*/view.json"):
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
+                publish(metadata.parent.name, c.home, shared)
         return True
     except OSError as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
@@ -1234,6 +1239,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         app_id = urlparse(self.path).path.strip("/")
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id.startswith('_views/'):
+            return self._view_revert(method, app_id.removeprefix('_views/'))
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1248,9 +1255,33 @@ class StoreHandler(BaseHTTPRequestHandler):
                                       lambda: installed_ids(c.runtipi()), selection=selection)
             except (ValueError, OSError, index.IndexError_) as e:
                 return self._json(400, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+                sys.stderr.write(f"wam store: {app_id} selection failed: {type(e).__name__}: {e}\n")
+                return self._json(500, {"error": f"The App Manager couldn't prepare this install ({type(e).__name__}). "
+                                                 "Update Wizard and try again."})
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _view_revert(self, method: str, app_id: str) -> None:
+        """Shell-owned Use original action, behind exactly the Settings/Store owner gate."""
+        from . import views
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,40}', app_id):
+            return self._json(404, {'error': 'not found'})
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 128:
+                    raise ValueError('invalid body size')
+                if json.loads(self.rfile.read(size)) != {'action': 'revert'}:
+                    raise ValueError('send action: revert')
+                views.revert(app_id, self.cfg.home)
+            view = views.load(app_id, self.cfg.home)
+            if not view:
+                return self._json(404, {'error': 'not customized'})
+            return self._json(200, {'app': app_id, 'active': view['active']})
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
 
     def _updates(self, method: str) -> None:
         """GET: installed vs stable and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
@@ -1325,6 +1356,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     if not before:
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
+    app, store = urn.split(":", 1)
+    if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
+        # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
+        role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
+        alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
     rt.update(urn, perform_backup=backup)
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
@@ -1391,6 +1427,8 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data for the installed shell (alongside)")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
+    tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -1455,6 +1493,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
+        elif args.cmd == "troubleshooter":
+            from . import troubleshooter
+            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
+            print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
+            return 1 if res["state"] in ("failed", "degraded") else 0
         elif args.cmd == "links":
             from . import links
             if args.dry_run:

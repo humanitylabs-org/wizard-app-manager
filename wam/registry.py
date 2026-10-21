@@ -16,6 +16,10 @@ from pathlib import Path
 import yaml
 
 SCHEMA = 2
+# Written into the same skills/ folder by the Agent Service and the wizard-os Hermes plugin (kernel.py
+# JOB_SKILL_PREFIX / JOB_STAMP). registry.write must never prune them.
+ROUTING_SKILL_PREFIX = "wizard-job-"
+ROUTING_STAMP = ".wizard-jobs"
 
 
 def home() -> Path:
@@ -92,6 +96,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
@@ -120,11 +125,19 @@ def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
     sk = root / "skills"
-    shutil.rmtree(sk, ignore_errors=True)
-    sk.mkdir()
+    sk.mkdir(exist_ok=True)
+    for entry in sk.iterdir():
+        # skills/ is shared: the Agent Service / wizard-os Hermes plugin keep the wizard-job-* routing
+        # skills (and their stamp) here. Only per-app skill folders are ours to prune.
+        if entry.name.startswith(ROUTING_SKILL_PREFIX) or entry.name == ROUTING_STAMP:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
     for a in reg["apps"]:
         src = a.get("_skill_src")   # get, not pop: write_registry writes twice and the second pass must copy skills too
-        if src:
+        if src and not a["id"].startswith(ROUTING_SKILL_PREFIX):
             (sk / a["id"]).mkdir()
             shutil.copy2(src, sk / a["id"] / "SKILL.md")
     prev = root / "apps.json"

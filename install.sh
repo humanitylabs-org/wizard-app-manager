@@ -30,9 +30,12 @@ services:
 YML
   ENVF="$(mktemp)"
   printf 'NGINX_PORT=8480\nNGINX_PORT_SSL=8443\nINTERNAL_IP=127.0.0.1\n' > "$ENVF"
-  curl -fsSL https://setup.runtipi.io -o /tmp/runtipi-setup.sh
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash /tmp/runtipi-setup.sh --env-file "$ENVF")
-  rm -f "$ENVF"
+  # A private temp dir, never a fixed /tmp name: a leftover /tmp/runtipi-setup.sh owned by another user (root, from
+  # an earlier install) can't be overwritten in sticky /tmp, and curl then fails with exit 23 before Runtipi exists.
+  SETUP_DIR="$(mktemp -d)"
+  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh"
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
+  rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
   sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
@@ -119,8 +122,8 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
-# Updates (wam/updates.py): Automatic unless the owner chose Ask me. Every install and rerun makes the nightly
-# update timer match that mode; it never writes the owner's choice, so an explicit Ask me is kept.
+# Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
+# update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
@@ -283,6 +286,14 @@ echo
 #    Skipped on a failed install: there is nothing usable to link to.
 if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
   "$HOME/.local/bin/wam" links || true
+  echo
+  # 5) The Troubleshooter (wizard-os#93): the way back when chat is down. A native user service, not an app, so it keeps
+  #    working (and can restart things) when Runtipi, the shell, the Agent Service or Hermes are broken. Mounted at
+  #    /troubleshoot/ on the shell's addresses (so it runs after `wam links`); the guardian only reports. The release
+  #    pins its commit. A hand-installed one is left alone; WIZARD_TROUBLESHOOTER=0 skips it.
+  if ! "$HOME/.local/bin/wam" troubleshooter; then
+    echo "note: the Troubleshooter is not fully set up ('wam troubleshooter' shows why; ~/.wizard-os/troubleshooter.json)"
+  fi
   echo
 fi
 [ ${#PENDING[@]} -eq 0 ] || { printf 'Pending: %s\n' "${PENDING[@]}"; echo; }

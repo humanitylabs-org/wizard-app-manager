@@ -1,5 +1,5 @@
 {
-  "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it).",
+  "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it). `provides` = known capabilities copied from that app's wizard.md for offline manifest checking, not extra install slots.",
   "slots": {
     "shell": {
       "name": "Shell (Wizard UX)",
@@ -42,6 +42,29 @@
       "required": false,
       "note": "Independent recovery component; must not depend on Agent Service or the agent it repairs. DRAFT distribution: host provisioning, owner-only routing and public access are release gates; app installation/health is not host-recovery acceptance."
     },
+    "connection-router": {
+      "name": "Connection Router",
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "required": false,
+      "provides": ["connection-router"],
+      "note": "Connect installed apps to tested models and services with explicit owner-approved replacements."
+    },
+    "accounts": {
+      "name": "Connected accounts",
+      "app": "wizard-connectors",
+      "repo": "humanitylabs-org/wizard-connectors",
+      "required": false,
+      "provides": ["connector-status", "simulated-private-summary"],
+      "note": "Account connector broker; Google sign-in stays off on new boxes until a verified Google OAuth app exists."
+    },
+    "agent-history": {
+      "name": "Agent History",
+      "app": null,
+      "repo": "humanitylabs-org/wizard-agent-history",
+      "required": false,
+      "note": "Reserved for wizard-agent-history; Wizard app packaging is pending, so no default is published yet."
+    },
     "files": {
       "name": "Files",
       "app": "files",
@@ -52,7 +75,16 @@
     "transcription": {
       "name": "Transcription",
       "app": "transcriber",
-      "required": false
+      "required": false,
+      "provides": ["transcription", "speech-to-text-engine"]
+    },
+    "voice": {
+      "name": "Voice",
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "required": false,
+      "provides": ["voice"],
+      "note": "Dictation and durable voice jobs; needs speech-to-text-engine from the existing Transcription default (transcriber)."
     },
     "browser": {
       "name": "Browser",
