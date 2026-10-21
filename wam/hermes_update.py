@@ -49,8 +49,8 @@ def _save(path: Path, doc: dict) -> None:
         Path(tmp).unlink(missing_ok=True)
 
 
-def _run(*argv, cwd=None, check=True, timeout=600) -> str:
-    r = subprocess.run([str(a) for a in argv], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def _run(*argv, cwd=None, check=True, timeout=600, env=None) -> str:
+    r = subprocess.run([str(a) for a in argv], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
     if check and r.returncode:
         # Do not persist stderr: installers can echo credential-bearing URLs/config.
         raise RuntimeError(f"{Path(str(argv[0])).name} failed (exit {r.returncode})")
@@ -105,7 +105,10 @@ def _installation(home: Path) -> dict:
 def _health(origin: str) -> str | None:
     try:
         with urllib.request.urlopen(origin + '/health', timeout=3) as response:
-            value = json.loads(response.read(65536)).get('version')
+            doc = json.loads(response.read(65536))
+            if doc.get('status') not in (None, 'ok'):
+                return None
+            value = doc.get('version')
         return value if isinstance(value, str) and value else None
     except (OSError, ValueError, AttributeError):
         return None
@@ -123,8 +126,15 @@ def receipt(home: Path) -> dict | None:
     if st and st.get('state') == 'running':
         why = updates._runner_gone(st, updates.boot_id(), updates._booted_at())
         if why:
-            # Read-only projection; never overwrite a new runner's receipt or unlink a lock.
-            return {**st, 'state': 'interrupted', 'reason': f'The Hermes update was interrupted ({why}); inspect its backup before retrying.'}
+            healed = {**st, 'state': 'interrupted', 'reason': f'The Hermes update was interrupted ({why}); inspect its backup before retrying.'}
+            try:
+                with _lock(home):
+                    cur = updates._read_status(home / 'hermes-update.json')
+                    if cur == st:
+                        _save(home / 'hermes-update.json', healed)
+            except OSError:
+                pass  # a live lock always wins; the projection is still useful on read-only homes
+            return healed
     return st
 
 
@@ -150,6 +160,7 @@ def status(home: Path | None = None, base: str | None = None) -> dict:
         out['running_version'] = out['running_version'] or out['checkout_tag']
         out['dirty'] = bool(_git(repo, 'status', '--porcelain', '--untracked-files=no'))
         have, want = _version(out['running_version']), _version(pin['tag'])
+        assert want is not None  # target() accepts final numeric tags only
         out['downgrade'] = have is not None and want < have
         out['update_available'] = have is not None and want >= have and out['commit'] != pin['commit']
         if out['dirty']:
@@ -229,10 +240,13 @@ def supervisor(hh: Path, repo: Path) -> dict | None:
 
 
 def restart(route: dict) -> None:
-    if route['usr1']:
-        os.kill(route['pid'], signal.SIGUSR1)
+    prefix = ['systemctl'] + (['--user'] if route['scope'] == 'user' else [])
+    # The PID recorded before the quiet wait may already have exited. Never signal it blindly.
+    pid = _run(*prefix, 'show', route['unit'], '--property=MainPID', '--value')
+    if route['usr1'] and pid.isdigit() and int(pid) > 0:
+        os.kill(int(pid), signal.SIGUSR1)
     else:
-        _run('systemctl', *(['--user'] if route['scope'] == 'user' else []), 'restart', route['unit'])
+        _run(*prefix, 'restart', route['unit'])
 
 
 def _wait_health(origin: str, version: str, timeout: float) -> None:
@@ -268,6 +282,7 @@ def _snapshot(h: Path, hh: Path, repo: Path, commit: str) -> Path:
             src.execute('SELECT count(*) FROM sqlite_master').fetchone()  # pin WAL read snapshot
             with closing(sqlite3.connect(backup / 'state.db')) as dst:
                 src.backup(dst, pages=256, progress=progress)
+        (backup / 'state.db').chmod(0o600)
         with closing(sqlite3.connect((backup / 'state.db').as_uri() + '?mode=ro', uri=True)) as db:
             if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                 raise RuntimeError('Hermes database backup failed integrity_check.')
@@ -293,6 +308,43 @@ def _restore(backup: Path, hh: Path, repo: Path) -> None:
         else:
             dst.unlink(missing_ok=True)
     # state.db is deliberately NOT restored: keep turns committed since the snapshot.
+
+
+def _clear_drain(hh: Path, run_id: str) -> None:
+    path = hh / '.drain_request.json'
+    try:
+        if _json(path).get('run_id') == run_id:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _request_drain(hh: Path, out: dict) -> None:
+    staged = hh / ('.wam-drain-' + out['run_id'])
+    try:
+        _save(staged, {'action': 'drain', 'run_id': out['run_id'], 'principal': 'wam-hermes-update',
+                       'requested_at': out['updated_at'], 'suppress_notification': True})
+        # Atomic publication without clobbering a concurrent maintenance owner's request.
+        os.link(staged, hh / '.drain_request.json')
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _dependency_lines(lines: list[str], repo: Path | None = None) -> list[str]:
+    # The editable Hermes line must not select a new checkout during rollback.
+    return [line for line in lines if line and not line.startswith('#')
+            and not (repo is not None and line == '-e ' + str(repo))
+            and not re.search(r'(?:^|#egg=)hermes[-_]agent(?:\s|[=@<]|$)', line, re.I)]
+
+
+def _distributions(lines: list[str]) -> set[str]:
+    # freeze's canonical distribution identifiers, not URLs or editable paths.
+    names = set()
+    for line in _dependency_lines(lines):
+        match = re.match(r'([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:==| @ )', line)
+        if match:
+            names.add(re.sub(r'[-_.]+', '-', match[1]).lower())
+    return names
 
 
 @contextmanager
@@ -327,6 +379,7 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         return {**st, 'state': 'refused', 'reason': 'A previous Hermes update needs inspection; keep its receipt and backup before retrying.'}
     began = time.monotonic()
     out = {'state': 'running', 'from': st['running_version'], 'to': st['target_tag'], 'backup': None,
+           'run_id': uuid.uuid4().hex,
            'pid': os.getpid(), 'boot_id': updates.boot_id(), 'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
            'timings': {}, 'notes': []}
     def save(state: str, reason: str) -> dict:
@@ -341,9 +394,9 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         return save('refused', st['reason'])
     repo, hh = Path(st['repo']), Path(st['hermes_home'])
     route = None
-    branch = _git(repo, 'symbolic-ref', '--short', '-q', 'HEAD', check=False) or 'main'
     old = st['commit']
     try:
+        branch = _git(repo, 'symbolic-ref', '--short', '-q', 'HEAD', check=False) or 'main'
         if st.get('uid') != os.getuid() or hh.stat().st_uid != os.getuid():
             raise ValueError('Run wam hermes update as the linked Hermes owner, not a different user.')
         if dry_run:
@@ -351,8 +404,11 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
             resolved = _git(repo, 'rev-parse', '--verify', 'refs/tags/' + st['target_tag'] + '^{commit}', check=False)
         else:
             save('running', 'Checking the exact upstream release pin.')
-            _git(repo, 'fetch', '--tags', 'origin')
-            resolved = _git(repo, 'rev-parse', '--verify', 'refs/tags/' + st['target_tag'] + '^{commit}')
+            try:
+                _git(repo, 'fetch', '--tags', 'origin')
+            except RuntimeError:
+                raise ValueError("release pin doesn't match upstream, or upstream could not be fetched") from None
+            resolved = _git(repo, 'rev-parse', '--verify', 'refs/tags/' + st['target_tag'] + '^{commit}', check=False)
         if resolved != st['target_commit']:
             raise ValueError("release pin doesn't match upstream")
         size = sum(p.stat().st_size for p in (hh / 'state.db', hh / 'state.db-wal', hh / 'config.yaml', hh / '.env') if p.exists())
@@ -382,10 +438,29 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         fresh = status(h, base)
         if fresh['state'] == 'refused' or fresh.get('commit') != old or fresh.get('target_commit') != st['target_commit']:
             raise ValueError('Hermes or its release pin changed while waiting; nothing was changed.')
+        backup = Path(out['backup'])
+        for name, src in (('config.yaml', hh / 'config.yaml'), ('.env', hh / '.env'),
+                          ('install-stamp.json', repo / 'install-stamp.json')):
+            saved = backup / name
+            if src.exists() != saved.exists() or (src.exists() and src.read_bytes() != saved.read_bytes()):
+                raise ValueError('Hermes configuration changed while waiting; retry with a fresh backup.')
+        if _installer(repo, 'freeze').strip() != (backup / 'freeze.txt').read_text().strip():
+            raise ValueError('Hermes dependencies changed while waiting; retry with a fresh backup.')
         if busy(h, hh):
             return save('busy', 'Work arrived before the swap; nothing was changed.')
     except (OSError, ValueError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         return save('refused', str(exc))
+    try:
+        if (hh / '.drain_request.json').exists():
+            return save('busy', 'Another maintenance request is draining Hermes; nothing was changed.')
+        _request_drain(hh, out)
+        time.sleep(1)  # let the gateway observe admission closure, then census again before mutation
+        if busy(h, hh):
+            _clear_drain(hh, out['run_id'])
+            return save('busy', 'Work arrived during admission closure; nothing was changed.')
+    except (OSError, ValueError) as exc:
+        _clear_drain(hh, out['run_id'])
+        return save('refused', f'Cannot pause gateway admission: {exc}')
     try:
         save('running', 'Installing the pinned Hermes tag.')
         _git(repo, 'checkout', '-B', branch, 'refs/tags/' + st['target_tag'])
@@ -397,12 +472,14 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
             doc = _json(stamp)
             doc['baseVersion'] = st['target_tag'][1:]
             _save(stamp, doc)
-        _run(repo / 'venv/bin/python', '-c', 'import hermes_cli.main, gateway.run, run_agent, hermes_state', cwd=repo)
+        _run(repo / 'venv/bin/python', '-c', 'import hermes_cli.main, gateway.run, run_agent, hermes_state',
+             cwd=repo, env={**os.environ, 'HERMES_HOME': str(hh)})
         save('running', 'Restarting Hermes and checking the target version.')
         restart(route)
         _wait_health(st['origin'], st['target_tag'], health_timeout)
         if _git(repo, 'rev-parse', 'HEAD') != st['target_commit']:
             raise RuntimeError('Hermes checkout moved during the update.')
+        _clear_drain(hh, out['run_id'])
         return save('updated', 'Hermes is running at the release pin; /health verified.')
     except Exception as exc:
         error = str(exc)
@@ -410,21 +487,26 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
             save('running', 'The update failed; restoring the previous Hermes installation.')
             _git(repo, 'checkout', '-f', '-B', branch, old)
             backup = Path(out['backup'])
+            _restore(backup, hh, repo)
             # Freeze may include an editable Hermes line. Restore dependency pins without
             # allowing that line to select another checkout, then re-register the old source.
             lines = (backup / 'freeze.txt').read_text().splitlines()
-            deps = [line for line in lines if line and not line.startswith(('#', '-e '))
-                    and not re.match(r'hermes[-_]agent(?:\s|[=@<])', line, re.I)]
+            deps = _dependency_lines(lines, repo)
+            added = _distributions(_installer(repo, 'freeze').splitlines()) - _distributions(lines)
+            if added:
+                # Remove dependencies introduced by the failed update as well as restoring old pins.
+                if shutil.which('uv'):
+                    _installer(repo, 'uninstall', *sorted(added))
+                else:
+                    _installer(repo, 'uninstall', '-y', *sorted(added))
             requirements = backup / 'dependencies.txt'
             requirements.write_text('\n'.join(deps) + '\n'); requirements.chmod(0o600)
             _installer(repo, 'install', '--no-deps', '-r', requirements)
             _installer(repo, 'install', '--no-deps', '-e', '.')
-            _restore(backup, hh, repo)
-            rollback_route = supervisor(hh, repo)
-            if not rollback_route:
-                raise RuntimeError('Cannot identify the gateway for rollback.')
-            restart(rollback_route)
+            # Reuse the pinned service identity even if it is now inactive after a failed boot.
+            restart(route)
             _wait_health(st['origin'], st['running_version'], health_timeout)
+            _clear_drain(hh, out['run_id'])
             return save('rolled_back', f'The update failed ({error}); the old /health version is verified.')
         except Exception as rollback_error:
             return save('rollback_failed', f'The update failed ({error}); rollback failed ({rollback_error}). Keep the backup at {out["backup"]}.')
