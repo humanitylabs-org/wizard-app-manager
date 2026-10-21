@@ -117,6 +117,12 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - 0.3.26 plus wizard-ux #268 (`00ffd23`): Settings → Updates has a Stable (recommended) / Latest (every release, for testers) channel picker over the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX image `sha256:94d0eaaf…` (amd64+arm64).
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.27 has a promotion record. Every other pin is identical to 0.3.26.
 
+## 0.3.29 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #124 (merge `cbd5fb7`), `releases/0.3.29.json`. Byte-identical SHA-256: `fc708e29602b8dba5579d402f99776a4d10bbc3ffb49faabf20c075809cce6c8`.
+- 0.3.28 plus App Manager #150 (`6a39dfa`, wizard-os#87): on fresh boxes, apps installed from the Store show Open and open in a Wizard window. `wam links` (installer and Store Get) also serves every installed app page on a same-origin path on each owner shell Serve port (`/<id>/` stripped, or the recipe's declared `view.path`), never replacing a different route, and points apps.json at it. Also carries #148 (portable work paths) and #149 (tests only). Host tooling only: no image input changed.
+- Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.29 has a promotion record. Every other pin is identical to 0.3.28.
+
 ## 0.3.28 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #122 (merge `261f554`), `releases/0.3.28.json`. Byte-identical SHA-256: `0a1c633798b839e5498c4e3b3254afff0656055c7196b48541ebcb240a27ca17`.
