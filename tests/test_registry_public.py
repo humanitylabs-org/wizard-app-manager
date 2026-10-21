@@ -58,6 +58,18 @@ def test_owner_route_projection_matches_return_and_shared_registry(config):
     assert result["apps"][0]["app_id"] == "hello-wizard"
 
 
+def test_private_inference_survives_registry_rewrite(config):
+    c, source = config
+    manifest = source / "wizard.md"
+    manifest.write_text(manifest.read_text().replace("---\n", "---\nprivate_inference: {kind: local, client: passthrough, relay_port: 8090, egress: []}\n", 1))
+    expected = {"kind": "local", "client": "passthrough", "relay_port": 8090, "egress": []}
+    for _ in range(2):
+        result = cli.write_registry(c)
+        assert result["apps"][0]["private_inference"] == expected
+        for dest in (c.home, c.runtipi_root / "app-data" / "wizard-os"):
+            assert json.loads((dest / "apps.json").read_text())["apps"][0]["private_inference"] == expected
+
+
 def test_apps_cli_serializes_public_data(config, capsys):
     c, source = config
     assert cli.main(["apps", "--json"]) == 0
