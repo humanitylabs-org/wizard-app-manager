@@ -17,6 +17,7 @@ Update button nor Automatic can move a developer box onto stable pins.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
@@ -82,21 +83,142 @@ def _key(v: str) -> tuple:
     return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"[.+-]", v))
 
 
-def installing(home: Path | None = None) -> bool:
-    """An installer run (e.g. an update just started) is still going (install-status.json, written by get.sh)."""
+ACTIVE = ("running", "needs_owner")   # states only a live runner may hold; anything else is final
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+PROC_STAT = Path("/proc/stat")
+
+
+def boot_id(path: Path | None = None) -> str | None:
     try:
-        return json.loads((_home(home) / "install-status.json").read_text()).get("state") == "running"
-    except (OSError, ValueError, AttributeError):
+        return (path or BOOT_ID).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _booted_at(path: Path | None = None) -> float | None:
+    try:
+        for line in (path or PROC_STAT).read_text().splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _pid_alive(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return True                   # unknown: never call a runner dead without evidence
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
+    except PermissionError:           # e.g. the root runner behind an owner projection
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _epoch(stamp) -> float | None:
+    try:
+        return float(calendar.timegm(time.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _runner_gone(st: dict, boot: str | None, booted_at: float | None) -> str | None:
+    """Why the runner that wrote this active status can no longer be running (None: it may still be)."""
+    if st.get("boot_id") and boot and st["boot_id"] != boot:
+        return "reboot"
+    if not st.get("boot_id") and booted_at:   # a status from before boot ids were recorded
+        began = _epoch(st.get("started_at")) or _epoch(st.get("updated_at"))
+        if began is not None and began < booted_at:
+            return "reboot"
+    if not _pid_alive(st.get("pid")):
+        return "runner exited"
+    return None
+
+
+def _read_status(path: Path) -> dict | None:
+    try:
+        st = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return st if isinstance(st, dict) else None
+
+
+def install_state(home: Path | None = None, boot_path: Path | None = None, stat_path: Path | None = None) -> str | None:
+    """The installer run's state (install-status.json, written by get.sh), healed after a reboot or a killed runner.
+
+    A status left `running` (or `needs_owner`) whose runner is gone (the boot changed, or its pid is dead) and whose
+    install.lock nobody holds becomes `interrupted`, and the stale install.lock is removed, so the Update button and
+    the nightly Automatic check can start the update again instead of reporting "installing" forever. A runner that
+    still holds the lock is always respected. Returns None when no installer run was recorded."""
+    h = _home(home)
+    path = h / "install-status.json"
+    st = _read_status(path)
+    if st is None:
+        return None
+    state = st.get("state")
+    if state not in ACTIVE:
+        return state if isinstance(state, str) else None
+    why = _runner_gone(st, boot_id(boot_path), _booted_at(stat_path))
+    if not why:
+        return state
+    lock = h / "install.lock"
+    fds: list[int] = []
+    try:
+        import fcntl
+        # get.sh's own order: install.start.lock (a start in flight) first, then install.lock (a live runner).
+        for name in ("install.start.lock", "install.lock"):
+            fds.append(os.open(h / name, os.O_RDWR | os.O_CREAT, 0o600))
+            fcntl.flock(fds[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ImportError):
+        for fd in fds:
+            os.close(fd)
+        return state                                      # a start or a runner holds a lock: it is alive
+    try:
+        cur = _read_status(path)                          # re-read under the lock: a new run may have just begun
+        if cur is None or cur.get("state") not in ACTIVE or _runner_gone(cur, boot_id(boot_path),
+                                                                         _booted_at(stat_path)) is None:
+            return (cur or {}).get("state")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        cur.update({"state": "interrupted", "interrupted_step": cur.get("step"), "interrupted_reason": why,
+                    "interrupted_at": stamp, "updated_at": stamp, "tailscale_login_url": None, "approval_url": None,
+                    "message": "The update was interrupted (" + ("the box restarted" if why == "reboot"
+                               else "the installer stopped") + ") before it finished; it will be retried."})
+        try:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(cur, indent=2) + "\n")
+            os.chmod(tmp, 0o600)
+            tmp.replace(path)
+        except OSError:
+            pass                                          # read-only status: still report it as interrupted
+        try:
+            lock.unlink()     # release the stale lock: we hold it and the start lock, so no runner can be opening it
+        except OSError:
+            pass
+        return "interrupted"
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+def installing(home: Path | None = None) -> bool:
+    """An installer run (e.g. an update just started) is still going; a run cut short by a reboot is not."""
+    return install_state(home) == "running"
 
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
+    run = install_state(home)
     have, want = installed(home), latest(base, fresh=fresh)
     unpinned = have is None
     newer = bool(want) and not unpinned and _key(want) > _key(have)
     return {"mode": mode(home), "chosen": _choice(home) is not None, "installed": have, "latest": want,
             "update_available": newer, "unpinned": unpinned, "checked": want is not None,
-            "installing": installing(home)}
+            "installing": run == "running",
+            # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
+            "interrupted": run == "interrupted" and newer}
 
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
