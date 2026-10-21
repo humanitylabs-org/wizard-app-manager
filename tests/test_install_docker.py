@@ -21,7 +21,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("bash", "sh", "cat", "mkdir", "cp", "chmod", "rm", "date", "dirname", "seq", "grep", "cut", "sed",
-                 "mv", "mktemp", "find", "chown"):
+                 "mv", "mktemp", "find"):
         (bin_dir / name).symlink_to(shutil.which(name))
     calls = tmp_path / "calls"
 
@@ -38,7 +38,7 @@ if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; t
 if [ "$1" = image ]; then exit 1; fi
 case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
 ''')
-    for name in ("systemctl", "loginctl"):
+    for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
     # HEALTH=down makes every health check fail (the App Manager never comes up).
     # The Runtipi setup download: write a stand-in setup script (creates the base's .env) to curl's -o target.
@@ -302,6 +302,7 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     assert not target.startswith("/tmp/runtipi-setup.sh")
     assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
     assert any(l.startswith("sudo bash " + target) for l in log)
+    assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
     assert outcome["status"] == "ok"
