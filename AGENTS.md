@@ -15,6 +15,14 @@ The Wizard App Manager is [Runtipi](https://github.com/runtipi/runtipi) with one
 - **Releases:** a release is a `release/X.Y.Z` PR that updates `releases/`. A box pulls a release only once it has merged.
 - **Checker rules:** the `wizard.md` checker copy here must match wizard-os `tools/check_wizard_md.py` and the wizard-app-index rules. Change all three together.
 
+## Portable machine configuration
+
+Machine-specific paths and hosts come from env vars: `WIZARD_WORK_ROOT`,
+`WIZARD_BUILD_HOST`, `WIZARD_ORIGIN`, `QA_PLAYWRIGHT`, and `HERMES_HOME`
+(`WIZARD_HEAVY_ROOT` where the shared heavy lane is used). Never commit personal
+paths or tailnet hostnames; the tracked-file portable-paths guard in the normal
+test/CI command enforces this. Historical evidence/receipts are explicitly exempt.
+
 <!-- wizard-os-team-rules v2 (19 Oct 2026). Same text in every Wizard OS repo; the canonical copy is humanitylabs-org/wizard-os AGENTS.md. Change it there first, then copy the block to every repo in one round of PRs. -->
 ## Wizard OS team rules (identical in every repo)
 
