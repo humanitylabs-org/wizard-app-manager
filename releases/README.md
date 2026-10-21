@@ -117,6 +117,12 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - 0.3.26 plus wizard-ux #268 (`00ffd23`): Settings → Updates has a Stable (recommended) / Latest (every release, for testers) channel picker over the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX image `sha256:94d0eaaf…` (amd64+arm64).
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.27 has a promotion record. Every other pin is identical to 0.3.26.
 
+## 0.3.30 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #126 (merge `a9925fc`), `releases/0.3.30.json`. Byte-identical SHA-256: `b85c61d09258f2b2957751c30c4f6017327ef2bbf48b2d192f57ddc1ee101be9`.
+- 0.3.29 plus wizard-ux #273 and App Manager #152 (`d779843`, wizard-os#87): right after a Store Get the Store shows Open without a reload. The Wizard UX image moves to official main `dc9028c` (`sha256:1df6791b…a506be`, amd64+arm64, Publish run 39619521621). It also carries #256, #267, #269–#271, #274–#277 and #279. The App Manager image is unchanged because its image inputs are unchanged since 8d6e7bd.
+- Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.30 has a promotion record.
+
 ## 0.3.29 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #124 (merge `cbd5fb7`), `releases/0.3.29.json`. Byte-identical SHA-256: `fc708e29602b8dba5579d402f99776a4d10bbc3ffb49faabf20c075809cce6c8`.
