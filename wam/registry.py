@@ -86,7 +86,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
                 raise ValueError('invalid canonical local app id')
             name = canonical
         if any(a['id'] == name for a in apps):
-            raise ValueError('duplicate installed Wizard app id: ' + name)
+            raise ValueError('Duplicate installed Wizard app id: ' + name)
         w, cfg = meta["w"], meta["cfg"]
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None

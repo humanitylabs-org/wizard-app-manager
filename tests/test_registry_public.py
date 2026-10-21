@@ -84,7 +84,7 @@ def test_local_ineligible_id_preserves_provider_identity_and_contract(config):
     assert result['apps'][0]['urn'] == 'hello-wizard_private:wizardapps'
     assert result['apps'][0]['repo'] == 'local:hello-wizard_private'
     assert result['apps'][0]['private_inference']['kind'] == 'attested-relay'
-    with pytest.raises(ValueError, match='duplicate'):
+    with pytest.raises(ValueError, match='[Dd]uplicate'):
         registry.build([row, {'app':{},'info':{'urn':'hello-wizard:wizardapps'}}], 'wizardapps', '127.0.0.1', c.runtipi_root)
     (local / '.wizard-source').write_text(json.dumps({'repo':'unknown/source'}))
     assert registry.build([row], 'wizardapps', '127.0.0.1', c.runtipi_root)['apps'][0]['id'] == 'hello-wizard_private'
