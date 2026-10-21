@@ -953,6 +953,31 @@ def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
     assert cli.trusted_origin_env(c, "cal") == {}
 
 
+def test_owner_login_apps_also_get_the_box_owner(tmp_path, monkeypatch):
+    from wam import cli, store_install
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/wizard-cloudflare/docker-compose.yml"
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n  WIZARD_OWNER_LOGINS: ${WIZARD_OWNER_LOGINS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    monkeypatch.setattr(store_install, "owner_login", lambda: "owner@example.com")
+    assert cli.trusted_origin_env(c, "wizard-cloudflare")["WIZARD_OWNER_LOGINS"] == "owner@example.com"
+    monkeypatch.setattr(store_install, "owner_login", lambda: "")
+    assert "WIZARD_OWNER_LOGINS" not in cli.trusted_origin_env(c, "wizard-cloudflare")
+
+
+def test_cloudflare_is_an_optional_default_with_a_shell_path():
+    import json
+    from pathlib import Path
+    from wam import links
+    slot = json.loads((Path(__file__).parents[1] / "wam/defaults.json").read_text())["slots"]["cloudflare-connection"]
+    assert slot["app"] == "wizard-cloudflare" and slot["required"] is False
+    assert links.gateway_paths()["wizard-cloudflare"]["path"] == "/wizard-cloudflare/"
+
+
 def test_multi_provider_slot_is_not_a_collision():
     from wam import registry, slots
     reg = {"slots": {"ai-connection": {"default": "wizard-claude", "candidates": ["wizard-chatgpt", "wizard-claude"]},

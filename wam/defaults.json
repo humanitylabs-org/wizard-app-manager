@@ -61,6 +61,14 @@
       "name": "Notifications",
       "app": "notifications",
       "required": false
+    },
+    "cloudflare-connection": {
+      "name": "Cloudflare",
+      "app": "wizard-cloudflare",
+      "repo": "oscarhenrycollins/wizard-cloudflare",
+      "required": false,
+      "gateway": {"path": "/wizard-cloudflare/", "strip_prefix": true},
+      "note": "Connect-only: the owner signs in to Cloudflare once (or signs up there); the agent publishes websites, backs up Files folders and handles DNS/domain lookups through its MCP. Every change waits for the owner's Approve tap; nothing is deleted or bought."
     }
   }
 }

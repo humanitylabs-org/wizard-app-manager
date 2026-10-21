@@ -386,7 +386,15 @@ def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
         host = ""
     if not host or not port:
         return {}
-    return {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+    env = {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+    # Apps that name their owner from Tailscale Serve (e.g. Cloudflare) also need the box owner's tailnet login,
+    # or a default install answers every page load with "owner auth unconfigured".
+    if "WIZARD_OWNER_LOGINS" in text:
+        from . import store_install
+        owner = store_install.owner_login()
+        if owner:
+            env["WIZARD_OWNER_LOGINS"] = owner
+    return env
 
 
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
