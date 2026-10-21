@@ -306,3 +306,14 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
     assert outcome["status"] == "ok"
+
+
+def test_fresh_install_sets_up_the_store_routes_after_links(tmp_path):
+    """Fresh boxes: the Store's store-data / store-install routes are set up after `wam links` (alongside boxes do it
+    in their own block). Before: only alongside ran `wam store-data`, so the fresh Store had no installed status."""
+    p, home, root, calls, outcome = sandbox(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = [line for line in calls.read_text().splitlines() if line.startswith("wam ")]
+    names = [line.split()[3] for line in log]
+    assert "store-data" in names, names
+    assert names.index("links") < names.index("store-data") < names.index("troubleshooter")

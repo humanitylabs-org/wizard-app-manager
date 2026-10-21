@@ -357,8 +357,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             agent_link(c, STORE)
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
             print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
-    if role == "shell" and status == "running" and alongside.load(c.home):
-        try:
+    if role == "shell" and status == "running":
+        try:   # alongside and fresh: the Store data adapter follows the installed shell's commit
             store_data_cmd(c)
         except Exception as e:  # noqa: BLE001 - the Store window is optional; never fail the shell install for it
             print(f"note: App Store data not set up ({str(e)[:120]}); run `wam store-data`", file=sys.stderr)
@@ -846,25 +846,27 @@ def host_dashboard_cmd(c: Config, rt: Runtipi | None = None, apply: bool = True)
 
 
 def store_data_cmd(c: Config, apply: bool = True) -> dict:
-    """Install/refresh the App Store browse-data service for the installed shell (alongside boxes)."""
-    from . import store_data
+    """Install/refresh the App Store browse-data service for the installed shell and route it, with the owner-gated
+    Store Get listener, on the shell's tailnet ports. Alongside boxes name their ports in alongside.json; fresh boxes
+    (Runtipi apps on loopback ports) take them from apps.json."""
+    from . import links, store_data
     al = alongside.load(c.home)
-    if not al:
-        return {"state": "skipped", "note": "not an alongside box (fresh boxes serve Store data from the shell image)"}
     reg = write_registry(c, c.runtipi())
-    svc_port = int((al.get("service") or {}).get("port") or 0)
-    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
-    if out.get("state") == "ready" and apply and shutil.which("tailscale"):
+    if al:
         shell_port = int((al.get("shell") or {}).get("port") or 0)
-        if shell_port:
-            try:
-                r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
-                out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
-                from . import store_install
-                r2 = subprocess.run(store_install.route(shell_port), capture_output=True, text=True, timeout=60)
-                out["get"] = "routed" if r2.returncode == 0 else (r2.stderr or r2.stdout).strip()[:200]
-            except (OSError, subprocess.TimeoutExpired) as e:
-                out["tailnet"] = str(e)[:200]
+        svc_port = int((al.get("service") or {}).get("port") or 0)
+    else:
+        shell_port, svc_port = store_data.fresh_ports(reg)
+        if not shell_port:
+            return {"state": "skipped", "note": "no Wizard shell with a loopback port is installed"}
+    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
+    out["mode"] = "alongside" if al else "fresh"
+    if out.get("state") == "ready" and apply and shutil.which("tailscale") and shell_port:
+        ts = links.tailnet()
+        if ts["state"] != "Running" or not ts["host"]:
+            out["tailnet"] = "Tailscale isn't connected yet; rerun after `sudo tailscale up`"
+        else:
+            out.update(store_data.publish_routes(ts["host"], shell_port))
     return out
 
 
@@ -1431,7 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
-    sd = sub.add_parser("store-data", help="set up the App Store browse data for the installed shell (alongside)")
+    sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
