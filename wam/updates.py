@@ -1,13 +1,13 @@
-"""Owner-chosen updates: Automatic (default) or Ask me.
+"""Owner-chosen updates: Ask me (default) or Automatic.
 
 A box updates the way it always has: re-running the installer moves it to the release that `releases/stable`
 names, in the mode the box already has (get.sh). This module adds only the two things an owner needs on top:
 
 - a check: which release runs here (~/.wizard-os/release.json) vs the current stable, so a shell can show
   "Update available" with an Update button;
-- a choice, saved in ~/.wizard-os/updates.json: "auto" (the default for every box whose owner never chose: a
-  nightly systemd user timer applies a new stable) or "ask" (nothing runs by itself). An explicit choice is
-  always kept; the installer never writes updates.json.
+- a choice, saved in ~/.wizard-os/updates.json: "ask" (the default for every box whose owner never chose:
+  nothing runs by itself, the shell shows "Update available") or "auto" (a nightly systemd user timer applies a
+  new stable). An explicit choice is always kept; the installer never writes updates.json.
 
 Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`), never a second update path.
 
@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 
 MODES = ("ask", "auto")
-DEFAULT_MODE = "auto"         # boxes whose owner never chose update automatically; an explicit "ask" is kept
+DEFAULT_MODE = "ask"          # nothing installs unless the owner chose Automatic (James, alpha); an explicit "auto" is kept
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
 INSTALLER = "https://aiwizards.com/os.sh"
 UNIT = "wizard-os-update"
