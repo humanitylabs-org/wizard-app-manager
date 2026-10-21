@@ -116,3 +116,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os` PR #121, `releases/0.3.27.json`. Byte-identical SHA-256: `e8aefc91031be867f6cd1ada7258d971aeafcc9589e5d1a4b4879a9be0859a09`.
 - 0.3.26 plus wizard-ux #268 (`00ffd23`): Settings → Updates has a Stable (recommended) / Latest (every release, for testers) channel picker over the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX image `sha256:94d0eaaf…` (amd64+arm64).
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.27 has a promotion record. Every other pin is identical to 0.3.26.
+
+## 0.3.28 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #122 (merge `261f554`), `releases/0.3.28.json`. Byte-identical SHA-256: `0a1c633798b839e5498c4e3b3254afff0656055c7196b48541ebcb240a27ca17`.
+- 0.3.27 plus App Manager #146 (`b44c109`, wizard-os#87): on fresh boxes an app installed from the Store opens. `WIZARD_TRUSTED_HOSTS/ORIGINS` now name the shell origin and the app's own private address; before, they were empty without alongside.json and the app answered 403 "Unknown host". Also carries #140 (additive Chats slot, no default app). The App Manager image moves to the official `v4.10.2-wizard.391-8d6e7bd` (`sha256:197c4b57…`, amd64+arm64); its image inputs are unchanged up to b44c109.
+- Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.28 has a promotion record. Every other pin is identical to 0.3.27.
