@@ -71,7 +71,7 @@ describe('runtime.package (source | build | image)', () => {
   it('refuses symlinks that leave the app and sources over the size cap', async () => {
     await fs.promises.symlink('/etc/passwd', path.join(src, 'app', 'leak'));
     await expect(copySource(src, path.join(tmp, 'out'))).rejects.toThrow(/outside the app/);
-    await fs.promises.rm(path.join(src, 'app', 'leak'));
+    await fs.promises.unlink(path.join(src, 'app', 'leak'));
     await fs.promises.symlink('server.py', path.join(src, 'app', 'alias.py'));
     await copySource(src, path.join(tmp, 'ok'));
     expect(fs.readlinkSync(path.join(tmp, 'ok', 'app', 'alias.py'))).toBe('server.py');
