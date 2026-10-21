@@ -79,3 +79,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.22.json`. Byte-identical SHA-256: `4f13a86f4e2eb94c67121ca0a9c7688215c7af70c787b63295f92bf0ed0312ab`.
 - 0.3.21 plus App Manager #130 (`0b2a702`, wizard-os#93): every install and rerun sets up the working Troubleshooter (native user service at `/troubleshoot/` on the owner's shell addresses) from the new pinned component `wizard-troubleshooter` `c434bbe`. The owner gate is the box's own tailnet login and the guardian is report-only. Main also carries #128 (routing skills kept on registry rewrite).
 - Every other pin is identical to 0.3.21. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.23 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.23.json`. Byte-identical SHA-256: `8ab124cf9a9073c9dcdeec0aa9a8592fdfc1f99d1ef2105b9015ec0baacd9f9f`.
+- 0.3.22 plus wizard-troubleshooter #9 (`4b1f0ef`, wizard-os#93): the Troubleshooter's Sign in and Open … app links now open the connection app this box really has. The address comes from apps.json, or the app's App Store page when it isn't installed. Before, they went to a not_found page. A box without Claude Code now gets plain guidance instead of a dead Claude button. First snapshot with the required `hermes` pin (carried over, v2026.9.24).
+- Every other pin is identical to 0.3.22. The App Manager, Wizard UX and Agent Service images are unchanged.
