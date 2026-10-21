@@ -73,15 +73,16 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        if (st != '_user' and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st)) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             continue
         meta = app_meta(runtipi_root, st, name)
-        if not meta or (st != store and not meta.get("private")):
+        if not meta or (st != store and st != '_user' and not meta.get("private")):
             continue
-        # A fork can retain its canonical app id in a Git-backed store without the
-        # public index replacing its recipe. Project its actual installed identity.
-        if any(a["id"] == name for a in apps):
-            raise ValueError(f"Duplicate installed Wizard app id: {name}")
+        # _user is filesystem-only; admit only explicit local Wizard recipes.
+        if st == '_user' and meta['repo'] != 'local:' + name:
+            continue
+        if any(a['id'] == name for a in apps):
+            raise ValueError('duplicate installed Wizard app id: ' + name)
         w, cfg = meta["w"], meta["cfg"]
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None
