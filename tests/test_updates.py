@@ -1,4 +1,4 @@
-"""Owner-chosen updates (wam/updates.py): check vs stable, Automatic (default) / Ask me, apply = installer rerun."""
+"""Owner-chosen updates (wam/updates.py): check vs stable, Ask me (default) / Automatic, apply = installer rerun."""
 import io
 import json
 import subprocess
@@ -82,28 +82,29 @@ def test_latest_is_cached_about_ten_minutes(tmp_path, monkeypatch):
     assert len(hits) == 5                                                            # a miss retries after a minute
 
 
-def test_mode_defaults_to_automatic_and_an_explicit_ask_is_kept(tmp_path):
+def test_mode_defaults_to_ask_me_and_an_explicit_automatic_is_kept(tmp_path):
     h, ud = tmp_path / "wos", tmp_path / "units"
     st = updates.status(h, _base(tmp_path, "0.3.16"))
-    assert updates.mode(h) == "auto" and st["mode"] == "auto" and st["chosen"] is False
-    # The installer makes the timer match the mode without recording a choice for the owner.
-    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
-    assert not (h / "updates.json").exists()
+    assert updates.mode(h) == "ask" and st["mode"] == "ask" and st["chosen"] is False
+    # A box whose owner never chose gets no timer, and the installer records no choice for the owner.
+    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "ask", "timer": False}
+    assert not (h / "updates.json").exists() and not (ud.exists() and list(ud.iterdir()))
+    # A timer left by the old Automatic default does nothing for an owner who never chose.
+    assert updates.apply_if_auto(h, _base(tmp_path, "0.3.17"), runner=lambda *a, **k: pytest.fail("ran"), is_busy=lambda: False).get("started") is not True
+    updates.set_mode("auto", h, ud, systemctl=False)
+    assert updates.mode(h) == "auto" and (ud / "wizard-os-update.timer").is_file()
     timer = (ud / "wizard-os-update.timer").read_text()
     assert "OnCalendar=*-*-* 03:30" in timer and "RandomizedDelaySec=1h" in timer and "Persistent=true" in timer
     assert "updates --apply-if-auto" in (ud / "wizard-os-update.service").read_text()
+    # An installer rerun after the owner chose Automatic keeps Automatic and its timer.
+    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
+    assert updates.status(h, _base(tmp_path, "0.3.16"))["chosen"] is True
     updates.set_mode("ask", h, ud, systemctl=False)
     assert updates.mode(h) == "ask" and not list(ud.iterdir())
-    # An installer rerun after the owner chose Ask me keeps Ask me and does not bring the timer back.
-    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "ask", "timer": False}
-    assert updates.mode(h) == "ask" and not list(ud.iterdir())
-    assert updates.status(h, _base(tmp_path, "0.3.16"))["chosen"] is True
-    updates.set_mode("auto", h, ud, systemctl=False)
-    assert updates.mode(h) == "auto" and (ud / "wizard-os-update.timer").is_file()
     with pytest.raises(SystemExit):
         updates.set_mode("sometimes", h, ud, systemctl=False)
     (h / "updates.json").write_text("{not json")
-    assert updates.mode(h) == "auto"
+    assert updates.mode(h) == "ask"
 
 
 def test_apply_reruns_the_installer_only_when_newer(tmp_path):
@@ -131,6 +132,7 @@ def test_apply_reruns_the_installer_only_when_newer(tmp_path):
 def test_automatic_skips_while_the_agent_is_working_and_retries_next_window(tmp_path):
     h = tmp_path / "wos"
     _pin(h, "0.3.15")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)                    # the owner chose Automatic
     base, calls = _base(tmp_path, "0.3.16"), []
     res = updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: True)
     assert res["started"] is False and res["skipped"] == "busy" and calls == []
@@ -304,6 +306,7 @@ def test_a_held_lock_is_respected_even_with_a_dead_pid_or_changed_boot(tmp_path,
 def test_apply_and_the_nightly_timer_retry_after_an_interrupted_update(tmp_path, monkeypatch):
     h = tmp_path / "wos"
     _pin(h, "0.3.17")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)                    # the owner chose Automatic
     base, calls = _base(tmp_path, "0.3.19"), []
     monkeypatch.setattr(updates, "BOOT_ID", _boot(tmp_path, "boot-after"))
     _running(h, pid=_dead_pid(), boot_id="boot-before")
