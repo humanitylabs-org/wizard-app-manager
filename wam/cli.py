@@ -325,7 +325,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         if want and (want in reserved or not port_free(want)):
             form["port"] = free_port(want + 1, avoid=reserved)
             print(f"note: port {want} is in use or reserved; {app_id} gets {form['port']}", file=sys.stderr)
-    trust_env = trusted_origin_env(c, app_id)
+    trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
     if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
@@ -375,10 +375,12 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
 
 
-def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
+def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
     """Apps built with the Wizard builder answer only hosts/origins they are told to trust
-    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). On an alongside box with Tailscale, trust the shell's
-    tailnet origin, so the app opens inside Wizard instead of answering 'untrusted_host_or_site'."""
+    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). With Tailscale, trust the shell's tailnet origin so the app
+    opens inside Wizard instead of answering 'untrusted_host_or_site'. A fresh box (Runtipi shell, no alongside.json)
+    takes the shell port from apps.json and also trusts the app's own private address, `https://<box>:<app port>`,
+    which is where `wam links` publishes it there (alongside boxes route such apps under the shell origin)."""
     # Before install the recipe is only in Runtipi's store copy (repos/), after it also in apps/.
     text = ""
     for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
@@ -390,15 +392,29 @@ def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
             continue
     if "WIZARD_TRUSTED_HOSTS" not in text:
         return {}
-    al = alongside.load(c.home) or {}
-    port = int((al.get("shell") or {}).get("port") or 0)
+    al = alongside.load(c.home)
+    own = 0
+    if al:
+        port = int((al.get("shell") or {}).get("port") or 0)
+    else:
+        from . import store_data
+        try:
+            reg = json.loads((c.home / "apps.json").read_text())
+        except (OSError, ValueError):
+            reg = {}
+        port = store_data.fresh_ports(reg)[0]
+        own = int(app_port or 0) if app_port and 0 < int(app_port) < 65536 and int(app_port) != port else 0
     try:
         host = json.loads((c.home / "links.json").read_text()).get("host") or ""
     except (OSError, ValueError):
         host = ""
-    if not host or not port:
+    if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         return {}
-    return {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+    hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
+    if own:
+        hosts.insert(1, f"{host}:{own}")
+        origins.append(f"https://{host}:{own}")
+    return {"WIZARD_TRUSTED_HOSTS": ",".join(hosts), "WIZARD_TRUSTED_ORIGINS": ",".join(origins)}
 
 
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
