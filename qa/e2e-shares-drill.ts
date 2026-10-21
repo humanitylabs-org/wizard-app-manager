@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /** Disposable decisions #79/#80 integration rehearsal. See e2e-shares-drill.md.
  * No real credentials, owner recipes, ports, host accounts or live containers.
- * Run via bun --tsconfig-override packages/backend/tsconfig.json.
+ * Run via bun --tsconfig-override ./qa/tsconfig.e2e-shares.json.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -220,8 +220,11 @@ export async function main(argv = process.argv.slice(2)) {
       const source = await helper([sourceMount], 'sha256sum /old/.credentials.json');
       check('legacy_source_hash', source.split(/\s/)[0] === hashes.source);
     }
-    const provider = await store.prepare(urn('wizard-claude'), await compile('wizard-claude'));
     const providerData = files.getAppPaths(urn('wizard-claude')).appDataDir;
+    // Planning does not run the privileged copy helper that creates this folder
+    // in the full rehearsal. Precreate it without pretending to chown on macOS.
+    if (dry) await fs.mkdir(path.join(providerData, 'data/claude'), { recursive: true });
+    const provider = await store.prepare(urn('wizard-claude'), await compile('wizard-claude'));
     check('claude_owned_bind', yaml.parse(provider).services['wizard-claude-engine'].volumes.includes(`${providerData}/data/claude:/claude`));
     await store.change(proposal, true);
     check(

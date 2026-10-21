@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test';
+import { test, expect, spyOn } from 'bun:test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -97,6 +97,27 @@ test('production backup archives provider bytes only; production consumer data d
     await c.files.deleteAppDataDir('hermes-agent:wizardapps' as any);
     expect(await fs.readFile(login, 'utf8')).toBe(fake);
   } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('dry-run compiles without privileged chown and cleans its planning tree', async () => {
+  const root = await temp();
+  const chown = spyOn(fs, 'chown').mockRejectedValue(new Error('Unprivileged host'));
+  let printed = '';
+  const output = spyOn(process.stdout, 'write').mockImplementation((text: any) => {
+    printed += String(text);
+    return true;
+  });
+  try {
+    await main(['--dry-run', '--root', path.join(root, 'e2e-shares')]);
+    expect(chown).not.toHaveBeenCalled();
+    expect(printed).toContain('"hermes_mount_after_grant": true');
+    expect(printed).toContain('production compiled compose');
+    expect(await fs.readdir(path.join(root, 'e2e-shares'))).toEqual([]);
+  } finally {
+    chown.mockRestore();
+    output.mockRestore();
     await fs.rm(root, { recursive: true, force: true });
   }
 });

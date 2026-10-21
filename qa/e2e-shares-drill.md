@@ -10,7 +10,9 @@ throwaway tree; its copy/delete methods remain production methods.
 ## Prepare and run
 
 Stage **tracked files from the pushed commit**, not an uncommitted worktree.
-Install with `PATH=/opt/homebrew/bin:$PATH bun install --frozen-lockfile`.
+Install with `PATH=/opt/homebrew/bin:$PATH bun install --frozen-lockfile`, then
+run `(cd packages/common && PATH=/opt/homebrew/bin:$PATH bun run build)` (a small
+TypeScript-only workspace build: fresh installs have no exported `dist/schemas`).
 Use an explicit Colima `DOCKER_HOST` (do not change the user's Docker context).
 All host artifacts go in an explicitly selected dedicated directory whose last
 component is `e2e-shares`, supplied below as `$WIZARD_DRILL_ROOT`.
