@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { copySource, preparePackage, pruneSources, repoPath, sourceDir } from '../packaging';
@@ -11,7 +10,8 @@ describe('runtime.package (source | build | image)', () => {
   let src: string;
   let target: string;
   beforeEach(async () => {
-    tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pkg-'));
+    tmp = path.join('/tmp', `pkg-${Math.random().toString(36).slice(2)}`); // fs is memfs in this suite
+    await fs.promises.mkdir(tmp, { recursive: true });
     src = path.join(tmp, 'checkout');
     await fs.promises.mkdir(path.join(src, '.git'), { recursive: true });
     await fs.promises.mkdir(path.join(src, 'app'), { recursive: true });
