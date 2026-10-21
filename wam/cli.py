@@ -422,7 +422,14 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
     if own:
         hosts.insert(1, f"{host}:{own}")
         origins.append(f"https://{host}:{own}")
-    return {"WIZARD_TRUSTED_HOSTS": ",".join(hosts), "WIZARD_TRUSTED_ORIGINS": ",".join(origins)}
+    env = {"WIZARD_TRUSTED_HOSTS": ",".join(hosts), "WIZARD_TRUSTED_ORIGINS": ",".join(origins)}
+    # Cloudflare and other owner-login recipes need the box owner's tailnet identity.
+    if "WIZARD_OWNER_LOGINS" in text:
+        from . import store_install
+        owner = store_install.owner_login()
+        if owner:
+            env["WIZARD_OWNER_LOGINS"] = owner
+    return env
 
 
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
@@ -1279,6 +1286,11 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
             return self._chats_default(method)
+        if app_id == '_recommended':
+            from . import recommended
+            if method == 'GET':
+                return self._json(200, recommended.listing(c))
+            return self._json(202, recommended.start(c))
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1483,6 +1495,7 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
@@ -1532,6 +1545,9 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
+        elif args.cmd == "prefetch":
+            from . import recommended
+            print(json.dumps(recommended.prefetch(c), indent=2))
         elif args.cmd == "recover":
             print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":
@@ -1577,6 +1593,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import recommended
+            recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
             try:

@@ -78,6 +78,8 @@ def to_install(reg: dict, defaults: dict[str, dict] | None = None) -> list[str]:
     defaults = load_defaults() if defaults is None else defaults
     out: list[str] = []
     for row in table(reg, defaults):
+        if defaults[row["slot"]].get("install") == "on-demand":
+            continue
         if row["state"] == "external":
             continue
         # Multi-provider slots are additive: Claude must not suppress the release's ChatGPT default.

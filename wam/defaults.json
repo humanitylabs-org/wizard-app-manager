@@ -64,6 +64,28 @@
       "app": "secret-drop",
       "required": false
     },
+    "cloudflare-connection": {
+      "name": "Cloudflare",
+      "app": "wizard-cloudflare",
+      "repo": "oscarhenrycollins/wizard-cloudflare",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Publish websites, back up files and manage domains. Sign in after installing.",
+      "gateway": {"path": "/wizard-cloudflare/", "strip_prefix": true}
+    },
+    "connected-accounts": {
+      "name": "Connected accounts",
+      "app": "wizard-connectors",
+      "repo": "humanitylabs-org/wizard-connectors",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Connect your Google account. Available when a reviewed release is published.",
+      "gateway": {"path": "/wizard-connectors/", "strip_prefix": true}
+    },
     "notifications": {
       "name": "Notifications",
       "app": "notifications",
