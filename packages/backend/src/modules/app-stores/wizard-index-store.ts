@@ -12,6 +12,7 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
 import * as yaml from 'yaml';
 import { AppStoreFilesManager } from './app-store-files-manager';
+import { prepareChatsModule } from './chats-module';
 
 export const WIZARD_STORE_SLUG = 'wizardapps';
 export const DEFAULT_WIZARD_INDEX = 'https://apps.aiwizards.com';
@@ -227,6 +228,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
       `${desc.startsWith('# ') ? '' : `# ${String(d.name ?? appName)}\n\n`}${desc}\n`,
     );
     await this.filesystem.writeTextFile(path.join(tmp, 'wizard.md'), wizardText);
+    await prepareChatsModule(src, tmp, d, rec.install.commit);
     if (typeof d.skill === 'string') {
       const skill = await this.filesystem.readTextFile(path.join(src, d.skill));
       if (skill) await this.filesystem.writeTextFile(path.join(tmp, 'SKILL.md'), skill);

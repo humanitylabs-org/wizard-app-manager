@@ -211,7 +211,7 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                 old_tipi = 0
         have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
         rec = {"id": app_id, "repo": repo, "uses": d.get("uses") or [], "private": True, "install": {"commit": commit}}
-        if have == commit and not release and not source_pin:
+        if have == commit and not release and not source_pin and 'chats' not in (d.get('provides') or []):
             return rec
 
         cfg = json.loads(cfg_p.read_text())
@@ -242,6 +242,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         body = wizardmd.body(wtext)
         (tmp / "metadata" / "description.md").write_text(("" if body.startswith("# ") else f"# {d.get('name') or app_id}\n\n") + body + "\n")
         (tmp / "wizard.md").write_text(wtext)
+        from . import chats_views
+        chats_views.prepare(src, tmp, d, commit)
         if isinstance(d.get("skill"), str) and (src / d["skill"]).is_file():
             shutil.copy2(src / d["skill"], tmp / "SKILL.md")
         for cand in (cfg_p.parent / "metadata" / "logo.jpg", src / str(d.get("icon") or "-"), cfg_p.parent / "logo.jpg"):
