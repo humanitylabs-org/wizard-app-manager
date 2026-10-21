@@ -32,10 +32,11 @@ export const copySource = async (src: string, dst: string, limit = SOURCE_LIMIT_
   let total = 0;
   const walk = async (from: string, to: string) => {
     await fs.promises.mkdir(to, { recursive: true });
-    for (const e of await fs.promises.readdir(from, { withFileTypes: true })) {
-      if (from === root && e.name === '.git') continue;
-      const a = path.join(from, e.name);
-      const b = path.join(to, e.name);
+    for (const name of await fs.promises.readdir(from)) {
+      if (from === root && name === '.git') continue;
+      const a = path.join(from, String(name));
+      const b = path.join(to, String(name));
+      const e = await fs.promises.lstat(a);
       if (e.isSymbolicLink()) {
         const target = await fs.promises.readlink(a);
         const resolved = path.resolve(path.dirname(a), target);
@@ -45,7 +46,7 @@ export const copySource = async (src: string, dst: string, limit = SOURCE_LIMIT_
       } else if (e.isDirectory()) {
         await walk(a, b);
       } else if (e.isFile()) {
-        total += (await fs.promises.stat(a)).size;
+        total += e.size;
         if (total > limit) throw new Error(`app source is larger than ${Math.round(limit / 1048576)} MB`);
         await fs.promises.copyFile(a, b);
       }
