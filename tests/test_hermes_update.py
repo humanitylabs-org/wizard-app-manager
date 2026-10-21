@@ -79,11 +79,13 @@ def box(tmp_path, monkeypatch):
     set_pin(pin)
     monkeypatch.setenv('WIZARD_RELEASE_BASE', releases.as_uri())
     route = {'scope': 'user', 'unit': 'hermes-gateway-fixture.service', 'pid': 123456, 'usr1': False}
+    real_supervisor, real_restart = hu.supervisor, hu.restart
     monkeypatch.setattr(hu, 'supervisor', lambda *a: route)
     restarts = []
     monkeypatch.setattr(hu, 'restart', lambda *a: restarts.append((repo / 'version').read_text()))
     yield dict(hu=hu, h=h, hh=hh, repo=repo, git=git, commits=commits, queue=queue, pin=pin,
-               set_pin=set_pin, restarts=restarts, releases=releases, route=route)
+               set_pin=set_pin, restarts=restarts, releases=releases, route=route,
+               supervisor=real_supervisor, restart=real_restart)
     server.shutdown(); server.server_close(); thread.join()
 
 
@@ -237,6 +239,7 @@ def test_interrupted_receipt_after_reboot(box, monkeypatch):
     (b['h'] / 'hermes-update.json').write_text(json.dumps({'state': 'running', 'boot_id': 'before', 'pid': os.getpid()}))
     monkeypatch.setattr(updates, 'boot_id', lambda *a: 'after')
     assert b['hu'].status(b['h'])['receipt']['state'] == 'interrupted'
+    assert json.loads((b['h'] / 'hermes-update.json').read_text())['state'] == 'interrupted'
     assert b['hu'].update(b['h'])['state'] == 'refused'
     assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
 
@@ -272,3 +275,160 @@ def test_cli_status_and_dry_run(box, capsys):
     assert json.loads(capsys.readouterr().out)['state'] == 'dry_run'
     assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
     assert not (b['h'] / 'hermes-update.json').exists() and not b['restarts']
+
+
+@pytest.mark.parametrize('scope,usr1', [('user', True), ('user', False), ('system', False)])
+def test_real_supervisor_and_restart_are_scoped_to_linked_home(box, monkeypatch, scope, usr1):
+    b = box; hu = b['hu']; calls, signals = [], []
+    def fake_run(*args, **kw):
+        calls.append(args)
+        user = '--user' in args
+        if 'list-units' in args:
+            return 'hermes-gateway-fixture.service loaded active running' if user == (scope == 'user') else ''
+        if '--value' in args:
+            return '234567'  # fresh PID, not the preflight PID
+        if 'show' in args:
+            return (f'MainPID=123456\nActiveState=active\nUser={os.getuid()}\n'
+                    f'WorkingDirectory={b["repo"]}\nExecStart={b["repo"]}/venv/bin/python\n'
+                    f'Environment=HERMES_HOME={b["hh"]}\nExecReload=' + ('kill -USR1 $MAINPID' if usr1 else ''))
+        return ''
+    monkeypatch.setattr(hu, '_run', fake_run)
+    monkeypatch.setattr(hu.os, 'kill', lambda *args: signals.append(args))
+    route = b['supervisor'](b['hh'], b['repo'])
+    assert route['scope'] == scope and route['usr1'] is usr1
+    b['restart'](route)
+    if usr1:
+        assert signals == [(234567, hu.signal.SIGUSR1)]
+        assert not any('restart' in args for args in calls)
+    else:
+        assert signals == []
+        assert calls[-1] == tuple(['systemctl'] + (['--user'] if scope == 'user' else []) + ['restart', route['unit']])
+
+
+def test_supervisor_rejects_another_hermes_home(box, monkeypatch):
+    b = box
+    def fake(*args, **kw):
+        if 'list-units' in args:
+            return 'hermes-gateway-fixture.service loaded active running'
+        return (f'MainPID=123456\nActiveState=active\nWorkingDirectory={b["repo"]}\n'
+                f'Environment=HERMES_HOME={b["hh"]}/other\n')
+    monkeypatch.setattr(b['hu'], '_run', fake)
+    assert b['supervisor'](b['hh'], b['repo']) is None
+
+
+@pytest.mark.parametrize('failure', ['install', 'smoke', 'health'])
+def test_swap_failures_roll_back_at_real_boundaries(box, monkeypatch, failure):
+    b = box; hu = b['hu']; run = hu._run; seen = []
+    def boundary(*args, **kw):
+        seen.append(tuple(str(a) for a in args))
+        is_new = (b['repo'] / 'version').read_text() == '0.0.2'
+        if is_new and ((failure == 'install' and 'install' in args) or
+                       (failure == 'smoke' and '-c' in args)):
+            raise RuntimeError('fixture swap failure')
+        return run(*args, **kw)
+    monkeypatch.setattr(hu, '_run', boundary)
+    if failure == 'health':
+        health = hu._health
+        monkeypatch.setattr(hu, '_health', lambda origin: None if (b['repo'] / 'version').read_text() == '0.0.2' else health(origin))
+    out = hu.update(b['h'], wait_quiet=0, health_timeout=0)
+    assert out['state'] == 'rolled_back', out
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
+    assert not (b['hh'] / '.drain_request.json').exists()
+    assert any('--no-deps' in args and '-r' in args for args in seen)
+
+
+def test_work_arriving_after_drain_does_not_swap_and_clears_only_own_drain(box, monkeypatch):
+    b = box; hu = b['hu']; original = hu.busy
+    def busy(home, hh):
+        return ['fixture new work'] if (hh / '.drain_request.json').exists() else original(home, hh)
+    monkeypatch.setattr(hu, 'busy', busy)
+    out = hu.update(b['h'], wait_quiet=0)
+    assert out['state'] == 'busy' and b['git']('rev-parse', 'HEAD') == b['commits'][0]
+    assert not (b['hh'] / '.drain_request.json').exists()
+    foreign = b['hh'] / '.drain_request.json'; foreign.write_text('{"run_id":"someone-else"}')
+    out = hu.update(b['h'], wait_quiet=0)
+    assert out['state'] == 'busy' and foreign.read_text() == '{"run_id":"someone-else"}'
+
+
+def test_venv_installer_uses_uv_with_explicit_python_or_venv_pip(box, monkeypatch):
+    b = box; hu = b['hu']; calls = []
+    monkeypatch.setattr(hu, '_run', lambda *args, **kw: calls.append((args, kw)) or '')
+    monkeypatch.setattr(hu.shutil, 'which', lambda name: '/fixture/bin/uv')
+    hu._installer(b['repo'], 'install', '-e', '.')
+    assert calls[-1][0] == ('/fixture/bin/uv', 'pip', 'install', '-e', '.', '--python', b['repo'] / 'venv/bin/python')
+    monkeypatch.setattr(hu.shutil, 'which', lambda name: None)
+    hu._installer(b['repo'], 'freeze')
+    assert calls[-1][0] == (b['repo'] / 'venv/bin/pip', 'freeze')
+
+
+def test_status_falls_back_to_checkout_tag_when_health_is_down(box, monkeypatch):
+    b = box
+    monkeypatch.setattr(b['hu'], '_health', lambda origin: None)
+    assert b['hu'].status(b['h'])['running_version'] == 'v0.0.1'
+
+
+@pytest.mark.parametrize('tag,commit', [('stable', 'a' * 40), ('v0.0.2rc1', 'a' * 40), ('v0.0.2', 'abc')])
+def test_malformed_pins_fail_before_fetch(box, monkeypatch, tag, commit):
+    b = box
+    b['set_pin']({**b['pin'], 'tag': tag, 'commit': commit})
+    out = b['hu'].update(b['h'], wait_quiet=0)
+    assert out['state'] == 'refused' and not b['restarts']
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
+
+
+def test_changed_upstream_tag_refuses_instead_of_following_it(box):
+    b = box
+    remote = b['repo'].parent.parent / 'upstream.git'
+    subprocess.run(['git', '--git-dir', str(remote), 'update-ref', 'refs/tags/v0.0.2', b['commits'][0]], check=True)
+    out = b['hu'].update(b['h'], wait_quiet=0)
+    assert out['state'] == 'refused' and "release pin doesn't match upstream" in out['reason']
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
+
+
+def test_busy_queue_can_become_quiet_within_deadline(box, monkeypatch):
+    b = box; hu = b['hu']; probes = []
+    def census(*args):
+        probes.append(1)
+        return ['fixture running'] if len(probes) == 1 else []
+    monkeypatch.setattr(hu, 'busy', census)
+    monkeypatch.setattr(hu.time, 'sleep', lambda seconds: None)
+    assert hu.update(b['h'], wait_quiet=5, health_timeout=0)['state'] == 'updated'
+    assert len(probes) >= 3
+
+
+def test_config_change_while_waiting_refuses_stale_backup(box, monkeypatch):
+    b = box; hu = b['hu']
+    def census(*args):
+        (b['hh'] / 'config.yaml').write_text('new owner choice')
+        return []
+    monkeypatch.setattr(hu, 'busy', census)
+    out = hu.update(b['h'], wait_quiet=0)
+    assert out['state'] == 'refused' and 'configuration changed' in out['reason']
+    assert (b['hh'] / 'config.yaml').read_text() == 'new owner choice'
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
+
+
+def test_unknown_agent_queue_is_busy(box, monkeypatch):
+    b = box
+    monkeypatch.setattr(updates, 'busy', lambda *a: None)
+    assert b['hu'].update(b['h'], wait_quiet=0)['state'] == 'busy'
+
+
+def test_wal_backup_copies_committed_rows_without_copying_uncommitted_writes(box):
+    b = box
+    with sqlite3.connect(b['hh'] / 'state.db') as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute("INSERT INTO sessions VALUES ('committed WAL row')"); writer.commit()
+        writer.execute("INSERT INTO sessions VALUES ('uncommitted')")
+        out = b['hu'].update(b['h'], wait_quiet=0, health_timeout=0)
+        assert out['state'] == 'updated', out
+        with sqlite3.connect(Path(out['backup']) / 'state.db') as backup:
+            assert backup.execute('SELECT id FROM sessions').fetchall() == [('preserve',), ('committed WAL row',)]
+
+
+def test_rollback_dependency_parser_preserves_unrelated_editables(box):
+    b = box; hu = b['hu']
+    lines = ['# Editable Hermes', '-e ' + str(b['repo']), 'hermes-agent==0.0.1',
+             'sample==1.0', 'Another_Package==2.0', '-e /fixture/other-project']
+    assert hu._dependency_lines(lines, b['repo']) == ['sample==1.0', 'Another_Package==2.0', '-e /fixture/other-project']
+    assert hu._distributions(lines) == {'sample', 'another-package'}
