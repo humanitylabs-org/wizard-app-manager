@@ -71,15 +71,18 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if st not in (store, '_user'):
+        if st != store:
             continue
         meta = app_meta(runtipi_root, st, name)
         if not meta:
             continue
-        # Runtipi's filesystem-only owner store is never index-materialized.
-        # Admit only explicit local Wizard recipes, never arbitrary user apps.
-        if st == '_user' and meta['repo'] != 'local:' + name:
-            continue
+        # Local recipes can use a catalogue-ineligible physical id while retaining
+        # the provider's declared canonical id and its actual lifecycle URN.
+        if meta['repo'] == 'local:' + name and '_' in name:
+            canonical = meta['w'].get('id')
+            if not isinstance(canonical, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,62}', canonical):
+                raise ValueError('invalid canonical local app id')
+            name = canonical
         if any(a['id'] == name for a in apps):
             raise ValueError('duplicate installed Wizard app id: ' + name)
         w, cfg = meta["w"], meta["cfg"]
