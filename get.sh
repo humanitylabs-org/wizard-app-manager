@@ -35,7 +35,9 @@
 # Release pins (wizard-os#27): the install follows one Wizard OS release file, wizard-os/releases/<version>.json,
 # which names the App Manager commit and the image digests. WIZARD_RELEASE=<version> picks one; without it the
 # release named in wizard-os/releases/stable is used. Re-running the command with no WIZARD_RELEASE updates to the
-# current stable release; WIZARD_RELEASE=<version> keeps a box on that version. WAM_REF=<branch|sha> is the
+# current stable release; WIZARD_RELEASE=<version> keeps a box on that version. Channels (James, 21 Oct 2026):
+# releases/latest names every release as it is cut, releases/stable only releases that soaked and passed the upgrade
+# test. WIZARD_CHANNEL=latest (or a box whose owner ran `wam updates --channel latest`) follows latest instead. WAM_REF=<branch|sha> is the
 # developer override: it installs that App Manager ref unpinned. Afterwards the installer reads back what actually
 # runs (App Manager commit and image, shell image, default app versions) and records it in ~/.wizard-os/release.json.
 # WIZARD_STRICT=1 makes any drift from the release exit non-zero, and refuses unpinned installs (incl. WAM_REF).
@@ -311,6 +313,7 @@ preflight() {
 fwd_env() {
   printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
+    WIZARD_CHANNEL="${WIZARD_CHANNEL:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
@@ -1014,6 +1017,20 @@ fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published
 }
 if [ -z "${WAM_REF:-}" ]; then
   REL="${WIZARD_RELEASE:-}"
+  CHANNEL="${WIZARD_CHANNEL:-}"
+  if [ -z "$CHANNEL" ] && [ -f "$HOME/.wizard-os/updates.json" ]; then   # the owner's saved channel (wam updates)
+    CHANNEL="$(python3 -c 'import json, sys
+try: c = json.load(open(sys.argv[1])).get("channel")
+except Exception: c = None
+print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2>/dev/null || true)"
+  fi
+  case "${CHANNEL:=stable}" in stable|latest) ;; *) echo "WIZARD_CHANNEL must be stable or latest" >&2; exit 2 ;; esac
+  if [ -z "$REL" ] && [ "$CHANNEL" = latest ]; then
+    frc=0; fetch_release latest "$RECORD.latest" || frc=$?
+    [ "$frc" -eq 0 ] && REL="$(tr -d ' \t\r\n' < "$RECORD.latest")"
+    rm -f "$RECORD.latest"
+    [ -n "$REL" ] || echo "note: no latest release pointer at $RELEASE_BASE/latest; using stable"
+  fi
   if [ -z "$REL" ]; then
     frc=0; fetch_release stable "$RECORD.stable" || frc=$?
     if [ "$frc" -eq 1 ]; then
