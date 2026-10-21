@@ -85,3 +85,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.23.json`. Byte-identical SHA-256: `8ab124cf9a9073c9dcdeec0aa9a8592fdfc1f99d1ef2105b9015ec0baacd9f9f`.
 - 0.3.22 plus wizard-troubleshooter #9 (`4b1f0ef`, wizard-os#93): the Troubleshooter's Sign in and Open … app links now open the connection app this box really has. The address comes from apps.json, or the app's App Store page when it isn't installed. Before, they went to a not_found page. A box without Claude Code now gets plain guidance instead of a dead Claude button. First snapshot with the required `hermes` pin (carried over, v2026.9.24).
 - Every other pin is identical to 0.3.22. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.24 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.24.json`. Byte-identical SHA-256: `766e30a7c644f7d5098076c23850e2bfa6cbc10433a618115d22fdb22286bec1`.
+- 0.3.23 plus App Manager #135 (`5005f6b`, wizard-os#87): a fresh install no longer fails before Runtipi exists when an earlier install left a root-owned `/tmp/runtipi-setup.sh` (curl exit 23). The Runtipi setup now downloads to a private temp dir. Main also carries #133 (owner screens through the shared view projection).
+- Every other pin is identical to 0.3.23. The App Manager, Wizard UX and Agent Service images are unchanged.
