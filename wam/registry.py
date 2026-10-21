@@ -87,6 +87,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         if any(a["id"] == name for a in apps):
             raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
+        from . import chats_views
+        chats = chats_views.installed(meta['dir'], w, meta['commit'])
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None
         view = w.get("view") or None
@@ -96,6 +98,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
+                '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
@@ -125,6 +129,12 @@ def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
     sk = root / "skills"
+    from . import chats_views
+    chats_views.publish(reg, root)
+    reg.setdefault('slots', {}).setdefault('chats', {'default': chats_views.BUILTIN, 'candidates': []})
+    if chats_views.BUILTIN not in reg['slots']['chats']['candidates']:
+        reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
+        reg['slots']['chats']['default'] = chats_views.BUILTIN
     sk.mkdir(exist_ok=True)
     for entry in sk.iterdir():
         # skills/ is shared: the Agent Service / wizard-os Hermes plugin keep the wizard-job-* routing
@@ -160,7 +170,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if owner_routes_enabled and out.get("view") is not None:
             # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
             out["view"] = {"url": r["view"]} if r.get("view") else None
-        if r.get("staged_as"):
+        if r.get("staged_as") and not a.get('chats_view'):
             out.update({"id": r["staged_as"], "app_id": a["id"], "name": f"{out.get('name') or a['id']} (test)",
                         "staged": True})
         return out

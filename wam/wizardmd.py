@@ -82,6 +82,12 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule("front matter parses", False, str(e))
         return out
     rule("front matter parses", True)
+    from . import chats_views
+    try:
+        chats_views.validate(repo, d)
+        rule('Chats module admission', True)
+    except (ValueError, OSError, UnicodeError) as e:
+        rule('Chats module admission', False, str(e))
     rule("spec version known", d.get("wizard") in SPECS, str(d.get("wizard")))
     rule("id valid", bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(d.get("id", "")))), str(d.get("id")))
     t = d.get("type")

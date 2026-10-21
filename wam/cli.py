@@ -168,6 +168,13 @@ def share_registry(c: Config) -> bool:
                     if not os.path.islink(f):
                         os.chmod(f, 0o644)
         from .view_share import publish
+        from . import chats_views
+        chats_reg = json.loads((c.home / 'apps.json').read_text())
+        for app in chats_reg.get('apps', []):
+            view = app.get('chats_view')
+            if view:
+                app['_chats_src'] = str(c.home / 'chats-views' / app['id'] / (view['sha256'] + '.js'))
+        chats_views.publish(chats_reg, shared)
         for metadata in (c.home / "views").glob("*/view.json"):
             if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
                 publish(metadata.parent.name, c.home, shared)
@@ -1246,6 +1253,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id.startswith('_views/'):
             return self._view_revert(method, app_id.removeprefix('_views/'))
+        if app_id == '_slots/chats':
+            return self._chats_default(method)
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1267,6 +1276,23 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _chats_default(self, method: str) -> None:
+        from . import chats_views
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 256:
+                    raise ValueError('invalid body size')
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict) or set(body) != {'default'}:
+                    raise ValueError('send {default: installed-provider-id}')
+                chats_views.choose(self.cfg.home, body['default'])
+                share_registry(self.cfg)
+            reg = json.loads((self.cfg.home / 'apps.json').read_text())
+            return self._json(200, (reg.get('slots') or {}).get('chats', {'default': chats_views.BUILTIN}))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
 
     def _view_revert(self, method: str, app_id: str) -> None:
         """Shell-owned Use original action, behind exactly the Settings/Store owner gate."""

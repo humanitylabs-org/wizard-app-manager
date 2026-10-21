@@ -1,6 +1,13 @@
 {
   "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it).",
   "slots": {
+    "chats": {
+      "name": "Chats",
+      "app": null,
+      "required": false,
+      "multi": true,
+      "note": "Built-in wizard-chats plus owner-installed in-document Chats views; shared Agent Service conversations."
+    },
     "shell": {
       "name": "Shell (Wizard UX)",
       "app": "wizard-ux",
