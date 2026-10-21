@@ -60,3 +60,10 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.19.json`. Byte-identical SHA-256: `9c903594b3f009b6a73a1fafa9e2b3bbffcc92a12ad5dfe0fa412a682759fae2`.
 - 0.3.18 plus App Manager #118 (`c595834`): Store Get no longer fails with a bare "Install failed (502)" when the App Manager service can't run `docker info`; the architecture check falls back to `sudo -n docker`, then the machine's CPU, and unexpected errors answer with a plain reason.
 - Every other pin is identical to 0.3.18; the App Manager image is unchanged from 0.3.12.
+
+## 0.3.20 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.20.json`. Byte-identical SHA-256: `28c20be9958417598cdebbf8b16324d1f377ae1e167cf7d1f445b93386fd1795`.
+- 0.3.19 plus App Manager #123 (`cb81d8f`, wizard-os#90): an update cut short by a reboot (or a killed installer) is marked `interrupted` with its stale install.lock released, so the Update button or the nightly Automatic check retries instead of reporting "installing" forever. Main also carries #122 (private provider metadata kept in apps.json).
+- `secrets` default app moves to secret-drop `690b277` (engine image digest-pinned, same bytes); `install.note` now describes what both install modes actually pin and read back (wizard-os#27).
+- Every other pin is identical to 0.3.19; the App Manager image is unchanged from 0.3.12.
