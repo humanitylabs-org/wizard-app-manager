@@ -1,6 +1,6 @@
 # Wizard App Manager
 
-Installs, runs, updates and backs up the apps on a Wizard. It is [Runtipi](https://github.com/runtipi/runtipi) v4.10.2 (GPL-3.0) with one part replaced: **the App Store reads the [Wizard App Index](https://www.aiwizards.com/wizard-apps) live** instead of a cloned catalog. Nothing is downloaded until you open, install or update an app, so the store scales to any number of apps.
+Installs, runs, updates and backs up the apps on a Wizard. It is [Runtipi](https://github.com/runtipi/runtipi) v4.10.2 (GPL-3.0) with one part replaced: **the App Store reads the [Wizard App Index](https://www.aiwizards.com/wizard-apps) live** instead of a cloned catalog. Nothing is downloaded until you open, install or update an app, except the small curated Setup recommendation image cache described below; the store still scales to any number of apps.
 
 The interface here is temporary. It exists so the system can be seen and used now; the long-term interface is Wizard UX, part of WizardOS.
 
@@ -74,6 +74,28 @@ Wizard additions:
 | `wam doctor [--fix]` | Check the whole chain |
 | `wam updates [--ask\|--auto] [--channel stable\|latest] [--apply]` | Update check and the owner's choice. Ask me is the default; Automatic installs only promoted **stable** releases. `--channel latest` follows every release as it is cut (testers); stable is the default |
 | `wam serve` | Box-only HTTP API on `127.0.0.1:7790` (the `wizard-app-manager-api` user service runs it) |
+| `wam prefetch` | Cache recommended Docker images only; never install apps or create containers |
+
+### Recommended connectors (on demand)
+
+`wam/defaults.json` marks optional connector slots `install: on-demand`, `recommended: true`, `prefetch: true`.
+Bootstrap skips them; ChatGPT and Claude remain preinstalled for the agent's own sign-in.
+The Setup app shows one Recommended next list, using `GET store-install/_recommended` for source-qualified
+Store selections. Its ordinary Store Get request installs the selected immutable release and then opens sign-in.
+
+After the first successful Setup `/wizard/v1/setup/seen`, Setup posts to `store-install/_recommended` with
+the existing owner/origin/Store-header checks. WAM persists the request and pulls images sequentially in a
+background thread (nice 19, idle I/O where available). This is best-effort client priority, not a Docker daemon
+network throttle. No recipe is installed, no container runs, no app record or Apps tile is created. The request
+survives closing Setup; an interrupted run resumes at WAM service startup. Docker's image cache avoids repeated
+pulls. Errors never block setup or ordinary installation; `wam prefetch` explicitly retries or refills a pruned cache.
+
+Cloudflare is already published in the standard index. Connected accounts (`humanitylabs-org/wizard-connectors`)
+is a recommendation but is **not yet installable**: its current source uses the local-only `wizard-connectors:reviewed`
+image, required broker secrets and a Google review gate; no release is indexed. Setup says it is unavailable
+until an independently reviewed, pullable release is published. This change does not bypass that gate, publish
+an image or provision Google credentials. Recommendations belong in the normal index once they pass the same
+checker as other Store apps; no second app index or parallel install system is introduced.
 
 ## Building
 
