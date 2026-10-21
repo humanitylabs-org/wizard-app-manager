@@ -21,7 +21,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("bash", "sh", "cat", "mkdir", "cp", "chmod", "rm", "date", "dirname", "seq", "grep", "cut", "sed",
-                 "mv"):
+                 "mv", "mktemp", "find", "chown"):
         (bin_dir / name).symlink_to(shutil.which(name))
     calls = tmp_path / "calls"
 
@@ -41,7 +41,14 @@ case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
     for name in ("systemctl", "loginctl"):
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
     # HEALTH=down makes every health check fail (the App Manager never comes up).
-    tool("curl", 'printf "curl %s\\n" "$*" >> "$CALLS"\n[ "${HEALTH:-up}" = up ]\n')
+    # The Runtipi setup download: write a stand-in setup script (creates the base's .env) to curl's -o target.
+    tool("curl", '''printf "curl %s\\n" "$*" >> "$CALLS"
+case "$*" in *setup.runtipi.io*)
+  out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+  printf '#!/bin/bash\\nmkdir -p runtipi && echo NGINX_PORT=8480 > runtipi/.env && echo "services: {}" > runtipi/docker-compose.yml\\n' > "$out"
+  exit 0;; esac
+[ "${HEALTH:-up}" = up ]
+''')
     tool("tailscale", '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 [ "$1" = status ] && echo '{"BackendState":"Running"}'
 ''')
@@ -278,3 +285,23 @@ def test_a_failed_install_does_not_set_up_the_troubleshooter(tmp_path):
     p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down", WIZARD_HEALTH_TRIES="1")
     assert p.returncode == 1
     assert "wam -m wam troubleshooter" not in calls.read_text()
+
+
+def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
+    # Demo-box fresh install (0.3.23): a root-owned /tmp/runtipi-setup.sh left by an earlier install made curl exit 23
+    # for the new wizard user, and the whole install failed before Runtipi existed. The download must never use a
+    # fixed shared path.
+    def no_base(home):
+        (home / "runtipi/.env").unlink()
+        (home / "runtipi/docker-compose.yml").unlink()
+    p, home, root, calls, outcome = sandbox(tmp_path, before=no_base)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    dl = next(l for l in log if "setup.runtipi.io" in l)
+    target = dl.split(" -o ", 1)[1]
+    assert not target.startswith("/tmp/runtipi-setup.sh")
+    assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
+    assert any(l.startswith("sudo bash " + target) for l in log)
+    assert (root / ".env").is_file()
+    assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
+    assert outcome["status"] == "ok"
