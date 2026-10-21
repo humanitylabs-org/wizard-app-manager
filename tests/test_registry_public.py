@@ -70,6 +70,26 @@ def test_private_inference_survives_registry_rewrite(config):
             assert json.loads((dest / "apps.json").read_text())["apps"][0]["private_inference"] == expected
 
 
+def test_local_user_store_preserves_provider_identity_and_contract(config):
+    import shutil
+    c, source = config
+    local = c.runtipi_root / 'repos/_user/apps/hello-wizard'
+    shutil.copytree(source, local)
+    (local / '.wizard-source').write_text(json.dumps({'repo':'local:hello-wizard'}))
+    manifest = local / 'wizard.md'
+    manifest.write_text(manifest.read_text().replace('---\n', '---\nprivate_inference: {kind: attested-relay, relay_port: 8090, egress: [inference.tinfoil.sh]}\n', 1))
+    row = {'app': {'status':'running'}, 'info': {'urn':'hello-wizard:_user'}}
+    result = registry.build([row], 'wizardapps', '127.0.0.1', c.runtipi_root)
+    assert result['apps'][0]['id'] == 'hello-wizard'
+    assert result['apps'][0]['urn'] == 'hello-wizard:_user'
+    assert result['apps'][0]['repo'] == 'local:hello-wizard'
+    assert result['apps'][0]['private_inference']['kind'] == 'attested-relay'
+    with pytest.raises(ValueError, match='duplicate'):
+        registry.build([row, {'app':{},'info':{'urn':'hello-wizard:wizardapps'}}], 'wizardapps', '127.0.0.1', c.runtipi_root)
+    (local / '.wizard-source').write_text(json.dumps({'repo':'unknown/source'}))
+    assert registry.build([row], 'wizardapps', '127.0.0.1', c.runtipi_root)['apps'] == []
+
+
 def test_apps_cli_serializes_public_data(config, capsys):
     c, source = config
     assert cli.main(["apps", "--json"]) == 0
