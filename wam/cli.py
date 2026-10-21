@@ -166,6 +166,10 @@ def share_registry(c: Config) -> bool:
                     f = os.path.join(dirpath, name)
                     if not os.path.islink(f):
                         os.chmod(f, 0o644)
+        from .view_share import publish
+        for metadata in (c.home / "views").glob("*/view.json"):
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
+                publish(metadata.parent.name, c.home, shared)
         return True
     except OSError as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
@@ -1234,6 +1238,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         app_id = urlparse(self.path).path.strip("/")
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id.startswith('_views/'):
+            return self._view_revert(method, app_id.removeprefix('_views/'))
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1255,6 +1261,26 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _view_revert(self, method: str, app_id: str) -> None:
+        """Shell-owned Use original action, behind exactly the Settings/Store owner gate."""
+        from . import views
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,40}', app_id):
+            return self._json(404, {'error': 'not found'})
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 128:
+                    raise ValueError('invalid body size')
+                if json.loads(self.rfile.read(size)) != {'action': 'revert'}:
+                    raise ValueError('send action: revert')
+                views.revert(app_id, self.cfg.home)
+            view = views.load(app_id, self.cfg.home)
+            if not view:
+                return self._json(404, {'error': 'not customized'})
+            return self._json(200, {'app': app_id, 'active': view['active']})
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
 
     def _updates(self, method: str) -> None:
         """GET: installed vs stable and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;

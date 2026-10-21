@@ -27,4 +27,14 @@ Run `wam views update <app>` (the App Manager should call it after every update)
 "Put it back to normal": `wam views revert <app>`. History stays; `wam views reactivate <app>` brings it back.
 
 ## Status and serving
-`wam views status <app>`, `wam views index` (what the launcher opens). The door (`wam views serve`) is the reference for the Agent Service's same-origin routes; routes come from disk and survive restarts. Keep custom views only in `~/.wizard-os/views/`; change the look through a view, leaving the installed app untouched.
+`wam views status <app>`, `wam views index` (the reference door's URLs). `wam views serve` remains the standalone reference door; it is not required by the shell.
+
+### Shell integration (Skins and Views slice 5)
+
+- WAM publishes the successful build and a small read-only `views/<id>/view.json` projection into the **existing** Runtipi `app-data/wizard-os` share, on apply/update/revert/reactivate and on `wam apps`. The owner's `src/`, git history and build logs are never copied. `RUNTIPI_ROOT` or this home's `app-manager.json:runtipi_root` selects that share; an isolated home without either never writes another install.
+- The Agent Service reads the projection beside its configured `apps.json` and reports each app's `view: {mode, url}`. It serves own screens at `/wizard/views/<id>/` under its already-published `/wizard` gateway. This is the shell-accessible equivalent of the reference door's `/views/<id>/`, without a new port or Serve mount. Existing builds are backfilled by `wam apps`.
+- Both shell layouts select the own URL, keep Appearance v1 and normal app/Back lifecycle, and show **Your version**. Failed HTML/assets return to the original with a note naming the file; this is a session fallback, not deletion or permanent deactivation.
+- **Use original** opens shell Settings. Only its genuine confirmation tap sends `POST /wizard-os-home/store-install/_views/<id>` with `{\"action\":\"revert\"}`. This is the existing Settings/Store listener and its owner/Tailscale/Origin/JSON gate; it calls `views.revert` and returns only app/active. The shell reads it and the registry back before reporting the switch. No iframe message can authorize it.
+- Relative `api/…` uses a 307 to the original app's same-origin, declared API path, keeping that route's existing authentication/CSRF/grant handling; it is not a new privileged proxy. External-origin app API URLs are deliberately refused. Overlay mode retains the original URL and the reference door's existing overlay injection; this slice does not introduce a second injector.
+
+Own-version creation still requires locally available screen source, as `wam views customize` already documents; this does not fetch otherwise unavailable vendor source. No shell, service, image or owner state is deployed by these changes.

@@ -112,6 +112,24 @@ def _edit(path, old, new):
     path.write_text(text.replace(old, new, 1))
 
 
+def test_real_apply_and_revert_publish_the_build_for_the_shell(box, tmp_path):
+    root = tmp_path / 'tipi'
+    (box.home / 'app-manager.json').write_text(json.dumps({'runtipi_root': str(root)}))
+    views.customize('habit-tracker', home=box.home)
+    source = views.view_dir('habit-tracker', box.home) / 'src/web/index.html'
+    _edit(source, '<h1>Habits</h1>', '<h1>My own habits</h1>')
+    active = views.apply('habit-tracker', box.home)
+    shared = root / 'app-data/wizard-os/views/habit-tracker'
+    projection = json.loads((shared / 'view.json').read_text())
+    assert projection['active'] is True and projection['mode'] == 'own'
+    assert projection['serving'] == active['serving']
+    assert '<h1>My own habits</h1>' in (shared / 'builds' / active['serving'] / 'index.html').read_text()
+    assert 'source' not in projection and not (shared / 'src').exists()
+    views.revert('habit-tracker', box.home)
+    assert json.loads((shared / 'view.json').read_text())['active'] is False
+    assert source.exists()
+
+
 def test_no_views_folder_means_the_apps_own_screen(box):
     assert views.open_url('habit-tracker', box.home) == '/apps/habit-tracker/'
     assert not (box.home / 'views').exists()

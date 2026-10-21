@@ -77,7 +77,15 @@ def load(app_id, home=None):
 
 def _save(app_id, home, view):
     view['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    if view.get('mode') == 'own':
+        try:
+            api = app_record(app_id, home).get('api') or {}
+            view['api_path'] = api.get('path') or '/api'
+        except ViewError:
+            view.setdefault('api_path', '/api')  # preserve revert even after the app is removed
     builder._json(view_dir(app_id, home) / 'view.json', view)
+    from .view_share import publish
+    publish(app_id, _home(home))
     return view
 
 
