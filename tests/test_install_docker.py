@@ -53,6 +53,7 @@ case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
   if [ "${3:-}" = bootstrap ]; then
     if [ -n "${BOOTSTRAP_OUT:-}" ]; then printf '%s\\n' "$BOOTSTRAP_OUT"; else echo '{"installed": [], "failed": {}}'; fi
   fi
+  if [ "${3:-}" = troubleshooter ]; then exit "${TROUBLESHOOTER_RC:-0}"; fi
   if [ "${3:-}" = recover ]; then
     if [ -n "${RECOVER_OUT:-}" ]; then printf '%s\\n' "$RECOVER_OUT"; else echo '{"started": [], "failed": {}, "core": []}'; fi
   fi
@@ -256,3 +257,24 @@ def test_failed_core_recovery_fails_the_install_and_other_apps_degrade(tmp_path)
 def test_recovery_is_skipped_when_the_app_manager_never_answers(tmp_path):
     p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down")
     assert not any(l.startswith("wam -m wam recover") for l in calls.read_text().splitlines())
+
+
+def test_every_install_sets_up_the_native_troubleshooter_after_the_links(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = [l for l in calls.read_text().splitlines() if l.startswith("wam ")]
+    assert "wam -m wam troubleshooter" in log
+    assert log.index("wam -m wam links") < log.index("wam -m wam troubleshooter")
+
+
+def test_a_troubleshooter_problem_never_fails_the_install(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, TROUBLESHOOTER_RC="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert outcome["status"] == "ok"
+    assert "the Troubleshooter is not fully set up" in p.stdout
+
+
+def test_a_failed_install_does_not_set_up_the_troubleshooter(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down", WIZARD_HEALTH_TRIES="1")
+    assert p.returncode == 1
+    assert "wam -m wam troubleshooter" not in calls.read_text()

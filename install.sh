@@ -284,6 +284,14 @@ echo
 if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
   "$HOME/.local/bin/wam" links || true
   echo
+  # 5) The Troubleshooter (wizard-os#93): the way back when chat is down. A native user service, not an app, so it keeps
+  #    working (and can restart things) when Runtipi, the shell, the Agent Service or Hermes are broken. Mounted at
+  #    /troubleshoot/ on the shell's addresses (so it runs after `wam links`); the guardian only reports. The release
+  #    pins its commit. A hand-installed one is left alone; WIZARD_TROUBLESHOOTER=0 skips it.
+  if ! "$HOME/.local/bin/wam" troubleshooter; then
+    echo "note: the Troubleshooter is not fully set up ('wam troubleshooter' shows why; ~/.wizard-os/troubleshooter.json)"
+  fi
+  echo
 fi
 [ ${#PENDING[@]} -eq 0 ] || { printf 'Pending: %s\n' "${PENDING[@]}"; echo; }
 if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
