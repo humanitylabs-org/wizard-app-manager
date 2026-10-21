@@ -200,29 +200,34 @@ describe('legacy copy and explicit Claude upgrade', () => {
     run.mockRejectedValue(new Error('daemon offline'));
     await expect(store.prepare(urn, yaml.stringify({ ...compose, volumes: { login: null } }))).rejects.toThrow('daemon offline');
   });
-  it('upgrades existing Claude+Hermes fixed-volume pair to provider data/claude + install share only once', async () => {
-    const legacy = {
-      ...compose,
-      volumes: { login: { name: LEGACY_CLAUDE } },
-      services: { main: { ...compose.services.main, volumes: ['login:/claude'] } },
-    };
-    await install({ id: 'wizard-claude' }, legacy);
-    const urn = await install({ id: 'hermes-agent' }, legacy);
-    run.mockImplementation(async (_f, args) => ({ stdout: args[0] === 'volume' ? `${LEGACY_CLAUDE}\n` : '' }));
-    const result = yaml.parse(await store.prepare(urn, yaml.stringify(legacy)));
-    const grants = (await store.readGrants()).grants;
-    expect(grants).toEqual([
-      expect.objectContaining({ kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login', approved: 'install' }),
-    ]);
-    expect(result.services.main.volumes).toEqual([
-      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
-    ]);
-    await store.prepare(urn, yaml.stringify(result));
-    expect((await store.readGrants()).grants).toHaveLength(1);
-    await store.change(grants[0]!, false);
-    await store.prepare(urn, yaml.stringify(result));
-    expect((await store.readGrants()).grants).toEqual([]);
-  });
+  it.each([LEGACY_CLAUDE, 'wizard-storage-unit-legacy'])(
+    'upgrades existing fixed-volume pair once using selected legacy volume %s',
+    async (selected) => {
+      store = new WizardStorage(store.dirs, run, selected);
+      const legacy = {
+        ...compose,
+        volumes: { login: { name: LEGACY_CLAUDE } },
+        services: { main: { ...compose.services.main, volumes: ['login:/claude'] } },
+      };
+      await install({ id: 'wizard-claude' }, legacy);
+      const urn = await install({ id: 'hermes-agent' }, legacy);
+      run.mockImplementation(async (_f, args) => ({ stdout: args[0] === 'volume' ? `${selected}\n` : '' }));
+      const result = yaml.parse(await store.prepare(urn, yaml.stringify(legacy)));
+      expect(run.mock.calls.some(([, args]) => args.includes(`type=volume,src=${selected},dst=/old,readonly`))).toBe(true);
+      const grants = (await store.readGrants()).grants;
+      expect(grants).toEqual([
+        expect.objectContaining({ kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login', approved: 'install' }),
+      ]);
+      expect(result.services.main.volumes).toEqual([
+        expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+      ]);
+      await store.prepare(urn, yaml.stringify(result));
+      expect((await store.readGrants()).grants).toHaveLength(1);
+      await store.change(grants[0]!, false);
+      await store.prepare(urn, yaml.stringify(result));
+      expect((await store.readGrants()).grants).toEqual([]);
+    },
+  );
   it('does not autoapprove a new pair without old fixed-volume evidence', async () => {
     await install(provider);
     await install(consumer);

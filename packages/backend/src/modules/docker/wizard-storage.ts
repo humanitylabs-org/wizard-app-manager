@@ -113,7 +113,12 @@ export class WizardStorage {
   constructor(
     readonly dirs: { dataDir: string; appDataDir: string },
     readonly run: Run = (f, a) => execFileAsync(f, a),
-  ) {}
+    // Isolated rehearsals can select a disposable legacy volume without ever
+    // touching the owner's fixed-name login. Recipe compatibility stays literal.
+    readonly legacyClaudeVolume: string = LEGACY_CLAUDE,
+  ) {
+    if (!VOLUME.test(legacyClaudeVolume)) throw new Error('Unsafe legacy Claude volume name');
+  }
   serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn);
     this.queue = next.catch(() => {
@@ -346,7 +351,7 @@ rm -f ".$1.wizard-copy-ready"`;
         hermes &&
         !file.claude_share_upgrade_v1 &&
         [provider, hermes].every((a) => Object.values(a.compose.volumes ?? {}).some((v: any) => v?.name === LEGACY_CLAUDE)) &&
-        (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/).includes(LEGACY_CLAUDE)
+        (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/).includes(this.legacyClaudeVolume)
       ) {
         if (
           !file.denied.some((g) => g.kind === 'share' && g.from === 'hermes-agent' && g.to === 'wizard-claude' && g.share === 'claude-login') &&
@@ -370,10 +375,10 @@ rm -f ".$1.wizard-copy-ready"`;
           for (const svc of Object.values(doc.services)) svc.volumes = (svc.volumes ?? []).filter((v: any) => targetOf(v) !== '/claude');
           continue;
         }
-        await this.migrate(plan.old === LEGACY_CLAUDE ? plan.old : `${urn.replace(':', '_')}_${plan.old}`, plan.relative, app);
+        await this.migrate(plan.old === LEGACY_CLAUDE ? this.legacyClaudeVolume : `${urn.replace(':', '_')}_${plan.old}`, plan.relative, app);
       }
       // A modern provider already uses data/claude and has no named-volume declaration.
-      if (app.manifest.id === 'wizard-claude') await this.migrate(LEGACY_CLAUDE, 'data/claude', app);
+      if (app.manifest.id === 'wizard-claude') await this.migrate(this.legacyClaudeVolume, 'data/claude', app);
       const previously = doc['x-wizard-share-mounts'] ?? [];
       for (const svc of Object.values(doc.services)) svc.volumes = (svc.volumes ?? []).filter((v: any) => !previously.includes(targetOf(v)));
       doc['x-wizard-share-mounts'] = [];
@@ -391,7 +396,7 @@ rm -f ".$1.wizard-copy-ready"`;
           },
         );
         const folder = await confined(p.data, `data/${share.path}`, true);
-        if (p.manifest.id === 'wizard-claude' && share.id === 'claude-login') await this.migrate(LEGACY_CLAUDE, `data/${share.path}`, p);
+        if (p.manifest.id === 'wizard-claude' && share.id === 'claude-login') await this.migrate(this.legacyClaudeVolume, `data/${share.path}`, p);
         const main = Object.keys(app.compose.services).filter((n) => app.compose.services[n]['x-runtipi']?.is_main);
         if (main.length !== 1 || !doc.services[main[0]!]) throw new Error('Share consumer requires exactly one main service');
         const svc = doc.services[main[0]!];
