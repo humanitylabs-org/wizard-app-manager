@@ -1459,6 +1459,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "hermes":
+        from .hermes_update import main as hermes_main
+        return hermes_main(argv[1:])
     if argv and argv[0] == "agent-link":
         from .agent_link import main as agent_link_main
         return agent_link_main(argv[1:])
