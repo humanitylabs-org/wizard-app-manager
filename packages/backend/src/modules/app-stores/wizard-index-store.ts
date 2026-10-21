@@ -13,6 +13,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import * as yaml from 'yaml';
 import { AppStoreFilesManager } from './app-store-files-manager';
 import { prepareChatsModule } from './chats-module';
+import { preparePackage, sourceDir } from './packaging';
 
 export const WIZARD_STORE_SLUG = 'wizardapps';
 export const DEFAULT_WIZARD_INDEX = 'https://apps.aiwizards.com';
@@ -180,7 +181,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!wizardText) throw new Error(`${rec.repo}: no wizard.md`);
     const d = frontMatter(wizardText);
     if (d.id !== appName) throw new Error(`${rec.repo}: wizard.md id ${String(d.id)} != ${appName}`);
-    const rt = (d.runtime ?? {}) as { config?: string; compose?: string };
+    const rt = (d.runtime ?? {}) as { config?: string; compose?: string; package?: unknown };
     if (!rt.config || !rt.compose) throw new Error(`${rec.repo}: wizard.md runtime.config/compose missing`);
     const cfgText = await this.filesystem.readTextFile(path.join(src, rt.config));
     const composeText = await this.filesystem.readTextFile(path.join(src, rt.compose));
@@ -188,6 +189,17 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const compose = yaml.parse(composeText);
     const risks = composeRisks(compose);
     if (risks.length) throw new Error(`${rec.repo} asks for host-level access: ${risks.join('; ')}`);
+
+    // Packaging (source | build | image): copy the pinned code where the app's containers can mount or build it.
+    const { appDataDir } = this.configuration.get('directories');
+    await preparePackage({
+      pkg: rt.package,
+      compose,
+      src,
+      target: sourceDir(appDataDir, this.storeConfig.slug, appName, rec.install.commit),
+      appName,
+      commit: rec.install.commit,
+    });
 
     const dst = path.join(this.getAppStoreFolder(), appName);
     let oldTipi = 0;

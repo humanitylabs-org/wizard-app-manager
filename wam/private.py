@@ -196,10 +196,19 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                         matched += 1
                 if not matched:
                     raise PrivateError('catalog image does not match pinned Compose')
+        # Packaging (source | build | image): copy the pinned code where the containers mount or build it.
+        from . import packaging
+        try:
+            packaging.prepare_package(rt.get("package"), compose, src,
+                                      packaging.source_dir(packaging.app_data_root(runtipi_root), store, app_id, commit),
+                                      app_id, commit)
+        except packaging.PackagingError as e:
+            raise PrivateError(f"{repo}: {e}") from e
         # Runtipi pulls public release images through its normal install path. A fresh
         # sudo user need not have Docker socket access or a registry login on the CLI.
         if not source_pin:
-            for img in images(compose):
+            for img in images({"services": {n: s for n, s in (compose.get("services") or {}).items()
+                                            if isinstance(s, dict) and not s.get("build")}}):
                 pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
