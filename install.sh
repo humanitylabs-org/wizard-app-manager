@@ -30,9 +30,12 @@ services:
 YML
   ENVF="$(mktemp)"
   printf 'NGINX_PORT=8480\nNGINX_PORT_SSL=8443\nINTERNAL_IP=127.0.0.1\n' > "$ENVF"
-  curl -fsSL https://setup.runtipi.io -o /tmp/runtipi-setup.sh
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash /tmp/runtipi-setup.sh --env-file "$ENVF")
-  rm -f "$ENVF"
+  # A private temp dir, never a fixed /tmp name: a leftover /tmp/runtipi-setup.sh owned by another user (root, from
+  # an earlier install) can't be overwritten in sticky /tmp, and curl then fails with exit 23 before Runtipi exists.
+  SETUP_DIR="$(mktemp -d)"
+  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh"
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
+  rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
   sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
