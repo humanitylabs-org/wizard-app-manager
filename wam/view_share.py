@@ -16,6 +16,8 @@ def shared_home(home):
     cfg = json.loads(config.read_text()) if config.is_file() else {}
     root = os.environ.get('RUNTIPI_ROOT') or cfg.get('runtipi_root')
     # An isolated views home with no manager config must never touch another install.
+    if not root and Path(home).resolve() == (Path.home() / '.wizard-os').resolve():
+        root = Path.home() / 'runtipi'  # the same stock default as Config
     if not root:
         return None
     return Path(root).expanduser() / 'app-data' / 'wizard-os'
@@ -30,6 +32,8 @@ def publish(app_id, home, target=None):
     if not view:
         return
     dest = shared / 'views' / app_id
+    if dest.resolve() == views.view_dir(app_id, home).resolve():
+        return  # already using the owner home directly; never replace its metadata
     if any(p.is_symlink() for p in (shared, shared / 'views', dest)):
         raise views.ViewError('The shared views folder must not be a symlink.')
     dest.mkdir(parents=True, exist_ok=True)
