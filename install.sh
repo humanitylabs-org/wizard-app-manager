@@ -287,6 +287,14 @@ echo
 if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
   "$HOME/.local/bin/wam" links || true
   echo
+  # Fresh boxes: the shell image serves only its own files, so the Store's /wizard-os-home/store-data (browse data,
+  # installed status) and /store-install (owner-gated Get) need the same loopback services and Serve routes that
+  # alongside boxes get above. After `wam links`, so the routes land on the shell's published HTTPS port(s).
+  if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "$healthy" = 1 ]; then
+    sd="$("$HOME/.local/bin/wam" store-data 2>/dev/null || true)"
+    printf '%s' "$sd" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(d.get("state") not in ("ready", "skipped") or any(d.get(k, "routed") != "routed" for k in ("tailnet", "get")))' 2>/dev/null \
+      || echo "note: the App Store is not fully set up on this box ('wam store-data' shows why)"
+  fi
   # 5) The Troubleshooter (wizard-os#93): the way back when chat is down. A native user service, not an app, so it keeps
   #    working (and can restart things) when Runtipi, the shell, the Agent Service or Hermes are broken. Mounted at
   #    /troubleshoot/ on the shell's addresses (so it runs after `wam links`); the guardian only reports. The release
