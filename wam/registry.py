@@ -73,14 +73,18 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if (st != '_user' and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st)) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
             continue
         meta = app_meta(runtipi_root, st, name)
-        if not meta or (st != store and st != '_user' and not meta.get("private")):
+        if not meta or (st != store and not meta.get("private")):
             continue
-        # _user is filesystem-only; admit only explicit local Wizard recipes.
-        if st == '_user' and meta['repo'] != 'local:' + name:
-            continue
+        # Local physical ids are excluded from the catalogue's hyphen-only
+        # materializer but retain their canonical provider id and actual URN.
+        if meta['repo'] == 'local:' + name and '_' in name:
+            canonical = meta['w'].get('id')
+            if not isinstance(canonical, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,62}', canonical):
+                raise ValueError('invalid canonical local app id')
+            name = canonical
         if any(a['id'] == name for a in apps):
             raise ValueError('duplicate installed Wizard app id: ' + name)
         w, cfg = meta["w"], meta["cfg"]
