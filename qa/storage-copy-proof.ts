@@ -84,6 +84,9 @@ try {
     old_volume_retained: retained === volume,
   };
   if (Object.values(checks).some((v) => !v)) throw new Error('One or more proof checks failed');
+  process.stdout.write(
+    `${JSON.stringify({ passed: Object.keys(checks).length, checks, daemon: (await run(['info', '--format', '{{.ServerVersion}}'])).trim(), image: COPY_IMAGE, attributes: first.trim(), copy_once: second, old_volume_retained: retained })}\n`,
+  );
 } finally {
   await run(['volume', 'rm', volume]);
   await helper('rm -rf /state/volumes /state/app-state.tar.gz', false);
