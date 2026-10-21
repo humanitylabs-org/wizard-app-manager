@@ -82,3 +82,15 @@ docker build --build-arg LOCAL=true --build-arg TIPI_VERSION=v4.10.2-wizard.N -t
 ```
 
 Runtipi's original README and agent notes are kept as `README.runtipi.md` and `AGENTS.runtipi.md`. License: GPL-3.0 (inherited).
+
+## Portable QA configuration
+
+Set `WIZARD_WORK_ROOT` to your QA work disk (default `${TMPDIR:-/tmp}/wizard-work`).
+`qa/views/e2e.py` keeps `E2E_ROOT` as a full workspace override;
+`qa/builder/system-functions-run.py --lock` can override the shared lock path.
+Browser QA resolves `QA_PLAYWRIGHT` first, then installed `playwright`, then
+`playwright-core`; no personal Node module path is assumed. Legacy
+`PLAYWRIGHT_PATH`, `PW`, and `PW_MODULE` overrides still work. The tracked-file
+portable-paths guard runs in Python CI (`python tests/test_portable_paths.py`)
+and is included in `pytest` discovery; the TypeScript workspace still uses
+`bun run test` / `turbo test`.
