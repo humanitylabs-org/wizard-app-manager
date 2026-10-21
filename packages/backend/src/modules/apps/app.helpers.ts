@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { pruneSources, sourceDir, sourceDirName } from '@/modules/app-stores/packaging';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
@@ -54,6 +55,15 @@ export class AppHelpers {
     envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
     envMap.set('APP_DATA_DIR', path.join(`${userSettings.appDataPath}/app-data`, appStoreId, appName));
     envMap.set('APP_IMAGE_TAG', config.version);
+    // Packaging (spec/WIZARD_MD.md): source/build apps mount their pinned code from app-data.
+    const commit = (await this.filesytem.readTextFile(path.join(this.appFilesManager.getAppPaths(appUrn).appInstalledDir, '.wizard-commit')))?.trim();
+    if (commit && /^[0-9a-f]{40}$/.test(commit)) {
+      const { directories } = this.config.getConfig();
+      if (await this.filesytem.isDirectory(sourceDir(directories.appDataDir, appStoreId, appName, commit))) {
+        envMap.set('APP_SOURCE_DIR', sourceDir(`${userSettings.appDataPath}/app-data`, appStoreId, appName, commit));
+        await pruneSources(directories.appDataDir, appStoreId, appName, sourceDirName(appName, commit));
+      }
+    }
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const existingAppEnvMap = this.envUtils.envStringToMap(appEnv.content ?? '');
