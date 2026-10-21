@@ -104,3 +104,9 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os`, `releases/0.3.25.json`. Byte-identical SHA-256: `9fbbde5313e44a3973317e8bdd9f49653d906560747a2882616c8d6d48de5689`.
 - 0.3.24 plus App Manager #137 (`40e59d8`, wizard-os#87): a fresh install on a box whose new `wizard` user is not uid 1000 no longer fails at the end with Errno 13 on the stock Hermes `config.yaml`. The builder step reads and replaces it through the installer's passwordless sudo, keeping the agent's owner and mode.
 - Every other pin is identical to 0.3.24. The App Manager, Wizard UX and Agent Service images are unchanged.
+
+## 0.3.26 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #120 (merge `58577b9`), `releases/0.3.26.json`. Byte-identical SHA-256: `d586005ba25b0f8c04e878349517f8efc71a248a48796e6c6677e0350b5cca47`.
+- 0.3.25 plus App Manager #143 (`07b7d84`, wizard-os#87): the App Store works on fresh boxes. `wam store-data` (run by install.sh after `wam links`) starts the read-only Store data adapter at the shell's commit and mounts `/wizard-os-home/store-data` and the owner-gated `/wizard-os-home/store-install` on the fresh shell's Tailscale Serve ports. Also carries #138 (updates default to Ask me) and #141 (stable/latest channels).
+- Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.26 has a promotion record. Every image pin is identical to 0.3.25.
