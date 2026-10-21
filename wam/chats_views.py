@@ -85,8 +85,10 @@ def publish(reg: dict, root: Path) -> None:
         if destination.is_symlink():
             raise ValueError('Chats share symlinks are forbidden')
         destination.mkdir(exist_ok=True)
-        source = app.get('_chats_src') or destination / (view['sha256'] + '.js')
-        body = Path(source).read_bytes()
+        source = Path(app.get('_chats_src') or destination / (view['sha256'] + '.js'))
+        if not 0 < source.stat().st_size == view['bytes'] <= MAX_BYTES:
+            raise ValueError('Chats module size changed after admission')
+        body = source.read_bytes()
         if hashlib.sha256(body).hexdigest() != view['sha256']:
             raise ValueError('Chats module changed after admission')
         target = destination / (view['sha256'] + '.js')
