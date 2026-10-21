@@ -333,3 +333,26 @@ def test_unpinned_record_is_only_written_once_the_checkout_worked(box):
     assert rec["status"] == "pinned"
     p, rec = box["run"](WAM_REF="no-such-branch")
     assert p.returncode != 0 and rec["status"] == "pinned"
+
+
+def test_latest_channel_follows_releases_latest_and_stable_stays_default(box):
+    """Channels (James, 21 Oct 2026): a box follows stable unless its owner chose latest (saved by wam updates)."""
+    newer = json.loads((box["rel"] / "9.9.9.json").read_text())
+    newer["version"] = "9.9.10"
+    newer["components"]["wizard-app-manager"]["commit"] = git("rev-parse", "main", cwd=box["src"])
+    (box["rel"] / "9.9.10.json").write_text(json.dumps(newer))
+    (box["rel"] / "latest").write_text("9.9.10\n")
+    p, rec = box["run"]()
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert rec["release"] == "9.9.9"                                   # stable is the default channel
+    (box["home"] / ".wizard-os" / "updates.json").write_text(json.dumps({"mode": "ask", "channel": "latest"}))
+    p, rec = box["run"]()
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert rec["release"] == "9.9.10"                                  # the owner's saved channel
+    p, rec = box["run"](WIZARD_CHANNEL="stable", WIZARD_RELEASE="9.9.9")
+    assert p.returncode == 0 and rec["release"] == "9.9.9"             # an explicit release still wins
+    (box["rel"] / "latest").unlink()
+    p, rec = box["run"](WIZARD_CHANNEL="latest")
+    assert p.returncode == 0 and rec["release"] == "9.9.9" and "using stable" in p.stdout
+    p, _ = box["run"](WIZARD_CHANNEL="nightly")
+    assert p.returncode == 2 and "stable or latest" in p.stderr

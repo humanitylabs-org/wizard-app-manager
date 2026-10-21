@@ -2,7 +2,14 @@
 
 This directory publishes only the installer’s release metadata. The canonical Wizard OS specification repository remains private; no source checkout, credentials or owner configuration is mirrored here.
 
-`get.sh` reads `stable`, then `<version>.json`. `WIZARD_RELEASE_BASE` still supports an explicitly chosen alternate mirror or local release directory.
+`get.sh` reads `stable` (or `latest` on a box whose owner chose the latest channel), then `<version>.json`. `WIZARD_RELEASE_BASE` still supports an explicitly chosen alternate mirror or local release directory.
+
+## Channels (wizard-os DECISIONS #75)
+
+- `latest`: every release as soon as it is cut. Mirror it with each new release JSON.
+- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. Mirror the record together with the pointer.
+
+Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
 ## 0.2.2 provenance
 
