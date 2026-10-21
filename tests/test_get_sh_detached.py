@@ -147,6 +147,20 @@ def test_status_spots_a_runner_that_died(box, tmp_path):
     assert out.startswith("Wizard OS install: stopped") and "last words" in out
 
 
+def test_runner_records_its_boot_id_and_status_reports_an_interrupted_update(box, tmp_path):
+    """wizard-os#90: the status names the boot it ran in, so a reader after a reboot knows the run is gone."""
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    assert box.run("alice", "start", **_wam(tmp_path, "echo '==> Default apps'\n")).returncode == 0
+    st = _wait(home, {"done", "failed"})
+    assert st["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    d = home / ".wizard-os"
+    (d / "install-status.json").write_text(json.dumps({"state": "interrupted", "interrupted_step": "Default apps"}))
+    out = box.run("alice", "status").stdout
+    assert out.startswith("Wizard OS install: interrupted") and "Run the start command again" in out
+
+
 def test_detached_agent_install_restarts_hermes_only_after_done_is_written(box, tmp_path):
     """An older install.sh under the agent asks for a synchronous restart; the detached run defers it, and the
     scheduled restart waits for the runner (which exits only after the final status is written)."""

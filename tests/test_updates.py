@@ -220,3 +220,105 @@ def test_installer_enables_the_timer_on_every_install_and_rerun():
     text = (Path(__file__).resolve().parent.parent / "install.sh").read_text()
     api = text.index("systemctl --user restart wizard-app-manager-api.service")
     assert text.index('"$HOME/.local/bin/wam" updates --ensure-timer') > api
+
+
+# ---- an update cut short by a reboot (wizard-os#90): never "installing" forever ----
+
+def _dead_pid():
+    p = subprocess.Popen(["true"]); p.wait()
+    return p.pid
+
+
+def _boot(tmp_path, value):
+    f = tmp_path / "boot_id"; f.write_text(value + "\n")
+    return f
+
+
+def _running(h, **kw):
+    h.mkdir(exist_ok=True)
+    import time
+    st = {"state": "running", "step": "starting", "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **kw}
+    (h / "install-status.json").write_text(json.dumps(st))
+    (h / "install.lock").write_text("")
+
+
+def test_dead_runner_pid_is_interrupted_and_the_stale_lock_is_released(tmp_path):
+    h = tmp_path / "wos"
+    _running(h, pid=_dead_pid())
+    assert updates.installing(h) is False
+    st = json.loads((h / "install-status.json").read_text())
+    assert st["state"] == "interrupted" and st["interrupted_step"] == "starting"
+    assert st["interrupted_reason"] == "runner exited" and "retried" in st["message"]
+    assert not (h / "install.lock").exists()
+
+
+def test_changed_boot_id_is_interrupted_even_if_the_pid_was_reused(tmp_path, monkeypatch):
+    import os
+    h = tmp_path / "wos"
+    _running(h, pid=os.getpid(), boot_id="boot-before")          # pid alive (reused after the reboot)
+    monkeypatch.setattr(updates, "BOOT_ID", _boot(tmp_path, "boot-after"))
+    assert updates.install_state(h) == "interrupted"
+    assert json.loads((h / "install-status.json").read_text())["interrupted_reason"] == "reboot"
+    assert not (h / "install.lock").exists()
+
+
+def test_status_from_before_boot_ids_started_before_this_boot_is_interrupted(tmp_path, monkeypatch):
+    """The 0.3.17 box from the report: no boot_id recorded yet, started before the box last booted."""
+    import os
+    h = tmp_path / "wos"
+    _running(h, pid=os.getpid(), started_at="2026-10-20T16:13:16Z")
+    stat = tmp_path / "stat"; stat.write_text("cpu 1 2 3\nbtime 1792512809\n")   # 2026-10-20T16:13:29Z
+    monkeypatch.setattr(updates, "PROC_STAT", stat)
+    assert updates.install_state(h) == "interrupted"
+    stat.write_text("btime 1792512700\n")                                          # booted before it started
+    _running(h, pid=os.getpid(), started_at="2026-10-20T16:13:16Z")
+    assert updates.install_state(h) == "running"
+
+
+def test_live_runner_still_reports_installing(tmp_path, monkeypatch):
+    import os
+    h = tmp_path / "wos"
+    monkeypatch.setattr(updates, "BOOT_ID", _boot(tmp_path, "same-boot"))
+    _running(h, pid=os.getpid(), boot_id="same-boot")
+    assert updates.installing(h) is True and updates.status(h, _base(tmp_path, "0.3.19"))["installing"] is True
+    assert json.loads((h / "install-status.json").read_text())["state"] == "running"
+    assert (h / "install.lock").exists()
+    _running(h, boot_id="same-boot")                       # no pid recorded: no evidence the runner is gone
+    assert updates.installing(h) is True
+
+
+def test_a_held_lock_is_respected_even_with_a_dead_pid_or_changed_boot(tmp_path, monkeypatch):
+    import fcntl
+    h = tmp_path / "wos"
+    monkeypatch.setattr(updates, "BOOT_ID", _boot(tmp_path, "boot-after"))
+    for name in ("install.lock", "install.start.lock"):
+        _running(h, pid=_dead_pid(), boot_id="boot-before")
+        with open(h / name, "w") as holder:
+            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert updates.installing(h) is True, name
+            assert json.loads((h / "install-status.json").read_text())["state"] == "running"
+            assert (h / "install.lock").exists()
+        assert updates.installing(h) is False            # holder gone: now it heals
+
+
+def test_apply_and_the_nightly_timer_retry_after_an_interrupted_update(tmp_path, monkeypatch):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.17")
+    base, calls = _base(tmp_path, "0.3.19"), []
+    monkeypatch.setattr(updates, "BOOT_ID", _boot(tmp_path, "boot-after"))
+    _running(h, pid=_dead_pid(), boot_id="boot-before")
+    st = updates.status(h, base)
+    assert st["installing"] is False and st["interrupted"] is True and st["update_available"] is True
+    res = updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: False)     # the nightly timer
+    assert res["started"] is True and len(calls) == 1
+    _running(h, pid=_dead_pid(), boot_id="boot-before")
+    assert updates.apply(h, base, _ok_runner(calls))["started"] is True and len(calls) == 2   # `wam updates --apply`
+
+
+def test_finished_states_are_left_alone(tmp_path):
+    h = tmp_path / "wos"; h.mkdir()
+    for state in ("done", "failed", "needs_admin", "interrupted"):
+        raw = json.dumps({"state": state, "pid": _dead_pid()})
+        (h / "install-status.json").write_text(raw)
+        assert updates.install_state(h) == state and (h / "install-status.json").read_text() == raw
+    assert updates.install_state(tmp_path / "none") is None
