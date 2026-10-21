@@ -227,6 +227,14 @@ def shell_origins(c: Config) -> set[str]:
         return set()
 
 
+def is_origin_list(f: dict) -> bool:
+    """A required list of trusted browser origins with no real default, e.g. `X_ALLOWED_ORIGINS` (url) or Wisdom's
+    `WISDOM_ORIGINS` (text, default ''). Runtipi takes an empty default as the value, so the app would start
+    trusting no Wizard origin and answer 'Unknown host' inside the shell."""
+    var = str(f.get("env_variable") or "")
+    return f.get("type") in ("url", "text") and var.endswith("_ORIGINS") and f.get("default", "") == ""
+
+
 def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
@@ -242,12 +250,12 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             form[var] = given[var]
         elif f.get("required") and (v := shared_value(c, var, uses or [])):
             form[var] = v
-        elif "default" in f:
-            continue
-        elif f.get("required") and f.get("type") == "url" and var.endswith("_ALLOWED_ORIGINS") and (origins := shell_origins(c)):
+        elif f.get("required") and is_origin_list(f) and (origins := shell_origins(c)):
             # Origin-list configuration is distinct from arbitrary required URLs
             # (provider endpoints etc.). Only existing owner Serve mounts qualify.
             form[var] = ",".join(sorted(origins))
+        elif "default" in f:
+            continue
         elif f.get("required") and f.get("type") == "password":
             form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
