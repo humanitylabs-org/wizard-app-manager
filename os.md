@@ -38,6 +38,7 @@ If it shows an owner action with a link (an approval link or a Tailscale link), 
 
 - Never edit Hermes config by hand.
 - Never reinstall or update Hermes.
+- Owners can explicitly update the release-pinned host Hermes with `wam hermes update`; this is not an installer-agent step.
 - Never run any other script.
 - Never improvise fixes.
 
