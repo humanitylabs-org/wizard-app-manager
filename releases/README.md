@@ -117,6 +117,12 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - 0.3.26 plus wizard-ux #268 (`00ffd23`): Settings → Updates has a Stable (recommended) / Latest (every release, for testers) channel picker over the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX image `sha256:94d0eaaf…` (amd64+arm64).
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.27 has a promotion record. Every other pin is identical to 0.3.26.
 
+## 0.3.32 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #128 (merge `a52f374`), `releases/0.3.32.json`. Byte-identical SHA-256: `b81fbc64d8a4a61a55239461380745b8d26df5f339eeb95b481b0b185ad2c099`.
+- 0.3.31 plus App Manager #153 (`66d06b4`): apps whose wizard.md declares `runtime.package: source` run from the pinned commit (APP_SOURCE_DIR), so Wisdom installs from the Store on the official python:3.12-slim with no private app image. The App Manager image moves to the official build from `66d06b4` (`v4.10.2-wizard.415-66d06b4`, `sha256:a3c821aa…91a5d`, amd64+arm64, image run 39636054008) because #153 changes the backend.
+- Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.32 has a promotion record.
+
 ## 0.3.31 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #127 (merge `46e9b4a`), `releases/0.3.31.json`. Byte-identical SHA-256: `df03d6cc926d4952c52c42d282f8451f6b7c9cf67825243d439df59da71c2cac`.
