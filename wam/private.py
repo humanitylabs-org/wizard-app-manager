@@ -104,7 +104,29 @@ def pull(image: str, tok: str) -> None:
                            f"(or set GITHUB_TOKEN with read:packages), or ask the owner to make the package public")
 
 
-def write_sealed_bootstrap(runtipi_root, store, app_id, compose):
+BOOTSTRAP_HEADER = '# WAM private-provider internal bootstrap\n'
+
+
+def _bootstrap_config(rt, urn):
+    config = rt.req('GET', f'/user-config/{urn}')
+    text = config.get('dockerCompose') or ''
+    if text and not text.startswith(BOOTSTRAP_HEADER):
+        raise PrivateError('private provider bootstrap conflicts with existing user Compose override')
+    if config.get('appEnv'):
+        raise PrivateError('private provider bootstrap conflicts with existing user environment override')
+    return text
+
+
+def remove_sealed_bootstrap(rt, store, app_id):
+    """Clear only our override through the daemon; never unlink root-owned files."""
+    urn = f'{app_id}:{store}'
+    _bootstrap_config(rt, urn)
+    rt.req('PUT', f'/user-config/{urn}', {'dockerCompose': '', 'appEnv': ''})
+    if _bootstrap_config(rt, urn):
+        raise PrivateError('private provider bootstrap removal readback differs')
+
+
+def write_sealed_bootstrap(rt, store, app_id, compose):
     """Keep a provisioned local provider off Runtipi's implicit public network."""
     import textwrap
     mains = [(name, svc) for name, svc in compose.get('services', {}).items()
@@ -116,14 +138,14 @@ def write_sealed_bootstrap(runtipi_root, store, app_id, compose):
     if (not isinstance(nets, (list, dict)) or not nets or
             any(not (compose.get('networks', {}).get(n) or {}).get('internal') for n in nets)):
         raise PrivateError('private provider bootstrap networks must all be internal')
-    override = runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
-    header = '# WAM private-provider internal bootstrap\n'
-    if override.exists() and not override.read_text().startswith(header):
-        raise PrivateError('private provider bootstrap conflicts with existing user Compose override')
-    override.parent.mkdir(parents=True, exist_ok=True)
+    urn = f'{app_id}:{store}'
+    _bootstrap_config(rt, urn)
     body = yaml.safe_dump({name: {'networks': list(nets)}}, sort_keys=False)
     body = body.replace('networks:', 'networks: !override', 1)
-    override.write_text(header + 'services:\n' + textwrap.indent(body, '  '))
+    text = BOOTSTRAP_HEADER + 'services:\n' + textwrap.indent(body, '  ')
+    rt.req('PUT', f'/user-config/{urn}', {'dockerCompose': text, 'appEnv': ''})
+    if _bootstrap_config(rt, urn) != text:
+        raise PrivateError('private provider bootstrap readback differs; refusing install')
 
 
 def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -> dict:
@@ -182,7 +204,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
         # Runtipi otherwise adds its public shared network to every is_main service.
         # Preserve the declared internal bootstrap through a final Compose override.
         if (d.get('private_inference') or {}).get('provisioning_service'):
-            write_sealed_bootstrap(runtipi_root, store, app_id, compose)
+            from .runtipi import Runtipi
+            write_sealed_bootstrap(Runtipi.from_install(runtipi_root), store, app_id, compose)
 
 
         tmp = dst.with_name(f"{app_id}.tmp-{os.getpid()}")
