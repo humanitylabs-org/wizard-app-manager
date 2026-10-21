@@ -93,3 +93,23 @@ def test_registry_api_serializes_public_data(config):
         srv.shutdown()
         srv.server_close()
         thread.join(timeout=5)
+
+
+def test_registry_rewrite_keeps_routing_skills(config):
+    """`wam apps` (and every other registry rewrite) must not delete the wizard-job-* routing skills
+    that the Agent Service / wizard-os Hermes plugin keep in the same skills/ folder."""
+    c, source = config
+    sk = c.home / "skills"
+    (sk / "wizard-job-files").mkdir(parents=True)
+    (sk / "wizard-job-files" / "SKILL.md").write_text("routing\n")
+    (sk / ".wizard-jobs").write_text("1\n")
+    (sk / "removed-app").mkdir()
+    (sk / "removed-app" / "SKILL.md").write_text("stale\n")
+    for _ in range(2):   # repeated rewrites, as timers and `wam apps --json` do
+        result = cli.write_registry(c)
+        assert_public_and_skills(c, source, result)
+        assert (sk / "wizard-job-files" / "SKILL.md").read_text() == "routing\n"
+        assert (sk / ".wizard-jobs").read_text() == "1\n"
+        assert not (sk / "removed-app").exists()   # per-app skills of uninstalled apps are still pruned
+        shared = c.runtipi_root / "app-data" / "wizard-os" / "skills"
+        assert (shared / "wizard-job-files" / "SKILL.md").read_text() == "routing\n"
