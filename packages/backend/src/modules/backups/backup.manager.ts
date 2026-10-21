@@ -71,7 +71,7 @@ export class BackupManager {
 
     await this.filesystem.copyDirectory(appDataDir, path.join(tempDir, 'app-data'), {
       recursive: true,
-      filter: (src) => !src.includes('backups'),
+      filter: (src) => src !== path.join(appDataDir, 'backups') && !src.startsWith(`${path.join(appDataDir, 'backups')}${path.sep}`),
     });
 
     await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
