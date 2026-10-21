@@ -1189,9 +1189,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
-            if path == "/api/updates":            # {"mode": "auto"|"ask"}: the owner's choice
+            if path == "/api/updates":            # {"mode": "auto"|"ask"} or {"channel": "stable"|"latest"}
                 from . import updates
-                return self._json(200, updates.set_mode(str(self._body().get("mode", ""))))
+                body = self._body()
+                if set(body) == {"channel"}:
+                    return self._json(200, updates.set_channel(str(body.get("channel", ""))))
+                return self._json(200, updates.set_mode(str(body.get("mode", ""))))
             if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
                 from . import updates
                 return self._json(200, updates.apply(force=self._body().get("force") is True))
@@ -1284,7 +1287,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(400, {'error': str(e)[:200]})
 
     def _updates(self, method: str) -> None:
-        """GET: installed vs stable and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
+        """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
+        POST {"channel": "stable"|"latest"} saves the channel;
         POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
         an unpinned box refuses."""
         from . import updates
@@ -1304,7 +1308,10 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
-        return self._json(400, {"error": 'send {"mode": "auto"|"ask"} or {"action": "apply"}'})
+        if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
+            return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
+                                         '{"action": "apply"}'})
 
     def do_GET(self):  # noqa: N802
         self._go("GET")
@@ -1435,11 +1442,14 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
-    up = sub.add_parser("updates", help="update check, and the owner's choice: --auto (default) or --ask")
+    up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
+                                        "(--channel stable default, or latest)")
     upg = up.add_mutually_exclusive_group()
     upg.add_argument("--auto", action="store_true"); upg.add_argument("--ask", action="store_true")
     upg.add_argument("--apply", action="store_true"); upg.add_argument("--apply-if-auto", action="store_true")
     upg.add_argument("--ensure-timer", action="store_true", help="installer: make the nightly timer match the mode")
+    upg.add_argument("--channel", choices=("stable", "latest"),
+                     help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     args = ap.parse_args(argv)
     if args.cmd == "updates":
@@ -1447,7 +1457,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.force and not args.apply:
             print("--force only goes with --apply", file=sys.stderr)
             return 2
-        res = (updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
+        res = (updates.set_channel(args.channel) if args.channel
+               else updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
                else updates.apply(force=args.force) if args.apply else updates.apply_if_auto() if args.apply_if_auto
                else updates.ensure_timer() if args.ensure_timer else updates.status(fresh=True))
         print(json.dumps(res, indent=2))

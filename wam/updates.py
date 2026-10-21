@@ -1,10 +1,18 @@
-"""Owner-chosen updates: Ask me (default) or Automatic.
+"""Owner-chosen updates: Ask me (default) or Automatic, on the stable (default) or latest channel.
 
-A box updates the way it always has: re-running the installer moves it to the release that `releases/stable`
-names, in the mode the box already has (get.sh). This module adds only the two things an owner needs on top:
+A box updates the way it always has: re-running the installer moves it to the release its channel names, in the
+mode the box already has (get.sh). Two channels (James, 21 Oct 2026):
+
+- `releases/latest` names every new release as soon as it is cut (testers opt in with `wam updates --channel latest`);
+- `releases/stable` moves only after a release has soaked on latest and passed the upgrade test
+  (releases/promotions/<version>.json). Every box is on stable unless its owner chose latest.
+
+Automatic updates install stable releases only, whatever the channel: a latest box gets newer releases when its
+owner presses Update. This module adds only the things an owner needs on top of the installer:
 
 - a check: which release runs here (~/.wizard-os/release.json) vs the current stable, so a shell can show
   "Update available" with an Update button;
+- a channel, saved in ~/.wizard-os/updates.json as "channel" (default "stable");
 - a choice, saved in ~/.wizard-os/updates.json: "ask" (the default for every box whose owner never chose:
   nothing runs by itself, the shell shows "Update available") or "auto" (a nightly systemd user timer applies a
   new stable). An explicit choice is always kept; the installer never writes updates.json.
@@ -24,34 +32,60 @@ import re
 import subprocess
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 MODES = ("ask", "auto")
 DEFAULT_MODE = "ask"          # nothing installs unless the owner chose Automatic (James, alpha); an explicit "auto" is kept
+CHANNELS = ("stable", "latest")
+DEFAULT_CHANNEL = "stable"    # tested releases only; "latest" is the testers' opt-in
+SOAK_HOURS = 72               # a release runs on latest this long before it can be promoted to stable
+GRANDFATHERED_THROUGH = "0.3.25"   # stable when the channels split; every later promotion passes the full gate
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
 INSTALLER = "https://aiwizards.com/os.sh"
 UNIT = "wizard-os-update"
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
 CACHE_SECONDS = 600           # a shell polling for "Update available" stays cheap (one fetch per ~10 minutes)
 MISS_SECONDS = 60             # an unreachable stable pointer is retried sooner
-_latest: dict[str, tuple[float, str | None]] = {}
+_latest: dict[tuple[str, str], tuple[float, str | None]] = {}
 
 
 def _home(home: Path | None) -> Path:
     return Path(home or os.environ.get("WIZARD_OS_HOME", Path.home() / ".wizard-os")).expanduser()
 
 
+def _settings(home: Path | None) -> dict:
+    try:
+        s = json.loads((_home(home) / "updates.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return s if isinstance(s, dict) else {}
+
+
+def _save(home: Path | None, **changes) -> None:
+    """Write updates.json, keeping the other saved choice (mode and channel are independent)."""
+    h = _home(home)
+    h.mkdir(parents=True, exist_ok=True)
+    s = {k: v for k, v in _settings(h).items() if (k == "mode" and v in MODES) or (k == "channel" and v in CHANNELS)}
+    s.update(changes)
+    tmp = h / "updates.json.tmp"
+    tmp.write_text(json.dumps(s) + "\n")
+    tmp.replace(h / "updates.json")
+
+
 def _choice(home: Path | None) -> str | None:
     """The owner's explicit choice, or None when they never chose."""
-    try:
-        m = json.loads((_home(home) / "updates.json").read_text()).get("mode")
-    except (OSError, ValueError, AttributeError):
-        return None
+    m = _settings(home).get("mode")
     return m if m in MODES else None
 
 
 def mode(home: Path | None = None) -> str:
     return _choice(home) or DEFAULT_MODE
+
+
+def channel(home: Path | None = None) -> str:
+    c = _settings(home).get("channel")
+    return c if c in CHANNELS else DEFAULT_CHANNEL
 
 
 def installed(home: Path | None = None) -> str | None:
@@ -63,20 +97,82 @@ def installed(home: Path | None = None) -> str | None:
     return rel if isinstance(rel, str) and VERSION.fullmatch(rel) else None
 
 
-def latest(base: str | None = None, timeout: float = 10, fresh: bool = False, now=time.monotonic) -> str | None:
-    """The release `releases/stable` names, cached ~10 minutes (`fresh` skips the cache: apply / the timer)."""
-    base = (base or os.environ.get("WIZARD_RELEASE_BASE") or RELEASE_BASE).rstrip("/")
-    hit = _latest.get(base)
+def _pointer(base: str, name: str, timeout: float, fresh: bool, now) -> str | None:
+    hit = _latest.get((base, name))
     if hit and not fresh and now() - hit[0] < (CACHE_SECONDS if hit[1] else MISS_SECONDS):
         return hit[1]
     try:
-        with urllib.request.urlopen(f"{base}/stable", timeout=timeout) as r:
+        with urllib.request.urlopen(f"{base}/{name}", timeout=timeout) as r:
             v = r.read(64).decode().strip()
     except (OSError, ValueError):
         v = None
     v = v if v and VERSION.fullmatch(v) else None
-    _latest[base] = (now(), v)
+    _latest[(base, name)] = (now(), v)
     return v
+
+
+def latest(base: str | None = None, timeout: float = 10, fresh: bool = False, now=time.monotonic,
+           chan: str = "stable") -> str | None:
+    """The release a channel pointer (`releases/stable` or `releases/latest`) names, cached ~10 minutes (`fresh`
+    skips the cache: apply / the timer). A mirror without a `latest` pointer yet serves latest-channel boxes stable."""
+    base = (base or os.environ.get("WIZARD_RELEASE_BASE") or RELEASE_BASE).rstrip("/")
+    stable = _pointer(base, "stable", timeout, fresh, now)
+    if chan != "latest":
+        return stable
+    newest = _pointer(base, "latest", timeout, fresh, now)
+    if not newest:
+        return stable
+    return newest if not stable or _key(newest) >= _key(stable) else stable   # latest never trails stable
+
+
+def _stamp(s) -> float | None:
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def promotion_problems(rec, version: str) -> list[str]:
+    """Why a releases/promotions/<version>.json record does not let <version> be stable ([] = it does).
+
+    A promotion needs the release to have been on latest for SOAK_HOURS and a passed upgrade test onto it from an
+    older release, with evidence. Only releases up to GRANDFATHERED_THROUGH may carry a `grandfathered` reason instead."""
+    if not isinstance(rec, dict):
+        return ["no promotion record"]
+    if rec.get("version") != version:
+        return [f"record is for {rec.get('version')!r}, not {version}"]
+    if rec.get("grandfathered"):
+        ok = VERSION.fullmatch(version) and _key(version) <= _key(GRANDFATHERED_THROUGH)
+        return [] if ok else [f"only releases up to {GRANDFATHERED_THROUGH} can be grandfathered"]
+    out = []
+    since, at = _stamp(rec.get("latest_since")), _stamp(rec.get("promoted_at"))
+    if since is None or at is None:
+        out.append("latest_since and promoted_at must be ISO timestamps")
+    elif at - since < SOAK_HOURS * 3600:
+        out.append(f"soaked {(at - since) / 3600:.1f}h on latest; stable needs {SOAK_HOURS}h")
+    t = rec.get("upgrade_test")
+    if not isinstance(t, dict) or t.get("passed") is not True:
+        out.append("no passed upgrade test")
+    else:
+        frm = str(t.get("from", ""))
+        if t.get("to") != version or not VERSION.fullmatch(frm) or _key(frm) >= _key(version):
+            out.append("upgrade test must go from an older release to this one")
+        if not str(t.get("evidence", "")).strip():
+            out.append("upgrade test needs evidence (a run log or report link)")
+    return out
+
+
+def promoted(version: str | None, base: str | None = None, timeout: float = 10) -> bool:
+    """True when the mirror carries a valid promotion record for <version> (Automatic installs nothing else)."""
+    if not version or not VERSION.fullmatch(version):
+        return False
+    base = (base or os.environ.get("WIZARD_RELEASE_BASE") or RELEASE_BASE).rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/promotions/{version}.json", timeout=timeout) as r:
+            rec = json.loads(r.read(65536).decode())
+    except (OSError, ValueError):
+        return False
+    return not promotion_problems(rec, version)
 
 
 def _key(v: str) -> tuple:
@@ -210,11 +306,15 @@ def installing(home: Path | None = None) -> bool:
 
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
+    """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
     run = install_state(home)
-    have, want = installed(home), latest(base, fresh=fresh)
+    chan = channel(home)
+    have, want = installed(home), latest(base, fresh=fresh, chan=chan)
+    stable = want if chan == "stable" else latest(base, chan="stable")
     unpinned = have is None
     newer = bool(want) and not unpinned and _key(want) > _key(have)
-    return {"mode": mode(home), "chosen": _choice(home) is not None, "installed": have, "latest": want,
+    return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
+            "latest": want, "stable": stable,
             "update_available": newer, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
             # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
@@ -268,21 +368,34 @@ def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, s
     if new not in MODES:
         raise SystemExit(f"updates mode must be one of {', '.join(MODES)}")
     h = _home(home)
-    h.mkdir(parents=True, exist_ok=True)
-    tmp = h / "updates.json.tmp"
-    tmp.write_text(json.dumps({"mode": new}) + "\n")
-    tmp.replace(h / "updates.json")
+    _save(h, mode=new)
     ensure_timer(h, unit_dir, systemctl)
     return {"mode": new, "chosen": True}
 
 
-def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False) -> dict:
+def set_channel(new: str, home: Path | None = None) -> dict:
+    """Save the owner's channel: stable (tested releases, the default) or latest (every release, for testers).
+    Leaves the mode alone; Automatic keeps installing stable releases only."""
+    if new not in CHANNELS:
+        raise SystemExit(f"updates channel must be one of {', '.join(CHANNELS)}")
+    _save(home, channel=new)
+    return {"channel": new}
+
+
+def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False,
+          target: str | None = None) -> dict:
     """Start the update now: the installer's own detached, agent-safe rerun. Progress: `os.sh | bash -s status`.
 
-    `force` is the only way to rerun the installer on an unpinned box (it then moves onto stable pins)."""
+    The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
+    cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
+    narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
+    moves onto stable pins)."""
     st = status(home, base, fresh=True)
+    if target:
+        newer = st["installed"] is not None and _key(target) > _key(st["installed"])
+        st = {**st, "latest": target, "update_available": newer}
     if not st["checked"]:
-        return {**st, "started": False, "error": "could not read the current stable release; try again later"}
+        return {**st, "started": False, "error": "could not read the current release pointer; try again later"}
     if st["installing"]:
         return {**st, "started": False, "note": "an install or update is already running"}
     if st["unpinned"] and not force:
@@ -290,7 +403,10 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
                 "error": "this box is unpinned (updated by hand); `wam updates --apply --force` moves it to stable"}
     if not st["update_available"] and not (st["unpinned"] and force):
         return {**st, "started": False}
-    r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | bash -s start"], capture_output=True, text=True, timeout=600)
+    pin = st["latest"] if st["latest"] and VERSION.fullmatch(st["latest"]) else None
+    env = f"WIZARD_RELEASE={pin} " if pin else ""
+    r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
+               timeout=600)
     ok = r.returncode == 0
     return {**st, "started": ok, **({} if ok else {"error": (r.stderr or r.stdout or "").strip()[-300:]})}
 
@@ -335,13 +451,19 @@ def service_origin(home: Path | None = None) -> str | None:
 
 
 def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
-    """The nightly timer: apply only in Automatic, never on an unpinned box, and not while the agent is working
-    (skipped; the next nightly window tries again)."""
+    """The nightly timer: apply only in Automatic, only a stable release (whatever the channel), never on an unpinned
+    box, and not while the agent is working (skipped; the next nightly window tries again)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
-    if not st["update_available"]:
+    stable = st["stable"]
+    newer = bool(stable) and st["installed"] is not None and _key(stable) > _key(st["installed"])
+    st = {**st, "latest": stable, "update_available": newer}
+    if not newer:
         return {**st, "started": False}
+    if not promoted(stable, base):
+        return {**st, "started": False, "skipped": "unpromoted",
+                "note": f"stable {stable} has no valid promotion record; Automatic waits for a tested release"}
     if (is_busy or (lambda: busy(service_origin(home))))():
         return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(home, base, runner)
+    return apply(home, base, runner, target=stable)

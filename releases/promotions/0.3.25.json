@@ -1,0 +1,5 @@
+{
+  "version": "0.3.25",
+  "grandfathered": "stable when the release channels split (21 Oct 2026). From the next promotion, stable needs 72h on latest and a passed upgrade test.",
+  "promoted_at": "2026-10-21T11:05:19Z"
+}

@@ -15,9 +15,14 @@ def _no_cache():
     updates._latest.clear()
 
 
-def _base(tmp_path, stable):
+def _base(tmp_path, stable, promoted=True):
     d = tmp_path / "rel"; d.mkdir(exist_ok=True)
     (d / "stable").write_text(stable + "\n")
+    if promoted:                                   # Automatic installs only a stable release with a promotion record
+        (d / "promotions").mkdir(exist_ok=True)
+        (d / "promotions" / f"{stable}.json").write_text(json.dumps({
+            "version": stable, "latest_since": "2026-10-01T00:00:00Z", "promoted_at": "2026-10-05T00:00:00Z",
+            "upgrade_test": {"from": "0.0.1", "to": stable, "passed": True, "evidence": "https://example.test/run"}}))
     return d.as_uri()
 
 
@@ -116,7 +121,7 @@ def test_apply_reruns_the_installer_only_when_newer(tmp_path):
     assert updates.apply_if_auto(h, _base(tmp_path, "0.3.8"), run)["started"] is False and calls == []  # Ask me
     res = updates.apply(h, _base(tmp_path, "0.3.8"), run)
     assert res["started"] is True
-    assert calls[-1] == ["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | bash -s start"]
+    assert calls[-1] == ["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.8 bash -s start"]
     _pin(h, "0.3.8")
     assert updates.apply(h, _base(tmp_path, "0.3.8"), run)["started"] is False and len(calls) == 1
     _pin(h, "0.3.7")
