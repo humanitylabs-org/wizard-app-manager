@@ -35,7 +35,7 @@ import uuid
 from pathlib import Path
 
 from .. import slots
-from . import agents as agentlib, bundle, fmt
+from . import agents as agentlib, bundle, fmt, versions
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
                   box_digest, digest_differences, human, log, need_space, skip_home_entry)
@@ -152,9 +152,30 @@ def _one_agent_service(apps: list[dict]) -> None:
                            "; keep one provider before restoring or activating")
 
 
-def plan(box: Box, m: dict, probe: bool = True) -> dict:
+def _here_release(box: Box, urn: str, installed_here: bool) -> dict | None:
+    """The release of an app this box runs (installed package, else its apps.json row) or would install (its store
+    package). None: not known until Runtipi installs it (a public app is fetched from the App Index then)."""
+    app_id, store = urn.split(":")[0], urn.split(":")[1]
+    if installed_here or box.app_package(store, app_id).is_dir():
+        rel = versions.package_release(box.app_package(store, app_id))
+        row = box.registry_rows().get(app_id) or {}
+        if row.get("urn", urn) == urn:
+            rel = {"version": (rel or {}).get("version") or (str(row["version"]) if row.get("version") else None),
+                   "commit": (rel or {}).get("commit") or row.get("commit") or None}
+        return rel or {"version": None, "commit": None}
+    return versions.package_release(box.store_package(store, app_id))
+
+
+def _version_check(box: Box, a: dict, installed_here: bool, stage: Path | None) -> dict:
+    have = versions.backed_up(a, stage / "apps" / a["id"] / "package" if stage else None)
+    return versions.check(a, have, _here_release(box, a["urn"], installed_here))
+
+
+def plan(box: Box, m: dict, probe: bool = True, stage: Path | None = None) -> dict:
+    """What a restore of manifest `m` does on this box. An app whose backup is newer than this box's release is
+    `refused` (wizard-os#91): not installed, its data not put back, this box's copy left as it is."""
     out = {"mode_here": None, "mode_bundle": (m.get("source") or {}).get("mode"), "install": [], "replace": [],
-           "leave": [], "agents": [], "warnings": [], "kept_here": []}
+           "leave": [], "agents": [], "warnings": [], "kept_here": [], "refused": [], "agents_skipped": []}
     try:
         out["mode_here"] = box.mode()
         here = box.installed() if probe else {}
@@ -177,12 +198,20 @@ def plan(box: Box, m: dict, probe: bool = True) -> dict:
         if not provided or not provided <= kept:
             want[a["urn"]] = a
     for urn, a in sorted(want.items()):
+        v = _version_check(box, a, urn in here, stage)
+        if v["verdict"] == "refuse":
+            out["refused"].append(v)
+            continue
+        if v["verdict"] == "warn" and v["here"] is not None:
+            out["warnings"].append(v["message"])
         (out["replace"] if urn in here else out["install"]).append(a["id"])
     mapped = {k["here"] for k in out["kept_here"] if k["slot"] == "agent-service"}
     out["leave"] = sorted(info["id"] for urn, info in here.items() if urn not in want and info["id"] not in mapped)
     for dest in sorted(mapped):
         out["warnings"].append(f"the backup's Agent Service data will go into {dest}; it stays stopped until activate")
-    out["agents"] = [a.get("id") for a in m.get("agents", [])]
+    refused = {x["id"] for x in out["refused"]}
+    out["agents"] = [a.get("id") for a in m.get("agents", []) if a.get("app") not in refused]
+    out["agents_skipped"] = [a.get("id") for a in m.get("agents", []) if a.get("app") in refused]
     arch = (m.get("source") or {}).get("arch")
     import platform as _p
     if arch and arch != _p.machine():
@@ -305,7 +334,7 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
     r, res = stager() if stager is not None else stage(box, path, keys)
     m = r.journal["manifest"]
     try:
-        p = plan(box, m)
+        p = plan(box, m, stage=r.root / "stage")
     except BaseException:
         discard(r)
         raise
@@ -328,6 +357,8 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
                            f"{r.root / 'before'}; run `wam backup undo` to put it back") from e
     receipt = r.journal["receipt"]
     receipt["seconds"] = round(time.time() - t0, 1)
+    if receipt.get("refused"):
+        _write_json(r.root / "journal.json", r.journal)
     _write_json(r.root / "receipt.json", receipt)
     return receipt
 
@@ -464,7 +495,9 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     installed = box.installed()
     r.journal["installed_before"] = {u: {"status": i.get("status")} for u, i in installed.items()}
     existing = {a.id: a for a in current_agents}
-    targets = {a["id"]: _target_agent(box, a, existing) for a in _bundle_agents(r)}
+    refused_ids = {x["id"] for x in p.get("refused") or []}
+    # an agent whose app is refused is not imported: its home on this box stays as it is
+    targets = {a["id"]: _target_agent(box, a, existing) for a in _bundle_agents(r) if a.get("app") not in refused_ids}
     r.journal["agents"] = {k: {"home": str(a.home), "runtime": a.runtime, "urn": a.urn, "existed": k in existing,
                                "folder": str(a.folder) if a.folder else None, "main": a.main}
                            for k, a in targets.items()}
@@ -545,16 +578,36 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     for k, a in targets.items():
         if k not in existing:
             _prepare_agent_folder(r, k, a)
+    late_refused: set[str] = set()
     for a in apps:
         if a["urn"] not in installed:
-            log(f"app {a['id']}: installing the bundled version")
+            log(f"app {a['id']}: installing this box's release")
             _install_app(box, r, a)
+            # what Runtipi actually installed (the App Index's release can differ from any store copy seen before)
+            v = _version_check(box, a, True, stage)
+            if v["verdict"] == "refuse":
+                # Runtipi installed an older release than the backup's: take it off again (undo cleans up the
+                # rest), put none of the backup's data in it, and go on with the other apps
+                log(v["message"])
+                p["refused"].append(v)
+                late_refused.add(a["urn"])
+                r.step(kind="app_refused", urn=a["urn"], message=v["message"])
+                try:
+                    box.rt.uninstall(a["urn"])
+                    box.wait_status(a["urn"], {"missing"}, timeout=900)
+                except RuntipiError as e:
+                    p["warnings"].append(f"{a['id']}: could not uninstall the older release it got: {e}")
+            elif v["verdict"] == "warn":
+                p["warnings"].append(v["message"])
     for a in data_apps:
+        if a["urn"] in late_refused:
+            continue
         arch = stage / "apps" / a["id"] / "data.tar.gz"
         if arch.is_file():
             # user-config/ of an app this box already had is this box's wiring (alongside overrides, trusted
-            # origins, ports): it stays
-            parts = [x for x in APP_ROOTS if not (x == "user-config" and a["urn"] in installed)]
+            # origins, ports): it stays. app/ is the installed package (compose file, config.json, wizard.md): this
+            # box's release stays, so a restore never puts an older build back over it (wizard-os#91)
+            parts = [x for x in APP_ROOTS if x != "app" and not (x == "user-config" and a["urn"] in installed)]
             _stop_app(box, a["urn"])
             log(f"app {a['id']}: putting its data back")
             got = _put_back(box, a["urn"], arch, parts, _path_rewrite(box, m))
@@ -578,6 +631,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
                 continue
             _move(src / n, box.home / n)
     _merge_back(before / "wizard-os", box.home)
+    _keep_refused_secrets(before / "wizard-os", box.home, [x["id"] for x in p.get("refused") or []])
     _schedule_off_after_restore(box)
     r.step(kind="placed", area="wizard-os")
 
@@ -590,7 +644,13 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             _move(src / n, aroot / n)
         r.step(kind="placed", area="agents-root")
     agent_reports = {}
-    for k, a in targets.items():
+    for k, a in list(targets.items()):
+        if a.urn in late_refused:
+            p["agents_skipped"].append(k)
+            p["agents"] = [x for x in p["agents"] if x != k]
+            # only an app this box did not have is refused here, so this agent is new: nothing of it was set aside
+            targets.pop(k)
+            continue
         agent_reports[k] = _import_agent(box, r, k, a, existing, installed)
 
     if (m.get("files") or {}).get("included"):
@@ -611,6 +671,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         notes += _regenerate(box)
     health = {dest["id"]: box.app_status(dest["urn"]) for _, dest in mappings}
     for a in apps:
+        if a["urn"] in late_refused:
+            continue
         want_running = a.get("status") == "running"
         st = box.app_status(a["urn"])
         if want_running and st != "running":
@@ -634,12 +696,18 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     shutil.rmtree(stage, ignore_errors=True)
     shutil.rmtree(r.froot / "stage", ignore_errors=True)
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
-    receipt = {"ok": True, "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
+    refused = list(p.get("refused") or [])
+    receipt = {"ok": not refused, "partial": bool(refused), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
                "manifest": summary(m), "plan": p, "apps": health, "agents": agent_reports,
                "installed_by_restore": [s["urn"] for s in r.journal["steps"] if s["kind"] == "app_installed"],
                "kept_identity": kept, "active_at_export": m.get("active") or {},
                "schedule": "copied, off", "notes": notes, "undo": "wam backup undo",
-               "activate": "wam backup activate --old-is-off"}
+               "activate": "wam backup activate --old-is-off",
+               "refused": [{"id": x["id"], "name": x["name"], "message": x["message"], "backup": x["backup"],
+                            "here": x["here"]} for x in refused],
+               "not_restored": [x["message"] for x in refused]}
+    if refused:
+        receipt["error"] = "partly restored: " + " ".join(x["message"] for x in refused)
     r.journal["receipt"] = receipt
     r.journal["status"] = "restored"
     r.save()
@@ -663,6 +731,25 @@ def _merge_back(held: Path, home: Path) -> None:
         for n in sorted(os.listdir(src)):
             if not (dst / n).exists() and (src / n).is_file() and not (src / n).is_symlink():
                 shutil.copy2(src / n, dst / n)
+
+
+def _keep_refused_secrets(held: Path, home: Path, refused: list[str]) -> None:
+    """A refused app keeps this box's data, so it keeps this box's secrets and app token too (a bundled DB password
+    would not open this box's database): secrets/<id>[.*] and app-tokens/<id>[.*] are made what they were here."""
+    for app_id in refused:
+        for d in MERGE_DIRS:
+            def mine(n: str) -> bool:
+                return n == app_id or n.startswith(app_id + ".")
+            dst = home / d
+            for n in sorted(os.listdir(dst)) if dst.is_dir() else []:
+                if mine(n) and not (held / d / n).exists():
+                    _rm(dst / n)
+            src = held / d
+            for n in sorted(os.listdir(src)) if src.is_dir() else []:
+                if mine(n) and (src / n).is_file() and not (src / n).is_symlink():
+                    dst.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    _rm(dst / n)
+                    shutil.copy2(src / n, dst / n)
 
 
 def _schedule_off_after_restore(box: Box) -> None:

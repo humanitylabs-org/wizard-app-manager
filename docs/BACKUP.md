@@ -81,6 +81,16 @@ refused.
    checking members, hashing every file and comparing with `checksums.json`; require the final chunk. Check free space
    from the manifest first. Any failure → staging deleted, refused; the live Wizard was never touched.
 3. **Plan**: compare manifest with this box (mode, installed apps, image architectures). Report what will change.
+   **Never a downgrade** (wizard-os#91): a restore keeps the owner's data exactly and runs it on this box's current
+   release of each app. When an app's backup is from a *newer* release than this box offers, that app is refused:
+   it is not installed, its data is not put back and this box's copy (data, wiring, secrets) stays as it is, so the
+   owner can update the box and restore again. Every other app goes on. Versions are wizard.md versions compared as
+   upstream semver first, then the `-wizardN` patch number (`2.63.23-wizard1` < `-wizard2` < `2.64.0`). An app whose
+   version cannot be parsed is the same release when the commit matches; otherwise it is restored with a warning
+   (an unknown version never blocks). An app Runtipi installs from the App Index is checked again after install and
+   uninstalled if it came in older. The result then has `"partial": true`, `refused[]` and `not_restored[]`
+   (e.g. "Files not restored: your backup is from Files 2.64.0, newer than this box's 2.63.23. Update this box, then
+   restore again."), and `wam backup import` exits 3.
 4. **Set aside** (undo snapshot): stop the affected apps and agents and move their current data aside
    (`rename`, same filesystem, exact and instant) into `restores/<stamp>/before/`, with a digest of everything
    moved. Record which apps were installed before. App data belongs to the app containers (root), so each app the
@@ -88,7 +98,9 @@ refused.
    volumes an app the restore installs would overwrite (`before/volumes/`). The
    owner's files are set aside inside the files folder itself (`media/.wizard-restore/<stamp>/`): on a Mac it is a
    mounted Mac folder that cannot be renamed. Every step is journaled, so undo also works after a crash half way.
-5. **Apply**: install missing apps from the bundled packages at the same versions; swap app data in; import each agent
+5. **Apply**: install missing apps at this box's release (the bundled package only when the store has none); swap
+   app data in (`app-data/`, `user-config/` of apps this box lacked, volumes; never the installed package `app/`, so
+   this box's release stays); import each agent
    (main agent into this box's agent home, keeping this box's Wizard wiring, as "Bring My Hermes into Wizard" does);
    swap the Wizard home items and files in. Keep this box's own machine identity (tokens, tailnet name).
 6. **One active copy**: every agent's messaging off (tokens kept) and cron paused; scheduled backups off. The manifest's
