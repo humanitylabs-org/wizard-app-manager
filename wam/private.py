@@ -116,9 +116,9 @@ BOOTSTRAP_HEADER = '# WAM private-provider internal bootstrap\n'
 def _bootstrap_config(rt, urn):
     config = rt.req('GET', f'/user-config/{urn}')
     text = config.get('dockerCompose') or ''
-    if text and not text.startswith(BOOTSTRAP_HEADER):
+    if text.strip() and not text.startswith(BOOTSTRAP_HEADER):
         raise PrivateError('private provider bootstrap conflicts with existing user Compose override')
-    if config.get('appEnv'):
+    if (config.get('appEnv') or '').strip():
         raise PrivateError('private provider bootstrap conflicts with existing user environment override')
     return text
 
@@ -128,7 +128,7 @@ def remove_sealed_bootstrap(rt, store, app_id):
     urn = f'{app_id}:{store}'
     _bootstrap_config(rt, urn)
     rt.req('PUT', f'/user-config/{urn}', {'dockerCompose': '', 'appEnv': ''})
-    if _bootstrap_config(rt, urn):
+    if _bootstrap_config(rt, urn).strip():
         raise PrivateError('private provider bootstrap removal readback differs')
 
 
