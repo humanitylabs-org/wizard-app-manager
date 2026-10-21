@@ -45,6 +45,20 @@ def test_tag_stripped_in_storage_refuses_install():
     with pytest.raises(PrivateError,match='readback differs'):
         write_sealed_bootstrap(RT(corrupt=True),'wizardapps','local',recipe())
 
+def test_daemon_newline_normalization_is_not_an_owner_conflict():
+    class NewlineRT(RT):
+        def req(self, method, path, body=None):
+            if method == 'PUT':
+                body = {k: v if v.endswith('\n') else v + '\n' for k, v in body.items()}
+            return super().req(method, path, body)
+    rt = NewlineRT()
+    write_sealed_bootstrap(rt, 'wizardapps', 'local', recipe())
+    assert rt.config['appEnv'] == '\n'
+    remove_sealed_bootstrap(rt, 'wizardapps', 'local')
+    assert rt.config['dockerCompose'] == '\n'
+    write_sealed_bootstrap(rt, 'wizardapps', 'local', recipe())
+
+
 def test_remove_only_owned_override_via_api():
     rt=RT();write_sealed_bootstrap(rt,'wizardapps','local',recipe())
     remove_sealed_bootstrap(rt,'wizardapps','local')
