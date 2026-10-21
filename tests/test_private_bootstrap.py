@@ -49,7 +49,7 @@ def test_daemon_newline_normalization_is_not_an_owner_conflict():
     class NewlineRT(RT):
         def req(self, method, path, body=None):
             if method == 'PUT':
-                body = {k: v if v.endswith('\n') else v + '\n' for k, v in body.items()}
+                body = {k: v + '\n' for k, v in body.items()}
             return super().req(method, path, body)
     rt = NewlineRT()
     write_sealed_bootstrap(rt, 'wizardapps', 'local', recipe())

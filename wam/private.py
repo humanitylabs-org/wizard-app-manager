@@ -150,7 +150,9 @@ def write_sealed_bootstrap(rt, store, app_id, compose):
     body = body.replace('networks:', 'networks: !override', 1)
     text = BOOTSTRAP_HEADER + 'services:\n' + textwrap.indent(body, '  ')
     rt.req('PUT', f'/user-config/{urn}', {'dockerCompose': text, 'appEnv': ''})
-    if _bootstrap_config(rt, urn) != text:
+    # Runtipi writeTextFile appends one LF, including to an already LF-terminated
+    # document. Accept only that exact delimiter, never YAML/tag reserialization.
+    if _bootstrap_config(rt, urn) not in (text, text + '\n'):
         raise PrivateError('private provider bootstrap readback differs; refusing install')
 
 
