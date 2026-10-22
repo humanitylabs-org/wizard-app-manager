@@ -63,11 +63,19 @@ export const targetOf = (v: any): string | undefined => (typeof v === 'string' ?
 export function rewriteVolumes(input: Compose, appId: string): Compose {
   const doc = structuredClone(input);
   const plans: { name: string; old: string; relative: string }[] = [];
+  const aliases: NonNullable<Compose['volumes']> = {};
   for (const [name, opts] of Object.entries(doc.volumes ?? {})) {
     if (opts?.external || opts?.driver || opts?.driver_opts) throw new Error(`Nonportable volume ${name}`);
     if (!VOLUME.test(name) || name === '.' || name === '..') throw new Error('Unsafe volume id');
     const claude = appId === 'wizard-claude' && opts?.name === LEGACY_CLAUDE;
-    if (opts && 'name' in opts && !claude && !(appId === 'hermes-agent' && opts.name === LEGACY_CLAUDE)) throw new Error(`Fixed volume name ${name}`);
+    if (opts && 'name' in opts && opts.name !== LEGACY_CLAUDE) throw new Error(`Fixed volume name ${name}`);
+    // Agent Service generated consumers predate mounts declarations. Preserve
+    // their exact mounts; prepare() verifies this name is a provider-folder alias
+    // before start. Hermes retains its existing grant-based upgrade below.
+    if (opts?.name === LEGACY_CLAUDE && !claude && appId !== 'hermes-agent') {
+      aliases[name] = opts;
+      continue;
+    }
     const relative = claude ? 'data/claude' : `volumes/${name}`;
     plans.push({ name, old: opts?.name ?? name, relative });
     for (const svc of Object.values(doc.services)) {
@@ -83,7 +91,8 @@ export function rewriteVolumes(input: Compose, appId: string): Compose {
       });
     }
   }
-  delete doc.volumes;
+  if (Object.keys(aliases).length) doc.volumes = aliases;
+  else delete doc.volumes;
   doc['x-wizard-volumes'] = plans;
   return doc;
 }
@@ -277,6 +286,20 @@ export class WizardStorage {
     });
   }
 
+  /** Only the already-created local bind alias is safe for legacy consumers.
+   * Inspect the daemon path (hostData), not the manager's mapped app-data path.
+   * Never create/remove/retarget a volume here: running agents may hold it.
+   */
+  private async isClaudeAlias(app: App, relative = 'data/claude'): Promise<boolean> {
+    const info = JSON.parse((await this.run('docker', ['volume', 'inspect', this.legacyClaudeVolume, '--format', '{{json .}}'])).stdout);
+    return (
+      info.Driver === 'local' &&
+      info.Options?.type === 'none' &&
+      info.Options?.o?.split(',').includes('bind') &&
+      info.Options?.device === path.posix.join(app.hostData, relative)
+    );
+  }
+
   /** Copy with the daemon, not the manager's uid. Stage+rename and a durable intent
    * make failure/retry safe; an existing unmarked nonempty destination is never overwritten.
    * Never removes the source volume. Refuse a hot copy while any container is running on it.
@@ -285,8 +308,22 @@ export class WizardStorage {
     await confined(app.data, relative);
     const parent = path.posix.dirname(relative);
     const leaf = path.posix.basename(relative);
+    const marker = path.join(app.data, parent, `.${leaf}.wizard-migrated`);
+    const marked = await fs.lstat(marker).catch((e) => {
+      if (e.code !== 'ENOENT') throw e;
+      return null;
+    });
+    if (marked && !marked.isFile()) throw new Error('Unsafe storage migration marker');
+    // A completed migration does not require a cold legacy volume. Agents may
+    // still use its bind alias, and no login bytes need to be copied again.
+    if (marked) return;
     const names = (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/);
     if (!names.includes(old)) return;
+    if (old === this.legacyClaudeVolume && (await this.isClaudeAlias(app, relative))) {
+      await confined(app.data, parent, true);
+      await fs.writeFile(marker, '', { mode: 0o600, flag: 'wx' });
+      return;
+    }
     const active = (await this.run('docker', ['ps', '-q', '--filter', `volume=${old}`])).stdout.trim();
     if (active) throw new Error(`Storage migration blocked: stop containers using ${old}, then restart the app; old login was not changed`);
     const script = `set -eu
@@ -334,7 +371,17 @@ rm -f ".$1.wizard-copy-ready"`;
         await apply?.(generated);
         return generated;
       }
-      validateStorage(app.manifest, app.compose, ['wizard-claude', 'hermes-agent'].includes(app.manifest.id));
+      // apps() returns installed recipes only; candidates still fail rule 15.
+      validateStorage(app.manifest, app.compose, true);
+      if (
+        !['wizard-claude', 'hermes-agent'].includes(app.manifest.id) &&
+        Object.values(app.compose.volumes ?? {}).some((v) => v?.name === LEGACY_CLAUDE)
+      ) {
+        const provider = apps.find((a) => a.manifest.id === 'wizard-claude');
+        if (!provider) throw new Error('Legacy Claude bind alias requires the installed provider');
+        await confined(provider.data, 'data/claude');
+        if (!(await this.isClaudeAlias(provider))) throw new Error('Legacy Claude volume must be a bind alias to the provider folder');
+      }
       let doc: Compose = yaml.parse(generated);
       // Builder metadata persists the original names; a restarted/revoked consumer is
       // always reconstructed from its source, never from previously injected mounts.

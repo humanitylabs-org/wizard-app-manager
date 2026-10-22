@@ -176,6 +176,146 @@ describe('owner share grants', () => {
     expect((await store.readGrants()).grants).toHaveLength(2);
   });
 });
+describe('live legacy Claude compatibility', () => {
+  const legacy = {
+    ...compose,
+    volumes: { login: { name: LEGACY_CLAUDE } },
+    services: { main: { ...compose.services.main, volumes: ['login:/claude'] } },
+  };
+  async function coreProvider() {
+    await install({ id: 'wizard-claude' }, legacy);
+    await fs.mkdir(path.join(root, 'apps/core'), { recursive: true });
+    await fs.rename(path.join(root, 'apps/wizardapps/wizard-claude'), path.join(root, 'apps/core/wizard-claude'));
+    const data = path.join(root, 'app-data/core/wizard-claude');
+    await fs.mkdir(path.join(data, 'data/claude'), { recursive: true });
+    await fs.writeFile(path.join(data, 'app.env'), 'APP_DATA_DIR=/daemon/app-data/core/wizard-claude\n');
+    await fs.writeFile(path.join(data, 'data/claude/login'), 'retained-test-login');
+    const app = (await store.apps()).find((a) => a.urn === 'wizard-claude:core');
+    if (!app) throw new Error('Missing test provider');
+    return app;
+  }
+  function alias(device = '/daemon/app-data/core/wizard-claude/data/claude') {
+    run.mockImplementation(async (_f, args) => {
+      if (args[0] === 'volume' && args[1] === 'ls') return { stdout: `${LEGACY_CLAUDE}\n` };
+      if (args[0] === 'volume' && args[1] === 'inspect')
+        return { stdout: JSON.stringify({ Driver: 'local', Options: { type: 'none', o: 'bind', device } }) };
+      if (args[0] === 'ps') return { stdout: 'running-agent' };
+      throw new Error(`Unexpected Docker mutation: ${args.join(' ')}`);
+    });
+  }
+  it('checks the host marker before Docker or active legacy consumers', async () => {
+    const app = await coreProvider();
+    await fs.writeFile(path.join(app.data, 'data/.claude.wizard-migrated'), '');
+    alias();
+    await store.migrate(LEGACY_CLAUDE, 'data/claude', app);
+    expect(run).not.toHaveBeenCalled();
+  });
+  it('rejects a symlink migration marker rather than trusting it', async () => {
+    const app = await coreProvider();
+    await fs.symlink(path.join(app.data, 'data/claude/login'), path.join(app.data, 'data/.claude.wizard-migrated'));
+    alias();
+    await expect(store.migrate(LEGACY_CLAUDE, 'data/claude', app)).rejects.toThrow('marker');
+  });
+  it('adopts an exact bind alias without copying or stopping running agents and writes a missing marker', async () => {
+    const app = await coreProvider();
+    alias();
+    await store.migrate(LEGACY_CLAUDE, 'data/claude', app);
+    expect((await fs.stat(path.join(app.data, 'data/.claude.wizard-migrated'))).isFile()).toBe(true);
+    expect(await fs.readFile(path.join(app.data, 'data/claude/login'), 'utf8')).toBe('retained-test-login');
+    expect(run.mock.calls.every(([, args]) => args[0] === 'volume' && ['ls', 'inspect'].includes(args[1] ?? ''))).toBe(true);
+  });
+  it('still refuses a hot copy when the alias points somewhere else', async () => {
+    const app = await coreProvider();
+    alias('/daemon/other-login');
+    await expect(store.migrate(LEGACY_CLAUDE, 'data/claude', app)).rejects.toThrow('stop containers');
+  });
+  it('rewrites Claude itself without deleting or recreating the live alias', async () => {
+    const app = await coreProvider();
+    alias();
+    const result = yaml.parse(await store.prepare(app.urn, yaml.stringify(legacy)));
+    expect(result.services.main.volumes).toEqual(['${APP_DATA_DIR}/data/claude:/claude']);
+    expect(result.volumes).toBeUndefined();
+    expect(run.mock.calls.every(([, args]) => args[0] === 'volume' && ['ls', 'inspect'].includes(args[1] ?? ''))).toBe(true);
+  });
+  it.each(['agent-philosopher', 'agent-private', 'custom-consumer'])(
+    'preserves installed %s legacy mount paths, flags and services through compile and prepare',
+    async (id) => {
+      await coreProvider();
+      const source = {
+        volumes: { login: { name: LEGACY_CLAUDE }, cache: {} },
+        services: {
+          main: { ...compose.services.main, labels: { wizard_type: 'agent' }, volumes: ['login:/claude:rw', 'cache:/cache'] },
+          sidecar: { image: 'example', volumes: [{ type: 'volume', source: 'login', target: '/official-cli', read_only: true }] },
+        },
+      };
+      const urn = await install({ id }, source);
+      alias();
+      const built = new DockerComposeBuilder().getDockerCompose(
+        source as unknown as Parameters<DockerComposeBuilder['getDockerCompose']>[0],
+        {},
+        urn as AppUrn,
+        '10.1.0.0/24',
+      );
+      const result = yaml.parse(await store.prepare(urn, built));
+      expect(result.volumes).toEqual({ login: { name: LEGACY_CLAUDE } });
+      expect(result.services.main.volumes).toEqual(['login:/claude:rw', '${APP_DATA_DIR}/volumes/cache:/cache']);
+      expect(result.services.sidecar.volumes).toEqual(source.services.sidecar.volumes);
+      expect(result['x-wizard-volumes']).toEqual([{ name: 'cache', old: 'cache', relative: 'volumes/cache' }]);
+      expect(run.mock.calls.some(([, args]) => args[0] === 'volume' && args[1] === 'inspect')).toBe(true);
+      expect(run.mock.calls.some(([, args]) => args[0] === 'run')).toBe(false);
+      expect((await store.readGrants()).grants).toEqual([]); // retained alias authority, not a new share grant
+    },
+  );
+  it('does not trust a provider marker as evidence that a consumer alias is safe', async () => {
+    const app = await coreProvider();
+    await fs.writeFile(path.join(app.data, 'data/.claude.wizard-migrated'), '');
+    const urn = await install({ id: 'agent-private' }, legacy);
+    alias('/daemon/other-login');
+    await expect(store.prepare(urn, yaml.stringify(legacy))).rejects.toThrow('bind alias');
+  });
+  it.each([
+    { Driver: 'nfs', Options: { type: 'none', o: 'bind' } },
+    { Driver: 'local', Options: { type: 'nfs', o: 'bind' } },
+    { Driver: 'local', Options: { type: 'none', o: 'ro' } },
+    { Driver: 'local', Options: null },
+  ])('refuses a non-bind alias before starting a consumer: %j', async (info) => {
+    await coreProvider();
+    const urn = await install({ id: 'agent-private' }, legacy);
+    run.mockResolvedValue({
+      stdout: JSON.stringify({ ...info, Options: info.Options && { ...info.Options, device: '/daemon/app-data/core/wizard-claude/data/claude' } }),
+    });
+    const apply = vi.fn();
+    await expect(store.prepare(urn, yaml.stringify(legacy), apply)).rejects.toThrow('bind alias');
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it('aborts before consumer start when volume inspection fails', async () => {
+    await coreProvider();
+    const urn = await install({ id: 'agent-private' }, legacy);
+    run.mockRejectedValue(new Error('inspect failed'));
+    const apply = vi.fn();
+    await expect(store.prepare(urn, yaml.stringify(legacy), apply)).rejects.toThrow('inspect failed');
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it('preserves a private-store consumer on the raw pre-start rewrite path', async () => {
+    await coreProvider();
+    await install({ id: 'agent-private' }, legacy);
+    await fs.mkdir(path.join(root, 'apps/private'), { recursive: true });
+    await fs.rename(path.join(root, 'apps/wizardapps/agent-private'), path.join(root, 'apps/private/agent-private'));
+    alias();
+    const result = yaml.parse(await store.prepare('agent-private:private', yaml.stringify(legacy)));
+    expect(result.volumes).toEqual(legacy.volumes);
+    expect(result.services.main.volumes).toEqual(['login:/claude']);
+  });
+  it('does not allow a new candidate to inherit the installed-volume exception', async () => {
+    await coreProvider();
+    const dir = path.join(root, 'repos/wizardapps/apps/agent-new');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'wizard.md'), '---\nid: agent-new\n---\n');
+    await fs.writeFile(path.join(dir, 'docker-compose.yml'), yaml.stringify(legacy));
+    await expect(store.proposed('agent-new')).rejects.toThrow('fixed name');
+  });
+});
+
 describe('legacy copy and explicit Claude upgrade', () => {
   it('pins helper and uses project volume and read-only source; daemon failure aborts', async () => {
     const urn = await install(
@@ -211,7 +351,9 @@ describe('legacy copy and explicit Claude upgrade', () => {
       };
       await install({ id: 'wizard-claude' }, legacy);
       const urn = await install({ id: 'hermes-agent' }, legacy);
-      run.mockImplementation(async (_f, args) => ({ stdout: args[0] === 'volume' ? `${selected}\n` : '' }));
+      run.mockImplementation(async (_f, args) => ({
+        stdout: args[0] === 'volume' ? (args[1] === 'inspect' ? JSON.stringify({ Driver: 'local', Options: null }) : `${selected}\n`) : '',
+      }));
       const result = yaml.parse(await store.prepare(urn, yaml.stringify(legacy)));
       expect(run.mock.calls.some(([, args]) => args.includes(`type=volume,src=${selected},dst=/old,readonly`))).toBe(true);
       const grants = (await store.readGrants()).grants;

@@ -10,22 +10,28 @@ Source contract: `humanitylabs-org/wizard-os`, branch `spec/app-owned-logins`
   any installed recipe carrying `wizard.md` also gets the rewrite in the
   pre-start extension (including private stores).
 - Short and long syntax retain targets, read-only flags and other service
-  options. Top-level volume declarations are removed. `x-wizard-volumes`
+  options. Top-level volume declarations are removed except verified legacy
+  Claude bind aliases (below). `x-wizard-volumes`
   is migration metadata only; pre-start recomputes plans from the source recipe
   and never trusts author-supplied migration instructions.
 - Fixed `name:`, external volumes and volume-driver configurations are refused.
   External volumes are **not** silently left outside backups. The only runtime
   compatibility exception is the already-used `wizard-ai-accounts-claude`
-  login in the two legacy Claude/Hermes recipes; new recipes fail rule 15.
+  login: Claude/Hermes migrate to a share, and other installed consumers may
+  retain a verified bind alias (below). New recipes still fail rule 15.
 - Pre-start looks for Compose's `<app>_<store>_<volume>` (the same project name
   DockerService passes to Compose), or the legacy Claude fixed volume. A
   digest-pinned, network-disabled Alpine helper mounts the source read-only,
   copies with `cp -a` into a sibling staging folder, renames it, and writes a
   marker beside the destination. Source Docker volumes are never removed.
-- A running container on the source volume blocks migration with an explicit
-  instruction to stop it. **Stop both old Claude and Hermes containers before
-  their first upgraded start.** This avoids copying a login while its refresh
-  token is being rotated. No hot-copy fallback or empty-login start occurs.
+- A running container on the source volume blocks an **actual copy** with an
+  explicit instruction to stop it. Stop **all** writers, including generated
+  agent apps, before the first copy. A regular host-side completion marker is
+  checked before Docker queries, so a migrated provider starts even while
+  legacy-name consumers are running. A local bind alias whose `Options.device`
+  exactly matches the daemon-side destination (`APP_DATA_DIR` from `app.env`)
+  needs no copy: write the missing marker and return before checking writers.
+  Symlink/non-file markers are refused. No hot-copy or empty-login fallback occurs.
 - A failed helper/daemon call aborts before `compose up`. A partial staging copy
   retries from the intact source. An unmarked nonempty destination is refused,
   not overwritten or silently adopted. A completed copy is not recopied.
@@ -69,6 +75,32 @@ qualifies for one `approved: install` share grant. Claude's old login is copied
 into its `data/claude`; Hermes mounts that folder, never a second consumer-owned
 credential copy. A remembered denial is not auto-approved on restart.
 
+### Live box compatibility
+
+Agent Service generated installed apps (including `agent-*`, `wizard_type: agent`
+labels, and other ids) can already mount the exact fixed name
+`wizard-ai-accounts-claude` without declaring `mounts`. Keep those volume
+references, every service's mount path (including `/claude`) and flags intact.
+Do not copy credentials into a consumer-owned folder or rewrite its runtime
+configuration. This is safer for existing agents than silently changing their
+mount topology or granting new authority. The exception is keyed by the exact
+volume name, not by an agent id prefix or label. Other named volumes still migrate.
+
+Before starting such an installed consumer, inspect the legacy volume and require
+`Driver: local`, `Options.type: none`, a `bind` option, and `Options.device` equal
+to the installed Claude provider's daemon-side `data/claude` folder. Discover
+Claude across stores (including `core`), not only `wizardapps`. A provider's
+completion marker alone is **not** proof that the alias is safe. Missing or
+mismatched aliases and daemon failures abort before container creation. The
+provider itself is still rewritten to its app-owned bind; WAM never removes,
+recreates or retargets the legacy alias, so running consumers keep their mount.
+
+This is a retained-authority compatibility bridge, **not** a new share grant;
+the share-grant revoke API does not detach an undeclared legacy alias. To manage
+that consumer with owner grants, first update its recipe to remove the fixed
+volume and declare the provider share. The existing Hermes grant-based shim
+is unchanged, and new install candidates still fail the fixed-name rule.
+
 `wam/claude_login.py` no longer writes a host-login override for a share-aware
 Claude recipe. Its legacy alongside bridge is retained for existing owner
 host-Hermes bindings; changing a live host's single-use refresh token location
@@ -82,7 +114,10 @@ owner disconnection before moving the host itself to app-owned state.
 - Backend `wizard-storage.test.ts` covers both mount syntaxes, all services,
   compile-time vs stock behavior, refusal paths, proposal/approve/revoke,
   provider-later, uninstall preservation, concurrent approvals, failure gates
-  and the explicit old Claude/Hermes upgrade.
+  and the explicit old Claude/Hermes upgrade. Live-rollout regressions use a fake
+  Docker runner to cover marker-first starts, alias adoption without hot copying,
+  alias verification across stores and generated-consumer compile/pre-start
+  preservation. These are isolated unit proofs, not a live-container rehearsal.
 - Backup-manager regression tests assert migrated login bytes enter its archive
   input, including a named volume called `backups` (the old substring filter
   erroneously dropped it).
