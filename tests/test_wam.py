@@ -39,6 +39,7 @@ def test_index_resolve_by_id_and_repo(monkeypatch):
         calls.append(url)
         return {"apps": [rec]} if "/v1/search" in url else {**rec, "listed": True}
     monkeypatch.setattr(index, "_get", fake_get)
+    monkeypatch.setenv("WAM_PUBLISHERS", "*")  # resolve mechanics; the first-party guard has its own tests
     assert index.resolve("https://i", "hello-wizard")["repo"] == "a/hello"
     assert "id=hello-wizard" in calls[-1]
     assert index.resolve("https://i", "a/hello")["install"]["commit"] == "f" * 40
