@@ -181,6 +181,26 @@ describe('22 October stale provider directory incident', () => {
     expect(running.has(claude)).toBe(true);
     expect(calls).toEqual([]);
   });
+  it('restarts the live layout: agent declares the legacy login external and an unrelated app is installed twice', async () => {
+    await recipe(agent, { ...legacy, volumes: { login: { name: LEGACY_CLAUDE, external: true } } });
+    const rows = await repository.getApps();
+    repository.getApps.mockResolvedValue([
+      ...rows,
+      { appName: 'defleur-video', appStoreSlug: 'wizard', status: 'stopped' },
+      { appName: 'defleur-video', appStoreSlug: 'wizardapps', status: 'running' },
+    ] as typeof rows);
+    for (const urn of [claude, agent, connectors]) {
+      calls.length = 0;
+      expect(await lifecycle('restart', urn)).toEqual({ success: true, message: `App ${urn} restarted successfully` });
+      expect(calls.map(([app]) => app)).toEqual([urn, urn]);
+    }
+    expect(running).toEqual(new Set([claude, agent, connectors]));
+  });
+  it('still refuses an external volume that is not the legacy Claude login', async () => {
+    await recipe(agent, { ...legacy, volumes: { login: { name: 'other-volume', external: true } } });
+    expect(await lifecycle('restart', agent)).toMatchObject({ success: false, deploymentUnchanged: true });
+    expect(running.has(agent)).toBe(true);
+  });
   it('does not fall back to directory discovery if the installed repository fails', async () => {
     repository.getApps.mockRejectedValue(new Error('database unavailable'));
     expect(await lifecycle('restart', claude)).toEqual({ success: false, message: 'database unavailable', deploymentUnchanged: true });
