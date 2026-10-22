@@ -55,4 +55,7 @@ test('image fallback is origin-first and keeps digest, never tags', async () => 
   await resolveImages(compose, async ref => { calls.push(ref); return true; });
   expect(calls).toEqual([image]);
   expect(compose.services.app.image).toBe(image);
+  compose.services.app.image = '${OWNER_IMAGE:-' + image + '}';
+  await resolveImages(compose, async ref => ref === mirror);
+  expect(compose.services.app.image).toBe('${OWNER_IMAGE:-' + mirror + '}');
 });
