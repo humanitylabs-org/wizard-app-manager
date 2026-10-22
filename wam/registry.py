@@ -98,6 +98,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
@@ -175,7 +176,9 @@ def write(reg: dict, root: Path | None = None) -> Path:
                         "staged": True})
         return out
 
-    public = {**reg, "apps": [project(a) for a in reg["apps"]]}
+    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
+    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
     tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev

@@ -78,6 +78,10 @@ describe('AppHelpers', () => {
       envUtils.envMapToString.mockReturnValue('');
       appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
+      appFilesManager.getAppPaths.mockReturnValue({ appInstalledDir: '/data/apps/installed/test/test-app' } as ReturnType<
+        AppFilesManager['getAppPaths']
+      >);
+      filesystem.readTextFile.mockResolvedValue(null);
       appFilesManager.writeAppEnv.mockResolvedValue(true);
       filesystem.readTextFile.mockResolvedValue('');
     });
