@@ -31,7 +31,11 @@ const downloadBundle = async (url: string, dest: string) => {
       if (total > BUNDLE_LIMIT_BYTES) throw new Error('curator bundle exceeds size limit');
       await out.writeFile(value);
     }
-  } finally { reader.releaseLock(); await out.close(); }
+  } finally {
+    // Bun 1.3.0's optimized HTTP reader can omit releaseLock; Node has it.
+    reader.releaseLock?.();
+    await out.close();
+  }
 };
 
 // Full git object verification, not an archive filename/header claiming a SHA.
