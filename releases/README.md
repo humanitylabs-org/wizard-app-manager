@@ -21,6 +21,12 @@ Never point `stable` at a release without its promotion record: `tests/test_rele
 
 The canonical manifest’s private-URL caveat records its original publication boundary. This public mirror closes that metadata-availability gap; it does not expose the private repository or alter the selected image identities.
 
+## stable 0.3.32 (promoted 22 Oct 2026)
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #151 (merge `9c369f4`), `releases/stable` and `releases/promotions/0.3.32.json`. Byte-identical SHA-256: `0.3.32.json` `b81fbc64d8a4a61a55239461380745b8d26df5f339eeb95b481b0b185ad2c099`, `promotions/0.3.32.json` `8134f8b4ce4a3ac3af0be9649c92d651054ff54c8684702849f5ec0a00dd17e4`.
+- First fast-tracked fix promotion (wizard-os DECISIONS #82): the upgrade test went 0.3.25 → 0.3.32 on the demo box, evidence `docs/acceptance/promote-0.3.32.md`. Feature-like ride-alongs are listed in the record's `fast_track.notes`.
+- Channel: `stable` and `latest` both 0.3.32. Rollback: point `stable` back at 0.3.25, whose grandfathered record is still valid.
+
 ## 0.3.0 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #57, `releases/0.3.0.json`.
