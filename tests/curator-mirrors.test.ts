@@ -8,6 +8,17 @@ import { fetchPinnedCommit, sourceRef, sourceName, imageRef, resolveImages } fro
 test('real git: missing origin -> mirror -> exact SHA; wrong SHA rejected; origin wins', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'curator-'));
   const original = process.env.GIT_CONFIG_GLOBAL;
+  const originalFetch = globalThis.fetch;
+  // Exercise Bun 1.3.0's optimized-reader shape even when this host selects
+  // the standard reader. Bytes still come from the real local HTTP server.
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    const response = await originalFetch(...args);
+    if (response.body) {
+      const reader = response.body.getReader();
+      Object.defineProperty(response, 'body', { value: { getReader: () => ({ read: reader.read.bind(reader) }) } });
+    }
+    return response;
+  }) as typeof fetch;
   const assets = path.join(root, 'assets');
   await fs.mkdir(assets);
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => {
@@ -46,6 +57,7 @@ test('real git: missing origin -> mirror -> exact SHA; wrong SHA rejected; origi
     await expect(fetchPinnedCommit('https://github.com/gone/builder', 'main', dest)).rejects.toThrow('40-hex');
   } finally {
     server.stop(true);
+    globalThis.fetch = originalFetch;
     if (original === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = original;
     await fs.rm(root, { recursive: true, force: true });
   }
