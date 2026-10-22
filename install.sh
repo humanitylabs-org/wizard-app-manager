@@ -323,7 +323,7 @@ if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
   fi
 fi
 # First contact does not depend on private-access enrollment. SSH retains its own auth.
-if [ "$status" != failed ] && [ -n "$WIZ_CLI" ] && [ "${WIZARD_MODE:-fresh}" = fresh ]; then
+if [ "$status" != failed ] && [ "${WIZARD_MODE:-fresh}" = fresh ] && [ -n "${WIZ_CLI:-}" ]; then
   echo "Before Tailscale: reach Wizard securely through your existing SSH access:"
   "$WIZ_CLI" contact || echo "Run 'wizard contact --ssh-host HOST --ssh-port PORT' with the SSH address you used."
   echo "Support: wizard report > wizard-report.json (no raw logs or credentials; review before sharing)."
