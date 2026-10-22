@@ -7,7 +7,7 @@ This directory publishes only the installer’s release metadata. The canonical 
 ## Channels (wizard-os DECISIONS #75)
 
 - `latest`: every release as soon as it is cut. Mirror it with each new release JSON.
-- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. Mirror the record together with the pointer.
+- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix-only release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
