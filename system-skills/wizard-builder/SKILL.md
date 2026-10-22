@@ -32,6 +32,9 @@ Wizard OS installs a complete, matching skill/tooling/templates bundle automatic
 ## Supported shell skins
 Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
 
+## Chat is the Chats thread (James, 22 Oct 2026; mandatory)
+Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant", "chat about this") opens the real Chats thread over the app window with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping. The `wizard-ui.css` kit is styling, never a licence to build a composer or transcript. Isolation requirements are met with an agent bound to the app, not a separate UI. `wam check` fails `app-chat` markup. Read `references/chat.md` before planning any conversational feature; its parity + fault-injection gate is the definition of done.
+
 ## Shared system functions (James-approved, mandatory)
 Read `references/system-functions.md` **before** editing any view. Always reuse `WizardApp` from `/wizard-os-home/core/app-client.js`; apps own task state/domain callbacks, never capture, sharing, root exit guards, system theme storage, SW or install implementations. This reference and its executable gate ship in the installed builder skill, so future agents load the rule automatically. No new `wizard.md` field is approved by this work.
 
