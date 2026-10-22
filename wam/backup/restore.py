@@ -52,8 +52,20 @@ def _now_stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
 
-def _write_json(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+def _mkdir_durable(path: Path) -> None:
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in reversed(missing):
+        _sync_dir(directory)
+        _sync_dir(directory.parent)
+
+
+def _write_json(path: Path, obj: dict) -> None:
+    _mkdir_durable(path.parent)
     tmp = path.with_name(f".{path.name}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -74,7 +86,7 @@ def _sync_dir(path: Path) -> None:
 
 
 def _move(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _mkdir_durable(dst.parent)
     if dst.exists() or dst.is_symlink():
         raise RestoreError(f"refusing to overwrite {dst}")
     try:
