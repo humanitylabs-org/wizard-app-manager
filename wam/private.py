@@ -92,7 +92,14 @@ def fetch(repo: str, commit: str, dest: Path, tok: str) -> None:
     except PrivateError:
         # Start clean: never let an old FETCH_HEAD or partial origin tree win.
         init()
-        git("fetch", "-q", "--depth", "1", mirrors.SOURCE_MIRROR, ref)
+        bundle = dest / ".git" / "curator.bundle"
+        try:
+            mirrors.download_bundle(repo, commit, bundle)
+            git("fetch", "-q", str(bundle), ref)
+        except (OSError, ValueError) as e:
+            raise PrivateError(f"curator source unavailable for {repo}@{commit}") from e
+        finally:
+            bundle.unlink(missing_ok=True)
     git("checkout", "-q", "FETCH_HEAD")
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, env=env,
                           capture_output=True, text=True, check=True).stdout.strip()
