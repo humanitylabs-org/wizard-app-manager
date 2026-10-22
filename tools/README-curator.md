@@ -14,6 +14,9 @@ secret or deploy key is needed. No app code, build, submodule hook or install sc
 The mirror source repo is this repository, under append-only lightweight
 `curator/<owner>/<repo>/<commit>` tags. Do not force-push, prune, or run WAM
 CI/release jobs on these tags: the referenced trees are app source, not WAM.
+Images use the already-public WAM package's `curator-sha256-<digest>` tags;
+these are preserved upstream images, not App Manager releases. Production
+WAM image tags are never overwritten by custody maintenance.
 
 Regression proof (local fixture repositories; no network):
 

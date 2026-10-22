@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 export const SOURCE_MIRROR = 'https://github.com/humanitylabs-org/wizard-app-manager.git';
-export const IMAGE_MIRROR = 'ghcr.io/humanitylabs-org/wizard-default-mirrors';
+export const IMAGE_MIRROR = 'ghcr.io/humanitylabs-org/wizard-app-manager';
 export const sourceRef = (repo: string, commit: string) => {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(commit))
     throw new Error('mirror requires a repository and exact 40-hex commit');
@@ -45,7 +45,7 @@ export const fetchPinnedCommit = async (url: string, commit: string, dest: strin
 export const imageRef = (image: string) => {
   if (image.startsWith('ghcr.io/humanitylabs-org/')) return undefined;
   const digest = /^[^\s@$]+@sha256:([0-9a-f]{64})$/.exec(image)?.[1];
-  return digest ? `${IMAGE_MIRROR}:sha256-${digest}@sha256:${digest}` : undefined;
+  return digest ? `${IMAGE_MIRROR}:curator-sha256-${digest}@sha256:${digest}` : undefined;
 };
 export const resolveImages = async (compose: { services?: Record<string, Record<string, unknown>> }, probe = async (image: string) => {
   try { await exec('docker', ['image', 'inspect', image], { timeout: 15000 }); return true; } catch { /* registry-only below */ }
