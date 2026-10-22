@@ -5,6 +5,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import deepmerge from 'deepmerge';
 import * as yaml from 'yaml';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
+import { rewriteVolumes } from '../wizard-storage';
 
 /**
  * Interpolate {{RUNTIPI_APP_ID}} placeholders in labels with the actual app ID
@@ -213,6 +214,6 @@ export class DockerComposeBuilder {
       '\n',
     );
 
-    return header + yaml.stringify(inputCopy, { nullStr: '' });
+    return header + yaml.stringify(appStoreId === 'wizardapps' ? rewriteVolumes(inputCopy, appName) : inputCopy, { nullStr: '' });
   };
 }

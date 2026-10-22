@@ -65,6 +65,50 @@ def compose_risks(text: str) -> list[str]:
     return risks
 
 
+"""Rule 15, shared verbatim by the spec checker and WAM."""
+def storage_problems(manifest: dict, compose: dict) -> list[str]:
+    import re
+    ident = re.compile(r'[a-z0-9][a-z0-9-]{1,40}')
+    def relative(p):
+        return (isinstance(p, str) and bool(p) and not p.startswith('/')
+                and not any(x in ('', '.', '..') for x in p.split('/'))
+                and not any(x in p for x in ('\\', '$', ':', ','))
+                and not any(ord(c) < 32 or ord(c) == 127 for c in p))
+    def absolute(p):
+        return isinstance(p, str) and p.startswith('/') and p != '/' and relative(p[1:])
+    bad = []
+    volumes = compose.get('volumes', {})
+    if not isinstance(volumes, dict):
+        bad.append('volumes must be a mapping')
+    else:
+        for name, opts in volumes.items():
+            if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name) or name in ('.', '..'):
+                bad.append('invalid volume id')
+            if opts is not None and not isinstance(opts, dict):
+                bad.append(f'{name}: volume options must be a mapping')
+            elif opts and ('name' in opts or opts.get('external') or opts.get('driver') or opts.get('driver_opts')):
+                bad.append(f'{name}: fixed name, external and custom-driver volumes are not portable; use shares')
+    for field, keys in (('shares', {'id', 'path'}), ('mounts', {'app', 'share', 'path'})):
+        rows = manifest.get(field, [])
+        if not isinstance(rows, list):
+            bad.append(f'{field} must be a list'); continue
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != keys:
+                bad.append(f'{field}: expected {sorted(keys)}'); continue
+            ids = ['id'] if field == 'shares' else ['app', 'share']
+            if not all(isinstance(row[k], str) and ident.fullmatch(row[k]) for k in ids):
+                bad.append(f'{field}: invalid id')
+            if not (relative(row['path']) if field == 'shares' else absolute(row['path'])):
+                bad.append(f'{field}: unsafe path')
+            key = row['id'] if field == 'shares' else row['path']
+            if not isinstance(key, str) or key in seen:
+                bad.append(f'{field}: duplicate or invalid id/path')
+            else:
+                seen.add(key)
+    return bad
+
+
 def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
     out: list[tuple[str, bool, str]] = []
 
@@ -143,6 +187,11 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
     if rt.get("compose") and comp.is_file():
         risks = compose_risks(comp.read_text())
         rule("container asks for no host-level access", not risks, "; ".join(risks))
+    try:
+        probs = storage_problems(d, yaml.safe_load(comp.read_text()) if comp.is_file() else {})
+    except Exception as e:
+        probs = [str(e)]
+    rule("storage (rule 15)", not probs, "; ".join(probs))
     if d.get("publisher") is not None:
         rule("publisher is an npub", bool(NPUB.fullmatch(str(d.get("publisher")))), str(d.get("publisher")))
     if github:
