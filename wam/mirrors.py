@@ -1,8 +1,10 @@
 """DECISIONS #83: origin-first, immutable curator copies (no mutable mirror HEAD)."""
 import re
 import subprocess
+import urllib.request
 
-SOURCE_MIRROR = "https://github.com/humanitylabs-org/wizard-app-manager.git"
+SOURCE_MIRROR = "https://github.com/humanitylabs-org/wizard-app-manager/releases/download/curator-source-mirrors"
+BUNDLE_LIMIT_BYTES = 256 * 1024 * 1024
 IMAGE_MIRROR = "ghcr.io/humanitylabs-org/wizard-app-manager"
 
 
@@ -10,6 +12,27 @@ def source_ref(repo, commit):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("mirror requires a repository and exact 40-hex commit")
     return f"refs/tags/curator/{repo}/{commit}"
+
+
+def source_name(repo, commit):
+    source_ref(repo, commit)  # validate before constructing a URL or filename
+    return f"{repo.replace('/', '--')}--{commit}.bundle"
+
+
+def source_url(repo, commit):
+    return f"{SOURCE_MIRROR}/{source_name(repo, commit)}"
+
+
+def download_bundle(repo, commit, dest, limit=BUNDLE_LIMIT_BYTES):
+    # Anonymous public release download; no origin or account credential required.
+    request = urllib.request.Request(source_url(repo, commit), headers={"User-Agent": "wizard-app-manager"})
+    with urllib.request.urlopen(request, timeout=90) as response, open(dest, "wb") as out:
+        total = 0
+        while chunk := response.read(1024 * 1024):
+            total += len(chunk)
+            if total > limit:
+                raise ValueError("curator bundle exceeds size limit")
+            out.write(chunk)
 
 
 def image_ref(image):
