@@ -13,7 +13,13 @@ IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 (cd "$HERE" && python3 -m wam.release_pins)
 
 # Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
-bash "$HERE/scripts/setup-private-access.sh"
+if [ "${WIZARD_MODE:-fresh}" = fresh ]; then
+  # First shell contact must not wait up to 30 minutes for tailnet enrollment.
+  # Keep the existing opt-in provider and explicit operator wait overrides intact.
+  WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-1}" bash "$HERE/scripts/setup-private-access.sh"
+else
+  bash "$HERE/scripts/setup-private-access.sh"
+fi
 
 if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first, box-only"
@@ -315,6 +321,12 @@ if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
     echo "message after a minute). The restart and a fresh 'wizard doctor' are logged in ~/.wizard-os/hermes-restart.log."
     echo
   fi
+fi
+# First contact does not depend on private-access enrollment. SSH retains its own auth.
+if [ "$status" != failed ] && [ -n "$WIZ_CLI" ] && [ "${WIZARD_MODE:-fresh}" = fresh ]; then
+  echo "Before Tailscale: reach Wizard securely through your existing SSH access:"
+  "$WIZ_CLI" contact || echo "Run 'wizard contact --ssh-host HOST --ssh-port PORT' with the SSH address you used."
+  echo "Support: wizard report > wizard-report.json (no raw logs or credentials; review before sharing)."
 fi
 case "$status" in
   ok)
