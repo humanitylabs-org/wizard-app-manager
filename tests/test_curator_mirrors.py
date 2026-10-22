@@ -96,6 +96,9 @@ def test_image_fallback_preserves_digest_and_never_floats():
     mirrors.resolve_images(compose, lambda image: seen.append(image) or True)
     assert seen == [original]
     assert compose['services']['app']['image'] == original
+    compose['services']['app']['image'] = '${OWNER_IMAGE:-' + original + '}'
+    mirrors.resolve_images(compose, lambda image: image == mirror)
+    assert compose['services']['app']['image'] == '${OWNER_IMAGE:-' + mirror + '}'
 
 
 def test_collect_keeps_channel_and_catalog_exact_pins(tmp_path):

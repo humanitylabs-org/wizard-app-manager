@@ -36,9 +36,12 @@ def resolve_images(compose, probe=None):
     """
     probe = probe or image_available
     for service in (compose.get("services") or {}).values():
-        image = service.get("image", "")
+        raw = service.get("image", "")
+        image = raw
         if isinstance(image, str):
             image = re.sub(r"\$\{[A-Z_][A-Z_0-9]*:-([^}]+)\}", r"\1", image)
         mirror = image_ref(image) if isinstance(image, str) and not service.get("build") else None
         if mirror and not probe(image) and probe(mirror):
-            service["image"] = mirror
+            # Preserve an owner's explicit environment override; replace only
+            # the recipe's pinned default, never the whole ${VAR:-default}.
+            service["image"] = raw.replace(image, mirror)

@@ -54,6 +54,7 @@ export const resolveImages = async (compose: { services?: Record<string, Record<
   for (const service of Object.values(compose.services ?? {})) {
     const image = typeof service.image === 'string' ? service.image.replace(/\$\{[A-Z_][A-Z_0-9]*:-([^}]+)\}/g, '$1') : service.image;
     const mirror = typeof image === 'string' && !service.build ? imageRef(image) : undefined;
-    if (mirror && !(await probe(image as string)) && await probe(mirror)) service.image = mirror;
+    if (mirror && !(await probe(image as string)) && await probe(mirror))
+      service.image = (service.image as string).replace(image as string, mirror);
   }
 };
