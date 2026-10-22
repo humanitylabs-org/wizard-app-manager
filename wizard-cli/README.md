@@ -2,8 +2,13 @@ Based on the generic `wizard` CLI from humanitylabs-org/wizard-os `tools/` (upst
 
 ## Headless first contact and offline support
 
-`wizard contact` probes the installed shell's loopback view and prints an SSH forward
-and browser URL. Run the SSH command **on your computer**, then open the URL there.
+`wizard contact` probes the installed shell's loopback front door and its same-origin
+`/wizard/v1/setup` API, then prints an SSH forward and browser URL. HTML alone is
+not readiness: 0.3.32 pins an Agent Service without Setup, so contact reports
+`contact_setup_unavailable` until the box is updated to a release with Setup support
+(0.3.33 or later). The shell port already proxies the API; forwarding the standalone
+Agent Service port would lose the shell. Run the SSH command **on your computer**,
+then open the URL there.
 Use `--ssh-host HOST --ssh-port PORT` for the address you connected with (required
 when sudo strips SSH context; NAT discovery is only a hint). It retains normal SSH
 host-key verification and opens no LAN listener. After connecting, use Setup for

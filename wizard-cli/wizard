@@ -1543,6 +1543,19 @@ def cmd_contact(ns):
         raise Fail("contact_unavailable", "The installed Wizard shell did not answer its loopback probe.")
     except (OSError, ValueError):
         raise Fail("contact_unavailable", "The installed Wizard shell did not answer its loopback probe.")
+    # view.local already fronts the shell and its Agent Service proxy. HTML alone
+    # is not readiness: 0.3.32 pins a service without Setup, despite shipping its UI.
+    setup_failure = "The shell answered, but its same-origin Setup API did not; run wizard doctor and update to a release with Setup support (0.3.33 or later)."
+    try:
+        with opener.open(f"http://{u.netloc}/wizard/v1/setup", timeout=min(ns.timeout, 8)) as response:
+            setup = json.loads(response.read(262144))
+            if response.status != 200 or not isinstance(setup, dict) or type(setup.get("first_run")) is not bool:
+                raise ValueError()
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise Fail("contact_setup_unavailable", setup_failure) from None
+    except (OSError, ValueError):
+        raise Fail("contact_setup_unavailable", setup_failure) from None
     fields = os.environ.get("SSH_CONNECTION", "").split()
     host = getattr(ns, "ssh_host", None)
     ssh_port = getattr(ns, "ssh_port", None)
@@ -1566,7 +1579,7 @@ def cmd_contact(ns):
     remote = "[::1]" if u.hostname == "::1" else "127.0.0.1"
     argv = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-p", str(ssh_port), "-L",
             f"127.0.0.1:18795:{remote}:{port}", "-l", user, host]
-    return {"ok": True, "command": shlex.join(argv), "url": "http://127.0.0.1:18795" + (u.path or "/"),
+    return {"ok": True, "command": shlex.join(argv), "url": "http://127.0.0.1:18795" + (u.path or "/"), "setup_api": 200,
             "instructions": "On your computer run the SSH command and keep it open; then open the URL there. Use the host/port you connected with if NAT or port mapping differs (--ssh-host/--ssh-port). Keep normal SSH host-key verification. Then open Setup to add phone access."}
 
 

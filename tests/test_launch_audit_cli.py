@@ -130,14 +130,17 @@ class AuditTests(unittest.TestCase):
                 self.assertEqual(wizard.cmd_report(argparse.Namespace())['schema'], 'wizard-report-v1')
 
     @contextlib.contextmanager
-    def shell(self, body=b'<title>Wizard OS</title>', redirect=None):
+    def shell(self, body=b'<title>Wizard OS</title>', redirect=None,
+              setup_body=b'{"first_run":true}', setup_status=200, setup_redirect=None):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                self.send_response(302 if redirect else 200)
-                if redirect:
-                    self.send_header('Location', redirect)
+                setup = self.path == '/wizard/v1/setup'
+                location = setup_redirect if setup else redirect
+                self.send_response(302 if location else setup_status if setup else 200)
+                if location:
+                    self.send_header('Location', location)
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(setup_body if setup else body)
             def log_message(self, format, *args):
                 pass
         with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
@@ -200,6 +203,24 @@ class AuditTests(unittest.TestCase):
             self.write('apps.json', reg)
             with self.assertRaises(wizard.Fail):
                 self.contact(host='box.invalid')
+
+    def test_contact_requires_same_origin_setup_not_just_shell_html(self):
+        # 0.3.32's shell proxy works, but its pinned Agent Service lacks Setup.
+        for setup in ({'setup_status': 404}, {'setup_status': 503},
+                      {'setup_body': b'<title>Wizard</title>'},
+                      {'setup_body': b'[]'}, {'setup_body': b'{}'},
+                      {'setup_body': b'{"first_run":"true"}'},
+                      {'setup_redirect': 'http://192.0.2.10/wizard/v1/setup'},
+                      {'setup_redirect': '/wizard-os-home/'}):
+            with self.subTest(setup=setup), self.shell(**setup):
+                with self.assertRaises(wizard.Fail) as error:
+                    self.contact(host='box.invalid')
+                self.assertEqual(error.exception.code, 'contact_setup_unavailable')
+        with self.shell(setup_body=b'{"first_run":false}') as server:
+            value = self.contact(host='box.invalid')
+            self.assertTrue(value['ok'])
+            self.assertIn(f':127.0.0.1:{server.server_port}', value['command'])
+            self.assertEqual(value['setup_api'], 200)
 
     def test_contact_does_not_create_listener(self):
         with self.shell(), patch('socket.socket.bind', side_effect=AssertionError('new listener')):
