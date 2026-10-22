@@ -1,0 +1,48 @@
+name: Default app custody
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  packages: write
+concurrency:
+  group: default-app-custody
+  cancel-in-progress: false
+jobs:
+  mirror:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, wizard-app-manager]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Isolated tools on the runner external disk
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/python
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/venv"
+          uv pip install --python "$RUNNER_TEMP/venv/bin/python" PyYAML
+          python3 tools/install_crane.py "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Copy exact commits and multi-platform image bytes; verify readbacks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+          DOCKER_CONFIG: ${{ runner.temp }}/curator-docker
+        run: |
+          printf '%s' "$GH_TOKEN" | crane auth login ghcr.io --username "$GH_USER" --password-stdin
+          python tools/mirror_defaults.py --root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/curator-source" --report "$RUNNER_TEMP/mirrors.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: default-app-custody
+          path: ${{ runner.temp }}/mirrors.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove temporary credentials and source cache
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/curator-docker" "$RUNNER_TEMP/curator-source"

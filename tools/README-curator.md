@@ -6,9 +6,10 @@ Contract, locations, commissioning and revocation:
 `mirror_defaults.py --root <wizard-os-checkout> --work <external-disk-cache> --report <receipt.json>`
 reads active release snapshots and the index-pinned publications of WAM defaults.
 Run on Thales only. It requires PyYAML, Git and crane v0.20.6. `GH_TOKEN`
-reads GitHub metadata; source pushes use the repo-scoped deploy key via
-`SOURCE_MIRROR_PUSH_URL`/`GIT_SSH_COMMAND`. `crane auth login` supplies the
-job-scoped GHCR token. No app code, build, submodule hook or install script runs.
+also authenticates source pushes (public sources are refused if GitHub marks
+them private). `crane auth login` supplies the job-scoped GHCR token. The
+scheduled WAM workflow uses its own token for contents/package writes; no new
+secret or deploy key is needed. No app code, build, submodule hook or install script runs.
 
 The mirror source repo is this repository, under append-only lightweight
 `curator/<owner>/<repo>/<commit>` tags. Do not force-push, prune, or run WAM
