@@ -1293,7 +1293,7 @@ class StoreHandler(BaseHTTPRequestHandler):
         # All Store operations (including _recommended) share this gate, before
         # peer/owner identity and BEFORE parsing a body or starting any installer.
         try:
-            boundary = getattr(self.server, 'browser_boundary', None) or from_env()
+            boundary = getattr(getattr(self, 'server', None), 'browser_boundary', None) or from_env()
         except ValueError:
             return self._json(503, {"error": "browser_boundary_unconfigured"})
         if not boundary.allows(self.headers):
