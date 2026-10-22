@@ -123,6 +123,12 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - 0.3.26 plus wizard-ux #268 (`00ffd23`): Settings → Updates has a Stable (recommended) / Latest (every release, for testers) channel picker over the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX image `sha256:94d0eaaf…` (amd64+arm64).
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.27 has a promotion record. Every other pin is identical to 0.3.26.
 
+## 0.3.33 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #154 (merge `b053eda`), `releases/0.3.33.json`. Byte-identical SHA-256: `ae75530ccc94323b701fbf34cbb93b1ca12e347f51ab450df1a936be6902aa3b`.
+- 0.3.32 plus the Agent Service at official main `634fe96` (3c45698 + wizard-agent-service #90). The 0.3.32 shell calls the Setup API (`/wizard/v1/setup`) and `/wizard/v1/ui-preferences`, but its Agent Service pin `e7bfd6d` predates both, so first-run Setup never opened on a fresh box. #90 also lets the shell's own Serve host through the Setup host guard. Agent Service image `sha-634fe96…` (`sha256:51b19dd8…8277a`, amd64+arm64, Publish run 39723089025).
+- Channel: on `latest` only. `stable` stays 0.3.32. The Agent Service ride-alongs include features (#68, #42, #72, #87), so this release soaks for 72h before promotion (DECISIONS #82).
+
 ## 0.3.32 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #128 (merge `a52f374`), `releases/0.3.32.json`. Byte-identical SHA-256: `b81fbc64d8a4a61a55239461380745b8d26df5f339eeb95b481b0b185ad2c099`.
