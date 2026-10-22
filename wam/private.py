@@ -70,15 +70,34 @@ def _git_env(tok: str) -> dict:
 
 
 def fetch(repo: str, commit: str, dest: Path, tok: str) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+    from . import mirrors
+    ref = mirrors.source_ref(repo, commit)
     env = _git_env(tok)
-    for args in (["init", "-q"], ["fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit], ["checkout", "-q", "FETCH_HEAD"]):
-        r = subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest, env=env, capture_output=True, text=True, timeout=300)
-        if r.returncode:
-            raise PrivateError(f"git {args[0]} {repo}: {r.stderr.strip()[:200]}")
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest,
+                                  env=env, capture_output=True, text=True, timeout=300, check=True)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise PrivateError(f"git {args[0]} {repo} failed") from e
+
+    def init():
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+
+    init()
+    try:
+        git("fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit)
+    except PrivateError:
+        # Start clean: never let an old FETCH_HEAD or partial origin tree win.
+        init()
+        git("fetch", "-q", "--depth", "1", mirrors.SOURCE_MIRROR, ref)
+    git("checkout", "-q", "FETCH_HEAD")
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, env=env,
                           capture_output=True, text=True, check=True).stdout.strip()
     if head != commit:
+        shutil.rmtree(dest, ignore_errors=True)
         raise PrivateError(f"{repo}: fetched {head}, expected {commit}")
 
 
@@ -196,6 +215,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                         matched += 1
                 if not matched:
                     raise PrivateError('catalog image does not match pinned Compose')
+        from .mirrors import resolve_images
+        resolve_images(compose)
         # Packaging (source | build | image): copy the pinned code where the containers mount or build it.
         from . import packaging
         try:

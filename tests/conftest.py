@@ -6,10 +6,14 @@ silently broke the ChatGPT/Tinfoil apps. Default every unit dir to a temp folder
 import pytest
 
 from wam import host_dashboard as hd
+from wam import mirrors
 
 
 @pytest.fixture(autouse=True)
 def _no_real_host_dashboard(tmp_path, monkeypatch):
+    # Unit installs must not query live registries. Mirror tests inject their own
+    # probe and real-git fixture, rather than changing a live Docker daemon.
+    monkeypatch.setattr(mirrors, "image_available", lambda image: True)
     units = tmp_path / "_systemd_user"
     real_disable, real_ensure = hd.disable, hd.ensure
     monkeypatch.setattr(hd, "_systemctl", lambda *a: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())

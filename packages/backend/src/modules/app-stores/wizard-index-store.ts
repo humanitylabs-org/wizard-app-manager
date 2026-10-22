@@ -7,6 +7,7 @@
  * on Runtipi's own install / update / backup / networking code handles it unchanged.
  */
 import path from 'node:path';
+import { fetchPinnedCommit, resolveImages } from './curator-mirrors';
 import { execFileAsync } from '@/common/helpers/exec-helpers';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
@@ -190,6 +191,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const risks = composeRisks(compose);
     if (risks.length) throw new Error(`${rec.repo} asks for host-level access: ${risks.join('; ')}`);
 
+    await resolveImages(compose);
     // Packaging (source | build | image): copy the pinned code where the app's containers can mount or build it.
     const { appDataDir } = this.configuration.get('directories');
     await preparePackage({
@@ -272,22 +274,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
   }
 
   private async fetchCommit(url: string, commit: string, dest: string) {
-    if (!/^https:\/\//.test(url)) throw new Error(`refusing non-https source ${url}`);
-    await this.filesystem.removeDirectory(dest);
-    await this.filesystem.createDirectory(dest);
-    for (const args of [
-      ['init', '-q'],
-      ['fetch', '-q', '--depth', '1', url, commit],
-      ['checkout', '-q', 'FETCH_HEAD'],
-    ]) {
-      const { stderr } = await execFileAsync('git', ['-c', 'advice.detachedHead=false', '-c', `safe.directory=${dest}`, ...args], {
-        cwd: dest,
-        timeout: 180000,
-      });
-      if (stderr && /fatal|error/i.test(stderr)) throw new Error(`git ${args[0]} ${url}@${commit.slice(0, 12)}: ${stderr.slice(0, 300)}`);
-    }
-    const head = (await execFileAsync('git', ['-c', `safe.directory=${dest}`, 'rev-parse', 'HEAD'], { cwd: dest })).stdout.trim();
-    if (head !== commit) throw new Error(`fetched ${head} instead of ${commit}`);
+    await fetchPinnedCommit(url, commit, dest);
   }
 
   // ---- Runtipi store interface: same as a git store, but each app is fetched on demand ----
