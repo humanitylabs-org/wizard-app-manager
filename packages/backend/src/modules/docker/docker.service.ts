@@ -10,6 +10,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
+import { AppsRepository } from '../apps/apps.repository';
 
 @Injectable()
 export class DockerService {
@@ -19,6 +20,7 @@ export class DockerService {
     private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
     private readonly appsService: AppsService,
+    private readonly appsRepository: AppsRepository,
   ) {}
 
   /**
@@ -81,20 +83,36 @@ export class DockerService {
    */
   private storageInstance?: WizardStorage;
   get storage() {
-    if (!this.storageInstance) this.storageInstance = new WizardStorage(this.config.get('directories'));
+    if (!this.storageInstance)
+      this.storageInstance = new WizardStorage(
+        this.config.get('directories'),
+        () => this.appsRepository.getApps(),
+        undefined,
+        undefined,
+        (message) => this.logger.warn(message),
+      );
     return this.storageInstance;
   }
 
-  public async composeApp(appUrn: AppUrn, command: string) {
+  public async prepareApp(appUrn: AppUrn, apply?: () => Promise<void>) {
+    const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
+    if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
+    await this.storage.prepare(appUrn, generated.content, async (prepared) => {
+      if (prepared !== generated.content) {
+        await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
+        await fs.rename(`${generated.path}.tmp-storage`, generated.path);
+      }
+      await apply?.();
+    });
+  }
+
+  public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
     if (command.split(' ')[0] === 'up') {
-      const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
-      if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
       let result!: { success: boolean; stdout: string; stderr: string };
-      await this.storage.prepare(appUrn, generated.content, async (prepared) => {
-        if (prepared !== generated.content) {
-          await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
-          await fs.rename(`${generated.path}.tmp-storage`, generated.path);
-        }
+      await this.prepareApp(appUrn, async () => {
+        // Validate storage/shares/bridge before a restart can stop anything,
+        // holding the grant lock continuously through down and up.
+        await beforeStart?.();
         result = await this.runComposeApp(appUrn, command);
       });
       return result;
