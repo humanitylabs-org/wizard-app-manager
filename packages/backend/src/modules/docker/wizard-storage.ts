@@ -121,10 +121,13 @@ export class WizardStorage {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
     readonly dirs: { dataDir: string; appDataDir: string },
+    // Runtipi's app rows are authoritative. Files are recipes, not installs.
+    readonly installedApps: () => Promise<{ appName: string; appStoreSlug: string }[]>,
     readonly run: Run = (f, a) => execFileAsync(f, a),
     // Isolated rehearsals can select a disposable legacy volume without ever
     // touching the owner's fixed-name login. Recipe compatibility stays literal.
     readonly legacyClaudeVolume: string = LEGACY_CLAUDE,
+    readonly warn: (message: string) => void = console.warn,
   ) {
     if (!VOLUME.test(legacyClaudeVolume)) throw new Error('Unsafe legacy Claude volume name');
   }
@@ -168,6 +171,8 @@ export class WizardStorage {
   }
   async apps(): Promise<App[]> {
     const out: App[] = [];
+    const installed = await this.installedApps();
+    const urns = new Set(installed.map((a) => `${a.appName}:${a.appStoreSlug}`));
     const root = path.join(this.dirs.dataDir, 'apps');
     const stores = await fs.readdir(root).catch((e) => {
       if (e.code !== 'ENOENT') throw e;
@@ -177,6 +182,10 @@ export class WizardStorage {
       if (!ID.test(store)) continue;
       for (const id of await fs.readdir(path.join(root, store))) {
         if (!ID.test(id)) continue;
+        if (!urns.has(`${id}:${store}`)) {
+          this.warn(`Ignoring stale app directory ${id}:${store}: no installed app row`);
+          continue;
+        }
         const dir = path.join(root, store, id);
         const text = await fs.readFile(path.join(dir, 'wizard.md'), 'utf8').catch((e) => {
           if (e.code !== 'ENOENT') throw e;
@@ -202,7 +211,8 @@ export class WizardStorage {
         out.push({ urn: `${id}:${store}`, manifest, compose, data, hostData });
       }
     }
-    if (new Set(out.map((a) => a.manifest.id)).size !== out.length) throw new Error('Ambiguous installed provider ids');
+    // Count database rows, including a second install whose recipe is missing.
+    if (out.some((a) => installed.filter((row) => row.appName === a.manifest.id).length > 1)) throw new Error('Ambiguous installed provider ids');
     return out;
   }
   proposals(apps: App[], file: Grants): Grant[] {

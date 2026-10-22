@@ -7,12 +7,13 @@ import type { AppUrn } from '@runtipi/common/types';
 import { AppLifecycleCommand } from './command';
 
 export class RestartAppCommand extends AppLifecycleCommand {
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
+  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string; deploymentUnchanged?: boolean }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
 
+    let deploymentUnchanged = true;
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
 
@@ -20,14 +21,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
-      await this.ensureAppDir(appUrn, form);
-
-      logger.info(`Stopping app ${appUrn}`);
-
-      await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
-        logger.error(`Failed to stop app ${appUrn}:`, err);
-      });
-      await this.ensureAppDir(appUrn, form);
+      await this.ensureAppDir(appUrn, form, { pruneContainers: false });
 
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);
@@ -35,13 +29,19 @@ export class RestartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && (form.forcePull ?? config.force_pull);
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`, async () => {
+        deploymentUnchanged = false;
+        logger.info(`Stopping app ${appUrn}`);
+        await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
+          logger.error(`Failed to stop app ${appUrn}:`, err);
+        });
+      });
 
       logger.info(`App ${appUrn} restarted`);
 
       return { success: true, message: `App ${appUrn} restarted successfully` };
     } catch (err) {
-      return this.handleAppError(err, appUrn, 'restart');
+      return { ...(await this.handleAppError(err, appUrn, 'restart')), deploymentUnchanged };
     }
   }
 }

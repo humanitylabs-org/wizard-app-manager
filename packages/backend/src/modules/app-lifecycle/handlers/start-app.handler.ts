@@ -30,7 +30,9 @@ export class StartAppHandler implements ILifecycleHandler<StartAppParams> {
 
     const requestId = generateRequestId();
 
-    this.appEventsQueue.publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } }).then(async ({ success, message }) => {
+    this.appEventsQueue.publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } }).then(async (result) => {
+      const { success, message } = result;
+      const deploymentUnchanged = 'deploymentUnchanged' in result && result.deploymentUnchanged;
       if (success) {
         await this.statusManager.emitSuccess({
           appId: app.id,
@@ -44,7 +46,7 @@ export class StartAppHandler implements ILifecycleHandler<StartAppParams> {
           appId: app.id,
           appUrn,
           event: 'start_error',
-          status: 'stopped',
+          status: deploymentUnchanged ? app.status : 'stopped',
           error: message ?? 'Unknown error',
         });
       }

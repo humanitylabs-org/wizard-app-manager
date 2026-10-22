@@ -95,7 +95,8 @@ export async function fixture(root: string, dry: boolean, legacyVolume: string) 
         : args;
     return exec(file, actual, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
   };
-  const store = dry ? new PlanningStorage(dirs, undefined, legacyVolume) : new WizardStorage(dirs, run, legacyVolume);
+  const installedApps = async () => ids.map((appName) => ({ appName, appStoreSlug: 'wizardapps' }));
+  const store = dry ? new PlanningStorage(dirs, installedApps, undefined, legacyVolume) : new WizardStorage(dirs, installedApps, run, legacyVolume);
   // Never read/update the real owner's registry, even when inherited from a worker.
   process.env.WIZARD_OS_HOME = path.join(dirs.dataDir, 'state/wizard-os');
   const config = {

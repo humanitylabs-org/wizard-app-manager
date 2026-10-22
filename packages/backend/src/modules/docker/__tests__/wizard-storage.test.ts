@@ -9,6 +9,7 @@ import type { AppUrn } from '@runtipi/common/types';
 
 let root: string;
 let store: WizardStorage;
+let installed: { appName: string; appStoreSlug: string }[];
 let run: ReturnType<typeof vi.fn<(file: string, args: string[]) => Promise<{ stdout: string }>>>;
 const provider = { id: 'wizard-claude', shares: [{ id: 'claude-login', path: 'claude' }] };
 const consumer = { id: 'hermes-agent', mounts: [{ app: 'wizard-claude', share: 'claude-login', path: '/claude' }] };
@@ -20,12 +21,14 @@ async function install(m: any, c: any = compose) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'wizard.md'), `---\n${yaml.stringify(m)}---\n`);
   await fs.writeFile(path.join(dir, 'docker-compose.yml'), yaml.stringify(c));
+  installed.push({ appName: m.id, appStoreSlug: 'wizardapps' });
   return `${m.id}:wizardapps`;
 }
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), 'wizard-storage-'));
   run = vi.fn().mockResolvedValue({ stdout: '' });
-  store = new WizardStorage({ dataDir: root, appDataDir: path.join(root, 'app-data') }, run);
+  installed = [];
+  store = new WizardStorage({ dataDir: root, appDataDir: path.join(root, 'app-data') }, async () => installed, run);
 });
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
@@ -186,6 +189,7 @@ describe('live legacy Claude compatibility', () => {
     await install({ id: 'wizard-claude' }, legacy);
     await fs.mkdir(path.join(root, 'apps/core'), { recursive: true });
     await fs.rename(path.join(root, 'apps/wizardapps/wizard-claude'), path.join(root, 'apps/core/wizard-claude'));
+    installed.find((a) => a.appName === 'wizard-claude')!.appStoreSlug = 'core';
     const data = path.join(root, 'app-data/core/wizard-claude');
     await fs.mkdir(path.join(data, 'data/claude'), { recursive: true });
     await fs.writeFile(path.join(data, 'app.env'), 'APP_DATA_DIR=/daemon/app-data/core/wizard-claude\n');
@@ -301,6 +305,7 @@ describe('live legacy Claude compatibility', () => {
     await install({ id: 'agent-private' }, legacy);
     await fs.mkdir(path.join(root, 'apps/private'), { recursive: true });
     await fs.rename(path.join(root, 'apps/wizardapps/agent-private'), path.join(root, 'apps/private/agent-private'));
+    installed.find((a) => a.appName === 'agent-private')!.appStoreSlug = 'private';
     alias();
     const result = yaml.parse(await store.prepare('agent-private:private', yaml.stringify(legacy)));
     expect(result.volumes).toEqual(legacy.volumes);
@@ -343,7 +348,7 @@ describe('legacy copy and explicit Claude upgrade', () => {
   it.each([LEGACY_CLAUDE, 'wizard-storage-unit-legacy'])(
     'upgrades existing fixed-volume pair once using selected legacy volume %s',
     async (selected) => {
-      store = new WizardStorage(store.dirs, run, selected);
+      store = new WizardStorage(store.dirs, async () => installed, run, selected);
       const legacy = {
         ...compose,
         volumes: { login: { name: LEGACY_CLAUDE } },

@@ -55,9 +55,10 @@ test('injected legacy name controls real production upgrade lookup/copy, not rec
     // Unit test double only. Full rehearsal uses rejecting real execFile.
     const run = async (_file: string, args: string[]) => {
       calls.push(args);
+      if (args[0] === 'volume' && args[1] === 'inspect') return { stdout: '{}' };
       return { stdout: args[0] === 'volume' ? 'unit-disposable-legacy\n' : '' };
     };
-    const store = new WizardStorage(c.dirs, run, 'unit-disposable-legacy');
+    const store = new WizardStorage(c.dirs, c.store.installedApps, run, 'unit-disposable-legacy');
     const result = yaml.parse(await store.prepare('hermes-agent:wizardapps', await c.compile('hermes-agent')));
     expect((await store.readGrants()).grants[0]?.approved).toBe('install');
     expect(result.services.main.volumes).toHaveLength(1);
@@ -67,8 +68,8 @@ test('injected legacy name controls real production upgrade lookup/copy, not rec
     const grant = (await store.readGrants()).grants[0]!;
     await store.change(grant, false);
     expect(yaml.parse(await store.prepare('hermes-agent:wizardapps', await c.compile('hermes-agent'))).services.main.volumes).toEqual([]);
-    expect(() => new WizardStorage(c.dirs, run, '../unsafe')).toThrow('Unsafe legacy');
-    expect(new WizardStorage(c.dirs, run).legacyClaudeVolume).toBe(LEGACY_CLAUDE);
+    expect(() => new WizardStorage(c.dirs, c.store.installedApps, run, '../unsafe')).toThrow('Unsafe legacy');
+    expect(new WizardStorage(c.dirs, c.store.installedApps, run).legacyClaudeVolume).toBe(LEGACY_CLAUDE);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

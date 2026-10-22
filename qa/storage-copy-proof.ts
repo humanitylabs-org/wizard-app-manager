@@ -44,7 +44,7 @@ try {
   await helper(
     'mkdir /old/nested; printf proof-only > /old/nested/.login; chmod 600 /old/nested/.login; chown -R 1234:2345 /old; chmod 700 /old/nested; ln -s nested/.login /old/link',
   );
-  const storage = new WizardStorage({ dataDir: root, appDataDir: root });
+  const storage = new WizardStorage({ dataDir: root, appDataDir: root }, async () => []);
   const app = { urn: 'proof:wizardapps', manifest: { id: 'proof' }, compose: { services: {} }, data: root, hostData };
   await storage.migrate(volume, 'volumes/login', app);
   const first = await helper(
