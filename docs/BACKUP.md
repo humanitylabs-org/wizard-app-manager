@@ -21,6 +21,25 @@ provisioned by the same `os.sh`), so one engine serves all of them; the Mac app 
   after the first run; keeps 7 daily, 4 weekly and 6 monthly snapshots; checked after every run and read back
   weekly.
 
+## Interrupted restores and Undo
+
+Before any destructive change, the engine publishes the restore journal pointer. Each Wizard-home, agent-home,
+agent metadata, Files and agent-root rename has a durable pending intent and a completion record, with the journal
+and rename-parent directories flushed to disk. Undo reconciles a pending move from the actual source/destination
+locations, including a process that died between rename and its completion record. An interrupted area restores
+only the entries actually moved; it never sets aside untouched entries. Undo's own move plan is persisted once,
+so retrying a partial Undo does not set aside already restored originals.
+
+A digest mismatch is **not** a completed Undo: status remains `undo-failed`, `undo_failed` is true, recovery copies
+are retained, and `wam backup undo` may be retried after resolving the reported difference. Success alone marks
+`undone` and removes temporary recovery data. A cross-filesystem set-aside is refused without copying/deleting the
+original: atomically renaming that agent home requires its undo staging to be on the same filesystem.
+
+Regression coverage: `tests/test_backup_move_journal.py` injects failure immediately before and after every move
+position across all four areas, interrupts successive Undo moves, bypasses exception handlers with a hard process
+exit during the secrets move, and checks retry after a digest mismatch. These are disposable fake-box tests; a
+fresh-box Mac/Linux acceptance run is still required before release.
+
 ## The key
 
 The owner holds the key; the box never sends anything readable off the machine.

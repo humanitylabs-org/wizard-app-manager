@@ -58,7 +58,18 @@ def _write_json(path: Path, obj) -> None:
     with os.fdopen(fd, "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    _sync_dir(path.parent)
+
+
+def _sync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _move(src: Path, dst: Path) -> None:
@@ -70,7 +81,73 @@ def _move(src: Path, dst: Path) -> None:
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
-        shutil.move(str(src), str(dst))   # a different filesystem (e.g. an agent home on its own mount)
+        # A copy+delete fallback is not an atomic set-aside. Refuse without
+        # touching the original rather than leave an ambiguous partial copy.
+        raise RestoreError(f"cannot atomically move {src} to {dst}: different filesystems") from e
+
+
+def _journal_move(j: dict, save, kind: str, area: str, src: Path, dst: Path) -> None:
+    """Write intent durably before rename; reconcile a crash after rename on retry."""
+    row = next((s for s in j["steps"] if s["kind"] == kind and s.get("src") == str(src)
+                and s.get("dst") == str(dst)), None)
+    if row is None:
+        row = {"kind": kind, "area": area, "src": str(src), "dst": str(dst), "state": "pending"}
+        j["steps"].append(row)
+        save()
+    if row["state"] == "done":
+        return
+    source = src.exists() or src.is_symlink()
+    dest = dst.exists() or dst.is_symlink()
+    if source and not dest:
+        _move(src, dst)
+    elif source or not dest:
+        raise RestoreError(f"cannot reconcile {kind}: {src} -> {dst}; recovery copies kept")
+    _sync_dir(src.parent)
+    _sync_dir(dst.parent)
+    row["state"] = "done"
+    save()
+
+
+def _aside(r: _Restore, area: str, src: Path, dst: Path) -> None:
+    _journal_move(r.journal, r.save, "set_aside_entry", area, src, dst)
+
+
+def _undo_journaled_trees(box: Box, root: Path, j: dict, targets: dict, files_root: Path, froot: Path) -> None:
+    """Freeze the undo move plan once. Retrying never sets aside an already restored original."""
+    save = lambda: _write_json(root / "journal.json", j)
+    if "undo_moves" not in j:
+        complete = {s["area"] for s in j["steps"] if s["kind"] == "set_aside"}
+        originals = [s for s in j["steps"] if s["kind"] == "set_aside_entry"
+                     and (Path(s["dst"]).exists() or Path(s["dst"]).is_symlink())]
+        current = []
+        if "wizard-os" in complete:
+            current += [("wizard-os", box.home / n, root / "undone/wizard-os" / n)
+                        for n in _home_entries(box.home)]
+        for k, a in targets.items():
+            if f"agent:{k}" in complete:
+                current += [(f"agent:{k}", a.home / n, root / "undone/agents" / k / "home" / n)
+                            for n in agentlib.movable_entries(a.home)]
+                if a.folder and (a.folder / "agent.json").is_file():
+                    current.append((f"agent:{k}", a.folder / "agent.json",
+                                    root / "undone/agents" / k / "agent.json"))
+        if "agents-root" in complete and j.get("agents_root"):
+            ar = Path(j["agents_root"])
+            current += [("agents-root", ar / n, root / "undone/agents-root" / n) for n in agentlib.root_files(ar)]
+        if "files" in complete:
+            current += [("files", files_root / n, froot / "undone" / n) for n in _files_entries(files_root)]
+        # An interrupted set-aside has not started applying: untouched entries
+        # must stay in place. Only an original actually held needs restoring.
+        known = {str(src) for _, src, _ in current}
+        for s in originals:
+            src = Path(s["src"])
+            if str(src) not in known and (src.exists() or src.is_symlink()):
+                raise RestoreError(f"both original and set-aside copy exist: {src}; recovery copies kept")
+        j["undo_moves"] = [dict(kind="undo_stash", area=a, src=str(s), dst=str(d)) for a, s, d in current]
+        j["undo_moves"] += [dict(kind="undo_restore", area=s["area"], src=s["dst"], dst=s["src"])
+                            for s in originals]
+        save()
+    for s in j["undo_moves"]:
+        _journal_move(j, save, s["kind"], s["area"], Path(s["src"]), Path(s["dst"]))
 
 
 def _rm(p: Path) -> None:
@@ -346,6 +423,9 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
                     "error": "not confirmed: nothing was changed (pass --yes to restore without asking)"}
     r.journal.update({"status": "setting-aside", "file": str(path), "plan": p, "started_at": int(t0)})
     r.save()
+    # Publish the recovery pointer BEFORE the first mutation, not only in an
+    # exception handler (SIGKILL/power loss never runs that handler).
+    _write_json(box.home / "restores" / "last.json", {"stamp": r.stamp})
     try:
         _apply(box, r, p, before_digest_agents)
     except BaseException as e:
@@ -525,6 +605,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         need_space(box, r.root, need + MARGIN, "the undo copies of the apps this restore replaces")
     r.save()
 
+    r.journal["move_journal_version"] = 1
+    r.save()
     # 4) set aside ------------------------------------------------------------
     # Everything the restore replaces is stopped first and only then digested: a running app keeps rewriting its
     # files (heartbeats; some rewrite their database at every start), so only a stopped box can be compared exactly.
@@ -550,26 +632,26 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         if a["urn"] not in installed:
             _snapshot_volumes(box, r, a, vols_taken)
     for n in _home_entries(box.home):
-        _move(box.home / n, before / "wizard-os" / n)
+        _aside(r, "wizard-os", box.home / n, before / "wizard-os" / n)
     r.step(kind="set_aside", area="wizard-os")
     for k, a in targets.items():
         if k not in existing or not a.home.is_dir():
             continue
         for rel in agentlib.movable_entries(a.home):
-            _move(a.home / rel, before / "agents" / k / "home" / rel)
+            _aside(r, f"agent:{k}", a.home / rel, before / "agents" / k / "home" / rel)
         if a.folder and (a.folder / "agent.json").is_file():
-            _move(a.folder / "agent.json", before / "agents" / k / "agent.json")
+            _aside(r, f"agent:{k}", a.folder / "agent.json", before / "agents" / k / "agent.json")
         r.step(kind="set_aside", area=f"agent:{k}")
     if (m.get("files") or {}).get("included"):
         for n in _files_entries(r.files_root):
-            _move(r.files_root / n, r.froot / "before" / n)
+            _aside(r, "files", r.files_root / n, r.froot / "before" / n)
         r.step(kind="set_aside", area="files")
     aroot = box.agents_root()
     held = agentlib.root_files(aroot)
     if held or (stage / "agents-root").is_dir():
         r.journal["agents_root"] = str(aroot)
         for n in held:
-            _move(aroot / n, before / "agents-root" / n)
+            _aside(r, "agents-root", aroot / n, before / "agents-root" / n)
         r.step(kind="set_aside", area="agents-root")
     r.journal["status"] = "applying"
     r.save()
@@ -887,37 +969,40 @@ def _undo(box: Box) -> dict:
                 box.wait_status(a.urn, {"stopped"}, timeout=300)
         except (RuntipiError, HermesError) as e:
             notes.append(f"agent {k}: stop: {e}")
-    # Wizard home
-    if "wizard-os" in areas:
-        for n in _home_entries(box.home):
-            _move(box.home / n, undone / "wizard-os" / n)
-        for n in sorted(os.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
-            _move(before / "wizard-os" / n, box.home / n)
-    # agents
-    for k, a in targets.items():
-        if f"agent:{k}" in areas:
-            for rel in agentlib.movable_entries(a.home):
-                _move(a.home / rel, undone / "agents" / k / "home" / rel)
-            held = before / "agents" / k / "home"
-            for rel in _walk_back(held):
-                _move(held / rel, a.home / rel)
-            if (before / "agents" / k / "agent.json").is_file() and a.folder:
-                if (a.folder / "agent.json").exists():
-                    _move(a.folder / "agent.json", undone / "agents" / k / "agent.json")
-                _move(before / "agents" / k / "agent.json", a.folder / "agent.json")
-    if "agents-root" in areas and j.get("agents_root"):
-        aroot = Path(j["agents_root"])
-        for n in agentlib.root_files(aroot):
-            _move(aroot / n, undone / "agents-root" / n)
-        for n in agentlib.root_files(before / "agents-root"):
-            _move(before / "agents-root" / n, aroot / n)
-    # files
-    if "files" in areas:
-        for n in _files_entries(files_root):
-            _move(files_root / n, froot / "undone" / n)
-        fb = froot / "before"
-        for n in sorted(os.listdir(fb)) if fb.is_dir() else []:
-            _move(fb / n, files_root / n)
+    if j.get("move_journal_version") == 1:
+        _undo_journaled_trees(box, root, j, targets, files_root, froot)
+    else:
+        # Wizard home
+        if "wizard-os" in areas:
+            for n in _home_entries(box.home):
+                _move(box.home / n, undone / "wizard-os" / n)
+            for n in sorted(os.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
+                _move(before / "wizard-os" / n, box.home / n)
+        # agents
+        for k, a in targets.items():
+            if f"agent:{k}" in areas:
+                for rel in agentlib.movable_entries(a.home):
+                    _move(a.home / rel, undone / "agents" / k / "home" / rel)
+                held = before / "agents" / k / "home"
+                for rel in _walk_back(held):
+                    _move(held / rel, a.home / rel)
+                if (before / "agents" / k / "agent.json").is_file() and a.folder:
+                    if (a.folder / "agent.json").exists():
+                        _move(a.folder / "agent.json", undone / "agents" / k / "agent.json")
+                    _move(before / "agents" / k / "agent.json", a.folder / "agent.json")
+        if "agents-root" in areas and j.get("agents_root"):
+            aroot = Path(j["agents_root"])
+            for n in agentlib.root_files(aroot):
+                _move(aroot / n, undone / "agents-root" / n)
+            for n in agentlib.root_files(before / "agents-root"):
+                _move(before / "agents-root" / n, aroot / n)
+        # files
+        if "files" in areas:
+            for n in _files_entries(files_root):
+                _move(files_root / n, froot / "undone" / n)
+            fb = froot / "before"
+            for n in sorted(os.listdir(fb)) if fb.is_dir() else []:
+                _move(fb / n, files_root / n)
     # apps: uninstall what the restore installed, put back what it replaced
     done = {s["urn"] for s in steps if s["kind"] == "app_installed"}
     for s in reversed(steps):
@@ -1006,16 +1091,17 @@ def _undo(box: Box) -> dict:
         notes += _regenerate(box)
     want = j.get("digest_before") or {}
     mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
-    j["status"] = "undone"
-    j["undone_at"] = int(time.time())
+    j["status"] = "undo-failed" if mismatch else "undone"
+    if not mismatch:
+        j["undone_at"] = int(time.time())
     j["undo_digest_match"] = not mismatch
     j["undo_differences"] = differences
     j["undo_notes"] = notes
     _write_json(root / "journal.json", j)
-    # staging is never needed after an undo, whatever the digest says
-    shutil.rmtree(root / "stage", ignore_errors=True)
-    shutil.rmtree(froot / "stage", ignore_errors=True)
+    # A mismatched undo remains retryable, with every recovery copy retained.
     if not mismatch:
+        shutil.rmtree(root / "stage", ignore_errors=True)
+        shutil.rmtree(froot / "stage", ignore_errors=True)
         shutil.rmtree(undone, ignore_errors=True)
         shutil.rmtree(before, ignore_errors=True)
         shutil.rmtree(froot, ignore_errors=True)
