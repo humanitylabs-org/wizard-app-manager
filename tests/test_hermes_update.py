@@ -259,10 +259,16 @@ def test_automatic_updates_never_call_host_update(box, monkeypatch):
         pytest.fail('automatic host Hermes update')
     monkeypatch.setattr(b['hu'], 'update', forbidden)
     (b['releases'] / 'stable').write_text('1.1.0')
+    (b['releases'] / 'promotions').mkdir(exist_ok=True)   # Automatic installs only a promoted stable release
+    (b['releases'] / 'promotions' / '1.1.0.json').write_text(json.dumps({
+        'version': '1.1.0', 'latest_since': '2026-10-01T00:00:00Z', 'promoted_at': '2026-10-05T00:00:00Z',
+        'upgrade_test': {'from': '1.0.0', 'to': '1.1.0', 'passed': True, 'evidence': 'https://example.test/run'}}))
+    updates.set_mode('auto', b['h'], b['h'] / 'units', systemctl=False)   # owner chose Automatic
     calls = []
     def run(cmd, **kw):
         calls.append(cmd); return subprocess.CompletedProcess(cmd, 0, '', '')
-    assert updates.apply_if_auto(b['h'], runner=run, is_busy=lambda: False)['started']
+    out = updates.apply_if_auto(b['h'], runner=run, is_busy=lambda: False)
+    assert out['started'], out
     assert len(calls) == 1
     assert b['git']('rev-parse', 'HEAD') == b['commits'][0]
 
