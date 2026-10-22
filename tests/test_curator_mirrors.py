@@ -20,17 +20,22 @@ def fixture(tmp_path, monkeypatch):
     git(source, 'config', 'user.name', 'Test')
     git(source, 'config', 'user.email', 'test@example.org')
     (source / 'server.py').write_text('print("pinned code")')
+    (source / 'wizard.md').write_text('---\nid: demo\nruntime:\n  compose: compose.yml\n---\n')
+    (source / 'compose.yml').write_text('services:\n  app:\n    image: python@sha256:' + 'a'*64 + '\n')
     git(source, 'add', '.')
     git(source, 'commit', '-qm', 'pinned source')
     sha = git(source, 'rev-parse', 'HEAD')
     mirror = tmp_path / 'mirror.git'
     git(tmp_path, 'clone', '-q', '--bare', str(source), str(mirror))
     git(mirror, 'update-ref', mirrors.source_ref('gone/builder', sha), sha)
+    assets = tmp_path / 'assets'
+    assets.mkdir()
+    git(mirror, 'bundle', 'create', str(assets / mirrors.source_name('gone/builder', sha)), mirrors.source_ref('gone/builder', sha))
     config = tmp_path / 'gitconfig'
     config.write_text(f'[url "file://{tmp_path}/unreachable"]\n    insteadOf = https://github.com/gone/builder\n')
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(config))
     monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
-    monkeypatch.setattr(mirrors, 'SOURCE_MIRROR', str(mirror))
+    monkeypatch.setattr(mirrors, 'SOURCE_MIRROR', assets.as_uri())
     return source, mirror, sha
 
 
@@ -55,6 +60,7 @@ def test_wrong_mirror_commit_fails_closed(tmp_path, fixture):
     source, mirror, sha = fixture
     wrong = 'b' * 40
     git(mirror, 'update-ref', mirrors.source_ref('gone/builder', wrong), sha)
+    git(mirror, 'bundle', 'create', str(tmp_path / 'assets' / mirrors.source_name('gone/builder', wrong)), mirrors.source_ref('gone/builder', wrong))
     dest = tmp_path / 'checkout'
     with pytest.raises(private.PrivateError, match='expected'):
         private.fetch('gone/builder', wrong, dest, '')
@@ -126,3 +132,68 @@ def test_denied_registry_does_not_mean_missing(monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         mirror_defaults.ensure_image('python@sha256:' + 'a'*64)
     assert len(calls) == 1  # no copy/overwrite after denied lookup
+
+
+def test_bundle_limit_and_invalid_bundle_fail_closed(tmp_path, fixture):
+    source, mirror, sha = fixture
+    with pytest.raises(ValueError, match='size limit'):
+        mirrors.download_bundle('gone/builder', sha, tmp_path / 'too-large', limit=1)
+    (tmp_path / 'assets' / mirrors.source_name('gone/builder', sha)).write_bytes(b'not a Git bundle')
+    with pytest.raises(private.PrivateError):
+        private.fetch('gone/builder', sha, tmp_path / 'checkout', '')
+
+
+def test_maintainer_reads_existing_bundle_without_builder(tmp_path, fixture, monkeypatch):
+    source, mirror, sha = fixture
+    def no_api(*a, **k):
+        raise AssertionError('existing mirror must not need builder metadata or an upload')
+    monkeypatch.setattr(private, '_api', no_api)
+    monkeypatch.setattr(mirror_defaults, 'api_json', no_api)
+    work = tmp_path / 'work'
+    work.mkdir()
+    images, record = mirror_defaults.ensure_source('gone/builder', sha, work, private._git_env(''),
+                                                  {'id': 1}, {mirrors.source_name('gone/builder', sha): {}})
+    assert images == ['python@sha256:' + 'a'*64]
+    assert record['commit'] == sha
+    assert git(work / (mirrors.source_name('gone/builder', sha) + '.git'), 'rev-parse', 'FETCH_HEAD') == sha
+
+
+def test_new_bundle_upload_is_read_back_into_fresh_git(tmp_path, fixture, monkeypatch):
+    source, mirror, sha = fixture
+    (tmp_path / 'gitconfig').write_text(f'[url "file://{source}"]\n insteadOf = https://github.com/gone/builder.git\n')
+    monkeypatch.setattr(private, '_api', lambda *a: {'private': False})
+    uploads = []
+    def upload(url, data, binary=False):
+        assert binary and '/assets?name=' in url
+        uploads.append(url)
+        (tmp_path / 'assets' / mirrors.source_name('gone/builder', sha)).write_bytes(data)
+        return {'name': mirrors.source_name('gone/builder', sha)}
+    monkeypatch.setattr(mirror_defaults, 'api_json', upload)
+    work = tmp_path / 'work'
+    work.mkdir()
+    images, record = mirror_defaults.ensure_source('gone/builder', sha, work, private._git_env(''), {'id': 1}, {})
+    assert len(uploads) == 1
+    assert record['commit'] == sha
+    assert len(record['bundle_sha256']) == 64
+
+
+def test_nonpublic_builder_is_not_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(private, '_api', lambda *a: {'private': True})
+    with pytest.raises(ValueError, match='nonpublic'):
+        mirror_defaults.ensure_source('gone/builder', 'a'*40, tmp_path, {}, {'id': 1}, {})
+
+
+def test_release_asset_listing_is_paginated(monkeypatch):
+    calls = []
+    def api(url, data=None, binary=False):
+        calls.append(url)
+        if '/tags/' in url:
+            return {'id': 1, 'draft': False, 'prerelease': True}
+        if url.endswith('&page=1'):
+            return [{'name': str(i)} for i in range(100)]
+        return [{'name': 'last'}]
+    monkeypatch.setattr(mirror_defaults, 'api_json', api)
+    release, assets = mirror_defaults.source_release()
+    assert len(assets) == 101
+    assert len(calls) == 3
+    assert 'page=2' in calls[-1]
