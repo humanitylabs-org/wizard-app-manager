@@ -1,7 +1,8 @@
 """`wam backup ...`: the command line for backup, restore, move and scheduled backups (docs/BACKUP.md).
 
 Every command prints one JSON object with --json and short human text otherwise; progress goes to stderr.
-Exit status 0 = done (or a scheduled run with nothing to do), 1 = refused or failed, 2 = usage.
+Exit status 0 = done (or a scheduled run with nothing to do), 1 = refused or failed, 2 = usage, 3 = import partly
+done: some apps were not restored because the backup is from a newer release than this box offers (never downgraded).
 """
 from __future__ import annotations
 
@@ -114,6 +115,8 @@ def _plan_text(p: dict) -> str:
         lines.append("  replace the data of: " + ", ".join(p["replace"]))
     if p.get("leave"):
         lines.append("  leave as they are: " + ", ".join(p["leave"]))
+    for x in p.get("refused") or []:
+        lines.append(f"  NOT restore: {x['message']}")
     lines.append("  import agents: " + ", ".join(p.get("agents") or []))
     lines += [f"  note: {w}" for w in p.get("warnings") or []]
     lines.append("The current Wizard is set aside; `wam backup undo` puts it back.")
@@ -121,6 +124,10 @@ def _plan_text(p: dict) -> str:
 
 
 def _human(cmd: str, res: dict) -> str:
+    if cmd == "import" and res.get("partial"):
+        return ("partly restored (" + str(res["stamp"]) + "):\n" + "\n".join("  " + x for x in res["not_restored"])
+                + "\nEverything else is restored. Messaging is off and scheduled jobs are paused until you run "
+                  "`wam backup activate --old-is-off`. `wam backup undo` puts the previous Wizard back.")
     if not res.get("ok", True):
         return "error: " + str(res.get("error"))
     if res.get("skipped"):
@@ -153,6 +160,10 @@ def _human(cmd: str, res: dict) -> str:
     return json.dumps(res, indent=2)
 
 
+# `import` restored everything except the apps it refused (a backup newer than this box's release, wizard-os#91)
+PARTIAL = 3
+
+
 def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
@@ -162,7 +173,7 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     box = box or Box()
     try:
         res = _dispatch(args, box)
-        code = 0 if res.get("ok", True) else 1
+        code = 0 if res.get("ok", True) else (PARTIAL if res.get("partial") else 1)
     except schedule.Busy as e:
         res, code = ({"ok": True, "skipped": str(e)}, 0) if args.cmd == "run" else ({"ok": False, "error": str(e)}, 1)
     except (BackupCryptoError, restore.RestoreError, capture.ExportError, SpaceError, schedule.ScheduleError,
