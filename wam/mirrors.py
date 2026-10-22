@@ -3,7 +3,7 @@ import re
 import subprocess
 
 SOURCE_MIRROR = "https://github.com/humanitylabs-org/wizard-app-manager.git"
-IMAGE_MIRROR = "ghcr.io/humanitylabs-org/wizard-default-mirrors"
+IMAGE_MIRROR = "ghcr.io/humanitylabs-org/wizard-app-manager"
 
 
 def source_ref(repo, commit):
@@ -16,7 +16,7 @@ def image_ref(image):
     if image.startswith("ghcr.io/humanitylabs-org/"):
         return None
     match = re.fullmatch(r"[^\s@$]+@sha256:([0-9a-f]{64})", image)
-    return f"{IMAGE_MIRROR}:sha256-{match[1]}@sha256:{match[1]}" if match else None
+    return f"{IMAGE_MIRROR}:curator-sha256-{match[1]}@sha256:{match[1]}" if match else None
 
 
 def image_available(image):
