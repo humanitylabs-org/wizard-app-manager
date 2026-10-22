@@ -53,7 +53,8 @@ export function validateStorage(m: Manifest, compose: Compose, legacy = false) {
   for (const [name, opts] of Object.entries(compose.volumes ?? {})) {
     if (!VOLUME.test(name) || name === '.' || name === '..') throw new Error('Unsafe volume id');
     if (opts != null && (typeof opts !== 'object' || Array.isArray(opts))) throw new Error('Invalid volume options');
-    if (opts?.external || opts?.driver || opts?.driver_opts || (opts && 'name' in opts && !(legacy && opts.name === LEGACY_CLAUDE)))
+    const legacyName = legacy && opts?.name === LEGACY_CLAUDE;
+    if ((opts?.external && !legacyName) || opts?.driver || opts?.driver_opts || (opts && 'name' in opts && !legacyName))
       throw new Error(`Volume ${name}: fixed name/external/custom driver is not portable; use shares`);
   }
 }
@@ -65,9 +66,12 @@ export function rewriteVolumes(input: Compose, appId: string): Compose {
   const plans: { name: string; old: string; relative: string }[] = [];
   const aliases: NonNullable<Compose['volumes']> = {};
   for (const [name, opts] of Object.entries(doc.volumes ?? {})) {
-    if (opts?.external || opts?.driver || opts?.driver_opts) throw new Error(`Nonportable volume ${name}`);
     if (!VOLUME.test(name) || name === '.' || name === '..') throw new Error('Unsafe volume id');
     const claude = appId === 'wizard-claude' && opts?.name === LEGACY_CLAUDE;
+    // Agent Service consumers declare the legacy login as `external: true`; the
+    // alias branch below keeps that declaration verbatim (prepare() verifies it).
+    const legacyConsumer = opts?.name === LEGACY_CLAUDE && !claude && appId !== 'hermes-agent';
+    if ((opts?.external && !legacyConsumer) || opts?.driver || opts?.driver_opts) throw new Error(`Nonportable volume ${name}`);
     if (opts && 'name' in opts && opts.name !== LEGACY_CLAUDE) throw new Error(`Fixed volume name ${name}`);
     // Agent Service generated consumers predate mounts declarations. Preserve
     // their exact mounts; prepare() verifies this name is a provider-folder alias
@@ -212,7 +216,12 @@ export class WizardStorage {
       }
     }
     // Count database rows, including a second install whose recipe is missing.
-    if (out.some((a) => installed.filter((row) => row.appName === a.manifest.id).length > 1)) throw new Error('Ambiguous installed provider ids');
+    // Only share providers must be unique: an unrelated app installed in two
+    // stores (e.g. a stopped older copy) must not block every lifecycle action.
+    const providers = new Set(out.filter((a) => a.manifest.shares?.length).map((a) => a.manifest.id));
+    for (const a of out) for (const m of a.manifest.mounts ?? []) providers.add(m.app);
+    for (const a of out) if (Object.values(a.compose.volumes ?? {}).some((v: any) => v?.name === LEGACY_CLAUDE)) providers.add('wizard-claude');
+    if ([...providers].some((id) => installed.filter((row) => row.appName === id).length > 1)) throw new Error('Ambiguous installed provider ids');
     return out;
   }
   proposals(apps: App[], file: Grants): Grant[] {
