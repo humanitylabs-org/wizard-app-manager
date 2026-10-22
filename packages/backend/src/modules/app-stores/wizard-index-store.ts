@@ -46,6 +46,23 @@ const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const CHECK_TTL = 10 * 60 * 1000;
 
+// wizard-os#138: until app pages stop acting as the owner (wizard-os#133), the Store lists and installs first-party
+// apps only. Same rule and override as wam/index.py: WAM_PUBLISHERS (comma-separated GitHub owners) replaces the
+// list; WAM_PUBLISHERS=* turns the guard off.
+export const FIRST_PARTY_PUBLISHERS = ['humanitylabs-org', 'oscarhenrycollins', 'jdefleur', 'defleur-agents'];
+export const allowedPublisher = (rec: { repo?: string; publisher?: string }, env = process.env.WAM_PUBLISHERS ?? '') => {
+  const raw = env.trim();
+  if (raw === '*') return true;
+  const allow = raw
+    ? raw
+        .split(',')
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean)
+    : FIRST_PARTY_PUBLISHERS;
+  const owner = String(rec.publisher || String(rec.repo ?? '').split('/')[0]).toLowerCase();
+  return allow.includes(owner);
+};
+
 /** Container settings that would give an app control of the host. Same rule as the index checker. */
 export const composeRisks = (doc: unknown): string[] => {
   const risks: string[] = [];
@@ -109,7 +126,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const { architecture } = this.configuration.getConfig();
     if (architecture) q.set('arch', architecture);
     const res = await this.get<IndexSearch>(`/v1/search?${q}`);
-    const data = res.apps.filter((a) => ID.test(a.id)).map((a) => this.toSimple(a));
+    const data = res.apps.filter((a) => ID.test(a.id) && allowedPublisher(a)).map((a) => this.toSimple(a));
     return { data, total: data.length + (res.next_offset != null ? 1 : 0), nextCursor: res.next_offset != null ? String(res.next_offset) : null };
   }
 
@@ -133,7 +150,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) return hit.rec;
     try {
       const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
-      const rec = res.apps.find((a) => a.id === appName) ?? null;
+      const rec = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
       this.lastCheck.set(appName, { at: Date.now(), rec });
       return rec;
     } catch (e) {
@@ -165,7 +182,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (await this.filesystem.isFile(selected)) {
       const pin = JSON.parse((await this.filesystem.readTextFile(selected)) ?? '{}');
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
-      if (!SHA.test(pin.commit ?? '') || pin.commit !== await this.localCommit(appName) || pin.repo !== source.repo)
+      if (!SHA.test(pin.commit ?? '') || pin.commit !== (await this.localCommit(appName)) || pin.repo !== source.repo)
         throw new Error('invalid owner-local selection pin');
       return;
     }
