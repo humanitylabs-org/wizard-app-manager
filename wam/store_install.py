@@ -51,6 +51,18 @@ def check_request(headers, owner: str, origins: set[str]) -> str | None:
     return None
 
 
+def served_origins(host: str) -> set[str]:
+    """Only owner-configured Serve mounts to this listener, not arbitrary browser ports."""
+    try:
+        r = subprocess.run(['tailscale', 'serve', 'status', '--json'], capture_output=True, text=True, timeout=15)
+        web = json.loads(r.stdout).get('Web', {})
+        return {f'https://{authority}' for authority, site in web.items()
+                if authority.rsplit(':', 1)[0] == host
+                and site.get('Handlers', {}).get(PREFIX, {}).get('Proxy') == f'http://127.0.0.1:{PORT}'}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+
 def allowed(c, app_id: str) -> bool:
     """Listed in the pinned private test catalog or the public App Index."""
     from . import index, test_catalog
@@ -65,31 +77,39 @@ def allowed(c, app_id: str) -> bool:
         return False
 
 
-def start(c, app_id: str, install_fn, installed_fn) -> tuple[int, dict]:
+def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[int, dict]:
     if not ID.match(app_id or ""):
         return 400, {"error": "bad app id"}
     with _lock:
         job = _jobs.get(app_id)
         if job and job["state"] == "installing":
+            if selection and job.get("selection") != {k: selection[k] for k in ("source", "repo", "commit", "operation")}:
+                return 409, {"error": "another release operation is already running for this app"}
             return 202, job
-    if app_id in installed_fn():
+    if not selection and app_id in installed_fn():
         return 200, {"app": app_id, "state": "installed", "note": "already installed"}
-    if not allowed(c, app_id):
+    if not selection and not allowed(c, app_id):
         return 404, {"error": f"{app_id} is not in the App Store"}
     with _lock:
         job = _jobs.get(app_id)
         if job and job["state"] == "installing":
+            if selection and job.get("selection") != {k: selection[k] for k in ("source", "repo", "commit", "operation")}:
+                return 409, {"error": "another release operation is already running for this app"}
             return 202, job
         job = _jobs[app_id] = {"app": app_id, "state": "installing", "started": int(time.time())}
+        if selection:
+            job["selection"] = {k: selection[k] for k in ("source", "repo", "commit", "operation")}
 
     def run():
         try:
             res = install_fn(c, app_id)
             ok = res.get("status") in ("running", "stopped", "already installed")
+            if ok:
+                # Publish the same-origin route and rewrite/share the registry BEFORE reporting `installed`: the
+                # Store then asks the shell to re-read its apps, and must find the app's openable URL already there.
+                _links(c)
             job.update(state="installed" if ok else "failed", status=res.get("status"),
                        **({} if ok else {"error": f"finished as {res.get('status')}"}))
-            if ok:
-                _links(c)
         except SystemExit as e:
             job.update(state="failed", error=str(e)[:400])
         except Exception as e:  # noqa: BLE001 - report, never crash the API server
@@ -104,12 +124,15 @@ def _links(c) -> None:
     """Publish the new app on the tailnet so Wizard can open it (best effort)."""
     try:
         from . import links
-        from .cli import write_registry
+        from .cli import write_registry, share_registry
         reg = write_registry(c)
         links.publish(reg, c.home, {a["id"] for a in reg.get("apps") or [] if "shell" in (a.get("provides") or [])})
         links.apply_to_registry(reg, c.home)
         from . import registry
         registry.write(reg, c.home)
+        # The Agent Service consumes the shared projection, not the owner's file.
+        # Publish it again after URL rewriting, including the very last install.
+        share_registry(c)
     except Exception:  # noqa: BLE001
         pass
 

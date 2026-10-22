@@ -16,6 +16,10 @@ from pathlib import Path
 import yaml
 
 SCHEMA = 2
+# Written into the same skills/ folder by the Agent Service and the wizard-os Hermes plugin (kernel.py
+# JOB_SKILL_PREFIX / JOB_STAMP). registry.write must never prune them.
+ROUTING_SKILL_PREFIX = "wizard-job-"
+ROUTING_STAMP = ".wizard-jobs"
 
 
 def home() -> Path:
@@ -36,7 +40,8 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
             src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
             commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit}
+            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
+                    "private": src.get("private") is True}
     return None
 
 
@@ -72,12 +77,18 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if st != store:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             continue
-        meta = app_meta(runtipi_root, store, name)
-        if not meta:
+        meta = app_meta(runtipi_root, st, name)
+        if not meta or (st != store and not meta.get("private")):
             continue
+        # A fork can retain its canonical app id in a Git-backed store without the
+        # public index replacing its recipe. Project its actual installed identity.
+        if any(a["id"] == name for a in apps):
+            raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
+        from . import chats_views
+        chats = chats_views.installed(meta['dir'], w, meta['commit'])
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None
         view = w.get("view") or None
@@ -87,6 +98,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
+                '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
+            **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
@@ -115,11 +129,25 @@ def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
     sk = root / "skills"
-    shutil.rmtree(sk, ignore_errors=True)
-    sk.mkdir()
+    from . import chats_views
+    chats_views.publish(reg, root)
+    reg.setdefault('slots', {}).setdefault('chats', {'default': chats_views.BUILTIN, 'candidates': []})
+    if chats_views.BUILTIN not in reg['slots']['chats']['candidates']:
+        reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
+        reg['slots']['chats']['default'] = chats_views.BUILTIN
+    sk.mkdir(exist_ok=True)
+    for entry in sk.iterdir():
+        # skills/ is shared: the Agent Service / wizard-os Hermes plugin keep the wizard-job-* routing
+        # skills (and their stamp) here. Only per-app skill folders are ours to prune.
+        if entry.name.startswith(ROUTING_SKILL_PREFIX) or entry.name == ROUTING_STAMP:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
     for a in reg["apps"]:
         src = a.get("_skill_src")   # get, not pop: write_registry writes twice and the second pass must copy skills too
-        if src:
+        if src and not a["id"].startswith(ROUTING_SKILL_PREFIX):
             (sk / a["id"]).mkdir()
             shutil.copy2(src, sk / a["id"] / "SKILL.md")
     prev = root / "apps.json"
@@ -142,7 +170,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if owner_routes_enabled and out.get("view") is not None:
             # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
             out["view"] = {"url": r["view"]} if r.get("view") else None
-        if r.get("staged_as"):
+        if r.get("staged_as") and not a.get('chats_view'):
             out.update({"id": r["staged_as"], "app_id": a["id"], "name": f"{out.get('name') or a['id']} (test)",
                         "staged": True})
         return out

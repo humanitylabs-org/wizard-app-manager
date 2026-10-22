@@ -21,7 +21,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("bash", "sh", "cat", "mkdir", "cp", "chmod", "rm", "date", "dirname", "seq", "grep", "cut", "sed",
-                 "mv"):
+                 "mv", "mktemp", "find"):
         (bin_dir / name).symlink_to(shutil.which(name))
     calls = tmp_path / "calls"
 
@@ -36,11 +36,19 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
 if [ "$1" = image ]; then exit 1; fi
+case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
 ''')
-    for name in ("systemctl", "loginctl"):
+    for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
     # HEALTH=down makes every health check fail (the App Manager never comes up).
-    tool("curl", 'printf "curl %s\\n" "$*" >> "$CALLS"\n[ "${HEALTH:-up}" = up ]\n')
+    # The Runtipi setup download: write a stand-in setup script (creates the base's .env) to curl's -o target.
+    tool("curl", '''printf "curl %s\\n" "$*" >> "$CALLS"
+case "$*" in *setup.runtipi.io*)
+  out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+  printf '#!/bin/bash\\nmkdir -p runtipi && echo NGINX_PORT=8480 > runtipi/.env && echo "services: {}" > runtipi/docker-compose.yml\\n' > "$out"
+  exit 0;; esac
+[ "${HEALTH:-up}" = up ]
+''')
     tool("tailscale", '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 [ "$1" = status ] && echo '{"BackendState":"Running"}'
 ''')
@@ -51,6 +59,10 @@ if [ "$1" = image ]; then exit 1; fi
   printf "wam %s\\n" "$*" >> "$CALLS"
   if [ "${3:-}" = bootstrap ]; then
     if [ -n "${BOOTSTRAP_OUT:-}" ]; then printf '%s\\n' "$BOOTSTRAP_OUT"; else echo '{"installed": [], "failed": {}}'; fi
+  fi
+  if [ "${3:-}" = troubleshooter ]; then exit "${TROUBLESHOOTER_RC:-0}"; fi
+  if [ "${3:-}" = recover ]; then
+    if [ -n "${RECOVER_OUT:-}" ]; then printf '%s\\n' "$RECOVER_OUT"; else echo '{"started": [], "failed": {}, "core": []}'; fi
   fi
   exit 0
 fi
@@ -75,17 +87,23 @@ def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_acc
     docker_calls = [line for line in log if line.startswith("docker ")]
     assert docker_calls[0] == "docker sudo=0 info"
     actual = [line.split(" ", 2)[2] for line in docker_calls[1:]]
-    assert actual[0].startswith("exec runtipi-db psql ")
-    assert actual[1:] == [
+    assert actual[0] == ("compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate "
+                         "--wait runtipi-db runtipi-queue")
+    assert actual[1].startswith("exec runtipi-db psql ") and "status = 'running'" in actual[1]
+    assert actual[2].startswith("exec runtipi-db psql ")
+    assert actual[3:] == [
         "image inspect ghcr.io/humanitylabs-org/wizard-app-manager:latest",
         "pull ghcr.io/humanitylabs-org/wizard-app-manager:latest",
         "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi",
+        "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps "
+        "runtipi-reverse-proxy",
         "rm -f wizard-store wizard-skin",
     ]
     privilege = "0" if docker_access else "1"
     assert all(line.startswith(f"docker sudo={privilege} ") for line in docker_calls[1:])
     assert "tailscale up" not in "\n".join(log)
-    assert any("enable --now tailscaled" in line for line in log)
+    assert any("is-active --quiet tailscaled" in line for line in log)
+    assert not any("enable --now tailscaled" in line for line in log)
     assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
     assert log.index("tailscale status --json") < log.index("docker sudo=0 info")
     compose = (root / "user-config/tipi-compose.yml").read_text()
@@ -186,3 +204,116 @@ def test_the_outcome_path_is_printed_only_when_it_was_written(tmp_path):
     assert "Recorded in" not in p.stderr
     p, *_ = sandbox(tmp_path / "ok", HEALTH="down", WIZARD_HEALTH_TRIES="2")
     assert "Recorded in" in p.stderr
+
+
+# ---- An agent's own bundled python3 (no PyYAML) first on PATH must not break the install (demo root run, 0.3.0)
+
+def test_a_python3_without_yaml_first_on_path_is_skipped(tmp_path):
+    system = tmp_path / "system-python3"
+    block = tmp_path / "noyaml"
+
+    def agent_python_first(home):
+        (tmp_path / "bin" / "python3").rename(system)    # the sandbox's stand-in python3 becomes "the system one"
+        block.mkdir()
+        (block / "yaml.py").write_text("raise ImportError('No module named yaml')\n")
+        bad = tmp_path / "bin" / "python3"               # a real Python that cannot import yaml, like Hermes' bundled one
+        bad.write_text('#!/bin/bash\nprintf "agent-python %s\\n" "$*" >> "$CALLS"\n'
+                       f'PYTHONPATH="{block}" exec "{sys.executable}" "$@"\n')
+        bad.chmod(0o755)
+
+    p, home, root, calls, outcome = sandbox(tmp_path, before=agent_python_first, WIZARD_PYTHON=str(system))
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text()
+    assert "agent-python -m wam " not in log            # no wam work ran under the yaml-less python
+    assert "wam " in log
+    assert f'exec "{system}" -m wam' in (home / ".local/bin/wam").read_text()
+    unit = (home / ".config/systemd/user/wizard-app-manager-api.service").read_text()
+    assert f"ExecStart={system} -m wam serve" in unit
+    assert (home / ".local/bin/wizard").read_text().splitlines()[0] == f"#!{system}"
+
+
+# ---- wam#95: records survive, base and app containers are gone
+
+def test_a_rerun_recreates_missing_base_containers_before_the_app_manager(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, RUNNING_ROWS="files:wizardapps\nwizard-ux:wizardapps\n")
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    base = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --wait runtipi-db runtipi-queue"))
+    manager = next(i for i, l in enumerate(log) if l.endswith("up -d --no-deps runtipi"))
+    proxy = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --no-deps runtipi-reverse-proxy"))
+    intent = next(i for i, l in enumerate(log) if "status = 'running'" in l)
+    assert base < intent < manager < proxy
+    # Installed apps whose containers vanished are started after the App Manager answers, before bootstrap; only the
+    # apps recorded running before the App Manager's status sync could mark them stopped.
+    rec = next(i for i, l in enumerate(log) if l.startswith("wam -m wam recover"))
+    assert log[rec] == "wam -m wam recover --running files:wizardapps --running wizard-ux:wizardapps"
+    assert rec < next(i for i, l in enumerate(log) if l.startswith("wam -m wam bootstrap"))
+    assert outcome["status"] == "ok"
+
+
+def test_failed_core_recovery_fails_the_install_and_other_apps_degrade(tmp_path):
+    out = json.dumps({"started": [], "failed": {"wizard-ux": "start did not finish", "files": "start_error"},
+                      "core": ["wizard-ux", "wizard-agent-service"]})
+    p, home, root, calls, outcome = sandbox(tmp_path, RECOVER_OUT=out)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert outcome["failed"] == ["the Wizard shell / Agent Service containers could not be restarted: "
+                                 "wizard-ux: start did not finish"]
+    assert outcome["degraded"] == ["some installed apps could not be restarted: files: start_error"]
+
+
+def test_recovery_is_skipped_when_the_app_manager_never_answers(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down")
+    assert not any(l.startswith("wam -m wam recover") for l in calls.read_text().splitlines())
+
+
+def test_every_install_sets_up_the_native_troubleshooter_after_the_links(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = [l for l in calls.read_text().splitlines() if l.startswith("wam ")]
+    assert "wam -m wam troubleshooter" in log
+    assert log.index("wam -m wam links") < log.index("wam -m wam troubleshooter")
+
+
+def test_a_troubleshooter_problem_never_fails_the_install(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, TROUBLESHOOTER_RC="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert outcome["status"] == "ok"
+    assert "the Troubleshooter is not fully set up" in p.stdout
+
+
+def test_a_failed_install_does_not_set_up_the_troubleshooter(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, HEALTH="down", WIZARD_HEALTH_TRIES="1")
+    assert p.returncode == 1
+    assert "wam -m wam troubleshooter" not in calls.read_text()
+
+
+def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
+    # Demo-box fresh install (0.3.23): a root-owned /tmp/runtipi-setup.sh left by an earlier install made curl exit 23
+    # for the new wizard user, and the whole install failed before Runtipi existed. The download must never use a
+    # fixed shared path.
+    def no_base(home):
+        (home / "runtipi/.env").unlink()
+        (home / "runtipi/docker-compose.yml").unlink()
+    p, home, root, calls, outcome = sandbox(tmp_path, before=no_base)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    dl = next(l for l in log if "setup.runtipi.io" in l)
+    target = dl.split(" -o ", 1)[1]
+    assert not target.startswith("/tmp/runtipi-setup.sh")
+    assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
+    assert any(l.startswith("sudo bash " + target) for l in log)
+    assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
+    assert (root / ".env").is_file()
+    assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
+    assert outcome["status"] == "ok"
+
+
+def test_fresh_install_sets_up_the_store_routes_after_links(tmp_path):
+    """Fresh boxes: the Store's store-data / store-install routes are set up after `wam links` (alongside boxes do it
+    in their own block). Before: only alongside ran `wam store-data`, so the fresh Store had no installed status."""
+    p, home, root, calls, outcome = sandbox(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = [line for line in calls.read_text().splitlines() if line.startswith("wam ")]
+    names = [line.split()[3] for line in log]
+    assert "store-data" in names, names
+    assert names.index("links") < names.index("store-data") < names.index("troubleshooter")

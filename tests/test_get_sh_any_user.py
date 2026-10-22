@@ -103,7 +103,8 @@ class Box:
         e = {"PATH": f"{self.bin}:{home}/.local/bin:/usr/bin:/bin", "HOME": str(home), "USER": user, "LANG": "C.UTF-8",
              "FAKE_USER": user, "FAKE_PASSWD": str(self.tmp / "passwd"), "FAKE_PS": str(self.ps),
              "FAKE_LOG": str(self.log), "WIZARD_SYSTEMD_DIR": str(self.units), "WIZARD_SUDOERS_DIR": str(self.sudoers),
-             "WIZARD_PROC_ROOT": str(self.proc), "WIZARD_BUS_WAIT": "0", "WIZARD_PRIVATE_ACCESS": "none"}
+             "WIZARD_PROC_ROOT": str(self.proc), "WIZARD_RUN_ROOT": str(self.tmp / "run-user"),
+             "WIZARD_BUS_WAIT": "0", "WIZARD_PRIVATE_ACCESS": "none"}
         e.update({k: v for k, v in extra.items() if v is not None})
         return e
 
@@ -217,6 +218,27 @@ def test_no_hermes_root_still_makes_the_wizard_user_fresh(box):
     assert (box.sudoers / "90-wizard-wizard").exists()
 
 
+@pytest.mark.parametrize("record", ["none", "alongside", "failed"])
+def test_running_runtipi_is_not_a_fresh_receipt_for_named_owner(box, record):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    if record == "alongside":
+        box.wos("alice", "alongside")
+    elif record == "failed":
+        state = box.users["alice"][1] / ".wizard-os"
+        state.mkdir()
+        (state / "release.json").write_text('{"mode":"alongside","status":"install-failed"}')
+    (box.bin / "docker").write_text('#!/bin/sh\ncase "$1" in version) echo 29.9.1;; ps) echo runtipi;; esac\nexit 0\n')
+    checked = box.run("root", "--check")
+    assert "would install:     alongside as alice" in checked.stdout, checked.stdout
+    result = box.run("root")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert box.handoff().startswith("sudo -iu alice "), box.log.read_text()
+    assert _env_of(box.handoff())["WIZARD_MODE"] == "alongside"
+    assert "useradd" not in box.log.read_text()
+    assert list(box.sudoers.iterdir()) == []
+
+
 def test_fresh_box_with_a_root_hermes_stays_fresh_on_rerun(box):
     box.hermes("root")
     box.add_user("wizard", 1000)
@@ -224,6 +246,22 @@ def test_fresh_box_with_a_root_hermes_stays_fresh_on_rerun(box):
     p = box.run("root")
     assert p.returncode == 0, p.stdout + p.stderr
     assert box.handoff().startswith("sudo -iu wizard ") and _env_of(box.handoff())["WIZARD_MODE"] == "fresh"
+
+
+def test_rerun_after_a_failed_alongside_install_stays_alongside(box, tmp_path):
+    """Demo, 0.3.0: the first alongside run failed after Runtipi came up but before `wam alongside` recorded the
+    mode. The re-run saw a running runtipi and planned a fresh install as a new wizard user."""
+    box.hermes("root", where="launcher")
+    d = box.users["root"][1] / ".wizard-os"; d.mkdir(parents=True, exist_ok=True)
+    (d / "release.json").write_text('{"release": "0.3.0", "mode": "alongside", "status": "install-failed"}')
+    (box.bin / "docker").write_text('#!/bin/sh\ncase "$1" in version) echo 29.0.0 ;; ps) echo runtipi ;; esac\nexit 0\n')
+    p = box.run("root", WIZARD_CHECK="1")
+    assert "would install:     alongside as root" in p.stdout, p.stdout
+    src = _local_wam(tmp_path)
+    p = box.run("root", WAM_REPO=str(src), WAM_REF="main", WAM_DIR=str(tmp_path / "wam"))
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "useradd" not in box.log.read_text() and not box.handoff()
+    assert _env_of((tmp_path / "install-env").read_text())["WIZARD_MODE"] == "alongside"
 
 
 def test_rerun_with_two_hermes_requires_explicit_selection(box):
@@ -384,3 +422,30 @@ def test_install_sh_restarts_synchronously_from_a_terminal(tmp_path):
     assert p.returncode == 0, p.stderr
     assert "--" + RS in next(l for l in calls.splitlines() if l.startswith("wizard link"))
     assert "systemd-run" not in calls and "RESTART_LATER=\n" in p.stdout + "\n"
+
+
+def test_admin_preparation_refuses_rootless_before_host_changes(box):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    p = box.run("root", DOCKER_HOST="unix:///run/user/1001/docker.sock")
+    assert p.returncode == 2
+    assert "uses rootless Docker" in p.stderr
+    assert "apt-get" not in box.log.read_text() and not box.handoff()
+    assert list(box.sudoers.iterdir()) == []
+
+
+@pytest.mark.parametrize("entry", [(), ("start",)])
+def test_passwordful_user_gets_exact_one_time_admin_command_without_writes(box, entry):
+    box.add_user("alice", 1001)
+    hh = box.hermes("alice", home_dir=box.tmp / "custom-hermes-home")
+    (box.bin / "sudo").write_text('#!/bin/sh\necho "sudo $*" >> "$FAKE_LOG"\nexit 1\n')
+    p = box.run("alice", *entry, HERMES_HOME=str(hh), FAKE_STAT_OWNER="alice")
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert "sudo env WIZARD_HERMES_USER=alice" in p.stderr
+    assert f"HERMES_HOME={hh}" in p.stderr
+    assert "WIZARD_AGENT_SAFE=1 bash -s start" in p.stderr
+    assert "No passwordless sudo is required or granted" in p.stderr
+    assert not (box.users["alice"][1] / ".wizard-os").exists()
+    assert list(box.sudoers.iterdir()) == []
+    assert "apt-get" not in box.log.read_text() and "systemd-run" not in box.log.read_text()
+

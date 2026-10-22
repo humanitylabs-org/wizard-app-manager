@@ -42,3 +42,52 @@ def test_route_is_prefix_only_on_the_shell_port():
     assert store_data.route(8796) == ["tailscale", "serve", "--bg", "--https=8796",
                                       "--set-path=/wizard-os-home/store-data",
                                       "http://127.0.0.1:9584/wizard-os-home/store-data"]
+
+
+def test_sibling_modules_the_adapter_imports_are_fetched_too(tmp_path):
+    """Live 0.3.6: store-private-catalog.mjs imports ./wizard-alpha.mjs; without it node exits ERR_MODULE_NOT_FOUND."""
+    files = {
+        "store-data-origin.mjs": b"import { x } from './store-index-views.mjs';\nimport {w} from './store-private-catalog.mjs';",
+        "store-index-views.mjs": b"export const x = 1;",
+        "system-overview.mjs": b"export const y = 2;",
+        "store-private-catalog.mjs": b"import {cached, refresh} from './wizard-alpha.mjs';\nconst m = await import('./lazy.mjs');",
+        "wizard-alpha.mjs": b"import {join} from 'node:path';\nexport const cached = 1;",
+        "lazy.mjs": b"export default 1;",
+    }
+    asked = []
+    tools = store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
+    assert (tools / "wizard-alpha.mjs").is_file() and (tools / "lazy.mjs").is_file()
+    assert sorted(set(asked)) == sorted(files) and len(asked) == len(set(asked))
+
+
+def test_missing_imported_module_fails_cleanly(tmp_path):
+    files = {"store-data-origin.mjs": b"import './gone.mjs';", "store-index-views.mjs": b"", "system-overview.mjs": b""}
+    with pytest.raises(RuntimeError, match="no tools/gone.mjs"):
+        store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: files.get(n))
+    assert not any(tmp_path.iterdir())
+
+
+def test_a_cache_missing_an_imported_module_is_refetched(tmp_path):
+    """Live 0.3.7 rerun: a 0.3.6 cache (no wizard-alpha.mjs) was reused as complete and the unit kept failing."""
+    tools = tmp_path / SHA / "tools"
+    tools.mkdir(parents=True)
+    for n in ("store-data-origin.mjs", "store-index-views.mjs", "system-overview.mjs"):
+        (tools / n).write_text("// old")
+    (tools / "store-private-catalog.mjs").write_text("import {cached} from './wizard-alpha.mjs';")
+    files = {"store-data-origin.mjs": b"// new", "store-index-views.mjs": b"", "system-overview.mjs": b"",
+             "store-private-catalog.mjs": b"import {cached} from './wizard-alpha.mjs';", "wizard-alpha.mjs": b"//"}
+    asked = []
+    out = store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
+    assert (out / "wizard-alpha.mjs").is_file() and asked
+    asked.clear()
+    store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or files.get(n))
+    assert asked == [], "a complete cache is reused without refetching"
+
+
+def test_unit_points_the_adapter_at_the_boxs_agent_service(tmp_path):
+    tools = tmp_path / "tools"
+    unit = store_data.unit_text("/usr/bin/node", tools, SHA, service="http://127.0.0.1:8798")
+    assert "Environment=WIZARD_STORE_SERVICE_ORIGIN=http://127.0.0.1:8798\n" in unit
+    for bad in ("https://example.com", "http://10.0.0.5:8798", "http://127.0.0.1:8798/x\nExecStart=/bin/sh"):
+        assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA, service=bad)
+    assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA)

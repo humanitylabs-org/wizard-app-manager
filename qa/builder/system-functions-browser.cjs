@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), http = require('node:http');
 const crypto = require('node:crypto'), os = require('node:os');
 const {spawn} = require('node:child_process');
-const {chromium} = require('playwright');
+const {chromium} = require('../qa-playwright.cjs');
 const args = Object.fromEntries(process.argv.slice(2).reduce((r,v,i,a)=>{if(v.startsWith('--'))r.push([v.slice(2),a[i+1]]);return r},[]));
 const SOURCE = path.resolve(args.source || ''), CORE = path.resolve(args.core || ''), OUT = path.resolve(args.out || 'evidence/browser');
 fs.mkdirSync(OUT,{recursive:true});

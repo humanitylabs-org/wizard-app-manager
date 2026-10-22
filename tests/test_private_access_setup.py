@@ -30,7 +30,7 @@ def sandbox(tmp_path):
         p.chmod(0o755)
 
     tool("id", 'echo 1000\n')
-    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; exec "$@"\n')
+    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; [ "${1:-}" != -n ] || shift; exec "$@"\n')
     tool("systemctl", 'printf "systemctl %s\\n" "$*" >> "$CALLS"; exit "${SERVICE_RC:-0}"\n')
     tailscale_body = '''printf "tailscale %s\\n" "$*" >> "$CALLS"
 case "$1" in
@@ -45,7 +45,11 @@ login)
   if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
   exit 1 ;;
 up)
-  if [ -n "${NONDEFAULT:-}" ]; then echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags"; exit 1; fi
+  if [ -n "${NONDEFAULT:-}" ] && [ "$#" -eq 2 ]; then
+    echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags"
+    echo "  tailscale up $2 ${PRESERVE_FLAGS:---accept-dns=false --accept-routes --hostname=fixture}"
+    exit 1
+  fi
   touch "$STATE_FILE.up"
   echo "To authenticate, visit:"
   echo "login link from mock"
@@ -85,9 +89,24 @@ def test_existing_connection_is_not_reconfigured(sandbox):
     calls = log.read_text()
     assert "tailscale up" not in calls
     assert "package installed" not in calls
-    assert "enable --now tailscaled" in calls
+    assert "is-active --quiet tailscaled" in calls
+    assert "enable --now tailscaled" not in calls
+    assert "sudo -n systemctl" not in calls, "a running daemon needs no privileged systemctl"
     assert json.loads((home / ".wizard-os/private-access.json").read_text()) == {
         "provider": "tailscale", "runtime": "host", "state": "Running", "installed": True, "serve_ready": True}
+
+
+def test_operator_without_sudo_reuses_daemon_and_runs_each_up_only_once(sandbox):
+    bindir, log, _, state, _ = sandbox
+    (bindir / "sudo").write_text('#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$CALLS"\nexit 1\n')
+    state.write_text("NeedsLogin")
+    # Let the successful preserved invocation complete instead of racing a zero-second deadline.
+    p = run(sandbox, NONDEFAULT="1", WIZARD_TAILSCALE_WAIT="2", UP_STATE="Running")
+    assert p.returncode == 0, p.stderr
+    calls = log.read_text()
+    assert "sudo -n tailscale" not in calls and "enable --now tailscaled" not in calls
+    assert sum(line.startswith("tailscale up ") for line in calls.splitlines()) == 2
+    assert "--accept-dns=false --accept-routes --hostname=fixture" in calls
 
 
 def test_fresh_install_can_leave_login_pending(sandbox):
@@ -176,8 +195,38 @@ def test_tailnet_without_magicdns_or_https_finishes_box_only_with_the_admin_link
 def test_logged_out_node_with_custom_settings_signs_in_without_changing_them(sandbox):
     _, log, home, state, _ = sandbox
     state.write_text("NeedsLogin")
-    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="2", NONDEFAULT="1")
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", LOGIN_AFTER="3", NONDEFAULT="1")
     assert p.returncode == 0, p.stderr
-    assert "tailscale login --timeout=" in log.read_text()
+    calls = log.read_text()
+    assert "tailscale login" not in calls, "login switches to an empty profile"
+    assert "--accept-dns=false --accept-routes --hostname=fixture" in calls
     assert "https://login.tailscale.com/a/abc123" in p.stdout
     assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
+
+
+@pytest.mark.parametrize("flags", ["--reset", "--force-reauth", "--auth-key=not-a-key",
+                                  "--hostname=fixture; touch injected", "'unterminated"])
+def test_preservation_fallback_rejects_unsafe_or_unrecognized_output(sandbox, flags):
+    _, log, _, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, NONDEFAULT="1", PRESERVE_FLAGS=flags, WIZARD_TAILSCALE_WAIT="0")
+    assert p.returncode == 0, p.stderr
+    calls = log.read_text()
+    assert "tailscale login" not in calls
+    assert sum(line.startswith("tailscale up ") for line in calls.splitlines()) == 1
+
+
+def test_unavailable_daemon_status_is_not_reported_as_success(sandbox):
+    _, _, home, state, _ = sandbox
+    state.write_text("Unknown")
+    p = run(sandbox)
+    assert p.returncode != 0
+    assert "status is unavailable" in p.stderr
+    assert not (home / ".wizard-os/private-access.json").exists()
+
+
+def test_joined_node_never_changes_custom_flags_or_serve_443(sandbox):
+    _, log, _, _, _ = sandbox
+    assert run(sandbox, NONDEFAULT="1").returncode == 0
+    commands = [line for line in log.read_text().splitlines() if line.startswith("tailscale ")]
+    assert commands and all(line == "tailscale status --json" for line in commands)

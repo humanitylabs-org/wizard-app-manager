@@ -28,7 +28,15 @@ esac
 if [ "$(id -u)" -eq 0 ]; then
   root() { "$@"; }
 else
-  root() { sudo "$@"; }
+  root() {
+    # Use the supported operator interface when sudo is unavailable; never prompt or retry a
+    # failed `up` as a second user, since its exact preservation diagnostic must remain intact.
+    if [ "$1" = tailscale ] && ! sudo -n true 2>/dev/null; then
+      "$@"
+    else
+      sudo -n "$@"
+    fi
+  }
 fi
 
 if ! command -v tailscale >/dev/null; then
@@ -40,7 +48,8 @@ if ! command -v tailscale >/dev/null; then
   rm -f "$script"
   trap - EXIT
 fi
-root systemctl enable --now tailscaled
+# A running, administrator-prepared daemon needs no second elevation from its named owner.
+systemctl is-active --quiet tailscaled || root systemctl enable --now tailscaled
 
 ADMIN_DNS="https://login.tailscale.com/admin/dns"
 # status_field <field>: BackendState | AuthURL | serve (MagicDNS and HTTPS certificates: on|magicdns-off|https-off)
@@ -74,12 +83,42 @@ if [ "$current" = "NeedsLogin" ]; then
   echo "Use the same Tailscale account on your phone or laptop. No shared team account is used."
   out="$(mktemp)"
   deadline=$(( $(date +%s) + wait_s ))
-  # Plain `tailscale up` (no flags, so no setting changes), in the background: its link is read from status/output.
-  # A node logged out with earlier non-default settings (e.g. --ssh) makes a bare `up` refuse; `login` keeps them.
+  # `up --timeout` can refuse existing non-default preferences. Replay only the
+  # CLI's explicit preservation command as argv, never shell code. `login` is NOT
+  # a fallback: it switches to an empty profile and silently resets preferences.
   start_up() {
     local left=$(( deadline - $(date +%s) > 1 ? deadline - $(date +%s) : 1 ))
-    ( root tailscale up --timeout="${left}s" >"$out" 2>&1 \
-        || { grep -qi "non-default" "$out" && root tailscale login --timeout="${left}s" >>"$out" 2>&1; } || true ) &
+    (
+      if ! root tailscale up --timeout="${left}s" >"$out" 2>&1; then
+        local -a preserved=()
+        mapfile -d '' -t preserved < <(python3 - "$out" <<'PY'
+import pathlib, shlex, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+if "non-default" not in text:
+    sys.exit(0)
+for line in text.splitlines():
+    if not line.strip().startswith("tailscale up "):
+        continue
+    try:
+        args = shlex.split(line.strip())
+    except ValueError:
+        break
+    # Current official output uses --name=value or boolean --name. Fail closed
+    # on unknown output shapes and never accept reset, reauth, or credentials.
+    forbidden = {"--reset", "--force-reauth", "--auth-key", "--client-secret", "--id-token"}
+    if args[:2] == ["tailscale", "up"] and all(
+        a.startswith("--") and a.split("=", 1)[0] not in forbidden for a in args[2:]
+    ):
+        for arg in args[2:]:
+            sys.stdout.write(arg + "\0")
+    break
+PY
+)
+        if [ "${#preserved[@]}" -gt 0 ]; then
+          root tailscale up "${preserved[@]}" >>"$out" 2>&1 || true
+        fi
+      fi
+    ) &
     up_pid=$!
   }
   start_up
@@ -114,6 +153,9 @@ if [ "$current" = "NeedsLogin" ]; then
     echo "Tailscale could not connect (state $current). Existing networking was not reset." >&2
     exit 1
   fi
+elif [ "$current" = Unknown ] || [ "$current" = NoState ] || [ "$current" = Starting ]; then
+  echo "Tailscale status is unavailable (state $current). Check sudo systemctl status tailscaled; existing networking was not reset." >&2
+  exit 1
 elif [ "$current" != "Running" ]; then
   echo "Tailscale already has state $current; leaving its settings alone. Run sudo tailscale up when ready."
 fi

@@ -41,13 +41,38 @@ def resolve(ref):
     return next((a for a in load() if ref in (a['id'], a['repo'], 'https://github.com/' + a['repo'])), None)
 
 
+def host_architecture():
+    """The Docker daemon's architecture (amd64/arm64). Never raises: a manager service that can't reach Docker
+    yet (fresh box before docker group membership is active, rootless socket not in its env) falls back to
+    `sudo -n docker`, then to this machine's own CPU, which is the local daemon's architecture."""
+    import platform
+    norm = {'aarch64': 'arm64', 'x86_64': 'amd64'}
+    for argv in (['docker'], ['sudo', '-n', 'docker']):
+        try:
+            r = subprocess.run(argv + ['info', '--format', '{{.Architecture}}'], capture_output=True, text=True,
+                               timeout=20, check=True)
+            if r.stdout.strip():
+                return norm.get(r.stdout.strip(), r.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            continue
+    m = platform.machine().lower()
+    return norm.get(m, m)
+
+
+def check_architecture(entry):
+    """Reject incompatible pinned releases before source or asset downloads."""
+    from .private import PrivateError
+    arch = host_architecture()
+    supported = entry.get('architectures') or []
+    if supported and arch not in supported:
+        raise PrivateError(f"{entry['id']}: this release runs on {', '.join(supported)}, not this Wizard ({arch}). Choose a compatible release.")
+    return arch
+
+
 def preload(entry, tok):
     """Download with existing GitHub authorization; verify archive AND loaded image on the target daemon."""
     from .private import PrivateError
-    r = subprocess.run(['docker', 'info', '--format', '{{.Architecture}}'], capture_output=True, text=True, check=True)
-    arch = {'aarch64': 'arm64', 'x86_64': 'amd64'}.get(r.stdout.strip(), r.stdout.strip())
-    if arch not in entry['architectures']:
-        raise PrivateError(f"{entry['id']}: release does not support {arch}")
+    arch = check_architecture(entry)
     if not entry.get('images'):
         return
     asset = entry['images'].get(arch)

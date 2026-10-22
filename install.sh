@@ -30,14 +30,28 @@ services:
 YML
   ENVF="$(mktemp)"
   printf 'NGINX_PORT=8480\nNGINX_PORT_SSL=8443\nINTERNAL_IP=127.0.0.1\n' > "$ENVF"
-  curl -fsSL https://setup.runtipi.io -o /tmp/runtipi-setup.sh
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash /tmp/runtipi-setup.sh --env-file "$ENVF")
-  rm -f "$ENVF"
+  # A private temp dir, never a fixed /tmp name: a leftover /tmp/runtipi-setup.sh owned by another user (root, from
+  # an earlier install) can't be overwritten in sticky /tmp, and curl then fails with exit 23 before Runtipi exists.
+  SETUP_DIR="$(mktemp -d)"
+  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh"
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
+  rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
   sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
 fi
-python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+# The Python that runs wam needs PyYAML. Do not trust whichever python3 is first on PATH: a Hermes agent puts its own
+# bundled Python (no PyYAML) first for the commands it runs, and wam would then fail mid-install. Pick the first
+# python3 that imports yaml (PATH first, then the system one); otherwise install python3-yaml for the system Python.
+pick_py() {
+  local c
+  for c in "${WIZARD_PYTHON:-}" "$(command -v python3 2>/dev/null || true)" /usr/bin/python3 /bin/python3; do
+    [ -n "$c" ] && [ -x "$c" ] && "$c" -c 'import yaml' 2>/dev/null && { echo "$c"; return 0; }
+  done
+  return 1
+}
+PY="$(pick_py)" || { sudo apt-get install -y python3-yaml >/dev/null; PY="$(pick_py)"; } \
+  || { echo "Wizard OS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again." >&2; exit 1; }
 command -v git >/dev/null || sudo apt-get install -y git
 # An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
 # the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
@@ -51,7 +65,14 @@ mkdir -p "$RUNTIPI_ROOT/user-config"
 OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 [ -f "$OVR" ] && cp "$OVR" "$OVR.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 # Preserve owner settings and Compose tags (!override/!reset), including box-only bindings.
-(cd "$HERE" && python3 -m wam.release_pins "$OVR" "$IMAGE")
+(cd "$HERE" && "$PY" -m wam.release_pins "$OVR" "$IMAGE")
+# wam#95: the runtime records (.env, database files, app records) can survive while the base containers are gone
+# (Docker reinstalled, containers removed). Start the database and queue from those records before anything talks to
+# them; --no-recreate leaves running ones exactly as they are, so a rerun on a healthy box changes nothing.
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --wait runtipi-db runtipi-queue)
+# Apps the owner left running, read before the App Manager starts: its status sync marks an app whose containers are
+# gone as stopped, which would lose that intent. `wam recover` restarts these; apps the owner stopped stay stopped.
+RUNNING_APPS="$("${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -Atc "SELECT app_name || ':' || app_store_slug FROM app WHERE status = 'running'" 2>/dev/null || true)"
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
 if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
@@ -63,13 +84,15 @@ if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
+# The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
 cat > "$HOME/.local/bin/wam" <<EOF
 #!/usr/bin/env bash
 export WIZARD_RELEASE_PINS="\${WIZARD_RELEASE_PINS-${WIZARD_RELEASE_PINS:-}}"
-cd "$HERE" && exec python3 -m wam "\$@"
+cd "$HERE" && exec "$PY" -m wam "\$@"
 EOF
 chmod +x "$HOME/.local/bin/wam"
 
@@ -82,7 +105,7 @@ After=network-online.target
 Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
 Environment=WIZARD_RELEASE_PINS=${WIZARD_RELEASE_PINS:-}
 WorkingDirectory=$HERE
-ExecStart=/usr/bin/env python3 -m wam serve
+ExecStart=$PY -m wam serve
 Restart=on-failure
 
 [Install]
@@ -99,6 +122,9 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
+# Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
+# update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
+"$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
 # happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
@@ -115,6 +141,26 @@ fi
 healthy=0
 for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^NGINX_PORT=' "$RUNTIPI_ROOT/.env" | cut -d= -f2 || echo 80)/api/health" 2>/dev/null && { healthy=1; break; }; sleep 2; done
 [ "$healthy" = 1 ] || FAILED+=("the App Manager did not answer its health check within 2 minutes")
+# wam#95: installed apps whose containers are gone (records kept) are not reinstalled by bootstrap. Start the Wizard
+# shell / Agent Service and every app the owner left running; owner-stopped apps stay stopped. No-op when all run.
+if [ "$healthy" = 1 ]; then
+  REC_ARGS=()
+  while IFS= read -r u; do [ -z "$u" ] || REC_ARGS+=(--running "$u"); done <<<"$RUNNING_APPS"
+  if rec="$("$HOME/.local/bin/wam" recover ${REC_ARGS[@]+"${REC_ARGS[@]}"})"; then
+    split="$(printf '%s' "$rec" | python3 -c 'import json,sys
+try: r = json.load(sys.stdin)
+except ValueError: print("\n(unreadable recover result)"); raise SystemExit
+f, core = r.get("failed") or {}, set(r.get("core") or [])
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k in core))
+print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' 2>/dev/null || printf '\n(unreadable recover result)')"
+    rec_core="$(printf '%s\n' "$split" | sed -n 1p)"
+    rec_rest="$(printf '%s\n' "$split" | sed -n 2p)"
+    [ -z "$rec_core" ] || FAILED+=("the Wizard shell / Agent Service containers could not be restarted: $rec_core")
+    [ -z "$rec_rest" ] || DEGRADED+=("some installed apps could not be restarted: $rec_rest")
+  else
+    DEGRADED+=("could not restart installed apps whose containers are missing (wam recover failed)")
+  fi
+fi
 "$HOME/.local/bin/wam" doctor --fix >/dev/null 2>&1 || true   # repairs what it can; the next run is the verdict
 "$HOME/.local/bin/wam" apps >/dev/null || DEGRADED+=("could not write the installed-app list (wam apps)")
 # restic for scheduled backups: the pinned official release, sha256-checked (wam/backup/restic.py); `wam backup
@@ -123,8 +169,14 @@ for _ in $(seq 1 "${WIZARD_HEALTH_TRIES:-60}"); do curl -fsS -o /dev/null "http:
 # The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
-sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1 || sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os \
-  || FAILED+=("could not install the wizard command")
+WIZ_CLI="$HOME/.local/bin/wizard"
+if ! PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1; then
+  WIZ_CLI="$HOME/.local/bin/wizard-os"
+  PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" --name wizard-os || { WIZ_CLI=""; FAILED+=("could not install the wizard command"); }
+fi
+# Same interpreter as wam: under an agent, `env python3` can be the agent's bundled Python, which lacks PyYAML, and
+# `wizard link` would then misread the owner's config.yaml as empty.
+[ -z "$WIZ_CLI" ] || sed -i "1s|.*|#!$PY|" "$WIZ_CLI"
 
 # Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
 # agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
@@ -157,6 +209,7 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
   echo "Alongside mode: the install already failed, so your Hermes (${HERMES_HOME:-$HOME/.hermes}) was not touched."
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
+  # Active threads use the supported Hermes HTTP session reader. Keep archive/database sharing opt-in.
   if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
     FAILED+=("could not record alongside mode (wam alongside)")
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
@@ -195,6 +248,13 @@ print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")
   fi
 fi
+# Alongside: (re)install the App Store data service for the installed shell on every run, so a rerun repairs a
+# failed/outdated one (bootstrap only sets it up when it installs the shell itself).
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ "$healthy" = 1 ]; then
+  sd="$("$HOME/.local/bin/wam" store-data 2>/dev/null || true)"
+  printf '%s' "$sd" | python3 -c 'import json,sys; sys.exit(json.load(sys.stdin).get("state") not in ("ready", "skipped"))' 2>/dev/null \
+    || DEGRADED+=("the App Store data service could not be set up (wam store-data)")
+fi
 PENDING=()
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
   if [ -n "$RESTART_LATER" ]; then
@@ -229,6 +289,22 @@ echo
 #    Skipped on a failed install: there is nothing usable to link to.
 if [ "$status" != failed ] && [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = "tailscale" ]; then
   "$HOME/.local/bin/wam" links || true
+  echo
+  # Fresh boxes: the shell image serves only its own files, so the Store's /wizard-os-home/store-data (browse data,
+  # installed status) and /store-install (owner-gated Get) need the same loopback services and Serve routes that
+  # alongside boxes get above. After `wam links`, so the routes land on the shell's published HTTPS port(s).
+  if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "$healthy" = 1 ]; then
+    sd="$("$HOME/.local/bin/wam" store-data 2>/dev/null || true)"
+    printf '%s' "$sd" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(d.get("state") not in ("ready", "skipped") or any(d.get(k, "routed") != "routed" for k in ("tailnet", "get")))' 2>/dev/null \
+      || echo "note: the App Store is not fully set up on this box ('wam store-data' shows why)"
+  fi
+  # 5) The Troubleshooter (wizard-os#93): the way back when chat is down. A native user service, not an app, so it keeps
+  #    working (and can restart things) when Runtipi, the shell, the Agent Service or Hermes are broken. Mounted at
+  #    /troubleshoot/ on the shell's addresses (so it runs after `wam links`); the guardian only reports. The release
+  #    pins its commit. A hand-installed one is left alone; WIZARD_TROUBLESHOOTER=0 skips it.
+  if ! "$HOME/.local/bin/wam" troubleshooter; then
+    echo "note: the Troubleshooter is not fully set up ('wam troubleshooter' shows why; ~/.wizard-os/troubleshooter.json)"
+  fi
   echo
 fi
 [ ${#PENDING[@]} -eq 0 ] || { printf 'Pending: %s\n' "${PENDING[@]}"; echo; }

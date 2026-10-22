@@ -183,6 +183,35 @@ def pin(st: dict, app_id: str) -> str:
     return str(pins.get(app_id) or "")
 
 
+def reconcile_images(st: dict, apps=None) -> None:
+    """Selected release -> alongside pins; explicit test overrides win, unpinned runs keep their pins.
+
+    Keep the previous reference on transitions (including an explicit downgrade), not on no-op reruns.
+    A receipt is deliberately not a policy input: only WIZARD_RELEASE_PINS selects a release.
+    """
+    from . import release_pins
+
+    doc = release_pins.load()
+    pins = dict(st.get("images") or {})
+    if not pins and (old := (st.get("shell") or {}).get("image")):
+        pins[LEGACY_BUNDLE] = old
+    previous = dict(st.get("previous_images") or {})
+    for app in (PIN_VARS if apps is None else apps):
+        selected = (doc.get("images") or {}).get(app)
+        image = os.environ.get(PIN_VARS[app]) or (release_pins.image_ref(selected) if selected else "")
+        if not image:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image):
+            raise ValueError(f"{PIN_VARS[app]}: invalid image reference")
+        if pins.get(app) and pins[app] != image:
+            previous[app] = pins[app]
+        pins[app] = image
+    if pins:
+        st["images"] = pins
+    if previous:
+        st["previous_images"] = previous
+
+
 def image_lines(st: dict, app_id: str) -> str:
     image = pin(st, app_id)
     return f"\n    image: {image}\n    pull_policy: missing" if image else ""
@@ -241,19 +270,16 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
     # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
     st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
-    # Image pins (a release's digest, or a local build under test), one per app, kept across re-runs.
-    pins = dict(prev.get("images") or {})
-    old = (prev.get("shell") or {}).get("image")
-    if old and not pins:   # before the split one pin served the bundle: it stays the bundle's
-        pins[LEGACY_BUNDLE] = old
-    for app, var in PIN_VARS.items():
-        if os.environ.get(var):
-            pins[app] = os.environ[var]
-    for app, image in pins.items():
+    # Stored pins are a fallback, never stronger than the selected release. Preserve rollback references.
+    st["images"] = dict(prev.get("images") or {})
+    if not st["images"] and (old := (prev.get("shell") or {}).get("image")):
+        st["images"][LEGACY_BUNDLE] = old
+    if prev.get("previous_images"):
+        st["previous_images"] = dict(prev["previous_images"])
+    reconcile_images(st)
+    for app, image in st["images"].items():
         if not re.fullmatch(r"[A-Za-z0-9._/:@-]+", str(image)):
             raise SystemExit(f"{PIN_VARS.get(app, app)} {image!r} is not an image reference")
-    if pins:
-        st["images"] = pins
     gateway_token(wizard_home)
     save(wizard_home, st)
     return {**st, "detected": det}
@@ -412,12 +438,37 @@ def adopt_state(runtipi_root: Path, store: str, app_id: str, image: str, rootles
         return False
     if not _SAFE_PATH.match(str(data)):
         raise SystemExit(f"app data path {str(data)!r} has characters a command can't carry safely")
-    r = subprocess.run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
                         "--entrypoint", "sh", "-v", f"{data}:/state", image, "-c",
                         "chown -R 0:1000 /state && chmod -R g+rwX /state"],
                        capture_output=True, text=True, timeout=300)
     if r.returncode:
         raise SystemExit(f"could not hand {app_id}'s saved state to the owner: {r.stderr.strip()[:200]}")
+    return True
+
+
+def adopt_media(runtipi_root: Path, image: str, user: str) -> bool:
+    """Attachments land in the shared media folder (Inbox/<date>/, staged in .wizard-uploads/), but the Agent Service
+    runs as the owner (`user`), and Runtipi made that folder for its own uid. An owner who is not that uid (any user
+    but the first on rootful Docker) got EACCES on every upload, which the phone shows as "Wizard Files is
+    unavailable (502)". Hand just those two Wizard folders to the service's identity (group-writable, so the uid-1000
+    apps still read them), once, with a throwaway container of the app's own image. Returns True when it ran."""
+    # The image is the release pin, which an upgrade has not pulled yet (`wam app update` comes after this), so
+    # pull the pinned image when it is missing; `--pull never` failed every upgrade with "No such image".
+    import subprocess
+    media = Path(runtipi_root) / "media"
+    if not media.is_dir() or not image or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", image) or not re.fullmatch(r"\d+:\d+", user):
+        return False
+    if not _SAFE_PATH.match(str(media)):
+        raise SystemExit(f"media path {str(media)!r} has characters a command can't carry safely")
+    r = subprocess.run(["docker", "run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
+                        "--entrypoint", "sh", "-v", f"{media}:/media", image, "-c",
+                        "mkdir -p /media/Inbox /media/.wizard-uploads"
+                        f" && chown -R {user} /media/Inbox /media/.wizard-uploads"
+                        " && chmod -R u+rwX,g+rwX /media/Inbox /media/.wizard-uploads"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise SystemExit(f"could not give the Agent Service its attachment folders: {r.stderr.strip()[:200]}")
     return True
 
 
@@ -550,6 +601,9 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     st = load(wizard_home)
     if not st:
         return None
+    if app_id in PIN_VARS:
+        reconcile_images(st, [app_id])
+        save(wizard_home, st)
     d = runtipi_root / "user-config" / store / app_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role,

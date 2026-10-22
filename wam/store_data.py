@@ -1,9 +1,10 @@
-"""App Store browse data for alongside boxes.
+"""App Store browse data for every box (alongside and fresh).
 
 The Wizard UX Store window reads `/wizard-os-home/store-data/` (the public App Index, this box's installed apps,
-logos). Its read-only adapter ships as `tools/store-data-origin.mjs` in the wizard-ux repo, but nothing installed it,
-so the Store was empty on every alongside box. This module installs it from the SAME commit as the installed shell,
-runs it as a loopback user service, and routes only that prefix on the shell's tailnet port.
+logos). Its read-only adapter ships as `tools/store-data-origin.mjs` in the wizard-ux repo, but the shell image does
+not run it, so the Store was empty (alongside) or said "Installed status is incomplete" (fresh). This module installs
+it from the SAME commit as the installed shell, runs it as a loopback user service, and routes only that prefix (plus
+the App Manager's owner-gated Store Get listener) on the shell's own tailnet ports.
 
 Nothing is invented here: the adapter files are fetched from the public repo at the pinned commit and checked
 before use; the service binds 127.0.0.1 only; the browser never sees the Runtipi credential (the adapter keeps it).
@@ -26,13 +27,18 @@ PORT = 9584
 PREFIX = "/wizard-os-home/store-data"
 UNIT = "wizard-store-data.service"
 SHA = re.compile(r"^[0-9a-f]{40}$")
+SERVICE = re.compile(r"^http://127\.0\.0\.1:\d{1,5}$")
+# Sibling-module imports in the adapter: `from './x.mjs'` / `import('./x.mjs')`. Plain names only (no paths).
+LOCAL_IMPORT = re.compile(r"""(?:from|import\s*\(?)\s*['"]\./([A-Za-z0-9_.-]+\.mjs)['"]""")
 
 
 def find_node() -> str | None:
-    """A Node.js 18+ binary: PATH, then the copies the Hermes installer leaves in ~/.hermes."""
+    """A Node.js 18+ binary: PATH, the copies the Hermes installer leaves in ~/.hermes, then the official,
+    sha256-checked Node the Troubleshooter installs (a fresh box has no host Hermes and often no system Node)."""
     home = Path.home()
     cands = [shutil.which("node"), str(home / ".hermes/node/bin/node")]
     cands += sorted(glob.glob(str(home / ".hermes/tools/node-*/bin/node")), reverse=True)
+    cands.append(str(home / ".local/share/wizard-troubleshooter/node/bin/node"))
     for c in cands:
         if not c or not os.access(c, os.X_OK):
             continue
@@ -44,6 +50,40 @@ def find_node() -> str | None:
         if m and int(m.group(1)) >= 18:
             return c
     return None
+
+
+def ensure_node() -> str | None:
+    """find_node(), else install the official Node build the Troubleshooter pins (published sha256 checked)."""
+    node = find_node()
+    if node:
+        return node
+    from . import troubleshooter
+    try:
+        return troubleshooter.node(troubleshooter.paths())
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        import sys
+        print(f"note: could not install Node.js for the Store data service ({str(e)[:160]})", file=sys.stderr)
+        return None
+
+
+def _local_port(url) -> int | None:
+    m = re.match(r"^http://(?:127\.0\.0\.1|localhost):(\d{1,5})(?:/|$)", str(url or ""))
+    return int(m.group(1)) if m else None
+
+
+def fresh_ports(reg: dict) -> tuple[int, int]:
+    """(shell port, Agent Service port) on a fresh box, from the App Manager's own apps.json (loopback only)."""
+    shell = svc = 0
+    for a in reg.get("apps") or []:
+        provides = a.get("provides") or []
+        urls = (a.get("health"), (a.get("view") or {}).get("local"), (a.get("view") or {}).get("url"),
+                (a.get("mcp") or {}).get("url"))
+        port = next((p for p in map(_local_port, urls) if p), 0)
+        if not shell and ("shell" in provides or a.get("id") == "wizard-ux"):
+            shell = port
+        if not svc and ("agent-service" in provides or a.get("id") == "wizard-agent-service"):
+            svc = port
+    return shell, svc
 
 
 def shell_commit(reg: dict) -> str | None:
@@ -64,33 +104,58 @@ def _fetch(sha: str, name: str, timeout: int = 20) -> bytes | None:
         return None
 
 
+def _complete(tools: Path) -> bool:
+    """A cached adapter is usable only if the required files AND every sibling module they import are present
+    (a cache written before sibling imports were fetched lacks wizard-alpha.mjs and fails at node start)."""
+    if not all((tools / f).is_file() for f in REQUIRED):
+        return False
+    for f in tools.glob("*.mjs"):
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            return False
+        if any(not (tools / m).is_file() for m in LOCAL_IMPORT.findall(text)):
+            return False
+    return True
+
+
 def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
     """Download the adapter at `sha` into dest_root/<sha>/tools (idempotent, atomic)."""
     fetch = fetch or _fetch
     if not SHA.match(sha):
         raise ValueError("shell commit must be a full 40-char sha")
     final = dest_root / sha / "tools"
-    if all((final / f).is_file() for f in REQUIRED):
+    if _complete(final):
         return final
     tmp = dest_root / f".{sha}.partial"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    for name in FILES:
+    queue, seen = list(FILES), set()
+    while queue:   # the listed files plus every sibling module they import (e.g. wizard-alpha.mjs), at the same sha
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
         body = fetch(sha, name)
         if body is None:
-            if name in REQUIRED:
+            if name in REQUIRED or name not in FILES:   # an imported module is required by its importer
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise RuntimeError(f"wizard-ux {sha[:9]} has no tools/{name}; this shell version has no Store data")
             continue
         (tmp / name).write_bytes(body)
+        queue += [m for m in LOCAL_IMPORT.findall(body.decode("utf-8", "replace")) if m not in seen]
     final.parent.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(final, ignore_errors=True)
     tmp.rename(final)
     return final
 
 
-def unit_text(node: str, tools: Path, sha: str, port: int = PORT, catalog: str | None = None) -> str:
+def unit_text(node: str, tools: Path, sha: str, port: int = PORT, catalog: str | None = None,
+              service: str | None = None) -> str:
     env = f"Environment=WAM_PRIVATE_CATALOG={catalog}\n" if catalog else ""
+    # The adapter reads the shell app list from the Agent Service; alongside boxes run it on their own port.
+    if service and SERVICE.match(service):
+        env += f"Environment=WIZARD_STORE_SERVICE_ORIGIN={service}\n"
     return (f"[Unit]\nDescription=Wizard App Store browse data (read-only, loopback :{port}) from wizard-ux {sha}\n"
             f"After=network-online.target\n\n[Service]\n{env}"
             f"ExecStart={node} {tools}/store-data-origin.mjs {port}\nRestart=on-failure\nNoNewPrivileges=true\n\n"
@@ -102,14 +167,15 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
 
 
 def ensure(reg: dict, data_root: Path | None = None, unit_dir: Path | None = None, port: int = PORT,
-           apply: bool = True) -> dict:
+           apply: bool = True, service: str | None = None) -> dict:
     """Install/refresh the Store data service for the installed shell's commit. Returns a result dict."""
     sha = shell_commit(reg)
     if not sha:
         return {"state": "skipped", "note": "no Wizard shell with a pinned commit is installed"}
-    node = find_node()
+    node = ensure_node()
     if not node:
-        return {"state": "error", "error": "Node.js 18+ not found (PATH, ~/.hermes/node, ~/.hermes/tools/node-*)"}
+        return {"state": "error", "error": "Node.js 18+ not found (PATH, ~/.hermes/node, ~/.hermes/tools/node-*, "
+                                           "the Troubleshooter's Node) and could not be installed"}
     data_root = data_root or Path.home() / ".local/share/wizard-store-data"
     unit_dir = unit_dir or Path.home() / ".config/systemd/user"
     try:
@@ -117,7 +183,7 @@ def ensure(reg: dict, data_root: Path | None = None, unit_dir: Path | None = Non
     except (RuntimeError, ValueError, OSError) as e:
         return {"state": "error", "error": str(e)}
     cat = os.environ.get("WAM_PRIVATE_CATALOG")
-    text = unit_text(node, tools, sha, port, cat if cat and Path(cat).is_file() else None)
+    text = unit_text(node, tools, sha, port, cat if cat and Path(cat).is_file() else None, service)
     unit = unit_dir / UNIT
     changed = not unit.is_file() or unit.read_text() != text
     out = {"state": "ready", "commit": sha, "port": port, "node": node, "unit": str(unit), "changed": changed}
@@ -131,6 +197,35 @@ def ensure(reg: dict, data_root: Path | None = None, unit_dir: Path | None = Non
     r = _systemctl("restart", UNIT) if changed else _systemctl("start", UNIT)
     if r.returncode != 0:
         out.update(state="error", error=(r.stderr or r.stdout).strip()[:300])
+    return out
+
+
+def publish_routes(host: str, shell_port: int, port: int = PORT) -> dict:
+    """Route the Store data prefix and the Store Get listener on every owner shell port (the shell's own port plus
+    owner-configured aliases). An existing different handler is never replaced; readback must match exactly."""
+    from . import links, store_install
+    wanted = ((PREFIX, f"http://127.0.0.1:{port}{PREFIX}", "tailnet"),
+              (store_install.PREFIX, f"http://127.0.0.1:{store_install.PORT}", "get"))
+    out: dict = {"tailnet": "routed", "get": "routed", "ports": []}
+    try:
+        ports = links.gateway_shell_ports(links.serve_status(), host, shell_port)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return {"tailnet": str(e)[:200], "get": str(e)[:200], "ports": []}
+    for p in ports:
+        for path, target, key in wanted:
+            try:
+                st = links.route_status(links.serve_status(), host, p, path, target)
+                if st == "conflict":
+                    raise ValueError(f"existing Serve route on {p}{path} differs; left untouched")
+                if st == "missing":
+                    r = links._run(["tailscale", "serve", "--bg", f"--https={p}", f"--set-path={path}", target], 60)
+                    if r.returncode:
+                        raise ValueError((r.stderr or r.stdout).strip()[-200:] or "Tailscale Serve failed")
+                    if links.route_status(links.serve_status(), host, p, path, target) != "match":
+                        raise ValueError("Serve route readback did not match")
+            except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+                out[key] = f"{p}: {str(e)[:200]}"
+        out["ports"].append(p)
     return out
 
 

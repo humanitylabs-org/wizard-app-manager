@@ -39,6 +39,7 @@ def test_index_resolve_by_id_and_repo(monkeypatch):
         calls.append(url)
         return {"apps": [rec]} if "/v1/search" in url else {**rec, "listed": True}
     monkeypatch.setattr(index, "_get", fake_get)
+    monkeypatch.setenv("WAM_PUBLISHERS", "*")  # resolve mechanics; the first-party guard has its own tests
     assert index.resolve("https://i", "hello-wizard")["repo"] == "a/hello"
     assert "id=hello-wizard" in calls[-1]
     assert index.resolve("https://i", "a/hello")["install"]["commit"] == "f" * 40
@@ -378,6 +379,7 @@ def test_alongside_adopts_existing_service_state_on_rootless(tmp_path, monkeypat
     assert cmd[:2] == ["docker", "run"] and "--network" in cmd and "none" in cmd and "img:1" in cmd
     assert f"{rt}/app-data/wizardapps/wizard-agent-service/data:/state" in cmd
     assert "chown -R 0:1000 /state" in cmd[-1]
+    assert cmd[cmd.index("--pull") + 1] == "missing"   # the new pin may not be pulled yet on an upgrade
     assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "bad image;rm", rootless=True) is False
 
 
@@ -817,9 +819,13 @@ def test_get_sh_rerun_on_a_fresh_box_stays_fresh(tmp_path):
     d = tmp_path / "b"; d.mkdir()
     assert _mode(d, wizard_user_wos="fresh") == "fresh"          # installed under the wizard user
     d = tmp_path / "c"; d.mkdir()
-    assert _mode(d, runtipi=True) == "fresh"                      # a running Runtipi, home not readable
+    assert _mode(d, runtipi=True, hermes=False) == "fresh"         # no verified host Hermes or readable owner receipt
     d = tmp_path / "e"; d.mkdir()
     assert _mode(d, wos="fresh", mode="alongside") == "alongside"  # explicit WIZARD_MODE=alongside still switches
+
+
+def test_get_sh_verified_host_hermes_beats_a_running_runtipi_without_receipt(tmp_path):
+    assert _mode(tmp_path, runtipi=True) == "alongside"
 
 
 def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
@@ -949,11 +955,155 @@ def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
     assert cli.trusted_origin_env(c, "cal") == {}
 
 
+def test_owner_login_apps_also_get_the_box_owner(tmp_path, monkeypatch):
+    from wam import cli, store_install
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/wizard-cloudflare/docker-compose.yml"
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n  WIZARD_OWNER_LOGINS: ${WIZARD_OWNER_LOGINS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    monkeypatch.setattr(store_install, "owner_login", lambda: "owner@example.com")
+    assert cli.trusted_origin_env(c, "wizard-cloudflare")["WIZARD_OWNER_LOGINS"] == "owner@example.com"
+    monkeypatch.setattr(store_install, "owner_login", lambda: "")
+    assert "WIZARD_OWNER_LOGINS" not in cli.trusted_origin_env(c, "wizard-cloudflare")
+
+
+def test_cloudflare_is_an_optional_default_with_a_shell_path():
+    import json
+    from pathlib import Path
+    from wam import links
+    slot = json.loads((Path(__file__).parents[1] / "wam/defaults.json").read_text())["slots"]["cloudflare-connection"]
+    assert slot["app"] == "wizard-cloudflare" and slot["required"] is False
+    assert links.gateway_paths()["wizard-cloudflare"]["path"] == "/wizard-cloudflare/"
+
+
 def test_multi_provider_slot_is_not_a_collision():
     from wam import registry, slots
     reg = {"slots": {"ai-connection": {"default": "wizard-claude", "candidates": ["wizard-chatgpt", "wizard-claude"]},
                      "browser": {"default": "browser", "candidates": ["browser", "other-browser"]}}}
     assert registry.collisions(reg) == ["slot 'browser' has 2 apps (browser, other-browser); default browser"]
     d = slots.load_defaults()
-    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-claude"
+    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-chatgpt"
     assert "ai-accounts" not in d   # AI Accounts retired: one connection app per provider (decision #61)
+
+
+def test_bootstrap_retries_an_app_the_manager_removed_once(monkeypatch):
+    """Live 0.3.6: wizard-chatgpt's first `compose up` failed (pull cancelled); a second attempt succeeded."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    monkeypatch.setattr(release_pins, "load", lambda: None)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: ["files", "wizard-chatgpt", "broken"])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    tries = {}
+
+    def install(c, app_id):
+        tries[app_id] = tries.get(app_id, 0) + 1
+        if app_id == "wizard-chatgpt" and tries[app_id] == 1:
+            raise SystemExit("wizard-chatgpt: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        if app_id == "broken":
+            raise SystemExit("broken: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        return {"id": app_id}
+    monkeypatch.setattr(cli, "install", install)
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None))
+    assert out["installed"] == ["files", "wizard-chatgpt"]
+    assert list(out["failed"]) == ["broken"] and tries == {"files": 1, "wizard-chatgpt": 2, "broken": 2}
+
+
+def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
+    """Uploads failed with EACCES (phone: "Wizard Files is unavailable (502)") when the owner's uid doesn't own
+    Runtipi's media folder. adopt_media hands only Inbox/ and .wizard-uploads/ to the service identity."""
+    from wam import alongside
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    rt = tmp_path / "rt"
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    (rt / "media").mkdir(parents=True)
+    assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
+    assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False
+    assert calls == []
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is True
+    cmd = calls[-1]
+    assert cmd[:2] == ["docker", "run"] and "none" in cmd and f"{rt}/media:/media" in cmd
+    assert "chown -R 1001:1001 /media/Inbox /media/.wizard-uploads" in cmd[-1]
+    # an upgrade runs this before `wam app update` pulls the new pin: "--pull never" failed with "No such image"
+    assert cmd[cmd.index("--pull") + 1] == "missing"
+    assert "chown -R 1001:1001 /media " not in cmd[-1] and not cmd[-1].endswith("/media")   # never the whole tree
+
+
+# ---- wam#95: `wam recover` starts only missing core apps and apps recorded running
+
+def _recover_env(tmp_path, monkeypatch, installed, states):
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": u}, "app": {"status": s}} for u, s in installed]})()
+    c.runtipi = lambda: rt
+    started, written = [], []
+    monkeypatch.setattr(cli, "_app_container_states", lambda urn: states.get(urn, []))
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: started.append((verb, urn)) or {"status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: written.append(1) or {})
+    return c, started, written
+
+
+def test_recover_starts_missing_core_and_recorded_running_apps_only(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "stopped"), ("wizard-agent-service:wizardapps", "stopped"),
+                 ("files:wizardapps", "stopped"), ("browser:wizardapps", "stopped")]
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, {})
+    res = cli.recover(c, ["files:wizardapps"])
+    # browser was stopped by its owner (not recorded running): it stays stopped
+    assert [u for _, u in started] == ["wizard-ux:wizardapps", "wizard-agent-service:wizardapps", "files:wizardapps"]
+    assert res["started"] == ["wizard-ux", "wizard-agent-service", "files"] and res["failed"] == {}
+    assert set(res["core"]) == {"wizard-ux", "wizard-agent-service"} and written
+
+
+def test_recover_is_a_no_op_when_every_container_runs(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running"),
+                 ("files:wizardapps", "running")]
+    states = {u: ["running", "running"] for u, _ in installed}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    res = cli.recover(c, ["files:wizardapps", "gone:wizardapps"])
+    assert started == [] and not written
+    assert res == {"started": [], "failed": {}, "not_installed": ["gone"], "core": ["wizard-ux", "wizard-agent-service"]}
+
+
+def test_recover_starts_an_app_with_a_stopped_container_and_reports_failures(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running")]
+    states = {"wizard-ux:wizardapps": ["running", "exited"], "wizard-agent-service:wizardapps": []}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: {"status": "start_error", "error": "boom"}
+                        if "agent" in urn else started.append(urn) or {"status": "running"})
+    res = cli.recover(c)
+    assert started == ["wizard-ux:wizardapps"]
+    assert res["failed"] == {"wizard-agent-service": "boom"}
+
+
+def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(monkeypatch, tmp_path):
+    """Live 0.3.12 -> 0.3.14 upgrade on demo: Files stayed on 0.3.12's commit (its `.wizard-selection` locks it), so
+    the read-back failed `default app source files`. Bootstrap must move release defaults installed from the
+    release's own repo, and leave an owner-chosen source and an up-to-date app alone."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    new, old = "8" * 40, "d" * 40
+    doc = {"default_apps": {"files": {"app": "files", "repo": "o/files", "commit": new},
+                            "browser": {"app": "browser", "repo": "o/browser", "commit": new},
+                            "notes": {"app": "notes", "repo": "o/notes", "commit": new}}}
+    monkeypatch.setattr(release_pins, "load", lambda: doc)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: [])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"files", "browser", "notes"})
+    for app, commit, repo in (("files", old, "o/files"), ("browser", new, "o/browser"), ("notes", old, "me/notes")):
+        d = tmp_path / "apps" / cli.STORE / app
+        d.mkdir(parents=True)
+        (d / ".wizard-commit").write_text(commit + "\n")
+        (d / ".wizard-source").write_text(json.dumps({"repo": repo}))
+    calls = []
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: calls.append(("prepare", ref)) or {"id": ref})
+    monkeypatch.setattr(cli, "app_update", lambda c, a: calls.append(("update", a)) or {"status": "running"})
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
+    assert calls == [("prepare", "files"), ("update", "files")]
+    assert out["updated"] == ["files"] and out["failed"] == {}

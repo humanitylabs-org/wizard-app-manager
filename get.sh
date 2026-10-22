@@ -35,7 +35,9 @@
 # Release pins (wizard-os#27): the install follows one Wizard OS release file, wizard-os/releases/<version>.json,
 # which names the App Manager commit and the image digests. WIZARD_RELEASE=<version> picks one; without it the
 # release named in wizard-os/releases/stable is used. Re-running the command with no WIZARD_RELEASE updates to the
-# current stable release; WIZARD_RELEASE=<version> keeps a box on that version. WAM_REF=<branch|sha> is the
+# current stable release; WIZARD_RELEASE=<version> keeps a box on that version. Channels (James, 21 Oct 2026):
+# releases/latest names every release as it is cut, releases/stable only releases that soaked and passed the upgrade
+# test. WIZARD_CHANNEL=latest (or a box whose owner ran `wam updates --channel latest`) follows latest instead. WAM_REF=<branch|sha> is the
 # developer override: it installs that App Manager ref unpinned. Afterwards the installer reads back what actually
 # runs (App Manager commit and image, shell image, default app versions) and records it in ~/.wizard-os/release.json.
 # WIZARD_STRICT=1 makes any drift from the release exit non-zero, and refuses unpinned installs (incl. WAM_REF).
@@ -183,6 +185,9 @@ has_hermes() {
 wos_mode() {  # wos_mode user
   local h; h="$(home_of "$1")"
   if [ -n "$h" ] && [ -f "$h/.wizard-os/alongside.json" ]; then echo alongside
+  # An alongside attempt that failed before `wam alongside` wrote its record still leaves the App Manager running:
+  # its release read-back says alongside, so a re-run finishes that install instead of starting a fresh one.
+  elif [ -n "$h" ] && grep -qE '"mode": *"alongside"' "$h/.wizard-os/release.json" 2>/dev/null; then echo alongside
   elif [ -n "$h" ] && [ -f "$h/.wizard-os/apps.json" ]; then echo fresh
   else echo none; fi
 }
@@ -191,6 +196,9 @@ fresh_box() {  # fresh_box [user]
   local u="${1:-$(id -un)}"
   [ "$(wos_mode "$u")" = alongside ] && return 1
   [ "$(wos_mode "$u")" = fresh ] || [ "$(wos_mode "$WUSER")" = fresh ] && return 0
+  # Runtipi is also started by alongside host preparation. Without an explicit fresh receipt, a verified
+  # existing host Hermes wins over that container heuristic (including root reruns for a named owner).
+  has_hermes && return 1
   { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
 }
 # Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
@@ -227,7 +235,7 @@ in_hermes_agent() {
 }
 docker_mode() {  # rootless | rootful | none, for user $1
   local uid; uid="$(getent passwd "${1:-$(id -un)}" | cut -d: -f3)"
-  if [ -S "/run/user/${uid:-x}/docker.sock" ] || case "${DOCKER_HOST:-}" in unix:///run/user/*) true ;; *) false ;; esac; then
+  if [ -S "${WIZARD_RUN_ROOT:-/run/user}/${uid:-x}/docker.sock" ] || case "${DOCKER_HOST:-}" in unix:///run/user/*) true ;; *) false ;; esac; then
     echo rootless
   elif [ -S /var/run/docker.sock ] || command -v docker >/dev/null 2>&1; then echo rootful
   else echo none; fi
@@ -269,6 +277,14 @@ preflight() {
     fi
   fi
   echo "docker:            $(docker_mode "${H_USER:-$(id -un)}")"
+  if [ "$(id -u)" -ne 0 ]; then
+    if sudo -n true 2>/dev/null; then echo "needs root once:   no (passwordless sudo is available)"
+    elif named_host_ready; then echo "needs root once:   no (Docker, the runtime, linger and Tailscale operator are already in place)"
+    else
+      local rn; rn="$(root_needs)"
+      echo "needs root once:   ${rn:-host preparation} (the agent's start shows the owner a one-time approval link)"
+    fi
+  fi
   echo "existing Wizard OS: $(wos_mode "$(id -un)") for $(id -un)$( [ "$(id -un)" = "$WUSER" ] || echo ", $(wos_mode "$WUSER") for $WUSER")"
   if [ -z "${plan:-}" ] && [ "$MODE" != fresh ]; then
     if [ "$rc" -eq 0 ] && [ "$H_OK" != yes ]; then plan="stop: existing Hermes cannot be verified"
@@ -297,6 +313,7 @@ preflight() {
 fwd_env() {
   printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
+    WIZARD_CHANNEL="${WIZARD_CHANNEL:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
@@ -369,16 +386,24 @@ def save(st):
     os.chmod(tmp, 0o600); os.replace(tmp, path)
 ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 url = re.compile(r"https://\S+")
+def boot_id():   # a reader that sees another boot id knows this run was cut short by a reboot (wam updates)
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f: return f.read().strip() or None
+    except OSError: return None
 if mode == "begin":
     save({"state": "running", "step": "starting", "tailscale_login_url": None, "wizard_url": None, "message": "",
           "notes": [], "restart_pending": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-          "pid": int(sys.argv[4])})
+          "pid": int(sys.argv[4]), "boot_id": boot_id()})
     sys.exit(0)
 if mode == "end":
     st, rc = load(), int(sys.argv[4])
     st["tailscale_login_url"] = st.get("tailscale_login_url") if rc else None
     st["state"] = "done" if rc == 0 else "failed"
     st["exit_code"] = rc
+    st["approval_url"] = None
+    if rc == 3 and st.get("admin_command") and st.get("admin_message"):
+        st["state"], st["message"] = "needs_admin", st["admin_message"]
+        save(st); sys.exit(0)
     if rc == 0:
         msg = "Wizard OS is installed."
         if not st.get("wizard_url"):
@@ -405,8 +430,19 @@ def handle(line):
         m = url.search(s)
         st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
         st["message"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-approval:"):
+        m = re.search(r"https?://\S+", s)
+        st["state"], st["approval_url"] = "needs_owner", m.group(0) if m else None
+        st["message"] = s.split(":", 1)[1].replace(m.group(0) if m else "\0", "").strip()
+    elif s.startswith("[wizard-os] admin-command:"):
+        st["admin_command"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-admin:"):
+        st["approval_url"], st["admin_message"] = None, s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] note-once:"):
+        st["notice"] = s.split(":", 1)[1].strip()
     elif s.startswith("[wizard-os] owner-action-done"):
         st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
+        st["approval_url"], st["notice"] = None, None
     elif s.startswith("[wizard-os] wizard-url:"):
         m = url.search(s)
         st["wizard_url"] = m.group(0) if m else None
@@ -418,6 +454,21 @@ def handle(line):
     else:
         changed = False
     if changed: save(st)
+if mode == "stream":
+    # This projection runs AS the selected owner, never root. User-controlled paths/symlinks cannot
+    # redirect a privileged write, and the agent can monitor its own normal status command.
+    import fcntl
+    lock = open(os.path.join(os.path.dirname(path), "install.lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    st = {"state": "running", "step": "administrator host preparation", "tailscale_login_url": None,
+          "wizard_url": None, "message": "", "notes": [], "restart_pending": False, "pid": pid,
+          "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "boot_id": boot_id()}
+    save(st)
+    with open(log_path, "w") as projected:
+        os.chmod(log_path, 0o600)
+        for line in sys.stdin:
+            projected.write(line); projected.flush(); handle(line)
+    sys.exit(0)
 with open(log_path, errors="replace") as log:
     buf = ""
     while True:
@@ -448,7 +499,11 @@ st, state = json.load(open(sys.argv[1])), sys.argv[2]
 print(f"Wizard OS install: {state}")
 if state in ("running", "needs_owner"):
     print(f"Step: {st.get('step') or 'starting'}")
-    if st.get("tailscale_login_url"):
+    if st.get("approval_url"):
+        if st.get("notice"): print(f"Note: {st['notice']}")
+        print(f"Owner action: {st.get('message') or 'Open this link and enter your server password once to approve the Wizard OS install:'}")
+        print(st["approval_url"])
+    elif st.get("tailscale_login_url"):
         print("Owner action: Open this link to connect your Wizard to your Tailscale:")
         print(st["tailscale_login_url"])
     elif state == "needs_owner" and st.get("message"):
@@ -458,17 +513,30 @@ elif state == "done":
     if st.get("wizard_url"):
         print("Your private Wizard link (open it on a device signed in to your Tailscale):")
         print(st["wizard_url"])
-elif state == "stopped":
-    print("The install stopped before it finished (the runner is gone). Run the start command again to retry.")
+elif state == "needs_admin":
+    print(f"Owner action: {st.get('message')}")
+    print(st.get("admin_command") or "")
+elif state in ("stopped", "interrupted"):
+    print("The install stopped before it finished (the runner is gone, e.g. the box restarted). Run the start command again to retry.")
 else:
     print(st.get("message") or "Wizard OS did not finish installing.")
 PY
-  if [ "$state" = failed ] || [ "$state" = stopped ]; then
+  if [ "$state" = failed ] || [ "$state" = stopped ] || [ "$state" = interrupted ]; then
     echo "Last 20 lines of $INSTALL_LOG:"
     tail -n 20 "$INSTALL_LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' || true
   fi
 }
+docker_group_member() {  # the account is in the docker group (/etc/group), whether or not this process has it yet
+  getent group docker 2>/dev/null | cut -d: -f4 | tr ',' '\n' | grep -qx "$(id -un)"
+}
 install_runner() {  # internal: the detached runner. One at a time (flock); the final status is written before it exits.
+  # After the one-time administrator approval, the owner's systemd user manager (and so this transient unit) can
+  # predate the new docker group membership until the next login/reboot. Pick the group up here instead of failing.
+  if [ "$(id -u)" -ne 0 ] && [ -z "${WIZARD_RUNNER_SG:-}" ] && ! docker info >/dev/null 2>&1 &&
+     docker_group_member && command -v sg >/dev/null; then
+    export WIZARD_RUNNER_SG=1
+    exec sg docker -c "exec /bin/bash $(printf '%q' "$WOS_DIR/get.sh") __runner"
+  fi
   exec 9>"$INSTALL_LOCK"
   flock -n 9 || { echo "A Wizard OS install is already running." >&2; exit 0; }
   [ ! -f "$WOS_DIR/install-env" ] || { set -a; . "$WOS_DIR/install-env"; set +a; rm -f "$WOS_DIR/install-env"; }
@@ -476,6 +544,25 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
   : > "$INSTALL_LOG"; chmod 600 "$INSTALL_LOG"
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" begin $$
   local rc=0 gpid fpid
+  if [ "$(id -u)" -eq 0 ] && [ -n "${WIZARD_HERMES_USER:-}" ] &&
+     [ "$WIZARD_HERMES_USER" != root ] && pick_hermes && [ "$H_OK" = yes ]; then
+    # Keep administrator state root-owned, but stream a progress projection under the owner's UID.
+    # Never source scripts/env or write as root through a directory controlled by the named account.
+    local oh; oh="$(home_of "$H_USER")/.wizard-os"
+    runuser -u "$H_USER" -- mkdir -p "$oh"
+    runuser -u "$H_USER" -- chmod 700 "$oh"
+    local -a codes
+    set +e
+    bash "$WOS_DIR/get.sh" </dev/null 2>&1 9>&- | tee -a "$INSTALL_LOG" |
+      runuser -u "$H_USER" -- /usr/bin/python3 -c "$STATUS_PY" "$oh/install-status.json" "$oh/install.log" stream $$ 9>&-
+    codes=("${PIPESTATUS[@]}")
+    set -e
+    rc="${codes[0]}"
+    [ "${codes[1]}" = 0 ] && [ "${codes[2]}" = 0 ] || rc=1
+    runuser -u "$H_USER" -- /usr/bin/python3 -c "$STATUS_PY" "$oh/install-status.json" "$oh/install.log" end "$rc"
+    python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
+    return 0
+  fi
   bash "$WOS_DIR/get.sh" </dev/null >>"$INSTALL_LOG" 2>&1 9>&- &
   gpid=$!
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" follow "$gpid" </dev/null 9>&- &
@@ -526,14 +613,228 @@ for k in sorted(os.environ):
     setsid nohup /bin/bash "$WOS_DIR/get.sh" __runner </dev/null >/dev/null 2>&1 8>&- &
   fi
   for _ in $(seq 1 40); do install_running && [ -f "$STATUS_FILE" ] && break; sleep 0.25; done
+  if [ ! -f "$STATUS_FILE" ] && ! install_running; then
+    echo "The Wizard OS install did not start (its background runner exited at once). Nothing new was installed." >&2
+    echo "Run the start command again; if it repeats, run: curl -fsSL https://aiwizards.com/os.sh | bash" >&2
+    exit 1
+  fi
   echo "Wizard OS install started in the background (it can take 10-20 minutes)."
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
+named_host_ready() {
+  [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
+  docker info >/dev/null 2>&1 || { docker_group_member && command -v sg >/dev/null &&
+    sg docker -c 'docker info' >/dev/null 2>&1; } || return 1
+  [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" != tailscale ] ||
+    { systemctl is-active --quiet tailscaled && tailscale debug prefs 2>/dev/null |
+      python3 -c 'import json,os,sys; sys.exit(json.load(sys.stdin).get("OperatorUser") != os.environ.get("USER"))'; }
+}
+# Which host pieces this (non-root) owner still needs root for, as relay/page keys. Read-only; empty = none.
+root_needs() {
+  local -a n=(); local v
+  { command -v git && command -v curl && command -v openssl &&
+    { python3 -c 'import yaml' || /usr/bin/python3 -c 'import yaml'; }; } >/dev/null 2>&1 || n+=(packages)
+  if ! command -v docker >/dev/null 2>&1; then n+=(docker)
+  else
+    v="$(docker version --format '{{.Server.Version}}' 2>/dev/null ||
+       { docker_group_member && sg docker -c "docker version --format '{{.Server.Version}}'" 2>/dev/null </dev/null; } || true)"
+    [ -z "$v" ] || [ "${v%%.*}" -ge 28 ] 2>/dev/null || n+=(docker)
+    docker info >/dev/null 2>&1 || docker_group_member || n+=(docker_group)
+  fi
+  [ -f "$HOME/runtipi/.env" ] || n+=(runtipi)
+  if [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = tailscale ]; then
+    if ! command -v tailscale >/dev/null 2>&1; then n+=(tailscale tailscale_operator)
+    elif ! tailscale debug prefs 2>/dev/null |
+         python3 -c 'import json,os,sys; sys.exit(json.load(sys.stdin).get("OperatorUser") != os.environ.get("USER"))' 2>/dev/null; then
+      n+=(tailscale_operator)
+    fi
+  fi
+  echo "${n[*]:-}"
+}
+admin_command() {  # the one terminal command (last resort), for the selected owner/home
+  printf 'curl -fsSL https://aiwizards.com/os.sh | sudo env WIZARD_HERMES_USER=%q HERMES_HOME=%q WIZARD_AGENT_SAFE=1 bash -s start' "$H_USER" "$H_HOME"
+}
+sudo_group_member() {  # in a group that Debian/Ubuntu/Fedora/Arch sudoers grant by default
+  local g; for g in $(id -nG 2>/dev/null); do case "$g" in sudo|admin|wheel) return 0 ;; esac; done; return 1
+}
+# One-time owner approval through https://www.aiwizards.com/os-approve (the detached runner only; no terminal).
+# A fresh RSA key pair lives in this process's memory only. The owner's browser encrypts the server password to its
+# public key; the relay keeps only that ciphertext, hands it over once, and forgets it. Here it is decrypted in memory
+# and piped straight into `sudo -S` for the ONE root step (host preparation), then dropped. It never reaches a file,
+# an argument, the environment, the log or the status. A wrong password gets a fresh link (bounded); the relay being
+# unreachable, an account that cannot sudo, or used-up tries end in the one terminal command instead.
+# shellcheck disable=SC2016
+APPROVE_PY='
+import hashlib, json, os, secrets, subprocess, sys, time, urllib.error, urllib.request
+cfg = json.loads(sys.argv[1])
+PAGE = cfg["relay"].rstrip("/")
+LABEL = "wizard-os-approve/v1:"
+HDR = {"content-type": "application/json", "user-agent": "wizard-os-installer"}
+def say(s): print(s, flush=True)
+def api(p, body):
+    req = urllib.request.Request(PAGE + "/api/" + p, data=json.dumps(body).encode(), headers=HDR, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r: return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.loads(e.read() or b"{}")
+        except ValueError: return e.code, {}
+    except (OSError, ValueError): return 0, {}
+def fallback(msg):
+    say("[wizard-os] admin-command: " + cfg["admin_cmd"])
+    say("[wizard-os] owner-admin: " + msg)
+    sys.exit(3)
+ADMIN = "an administrator of this server"
+TERM = (" Run this once in your own terminal on the server (sudo asks for the password there, never in chat);"
+        " your agent can then keep checking the normal status:")
+def ossl(args, data=None):
+    return subprocess.run(["openssl", *args], input=data, capture_output=True, check=True).stdout
+def decrypt(pem, rid, ct):
+    r, w = os.pipe()   # the private key reaches openssl through a pipe, never a file
+    os.write(w, pem); os.close(w)
+    try:
+        return subprocess.run(["openssl", "pkeyutl", "-decrypt", "-inkey", "/dev/fd/%d" % r,
+            "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha256", "-pkeyopt", "rsa_mgf1_md:sha256",
+            "-pkeyopt", "rsa_oaep_label:" + (LABEL + rid).encode().hex()],
+            input=__import__("base64").b64decode(ct), capture_output=True, check=True, pass_fds=(r,)).stdout
+    finally: os.close(r)
+def elevate(pw):
+    mark = "WIZARD-ELEVATED-" + secrets.token_hex(8)
+    # Root runs the official installer from its source, never a file this account can write.
+    # The bytes must equal the installer this runner is (main can move while the owner opens the link).
+    argv = ["sudo", "-S", "-k", "-p", "", "--", "/bin/bash", "-c",
+            "echo " + mark + "; t=$(mktemp) || exit 4; curl -fsSL \"$1\" -o \"$t\" &&"
+            " [ \"$(sha256sum < \"$t\" | head -c 64)\" = \"$2\" ] || { rm -f \"$t\";"
+            " echo \"The installer changed while waiting for the approval; run the start command again.\"; exit 4; };"
+            " env \"${@:3}\" /bin/bash \"$t\"; rc=$?; rm -f \"$t\"; exit $rc", "_",
+            cfg["getsh"], cfg["getsh_sha"], *cfg["root_env"]]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         env={**os.environ, "LC_ALL": "C"})
+    try: p.stdin.write(bytes(pw) + b"\n"); p.stdin.close()
+    except BrokenPipeError: pass
+    pre, up = [], False
+    for raw in p.stdout:
+        line = raw.decode(errors="replace")
+        if not up:
+            if line.strip() == mark:
+                up = True; say("[wizard-os] owner-action-done"); say("==> Administrator host preparation (approved by the owner)")
+            else: pre.append(line.lower())
+            continue
+        sys.stdout.write(line); sys.stdout.flush()
+    rc, said = p.wait(), "".join(pre)
+    up_seen[0] = up
+    if up: return ("approved" if rc == 0 else "failed"), rc
+    if "not in the sudoers" in said or "not allowed to" in said or "may not run sudo" in said: return "not_sudoer", rc
+    if "incorrect password" in said or "try again" in said or "no password was provided" in said: return "wrong_password", rc
+    return "failed", rc
+up_seen = [False]
+tries = max(1, min(int(cfg.get("tries") or 3), 9))
+for attempt in range(1, tries + 1):
+    pem = ossl(["genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:3072"])
+    pub = __import__("base64").b64encode(ossl(["pkey", "-pubout", "-outform", "DER"], pem)).decode()
+    cap, pickup = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    rid = hashlib.sha256(cap.encode()).hexdigest()
+    s, j = api("create", {"id": rid, "pickup_hash": hashlib.sha256(pickup.encode()).hexdigest(), "pubkey": pub,
+                          "host": cfg["host"], "user": cfg["user"], "needs": cfg["needs"], "attempt": attempt})
+    if s != 201:
+        fallback("Wizard OS needs administrator rights once for host setup, and the approval link is unavailable right now." + TERM)
+    say("[wizard-os] owner-approval: Open this link and enter your server password once to approve the Wizard OS install: "
+        + PAGE + "#" + cap)
+    ct, down_since, deadline = None, None, time.time() + int(j.get("ttl") or 1800) + 30
+    while time.time() < deadline:
+        time.sleep(float(cfg.get("interval") or 3))
+        s, j = api("poll", {"id": rid, "pickup": pickup})
+        if s != 200:
+            down_since = down_since or time.time()
+            if time.time() - down_since > float(cfg.get("down_after") or 300):
+                fallback("Wizard OS needs administrator rights once for host setup, and the approval link stopped working." + TERM)
+            continue
+        down_since = None
+        if j.get("state") == "submitted" and j.get("ct"): ct = j["ct"]; break
+        if j.get("state") in ("expired", "picked_up") or j.get("state") in ("approved", "wrong_password", "not_sudoer", "failed"): break
+    if not ct:
+        api("cancel", {"id": rid, "pickup": pickup})
+        if attempt < tries: say("[wizard-os] note-once: The approval link expired; a fresh one is shown.")
+        continue
+    try: pw = bytearray(decrypt(pem, rid, ct))
+    except (subprocess.CalledProcessError, ValueError): pw = None
+    del pem, ct
+    if pw is None:
+        api("result", {"id": rid, "pickup": pickup, "outcome": "failed"}); continue
+    outcome, rc = elevate(pw)
+    for i in range(len(pw)): pw[i] = 0
+    del pw
+    api("result", {"id": rid, "pickup": pickup, "outcome": outcome})
+    if outcome == "approved": sys.exit(0)
+    if outcome == "not_sudoer":
+        fallback("The account " + cfg["user"] + " is not allowed to use sudo, so a password cannot approve this. " + ADMIN.capitalize()
+                 + " must run this once in their own terminal:")
+    if outcome == "failed" and rc != 0 and up_seen[0]:
+        say("[wizard-os] note: the approved host preparation failed (exit %d); the log above shows why." % rc); sys.exit(1)
+    if outcome == "failed":
+        fallback("Your server could not use the approval (sudo refused it)." + TERM)
+    if attempt < tries: say("[wizard-os] note-once: That password was not accepted; a fresh approval link is shown.")
+fallback("The approval link was not completed after %d tries." % tries + TERM)
+'
+owner_approval() {  # in the detached runner: ask for the one-time approval, run only the root step, or stop with (C)
+  local needs; needs="$(root_needs)"
+  echo "Administrator rights are needed once for: ${needs:-host preparation}"
+  if ! command -v openssl >/dev/null || ! command -v sudo >/dev/null; then
+    echo "[wizard-os] admin-command: $(admin_command)"
+    echo "[wizard-os] owner-admin: Wizard OS needs administrator rights once for host setup, and this server cannot show the approval link (openssl or sudo is missing). Run this once in your own terminal on the server (sudo asks for the password there, never in chat); your agent can then keep checking the normal status:"
+    exit 3
+  fi
+  if ! sudo_group_member; then
+    echo "[wizard-os] admin-command: $(admin_command)"
+    echo "[wizard-os] owner-admin: The account $(id -un) is not in this server's sudo group, so its password cannot approve this. An administrator of this server must run this once in their own terminal:"
+    exit 3
+  fi
+  local cfg
+  cfg="$(python3 -c 'import json, sys; a = sys.argv
+print(json.dumps({"relay": a[1], "host": a[2], "user": a[3], "needs": [x for x in a[4].split() if x], "tries": a[5],
+  "interval": a[6], "down_after": a[7], "admin_cmd": a[8], "getsh": a[9], "getsh_sha": a[10], "root_env": a[11:]}))' \
+    "${WIZARD_APPROVE_URL:-https://www.aiwizards.com/os-approve}" "$(hostname -s 2>/dev/null || hostname)" "$(id -un)" "$needs" \
+    "${WIZARD_APPROVE_TRIES:-3}" "${WIZARD_APPROVE_INTERVAL:-3}" "${WIZARD_APPROVE_DOWN_AFTER:-300}" "$(admin_command)" \
+    "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" "$(sha256sum < "$WOS_DIR/get.sh" | cut -d' ' -f1)" "WIZARD_HERMES_USER=$H_USER" "HERMES_HOME=$H_HOME" WIZARD_HOST_PREP_ONLY=1 WIZARD_AGENT_SAFE=1 \
+    "WAM_REPO=$REPO" ${WAM_REF:+"WAM_REF=$WAM_REF"} "WIZARD_PRIVATE_ACCESS=${WIZARD_PRIVATE_ACCESS:-tailscale}")"
+  local rc=0; python3 -c "$APPROVE_PY" "$cfg" || rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+  # Approved and prepared: carry on as the owner. Pick up the new docker group in this process tree.
+  export WIZARD_APPROVED=1
+  if ! docker info >/dev/null 2>&1 && docker_group_member && command -v sg >/dev/null; then
+    exec sg docker -c "exec /bin/bash $(printf '%q' "$WOS_DIR/get.sh")"
+  fi
+}
+# Noninteractive agents cannot authenticate sudo. Stop before creating detached state or changing anything,
+# and retain the exact selected owner/home in the ONE command the owner runs in their own terminal. Under the
+# detached `start`, the owner gets a one-time approval link instead (owner_approval); the command stays the fallback.
+if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] && [ "${WIZARD_APPROVED:-0}" != 1 ] &&
+   [[ "${1:-}" != status && "${1:-}" != check && "${1:-}" != --check && "${1:-}" != __runner ]] &&
+   ! sudo -n true 2>/dev/null && ! named_host_ready &&
+   ! { [ "${1:-}" = start ] && install_running; }; then
+  prc=0; pick_hermes || prc=$?
+  if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
+    if [ "${WIZARD_APPROVE:-link}" = link ] && [ "${1:-}" = start ] && ! sudo_group_member; then
+      echo "The account $(id -un) is not in this server's sudo group, so its password cannot approve the Wizard OS install. No passwordless sudo is required or granted." >&2
+      echo "An administrator of this server must run this once in their own terminal (sudo asks there, never in chat); your agent can then check normal status:" >&2
+      admin_command >&2; echo >&2
+      exit 2
+    elif [ "${WIZARD_APPROVE:-link}" = link ] && [ "${1:-}" = start ]; then
+      :   # the detached runner asks for the approval link (below, via owner_approval)
+    elif [ "${WIZARD_APPROVE:-link}" = link ] && [ "${WIZARD_DETACHED:-0}" = 1 ] && [ -z "${1:-}" ]; then
+      owner_approval
+    else
+      echo "Wizard OS needs one administrator approval for host packages and services. No passwordless sudo is required or granted." >&2
+      echo "Run this in your own terminal (sudo asks there, never in chat); your agent can then check normal status:" >&2
+      admin_command >&2; echo >&2
+      exit 2
+    fi
+  fi
+fi
 case "${1:-}" in
   start) install_start; exit 0 ;;
   status) install_status; exit 0 ;;
-  __runner) install_runner ;;
+  __runner) install_runner; exit 0 ;;
 esac
 # ---- end detached install ----
 AGENT_SAFE=0; in_hermes_agent && AGENT_SAFE=1
@@ -552,6 +853,10 @@ if [ "$MODE" != fresh ]; then
   if [ "$prc" -eq 0 ] && [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; then MODE=alongside; fi
 fi
 
+if [ "${WIZARD_HOST_PREP_ONLY:-0}" = 1 ] &&
+   { [ "$(id -u)" -ne 0 ] || [ -z "${WIZARD_HERMES_USER:-}" ] || [ "$WIZARD_HERMES_USER" = root ] || [ "$MODE" = fresh ]; }; then
+  echo "WIZARD_HOST_PREP_ONLY is only for the owner-approved root step for a named Hermes owner." >&2; exit 2
+fi
 if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
   # Alongside the Hermes on this box, as the user that owns it (root included). A re-run keeps the box's mode.
   ALONG_USER=""; ALONG_HOME=""
@@ -567,14 +872,20 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
   fi
   if [ -n "$ALONG_USER" ]; then
     say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing Wizard OS alongside it as $ALONG_USER"
-    if [ "$ALONG_USER" != root ] && ! sudo -n -u "$ALONG_USER" sudo -n true 2>/dev/null; then
-      echo "Alongside requires administrator-provisioned sudo for $ALONG_USER; refusing to grant passwordless root access automatically. Nothing was changed." >&2
+    if [ "$ALONG_USER" != root ] && [ "$(docker_mode "$ALONG_USER")" = rootless ]; then
+      echo "The selected Hermes owner uses rootless Docker. The one-time host preparation does not support that layout yet; existing Docker and Hermes were not changed." >&2
       exit 2
     fi
     prepare_server
     if [ "$ALONG_USER" != root ]; then
-      if [ "$(docker_mode "$ALONG_USER")" = rootful ] && ! id -nG "$ALONG_USER" | tr ' ' '\n' | grep -qx docker; then
-        usermod -aG docker "$ALONG_USER" && echo "added $ALONG_USER to the docker group"
+      # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
+      # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
+      helper="$(mktemp)"
+      curl -fsSL "$REPO/raw/$REF/scripts/prepare-named-user.sh" -o "$helper"
+      bash "$helper" "$ALONG_USER"
+      rm -f "$helper"
+      if [ "${WIZARD_HOST_PREP_ONLY:-0}" = 1 ]; then   # the owner-approved root step: the owner's runner continues
+        echo "Administrator host preparation finished; continuing as $ALONG_USER."; exit 0
       fi
       as_user "$ALONG_USER" alongside "$ALONG_HOME"
     fi
@@ -706,6 +1017,20 @@ fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published
 }
 if [ -z "${WAM_REF:-}" ]; then
   REL="${WIZARD_RELEASE:-}"
+  CHANNEL="${WIZARD_CHANNEL:-}"
+  if [ -z "$CHANNEL" ] && [ -f "$HOME/.wizard-os/updates.json" ]; then   # the owner's saved channel (wam updates)
+    CHANNEL="$(python3 -c 'import json, sys
+try: c = json.load(open(sys.argv[1])).get("channel")
+except Exception: c = None
+print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2>/dev/null || true)"
+  fi
+  case "${CHANNEL:=stable}" in stable|latest) ;; *) echo "WIZARD_CHANNEL must be stable or latest" >&2; exit 2 ;; esac
+  if [ -z "$REL" ] && [ "$CHANNEL" = latest ]; then
+    frc=0; fetch_release latest "$RECORD.latest" || frc=$?
+    [ "$frc" -eq 0 ] && REL="$(tr -d ' \t\r\n' < "$RECORD.latest")"
+    rm -f "$RECORD.latest"
+    [ -n "$REL" ] || echo "note: no latest release pointer at $RELEASE_BASE/latest; using stable"
+  fi
   if [ -z "$REL" ]; then
     frc=0; fetch_release stable "$RECORD.stable" || frc=$?
     if [ "$frc" -eq 1 ]; then
@@ -928,10 +1253,6 @@ try:
   check("App Manager checkout clean", "clean", "clean" if not dirty else "modified: " + " ".join(dirty.split()[:6]), True)
   running_names = run(*docker, "ps", "--format", "{{.Names}}").split()
   digest_check("wizard-app-manager", "runtipi" if "runtipi" in running_names else "", True)
-  try:
-      apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
-  except (OSError, ValueError):
-      apps = {}
   names = run(*docker, "ps", "--format", "{{.Names}}").split()
   def container_for(app):
       # Exact Runtipi project boundary, not a substring that can match another app/test stack.
@@ -967,6 +1288,12 @@ try:
       digest_check(image_name, container, mode == "alongside")
       if mode == "alongside" and checks[-1]["name"] == f"image {image_name}" and not checks[-1]["ok"]:
           checks[-1]["remedy"] = f"~/.local/bin/wam app update {app_id}, then re-run this command"
+  # app update regenerates apps.json. Re-read it AFTER all queued core updates; the pre-update
+  # projection otherwise falsely reports old source commits even when the new images are running.
+  try:
+      apps = {a["id"]: a for a in json.load(open(os.path.expanduser("~/.wizard-os/apps.json"))).get("apps", [])}
+  except (OSError, ValueError):
+      apps = {}
   for slot, d in (rel.get("default_apps") or {}).items():
       if not d or (mode == "alongside" and d.get("alongside")):
           continue

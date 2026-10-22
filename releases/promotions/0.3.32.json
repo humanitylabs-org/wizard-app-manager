@@ -1,0 +1,16 @@
+{
+  "version": "0.3.32",
+  "latest_since": "2026-10-21T16:39:01Z",
+  "promoted_at": "2026-10-22T02:57:18Z",
+  "upgrade_test": {
+    "from": "0.3.25",
+    "to": "0.3.32",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.32.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Stable 0.3.25 Store is broken on fresh boxes (Store routes 404, no Open, Wisdom can't install); fixed by WAM #143/#146/#150/#152/#153/#155 and wizard-ux #273/#282, each with regression tests. Demo box upgrade chain 0.3.25 -> 0.3.32 passed; 0.3.32 re-checked 22 Oct.",
+    "notes": "Feature-like ride-alongs, promoted on Miguel's call because demo tests pass: WAM #138 updates default Ask me (medium: never-chosen 0.3.25 boxes auto-update once, then stay Ask me); WAM #141 + ux #268 channels (low); WAM #140 Chats slot, new App Manager image (low); WAM #153 runtime.package source (low-medium); ux #272 Settings redesign (medium, big UX); ux #15 first-run Setup (medium, not re-proven fresh); ux #256/#258/#254 opt-in surfaces and skins (low). Fresh install of 0.3.32 not redone (no shell on the demo box)."
+  }
+}
