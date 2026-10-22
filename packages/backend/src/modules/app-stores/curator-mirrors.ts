@@ -21,14 +21,17 @@ const downloadBundle = async (url: string, dest: string) => {
   const response = await fetch(url, { signal: AbortSignal.timeout(90000) });
   if (!response.ok || !response.body) throw new Error('curator bundle unavailable');
   const out = await fs.open(dest, 'w');
+  const reader = response.body.getReader();
   let total = 0;
   try {
-    for await (const chunk of response.body) {
-      total += chunk.length;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
       if (total > BUNDLE_LIMIT_BYTES) throw new Error('curator bundle exceeds size limit');
-      await out.writeFile(chunk);
+      await out.writeFile(value);
     }
-  } finally { await out.close(); }
+  } finally { reader.releaseLock(); await out.close(); }
 };
 
 // Full git object verification, not an archive filename/header claiming a SHA.
