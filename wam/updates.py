@@ -330,6 +330,7 @@ def installing(home: Path | None = None) -> bool:
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
     """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
+    from . import hermes_update
     run = install_state(home)
     chan = channel(home)
     have, want = installed(home), latest(base, fresh=fresh, chan=chan)
@@ -341,7 +342,8 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "update_available": newer, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
             # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
-            "interrupted": run == "interrupted" and newer}
+            "interrupted": run == "interrupted" and newer,
+            "hermes": hermes_update.status(home, base)}
 
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:

@@ -19,6 +19,8 @@ Wizard additions:
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
+  wam hermes status [--json]    host Hermes version vs the box's release pin
+  wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                 [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
@@ -1459,6 +1461,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "hermes":
+        from .hermes_update import main as hermes_main
+        return hermes_main(argv[1:])
     if argv and argv[0] == "agent-link":
         from .agent_link import main as agent_link_main
         return agent_link_main(argv[1:])
