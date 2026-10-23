@@ -39,6 +39,10 @@ RULES = [
     ('theme-storage', r'''\b(?:localStorage|sessionStorage)\s*\.\s*(?:setItem|getItem)\s*\(\s*['"](?:theme|dark(?:Mode|-mode)?|color[-_]?scheme|wos\.skin|skin)['"]''', 'System skin/dark/light state belongs to WizardApp.theme, not app storage.'),
     ('theme-switch', r'''\b(?:toggleDarkMode|toggleTheme|setDarkMode)\s*\(|(?:id|data-action)\s*=\s*['"][^'"]*(?:theme-toggle|dark-mode|dark-toggle)[^'"]*['"]|\bdocument\s*\.\s*documentElement\s*\.\s*classList\s*\.\s*(?:toggle|add|remove)\s*\(\s*['"](?:dark|light|dark-mode|light-mode)['"]|\bdocument\s*\.\s*documentElement\s*\.\s*setAttribute\s*\(\s*['"]data-(?:theme|color-scheme)['"]\s*,\s*['"](?:dark|light)['"]''', 'Remove app-local system theme switches; keep app reading/art controls.'),
     ('root-guard', r'''\b(?:wzGuard|wosGuard|rootGuard|backGuard|__wosNativeBack)\b|Press\s+back\s+again\s+to\s+exit''', 'Use WizardApp.back; root exit/standalone guards live only in shared core.'),
+    # James, 22 Oct 2026: "why for every app … are you implementing some bootstrap thing from scratch when we already
+    # have a fully functional chat interface?" A conversation with an AI is the real Chats thread, never an app copy.
+    ('app-chat', r'''<textarea\b[^>]*\b(?:placeholder|aria-label)\s*=\s*['"][^'"]*\b(?:ask|message|reply|chat|talk to)\b[^'"]*['"]|\.\s*placeholder\s*=\s*['"`][^'"`]*\b(?:ask|message|reply|chat|talk to)\b[^'"`]*['"`]|\b(?:class|id)\s*=\s*['"][^'"]*\b(?:chat|ask-ai|ai-chat|assistant)[-_](?:composer|input|messages|transcript|thread|log)\b[^'"]*['"]''',
+     'An AI conversation opens the real Chats thread: WizardApp.nav.openThread(sessionId, {reply}) on an agent bound to this app. See references/chat.md.'),
 ]
 
 
@@ -86,7 +90,7 @@ def _scan_text(raw, rel):
     text = _code(raw)
     rows = []
     for name, expression, remedy in RULES:
-        match = re.search(expression, text, re.I if name in {'theme-storage', 'theme-switch', 'root-guard'} else 0)
+        match = re.search(expression, text, re.I if name in {'theme-storage', 'theme-switch', 'root-guard', 'app-chat'} else 0)
         if match:
             line = text.count('\n', 0, match.start()) + 1
             rows.append({'rule': 'system functions: ' + name, 'ok': False, 'severity': 'error', 'detail': f'{rel}:{line}: {remedy}'})

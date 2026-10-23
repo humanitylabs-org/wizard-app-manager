@@ -35,6 +35,11 @@ from wam import builder, system_functions
     ('window.onpopstate = () => { history.forward() };', 'root-history-bounce'),
     ('window.onpopstate = () => history.forward();', 'root-history-bounce'),
     ('''window.onpopstate = () => history.pushState(null, '', location.href);''', 'root-history-bounce'),
+    ('<textarea placeholder="Ask about this passage…"></textarea>', 'app-chat'),
+    ('<textarea aria-label="Message the assistant"></textarea>', 'app-chat'),
+    ('<section class="ask-ai-messages"></section>', 'app-chat'),
+    ('<div id="chat-composer"></div>', 'app-chat'),
+    ('''composer = document.createElement('textarea'); composer.placeholder = 'Ask about this passage…';''', 'app-chat'),
 ])
 def test_raw_implementations_rejected(tmp_path, snippet, rule):
     (tmp_path / 'screen.html').write_text(snippet)
@@ -52,6 +57,8 @@ def test_domain_callbacks_real_routes_and_reading_controls_allowed(tmp_path):
       addEventListener('popstate',()=>history.pushState(state, '', location.pathname + '?record=2'));
       window.onpopstate = () => history.pushState({record:2}, '', location.href);
       document.querySelector('record-card').addEventListener('activate', render);
+      field.placeholder = 'Search chapters'; title.placeholder = 'Name this habit';
+      const note='<textarea placeholder="Write a note"></textarea><input placeholder="Add a habit"><div class="habit-input"></div>';
       navigator.permissions.query({name:'geolocation'});
       function openRecord(id) { history.pushState({record:id}, '', '/record/'+id);render() }
       function closeRecord() { history.back() }
