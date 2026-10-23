@@ -32,6 +32,17 @@ Wizard OS installs a complete, matching skill/tooling/templates bundle automatic
 ## Supported shell skins
 Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
 
+
+## Reuse check (mandatory, before writing code)
+One implementation per capability. Before planning, read the Wizard OS component inventory (`docs/COMPONENTS.md` in wizard-ux; its App section is the `WizardApp` facade). List every capability the job needs (chat, draft, back, theme, share, capture, upload, settings, auth, markdown, errors, model picker, reading place, anything drawn or animated) and write one line each in the plan, worker brief, PR body and completion report:
+```
+Reuse:
+- <capability>: REUSE <entry point from its row>
+- <capability>: EXTEND <module> because <row> lacks <thing> (row updated)
+- <capability>: NEW because no row covers it (lands in the shell's web/core with a row, never in the app)
+Visual: <side-by-side screenshot of the existing element and yours, for anything drawn or animated>
+```
+Tests for a REUSE line exercise the shared path named in its row, not only the outcome. Delegated workers get this block and the inventory in their brief. Why: an app's homemade Ask AI chat and a PNG orb were rebuilt beside polished shared components.
 ## Shared system functions (James-approved, mandatory)
 Read `references/system-functions.md` **before** editing any view. Always reuse `WizardApp` from `/wizard-os-home/core/app-client.js`; apps own task state/domain callbacks, never capture, sharing, root exit guards, system theme storage, SW or install implementations. This reference and its executable gate ship in the installed builder skill, so future agents load the rule automatically. No new `wizard.md` field is approved by this work.
 
