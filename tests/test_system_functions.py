@@ -184,3 +184,24 @@ def test_installed_portable_skill_retains_mandatory_qa_and_reference(tmp_path):
     assert builder.check_app(app)['ok']
     (app / 'web/platform.js').write_text('navigator.serviceWorker.register("custom.js")')
     assert not builder.check_app(app)['ok']
+
+
+def test_installed_bundle_exposes_wizard_guide_beside_builder(tmp_path):
+    """The onboarding guide ships with wizard-builder: Hermes discovers both from the one registered dir."""
+    os_home, hermes_home = tmp_path / 'os', tmp_path / 'hermes'
+    receipt = builder.install_skill(os_home, hermes_home)
+    registered = Path(receipt['registered'])
+    guide = registered / 'wizard-guide' / 'SKILL.md'
+    assert guide.is_file()
+    assert guide.read_bytes() == (builder.REPO / 'system-skills/wizard-guide/SKILL.md').read_bytes()
+    text = guide.read_text()
+    assert text.startswith('---\nname: wizard-guide\n')
+    for tool in ('wizard_tips', 'wizard_remind', 'Skins/My skin/skin.css'):
+        assert tool in text
+    # An owner's own folder of the same name is preserved on reinstall.
+    link = registered / 'wizard-guide'
+    link.unlink()
+    link.mkdir()
+    (link / 'SKILL.md').write_text('mine')
+    builder.install_skill(os_home, hermes_home)
+    assert (link / 'SKILL.md').read_text() == 'mine'
