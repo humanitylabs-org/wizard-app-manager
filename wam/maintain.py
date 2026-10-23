@@ -6,9 +6,11 @@
     wam maintain --os-security off|check|patch
     wam maintain history [-n N]
 
-Slice 1 owns OS security patches (wam/os_patch.py: any Linux, through its own package manager and security channel)
-and the run's history, written for Home > Resources > Health. Backups (`wam backup`), Wizard OS / Hermes / app
-updates (`wam updates`, `wam hermes`, `wam app update`) join this same run, lock and history in later slices.
+One run, in order: (1) backups: `wam backup` keeps its own schedule and lock; this run catches up a missed backup
+and reports whether the last one succeeded and was read back; (2) OS security patches (wam/os_patch.py: any Linux,
+through its own package manager and security channel); (3) the owner's Automatic Wizard OS update (stable releases
+only; this timer replaces the separate 03:30 one). Hermes updates stay explicit (`wam hermes update`). History goes
+to ~/.wizard-os/maintenance and Home > Resources > Health.
 
 OS security setting (~/.wizard-os/maintenance.json, kept across reinstalls; the installer never writes it):
 - "check" (default): look every night and show what is pending in Health. Changes nothing.
@@ -177,23 +179,31 @@ def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
 
 
 def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemctl: bool = True) -> dict:
-    on = settings(home)["os_security"] != "off"
+    """The nightly maintenance timer is always on: it owns the box's nightly work (backup check, OS security, the
+    Automatic Wizard OS update). The separate Wizard OS update timer is retired once this one exists; `wam updates`
+    sees this timer and never reinstalls its own."""
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = (lambda *a: subprocess.run(["systemctl", "--user", *a], capture_output=True, timeout=60)) if systemctl \
         else (lambda *a: None)
-    if on:
-        ud.mkdir(parents=True, exist_ok=True)
-        for p, text in files.items():
-            if not p.exists() or p.read_text() != text:
-                p.write_text(text)
-        run("daemon-reload"); run("enable", "--now", f"{UNIT}.timer")
-    else:
-        run("disable", "--now", f"{UNIT}.timer")
-        for p in files:
-            p.unlink(missing_ok=True)
-        run("daemon-reload")
-    return {"timer": on}
+    ud.mkdir(parents=True, exist_ok=True)
+    for p, text in files.items():
+        if not p.exists() or p.read_text() != text:
+            p.write_text(text)
+    retired = False
+    from . import updates
+    old_timer = ud / f"{updates.UNIT}.timer"
+    if old_timer.exists():
+        run("disable", "--now", f"{updates.UNIT}.timer")
+        old_timer.unlink(missing_ok=True)
+        (ud / f"{updates.UNIT}.service").unlink(missing_ok=True)
+        retired = True
+    run("daemon-reload"); run("enable", "--now", f"{UNIT}.timer")
+    return {"timer": True, "retired_update_timer": retired}
+
+
+def timer_installed(unit_dir: Path | None = None) -> bool:
+    return ((unit_dir or Path.home() / ".config/systemd/user") / f"{UNIT}.timer").exists()
 
 
 def set_os_security(mode: str, home: Path | None = None, runner=subprocess.run, unit_dir: Path | None = None,
@@ -267,17 +277,91 @@ def os_step(mode: str, home: Path, runner=subprocess.run, wait: float = 1800, is
     return call_helper(["apply"], runner)
 
 
-def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_busy=None, sleep=time.sleep) -> dict:
+BACKUP_DUE_HOURS = 26      # a daily backup older than this was missed (box asleep, timer lost): catch it up
+BACKUP_STALE_HOURS = 50   # Health: no successful backup in two days is an error
+READ_BACK_DAYS = 8        # Health: the weekly read-back of backed-up data is overdue
+
+
+def _age_hours(stamp, now: float) -> float | None:
+    if isinstance(stamp, (int, float)):
+        return (now - float(stamp)) / 3600
+    try:
+        return (now - calendar.timegm(time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S"))) / 3600
+    except (ValueError, OverflowError):
+        return None
+
+
+def backup_state(home: Path) -> dict:
+    """What `wam backup` (wam/backup, its own timer and lock) last did. No engine on this wam: not installed."""
+    try:
+        from .backup import schedule as _sched  # noqa: F401
+    except ImportError:
+        return {"state": "not_installed"}
+    cfg = _load(home / "backup.json")
+    st = _load(home / "backup-status.json")
+    if not cfg.get("target"):
+        return {"state": "not_set_up"}
+    if not cfg.get("enabled"):
+        return {"state": "off", "status": st}
+    return {"state": "on", "status": st, "every": cfg.get("every")}
+
+
+def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> dict:
+    """Catch up a missed scheduled backup; never a second copy of the backup schedule. The backup engine keeps its
+    own lock, so a backup already running makes this a no-op."""
+    now = time.time() if now is None else now
+    b = backup_state(home)
+    if b["state"] != "on":
+        return b
+    st = b.get("status") or {}
+    age = _age_hours(st.get("last_success_at"), now)
+    due = BACKUP_DUE_HOURS * (7 if b.get("every") == "weekly" else 1)
+    if age is not None and age < due:
+        return {**b, "ran": False, "age_hours": round(age, 1)}
+    wam = shutil.which("wam") or str(Path.home() / ".local/bin/wam")
+    try:
+        p = runner([wam, "backup", "run", "--scheduled", "--json"], capture_output=True, text=True, timeout=4 * 3600)
+        rc = p.returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {**b, "ran": True, "state": "error", "reason": f"catch-up backup failed to start: {exc}"}
+    b = backup_state(home)
+    return {**b, "ran": True, "exit_code": rc}
+
+
+def updates_step(home: Path, quiet: bool) -> dict:
+    """The owner's Automatic Wizard OS update (stable, promoted releases only), formerly its own 03:30 timer.
+    Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
+    from . import updates
+    try:
+        if updates.mode(home) != "auto":
+            return {"state": "ask", "mode": "ask"}
+        if not quiet:
+            return {"state": "deferred", "reason": "The box was busy; the update waits for the next quiet night."}
+        res = updates.apply_if_auto(home)
+    except Exception as exc:   # an update check must never sink the nightly run
+        return {"state": "error", "reason": f"update check failed: {exc}"[:400]}
+    if res.get("error"):
+        return {"state": "error", "reason": str(res["error"])[:400], "installed": res.get("installed")}
+    if res.get("started"):
+        return {"state": "started", "to": res.get("latest"), "from": res.get("installed")}
+    return {"state": res.get("skipped") or "current", "installed": res.get("installed"), "note": res.get("note")}
+
+
+def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_busy=None, sleep=time.sleep,
+        with_updates: bool = True) -> dict:
     h = _home(home)
     started = _now()
     try:
         with _lease(h):
             mode = settings(h)["os_security"]
             t0 = time.monotonic()
+            bk = backup_step(h, runner)
             os_res = os_step(mode, h, runner, wait, is_busy, sleep)
+            quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
+            up = updates_step(h, quiet) if with_updates else {"state": "skipped"}
             rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(),
-                   "seconds": round(time.monotonic() - t0, 1), "os_security": mode, "os": os_res,
-                   "state": _overall(os_res)}
+                   "seconds": round(time.monotonic() - t0, 1), "os_security": mode, "backup": _slim_backup(bk),
+                   "os": os_res, "updates": up, "state": _overall(os_res, bk, up)}
     except BlockingIOError:
         rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(), "state": "busy",
                "reason": "Another maintenance task holds the box's maintenance lease; nothing was changed."}
@@ -285,10 +369,19 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
     return rec
 
 
-def _overall(os_res: dict) -> str:
+def _slim_backup(b: dict) -> dict:
+    st = b.get("status") or {}
+    keep = ("ok", "error", "last_success_at", "finished_at", "snapshot", "read_data", "check", "repository_bytes")
+    return {k: v for k, v in {**b, "status": {k: st.get(k) for k in keep if k in st} or None}.items() if v is not None}
+
+
+def _overall(os_res: dict, bk: dict | None = None, up: dict | None = None) -> str:
     st = os_res.get("state")
-    return {"applied": "ok", "current": "ok", "pending": "ok", "off": "ok", "held": "ok", "report_only": "ok",
-            "deferred": "deferred"}.get(str(st), "error")
+    o = {"applied": "ok", "current": "ok", "pending": "ok", "off": "ok", "held": "ok", "report_only": "ok",
+         "deferred": "deferred"}.get(str(st), "error")
+    if (bk or {}).get("state") == "error" or (up or {}).get("state") == "error":
+        return "error"
+    return o
 
 
 def _record(h: Path, rec: dict) -> None:
@@ -326,11 +419,59 @@ def history(home: Path | None = None, n: int = 20) -> list[dict]:
 def health(home: Path | None = None, last: dict | None = None, now: float | None = None) -> dict:
     """Home > Resources > Health rows (wizard-ux tools/system-health.mjs shape)."""
     last = last if last is not None else _load(_dir(home) / "last.json")
+    now = time.time() if now is None else now
     mode = settings(home)["os_security"]
     items = []
+    b = _backup_item(backup_state(_home(home)), now)
+    if b:
+        items.append(b)
     if mode != "off":
-        items.append(_os_item(mode, last, time.time() if now is None else now))
+        items.append(_os_item(mode, last, now))
+    u = _updates_item(last)
+    if u:
+        items.append(u)
     return {"generated_at": _now(), "items": items}
+
+
+def _backup_item(b: dict, now: float) -> dict | None:
+    item = {"key": "backups", "label": "Backups"}
+    s = b["state"]
+    if s == "not_installed":
+        return None
+    if s == "not_set_up":
+        return {**item, "status": "warn", "value": "not set up", "detail": "Nothing is backed up off this box yet."}
+    if s == "off":
+        return {**item, "status": "warn", "value": "off", "detail": "Scheduled backups are switched off."}
+    st = b.get("status") or {}
+    age = _age_hours(st.get("last_success_at"), now)
+    if age is None:
+        return {**item, "status": "error" if st.get("error") else "warn", "value": "no backup yet",
+                "detail": str(st.get("error") or "The first scheduled backup has not finished.")[:300]}
+    when = f"{int(age)}h ago" if age < 48 else f"{int(age // 24)} days ago"
+    if age > BACKUP_STALE_HOURS * (7 if b.get("every") == "weekly" else 1):
+        return {**item, "status": "error", "value": f"last {when}",
+                "detail": str(st.get("error") or "Backups have stopped succeeding.")[:300]}
+    if st.get("ok") is False:
+        return {**item, "status": "warn", "value": "last run failed",
+                "detail": f"Last good backup {when}. {str(st.get('error') or '')[:200]}".strip()}
+    rd = st.get("read_data") or {}
+    rd_age = _age_hours(rd.get("at") if isinstance(rd, dict) else None, now)
+    if rd_age is None or not rd.get("ok") or rd_age > READ_BACK_DAYS * 24:
+        return {**item, "status": "warn", "value": f"backed up {when}", "detail": "Not read back this week yet."}
+    return {**item, "status": "ok", "value": f"verified, {when}", "detail": ""}
+
+
+def _updates_item(last: dict) -> dict | None:
+    u = (last or {}).get("updates") or {}
+    st = u.get("state")
+    item = {"key": "wizard-updates", "label": "Wizard OS updates", "quiet": True}
+    if st == "error":
+        return {**item, "status": "error", "value": "update failed", "detail": str(u.get("reason"))[:300]}
+    if st == "started":
+        return {**item, "status": "ok", "value": f"updating to {u.get('to')}", "detail": ""}
+    if st in ("deferred", "unpromoted"):
+        return {**item, "status": "warn", "value": "waiting", "detail": str(u.get("reason") or u.get("note") or "")[:300]}
+    return None
 
 
 def _os_item(mode: str, last: dict, now: float) -> dict:

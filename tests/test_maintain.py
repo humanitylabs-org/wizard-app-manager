@@ -139,12 +139,25 @@ def test_default_is_check_and_installer_never_writes_settings(tmp_path):
     assert "OnCalendar=*-*-* 02:00" in timer and "Persistent=true" in timer
 
 
-def test_off_removes_timer(tmp_path, monkeypatch):
+def test_off_skips_os_but_keeps_the_nightly_timer(tmp_path, monkeypatch):
     monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: {"changed": False})
-    maintain.ensure_timer(tmp_path, tmp_path / "u", systemctl=False)
     maintain.set_os_security("off", tmp_path, unit_dir=tmp_path / "u", systemctl=False)
-    assert not (tmp_path / "u" / "wizard-os-maintain.timer").exists()
+    assert (tmp_path / "u" / "wizard-os-maintain.timer").exists()
     assert json.loads((tmp_path / "maintenance.json").read_text())["os_security"] == "off"
+    rec = maintain.run(tmp_path, wait=0, is_busy=lambda: [], with_updates=False)
+    assert rec["os"] == {"state": "off"} and not [i for i in maintain.health(tmp_path)["items"] if i["key"] == "os-security"]
+
+
+def test_maintenance_timer_retires_the_update_timer_and_updates_defers(tmp_path, monkeypatch):
+    from wam import updates
+    ud = tmp_path / "u"
+    monkeypatch.setattr(updates, "mode", lambda home=None: "auto")
+    updates.ensure_timer(tmp_path, ud, systemctl=False)
+    assert (ud / "wizard-os-update.timer").exists()
+    assert maintain.ensure_timer(tmp_path, ud, systemctl=False)["retired_update_timer"]
+    assert not (ud / "wizard-os-update.timer").exists() and (ud / "wizard-os-maintain.timer").exists()
+    assert updates.ensure_timer(tmp_path, ud, systemctl=False)["nightly"] == "wizard-os-maintain"
+    assert not (ud / "wizard-os-update.timer").exists()
 
 
 def test_patch_needs_helper(tmp_path, monkeypatch):
@@ -261,3 +274,82 @@ def test_zypper_lists_only_needed_security_patches(monkeypatch):
            '<update kind="patch" name="SLE-3" edition="2" status="applied" category="security" severity="low">')
     monkeypatch.setattr(os_patch, "run", lambda argv, **k: subprocess.CompletedProcess(argv, 0, xml, ""))
     assert [p["name"] for p in os_patch.Zypper({}).pending(False)] == ["SLE-2"]
+
+
+# ---- slice 2: backups ---------------------------------------------------------------------------------------------
+
+NOW = 1_800_000_000
+
+
+def _bk(monkeypatch, state, status=None, every="daily"):
+    monkeypatch.setattr(maintain, "backup_state", lambda h: {"state": state, "status": status or {}, "every": every})
+
+
+def test_fresh_backup_is_not_rerun(tmp_path, monkeypatch):
+    _bk(monkeypatch, "on", {"ok": True, "last_success_at": NOW - 3600})
+    called = []
+    res = maintain.backup_step(tmp_path, lambda *a, **k: called.append(a), now=NOW)
+    assert res["ran"] is False and not called
+
+
+def test_missed_backup_is_caught_up_through_wam_backup(tmp_path, monkeypatch):
+    _bk(monkeypatch, "on", {"ok": True, "last_success_at": NOW - 30 * 3600})
+    called = []
+    def runner(argv, **k):
+        called.append(argv); return subprocess.CompletedProcess(argv, 0, "{}", "")
+    res = maintain.backup_step(tmp_path, runner, now=NOW)
+    assert res["ran"] and called[0][1:] == ["backup", "run", "--scheduled", "--json"]
+
+
+def test_backup_not_configured_does_nothing(tmp_path, monkeypatch):
+    _bk(monkeypatch, "not_set_up")
+    assert maintain.backup_step(tmp_path, lambda *a, **k: 1 / 0, now=NOW)["state"] == "not_set_up"
+
+
+@pytest.mark.parametrize("b,status,value", [
+    ({"state": "not_set_up"}, "warn", "not set up"),
+    ({"state": "on", "status": {"ok": True, "last_success_at": NOW - 7200,
+                                 "read_data": {"ok": True, "at": NOW - 86400}}}, "ok", "verified, 2h ago"),
+    ({"state": "on", "status": {"ok": True, "last_success_at": NOW - 7200}}, "warn", "backed up 2h ago"),
+    ({"state": "on", "status": {"ok": False, "error": "R2 down", "last_success_at": NOW - 20 * 3600,
+                                 "read_data": {"ok": True, "at": NOW}}}, "warn", "last run failed"),
+    ({"state": "on", "status": {"ok": False, "error": "R2 down", "last_success_at": NOW - 4 * 86400}}, "error", "last 4 days ago"),
+    ({"state": "on", "status": {"ok": False, "error": "no key"}}, "error", "no backup yet"),
+])
+def test_backup_health_row(b, status, value):
+    item = maintain._backup_item(b, NOW)
+    assert (item["status"], item["value"]) == (status, value)
+
+
+def test_backup_row_absent_without_backup_engine():
+    assert maintain._backup_item({"state": "not_installed"}, NOW) is None
+
+
+# ---- slice 3: Wizard OS updates -------------------------------------------------------------------------------
+
+def test_updates_step_ask_does_nothing(tmp_path, monkeypatch):
+    from wam import updates
+    monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: 1 / 0)
+    assert maintain.updates_step(tmp_path, True)["state"] == "ask"
+
+
+def test_updates_step_auto_applies_only_when_quiet(tmp_path, monkeypatch):
+    from wam import updates
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": True, "latest": "0.4.0", "installed": "0.3.9"})
+    assert maintain.updates_step(tmp_path, False)["state"] == "deferred"
+    assert maintain.updates_step(tmp_path, True) == {"state": "started", "to": "0.4.0", "from": "0.3.9"}
+
+
+def test_updates_failure_never_sinks_the_run(tmp_path, monkeypatch):
+    from wam import updates
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    def boom(h=None): raise OSError("network")
+    monkeypatch.setattr(updates, "apply_if_auto", boom)
+    _bk(monkeypatch, "not_set_up")
+    monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: {"state": "current", "security": [], "held": []})
+    rec = maintain.run(tmp_path, wait=0, is_busy=lambda: [])
+    assert rec["updates"]["state"] == "error" and rec["os"]["state"] == "current" and rec["state"] == "error"
+    keys = [i["key"] for i in maintain.health(tmp_path)["items"]]
+    assert keys == ["backups", "os-security", "wizard-updates"]

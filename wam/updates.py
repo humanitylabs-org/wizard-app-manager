@@ -375,6 +375,13 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = _systemctl(systemctl)
+    if (ud / "wizard-os-maintain.timer").exists():   # the nightly maintenance run applies Automatic (wam/maintain.py)
+        if (ud / f"{UNIT}.timer").exists():
+            run("disable", "--now", f"{UNIT}.timer")
+            for p in files:
+                p.unlink(missing_ok=True)
+            run("daemon-reload")
+        return {"mode": m, "timer": False, "nightly": "wizard-os-maintain"}
     if m == "auto":
         ud.mkdir(parents=True, exist_ok=True)
         for p, text in files.items():
