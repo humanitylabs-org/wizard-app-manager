@@ -1,6 +1,6 @@
 ---
 name: wizard-builder
-description: Use when building, porting or changing Wizard apps.
+description: Use when building, porting or changing apps for Wizard OS (wizard.md packages).
 version: 0.2.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
@@ -10,7 +10,9 @@ metadata:
     tags: [wizard-apps, builder]
     related_skills: []
 ---
-# Build a Wizard app
+# Build an app for Wizard OS
+
+Owner-facing words (wizard-os DECISIONS #84): an app with a screen is an **app**; a screenless app agents use is an **agent app**. Never say "Wizard app" to the owner.
 
 Use the smallest artifact that finishes the owner's job. This system skill lives outside generated app skills, so installs and removals preserve it. Candidate capabilities are source scaffolding, checking, isolated local staging and publication preparation. Production install and public execution remain separate gates.
 
