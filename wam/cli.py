@@ -1270,6 +1270,15 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _go(self, method: str) -> None:
         from . import store_install as si
+        from .browser_boundary import from_env
+        # All Store operations (including _recommended) share this gate, before
+        # peer/owner identity and BEFORE parsing a body or starting any installer.
+        try:
+            boundary = getattr(getattr(self, 'server', None), 'browser_boundary', None) or from_env()
+        except ValueError:
+            return self._json(503, {"error": "browser_boundary_unconfigured"})
+        if not boundary.allows(self.headers):
+            return self._json(401, {"error": "shell_token_required"})
         if si.peer_uid(self.client_address[1]) != 0:
             return self._json(403, {"error": "only reachable through tailscale serve"})
         c = self.cfg
@@ -1601,6 +1610,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
             from . import recommended
+            from .browser_boundary import from_env
+            # Validate before starting either listener or resuming installer work.
+            try:
+                browser_boundary = from_env()
+            except ValueError as e:
+                raise RuntimeError(str(e)) from None
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
@@ -1608,6 +1623,7 @@ def main(argv: list[str] | None = None) -> int:
                 import threading
                 from . import store_install
                 ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
+                setattr(ssrv, 'browser_boundary', browser_boundary)
                 threading.Thread(target=ssrv.serve_forever, daemon=True).start()
                 print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
