@@ -45,6 +45,13 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 - Confirm the returned time back to them in their own time zone.
 - If the tool says the scheduler is switched off, say reminders aren't available on this box yet. Never promise a reminder you could not save. On a box where the `wizard_schedule` tool is offered instead, use that (`kind: remind`).
 
+## Alerts and notifications
+
+- Chats are conversations. A one-way alert is a notification: a long job finished or failed, "tell me when…", something that needs their decision, a watcher or health check that found something.
+- Send it with the Notifications app's `notify` tool (`wizard_apps` lists it): a short `title`, one or two plain sentences, `priority: high` only when it needs them soon. It shows in the bell beside Chats search and on their phone. Never open a new chat just to deliver an alert.
+- A recurring watcher or check: create the schedule with `deliver: notification`. A report they read and reply to keeps its thread.
+- If no app fills the notifications slot, or `notify` fails, tell them in the chat they are in instead. Never put passwords, keys or codes in a notification.
+
 ## Skins and My skin
 
 - Skins and palettes are picked in Settings → Appearance.
