@@ -325,7 +325,8 @@ def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> 
     except (OSError, subprocess.SubprocessError) as exc:
         return {**b, "ran": True, "state": "error", "reason": f"catch-up backup failed to start: {exc}"}
     b = backup_state(home)
-    return {**b, "ran": True, "exit_code": rc}
+    ok = rc == 0 and (b.get("status") or {}).get("ok") is not False
+    return {**b, "ran": True, "exit_code": rc, "result": "ok" if ok else "failed"}
 
 
 def updates_step(home: Path, quiet: bool) -> dict:
@@ -379,7 +380,7 @@ def _overall(os_res: dict, bk: dict | None = None, up: dict | None = None) -> st
     st = os_res.get("state")
     o = {"applied": "ok", "current": "ok", "pending": "ok", "off": "ok", "held": "ok", "report_only": "ok",
          "deferred": "deferred"}.get(str(st), "error")
-    if (bk or {}).get("state") == "error" or (up or {}).get("state") == "error":
+    if (bk or {}).get("state") == "error" or (bk or {}).get("result") == "failed" or (up or {}).get("state") == "error":
         return "error"
     return o
 

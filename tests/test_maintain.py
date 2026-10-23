@@ -357,3 +357,16 @@ def test_updates_failure_never_sinks_the_run(tmp_path, monkeypatch):
     assert rec["updates"]["state"] == "error" and rec["os"]["state"] == "current" and rec["state"] == "error"
     keys = [i["key"] for i in maintain.health(tmp_path)["items"]]
     assert keys == ["backups", "os-security", "wizard-updates"]
+
+
+def test_failed_catch_up_backup_marks_the_run(tmp_path, monkeypatch):
+    calls = []
+    def state(h):
+        calls.append(1)
+        return ({"state": "on", "status": {"last_success_at": None}} if len(calls) == 1
+                else {"state": "on", "status": {"ok": False, "error": "no runtipi"}})
+    monkeypatch.setattr(maintain, "backup_state", state)
+    monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: {"state": "current", "security": [], "held": []})
+    rec = maintain.run(tmp_path, runner=lambda argv, **k: subprocess.CompletedProcess(argv, 1, "", ""), wait=0,
+                       is_busy=lambda: [], with_updates=False)
+    assert rec["backup"]["result"] == "failed" and rec["state"] == "error"
