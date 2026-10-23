@@ -7,6 +7,10 @@ import pytest
 from wam import maintain, os_patch
 
 
+def _row(home, key, last=None, now=None):
+    return next(i for i in maintain.health(home, last, now)["items"] if i["key"] == key)
+
+
 @pytest.mark.parametrize("rel,family", [
     ({"ID": "debian"}, "apt"), ({"ID": "ubuntu", "ID_LIKE": "debian"}, "apt"), ({"ID": "pop", "ID_LIKE": "ubuntu debian"}, "apt"),
     ({"ID": "fedora"}, "dnf"), ({"ID": "rocky", "ID_LIKE": "rhel centos fedora"}, "dnf"), ({"ID": "amzn"}, "dnf"),
@@ -191,7 +195,7 @@ def test_busy_box_defers_patch_and_changes_nothing(tmp_path, monkeypatch):
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: ["A chat run is active."], sleep=lambda s: None)
     assert rec["state"] == "deferred" and rec["os"]["state"] == "deferred" and not called
     h = json.loads((tmp_path / "maintenance" / "health.json").read_text())
-    assert h["items"][0]["value"] == "waiting for quiet"
+    assert next(i for i in h["items"] if i["key"] == "os-security")["value"] == "waiting for quiet"
 
 
 def test_quiet_box_applies_and_records_history(tmp_path, monkeypatch):
@@ -200,7 +204,7 @@ def test_quiet_box_applies_and_records_history(tmp_path, monkeypatch):
                                                                       "security": [], "held": [], "reboot_required": True})
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: [], sleep=lambda s: None)
     assert rec["state"] == "ok"
-    item = maintain.health(tmp_path)["items"][0]
+    item = _row(tmp_path, "os-security")
     assert item["value"] == "1 installed" and item["status"] == "warn" and "restart" in item["detail"]
     assert len(maintain.history(tmp_path)) == 1
 
@@ -224,7 +228,7 @@ def test_hermes_update_lock_blocks_the_run(tmp_path):
 def test_health_is_stale_after_three_days(tmp_path):
     old = {"finished_at": "2026-10-01T00:00:00Z", "state": "ok", "os": {"state": "current"}}
     now = time.mktime(time.strptime("2026-10-23", "%Y-%m-%d"))
-    assert maintain.health(tmp_path, old, now)["items"][0]["status"] == "error"
+    assert _row(tmp_path, "os-security", old, now)["status"] == "error"
 
 
 def test_history_is_bounded(tmp_path, monkeypatch):
