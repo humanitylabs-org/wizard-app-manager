@@ -91,6 +91,11 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,3 +143,13 @@ jobs:
           check_platforms "$IMAGE:$VERSION"
           docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$VERSION"
           check_platforms "$IMAGE:latest"
+      - name: Index digest of the versioned tag
+        id: index
+        run: echo "digest=$(docker buildx imagetools inspect "$IMAGE:${{ steps.v.outputs.tag }}" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')" >> "$GITHUB_OUTPUT"
+      # Signed build provenance: records that this exact image digest was built by this repo's CI from this commit.
+      # Verify: gh attestation verify oci://ghcr.io/humanitylabs-org/wizard-app-manager@<digest> --owner humanitylabs-org
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
