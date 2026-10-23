@@ -6,7 +6,7 @@ The authoritative tokens and components live in [wizard-os/style/](https://githu
 
 - `web/boot.js` ← `style/boot.js`: hosted marker before first paint.
 - `web/wizard-tokens.css` ← `style/tokens.css`: generated from `style/tokens.json`.
-- `web/wizard-ui.css` ← `style/ui.css`: card, chip, bar, sheet, row, button, empty state, composer and frame.
+- `web/wizard-ui.css` ← `style/ui.css`: card, chip, bar, sheet, row, button, empty state, single-line add field and frame. Look only: talking to an agent is the real Chats thread (`WizardApp.nav.openThread`), never a composer built from these classes. Inside Wizard, `WizardApp` swaps this copy for the shell's live kit (`/wizard-os-home/kit/wizard-ui.css`) and layers the active skin and My skin after `styles.css`, so skins can restyle `.wz-*`; never edit the copy (`wam check` warns), put app styles in `styles.css`.
 - `/wizard-os-home/core/app-client.js`: shared capability-negotiated WizardApp v1, including Appearance v1. No copied per-app transport.
 - `web/standalone.css`: retained system-media light fallback before host appearance arrives, separate from the immutable canonical CSS.
 - `web/styles.css`: app-specific layout. This is the file the builder edits.

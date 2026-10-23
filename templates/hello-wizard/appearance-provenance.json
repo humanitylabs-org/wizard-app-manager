@@ -2,7 +2,7 @@
   "schema": 3,
   "component": "wizard-ui-appearance-v1",
   "origin_repo": "https://github.com/humanitylabs-org/wizard-os",
-  "revision": "afd5188ddc86cbd38306f17ac83197a2a92eb7f7",
+  "revision": "81c70ae27e4f05f139609891027f4888ef40c614",
   "source_thread": "wizard_1791807054943_dc70b2bccb22",
   "license": "GPL-3.0-only",
   "modified": false,
@@ -13,7 +13,7 @@
     },
     "style/ui.css": {
       "destination": "web/wizard-ui.css",
-      "sha256": "501dc71ed11147f93949e6cc1b2c22cbaf238d65bc1e3dd3098d566947513c43"
+      "sha256": "fb3a00a117e4ba2fe441306d5461dba36c2b279adeabb53729a62da539d284ea"
     },
     "style/boot.js": {
       "destination": "web/boot.js",

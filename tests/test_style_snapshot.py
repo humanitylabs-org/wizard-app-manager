@@ -78,3 +78,21 @@ def test_snapshot_source_and_missing_asset_fail(tmp_path):
     (template / 'web/boot.js').unlink()
     with pytest.raises(ValueError, match='snapshot drifted'):
         builder.validate_style_snapshot(template)
+
+
+def test_forked_kit_is_a_warning_not_an_error(tmp_path):
+    from wam import builder
+    import shutil
+    app = tmp_path / 'app'
+    shutil.copytree(builder.REPO / 'templates' / 'hello-wizard', app)
+    assert builder.kit_rows(app) == []
+    kit = app / 'web' / 'wizard-ui.css'
+    kit.write_text(kit.read_text() + '\n.my-chat { display: flex; }\n')
+    rows = builder.kit_rows(app)
+    assert len(rows) == 1 and rows[0]['severity'] == 'warning' and 'styles.css' in rows[0]['detail']
+
+
+def test_template_add_field_uses_look_only_names():
+    from wam import builder
+    html = (builder.REPO / 'templates' / 'hello-wizard' / 'web' / 'index.html').read_text()
+    assert 'class="wz-field-row"' in html and 'wz-compose' not in html
