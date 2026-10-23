@@ -1,6 +1,6 @@
 ---
 name: wizard-builder
-description: Use when building, porting or changing Wizard apps.
+description: Use when building, porting or changing apps for Wizard OS (wizard.md packages).
 version: 0.2.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
@@ -10,7 +10,9 @@ metadata:
     tags: [wizard-apps, builder]
     related_skills: []
 ---
-# Build a Wizard app
+# Build an app for Wizard OS
+
+Owner-facing words (wizard-os DECISIONS #84): an app with a screen is an **app**; a screenless app agents use is an **agent app**. Never say "Wizard app" to the owner.
 
 Use the smallest artifact that finishes the owner's job. This system skill lives outside generated app skills, so installs and removals preserve it. Candidate capabilities are source scaffolding, checking, isolated local staging and publication preparation. Production install and public execution remain separate gates.
 
@@ -35,6 +37,17 @@ Use the shell registry as the source of truth. The accepted set is **Nebula (def
 ## Chat is the Chats thread (James, 22 Oct 2026; mandatory)
 Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant", "chat about this") opens the real Chats thread over the app window with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping. The `wizard-ui.css` kit is styling, never a licence to build a composer or transcript. Isolation requirements are met with an agent bound to the app, not a separate UI. `wam check` fails `app-chat` markup. Read `references/chat.md` before planning any conversational feature; its parity + fault-injection gate is the definition of done.
 
+
+## Reuse check (mandatory, before writing code)
+One implementation per capability. Before planning, read the Wizard OS component inventory (`docs/COMPONENTS.md` in wizard-ux; its App section is the `WizardApp` facade). List every capability the job needs (chat, draft, back, theme, share, capture, upload, settings, auth, markdown, errors, model picker, reading place, anything drawn or animated) and write one line each in the plan, worker brief, PR body and completion report:
+```
+Reuse:
+- <capability>: REUSE <entry point from its row>
+- <capability>: EXTEND <module> because <row> lacks <thing> (row updated)
+- <capability>: NEW because no row covers it (lands in the shell's web/core with a row, never in the app)
+Visual: <side-by-side screenshot of the existing element and yours, for anything drawn or animated>
+```
+Tests for a REUSE line exercise the shared path named in its row, not only the outcome. Delegated workers get this block and the inventory in their brief. Why: an app's homemade Ask AI chat and a PNG orb were rebuilt beside polished shared components.
 ## Shared system functions (James-approved, mandatory)
 Read `references/system-functions.md` **before** editing any view. Always reuse `WizardApp` from `/wizard-os-home/core/app-client.js`; apps own task state/domain callbacks, never capture, sharing, root exit guards, system theme storage, SW or install implementations. This reference and its executable gate ship in the installed builder skill, so future agents load the rule automatically. No new `wizard.md` field is approved by this work.
 
