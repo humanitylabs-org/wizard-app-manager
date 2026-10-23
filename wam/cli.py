@@ -1114,6 +1114,12 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out.append(("API token present (0600)", c.token_file.is_file() and (c.token_file.stat().st_mode & 0o077) == 0, str(c.token_file)))
     regp = c.home / "apps.json"
     out.append(("apps.json written", regp.is_file(), str(regp)))
+    from . import updates
+    run = updates.install_state(c.home)  # also heals a stale running state and its lock (wizard-os#90)
+    if run == "interrupted":
+        out.append(("Wizard OS update completed", False,
+                    "the last install or update was interrupted before it finished; retry with "
+                    "`wam updates --apply`, or `curl -fsSL https://aiwizards.com/os.sh | bash -s start`"))
     st = alongside.load(c.home)
     if st:
         a = st["agent"]
