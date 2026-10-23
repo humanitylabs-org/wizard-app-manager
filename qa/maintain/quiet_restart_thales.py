@@ -43,7 +43,10 @@ def collect():
 
 
 def main():
-    assert str(ROOT).startswith('/Volumes/ThalesMedia/'), 'Heavy work must be on the external disk'
+    configured = os.environ.get('WIZARD_HEAVY_ROOT') or os.environ.get('WIZARD_WORK_ROOT')
+    if not configured:
+        raise SystemExit('Heavy lane not configured: set WIZARD_HEAVY_ROOT or WIZARD_WORK_ROOT')
+    assert ROOT.is_relative_to(Path(configured).resolve()), 'Heavy work must be under the configured work disk'
     OUT.mkdir(exist_ok=True)
     os.environ['PATH'] = '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
     os.environ['TMPDIR'] = str(ROOT / '.tmp')

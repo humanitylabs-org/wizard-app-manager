@@ -76,8 +76,23 @@ def pre():
     with op._no_service_restarts():
         cmd('apt-get', 'update', '-qq')
         cmd('env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_SUSPEND=1', 'apt-get', 'install', '-y', '-q',
-            'needrestart', 'python3-pytest', 'python3-yaml', 'sudo')
+            'needrestart', 'python3-pytest', 'python3-yaml', 'sudo', 'git')
     root = str(Path(__file__).resolve().parents[2])
+    bundle = Path(root) / 'source.bundle'
+    if bundle.exists():
+        # Preserve real tracked-file/HEAD semantics for the repository's portable-path
+        # guard, without contacting GitHub or using credentials inside the guest.
+        cmd('git', '-C', root, 'init', '-q')
+        cmd('git', '-C', root, 'fetch', '-q', str(bundle), 'refs/heads/feature/system-maintenance')
+        cmd('git', '-C', root, 'reset', '--mixed', 'FETCH_HEAD')
+        combined_root = Path(root) / 'backup-integration'
+        if combined_root.exists():
+            cmd('git', '-C', str(combined_root), 'init', '-q')
+            cmd('git', '-C', str(combined_root), 'fetch', '-q', str(bundle), 'refs/heads/feature/system-maintenance')
+            cmd('git', '-C', str(combined_root), 'reset', '--mixed', 'FETCH_HEAD')
+            cmd('git', '-C', str(combined_root), 'add', '-A', '-f', '.')
+            save('source', {'candidate': cmd('git', '-C', root, 'rev-parse', 'HEAD'),
+                            'integration_tree': cmd('git', '-C', str(combined_root), 'write-tree')})
     tests = subprocess.run(['python3', '-m', 'pytest', '-q', root + '/tests'], cwd=root,
                            text=True, capture_output=True, timeout=1200, env={**os.environ, 'PYTHONPATH': root})
     (OUT / 'pytest.log').write_text(tests.stdout + tests.stderr)
