@@ -87,6 +87,11 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         if any(a["id"] == name for a in apps):
             raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
+        from .wizardmd import voice_names
+        try:
+            spoken = voice_names(w)
+        except ValueError:
+            spoken = []  # optional field: a bad list drops the names, never the app or the registry (wam check reports it)
         from . import chats_views
         chats = chats_views.installed(meta['dir'], w, meta['commit'])
         port = app.get("port") or cfg.get("port")
@@ -98,6 +103,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({"voice_names": spoken} if spoken else {}),
             "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),

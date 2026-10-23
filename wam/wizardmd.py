@@ -109,6 +109,16 @@ def storage_problems(manifest: dict, compose: dict) -> list[str]:
     return bad
 
 
+def voice_names(manifest: dict) -> list[str]:
+    """Spoken names that open this app; absence is backward compatible."""
+    names = manifest.get("voice_names", [])
+    if (not isinstance(names, list) or len(names) > 8 or
+            any(not isinstance(n, str) or not n.strip() or len(n) > 40 or
+                any(ord(c) < 32 or ord(c) == 127 for c in n) for n in names)):
+        raise ValueError("voice_names must be a list of at most 8 nonblank strings, each at most 40 characters, without controls")
+    return list(names)
+
+
 def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
     out: list[tuple[str, bool, str]] = []
 
@@ -126,6 +136,12 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule("front matter parses", False, str(e))
         return out
     rule("front matter parses", True)
+    if "voice_names" in d:
+        try:
+            voice_names(d)
+            rule("voice_names valid", True)
+        except ValueError as e:
+            rule("voice_names valid", False, str(e))
     from . import chats_views
     try:
         chats_views.validate(repo, d)
