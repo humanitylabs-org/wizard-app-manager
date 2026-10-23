@@ -31,8 +31,8 @@ def test_voice_names_survive_installed_apps_json(tmp_path):
     assert json.loads(output.read_text())['apps'][0]['voice_names'] == names
     wm.write_text(wm.read_text().replace(json.dumps(names), 'null'))
     assert 'voice_names valid' in wizardmd.failures(wizardmd.check(app))
-    with pytest.raises(ValueError, match='voice_names'):
-        registry.build(rows, 'wizardapps', '127.0.0.1', tmp_path)
+    reg = registry.build(rows, 'wizardapps', '127.0.0.1', tmp_path)
+    assert 'voice_names' not in json.loads(registry.write(reg, tmp_path / 'owner2').read_text())['apps'][0]
 
 def test_legacy_manifest_adds_no_names():
     assert wizardmd.voice_names({}) == []
