@@ -352,7 +352,7 @@ def test_updates_failure_never_sinks_the_run(tmp_path, monkeypatch):
     def boom(h=None): raise OSError("network")
     monkeypatch.setattr(updates, "apply_if_auto", boom)
     _bk(monkeypatch, "not_set_up")
-    monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: {"state": "current", "security": [], "held": []})
+    monkeypatch.setattr(maintain, "os_step", lambda *a, **k: {"state": "current", "security": [], "held": []})
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: [])
     assert rec["updates"]["state"] == "error" and rec["os"]["state"] == "current" and rec["state"] == "error"
     keys = [i["key"] for i in maintain.health(tmp_path)["items"]]
@@ -366,7 +366,7 @@ def test_failed_catch_up_backup_marks_the_run(tmp_path, monkeypatch):
         return ({"state": "on", "status": {"last_success_at": None}} if len(calls) == 1
                 else {"state": "on", "status": {"ok": False, "error": "no runtipi"}})
     monkeypatch.setattr(maintain, "backup_state", state)
-    monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: {"state": "current", "security": [], "held": []})
+    monkeypatch.setattr(maintain, "os_step", lambda *a, **k: {"state": "current", "security": [], "held": []})
     rec = maintain.run(tmp_path, runner=lambda argv, **k: subprocess.CompletedProcess(argv, 1, "", ""), wait=0,
                        is_busy=lambda: [], with_updates=False)
     assert rec["backup"]["result"] == "failed" and rec["state"] == "error"
