@@ -102,6 +102,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
+            # Optional tag (James, 23 Oct 2026): `privacy: private` keeps the app off every non-private agent until
+            # the owner ticks one. Anything else, or no line at all, is a standard app.
+            **({"privacy": "private"} if str(w.get("privacy", "")).strip().lower() == "private" else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
