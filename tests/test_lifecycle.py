@@ -464,7 +464,7 @@ def test_secret_named_slot_is_not_dropped(bridge):
     meta["provides"] = ["password-manager", "secret-store", "api-key-vault"]
     wizard.write_text("---\n" + yaml.safe_dump(meta) + "---\n")
     _, result = op(b, "install")
-    assert set(result["registry"]["slots"]) == {"password-manager", "secret-store", "api-key-vault"}
+    assert set(result["registry"]["slots"]) == {"password-manager", "secret-store", "api-key-vault", "chats"}
 
 
 def test_definite_rejection_is_retryable_and_form_types_checked(bridge):

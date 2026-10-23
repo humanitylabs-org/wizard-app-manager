@@ -13,7 +13,8 @@ DEFAULTS_FILE = Path(__file__).with_name("defaults.json")
 
 
 def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
-    return json.loads(path.read_text())["slots"]
+    from .release_pins import defaults
+    return defaults(json.loads(path.read_text())["slots"])
 
 
 # Apps that are no longer a slot default but are still installed on boxes and still updated from their repo.
@@ -58,6 +59,8 @@ def table(reg: dict, defaults: dict[str, dict] | None = None) -> list[dict]:
                          "external": f"external: {e.get('name', e.get('id'))}", "note": d.get("note", "")})
             continue
         apps = have.get(slot, [])
+        if slot == 'chats':
+            apps = ['wizard-chats', *apps]
         if not apps and d.get("app") in installed:   # a default that fills several spots before it's split
             apps = [d["app"]]
         rows.append({
@@ -72,11 +75,16 @@ def table(reg: dict, defaults: dict[str, dict] | None = None) -> list[dict]:
 
 def to_install(reg: dict, defaults: dict[str, dict] | None = None) -> list[str]:
     """Default apps to install so every spot that has a default is filled (an installed alternative counts)."""
+    defaults = load_defaults() if defaults is None else defaults
     out: list[str] = []
     for row in table(reg, defaults):
+        if defaults[row["slot"]].get("install") == "on-demand":
+            continue
         if row["state"] == "external":
             continue
-        if not row["installed"] and row["default_app"] and row["default_app"] not in out:
+        # Multi-provider slots are additive: Claude must not suppress the release's ChatGPT default.
+        missing = row["default_app"] not in row["installed"] if defaults[row["slot"]].get("multi") else not row["installed"]
+        if missing and row["default_app"] and row["default_app"] not in out:
             out.append(row["default_app"])
     return out
 

@@ -39,6 +39,7 @@ def test_index_resolve_by_id_and_repo(monkeypatch):
         calls.append(url)
         return {"apps": [rec]} if "/v1/search" in url else {**rec, "listed": True}
     monkeypatch.setattr(index, "_get", fake_get)
+    monkeypatch.setenv("WAM_PUBLISHERS", "*")  # resolve mechanics; the first-party guard has its own tests
     assert index.resolve("https://i", "hello-wizard")["repo"] == "a/hello"
     assert "id=hello-wizard" in calls[-1]
     assert index.resolve("https://i", "a/hello")["install"]["commit"] == "f" * 40
@@ -75,6 +76,28 @@ def test_registry_reads_app_manager_files(tmp_path):
     assert data["apps"][0]["skill"] == "skills/hello-wizard/SKILL.md"
     assert (tmp_path / "home" / "skills" / "hello-wizard" / "SKILL.md").is_file()
     assert "_skill_src" not in data["apps"][0]
+
+
+def test_views_are_same_origin_routes_and_staged_installs_never_shadow_owner_tiles(tmp_path):
+    rt = tmp_path / "runtipi"
+    d = _fake_store_app(rt)
+    wm = d / "wizard.md"
+    wm.write_text(wm.read_text().replace("\n---\n", "\nview:\n  path: /\n  port: 8799\n---\n", 1))
+    installed = [{"app": {"status": "running", "port": 8799}, "info": {"urn": "hello-wizard:wizardapps"}}]
+    reg = registry.build(installed, "wizardapps", "127.0.0.1", rt)
+    home = tmp_path / "home"
+    home.mkdir()
+    # This owner opted into same-origin routing; new generic installs without this file keep normal URLs.
+    (home / "routes.json").write_text("{}")
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] is None   # no owner route yet: never a raw host URL
+    (home / "routes.json").write_text(json.dumps({"hello-wizard": {"view": "/hello-next/", "staged_as": "hello-next"},
+                                                   "evil": {"view": "http://1.2.3.4/", "staged_as": "Bad Id"}}))
+    a = json.loads(registry.write(reg, home).read_text())["apps"][0]
+    assert a["view"] == {"url": "/hello-next/"} and a["id"] == "hello-next" and a["app_id"] == "hello-wizard"
+    assert a["staged"] is True and a["skill"] == "skills/hello-wizard/SKILL.md"
+    assert (home / "skills" / "hello-wizard" / "SKILL.md").is_file()
+    assert registry.routes(home)["evil"] == {"view": None, "staged_as": None}
 
 
 def test_build_form_generates_required_passwords(tmp_path, monkeypatch):
@@ -133,7 +156,7 @@ def test_template_mcp_server_speaks_mcp(tmp_path):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
     proc = subprocess.Popen([sys.executable, "-c", src], cwd=tmp_path,
-                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
+                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "DATA_DIR": str(tmp_path / "data")})
     try:
         for _ in range(50):
             try:
@@ -289,7 +312,7 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert f"{view}:/hermes:ro" in text and (view / "cache" / "images").is_dir()
     assert sorted(x.name for x in view.rglob("*")) == ["cache", "images"]      # nothing else: no secrets
     vols = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["volumes"]
-    assert [v.split(":")[1] for v in vols] == ["/hermes", "/hermes/cache/images"]   # parent before child
+    assert [v.split(":")[1] for v in vols][:2] == ["/hermes", "/hermes/cache/images"]   # parent before child
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
@@ -316,6 +339,64 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
     assert alongside.disable(wh) and alongside.external_slots(wh) == {}
     assert alongside.remove_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell")
+
+
+def test_alongside_service_sees_agent_outputs_and_transcriber(tmp_path, monkeypatch):
+    """Pictures and voice replies: the host Hermes reports MEDIA:<host path> under its cache folders, so the Agent
+    Service mounts each read-only at that same path and trusts them as artifact roots. Voice: on the host network
+    the Transcriber is reached on its loopback port, not by its compose name. Rootless Docker runs it as uid 0
+    (the owner) with gid 1000, so it can read the owner's 0700 folders and still write the shared /media."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("platforms:\n  api_server:\n    extra:\n      port: 8650\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    rt = tmp_path / "rt"; (rt / "app-data" / "wizardapps" / "transcriber").mkdir(parents=True)
+    (rt / "app-data" / "wizardapps" / "transcriber" / "app.env").write_text("APP_PORT=8791\n")
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    monkeypatch.setattr(alongside, "docker_rootless", lambda: True)
+    alongside.enable(wh, hh, 18796)
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    svc = yaml.safe_load(p.read_text().replace("!reset", ""))["services"]["wizard-agent-service"]
+    env = svc["environment"]
+    assert env["WIZARD_STT_ORIGIN"] == "http://127.0.0.1:8791"
+    roots = env["WIZARD_AGENT_ARTIFACT_ROOTS"].split(":")
+    for rel in alongside.AGENT_OUTPUT_DIRS:
+        d = str(hh / rel)
+        assert d in roots and f"{d}:{d}:ro" in svc["volumes"] and Path(d).is_dir()
+    assert roots[-1] == "/media" and svc["user"] == "0:1000"
+    monkeypatch.setattr(alongside, "docker_rootless", lambda: False)
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    assert yaml.safe_load(p.read_text().replace("!reset", ""))["services"]["wizard-agent-service"]["user"] == f"{os.getuid()}:{os.getgid()}"
+    # no Transcriber installed: the recipe's default stays, nothing invented
+    (rt / "app-data" / "wizardapps" / "transcriber" / "app.env").unlink()
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-agent-service", wh, "service")
+    assert "WIZARD_STT_ORIGIN" not in p.read_text()
+    # the UX-only shell still mounts nothing and gets no agent paths
+    p = alongside.write_shell_override(rt, "wizardapps", "wizard-ux", wh, "shell")
+    assert "volumes" not in p.read_text() and "ARTIFACT" not in p.read_text()
+
+
+def test_alongside_adopts_existing_service_state_on_rootless(tmp_path, monkeypatch):
+    """An Agent Service that already ran as the recipe's uid 1000 crash-loops once it runs as the owner (rootless
+    uid 0) because it can't chmod its own old files. adopt_state hands the folder over once, with the app's own
+    image; rootful Docker and an app with no saved state are left alone."""
+    from wam import alongside
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    rt = tmp_path / "rt"
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=True) is False  # no state yet
+    (rt / "app-data" / "wizardapps" / "wizard-agent-service" / "data").mkdir(parents=True)
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=False) is False
+    assert calls == []
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "img:1", rootless=True) is True
+    cmd = calls[-1]
+    assert cmd[:2] == ["docker", "run"] and "--network" in cmd and "none" in cmd and "img:1" in cmd
+    assert f"{rt}/app-data/wizardapps/wizard-agent-service/data:/state" in cmd
+    assert "chown -R 0:1000 /state" in cmd[-1]
+    assert cmd[cmd.index("--pull") + 1] == "missing"   # the new pin may not be pulled yet on an upgrade
+    assert alongside.adopt_state(rt, "wizardapps", "wizard-agent-service", "bad image;rm", rootless=True) is False
 
 
 def test_alongside_split_service_and_shell(tmp_path, monkeypatch):
@@ -652,13 +733,65 @@ def test_alongside_share_history_is_an_opt_in_kept_across_reruns(tmp_path, monke
     assert alongside.enable(wh, hh, None, False)["shell"]["share_history"] is False
 
 
+def test_alongside_share_sessions_mounts_only_the_session_database(tmp_path, monkeypatch):
+    """--share-sessions: helper status needs Hermes's state.db. Mount only state.db + -wal/-shm read-only, never the
+    Hermes home (no .env/auth.json), and set WIZARD_HERMES_STATE_PATH. --share-history still wins when both are on."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir()
+    (hh / "config.yaml").write_text("{}\n")
+    (hh / ".env").write_text("SECRET=1\n"); (hh / "auth.json").write_text("{}")
+    for n in alongside.SESSION_STATE_FILES:
+        (hh / n).write_bytes(b"x")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    st = alongside.enable(wh, hh, 18796, None, True)
+    assert st["shell"]["share_sessions"] is True and st["shell"]["share_history"] is False
+    text = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    svc = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-agent-service"]
+    assert svc["environment"]["WIZARD_HERMES_STATE_PATH"] == "/hermes/state.db"
+    vols = svc["volumes"]
+    for n in alongside.SESSION_STATE_FILES:
+        assert f"{hh}/{n}:/hermes/{n}:ro" in vols
+        assert (wh / "hermes-view" / n).is_file()                          # mount point inside the read-only view
+    assert f"{hh}:/hermes:ro" not in vols and not any(".env" in v or "auth.json" in v for v in vols)
+    assert all(v.endswith(":ro") for v in vols if "/hermes" in v.split(":")[1])
+    assert "credentials included" not in text and alongside.INODE_MARK in text
+    assert alongside.stale_session_mounts(text, str(hh)) == []
+    (hh / "new-wal").write_bytes(b"y"); (hh / "new-wal").replace(hh / "state.db-wal")   # Hermes recreated its WAL
+    assert alongside.stale_session_mounts(text, str(hh)) == ["state.db-wal"]
+    assert alongside.enable(wh, hh)["shell"]["share_sessions"] is True          # a re-run keeps the choice
+    # whole-home sharing supersedes it: no duplicate /hermes/state.db mounts
+    alongside.enable(wh, hh, None, True)
+    both = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    bvols = yaml.safe_load(both.replace("!reset", ""))["services"]["wizard-agent-service"]["volumes"]
+    assert f"{hh}:/hermes:ro" in bvols and not any(v.startswith(f"{hh}/state.db") for v in bvols)
+    alongside.enable(wh, hh, None, False, False)
+    off = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    assert 'WIZARD_HERMES_STATE_PATH: ""' in off and "state.db:" not in off
+
+
+def test_alongside_share_sessions_without_a_database_mounts_nothing(tmp_path, monkeypatch):
+    """No state.db yet: Docker would create root-owned directories in the Hermes home, so nothing is mounted and the
+    service stays on the HTTP-only path (state path blank)."""
+    from wam import alongside
+    hh = tmp_path / "hermes"; hh.mkdir(); (hh / "config.yaml").write_text("{}\n")
+    wh = tmp_path / "wos"; wh.mkdir()
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda origin, timeout=3.0: False)
+    alongside.enable(wh, hh, 18796, None, True)
+    text = alongside.shell_override(alongside.load(wh), "wizard-agent-service", wh, "service")
+    assert 'WIZARD_HERMES_STATE_PATH: ""' in text and "state.db" not in text.split("volumes:")[1]
+    assert not (hh / "state.db").exists()
+
+
 GET_SH = Path(__file__).resolve().parents[1] / "get.sh"
 
 
 def _mode(tmp_path, *, mode="auto", hermes=True, wos=None, wizard_user_wos=None, runtipi=False):
     """Run get.sh's mode helpers (has_hermes .. want_alongside) with stub getent/docker; return the picked mode."""
     src = GET_SH.read_text()
-    funcs = src[src.index("has_hermes() {"):src.index("# Root with an existing Hermes")]
+    funcs = src[src.index("# ---- Hermes detection"):src.index("# ---- end mode helpers ----")]
     homes = {}
     for user, state in (("owner", wos), ("wizard", wizard_user_wos)):
         h = tmp_path / user; h.mkdir(exist_ok=True); homes[user] = h
@@ -675,11 +808,14 @@ def _mode(tmp_path, *, mode="auto", hermes=True, wos=None, wizard_user_wos=None,
     script = f"""
 set -u
 MODE={mode}; WUSER=wizard
-getent() {{ case "$2" in owner) echo "owner:x:1:1::{homes['owner']}:/bin/sh";; wizard) echo "wizard:x:2:2::{homes['wizard']}:/bin/sh";; esac; }}
+getent() {{ case "${{2:-}}" in owner) echo "owner:x:1001:1001::{homes['owner']}:/bin/sh";; wizard) echo "wizard:x:1002:1002::{homes['wizard']}:/bin/sh";;
+  "") echo "owner:x:1001:1001::{homes['owner']}:/bin/sh"; echo "wizard:x:1002:1002::{homes['wizard']}:/bin/sh";; esac; }}
 docker() {{ {"echo runtipi" if runtipi else "true"}; }}
 sudo() {{ return 1; }}
 id() {{ echo owner; }}
+SYSUNIT_DIR={tmp_path}/no-units
 {funcs}
+_ps() {{ :; }}
 if [ "$(wos_mode owner)" = alongside ]; then echo alongside; elif want_alongside owner; then echo alongside; else echo fresh; fi
 """
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
@@ -699,9 +835,13 @@ def test_get_sh_rerun_on_a_fresh_box_stays_fresh(tmp_path):
     d = tmp_path / "b"; d.mkdir()
     assert _mode(d, wizard_user_wos="fresh") == "fresh"          # installed under the wizard user
     d = tmp_path / "c"; d.mkdir()
-    assert _mode(d, runtipi=True) == "fresh"                      # a running Runtipi, home not readable
+    assert _mode(d, runtipi=True, hermes=False) == "fresh"         # no verified host Hermes or readable owner receipt
     d = tmp_path / "e"; d.mkdir()
     assert _mode(d, wos="fresh", mode="alongside") == "alongside"  # explicit WIZARD_MODE=alongside still switches
+
+
+def test_get_sh_verified_host_hermes_beats_a_running_runtipi_without_receipt(tmp_path):
+    assert _mode(tmp_path, runtipi=True) == "alongside"
 
 
 def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
@@ -714,7 +854,7 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
     d = Path(__file__).resolve().parents[1] / "wizard-cli"
     src = json.loads((d / "SOURCE.json").read_text())
     for name, want in src["sha256"].items():
-        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: re-sync it from wizard-os"
+        assert hashlib.sha256((d / name).read_bytes()).hexdigest() == want, f"wizard-cli/{name} changed: update the local provenance hash"
     try:
         import urllib.request
         for name, path in src["files"].items():
@@ -735,3 +875,263 @@ def test_vendored_wizard_cli_matches_its_wizard_os_source():
         if os.environ.get("WIZARD_SOURCE_GITHUB_AUTH") == "1":
             raise
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
+
+
+def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
+    """`wam app update X` goes through the App Manager API and leaves a running app running."""
+    from wam import cli
+    seen = []
+
+    class RT:
+        st = "running"
+        def app(self, urn): return {"app": {"status": self.st, "version": 2}}
+        def update(self, urn, perform_backup=True): seen.append(("update", urn)); self.st = "stopped"
+        def start(self, urn): seen.append(("start", urn)); self.st = "running"
+        def wait_status(self, urn, want, timeout=0): return self.st
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    res = cli.app_update(cli.Config(), "notifications")
+    assert seen == [("update", "notifications:wizardapps"), ("start", "notifications:wizardapps")]
+    assert res["status"] == "running" and res["restarted"] is True
+
+
+def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypatch):
+    """wizard-ux `uses: [agent-service]` names a spot, not an app: install that spot's default (the Agent Service)
+    first, and skip it when something already provides the spot."""
+    from wam import cli
+    calls = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": urn.split(":")[0]}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    recs = {"wizard-ux": {"id": "wizard-ux", "uses": ["agent-service"]}, "wizard-agent-service": {"id": "wizard-agent-service", "uses": []}}
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: recs[ref])
+    provided = {"apps": []}
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: provided)
+
+    def stop(c, app_id, *a, **k):
+        calls.append(app_id); raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "build_form", stop)
+    try:
+        cli.install(cli.Config(), "wizard-ux")
+    except SystemExit:
+        pass
+    assert calls[0] == "wizard-agent-service"          # the service is installed before the screen
+    calls.clear()
+    provided["apps"] = [{"id": "other-service", "provides": ["agent-service"]}]
+    try:
+        cli.install(cli.Config(), "wizard-ux")
+    except SystemExit:
+        pass
+    assert calls == ["wizard-ux"]                      # spot already filled: no second service
+
+
+def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monkeypatch):
+    """A failed install deletes the app record; wam reports it right away instead of polling for 15 minutes."""
+    from wam import cli
+    import pytest
+    waits = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": "x"}}
+        def install(self, urn, form): pass
+        def wait_status(self, urn, want, timeout=900): waits.append(set(want)); return "missing"
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    monkeypatch.setattr(cli.alongside, "load", lambda h: None)
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: {"id": "x", "repo": "o/x", "uses": []})
+    monkeypatch.setattr(cli, "build_form", lambda *a, **k: ({}, []))
+    monkeypatch.setattr(cli, "alongside_role", lambda rec, i: None)
+    monkeypatch.setattr(cli, "install_failure_reason", lambda urn: "pull access denied")
+    with pytest.raises(SystemExit, match="install failed: pull access denied"):
+        cli.install(cli.Config(), "x")
+    assert "missing" in waits[0]
+
+
+def test_free_port_skips_a_taken_port():
+    import socket
+    from wam import cli
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); s.listen()
+        taken = s.getsockname()[1]
+        assert not cli.port_free(taken)
+        assert cli.free_port(taken) != taken
+
+
+def test_builder_apps_trust_the_shell_tailnet_origin(tmp_path, monkeypatch):
+    from wam import cli
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/cal/docker-compose.yml"   # not installed yet: store copy only
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    env = cli.trusted_origin_env(c, "cal")
+    assert env == {"WIZARD_TRUSTED_HOSTS": "box.tail1.ts.net:8796,box.tail1.ts.net",
+                   "WIZARD_TRUSTED_ORIGINS": "https://box.tail1.ts.net:8796"}
+    f = cli.write_user_env(c.runtipi_root, "cal", {"OTHER": "1"})
+    cli.write_user_env(c.runtipi_root, "cal", env)
+    assert f.read_text().splitlines() == ["OTHER=1", *[f"{k}={v}" for k, v in env.items()]]
+    comp.write_text("plain: app\n")
+    assert cli.trusted_origin_env(c, "cal") == {}
+
+
+def test_owner_login_apps_also_get_the_box_owner(tmp_path, monkeypatch):
+    from wam import cli, store_install
+    c = cli.Config()
+    c.runtipi_root, c.home = tmp_path / "rt", tmp_path / "home"
+    comp = tmp_path / "rt/repos" / cli.STORE / "apps/wizard-cloudflare/docker-compose.yml"
+    comp.parent.mkdir(parents=True)
+    comp.write_text("environment:\n  WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}\n  WIZARD_OWNER_LOGINS: ${WIZARD_OWNER_LOGINS:-}\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home/links.json").write_text('{"host": "box.tail1.ts.net"}')
+    monkeypatch.setattr(cli.alongside, "load", lambda h: {"shell": {"port": 8796}})
+    monkeypatch.setattr(store_install, "owner_login", lambda: "owner@example.com")
+    assert cli.trusted_origin_env(c, "wizard-cloudflare")["WIZARD_OWNER_LOGINS"] == "owner@example.com"
+    monkeypatch.setattr(store_install, "owner_login", lambda: "")
+    assert "WIZARD_OWNER_LOGINS" not in cli.trusted_origin_env(c, "wizard-cloudflare")
+
+
+def test_cloudflare_is_an_optional_default_with_a_shell_path():
+    import json
+    from pathlib import Path
+    from wam import links
+    slot = json.loads((Path(__file__).parents[1] / "wam/defaults.json").read_text())["slots"]["cloudflare-connection"]
+    assert slot["app"] == "wizard-cloudflare" and slot["required"] is False
+    assert links.gateway_paths()["wizard-cloudflare"]["path"] == "/wizard-cloudflare/"
+
+
+def test_multi_provider_slot_is_not_a_collision():
+    from wam import registry, slots
+    reg = {"slots": {"ai-connection": {"default": "wizard-claude", "candidates": ["wizard-chatgpt", "wizard-claude"]},
+                     "browser": {"default": "browser", "candidates": ["browser", "other-browser"]}}}
+    assert registry.collisions(reg) == ["slot 'browser' has 2 apps (browser, other-browser); default browser"]
+    d = slots.load_defaults()
+    assert d["ai-connection"]["multi"] and d["ai-connection"]["app"] == "wizard-chatgpt"
+    assert "ai-accounts" not in d   # AI Accounts retired: one connection app per provider (decision #61)
+
+
+def test_bootstrap_retries_an_app_the_manager_removed_once(monkeypatch):
+    """Live 0.3.6: wizard-chatgpt's first `compose up` failed (pull cancelled); a second attempt succeeded."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    monkeypatch.setattr(release_pins, "load", lambda: None)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: ["files", "wizard-chatgpt", "broken"])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    tries = {}
+
+    def install(c, app_id):
+        tries[app_id] = tries.get(app_id, 0) + 1
+        if app_id == "wizard-chatgpt" and tries[app_id] == 1:
+            raise SystemExit("wizard-chatgpt: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        if app_id == "broken":
+            raise SystemExit("broken: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        return {"id": app_id}
+    monkeypatch.setattr(cli, "install", install)
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None))
+    assert out["installed"] == ["files", "wizard-chatgpt"]
+    assert list(out["failed"]) == ["broken"] and tries == {"files": 1, "wizard-chatgpt": 2, "broken": 2}
+
+
+def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
+    """Uploads failed with EACCES (phone: "Wizard Files is unavailable (502)") when the owner's uid doesn't own
+    Runtipi's media folder. adopt_media hands only Inbox/ and .wizard-uploads/ to the service identity."""
+    from wam import alongside
+    import subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    rt = tmp_path / "rt"
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    (rt / "media").mkdir(parents=True)
+    assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
+    assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False
+    assert calls == []
+    assert alongside.adopt_media(rt, "img:1", "1001:1001") is True
+    cmd = calls[-1]
+    assert cmd[:2] == ["docker", "run"] and "none" in cmd and f"{rt}/media:/media" in cmd
+    assert "chown -R 1001:1001 /media/Inbox /media/.wizard-uploads" in cmd[-1]
+    # an upgrade runs this before `wam app update` pulls the new pin: "--pull never" failed with "No such image"
+    assert cmd[cmd.index("--pull") + 1] == "missing"
+    assert "chown -R 1001:1001 /media " not in cmd[-1] and not cmd[-1].endswith("/media")   # never the whole tree
+
+
+# ---- wam#95: `wam recover` starts only missing core apps and apps recorded running
+
+def _recover_env(tmp_path, monkeypatch, installed, states):
+    c = cli.Config.__new__(cli.Config); c.runtipi_root = tmp_path; c.home = tmp_path / "wos"; c.home.mkdir()
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": u}, "app": {"status": s}} for u, s in installed]})()
+    c.runtipi = lambda: rt
+    started, written = [], []
+    monkeypatch.setattr(cli, "_app_container_states", lambda urn: states.get(urn, []))
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: started.append((verb, urn)) or {"status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: written.append(1) or {})
+    return c, started, written
+
+
+def test_recover_starts_missing_core_and_recorded_running_apps_only(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "stopped"), ("wizard-agent-service:wizardapps", "stopped"),
+                 ("files:wizardapps", "stopped"), ("browser:wizardapps", "stopped")]
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, {})
+    res = cli.recover(c, ["files:wizardapps"])
+    # browser was stopped by its owner (not recorded running): it stays stopped
+    assert [u for _, u in started] == ["wizard-ux:wizardapps", "wizard-agent-service:wizardapps", "files:wizardapps"]
+    assert res["started"] == ["wizard-ux", "wizard-agent-service", "files"] and res["failed"] == {}
+    assert set(res["core"]) == {"wizard-ux", "wizard-agent-service"} and written
+
+
+def test_recover_is_a_no_op_when_every_container_runs(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running"),
+                 ("files:wizardapps", "running")]
+    states = {u: ["running", "running"] for u, _ in installed}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    res = cli.recover(c, ["files:wizardapps", "gone:wizardapps"])
+    assert started == [] and not written
+    assert res == {"started": [], "failed": {}, "not_installed": ["gone"], "core": ["wizard-ux", "wizard-agent-service"]}
+
+
+def test_recover_starts_an_app_with_a_stopped_container_and_reports_failures(tmp_path, monkeypatch):
+    installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running")]
+    states = {"wizard-ux:wizardapps": ["running", "exited"], "wizard-agent-service:wizardapps": []}
+    c, started, written = _recover_env(tmp_path, monkeypatch, installed, states)
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: {"status": "start_error", "error": "boom"}
+                        if "agent" in urn else started.append(urn) or {"status": "running"})
+    res = cli.recover(c)
+    assert started == ["wizard-ux:wizardapps"]
+    assert res["failed"] == {"wizard-agent-service": "boom"}
+
+
+def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(monkeypatch, tmp_path):
+    """Live 0.3.12 -> 0.3.14 upgrade on demo: Files stayed on 0.3.12's commit (its `.wizard-selection` locks it), so
+    the read-back failed `default app source files`. Bootstrap must move release defaults installed from the
+    release's own repo, and leave an owner-chosen source and an up-to-date app alone."""
+    from types import SimpleNamespace
+    from wam import release_pins, slots
+    new, old = "8" * 40, "d" * 40
+    doc = {"default_apps": {"files": {"app": "files", "repo": "o/files", "commit": new},
+                            "browser": {"app": "browser", "repo": "o/browser", "commit": new},
+                            "notes": {"app": "notes", "repo": "o/notes", "commit": new}}}
+    monkeypatch.setattr(release_pins, "load", lambda: doc)
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: [])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"files", "browser", "notes"})
+    for app, commit, repo in (("files", old, "o/files"), ("browser", new, "o/browser"), ("notes", old, "me/notes")):
+        d = tmp_path / "apps" / cli.STORE / app
+        d.mkdir(parents=True)
+        (d / ".wizard-commit").write_text(commit + "\n")
+        (d / ".wizard-source").write_text(json.dumps({"repo": repo}))
+    calls = []
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: calls.append(("prepare", ref)) or {"id": ref})
+    monkeypatch.setattr(cli, "app_update", lambda c, a: calls.append(("update", a)) or {"status": "running"})
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
+    assert calls == [("prepare", "files"), ("update", "files")]
+    assert out["updated"] == ["files"] and out["failed"] == {}

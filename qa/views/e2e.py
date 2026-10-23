@@ -9,7 +9,9 @@ Writes views-e2e.json; leaves the door and app running for the preview when --le
 import json, os, shutil, signal, subprocess, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
-V = Path(os.environ.get('E2E_ROOT', '/Volumes/ThalesMedia/WizardBuilder/20261012'))
+WORK_ROOT = Path(os.environ.get('WIZARD_WORK_ROOT') or Path(os.environ.get('TMPDIR') or '/tmp') / 'wizard-work')
+WORK_ROOT.mkdir(parents=True, exist_ok=True)
+V = Path(os.environ.get('E2E_ROOT') or WORK_ROOT / 'WizardBuilder/20261012')
 SRC = V / 'views-src'
 HOME = V / 'views-e2e' / 'home'
 DEV = V / 'views-e2e' / 'dev'
@@ -197,7 +199,7 @@ ok('reactivate brings the custom screen back', '<h1>My rituals</h1>' in http('/v
 # ---- screenshots ---------------------------------------------------------------------
 shots = V / 'views-shots'; shutil.rmtree(shots, ignore_errors=True); shots.mkdir()
 node = subprocess.run(['node', '-e', r'''
-let pw;try{pw=require('playwright')}catch{pw=require('playwright-core')}
+const pw=require('./qa/qa-playwright.cjs');
 (async()=>{const b=await pw.chromium.launch();const c=await b.newContext({viewport:{width:393,height:760},colorScheme:'dark'});
 const p=await c.newPage();const errs=[];p.on('pageerror',e=>errs.push(String(e)));
 for(const [n,u] of [['app','/apps/habit-tracker/'],['custom','/views/habit-tracker/']]){
@@ -205,7 +207,7 @@ for(const [n,u] of [['app','/apps/habit-tracker/'],['custom','/views/habit-track
  await p.screenshot({path:process.argv[2]+'/'+n+'.png'});}
 await p.fill('#habit-name','Meditate');await p.click('#add');await p.waitForFunction(()=>[...document.querySelectorAll('#habits li')].some(l=>l.textContent.includes('Meditate')),null,{timeout:10000});
 console.log(JSON.stringify({errs,ok:true}));await b.close()})().catch(e=>{console.log(JSON.stringify({ok:false,e:String(e)}));process.exit(1)});
-''', str(DOOR_PORT), str(shots)], env={**ENV, 'NODE_PATH': '/Users/thales/workspace/wizard-mobile-link-candidate/node_modules'},
+''', str(DOOR_PORT), str(shots)], env=ENV, cwd=Path(__file__).resolve().parents[2],
     capture_output=True, text=True, timeout=180)
 res = json.loads((node.stdout.strip().splitlines() or ['{}'])[-1] or '{}')
 ok('custom screen works in a real browser (add a habit through the door)', node.returncode == 0 and res.get('ok') and not res.get('errs'), node.stdout[-500:] + node.stderr[-500:])
@@ -221,7 +223,7 @@ o = Path(wam('views', 'customize', 'habit-notes', '--mode', 'overlay')['edit'])
 (o / 'overlay.js').write_text('document.documentElement.dataset.ownerOverlay = "on";\n')
 ok('overlay applies', wam('views', 'apply', 'habit-notes')['active'])
 probe = r'''
-let pw;try{pw=require('playwright')}catch{pw=require('playwright-core')}
+const pw=require('./qa/qa-playwright.cjs');
 (async()=>{const b=await pw.chromium.launch();const p=await b.newPage({viewport:{width:393,height:760},colorScheme:'dark'});
 const errs=[];p.on('pageerror',e=>errs.push(String(e)));
 await p.goto('http://127.0.0.1:'+process.argv[1]+'/apps/habit-notes/');await p.waitForFunction(()=>document.getElementById('day-short')?.textContent,null,{timeout:10000}).catch(()=>{});await p.waitForTimeout(800);
@@ -231,7 +233,7 @@ const r=await p.evaluate(()=>{const f=document.querySelector('form'),l=document.
 if(process.argv[3])await p.screenshot({path:process.argv[3]});console.log(JSON.stringify(r));await b.close()})();
 '''
 def browse(shot=''):
-    r = subprocess.run(['node', '-e', probe, str(DOOR_PORT), 'x', shot], env={**ENV, 'NODE_PATH': '/Users/thales/workspace/wizard-mobile-link-candidate/node_modules'},
+    r = subprocess.run(['node', '-e', probe, str(DOOR_PORT), 'x', shot], env=ENV, cwd=Path(__file__).resolve().parents[2],
                        capture_output=True, text=True, timeout=120)
     try: return json.loads(r.stdout.strip().splitlines()[-1])
     except Exception: return {'err': r.stdout[-300:] + r.stderr[-300:]}

@@ -1,0 +1,11 @@
+{
+  "source_commit": "f8bc20bd2b4592ec140f6227016d5c9e1a1ae501",
+  "files": {
+    "SKILL.md": "961cd82ededc603ad72c37a57f19a4c950d3f053f9d07cb8ad1dd19e224cd2c8",
+    "references/appearance.md": "43e8d00b521479a80d819f5b03fa380fb25117eb077fe8e1fbf714c69ad59da8",
+    "references/build.md": "86c799445f03261ba3c5d3388add61530b370807184f411d67b4c06273a419bf",
+    "references/port.md": "9458979bbfbf5729335a44e4e49362328fb7f42b55c4c0cb1a17e5d0d473f6cf",
+    "references/publish.md": "24b3885c64634f1acc71b15a7f4327aab465ed19c589877d2fcf0068e3705c4e",
+    "references/views.md": "d270f47f758b816efde60ee0a8d9dd9d16efcf0902038797e5c40b13d8bf960f"
+  }
+}

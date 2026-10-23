@@ -49,8 +49,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await this.ensureAppDir(appUrn, form);
 
+      // Clear leftover containers only. Never delete the app's images here: an image the owner loaded locally
+      // (a private test archive, a locally built pin) has no registry to come back from, so `--rmi all` made the
+      // following `up` fail to pull it and the install hang. Uninstall still removes images.
       try {
-        await dockerService.composeApp(appUrn, 'down --rmi all --remove-orphans');
+        await dockerService.composeApp(appUrn, 'down --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }

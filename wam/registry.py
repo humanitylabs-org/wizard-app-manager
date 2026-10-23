@@ -70,8 +70,34 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
             src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
             commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit}
+            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
+                    "private": src.get("private") is True}
     return None
+
+
+def routes(root: Path | None = None) -> dict:
+    """Owner routing for app views, from <wizard-os home>/routes.json:
+        {"wisdom": {"view": "/wisdom-next/", "staged_as": "wisdom-next"}}
+    `view` is the same-origin path the box gateway serves the app at (phones never reach a raw host port).
+    `staged_as` lists a side-by-side install under its own launcher id until the owner cuts it over, so it never
+    shadows the owner's existing tile of the same id."""
+    f = (root or home()) / "routes.json"
+    try:
+        data = json.loads(f.read_text()) if f.is_file() else {}
+    except Exception:  # noqa: BLE001
+        return {}
+    ok = {}
+    for app_id, r in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(r, dict):
+            continue
+        view = r.get("view")
+        staged = r.get("staged_as")
+        ok[app_id] = {
+            "view": view if isinstance(view, str) and not view.startswith("//") and
+            ".." not in view.split("/") and re.fullmatch(r"/[A-Za-z0-9._~/#-]*", view) else None,
+            "staged_as": staged if isinstance(staged, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", staged) else None,
+        }
+    return ok
 
 
 def local_path(value, default="/") -> str:
@@ -159,7 +185,16 @@ def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, ru
     for key in ("api", "source", "backend", "replaces_view", "system"):
         if key in w or key in info or key in cfg:
             entry[key] = sanitize(w.get(key, info.get(key, cfg.get(key))))
+    from . import chats_views
+    chats = chats_views.installed(meta['dir'], w, meta['commit'])
+    entry.update({"shares": w.get("shares") or [], "mounts": w.get("mounts") or []})
+    if "private_inference" in w:
+        entry["private_inference"] = w["private_inference"]
+    if chats:
+        entry['chats_view'] = {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"}
     entry = sanitize(entry)
+    if chats:
+        entry['_chats_src'] = str(meta['dir'] / chats['module'])
     entry["_skill_src"] = str(skill) if skill.is_file() else None
     if view and port:
         internal_port = _main_internal_port(meta['dir']) or _port(view.get('port')) or port
@@ -176,10 +211,15 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, netw
         app, info = row.get("app") or {}, row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if st != store or not ID.fullmatch(name):
+        if not ID.fullmatch(st) or not ID.fullmatch(name):
             continue
         try:
-            entry = _entry(app, info, urn, name, store, host, runtipi_root, network)
+            meta = app_meta(runtipi_root, st, name)
+            if not meta or (st != store and not meta.get("private")):
+                continue
+            if any(a["id"] == name for a in apps):
+                raise ValueError(f"Duplicate installed Wizard app id: {name}")
+            entry = _entry(app, info, urn, name, st, host, runtipi_root, network)
         except (ValueError, TypeError, AttributeError, OSError, yaml.YAMLError):
             # One malformed app stays visible/uninstallable, but contributes no unsafe routes/skills/slots.
             entry = {"id": name, "name": name, "urn": urn, "status": app.get("status"),
@@ -348,6 +388,12 @@ def write(reg: dict, root: Path | None = None, *, preserve_choices=True, mcp_add
     root.mkdir(parents=True, exist_ok=True)
     prev = root / "apps.json"
     old = _json_file(prev)
+    from . import chats_views
+    chats_views.publish(reg, root)
+    reg.setdefault('slots', {}).setdefault('chats', {'default': chats_views.BUILTIN, 'candidates': []})
+    if chats_views.BUILTIN not in reg['slots']['chats']['candidates']:
+        reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
+        reg['slots']['chats']['default'] = chats_views.BUILTIN
     choices = old.get("slots") if preserve_choices else {}
     choices = choices if isinstance(choices, dict) else {}
     for slot, val in choices.items():
@@ -355,11 +401,32 @@ def write(reg: dict, root: Path | None = None, *, preserve_choices=True, mcp_add
                 and val.get("default") in reg["slots"][slot]["candidates"]):
             reg["slots"][slot]["default"] = val["default"]
     _skills(reg, root, old)
-    atomic_write(prev, (json.dumps(public_projection(reg), indent=2) + "\n").encode())
+    owner = routes(root)
+    owner_routes_enabled = (root / "routes.json").exists()
+
+    def project(a: dict) -> dict:
+        out = sanitize(a)
+        r = owner.get(a["id"]) or {}
+        if owner_routes_enabled and out.get("view") is not None:
+            out["view"] = {"url": r["view"]} if r.get("view") else None
+        if r.get("staged_as") and not a.get('chats_view'):
+            out.update({"id": r["staged_as"], "app_id": a["id"], "name": f"{out.get('name') or a['id']} (test)", "staged": True})
+        return out
+
+    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+    grants = _json_file(grants_path).get('grants', []) if grants_path.is_file() else old.get('grants', [])
+    reg.setdefault('grants', grants)
+    public = {**reg, "apps": [project(a) for a in reg["apps"]]}
+    atomic_write(prev, (json.dumps(public_projection(public), indent=2) + "\n").encode())
     write_pointers(reg, root, mcp_address)
     return prev
 
 
-def collisions(reg: dict) -> list[str]:
+def collisions(reg: dict, multi: set[str] | None = None) -> list[str]:
+    """Slots filled by more than one app. A `multi` slot (defaults.json) holds one app per provider by design,
+    e.g. `ai-connection` (Claude, ChatGPT, ...), so several apps there are not a collision."""
+    if multi is None:
+        from . import slots as _slots
+        multi = {k for k, v in _slots.load_defaults().items() if v.get("multi")}
     return [f"slot '{s}' has {len(v['candidates'])} apps ({', '.join(v['candidates'])}); default {v['default']}"
-            for s, v in reg.get("slots", {}).items() if len(v["candidates"]) > 1]
+            for s, v in reg.get("slots", {}).items() if len(v["candidates"]) > 1 and s not in multi]

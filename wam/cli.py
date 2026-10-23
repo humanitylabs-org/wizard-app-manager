@@ -17,13 +17,19 @@ Wizard additions:
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam backup                   encrypted backups: export, import, undo, schedule (--help)
+  wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
+  wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
+  wam hermes status [--json]    host Hermes version vs the box's release pin
+  wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
+                [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
   wam fresh-agent prepare|connect|status|disconnect [--no-restart]
                                 fresh mode: connect the hermes-agent container to the one Wizard gateway, shared
                                 skills and the wizard-os plugin (docs/lifecycle-bridge.md, "Fresh mode")
+                                --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
 """
 from __future__ import annotations
@@ -32,6 +38,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -42,7 +49,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import alongside, fresh_agent, index, private, registry, slots
+import yaml
+
+from . import alongside, fresh_agent, index, private, registry, slots, release_pins
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -51,12 +60,25 @@ STORE_NAME = "Wizard Apps"
 
 class Config:
     def __init__(self) -> None:
+        release_pins.load()  # reject malformed pins before creating state or contacting Runtipi
         self.home = registry.home()
         self.home.mkdir(parents=True, exist_ok=True)
         cfg_file = self.home / "app-manager.json"
         cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
         self.runtipi_root = Path(os.environ.get("RUNTIPI_ROOT", cfg.get("runtipi_root", Path.home() / "runtipi"))).expanduser()
         self.index = index.base(cfg)
+        self.private_apps: dict[str, str] = {}
+        pa = cfg.get("private_apps", {})
+        if not isinstance(pa, dict):
+            raise SystemExit("private_apps must be an object of app-id: owner/repo aliases")
+        for k, v in pa.items():
+            if not isinstance(k, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", k):
+                raise SystemExit(f"invalid private_apps alias: {k!r}")
+            # Accept the documented URL form, but never repair malformed identifiers.
+            repo = v.removeprefix("https://github.com/") if isinstance(v, str) else ""
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", repo) or repo.split("/")[-1] in (".", ".."):
+                raise SystemExit(f"private_apps[{k}] must be owner/repo or https://github.com/owner/repo")
+            self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
@@ -111,14 +133,20 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
+    from . import links
+    links.apply_to_registry(reg, c.home)   # published apps open at their private-network address, not loopback
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    return registry.public_projection(reg)
+    # Return the exact owner-route projection we persisted, including staged view IDs.
+    # Internal _skill_src remains available for both copy passes, never in API/CLI output.
+    return json.loads((c.home / "apps.json").read_text())
 
 
 def share_registry(c: Config) -> bool:
@@ -128,13 +156,37 @@ def share_registry(c: Config) -> bool:
     shared = c.runtipi_root / "app-data" / "wizard-os"
     try:
         shared.mkdir(parents=True, exist_ok=True)
+        # The share holds no secrets and is read by app containers running as other users, so its
+        # modes are explicit: a caller's restrictive umask (0600 apps.json) must not hide every app
+        # from the Agent Service. The owner's own ~/.wizard-os copy keeps whatever mode it has.
+        os.chmod(shared, 0o755)
         tmp = shared / "apps.json.tmp"
-        shutil.copy2(c.home / "apps.json", tmp)
+        shutil.copyfile(c.home / "apps.json", tmp)
+        os.chmod(tmp, 0o644)
         tmp.replace(shared / "apps.json")
         if (c.home / "skills").is_dir():
             shutil.rmtree(shared / "skills", ignore_errors=True)
-            shutil.copytree(c.home / "skills", shared / "skills")
-        # Containers reach apps by their Runtipi network names: re-render the copied pointers for that address.
+            # Links stay links (never copied as their target's contents) and are never chmod-ed,
+            # so widening modes can only ever touch the regular skill files WAM itself wrote.
+            shutil.copytree(c.home / "skills", shared / "skills", symlinks=True, copy_function=shutil.copyfile)
+            for dirpath, dirnames, filenames in os.walk(shared / "skills"):
+                os.chmod(dirpath, 0o755)
+                for name in filenames:
+                    f = os.path.join(dirpath, name)
+                    if not os.path.islink(f):
+                        os.chmod(f, 0o644)
+        from .view_share import publish
+        from . import chats_views
+        chats_reg = json.loads((c.home / 'apps.json').read_text())
+        for app in chats_reg.get('apps', []):
+            view = app.get('chats_view')
+            if view:
+                app['_chats_src'] = str(c.home / 'chats-views' / app['id'] / (view['sha256'] + '.js'))
+        chats_views.publish(chats_reg, shared)
+        for metadata in (c.home / "views").glob("*/view.json"):
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
+                publish(metadata.parent.name, c.home, shared)
+        # Re-render container pointers after publishing all shared metadata.
         registry.write_pointers(json.loads((c.home / "apps.json").read_text()), shared, "internal")
         return True
     except (OSError, ValueError) as e:
@@ -168,6 +220,31 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     return None
 
 
+def shell_origins(c: Config) -> set[str]:
+    """Existing private HTTPS shell mounts, never inferred from a request Origin."""
+    from . import links, store_install
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+        port = int(((alongside.load(c.home) or {}).get("shell") or {}).get("port") or 0)
+        config = links.serve_status()
+        origins = store_install.served_origins(host)
+        # Also support CLI-only boxes without the Store listener mount.
+        for authority, site in config.get("Web", {}).items():
+            if authority.rsplit(":", 1)[0] == host and port and site.get("Handlers", {}).get("/", {}).get("Proxy") == f"http://127.0.0.1:{port}":
+                origins.add(f"https://{authority}")
+        return {o for o in origins if not config.get("AllowFunnel", {}).get(o.removeprefix("https://"))}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+
+def is_origin_list(f: dict) -> bool:
+    """A required list of trusted browser origins with no real default, e.g. `X_ALLOWED_ORIGINS` (url) or Wisdom's
+    `WISDOM_ORIGINS` (text, default ''). Runtipi takes an empty default as the value, so the app would start
+    trusting no Wizard origin and answer 'Unknown host' inside the shell."""
+    var = str(f.get("env_variable") or "")
+    return f.get("type") in ("url", "text") and var.endswith("_ORIGINS") and f.get("default", "") == ""
+
+
 def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
@@ -183,6 +260,10 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             form[var] = given[var]
         elif f.get("required") and (v := shared_value(c, var, uses or [])):
             form[var] = v
+        elif f.get("required") and is_origin_list(f) and (origins := shell_origins(c)):
+            # Origin-list configuration is distinct from arbitrary required URLs
+            # (provider endpoints etc.). Only existing owner Serve mounts qualify.
+            form[var] = ",".join(sorted(origins))
         elif "default" in f:
             continue
         elif f.get("required") and f.get("type") == "password":
@@ -201,18 +282,28 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 # ---------------------------------------------------------------- commands
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
-            _split: bool = False) -> dict:
+            _split: bool = False, _record: dict | None = None) -> dict:
+    release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
         return {"id": app_id, "status": "already handled"}
     _seen.add(app_id)
     rt = c.runtipi()
-    rec = resolve_any(c, app_id)
+    rec = _record if _record is not None else resolve_any(c, app_id)
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
+    defaults = slots.load_defaults()
     for dep in rec.get("uses") or []:
+        # `uses` may name a parking spot (e.g. agent-service) rather than an app: install the spot's default app,
+        # unless an installed app already provides that spot.
+        if dep in defaults:
+            spot = dep
+            providers = slots.providers(write_registry(c, rt)).get(spot) or []
+            if providers or spot in alongside.external_slots(c.home):
+                continue
+            dep = (defaults[spot] or {}).get("app") or dep
         if dep in have or dep in _seen:
             continue
         if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
@@ -226,6 +317,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     urn = f"{app_id}:{STORE}"
     if app_id in installed_ids(rt):
         return {"id": app_id, "urn": urn, "status": "already installed", "hint": f"wam app update {app_id}"}
+    if app_id == "hermes-agent" and not alongside.load(c.home):
+        from .builder_bundle import fresh
+        fresh(c, app_id, STORE)
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
@@ -241,17 +335,160 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     elif not al:
         fresh_agent.write_install_overlay(c.runtipi_root, STORE, app_id, c.home)
+    if "port" not in form:
+        # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
+        # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
+        # Dependencies can be installed before the shell/service starts listening. Reserve their
+        # recorded ports as well as live listeners, or a dependency can steal the host bridge port.
+        reserved = {int((al.get(part) or {}).get("port") or 0) for part in ("shell", "service")} if al else set()
+        want = int(info.get("port") or 0)
+        if want and (want in reserved or not port_free(want)):
+            form["port"] = free_port(want + 1, avoid=reserved)
+            print(f"note: port {want} is in use or reserved; {app_id} gets {form['port']}", file=sys.stderr)
+    trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
+    if trust_env:
+        write_user_env(c.runtipi_root, app_id, trust_env)
+    if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
+        try:
+            for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
+                if r.get("state") == "error":
+                    print(f"note: {name} keeps its own Claude sign-in ({r.get('error')}); run `wam alongside`",
+                          file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; `wam alongside` repairs it
+            print(f"note: Claude login not linked ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     rt.install(urn, form)
     if role == "service" and alongside.load(c.home):
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
-    status = rt.wait_status(urn, {"running", "stopped"}) if wait else "installing"
+    # A failed install (e.g. an image that can't be pulled) deletes the app record, so "missing" means failed:
+    # stop waiting then instead of polling for the full timeout.
+    status = rt.wait_status(urn, {"running", "stopped", "missing"}) if wait else "installing"
+    if status == "missing":
+        reason = install_failure_reason(urn)
+        raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
+                         " (the App Manager removed it; see `docker logs runtipi`)")
     reg = write_registry(c, rt)
+    if status == "running" and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
+        try:   # e.g. ChatGPT: its sign-in runs through the agent's dashboard, which alongside lives on the host
+            dash = host_dashboard_cmd(c, rt)
+            if app_id in (dash.get("changed_apps") or []):
+                rt.update(urn, perform_backup=False)   # restart it with the dashboard address and login
+                rt.wait_status(urn, {"running", "stopped", "missing"})
+        except Exception as e:  # noqa: BLE001 - never fail the install for it
+            print(f"note: host dashboard not set up ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
+    if app_id in ("hermes-agent", "wizard-agent-service") and status == "running" and not alongside.load(c.home) \
+            and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
+        try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
+            from .agent_link import link as agent_link
+            agent_link(c, STORE)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
+            print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
+    if role == "shell" and status == "running":
+        try:   # alongside and fresh: the Store data adapter follows the installed shell's commit
+            store_data_cmd(c)
+        except Exception as e:  # noqa: BLE001 - the Store window is optional; never fail the shell install for it
+            print(f"note: App Store data not set up ({str(e)[:120]}); run `wam store-data`", file=sys.stderr)
     entry = next((a for a in reg["apps"] if a["id"] == app_id), {})
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+
+
+def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
+    """Apps built with the Wizard builder answer only hosts/origins they are told to trust
+    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). With Tailscale, trust the shell's tailnet origin so the app
+    opens inside Wizard instead of answering 'untrusted_host_or_site'. A fresh box (Runtipi shell, no alongside.json)
+    takes the shell port from apps.json and also trusts the app's own private address, `https://<box>:<app port>`,
+    which is where `wam links` publishes it there (alongside boxes route such apps under the shell origin)."""
+    # Before install the recipe is only in Runtipi's store copy (repos/), after it also in apps/.
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
+    if "WIZARD_TRUSTED_HOSTS" not in text:
+        return {}
+    al = alongside.load(c.home)
+    own = 0
+    if al:
+        port = int((al.get("shell") or {}).get("port") or 0)
+    else:
+        from . import store_data
+        try:
+            reg = json.loads((c.home / "apps.json").read_text())
+        except (OSError, ValueError):
+            reg = {}
+        port = store_data.fresh_ports(reg)[0]
+        own = int(app_port or 0) if app_port and 0 < int(app_port) < 65536 and int(app_port) != port else 0
+    try:
+        host = json.loads((c.home / "links.json").read_text()).get("host") or ""
+    except (OSError, ValueError):
+        host = ""
+    if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return {}
+    hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
+    if own:
+        hosts.insert(1, f"{host}:{own}")
+        origins.append(f"https://{host}:{own}")
+    env = {"WIZARD_TRUSTED_HOSTS": ",".join(hosts), "WIZARD_TRUSTED_ORIGINS": ",".join(origins)}
+    # Cloudflare and other owner-login recipes need the box owner's tailnet identity.
+    if "WIZARD_OWNER_LOGINS" in text:
+        from . import store_install
+        owner = store_install.owner_login()
+        if owner:
+            env["WIZARD_OWNER_LOGINS"] = owner
+    return env
+
+
+def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
+    """Merge KEY=VALUE pairs into the app's Runtipi user-config app.env (kept across updates), owner-only."""
+    p = runtipi_root / "user-config" / STORE / app_id / "app.env"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    keep = [l for l in (p.read_text().splitlines() if p.is_file() else [])
+            if l.partition("=")[0].strip() not in values]
+    p.write_text("\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n")
+    p.chmod(0o600)
+    return p
+
+
+def port_free(port: int) -> bool:
+    """Nothing listens on this TCP port on any local address (loopback, tailnet, all)."""
+    import socket
+    for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET, "127.0.0.1")):
+        with socket.socket(fam, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((addr, port))
+            except OSError:
+                return False
+    try:
+        rows = [l.split() for f in ("/proc/net/tcp", "/proc/net/tcp6") for l in open(f).read().splitlines()[1:]]
+    except OSError:
+        rows = []
+    return not any(len(r) > 3 and r[3] == "0A" and int(r[1].rsplit(":", 1)[1], 16) == port for r in rows)
+
+
+def free_port(start: int, stop: int = 65000, *, avoid: set[int] | None = None) -> int:
+    for p in range(max(1024, start), stop):
+        if p not in (avoid or set()) and port_free(p):
+            return p
+    raise SystemExit("no free port for this app")
+
+
+def install_failure_reason(urn: str) -> str:
+    """Best effort: the App Manager's last logged error line for this app."""
+    try:
+        p = subprocess.run(["docker", "logs", "--since", "30m", "runtipi"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    name = urn.split(":")[0]
+    hits = [l.strip() for l in (p.stdout + p.stderr).splitlines()
+            if name in l and any(w in l.lower() for w in ("error", "denied", "failed", "not found", "manifest"))]
+    return hits[-1][-300:] if hits else ""
 
 
 def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid: int | None = None,
@@ -289,10 +526,30 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
     return src
 
 
+LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stopped"}}
+
+
+def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
+    """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
+    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
+    rt = c.runtipi()
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if not ((rt.app(urn) or {}).get("app") or {}):
+        raise SystemExit(f"{app_id} is not installed")
+    getattr(rt, verb)(urn)
+    time.sleep(2)
+    status = rt.wait_status(urn, LIFECYCLE_WANT[verb] | {"start_error", "stop_error", "restart_error", "missing"}, timeout)
+    out = {"id": app_id, "urn": urn, "action": verb, "status": status}
+    if status not in LIFECYCLE_WANT[verb]:
+        out["error"] = f"{verb} did not finish (status {status}); see `docker logs runtipi`"
+    return out
+
+
 def _app(c: Config, verb: str, app_id: str) -> None:
-    """Runtipi's own start/stop for one app (runtipi-cli, as `wam app start|stop <id>`)."""
-    if runtipi_cli(c.runtipi_root, ["app", verb, f"{app_id}:{STORE}"]) != 0:
-        raise SystemExit(f"runtipi-cli app {verb} {app_id} failed")
+    """Start/stop one app through the App Manager API (not runtipi-cli; see app_lifecycle)."""
+    res = app_lifecycle(c, verb, app_id)
+    if res.get("error"):
+        raise SystemExit(f"wam app {verb} {app_id} failed: {res['error']}")
 
 
 def _bundle_queue(port: int) -> dict | None:
@@ -515,18 +772,33 @@ def registry_apps(c: Config) -> dict[str, dict]:
         return {}
 
 
+def _app_image(c: Config, st: dict, app_id: str) -> str:
+    """The image an installed app runs: its alongside pin, else the first image in its installed compose."""
+    if alongside.pin(st, app_id):
+        return alongside.pin(st, app_id)
+    comp = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
+    try:
+        imgs = private.images(yaml.safe_load(comp.read_text()) or {})
+    except (OSError, ValueError, yaml.YAMLError):
+        return ""
+    return imgs[0] if imgs else ""
+
+
 def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | None, shell_port: int | None,
-                  share_history: bool | None = None) -> dict:
+                  share_history: bool | None = None, share_sessions: bool | None = None) -> dict:
     home = alongside.hermes_home(hermes_home)
     if detect_only:
         return alongside.detect(home)
     if off:
         was = alongside.disable(c.home)
+        from . import host_dashboard
+        host_dashboard.disable()
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
+        removed += [a for a in claude_login_off(c) if a not in removed]
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
-    st = alongside.enable(c.home, home, shell_port, share_history)
+    st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
     out = {k: v for k, v in st.items() if k != "detected"}
     out["detected"] = st["detected"]
     try:
@@ -542,8 +814,22 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = {a: r for a, r in apps.items() if (r != "bundle") == active} or apps
         for app_id, role in apps.items():
             alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
-        if apps:   # the service first, so the shell finds it when it starts
-            order = sorted(apps, key=lambda a: apps[a] != "service")
+            if role != "shell":   # it now runs as the owner: hand it the state the recipe's uid wrote
+                if alongside.adopt_state(c.runtipi_root, STORE, app_id, _app_image(c, st, app_id)):
+                    out.setdefault("state_adopted", []).append(app_id)
+                if alongside.adopt_media(c.runtipi_root, _app_image(c, st, app_id), alongside.container_user(st["agent"])):
+                    out.setdefault("media_adopted", []).append(app_id)
+        order = sorted(apps, key=lambda a: apps[a] != "service") if apps else []   # the service first
+        dash = host_dashboard_cmd(c, rt)
+        if dash.get("state") != "skipped":
+            out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
+        order += [a for a in dash.get("changed_apps") or [] if a not in order]
+        reg_apps = registry_apps(c)
+        login = claude_login_cmd(c, {a: (reg_apps.get(a) or {}).get("provides") or [] for a in installed_ids(rt)})
+        if login.get("apps"):
+            out["claude_login"] = login
+        order += [a for a in login.get("changed_apps") or [] if a not in order]
+        if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
@@ -551,9 +837,108 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
     return out
 
 
+def claude_login_cmd(c: Config, apps: dict[str, list]) -> dict:
+    """Alongside: point each installed Claude connection app at the host Hermes' own Claude Code login folder
+    (wam/claude_login.py), so its auto-renew and Connect/Test keep the agent signed in. Never copies a token.
+    `apps` = app id -> provides. Returns {apps: {id: result}, changed_apps: [...]} (changed apps need an update)."""
+    from . import claude_login
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes share the Claude volume)"}
+    a = al.get("agent") or {}
+    if not a.get("hermes_home") or a.get("uid") is None or a.get("gid") is None:
+        return {"state": "skipped", "note": "alongside state names no host Hermes; run `wam alongside`"}
+    hh = Path(a["hermes_home"])
+    cfg = alongside._config(hh)
+    out: dict = {"apps": {}, "changed_apps": []}
+    rootless = None
+    for app_id, provides in sorted(apps.items()):
+        if not claude_login.is_consumer(app_id, provides):
+            continue
+        if rootless is None:
+            rootless = alongside.docker_rootless()
+        try:
+            r = claude_login.ensure(c.runtipi_root, STORE, app_id, provides, hh, int(a["uid"]), int(a["gid"]),
+                                    rootless, cfg)
+        except (ValueError, OSError) as e:
+            r = {"state": "error", "error": str(e)[:200], "changed": False}
+        out["apps"][app_id] = {k: v for k, v in r.items() if k != "changed"}
+        if r.get("changed"):
+            out["changed_apps"].append(app_id)
+    return out
+
+
+def claude_login_off(c: Config) -> list[str]:
+    """`wam alongside --off`: Claude apps go back to their own volume (only what claude_login wrote is removed)."""
+    from . import claude_login
+    base = c.runtipi_root / "user-config" / STORE
+    return [d.name for d in sorted(base.iterdir()) if d.is_dir() and claude_login.remove(d / "docker-compose.yml")] \
+        if base.is_dir() else []
+
+
+def host_dashboard_consumers(c: Config, ids: set[str]) -> dict[str, list[str]]:
+    from . import host_dashboard
+    return host_dashboard.consumers(c.runtipi_root, STORE, ids)
+
+
+def host_dashboard_cmd(c: Config, rt: Runtipi | None = None, apply: bool = True) -> dict:
+    """Alongside: run the host Hermes dashboard for apps that sign in through it (e.g. ChatGPT) and point them at it."""
+    from . import host_dashboard
+    al = alongside.load(c.home)
+    if not al:
+        return {"state": "skipped", "note": "not an alongside box (fresh boxes use the Hermes Agent app's dashboard)"}
+    rt = rt or c.runtipi()
+    try:
+        return host_dashboard.ensure(c.home, c.runtipi_root, STORE, installed_ids(rt), alongside.hermes_binary(),
+                                     al["agent"]["hermes_home"], write_user_env, apply=apply)
+    except OSError as e:
+        return {"state": "error", "error": str(e)[:200]}
+
+
+def store_data_cmd(c: Config, apply: bool = True) -> dict:
+    """Install/refresh the App Store browse-data service for the installed shell and route it, with the owner-gated
+    Store Get listener, on the shell's tailnet ports. Alongside boxes name their ports in alongside.json; fresh boxes
+    (Runtipi apps on loopback ports) take them from apps.json."""
+    from . import links, store_data
+    al = alongside.load(c.home)
+    reg = write_registry(c, c.runtipi())
+    if al:
+        shell_port = int((al.get("shell") or {}).get("port") or 0)
+        svc_port = int((al.get("service") or {}).get("port") or 0)
+    else:
+        shell_port, svc_port = store_data.fresh_ports(reg)
+        if not shell_port:
+            return {"state": "skipped", "note": "no Wizard shell with a loopback port is installed"}
+    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
+    out["mode"] = "alongside" if al else "fresh"
+    if out.get("state") == "ready" and apply and shutil.which("tailscale") and shell_port:
+        ts = links.tailnet()
+        if ts["state"] != "Running" or not ts["host"]:
+            out["tailnet"] = "Tailscale isn't connected yet; rerun after `sudo tailscale up`"
+        else:
+            out.update(store_data.publish_routes(ts["host"], shell_port))
+    return out
+
+
 def resolve_any(c: Config, ref: str) -> dict:
-    """The public index first. If the app isn't there, a private GitHub repo this box can see: `ref` as owner/name,
-    or an app id that the parking-spot defaults map to a repo. The private app is fetched and checked locally."""
+    """Explicit pinned catalog first, owner aliases next, then the public index/private repo fallback.
+
+    An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
+    inside prepare before any image load/pull or store mutation.
+    """
+    pinned = release_pins.resolve(ref)
+    if pinned:
+        return private.prepare(c.runtipi_root, STORE, pinned['repo'], source_pin=pinned)
+    from . import test_catalog
+    pinned = test_catalog.resolve(ref)
+    if pinned:
+        return private.prepare(c.runtipi_root, STORE, pinned['repo'], release=pinned)
+    if ref in c.private_apps:
+        repo = c.private_apps[ref]
+        try:
+            return private.prepare(c.runtipi_root, STORE, repo, expected_id=ref)
+        except private.PrivateError as pe:
+            raise SystemExit(f"{ref}: private_apps alias to {repo} failed: {pe}") from None
     try:
         return index.resolve(c.index, ref)
     except index.IndexError_ as e:
@@ -583,8 +968,12 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
     return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]]}
 
 
+BOOTSTRAP_RETRY_DELAY = 10
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
+    release_pins.load()
     rt = c.runtipi()
     reg = write_registry(c, rt)
     done, failed = [], {}
@@ -593,12 +982,119 @@ def bootstrap(c: Config) -> dict:
             done.append(install(c, app_id)["id"])
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
+    # One retry for apps the App Manager removed after a failed `compose up` (seen live: a pull cancelled mid-way
+    # on a fresh box); a second attempt on the same box then succeeded. Anything failing twice is reported.
+    for app_id in [a for a in list(failed) if "install failed" in failed[a]]:
+        time.sleep(BOOTSTRAP_RETRY_DELAY)
+        try:
+            print(f"retrying {app_id} once", file=sys.stderr)
+            done.append(install(c, app_id)["id"])
+            del failed[app_id]
+        except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
+            failed[app_id] = str(e)[:200]
+    updated = release_updates(c, rt, failed)
     reg = write_registry(c, rt)
-    return {"installed": done, "failed": failed, "spots": slots.table(reg)}
+    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg)}
+
+
+def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+    """Move installed release defaults to the release's source commit on an upgrade rerun.
+
+    A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
+    e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
+    Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    """
+    doc = release_pins.load() or {}
+    if not doc.get("default_apps"):
+        return []
+    have = installed_ids(rt)
+    out = []
+    for row in (doc.get("default_apps") or {}).values():
+        if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        app_id = row["app"]
+        live = c.runtipi_root / "apps" / STORE / app_id
+        try:
+            commit = (live / ".wizard-commit").read_text().strip()
+            source = json.loads((live / ".wizard-source").read_text()).get("repo")
+        except (OSError, ValueError):
+            continue
+        if commit == row["commit"] or source != row["repo"]:
+            continue
+        try:
+            print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
+            resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            res = app_update(c, app_id)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            out.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, private.PrivateError) as e:
+            failed[app_id] = f"update to release source failed: {e}"[:200]
+    return out
+
+
+def _app_container_states(urn: str) -> list[str]:
+    """Docker states of the containers Runtipi labelled for one app (empty when they are all gone)."""
+    from .agent_link import _docker
+    p = subprocess.run(_docker() + ["ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format", "{{.State}}"],
+                       capture_output=True, text=True, timeout=30)
+    if p.returncode:
+        raise RuntimeError(f"docker ps failed: {(p.stderr or p.stdout).strip()[:160]}")
+    return p.stdout.split()
+
+
+def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
+    """wam#95: start installed apps whose containers are missing or not running while their records survive.
+    Only the Wizard shell / Agent Service and the apps named in `running` (recorded running before this rerun) are
+    started: an app the owner stopped stays stopped. Apps whose containers all run are left alone (healthy no-op)."""
+    rt = c.runtipi()
+    defaults = slots.load_defaults()
+    core = [(defaults.get(s) or {}).get("app") for s in ("shell", "agent-service")]
+    core = [a for a in core if a]
+    installed = {}
+    for row in rt.installed():
+        urn = (row.get("info") or {}).get("urn") or ""
+        if urn:
+            installed[urn] = (row.get("app") or {}).get("status")
+    want = [f"{a}:{STORE}" for a in core] + [u if ":" in u else f"{u}:{STORE}" for u in running]
+    started, failed, skipped = [], {}, []
+    for urn in dict.fromkeys(want):
+        app_id = urn.split(":", 1)[0]
+        if urn not in installed:
+            skipped.append(app_id)
+            continue
+        try:
+            states = _app_container_states(urn)
+            if states and all(s == "running" for s in states):
+                continue
+            res = app_lifecycle(c, "start", urn)
+            if res.get("error"):
+                failed[app_id] = res["error"][:200]
+            else:
+                started.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, subprocess.SubprocessError) as e:
+            failed[app_id] = str(e)[:200]
+    if started:
+        write_registry(c, rt)
+    return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
+    from . import builder_bundle
+    if fix:
+        try:
+            builder_bundle.install(c.home)
+            if not alongside.load(c.home) and os.environ.get('WIZARD_MODE') != 'alongside':
+                builder_bundle.fresh(c)
+        except (OSError, ValueError) as e:
+            out.append(("Wizard builder repair", False, str(e)))
+    al = alongside.load(c.home)
+    hh = Path(al['agent']['hermes_home']) if al else c.runtipi_root / 'app-data' / STORE / 'hermes-agent/data'
+    runtime = None if al else builder_bundle.RUNTIME + '/current/system-skills'
+    out.extend(builder_bundle.health(c.home, hh, runtime))
+    if not al:
+        out.extend(builder_bundle.runtime_health(c))
     try:
         rt = c.runtipi()
         rt.installed()
@@ -649,9 +1145,18 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
             readable = db.is_file() and os.access(db, os.R_OK) and os.stat(db).st_uid == os.getuid()
             out.append(("alongside: session history readable by the shell", readable,
                         f"{db} (shell runs as uid {a['uid']}, read-only; it can read every file in the Hermes home)"))
+        elif st["shell"].get("share_sessions"):
+            db = Path(a["hermes_home"]) / "state.db"
+            text = ovr.read_text() if ovr.is_file() else ""
+            mounted = 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
+            stale = alongside.stale_session_mounts(text, a["hermes_home"]) if mounted else []
+            out.append(("alongside: session database shared read-only (no credentials)", mounted and db.is_file() and not stale,
+                        f"{db} -> /hermes/state.db" if mounted and not stale else
+                        f"Hermes replaced {', '.join(stale)} since the mount: run `wam app update {agent_side}`" if stale else
+                        f"not in the override yet: run `wam alongside` then `wam app update {agent_side}`"))
         else:
             out.append(("alongside: Hermes home not shared with the shell", True,
-                        "chats over the Hermes API (opt in to history: wam alongside --share-history)"))
+                        "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
     if regp.is_file():
         for col in registry.collisions(json.loads(regp.read_text())):
             out.append(("slot collision", False, col))
@@ -696,6 +1201,15 @@ class Handler(BaseHTTPRequestHandler):
         c, u = self.cfg, urlparse(self.path)
         if u.path == "/healthz":
             return self._json(200, {"ok": True})
+        if u.path == "/api/system/load":
+            # Exact read-only numeric projection; never proxy arbitrary manager paths or credentials.
+            from . import resources
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
+            try:
+                return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
+            except Exception:
+                return self._json(503, {"error": "server_resources_unavailable"})
         if u.path == "/api/apps":
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
@@ -708,6 +1222,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/slots":
             p = c.home / "apps.json"
             return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
+        if u.path == "/api/updates":
+            from . import updates
+            return self._json(200, updates.status())
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -724,6 +1241,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
+            if path == "/api/updates":            # {"mode": "auto"|"ask"} or {"channel": "stable"|"latest"}
+                from . import updates
+                body = self._body()
+                if set(body) == {"channel"}:
+                    return self._json(200, updates.set_channel(str(body.get("channel", ""))))
+                return self._json(200, updates.set_mode(str(body.get("mode", ""))))
+            if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
+                from . import updates
+                return self._json(200, updates.apply(force=self._body().get("force") is True))
         except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
@@ -738,6 +1264,139 @@ class Handler(BaseHTTPRequestHandler):
             except (RuntipiError, SystemExit, RuntimeError) as e:
                 return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
+
+
+class StoreHandler(BaseHTTPRequestHandler):
+    """Store Get on loopback :7791, served only to tailscaled (peer socket owned by root). The path is the app id
+    (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
+    cfg: Config
+
+    def log_message(self, fmt, *args):  # noqa: D401
+        sys.stderr.write("wam store: " + (fmt % args) + "\n")
+
+    _json = Handler._json
+
+    def _go(self, method: str) -> None:
+        from . import store_install as si
+        if si.peer_uid(self.client_address[1]) != 0:
+            return self._json(403, {"error": "only reachable through tailscale serve"})
+        c = self.cfg
+        lp = c.home / "links.json"
+        ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
+        origins = si.served_origins(ts) if ts else set()
+        owner = si.owner_login()
+        if method == "POST":
+            why = si.check_request(self.headers, owner, origins)
+        else:
+            why = None if owner and (self.headers.get("Tailscale-User-Login") or "").lower() == owner.lower() else "owner only"
+        if why:
+            return self._json(403, {"error": why})
+        app_id = urlparse(self.path).path.strip("/")
+        if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
+            return self._updates(method)
+        if app_id.startswith('_views/'):
+            return self._view_revert(method, app_id.removeprefix('_views/'))
+        if app_id == '_slots/chats':
+            return self._chats_default(method)
+        if app_id == '_recommended':
+            from . import recommended
+            if method == 'GET':
+                return self._json(200, recommended.listing(c))
+            return self._json(202, recommended.start(c))
+        if method == "POST":
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4096:
+                    return self._json(400, {"error": "invalid selection body size"})
+                selection = json.loads(self.rfile.read(size))
+                from . import store_selection
+                if not si.ID.fullmatch(app_id):
+                    raise ValueError("bad app id")
+                selection = store_selection.resolve(c, app_id, selection)
+                code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
+                                      lambda: installed_ids(c.runtipi()), selection=selection)
+            except (ValueError, OSError, index.IndexError_) as e:
+                return self._json(400, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+                sys.stderr.write(f"wam store: {app_id} selection failed: {type(e).__name__}: {e}\n")
+                return self._json(500, {"error": f"The App Manager couldn't prepare this install ({type(e).__name__}). "
+                                                 "Update Wizard and try again."})
+        else:
+            code, body = si.status(app_id)
+        return self._json(code, body)
+
+    def _chats_default(self, method: str) -> None:
+        from . import chats_views
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 256:
+                    raise ValueError('invalid body size')
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict) or set(body) != {'default'}:
+                    raise ValueError('send {default: installed-provider-id}')
+                chats_views.choose(self.cfg.home, body['default'])
+                share_registry(self.cfg)
+            reg = json.loads((self.cfg.home / 'apps.json').read_text())
+            return self._json(200, (reg.get('slots') or {}).get('chats', {'default': chats_views.BUILTIN}))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
+
+    def _view_revert(self, method: str, app_id: str) -> None:
+        """Shell-owned Use original action, behind exactly the Settings/Store owner gate."""
+        from . import views
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,40}', app_id):
+            return self._json(404, {'error': 'not found'})
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 128:
+                    raise ValueError('invalid body size')
+                if json.loads(self.rfile.read(size)) != {'action': 'revert'}:
+                    raise ValueError('send action: revert')
+                views.revert(app_id, self.cfg.home)
+            view = views.load(app_id, self.cfg.home)
+            if not view:
+                return self._json(404, {'error': 'not customized'})
+            return self._json(200, {'app': app_id, 'active': view['active']})
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
+
+    def _updates(self, method: str) -> None:
+        """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
+        POST {"channel": "stable"|"latest"} saves the channel;
+        POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
+        an unpinned box refuses."""
+        from . import updates
+        if method == "GET":
+            return self._json(200, updates.status())
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise ValueError("expected an object")
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        if body.get("action") == "apply" and set(body) == {"action"}:
+            res = updates.apply()
+            return self._json(200 if res.get("started") or not res.get("error") else 409, res)
+        if set(body) == {"mode"} and body["mode"] in updates.MODES:
+            return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
+        if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
+            return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
+                                         '{"action": "apply"}'})
+
+    def do_GET(self):  # noqa: N802
+        self._go("GET")
+
+    def do_POST(self):  # noqa: N802
+        self._go("POST")
+
+
+UPDATES_PATH = "_updates"
 
 
 # ---------------------------------------------------------------- main
@@ -771,6 +1430,36 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
+    """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
+    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    rt = c.runtipi()
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    before = ((rt.app(urn) or {}).get("app") or {})
+    if not before:
+        raise SystemExit(f"{app_id} is not installed")
+    was_running = before.get("status") == "running"
+    app, store = urn.split(":", 1)
+    if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
+        # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
+        role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
+        alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
+    rt.update(urn, perform_backup=backup)
+    time.sleep(3)
+    status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+    after = ((rt.app(urn) or {}).get("app") or {})
+    restarted = False
+    if was_running and status != "running":
+        rt.start(urn)
+        status = rt.wait_status(urn, {"running"}, 300)
+        restarted = True
+    out = {"id": app_id, "urn": urn, "status": status, "version": after.get("version"),
+           "from_version": before.get("version"), "restarted": restarted}
+    if status != "running" and was_running:
+        out["error"] = "the app did not come back; see `docker logs runtipi`"
+    return out
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
@@ -785,12 +1474,29 @@ def main(argv: list[str] | None = None) -> int:
         from .backup.cli import main as backup_main
         return backup_main(argv[1:])
     # Builder lives in its own module; lifecycle/global registry remains separate.
-    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill"}:
+    if argv and argv[0] == "hermes":
+        from .hermes_update import main as hermes_main
+        return hermes_main(argv[1:])
+    if argv and argv[0] == "agent-link":
+        from .agent_link import main as agent_link_main
+        return agent_link_main(argv[1:])
+    if argv and argv[0] == "builder-bundle":
+        from .builder_bundle import main as bundle_main
+        return bundle_main(argv[1:])
+    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}:
         from .builder import main as builder_main
         return builder_main(argv)
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
+        res = app_lifecycle(Config(), argv[1], argv[2])
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
+    if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
+        res = app_update(Config(), argv[2], backup="--no-backup" not in argv)
+        print(json.dumps(res, indent=2))
+        return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -800,18 +1506,48 @@ def main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
+    rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
+    rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
     ss = sub.add_parser("shell-split", help="move this box from the wizard-shell bundle to the split Agent Service + shell")
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
+    sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
+    sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
+    sd.add_argument("--dry-run", action="store_true")
+    ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
+    tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     fa = sub.add_parser("fresh-agent"); fa.add_argument("action", choices=["prepare", "connect", "status", "disconnect"])
     fa.add_argument("--no-restart", action="store_true")
+    al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
+    al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
+                                        "(--channel stable default, or latest)")
+    upg = up.add_mutually_exclusive_group()
+    upg.add_argument("--auto", action="store_true"); upg.add_argument("--ask", action="store_true")
+    upg.add_argument("--apply", action="store_true"); upg.add_argument("--apply-if-auto", action="store_true")
+    upg.add_argument("--ensure-timer", action="store_true", help="installer: make the nightly timer match the mode")
+    upg.add_argument("--channel", choices=("stable", "latest"),
+                     help="stable: tested releases (default); latest: every release as soon as it is cut")
+    up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     args = ap.parse_args(argv)
+    if args.cmd == "updates":
+        from . import updates
+        if args.force and not args.apply:
+            print("--force only goes with --apply", file=sys.stderr)
+            return 2
+        res = (updates.set_channel(args.channel) if args.channel
+               else updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
+               else updates.apply(force=args.force) if args.apply else updates.apply_if_auto() if args.apply_if_auto
+               else updates.ensure_timer() if args.ensure_timer else updates.status(fresh=True))
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     c = Config()
     try:
         if args.cmd == "search":
@@ -829,6 +1565,11 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
+        elif args.cmd == "prefetch":
+            from . import recommended
+            print(json.dumps(recommended.prefetch(c), indent=2))
+        elif args.cmd == "recover":
+            print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":
             print(json.dumps(shell_split(c, rollback=args.rollback, force=args.force), indent=2))
         elif args.cmd == "apps":
@@ -841,8 +1582,13 @@ def main(argv: list[str] | None = None) -> int:
             for n, ok, det in res:
                 print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
             return 0 if all(ok for _, ok, _ in res) else 1
+        elif args.cmd == "store-data":
+            res = store_data_cmd(c, apply=not args.dry_run)
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("state") in ("ready", "skipped") else 1
         elif args.cmd == "alongside":
-            res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history)
+            res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history,
+                                args.share_sessions)
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
@@ -850,8 +1596,39 @@ def main(argv: list[str] | None = None) -> int:
             res = fresh_agent.main(c, args.action, restart=not args.no_restart)
             print(json.dumps(res, indent=2))
             return 0 if res.get("ok") else 1
+        elif args.cmd == "troubleshooter":
+            from . import troubleshooter
+            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
+            print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
+            return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "links":
+            from . import links
+            if args.dry_run:
+                rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
+                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+            else:
+                reg = write_registry(c)
+            shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
+            if not args.dry_run:
+                # The installer calls links last. Rebuild/share after publishing,
+                # otherwise a fresh Agent Service still receives loopback URLs.
+                write_registry(c)
+            print(json.dumps(res, indent=2) if args.json else links.describe(res))
+            return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import recommended
+            recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
+            StoreHandler.cfg = c
+            try:
+                import threading
+                from . import store_install
+                ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
+                threading.Thread(target=ssrv.serve_forever, daemon=True).start()
+                print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
+            except OSError as e:
+                print(f"note: store install listener not started ({e})", file=sys.stderr)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()

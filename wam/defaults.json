@@ -1,6 +1,13 @@
 {
   "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it).",
   "slots": {
+    "chats": {
+      "name": "Chats",
+      "app": null,
+      "required": false,
+      "multi": true,
+      "note": "Built-in wizard-chats plus owner-installed in-document Chats views; shared Agent Service conversations."
+    },
     "shell": {
       "name": "Shell (Wizard UX)",
       "app": "wizard-ux",
@@ -20,15 +27,27 @@
       "app": "hermes-agent",
       "required": true
     },
-    "ai-accounts": {
-      "name": "AI accounts",
-      "app": "wizard-ai-accounts",
-      "required": false
+    "ai-connection": {
+      "name": "AI connections",
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "required": false,
+      "multi": true,
+      "note": "One app per AI provider (Claude, ChatGPT, ...), contract wizard.ai-connection/1. Several installed at once is normal; Resources shows them all. Replaces AI Accounts (decision #61)."
+    },
+    "claude-subscription": {
+      "name": "Claude connection",
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "required": false,
+      "note": "The Claude connection app ships on every box next to ChatGPT: it holds the agent's own Claude Code sign-in (fresh: the shared Claude volume; alongside: the host Hermes' Claude login folder), renews it when it expires and offers Connect/Test. Without it an expired Claude sign-in only shows up as a failed chat."
     },
     "files": {
       "name": "Files",
       "app": "files",
-      "required": true
+      "repo": "oscarhenrycollins/files",
+      "required": true,
+      "gateway": {"path": "/files/", "strip_prefix": false}
     },
     "transcription": {
       "name": "Transcription",
@@ -44,6 +63,28 @@
       "name": "Secrets",
       "app": "secret-drop",
       "required": false
+    },
+    "cloudflare-connection": {
+      "name": "Cloudflare",
+      "app": "wizard-cloudflare",
+      "repo": "oscarhenrycollins/wizard-cloudflare",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Publish websites, back up files and manage domains. Sign in after installing.",
+      "gateway": {"path": "/wizard-cloudflare/", "strip_prefix": true}
+    },
+    "connected-accounts": {
+      "name": "Connected accounts",
+      "app": "wizard-connectors",
+      "repo": "humanitylabs-org/wizard-connectors",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Connect your Google account. Available when a reviewed release is published.",
+      "gateway": {"path": "/wizard-connectors/", "strip_prefix": true}
     },
     "notifications": {
       "name": "Notifications",

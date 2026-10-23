@@ -1,0 +1,23 @@
+services:
+  hermes-agent:
+    image: ghcr.io/humanitylabs-org/hermes-agent:v2026.9.24-wizard2
+    command: ["gateway", "run"]
+    stop_grace_period: 1m
+    volumes:
+      - ${APP_DATA_DIR}/data:/opt/data
+      # App Manager adds /claude only for the wizard.md claude-login share grant.
+    environment:
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
+    x-runtipi:
+      is_main: true
+      internal_port: 9119
+x-runtipi:
+  schema_version: 2
+  overrides: []

@@ -16,6 +16,6 @@ wam = "wam.cli:main"
 packages = ["wam", "wam.backup", "wam.vendor", "wam.vendor.wizard_os_plugin"]
 
 [tool.setuptools.package-data]
-"wam" = ["defaults.json"]
+"wam" = ["defaults.json", "release-index.mjs"]
 "wam.vendor" = ["SOURCE.json"]
 "wam.vendor.wizard_os_plugin" = ["plugin.yaml"]

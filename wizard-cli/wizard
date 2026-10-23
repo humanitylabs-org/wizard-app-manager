@@ -450,7 +450,7 @@ def hermes_home_path(arg: str | None = None) -> Path:
 
 def hermes_bin() -> str:
     import shutil
-    found = shutil.which("hermes") or str(Path.home() / ".local" / "bin" / "hermes")
+    found = os.environ.get("WIZARD_HERMES_BIN") or shutil.which("hermes") or str(Path.home() / ".local" / "bin" / "hermes")
     if not Path(found).is_file():
         raise Fail("usage", "no `hermes` command on this box (link needs an existing Hermes)")
     return found
@@ -787,10 +787,7 @@ def rollback_link(rec: dict) -> dict:
         restore_bytes(backup_cfg, cfgp)   # only link touched it: the owner's original bytes go straight back
     else:   # the owner edited it too: reverse only Wizard OS's keys, keep theirs
         for e in reversed(rec.get("edits") or []):
-            if e["before"]["present"]:
-                hcfg_set(home, e["key"], e["before"]["value"])
-            else:
-                hcfg_unset(home, e["key"])
+            reverse_edit(home, e)
         try:
             import yaml
             same = _semantic(yaml.safe_load(cfgp.read_text(encoding="utf-8")) or {}) == \
@@ -821,6 +818,110 @@ def rollback_link(rec: dict) -> dict:
             "plugin_removed": bool(rec.get("plugin_installed"))}
 
 
+def builder_module():
+    # The standalone CLI uses the OS bundle after installation, the adjacent
+    # source only in a complete checkout. No developer PYTHONPATH is required.
+    roots = [Path(__file__).resolve().parent.parent, os_home() / 'builder/current']
+    for root in roots:
+        if (root / 'wam/builder_bundle.py').is_file():
+            sys.path.insert(0, str(root))
+            from wam import builder_bundle
+            return builder_bundle
+    raise Fail('tool_error', 'Stock builder bundle is missing; reinstall Wizard App Manager')
+
+
+def plugin_fingerprint(home):
+    return plugin_tree_fingerprint(home / 'plugins' / PLUGIN_NAME)
+
+
+def plugin_tree_fingerprint(root):
+    import hashlib
+    files = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(root.rglob('*')) if p.is_file() and '.git' not in p.parts
+             and '__pycache__' not in p.parts and p.suffix != '.pyc'}
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def attest_legacy_plugin(home, rec):
+    """An old managed link has no fingerprint: compare against its recorded Git
+    revision, not today's upstream or a guessed owner path. Any difference stops.
+    """
+    import subprocess
+    import tempfile
+    try:
+        metadata = json.loads((home / 'plugins/.install-metadata.json').read_text())[PLUGIN_NAME]
+        revision, source = metadata['revision'], metadata['source']
+        if not re.fullmatch(r'[0-9a-f]{40}', revision) or source != PLUGIN_SOURCE:
+            raise ValueError('unknown source or unpinned installed revision')
+        repo, subdir = source.split('#', 1)
+        with tempfile.TemporaryDirectory(prefix='.plugin-attest-', dir=os_home()) as td:
+            root = Path(td)
+            for args in (['init', '-q', td], ['-C', td, 'fetch', '-q', '--depth=1', 'https://github.com/' + repo + '.git', revision],
+                         ['-C', td, 'checkout', '-q', '--detach', 'FETCH_HEAD']):
+                subprocess.run(['git', *args], check=True, capture_output=True, timeout=120)
+            if plugin_tree_fingerprint(root / subdir) != plugin_fingerprint(home):
+                raise ValueError('plugin differs from its recorded upstream revision')
+        rec['plugin_sha256'] = plugin_fingerprint(home)
+        # Pre-bundle link records omitted plugin_ref. Preserve an explicitly
+        # pinned stock install when migrating its attested ownership record.
+        if 'plugin_ref' not in rec and metadata.get('pinned'):
+            rec['plugin_ref'] = revision
+        save_record(rec)
+    except (KeyError, ValueError, OSError, subprocess.SubprocessError) as e:
+        raise Fail('tool_error', f'Cannot attest existing wizard-os plugin; preserving it ({e}). '
+                   'Review/back up the owner plugin before replacing it.') from None
+
+
+def refresh_owned_plugin(home, rec, ns):
+    """Refresh only a plugin whose last installed bytes we can attest."""
+    import shutil
+    root = home / 'plugins' / PLUGIN_NAME
+    if not rec.get('plugin_installed'):
+        raise Fail('tool_error', 'Existing wizard-os plugin is owner-managed; preserving it. Update it explicitly before relinking.')
+    if not rec.get('plugin_sha256'):
+        attest_legacy_plugin(home, rec)
+    if plugin_fingerprint(home) != rec['plugin_sha256']:
+        raise Fail('tool_error', 'Owner modified wizard-os plugin; preserving it. Review changes before upgrading.')
+    backup = Path(rec['backup']) / 'plugin-before-refresh'
+    if backup.exists():
+        raise Fail('tool_error', f'Unfinished plugin refresh: preserved backup at {backup}; recover before retrying')
+    shutil.copytree(root, backup, symlinks=True)
+    try:
+        args = ['plugins', 'install', ns.plugin_source or PLUGIN_SOURCE, '--force', '--no-enable']
+        ref = ns.plugin_ref or rec.get('plugin_ref')
+        if ref:
+            args += ['--ref', ref]
+        run_hermes(home, *args)
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(backup, root, symlinks=True)
+        shutil.rmtree(backup)
+        raise
+    shutil.rmtree(backup)
+    rec['plugin_ref'] = ref
+    rec['plugin_sha256'] = plugin_fingerprint(home)
+    save_record(rec)
+
+
+def reverse_edit(home, e):
+    if e['key'] == 'skills.external_dirs':
+        try:
+            now = list(raw_get(raw_config(home), e['key']) or [])
+        except KeyError:
+            now = []
+        before = e['before'].get('value') or []
+        added = [d for d in e['after'] if d not in before]
+        kept = [d for d in now if d not in added]
+        if kept or e['before']['present']:
+            hcfg_set(home, e['key'], kept)
+        else:
+            hcfg_unset(home, e['key'])
+    elif e['before']['present']:
+        hcfg_set(home, e['key'], e['before']['value'])
+    else:
+        hcfg_unset(home, e['key'])
+
+
 def cmd_link(ns) -> dict:
     import shutil
     import time as _t
@@ -828,9 +929,30 @@ def cmd_link(ns) -> dict:
     cfgp, envp = home / "config.yaml", home / ".env"
     if not cfgp.is_file():
         raise Fail("usage", f"no Hermes config at {cfgp}")
-    if link_record():
-        return {"ok": True, "already_linked": True, "record": str(os_home() / LINK_FILE),
-                "hint": "run `wizard unlink` first to link again"}
+    bb = builder_module()
+    if (home / 'plugins' / PLUGIN_NAME).exists() and not link_record() and not pending_record():
+        raise Fail('tool_error', 'Owner-managed wizard-os plugin already exists; preserving it. Review it before linking.')
+    try:
+        bb.check_collisions(home, os_home(), raw_config(home))
+        builder = bb.install(os_home())
+    except (ValueError, OSError) as e:
+        raise Fail('tool_error', str(e)) from None
+    if rec := link_record():
+        if Path(rec['hermes_home']) != home:
+            raise Fail('usage', 'Wizard OS is linked to a different Hermes home; unlink it first')
+        refresh_owned_plugin(home, rec, ns)
+        dirs = list((raw_config(home).get('skills') or {}).get('external_dirs') or [])
+        wanted = [str(os_home() / 'skills'), builder['system_skills']]
+        after = dirs + [d for d in wanted if d not in dirs]
+        if after != dirs:
+            rec['edits'].append({'key': 'skills.external_dirs', 'before': {'present': bool(dirs), 'value': dirs}, 'after': after})
+            save_record(rec)
+            hcfg_set(home, 'skills.external_dirs', after)
+        rec['config_sha_after'] = sha256_file(cfgp)
+        save_record(rec)
+        restarted = ns.restart and run_hermes(home, 'gateway', 'restart', check=False, timeout=180).returncode == 0
+        return {"ok": True, "already_linked": True, 'builder': builder, 'plugin_refreshed': True,
+                'gateway_restarted': bool(restarted), "record": str(os_home() / LINK_FILE)}
     recovered = None
     if pending_record():   # an earlier link died half-way: put the owner's files back before starting again
         recovered = rollback_link(pending_record())
@@ -897,9 +1019,10 @@ def cmd_link(ns) -> dict:
             dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])
         except KeyError:
             dirs = []
-        skills_dir = str(osh / "skills")
-        if skills_dir not in dirs and str(Path(skills_dir)) not in [str(Path(d).expanduser()) for d in dirs]:
-            remember("skills.external_dirs", dirs + [skills_dir])
+        wanted = [str(osh / "skills"), builder['system_skills']]
+        after = dirs + [d for d in wanted if d not in [str(Path(p).expanduser()) for p in dirs]]
+        if after != dirs:
+            remember("skills.external_dirs", after)
         # 3. the wizard-os plugin (stock `hermes plugins install`, then the allow-list)
         if not (home / "plugins" / PLUGIN_NAME).is_dir():
             args = ["plugins", "install", ns.plugin_source or PLUGIN_SOURCE, "--no-enable", "--no-deps"]
@@ -917,6 +1040,9 @@ def cmd_link(ns) -> dict:
                 shutil.copytree(local, home / 'plugins' / PLUGIN_NAME)
             else:
                 run_hermes(home, *args)
+            rec['plugin_sha256'] = plugin_fingerprint(home)
+            rec['plugin_ref'] = ns.plugin_ref
+            save_record(rec)
             produced()
             fault("after:plugin")
         try:
@@ -1055,12 +1181,13 @@ def cmd_unlink(ns) -> dict:
     bdir = Path(rec["backup"])
     untouched_since_link = sha256_file(cfgp) == rec.get("config_sha_after")
     if rec.get("plugin_installed"):
-        remove_installed_plugin(home, rec)
-    for e in reversed(rec["edits"]):
-        if e["before"]["present"]:
-            hcfg_set(home, e["key"], e["before"]["value"])
+        if not rec.get('plugin_sha256') or plugin_fingerprint(home) != rec['plugin_sha256']:
+            rec.setdefault('notes', []).append('Modified or unattested plugin preserved on unlink')
+            rec['plugin_installed'] = False
         else:
-            hcfg_unset(home, e["key"])
+            remove_installed_plugin(home, rec)
+    for e in reversed(rec["edits"]):
+        reverse_edit(home, e)
     # Byte-for-byte: when nothing else changed since link (the reversed document means exactly what the backup
     # meant), put the original bytes back, so even whitespace is the owner's.
     backup_cfg = bdir / "config.yaml"
@@ -1144,6 +1271,11 @@ def cmd_doctor(ns) -> dict:
     except KeyError:
         dirs = []
     _check(rows, "Hermes reads the Wizard OS skills", str(os_home() / "skills") in dirs, str(os_home() / "skills"))
+    try:
+        for name, ok, detail in builder_module().health(os_home(), home):
+            _check(rows, name, ok, detail)
+    except (Fail, ImportError, ValueError) as e:
+        _check(rows, 'Wizard builder bundle', False, str(e))
     try:
         enabled = raw_get(cfg, "plugins.enabled") or []
     except KeyError:

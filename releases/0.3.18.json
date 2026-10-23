@@ -1,0 +1,147 @@
+{
+  "version": "0.3.18",
+  "name": "Wizard OS install snapshot 0.3.18",
+  "date": "2026-10-20",
+  "about": "0.3.17 plus App Manager #116 (fixes #113): `wam app update` and `wam alongside` reconcile the alongside image pin from the selected release (explicit developer image overrides still win) before queuing a core app update, so an alongside box no longer keeps the Agent Service or Wizard UX on a stale saved image. Every other pin is identical to 0.3.17; the App Manager image is unchanged.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Alongside mode consumes the split image pins. Fresh mode still installs catalog defaults and reports image drift. No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "1068428aff53fbd0f35aaa61e8fcb686ae99e97c",
+      "branch": "main",
+      "note": "Merged main through #116; host-tooling change only (alongside image reconciliation before core updates, plus the 0.3.17 mirror) beyond 0.3.17."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "e7bfd6d16caf76b808585f3d3ae9a7d081841b16",
+      "branch": "main",
+      "note": "Official main with #62 (My skin: owner's skin layer served from Files); public image published."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "c1656a9316d248dbbd6b05a59e173a4a1c4c1ccd",
+      "branch": "main",
+      "note": "Official main with #211 (Settings → Updates) and #212 (My skin layer); public image published."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.278-904d987",
+      "digest": "sha256:0a1f04fa318d05f02ae846440d5ac7b3e724e7025270bad7726cbda7494f1f6f",
+      "built_from": "wizard-app-manager",
+      "source_commit": "904d987b167c9aa1bfa5d970328a9e40b499e046",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/39246751643",
+      "note": "Unchanged official multi-arch image from 0.3.12. Image build inputs are identical at the pinned host-tooling commit (git diff 904d987..1068428 for image_inputs is empty)."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-c1656a9316d248dbbd6b05a59e173a4a1c4c1ccd",
+      "digest": "sha256:dcc3db57dfd4f12280fd64c11431e1b891214831b5a88ab62ce129de3577e662",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/39407857733"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-e7bfd6d16caf76b808585f3d3ae9a7d081841b16",
+      "digest": "sha256:cb92d01c5656e89f8280e54f6972bc486de3d04f1e50203e00c8acf0d8bb0389",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/39407802585"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "c1656a9316d248dbbd6b05a59e173a4a1c4c1ccd",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "e7bfd6d16caf76b808585f3d3ae9a7d081841b16"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.1.4",
+      "commit": "f87d5ddc449535418ee92ebeb24aaec36cc58058",
+      "note": "Host Hermes owns and renews its sign-in; the connection app reads sanitized usage through the wizard-os dashboard plugin. Claude is installed by default as its own `claude-subscription` row below."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.1.2",
+      "commit": "3b2d6186b86a896f254150ad056b9eaa495e738e",
+      "note": "Installed on every box next to ChatGPT. Alongside with host Hermes on a claude-subscription provider: App Manager binds the agent's own Claude Code login folder at the engine's /claude, so Connect/Test and auto-renew act on the agent's sign-in; tokens are never copied."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard2",
+      "commit": "8a4dd8ac5189d7d9d8af2bb8a2416936668e90df"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "304e61613d1fdc1c5df9b62bccd1f8b52790b642"
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    }
+  }
+}

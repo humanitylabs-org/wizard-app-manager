@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { WizardStorage } from './wizard-storage';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -77,7 +79,30 @@ export class DockerService {
    * @param {string} appUrn - App name
    * @param {string} command - Command to execute
    */
+  private storageInstance?: WizardStorage;
+  get storage() {
+    if (!this.storageInstance) this.storageInstance = new WizardStorage(this.config.get('directories'));
+    return this.storageInstance;
+  }
+
   public async composeApp(appUrn: AppUrn, command: string) {
+    if (command.split(' ')[0] === 'up') {
+      const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
+      if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
+      let result!: { success: boolean; stdout: string; stderr: string };
+      await this.storage.prepare(appUrn, generated.content, async (prepared) => {
+        if (prepared !== generated.content) {
+          await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
+          await fs.rename(`${generated.path}.tmp-storage`, generated.path);
+        }
+        result = await this.runComposeApp(appUrn, command);
+      });
+      return result;
+    }
+    return this.runComposeApp(appUrn, command);
+  }
+
+  private async runComposeApp(appUrn: AppUrn, command: string) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
@@ -88,7 +113,8 @@ export class DockerService {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    const exitCode = await new Promise((resolve) => {
+    const exitCode = await new Promise((resolve, reject) => {
+      cmd.once('error', reject);
       cmd.stdout.on('data', (data) => {
         this.logger.debug(`docker-compose: ${String(data).trim()}`);
         stdout.push(String(data).trim());

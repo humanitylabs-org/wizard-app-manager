@@ -62,18 +62,50 @@ def head_commit(repo: str, tok: str) -> str:
 
 def _git_env(tok: str) -> dict:
     """Pass the login as an HTTP header through git's env config, so it never shows in the process list."""
+    if not tok:
+        return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     basic = base64.b64encode(f"x-access-token:{tok}".encode()).decode()
     return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader", "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}"}
 
 
 def fetch(repo: str, commit: str, dest: Path, tok: str) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+    from . import mirrors
+    ref = mirrors.source_ref(repo, commit)
     env = _git_env(tok)
-    for args in (["init", "-q"], ["fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit], ["checkout", "-q", "FETCH_HEAD"]):
-        r = subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest, env=env, capture_output=True, text=True, timeout=300)
-        if r.returncode:
-            raise PrivateError(f"git {args[0]} {repo}: {r.stderr.strip()[:200]}")
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest,
+                                  env=env, capture_output=True, text=True, timeout=300, check=True)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise PrivateError(f"git {args[0]} {repo} failed") from e
+
+    def init():
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+
+    init()
+    try:
+        git("fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit)
+    except PrivateError:
+        # Start clean: never let an old FETCH_HEAD or partial origin tree win.
+        init()
+        bundle = dest / ".git" / "curator.bundle"
+        try:
+            mirrors.download_bundle(repo, commit, bundle)
+            git("fetch", "-q", str(bundle), ref)
+        except (OSError, ValueError) as e:
+            raise PrivateError(f"curator source unavailable for {repo}@{commit}") from e
+        finally:
+            bundle.unlink(missing_ok=True)
+    git("checkout", "-q", "FETCH_HEAD")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, env=env,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    if head != commit:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise PrivateError(f"{repo}: fetched {head}, expected {commit}")
 
 
 def images(compose: dict) -> list[str]:
@@ -104,14 +136,45 @@ def pull(image: str, tok: str) -> None:
                            f"(or set GITHUB_TOKEN with read:packages), or ask the owner to make the package public")
 
 
-def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -> dict:
+def write_sealed_bootstrap(runtipi_root, store, app_id, compose):
+    """Keep a provisioned local provider off Runtipi's implicit public network."""
+    import textwrap
+    mains = [(name, svc) for name, svc in compose.get('services', {}).items()
+             if (svc.get('x-runtipi') or {}).get('is_main')]
+    if len(mains) != 1:
+        raise PrivateError('private provider requires exactly one main service')
+    name, svc = mains[0]
+    nets = svc.get('networks') or []
+    if (not isinstance(nets, (list, dict)) or not nets or
+            any(not (compose.get('networks', {}).get(n) or {}).get('internal') for n in nets)):
+        raise PrivateError('private provider bootstrap networks must all be internal')
+    override = runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
+    header = '# WAM private-provider internal bootstrap\n'
+    if override.exists() and not override.read_text().startswith(header):
+        raise PrivateError('private provider bootstrap conflicts with existing user Compose override')
+    override.parent.mkdir(parents=True, exist_ok=True)
+    body = yaml.safe_dump({name: {'networks': list(nets)}}, sort_keys=False)
+    body = body.replace('networks:', 'networks: !override', 1)
+    override.write_text(header + 'services:\n' + textwrap.indent(body, '  '))
+
+
+def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None,
+            expected_id: str | None = None, source_pin: dict | None = None) -> dict:
     """Fetch `repo` (owner/name) at its newest commit into the Wizard store folder and pull its images.
     Returns an index-like record: {id, repo, uses, private: True, install: {commit}}."""
     tok = tok or token()
-    if not tok:
+    if not tok and not source_pin:
         raise PrivateError(f"{repo} isn't in the public index and this box has no GitHub login. Run `gh auth login` "
                            f"with an account that can see it, or set GITHUB_TOKEN")
-    commit = head_commit(repo, tok)
+    if release and (release.get('repo') != repo or not re.fullmatch(r'[0-9a-f]{40}', release.get('commit', ''))):
+        raise PrivateError('invalid private source pin')
+    if source_pin and (source_pin.get('repo') != repo or
+                       not re.fullmatch(r'[0-9a-f]{40}', source_pin.get('commit', ''))):
+        raise PrivateError('invalid release source pin')
+    if release:
+        from .test_catalog import check_architecture
+        check_architecture(release)
+    commit = source_pin['commit'] if source_pin else release['commit'] if release else head_commit(repo, tok)
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Path(tmpdir) / "src"
         fetch(repo, commit, src, tok)
@@ -120,10 +183,18 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
             raise PrivateError(f"{repo}: no wizard.md")
         d = wizardmd.front_matter(wtext)
         app_id = str(d.get("id") or "")
+        if expected_id is not None and app_id != expected_id:
+            raise PrivateError(f"alias {expected_id!r} does not match manifest id {app_id!r}; nothing installed")
+        if release and app_id != release['id']:
+            raise PrivateError('pinned app identity mismatch')
+        if source_pin and app_id != source_pin['id']:
+            raise PrivateError('release app identity mismatch')
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", app_id):
             raise PrivateError(f"{repo}: bad id {app_id!r}")
         rt = d.get("runtime") or {}
         cfg_p, comp_p = src / str(rt.get("config", "")), src / str(rt.get("compose", ""))
+        if not cfg_p.resolve().is_relative_to(src.resolve()) or not comp_p.resolve().is_relative_to(src.resolve()):
+            raise PrivateError('runtime files must stay inside fetched source')
         if not cfg_p.is_file() or not comp_p.is_file():
             raise PrivateError(f"{repo}: wizard.md runtime.config/compose missing")
         ctext = comp_p.read_text()
@@ -131,8 +202,42 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
         if risks:
             raise PrivateError(f"{repo} asks for host-level access: {'; '.join(risks)}")
         compose = yaml.safe_load(ctext) or {}
-        for img in images(compose):
-            pull(img, tok)
+        if source_pin and source_pin.get('image'):
+            mains = [svc for svc in compose.get('services', {}).values()
+                     if (svc.get('x-runtipi') or {}).get('is_main')]
+            if len(mains) != 1:
+                raise PrivateError('release image requires exactly one main Compose service')
+            mains[0]['image'] = source_pin['image']
+            mains[0]['pull_policy'] = 'if_not_present'
+        if release:
+            from .test_catalog import preload
+            loaded = preload(release, tok)
+            if loaded:
+                matched = 0
+                for svc in compose.get('services', {}).values():
+                    resolved = IMAGE_VAR.sub(lambda m: m.group(1) or '', str(svc.get('image', '')))
+                    if resolved.split('@')[0] == loaded['image'].split('@')[0]:
+                        svc['image'] = loaded['image_id']
+                        svc['pull_policy'] = 'never'
+                        matched += 1
+                if not matched:
+                    raise PrivateError('catalog image does not match pinned Compose')
+        from .mirrors import resolve_images
+        resolve_images(compose)
+        # Packaging (source | build | image): copy the pinned code where the containers mount or build it.
+        from . import packaging
+        try:
+            packaging.prepare_package(rt.get("package"), compose, src,
+                                      packaging.source_dir(packaging.app_data_root(runtipi_root), store, app_id, commit),
+                                      app_id, commit)
+        except packaging.PackagingError as e:
+            raise PrivateError(f"{repo}: {e}") from e
+        # Runtipi pulls public release images through its normal install path. A fresh
+        # sudo user need not have Docker socket access or a registry login on the CLI.
+        if not source_pin:
+            for img in images({"services": {n: s for n, s in (compose.get("services") or {}).items()
+                                            if isinstance(s, dict) and not s.get("build")}}):
+                pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
         old_tipi = 0
@@ -143,11 +248,14 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
                 old_tipi = 0
         have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
         rec = {"id": app_id, "repo": repo, "uses": d.get("uses") or [], "private": True, "install": {"commit": commit}}
-        if have == commit:
+        if have == commit and not release and not source_pin and 'chats' not in (d.get('provides') or []):
             return rec
 
         cfg = json.loads(cfg_p.read_text())
         cfg["id"] = app_id
+        # Runtipi requires source even when a valid private manifest omitted it.
+        # Bind it to the fetched repository, never to a catalog/browser URL.
+        cfg["source"] = f"https://github.com/{repo}"
         cat = d.get("category")
         cfg["categories"] = [cat if cat in CATEGORIES else ("agent" if d.get("type") == "agent" else "app")]
         cfg["tipi_version"] = max(int(cfg.get("tipi_version") or 1), old_tipi + 1 if have else old_tipi)   # new commit = update
@@ -157,6 +265,12 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
             if xr.get("is_main") and xr.get("internal_port") and not svc.get("ports"):
                 svc["ports"] = [f"127.0.0.1:${{APP_PORT}}:{xr['internal_port']}"]
 
+        # Runtipi otherwise adds its public shared network to every is_main service.
+        # Preserve the declared internal bootstrap through a final Compose override.
+        if (d.get('private_inference') or {}).get('provisioning_service'):
+            write_sealed_bootstrap(runtipi_root, store, app_id, compose)
+
+
         tmp = dst.with_name(f"{app_id}.tmp-{os.getpid()}")
         shutil.rmtree(tmp, ignore_errors=True)
         (tmp / "metadata").mkdir(parents=True)
@@ -165,6 +279,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
         body = wizardmd.body(wtext)
         (tmp / "metadata" / "description.md").write_text(("" if body.startswith("# ") else f"# {d.get('name') or app_id}\n\n") + body + "\n")
         (tmp / "wizard.md").write_text(wtext)
+        from . import chats_views
+        chats_views.prepare(src, tmp, d, commit)
         if isinstance(d.get("skill"), str) and (src / d["skill"]).is_file():
             shutil.copy2(src / d["skill"], tmp / "SKILL.md")
         for cand in (cfg_p.parent / "metadata" / "logo.jpg", src / str(d.get("icon") or "-"), cfg_p.parent / "logo.jpg"):
@@ -175,6 +291,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None) -
             shutil.copytree(cfg_p.parent / "data", tmp / "data")
         (tmp / ".wizard-commit").write_text(commit + "\n")
         (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True}) + "\n")
+        if release or source_pin:
+            (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
         shutil.rmtree(dst, ignore_errors=True)
         tmp.rename(dst)
     return rec
