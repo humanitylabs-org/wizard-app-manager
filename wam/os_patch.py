@@ -437,12 +437,117 @@ def native(on, rel = None):
     return {"family": "apt", "changed": changed, "native_auto": b.native_auto()}
 
 
+# Quiet restart privilege boundary: no caller-selected unit outside needrestart's fresh list.
+SERVICE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_@:.-]*\.service\Z")
+
+
+def restart_check():
+    b = detect()
+    doc = {"boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+           "reboot_required": b.reboot_required(), "services": [], "state": "current"}
+    if not shutil.which("systemctl"):
+        return dict(doc, state="report_only", reason="Service restarts require systemd.")
+    p = run(["systemctl", "is-system-running"], timeout=30)
+    doc["system_state"] = p.stdout.strip()
+    if not shutil.which("needrestart"):
+        return dict(doc, state="report_only", reason="needrestart is not installed; no services will be restarted.")
+    p = run(["needrestart", "-b", "-r", "l"], timeout=180)
+    if p.returncode != 0:
+        return dict(doc, state="error", reason=(p.stderr or p.stdout)[-600:])
+    names = [line.partition(":")[2].strip() for line in p.stdout.splitlines() if line.startswith("NEEDRESTART-SVC:")]
+    if any(not SERVICE.fullmatch(n) for n in names):
+        return dict(doc, state="error", reason="needrestart returned an invalid service name.")
+    doc["services"] = sorted(set(names))
+    return doc
+
+
+def restart_service(name):
+    if os.geteuid() != 0 or not SERVICE.fullmatch(name):
+        return {"state": "refused", "reason": "Root and a valid system service are required."}
+    before = restart_check()
+    if before["state"] == "error":
+        return before
+    if name not in before["services"]:
+        return {"state": "current", "service": name, "reason": "Not in needrestart's current list; left alone."}
+    # Restarting a user manager can kill this very maintenance runner. IPC/login
+    # brokers can tear down work even when their unit comes back. Move them to reboot.
+    if name.startswith("user@") or name in ("dbus.service", "dbus-broker.service", "systemd-logind.service"):
+        return {"state": "report_only", "service": name, "reason": "Login/IPC manager requires an explicit quiet reboot."}
+    # Never start a stopped service and never stop a service just to test it.
+    if run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode != 0:
+        return {"state": "refused", "service": name, "reason": "Service is not active; left alone."}
+    p = run(["systemctl", "try-restart", name], timeout=180)
+    active = run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode == 0
+    if active and p.returncode == 0:
+        time.sleep(1)
+        active = run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode == 0
+    if p.returncode or not active:
+        recovery = None
+        if not active:
+            recovery = run(["systemctl", "start", name], timeout=180)
+        recovered = run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode == 0
+        return {"state": "error", "service": name, "recovered": recovered,
+                "reason": (p.stderr or p.stdout or "Service did not recover after restart.")[-600:],
+                "recovery_error": (recovery.stderr or recovery.stdout)[-600:] if recovery and recovery.returncode else ""}
+    return {"state": "restarted", "service": name}
+
+
+def apply_held():
+    if os.geteuid() != 0:
+        return {"state": "refused", "reason": "needs root"}
+    before = check(refresh=False)
+    if before["state"] not in ("pending", "current"):
+        return before
+    b = detect()
+    if b.family != "apt":
+        return {"state": "report_only", "held": before.get("held", []),
+                "reason": "Held platform packages are installable only on apt in this increment."}
+    targets = before.get("held") or []
+    if not targets:
+        return {"state": "current", "installed": []}
+    leftover_guard()
+    if POLICY_RC.exists() or POLICY_RC.is_symlink():
+        return {"state": "refused", "reason": "An owner policy-rc.d exists; cannot guarantee restart suppression without replacing it."}
+    # Pin the security candidates we checked, refuse removals, suppress service actions.
+    names = [p["name"] + "=" + p["to"] for p in targets]
+    with _no_service_restarts():
+        p = run(b.apply_argv(names) + ["--no-remove"], timeout=TIMEOUT,
+                env={"DEBIAN_FRONTEND": "noninteractive", "NEEDRESTART_SUSPEND": "1", "NEEDRESTART_MODE": "l"})
+    after = check(refresh=False)
+    if after["state"] not in ("pending", "current"):
+        return dict(after, state="error", reason="Cannot verify held platform update.")
+    still = {x["name"] for x in after.get("held", [])}
+    installed = [x["name"] for x in targets if x["name"] not in still]
+    return {"state": "applied" if p.returncode == 0 and not still.intersection(x["name"] for x in targets) else "error",
+            "installed": installed, "held": after.get("held", []), "reboot_required": after.get("reboot_required"),
+            "reason": (p.stderr or p.stdout)[-600:] if p.returncode else ""}
+
+
+def schedule_reboot():
+    if os.geteuid() != 0:
+        return {"state": "refused", "reason": "needs root"}
+    if not detect().reboot_required():
+        return {"state": "current", "reason": "A reboot is no longer required."}
+    # A short delay lets the unprivileged caller fsync the receipt before shutdown. No detached shell.
+    p = run(["systemd-run", "--unit=wizard-os-maintenance-reboot", "--on-active=10s", "--collect",
+             "/usr/bin/systemctl", "reboot"], timeout=30)
+    return {"state": "scheduled" if p.returncode == 0 else "error", "reason": (p.stderr or p.stdout)[-600:]}
+
+
 def main(argv = None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["check"] and set(argv[1:]) <= {"--refresh"}:
         res = check(refresh="--refresh" in argv)
     elif argv == ["apply"]:
         res = apply()
+    elif argv == ["restart-check"]:
+        res = restart_check()
+    elif len(argv) == 2 and argv[0] == "restart-service":
+        res = restart_service(argv[1])
+    elif argv == ["apply-held"]:
+        res = apply_held()
+    elif argv == ["reboot"]:
+        res = schedule_reboot()
     elif argv in (["native-off"], ["native-on"]):
         res = native(argv[0] == "native-on")
     else:

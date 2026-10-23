@@ -18,8 +18,11 @@ OS security setting (~/.wizard-os/maintenance.json, kept across reinstalls; the 
   On Debian/Ubuntu it pauses the distribution's own unattended-upgrades (which may restart services through
   needrestart) and does the same security patching itself without restarts; "check"/"off" hand it back.
 - "off": no OS check at all.
-Automatic service restarts and reboots are not offered yet (James, 23 Oct 2026: not until they are proven to never
-break running work and always come back online). Held platform packages and pending reboots are reported.
+Quiet restart lane (all default off / report-only; no installer changes these settings):
+  --quiet-restarts off|auto  restart only needrestart-selected active systemd services, while quiet
+  --held-platform off|patch  apt held security packages, only with os-security patch, while quiet
+  --quiet-reboot off|auto    reboot-required only, while quiet; intent survives reboot and Health reconciles it
+Attended acceptance is required before enabling on an owner box. Busy probes are not an atomic admission fence.
 """
 from __future__ import annotations
 
@@ -82,6 +85,10 @@ def settings(home: Path | None = None) -> dict:
     s = _load(_home(home) / "maintenance.json")
     if s.get("os_security") not in MODES:
         s["os_security"] = DEFAULT_MODE
+    from .quiet_restart import OPTIONS
+    for key, choices in OPTIONS.items():
+        if s.get(key) not in choices:
+            s[key] = "off"
     return s
 
 
@@ -144,7 +151,9 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
         return {"helper": "root", "changed": False}   # a root-run box calls os_patch directly
     if _sha(HELPER) == _sha(_source()) and (SUDOERS.exists() or not root):
         return {"helper": "ready", "changed": False}
-    rule = f"{user} ALL=(root) NOPASSWD: {HELPER} check, {HELPER} check --refresh, {HELPER} apply, {HELPER} native-off, {HELPER} native-on\n"
+    rule = (f"{user} ALL=(root) NOPASSWD: {HELPER} check, {HELPER} check --refresh, {HELPER} apply, "
+            f"{HELPER} native-off, {HELPER} native-on, {HELPER} restart-check, {HELPER} restart-service *, "
+            f"{HELPER} apply-held, {HELPER} reboot\n")
     with tempfile.TemporaryDirectory() as td:
         sud = Path(td) / "sudoers"
         sud.write_text(rule)
@@ -354,15 +363,32 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
     started = _now()
     try:
         with _lease(h):
-            mode = settings(h)["os_security"]
+            from . import quiet_restart as qr
+            cfg = settings(h)
+            mode = cfg["os_security"]
             t0 = time.monotonic()
-            bk = backup_step(h, runner)
-            os_res = os_step(mode, h, runner, wait, is_busy, sleep)
-            quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
-            up = updates_step(h, quiet) if with_updates else {"state": "skipped"}
+            bk = qr.safe_step(backup_step, h, runner)
+            os_res = qr.safe_step(os_step, mode, h, runner, wait, is_busy, sleep)
+            def do_updates():
+                quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
+                return updates_step(h, quiet) if with_updates else {"state": "skipped"}
+            up = qr.safe_step(do_updates)
+            # Updates may launch a long installer. Never restart underneath it.
+            def restart_probe():
+                from . import updates
+                reasons = list((is_busy or (lambda: busy_reasons(h)))())
+                if up.get("state") == "started" or updates.installing(h):
+                    reasons.append("A Wizard OS installer is running.")
+                return reasons
+            restarts = qr.safe_step(qr.run, h, os_res, runner, wait, restart_probe, sleep)
             rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(),
                    "seconds": round(time.monotonic() - t0, 1), "os_security": mode, "backup": _slim_backup(bk),
-                   "os": os_res, "updates": up, "state": _overall(os_res, bk, up)}
+                   "os": os_res, "updates": up, "restarts": restarts, "state": _overall(os_res, bk, up)}
+            parts = [restarts, *(restarts.get(k) or {} for k in ("held", "services", "reboot"))]
+            if any(p.get("state") in qr.BAD for p in parts):
+                rec["state"] = "error"
+            elif rec["state"] == "ok" and any(p.get("state") == "deferred" for p in parts):
+                rec["state"] = "deferred"
     except BlockingIOError:
         rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(), "state": "busy",
                "reason": "Another maintenance task holds the box's maintenance lease; nothing was changed."}
@@ -431,6 +457,8 @@ def health(home: Path | None = None, last: dict | None = None, now: float | None
     u = _updates_item(last)
     if u:
         items.append(u)
+    from . import quiet_restart
+    items.extend(quiet_restart.items(_home(home), last))
     return {"generated_at": _now(), "items": items}
 
 
@@ -489,7 +517,7 @@ def _os_item(mode: str, last: dict, now: float) -> dict:
     sec, held = o.get("security") or [], o.get("held") or []
     reboot = " A restart is needed to finish." if o.get("reboot_required") else ""
     st = o.get("state")
-    if last.get("state") == "error" or st in ("error", "refused"):
+    if st in ("error", "refused") or (not o and last.get("state") == "error"):
         return {**item, "status": "error", "value": "needs attention", "detail": str(o.get("reason") or last.get("reason"))[:300]}
     if st == "unsupported":
         return {**item, "status": "warn", "value": "not supported", "detail": o.get("reason", "")}
@@ -507,9 +535,19 @@ def _os_item(mode: str, last: dict, now: float) -> dict:
     return {**item, "status": "warn" if reboot else "ok", "value": "up to date", "detail": reboot.strip() or o.get("distro", "")}
 
 
+def set_restart_option(key: str, value: str, home: Path | None = None) -> dict:
+    from .quiet_restart import OPTIONS
+    if key not in OPTIONS or value not in OPTIONS[key]:
+        return {"error": "Invalid quiet-restart setting."}
+    cfg = settings(home)
+    cfg.update({key: value, "changed_at": _now()})
+    _save(_home(home) / "maintenance.json", cfg)
+    return {key: value, "note": "Opt-in automation; attended acceptance is required before enabling on an owner box."}
+
+
 def status(home: Path | None = None) -> dict:
     s = settings(home)
-    return {"os_security": s["os_security"], "helper": helper_state(), "last": _load(_dir(home) / "last.json") or None,
+    return {"settings": s, "os_security": s["os_security"], "helper": helper_state(), "last": _load(_dir(home) / "last.json") or None,
             "health": health(home)["items"]}
 
 
@@ -518,12 +556,22 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="wam maintain", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", nargs="?", default="status", choices=("status", "run", "setup", "history", "health"))
     ap.add_argument("--os-security", choices=MODES)
+    from .quiet_restart import OPTIONS
+    for key, choices in OPTIONS.items():
+        ap.add_argument("--" + key.replace("_", "-"), choices=choices, help="Opt-in; default off (report only)")
     ap.add_argument("--wait-quiet", type=float, default=1800)
     ap.add_argument("-n", type=int, default=20)
     ap.add_argument("--ensure-timer", action="store_true", help="installer: make the nightly timer match the setting")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-    if a.os_security:
+    chosen = [(key, getattr(a, key)) for key in OPTIONS if getattr(a, key) is not None]
+    if len(chosen) + bool(a.os_security) > 1:
+        ap.error("Change one maintenance setting per command.")
+    if a.wait_quiet < 0:
+        ap.error("--wait-quiet must not be negative")
+    if chosen:
+        res = set_restart_option(*chosen[0])
+    elif a.os_security:
         res = set_os_security(a.os_security)
     elif a.ensure_timer:
         res = ensure_timer()

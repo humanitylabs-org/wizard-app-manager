@@ -7,6 +7,16 @@ import pytest
 from wam import maintain, os_patch
 
 
+@pytest.fixture(autouse=True)
+def no_host_restart_state(monkeypatch):
+    original = maintain.call_helper
+    def helper(action, *args, **kwargs):
+        if action == ["restart-check"]:
+            return {"state": "current", "services": [], "boot_id": "test-boot", "reboot_required": False}
+        return original(action, *args, **kwargs)
+    monkeypatch.setattr(maintain, "call_helper", helper)
+
+
 def _row(home, key, last=None, now=None):
     return next(i for i in maintain.health(home, last, now)["items"] if i["key"] == key)
 
@@ -193,7 +203,7 @@ def test_busy_box_defers_patch_and_changes_nothing(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(maintain, "call_helper", lambda a, r=None: called.append(a) or {"state": "applied"})
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: ["A chat run is active."], sleep=lambda s: None)
-    assert rec["state"] == "deferred" and rec["os"]["state"] == "deferred" and not called
+    assert rec["state"] == "deferred" and rec["os"]["state"] == "deferred" and called == [["restart-check"]]
     h = json.loads((tmp_path / "maintenance" / "health.json").read_text())
     assert next(i for i in h["items"] if i["key"] == "os-security")["value"] == "waiting for quiet"
 
@@ -356,7 +366,7 @@ def test_updates_failure_never_sinks_the_run(tmp_path, monkeypatch):
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: [])
     assert rec["updates"]["state"] == "error" and rec["os"]["state"] == "current" and rec["state"] == "error"
     keys = [i["key"] for i in maintain.health(tmp_path)["items"]]
-    assert keys == ["backups", "os-security", "wizard-updates"]
+    assert keys == ["backups", "os-security", "wizard-updates", "maintenance-held", "maintenance-services", "maintenance-reboot"]
 
 
 def test_failed_catch_up_backup_marks_the_run(tmp_path, monkeypatch):
