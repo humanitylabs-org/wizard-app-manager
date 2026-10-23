@@ -1126,7 +1126,8 @@ else
   unpinned "WAM_REF=$WAM_REF (developer override)"
 fi
 
-[ -z "$PINS" ] || rm -f "$RECORD"   # this pinned run writes its own record; an older one must not survive it
+# release.json is the last completed install, not the in-flight target. Keep it across a
+# power cut; release-pins.json already records the validated target for an exact retry.
 if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, detached, and prove it
   if [ -d "$DIR/.git" ]; then
     if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then

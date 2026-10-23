@@ -328,6 +328,30 @@ def installing(home: Path | None = None) -> bool:
     return install_state(home) == "running"
 
 
+def _retry_target(home: Path | None, run: str | None, have: str | None) -> str | None:
+    """The validated release this interrupted run was installing, including pre-fix boxes whose receipt was deleted.
+
+    A developer's explicit unpinned receipt always wins over old release-pins.json. These pins are only a retry
+    hint; get.sh fetches and validates the named release again before installing anything.
+    """
+    if run != "interrupted":
+        return None
+    h = _home(home)
+    receipt = _read_status(h / "release.json") or {}
+    if receipt.get("status") == "unpinned":
+        return None
+    pins = _read_status(h / "release-pins.json") or {}
+    target = pins.get("version")
+    if not isinstance(target, str) or not VERSION.fullmatch(target):
+        return None
+    components = pins.get("components")
+    wam = components.get("wizard-app-manager") if isinstance(components, dict) else None
+    commit = wam.get("commit") if isinstance(wam, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return None
+    return target if have is None or _key(target) >= _key(have) else None
+
+
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
     """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
     from . import hermes_update
@@ -335,14 +359,16 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     chan = channel(home)
     have, want = installed(home), latest(base, fresh=fresh, chan=chan)
     stable = want if chan == "stable" else latest(base, chan="stable")
-    unpinned = have is None
-    newer = bool(want) and not unpinned and _key(want) > _key(have)
+    retry = _retry_target(home, run, have)
+    want = retry or want
+    unpinned = have is None and retry is None
+    newer = bool(want) and have is not None and _key(want) > _key(have)
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
-            "update_available": newer, "unpinned": unpinned, "checked": want is not None,
+            "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
-            # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
-            "interrupted": run == "interrupted" and newer,
+            # Health is independent of whether a release pointer is reachable/newer (wizard-os#90).
+            "interrupted": run == "interrupted",
             "hermes": hermes_update.status(home, base)}
 
 
@@ -417,7 +443,11 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     moves onto stable pins)."""
     st = status(home, base, fresh=True)
     if target:
-        newer = st["installed"] is not None and _key(target) > _key(st["installed"])
+        if st["interrupted"] and st["update_available"] and st["latest"] != target:
+            return {**st, "started": False, "skipped": "interrupted-target",
+                    "note": "the interrupted release must be retried before a different release"}
+        newer = (st["installed"] is not None and _key(target) > _key(st["installed"])) or (
+            st["interrupted"] and st["update_available"] and st["latest"] == target)
         st = {**st, "latest": target, "update_available": newer}
     if not st["checked"]:
         return {**st, "started": False, "error": "could not read the current release pointer; try again later"}
@@ -482,7 +512,12 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
     stable = st["stable"]
-    newer = bool(stable) and st["installed"] is not None and _key(stable) > _key(st["installed"])
+    retry = _retry_target(home, "interrupted" if st["interrupted"] else None, st["installed"])
+    if retry and retry != stable:
+        return {**st, "started": False, "skipped": "interrupted-target",
+                "note": "retry the interrupted release with Update now; Automatic installs stable only"}
+    newer = bool(stable) and ((st["installed"] is not None and _key(stable) > _key(st["installed"]))
+                              or retry == stable)
     st = {**st, "latest": stable, "update_available": newer}
     if not newer:
         return {**st, "started": False}

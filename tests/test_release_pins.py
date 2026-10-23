@@ -285,7 +285,8 @@ def test_a_modified_app_manager_checkout_is_refused(box):
     assert p.returncode == 0
     (box["home"] / "wam" / "install.sh").write_text("#!/usr/bin/env bash\necho tampered\n")
     p, rec = box["run"]()
-    assert p.returncode == 1 and "local changes" in p.stderr and rec is None
+    assert p.returncode == 1 and "local changes" in p.stderr
+    assert rec["release"] == "9.9.9" and rec["status"] == "pinned"  # failed preflight keeps the prior receipt
 
 
 def test_a_broken_default_app_entry_still_writes_a_record(box):
