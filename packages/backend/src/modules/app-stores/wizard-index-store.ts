@@ -7,11 +7,14 @@
  * on Runtipi's own install / update / backup / networking code handles it unchanged.
  */
 import path from 'node:path';
+import { fetchPinnedCommit, resolveImages } from './curator-mirrors';
 import { execFileAsync } from '@/common/helpers/exec-helpers';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
 import * as yaml from 'yaml';
 import { AppStoreFilesManager } from './app-store-files-manager';
+import { prepareChatsModule } from './chats-module';
+import { preparePackage, sourceDir } from './packaging';
 
 export const WIZARD_STORE_SLUG = 'wizardapps';
 export const DEFAULT_WIZARD_INDEX = 'https://apps.aiwizards.com';
@@ -42,6 +45,23 @@ type IndexSearch = { apps: IndexRecord[]; next_offset: number | null };
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const CHECK_TTL = 10 * 60 * 1000;
+
+// wizard-os#138: until app pages stop acting as the owner (wizard-os#133), the Store lists and installs first-party
+// apps only. Same rule and override as wam/index.py: WAM_PUBLISHERS (comma-separated GitHub owners) replaces the
+// list; WAM_PUBLISHERS=* turns the guard off.
+export const FIRST_PARTY_PUBLISHERS = ['humanitylabs-org', 'oscarhenrycollins', 'jdefleur', 'defleur-agents'];
+export const allowedPublisher = (rec: { repo?: string; publisher?: string }, env = process.env.WAM_PUBLISHERS ?? '') => {
+  const raw = env.trim();
+  if (raw === '*') return true;
+  const allow = raw
+    ? raw
+        .split(',')
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean)
+    : FIRST_PARTY_PUBLISHERS;
+  const owner = String(rec.publisher || String(rec.repo ?? '').split('/')[0]).toLowerCase();
+  return allow.includes(owner);
+};
 
 /** Container settings that would give an app control of the host. Same rule as the index checker. */
 export const composeRisks = (doc: unknown): string[] => {
@@ -106,7 +126,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const { architecture } = this.configuration.getConfig();
     if (architecture) q.set('arch', architecture);
     const res = await this.get<IndexSearch>(`/v1/search?${q}`);
-    const data = res.apps.filter((a) => ID.test(a.id)).map((a) => this.toSimple(a));
+    const data = res.apps.filter((a) => ID.test(a.id) && allowedPublisher(a)).map((a) => this.toSimple(a));
     return { data, total: data.length + (res.next_offset != null ? 1 : 0), nextCursor: res.next_offset != null ? String(res.next_offset) : null };
   }
 
@@ -130,7 +150,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) return hit.rec;
     try {
       const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
-      const rec = res.apps.find((a) => a.id === appName) ?? null;
+      const rec = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
       this.lastCheck.set(appName, { at: Date.now(), rec });
       return rec;
     } catch (e) {
@@ -162,7 +182,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (await this.filesystem.isFile(selected)) {
       const pin = JSON.parse((await this.filesystem.readTextFile(selected)) ?? '{}');
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
-      if (!SHA.test(pin.commit ?? '') || pin.commit !== await this.localCommit(appName) || pin.repo !== source.repo)
+      if (!SHA.test(pin.commit ?? '') || pin.commit !== (await this.localCommit(appName)) || pin.repo !== source.repo)
         throw new Error('invalid owner-local selection pin');
       return;
     }
@@ -179,7 +199,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!wizardText) throw new Error(`${rec.repo}: no wizard.md`);
     const d = frontMatter(wizardText);
     if (d.id !== appName) throw new Error(`${rec.repo}: wizard.md id ${String(d.id)} != ${appName}`);
-    const rt = (d.runtime ?? {}) as { config?: string; compose?: string };
+    const rt = (d.runtime ?? {}) as { config?: string; compose?: string; package?: unknown };
     if (!rt.config || !rt.compose) throw new Error(`${rec.repo}: wizard.md runtime.config/compose missing`);
     const cfgText = await this.filesystem.readTextFile(path.join(src, rt.config));
     const composeText = await this.filesystem.readTextFile(path.join(src, rt.compose));
@@ -187,6 +207,18 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const compose = yaml.parse(composeText);
     const risks = composeRisks(compose);
     if (risks.length) throw new Error(`${rec.repo} asks for host-level access: ${risks.join('; ')}`);
+
+    await resolveImages(compose);
+    // Packaging (source | build | image): copy the pinned code where the app's containers can mount or build it.
+    const { appDataDir } = this.configuration.get('directories');
+    await preparePackage({
+      pkg: rt.package,
+      compose,
+      src,
+      target: sourceDir(appDataDir, this.storeConfig.slug, appName, rec.install.commit),
+      appName,
+      commit: rec.install.commit,
+    });
 
     const dst = path.join(this.getAppStoreFolder(), appName);
     let oldTipi = 0;
@@ -227,6 +259,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
       `${desc.startsWith('# ') ? '' : `# ${String(d.name ?? appName)}\n\n`}${desc}\n`,
     );
     await this.filesystem.writeTextFile(path.join(tmp, 'wizard.md'), wizardText);
+    await prepareChatsModule(src, tmp, d, rec.install.commit);
     if (typeof d.skill === 'string') {
       const skill = await this.filesystem.readTextFile(path.join(src, d.skill));
       if (skill) await this.filesystem.writeTextFile(path.join(tmp, 'SKILL.md'), skill);
@@ -258,22 +291,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
   }
 
   private async fetchCommit(url: string, commit: string, dest: string) {
-    if (!/^https:\/\//.test(url)) throw new Error(`refusing non-https source ${url}`);
-    await this.filesystem.removeDirectory(dest);
-    await this.filesystem.createDirectory(dest);
-    for (const args of [
-      ['init', '-q'],
-      ['fetch', '-q', '--depth', '1', url, commit],
-      ['checkout', '-q', 'FETCH_HEAD'],
-    ]) {
-      const { stderr } = await execFileAsync('git', ['-c', 'advice.detachedHead=false', '-c', `safe.directory=${dest}`, ...args], {
-        cwd: dest,
-        timeout: 180000,
-      });
-      if (stderr && /fatal|error/i.test(stderr)) throw new Error(`git ${args[0]} ${url}@${commit.slice(0, 12)}: ${stderr.slice(0, 300)}`);
-    }
-    const head = (await execFileAsync('git', ['-c', `safe.directory=${dest}`, 'rev-parse', 'HEAD'], { cwd: dest })).stdout.trim();
-    if (head !== commit) throw new Error(`fetched ${head} instead of ${commit}`);
+    await fetchPinnedCommit(url, commit, dest);
   }
 
   // ---- Runtipi store interface: same as a git store, but each app is fetched on demand ----

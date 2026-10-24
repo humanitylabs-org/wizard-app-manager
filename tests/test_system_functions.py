@@ -35,6 +35,11 @@ from wam import builder, system_functions
     ('window.onpopstate = () => { history.forward() };', 'root-history-bounce'),
     ('window.onpopstate = () => history.forward();', 'root-history-bounce'),
     ('''window.onpopstate = () => history.pushState(null, '', location.href);''', 'root-history-bounce'),
+    ('<textarea placeholder="Ask about this passage…"></textarea>', 'app-chat'),
+    ('<textarea aria-label="Message the assistant"></textarea>', 'app-chat'),
+    ('<section class="ask-ai-messages"></section>', 'app-chat'),
+    ('<div id="chat-composer"></div>', 'app-chat'),
+    ('''composer = document.createElement('textarea'); composer.placeholder = 'Ask about this passage…';''', 'app-chat'),
 ])
 def test_raw_implementations_rejected(tmp_path, snippet, rule):
     (tmp_path / 'screen.html').write_text(snippet)
@@ -52,6 +57,8 @@ def test_domain_callbacks_real_routes_and_reading_controls_allowed(tmp_path):
       addEventListener('popstate',()=>history.pushState(state, '', location.pathname + '?record=2'));
       window.onpopstate = () => history.pushState({record:2}, '', location.href);
       document.querySelector('record-card').addEventListener('activate', render);
+      field.placeholder = 'Search chapters'; title.placeholder = 'Name this habit';
+      const note='<textarea placeholder="Write a note"></textarea><input placeholder="Add a habit"><div class="habit-input"></div>';
       navigator.permissions.query({name:'geolocation'});
       function openRecord(id) { history.pushState({record:id}, '', '/record/'+id);render() }
       function closeRecord() { history.back() }
@@ -184,3 +191,24 @@ def test_installed_portable_skill_retains_mandatory_qa_and_reference(tmp_path):
     assert builder.check_app(app)['ok']
     (app / 'web/platform.js').write_text('navigator.serviceWorker.register("custom.js")')
     assert not builder.check_app(app)['ok']
+
+
+def test_installed_bundle_exposes_wizard_guide_beside_builder(tmp_path):
+    """The onboarding guide ships with wizard-builder: Hermes discovers both from the one registered dir."""
+    os_home, hermes_home = tmp_path / 'os', tmp_path / 'hermes'
+    receipt = builder.install_skill(os_home, hermes_home)
+    registered = Path(receipt['registered'])
+    guide = registered / 'wizard-guide' / 'SKILL.md'
+    assert guide.is_file()
+    assert guide.read_bytes() == (builder.REPO / 'system-skills/wizard-guide/SKILL.md').read_bytes()
+    text = guide.read_text()
+    assert text.startswith('---\nname: wizard-guide\n')
+    for tool in ('wizard_tips', 'wizard_remind', 'Skins/My skin/skin.css'):
+        assert tool in text
+    # An owner's own folder of the same name is preserved on reinstall.
+    link = registered / 'wizard-guide'
+    link.unlink()
+    link.mkdir()
+    (link / 'SKILL.md').write_text('mine')
+    builder.install_skill(os_home, hermes_home)
+    assert (link / 'SKILL.md').read_text() == 'mine'

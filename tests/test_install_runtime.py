@@ -49,3 +49,27 @@ def test_incompatible_release_rejected_before_any_fetch(tmp_path, monkeypatch):
     monkeypatch.setattr(test_catalog,'resolve',lambda app:entry)
     with pytest.raises(ValueError,match='not this Wizard'):
         store_selection.resolve(SimpleNamespace(),'sample',{'source':'owner-private','repo':'org/sample','commit':PIN,'operation':'install'})
+
+
+def test_required_origin_list_with_empty_default_gets_owner_routes(tmp_path, monkeypatch):
+    """Wisdom's recipe declares WISDOM_ORIGINS as required text with default ''. Runtipi treats '' as satisfied, so a
+    fresh-box Store Get left it empty and Wisdom answered 421 'Unknown host' inside the shell. An empty default on a
+    required origin list is no value: fill it from the owner's Serve mounts, keep explicit and non-empty values."""
+    c = SimpleNamespace(home=tmp_path, secrets=tmp_path/'secrets')
+    (tmp_path/'links.json').write_text(json.dumps({'host':'box.ts.net'}))
+    monkeypatch.setattr(cli.alongside, 'load', lambda home: None)   # fresh box
+    monkeypatch.setattr(store_install, 'served_origins', lambda host: {'https://box.ts.net:8796'})
+    monkeypatch.setattr(links, 'serve_status', lambda: {'Web': {}})
+    field = {'type':'text','label':'Trusted Wizard browser origin','env_variable':'WISDOM_ORIGINS','required':True,'default':''}
+    info = {'form_fields':[field]}
+    form, missing = cli.build_form(c,'wisdom',info,{})
+    assert not missing
+    assert form['WISDOM_ORIGINS'] == 'https://box.ts.net:8796'
+    assert cli.build_form(c,'wisdom',info,{'WISDOM_ORIGINS':'https://explicit.test'})[0]['WISDOM_ORIGINS'] == 'https://explicit.test'
+    # A real (non-empty) default stays the recipe's choice; optional and non-origin fields are untouched.
+    assert 'WISDOM_ORIGINS' not in cli.build_form(c,'wisdom',{'form_fields':[dict(field, default='https://x.test')]},{})[0]
+    assert 'WISDOM_ORIGINS' not in cli.build_form(c,'wisdom',{'form_fields':[dict(field, required=False)]},{})[0]
+    assert 'WISDOM_TIMEZONE' not in cli.build_form(c,'wisdom',{'form_fields':[dict(field, env_variable='WISDOM_TIMEZONE')]},{})[0]
+    # No owner mount known: the empty default still applies (Runtipi accepts it), nothing invented.
+    monkeypatch.setattr(store_install, 'served_origins', lambda host: set())
+    assert 'WISDOM_ORIGINS' not in cli.build_form(c,'wisdom',info,{})[0]

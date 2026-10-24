@@ -104,10 +104,12 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
         try:
             res = install_fn(c, app_id)
             ok = res.get("status") in ("running", "stopped", "already installed")
+            if ok:
+                # Publish the same-origin route and rewrite/share the registry BEFORE reporting `installed`: the
+                # Store then asks the shell to re-read its apps, and must find the app's openable URL already there.
+                _links(c)
             job.update(state="installed" if ok else "failed", status=res.get("status"),
                        **({} if ok else {"error": f"finished as {res.get('status')}"}))
-            if ok:
-                _links(c)
         except SystemExit as e:
             job.update(state="failed", error=str(e)[:400])
         except Exception as e:  # noqa: BLE001 - report, never crash the API server

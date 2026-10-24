@@ -63,6 +63,48 @@ def test_the_gate_names_what_is_missing(change, why):
     assert any(why in p for p in updates.promotion_problems({**GOOD, **change}, "1.2.3"))
 
 
+QUICK = {**GOOD, "promoted_at": "2026-10-21T15:00:00Z"}
+FIX = {"classification": "fix", "reason": "Store 404s on fresh boxes"}
+
+
+def test_a_fast_tracked_feature_passes_without_the_soak():
+    """wizard-os DECISIONS #93: during launch a tested feature release reaches stable the same day too."""
+    assert updates.promotion_problems({**QUICK, "fast_track": {**FIX, "classification": "feature"}}, "1.2.3") == []
+
+
+def test_a_fast_tracked_fix_passes_without_the_soak():
+    """wizard-os DECISIONS #82: verified fixes reach stable the same day; the upgrade test is still required."""
+    assert updates.promotion_problems({**QUICK, "fast_track": FIX}, "1.2.3") == []
+    assert any("soaked 4.0h" in p for p in updates.promotion_problems(QUICK, "1.2.3"))
+
+
+@pytest.mark.parametrize("change, why", [
+    ({"fast_track": {**FIX, "classification": "other"}}, "fast_track is only for fix/feature releases"),
+    ({"fast_track": {**FIX, "reason": ""}}, "needs a reason"),
+    ({"fast_track": "fix"}, "must be an object"),
+    ({"fast_track": FIX, "upgrade_test": None}, "no passed upgrade test"),
+    ({"fast_track": FIX, "upgrade_test": {**GOOD["upgrade_test"], "evidence": ""}}, "evidence"),
+    ({"fast_track": FIX, "promoted_at": "2026-10-20T00:00:00Z"}, "before latest_since"),
+])
+def test_fast_track_is_only_for_verified_fixes(change, why):
+    assert any(why in p for p in updates.promotion_problems({**QUICK, **change}, "1.2.3"))
+
+
+def test_automatic_installs_a_fast_tracked_stable_fix(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.25")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    d = tmp_path / "rel"
+    (d / "promotions").mkdir(parents=True)
+    (d / "stable").write_text("0.3.32\n")
+    (d / "promotions" / "0.3.32.json").write_text(json.dumps({**QUICK, "version": "0.3.32", "fast_track": FIX,
+        "upgrade_test": {**GOOD["upgrade_test"], "from": "0.3.25", "to": "0.3.32"}}))
+    calls = []
+    res = updates.apply_if_auto(h, d.as_uri(), _runner(calls), is_busy=lambda: False)
+    assert res["started"] is True
+    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.32 bash -s start"]]
+
+
 def test_only_releases_before_the_split_can_be_grandfathered():
     assert updates.promotion_problems({"version": "0.3.25", "grandfathered": "split"}, "0.3.25") == []
     assert updates.promotion_problems({"version": "0.3.26", "grandfathered": "split"}, "0.3.26")

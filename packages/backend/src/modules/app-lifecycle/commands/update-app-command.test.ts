@@ -123,6 +123,25 @@ test('pulls the target images before stopping or removing the existing deploymen
   expect(ensureAppDir).toHaveBeenCalledWith(appUrn, {}, { pruneContainers: false, persistSubnet: false });
 });
 
+test.each([true, false])('validates target storage before any stop, with backup=%s', async (performBackup) => {
+  const { command, dockerService, backupManager } = createCommand({ performBackup, wasRunningBeforeUpdate: true });
+  let running = true;
+  dockerService.composeApp.mockImplementation(async (_urn, command) => {
+    if (/^(stop|down)/.test(command)) running = false;
+    return { success: true, stdout: '', stderr: '' };
+  });
+  dockerService.prepareApp.mockRejectedValue(new Error('Legacy Claude volume must be a bind alias to the provider folder'));
+
+  expect(await command.execute(appUrn, {})).toEqual({
+    success: false,
+    message: 'Legacy Claude volume must be a bind alias to the provider folder',
+    rollbackSucceeded: true,
+  });
+  expect(running).toBe(true);
+  expect(dockerService.composeApp).not.toHaveBeenCalled();
+  expect(backupManager.backupApp).not.toHaveBeenCalled();
+});
+
 test('does not allocate a subnet when a preflight pull fails', async () => {
   const { command, dockerService, appsRepository, appState } = createCommand({ stubEnsureAppDir: false });
   dockerService.composeApp.mockRejectedValueOnce(new Error('registry unavailable'));

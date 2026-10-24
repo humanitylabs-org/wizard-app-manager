@@ -132,6 +132,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
       await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false });
       await appHelpers.generateEnvFile(appUrn, form);
+      // Refuse invalid target storage/shares/legacy bridges while the old
+      // deployment is still running, before backup stop or compose down.
+      await dockerService.prepareApp(appUrn);
       await dockerService.composeApp(appUrn, 'pull');
 
       // Restore the old compose before taking a backup

@@ -1,6 +1,13 @@
 {
   "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it). `provides` = known capabilities copied from that app's wizard.md for offline manifest checking, not extra install slots.",
   "slots": {
+    "chats": {
+      "name": "Chats",
+      "app": null,
+      "required": false,
+      "multi": true,
+      "note": "Built-in wizard-chats plus owner-installed in-document Chats views; shared Agent Service conversations."
+    },
     "shell": {
       "name": "Shell (Wizard UX)",
       "app": "wizard-ux",
@@ -50,14 +57,6 @@
       "provides": ["connection-router"],
       "note": "Connect installed apps to tested models and services with explicit owner-approved replacements."
     },
-    "accounts": {
-      "name": "Connected accounts",
-      "app": "wizard-connectors",
-      "repo": "humanitylabs-org/wizard-connectors",
-      "required": false,
-      "provides": ["connector-status", "simulated-private-summary"],
-      "note": "Account connector broker; Google sign-in stays off on new boxes until a verified Google OAuth app exists."
-    },
     "agent-history": {
       "name": "Agent History",
       "app": null,
@@ -95,6 +94,30 @@
       "name": "Secrets",
       "app": "secret-drop",
       "required": false
+    },
+    "cloudflare-connection": {
+      "name": "Cloudflare",
+      "app": "wizard-cloudflare",
+      "repo": "oscarhenrycollins/wizard-cloudflare",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Publish websites, back up files and manage domains. Sign in after installing.",
+      "gateway": {"path": "/wizard-cloudflare/", "strip_prefix": true}
+    },
+    "connected-accounts": {
+      "name": "Connected accounts",
+      "app": "wizard-connectors",
+      "repo": "humanitylabs-org/wizard-connectors",
+      "required": false,
+      "install": "on-demand",
+      "recommended": true,
+      "prefetch": true,
+      "summary": "Connect your Google account. Available when a reviewed release is published.",
+      "provides": ["connector-status", "simulated-private-summary"],
+      "note": "Account connector broker; Google sign-in stays off on new boxes until a verified Google OAuth app exists.",
+      "gateway": {"path": "/wizard-connectors/", "strip_prefix": true}
     },
     "notifications": {
       "name": "Notifications",

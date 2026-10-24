@@ -400,6 +400,26 @@ if mode == "end":
     st["tailscale_login_url"] = st.get("tailscale_login_url") if rc else None
     st["state"] = "done" if rc == 0 else "failed"
     st["exit_code"] = rc
+    st["failure_reason"] = None
+    if rc:
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, os.SEEK_END); f.seek(max(0, f.tell() - 4096))
+                lines = [ansi.sub("", s).strip() for s in f.read().decode("utf-8", "replace").splitlines() if s.strip()]
+            # The read-back summary ("-> install-failed; recorded in ...") and report noise are not the
+            # cause; prefer the last real error line, and never echo credentials into the status file.
+            noise = re.compile(r"^(->|PASS |FAIL |DRIFT |fix:|Wizard OS \S+: what runs vs the release|\[wizard-os\] )")
+            errs = [s for s in lines if not noise.match(s)]
+            hits = [s for s in errs if re.search(r"(?i)\b(error|fatal|failed|refus|denied|cannot|not found|abort)", s)]
+            pick = (hits or errs or lines or [None])[-1]
+            if pick:
+                pick = re.sub(r"(?i)(\w+://)[^/\s:@]+(:[^/\s@]*)?@", r"\1***@", pick)
+                pick = re.sub(r"(?i)\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})", "***", pick)
+                pick = re.sub(r"(?i)\b(token|password|passwd|secret|api[_-]?key|authorization)(\s*[=:]\s*)(bearer\s+|basic\s+)?\S+", r"\1\2\3***", pick)
+                pick = re.sub(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 ***", pick)
+                pick = re.sub(r"(?i)([?&](?:token|key|sig|signature|access_token|auth)=)[^&\s]+", r"\1***", pick)
+            st["failure_reason"] = pick[-1000:] if pick else None
+        except OSError: pass
     st["approval_url"] = None
     if rc == 3 and st.get("admin_command") and st.get("admin_message"):
         st["state"], st["message"] = "needs_admin", st["admin_message"]
@@ -1126,18 +1146,94 @@ else
   unpinned "WAM_REF=$WAM_REF (developer override)"
 fi
 
-[ -z "$PINS" ] || rm -f "$RECORD"   # this pinned run writes its own record; an older one must not survive it
+# release.json is the last completed install, not the in-flight target. Keep it across a
+# power cut; release-pins.json already records the validated target for an exact retry.
+# A write-ahead receipt authorizes repair ONLY for a managed, initially clean pinned
+# checkout whose own installer was killed. An ordinary dirty developer tree never
+# gets this receipt. Keep it until checkout data is durable, including on failure.
+CHECKOUT_RECEIPT="$WOS_DIR/managed-checkout.json"
+managed_checkout() {
+  python3 - "$CHECKOUT_RECEIPT" "$DIR" "$REF" "$REPO" "$RECORD" "$$" "$1" <<'PY'
+import json, os, re, subprocess, sys
+from pathlib import Path
+path, directory, target, repo, record, pid, action = sys.argv[1:]
+path, directory = Path(path), Path(directory).resolve()
+def load(p):
+    try:
+        value = json.loads(Path(p).read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError): return {}
+def boot():
+    try: return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError: return None
+def git(*args):
+    return subprocess.check_output(["git", "-C", str(directory), *args], text=True).strip()
+def sync_parent():
+    fd = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+if action == "finish":
+    if load(path).get("pid") == int(pid):
+        path.unlink()
+        sync_parent()
+elif action == "recover":
+    st = load(path)
+    if load(record).get("status") == "unpinned": sys.exit(1)
+    if (st.get("directory") != str(directory) or st.get("target") != target or st.get("repo") != repo
+        or not re.fullmatch(r"[0-9a-f]{40}", str(st.get("before", "")))): sys.exit(1)
+    interrupted = bool(st.get("boot_id") and boot() and st["boot_id"] != boot())
+    if not interrupted:
+        old_pid = st.get("pid")
+        if not isinstance(old_pid, int) or isinstance(old_pid, bool) or old_pid <= 0: sys.exit(1)
+        try: os.kill(old_pid, 0)
+        except ProcessLookupError: interrupted = True
+        except (PermissionError, OSError): pass
+    if not interrupted: sys.exit(1)
+    # Reset only tracked files in this exact checkout. Never git clean: runtime /
+    # owner-created untracked and ignored files are not installer-owned garbage.
+    subprocess.run(["git", "-C", str(directory), "reset", "--hard", st["before"]], check=True)
+    print("Recovered tracked App Manager files from an interrupted pinned checkout.")
+else:
+    st = {"directory": str(directory), "target": target, "repo": repo, "before": git("rev-parse", "HEAD"),
+          "pid": int(pid), "boot_id": boot()}
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        json.dump(st, f); f.write("\n"); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+    sync_parent()
+PY
+}
 if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, detached, and prove it
   if [ -d "$DIR/.git" ]; then
-    if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
+    dirty="$(git -C "$DIR" status --porcelain --untracked-files=no)" || {
+      echo "Cannot verify App Manager checkout; refusing to overwrite it." >&2; exit 1;
+    }
+    # A cut can leave the target's NEW files untracked while tracked files look clean (a target that
+    # only adds files), so try the receipt-proven recovery whether or not tracked files are dirty.
+    if [ -n "$PINS" ] && [ -z "${WAM_REF:-}" ] && [ -f "$CHECKOUT_RECEIPT" ] && managed_checkout recover; then
+      RECOVERED=1   # own interrupted pinned run, not a developer override
+    elif [ -n "$dirty" ]; then
       echo "$DIR has local changes; a pinned install would run them. Commit/stash them, or use WAM_REF for a dev checkout." >&2
       exit 1
     fi
   else
     git clone -q "$REPO" "$DIR"
   fi
-  git -C "$DIR" fetch -q origin "$REF"
-  git -C "$DIR" checkout -q --detach "$REF"
+  if [ -n "$PINS" ] && [ -z "${WAM_REF:-}" ]; then
+    managed_checkout begin
+    # Flush checkout data before retiring the write-ahead receipt. A hard kill
+    # bypasses EXIT and leaves durable proof for the next pinned retry.
+    trap 'sync -f "$DIR" && managed_checkout finish' EXIT
+  fi
+  git -C "$DIR" -c core.fsync=all fetch -q origin "$REF"
+  if [ "${RECOVERED:-0}" = 1 ]; then
+    # The interrupted checkout's half-written new files are untracked now and would abort a plain
+    # checkout forever. -f replaces only paths in the target tree; other untracked/ignored files stay.
+    git -C "$DIR" -c core.fsync=all checkout -q -f --detach "$REF"
+  else
+    git -C "$DIR" -c core.fsync=all checkout -q --detach "$REF"
+  fi
   [ "$(git -C "$DIR" rev-parse HEAD)" = "$REF" ] || { echo "App Manager checkout is not $REF" >&2; exit 1; }
 elif [ -d "$DIR/.git" ]; then
   # (an `a && b` list doesn't trip set -e: without this a bad WAM_REF ran whatever was checked out and exited 0)

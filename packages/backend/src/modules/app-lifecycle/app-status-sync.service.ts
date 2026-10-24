@@ -9,6 +9,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { type ContainerFacts, statusFromTally, tallyContainers } from './app-status-tally';
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -56,22 +57,25 @@ export class AppStatusSyncService {
         filters: { label: ['runtipi.managed=true'] },
       });
 
-      const dockerStatusMap = new Map<string, { running: number; total: number }>();
-
+      // Exit codes and restart policies are not in the list payload: inspect only
+      // the cleanly exited containers, so finished one-shot jobs can be told apart.
+      const facts: ContainerFacts[] = [];
       for (const container of containers) {
         const appUrn = container.Labels?.['runtipi.appurn'];
         if (!appUrn) continue;
-
-        if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, total: 0 });
+        const fact: ContainerFacts = { appUrn, state: container.State };
+        if (container.State === 'exited' && /^Exited \(0\)/.test(container.Status ?? '')) {
+          try {
+            const info = await this.docker.getContainer(container.Id).inspect();
+            fact.exitCode = info.State?.ExitCode ?? null;
+            fact.restartPolicy = info.HostConfig?.RestartPolicy?.Name ?? null;
+          } catch {
+            // Gone or unreadable: count it as an ordinary stopped container.
+          }
         }
-
-        const status = dockerStatusMap.get(appUrn);
-        if (status) {
-          status.total++;
-          if (container.State === 'running') status.running++;
-        }
+        facts.push(fact);
       }
+      const dockerStatusMap = tallyContainers(facts);
 
       let syncedCount = 0;
       let skippedCount = 0;
@@ -92,17 +96,9 @@ export class AppStatusSyncService {
         }
 
         const dockerStatus = dockerStatusMap.get(appUrn);
-        let newStatus: AppStatus;
-
-        if (!dockerStatus) {
-          newStatus = 'stopped';
-        } else if (dockerStatus.running === dockerStatus.total) {
-          newStatus = 'running';
-        } else {
-          newStatus = 'stopped';
-          if (dockerStatus.running > 0) {
-            this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
-          }
+        const newStatus = statusFromTally(dockerStatus);
+        if (newStatus === 'stopped' && dockerStatus && dockerStatus.running > 0) {
+          this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
         }
 
         if (app.status !== newStatus) {

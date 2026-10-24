@@ -70,15 +70,41 @@ def _git_env(tok: str) -> dict:
 
 
 def fetch(repo: str, commit: str, dest: Path, tok: str) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+    from . import mirrors
+    ref = mirrors.source_ref(repo, commit)
     env = _git_env(tok)
-    for args in (["init", "-q"], ["fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit], ["checkout", "-q", "FETCH_HEAD"]):
-        r = subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest, env=env, capture_output=True, text=True, timeout=300)
-        if r.returncode:
-            raise PrivateError(f"git {args[0]} {repo}: {r.stderr.strip()[:200]}")
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-c", "advice.detachedHead=false", *args], cwd=dest,
+                                  env=env, capture_output=True, text=True, timeout=300, check=True)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise PrivateError(f"git {args[0]} {repo} failed") from e
+
+    def init():
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+
+    init()
+    try:
+        git("fetch", "-q", "--depth", "1", f"https://github.com/{repo}", commit)
+    except PrivateError:
+        # Start clean: never let an old FETCH_HEAD or partial origin tree win.
+        init()
+        bundle = dest / ".git" / "curator.bundle"
+        try:
+            mirrors.download_bundle(repo, commit, bundle)
+            git("fetch", "-q", str(bundle), ref)
+        except (OSError, ValueError) as e:
+            raise PrivateError(f"curator source unavailable for {repo}@{commit}") from e
+        finally:
+            bundle.unlink(missing_ok=True)
+    git("checkout", "-q", "FETCH_HEAD")
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, env=env,
                           capture_output=True, text=True, check=True).stdout.strip()
     if head != commit:
+        shutil.rmtree(dest, ignore_errors=True)
         raise PrivateError(f"{repo}: fetched {head}, expected {commit}")
 
 
@@ -196,10 +222,21 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                         matched += 1
                 if not matched:
                     raise PrivateError('catalog image does not match pinned Compose')
+        from .mirrors import resolve_images
+        resolve_images(compose)
+        # Packaging (source | build | image): copy the pinned code where the containers mount or build it.
+        from . import packaging
+        try:
+            packaging.prepare_package(rt.get("package"), compose, src,
+                                      packaging.source_dir(packaging.app_data_root(runtipi_root), store, app_id, commit),
+                                      app_id, commit)
+        except packaging.PackagingError as e:
+            raise PrivateError(f"{repo}: {e}") from e
         # Runtipi pulls public release images through its normal install path. A fresh
         # sudo user need not have Docker socket access or a registry login on the CLI.
         if not source_pin:
-            for img in images(compose):
+            for img in images({"services": {n: s for n, s in (compose.get("services") or {}).items()
+                                            if isinstance(s, dict) and not s.get("build")}}):
                 pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
@@ -211,7 +248,7 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
                 old_tipi = 0
         have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
         rec = {"id": app_id, "repo": repo, "uses": d.get("uses") or [], "private": True, "install": {"commit": commit}}
-        if have == commit and not release and not source_pin:
+        if have == commit and not release and not source_pin and 'chats' not in (d.get('provides') or []):
             return rec
 
         cfg = json.loads(cfg_p.read_text())
@@ -242,6 +279,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         body = wizardmd.body(wtext)
         (tmp / "metadata" / "description.md").write_text(("" if body.startswith("# ") else f"# {d.get('name') or app_id}\n\n") + body + "\n")
         (tmp / "wizard.md").write_text(wtext)
+        from . import chats_views
+        chats_views.prepare(src, tmp, d, commit)
         if isinstance(d.get("skill"), str) and (src / d["skill"]).is_file():
             shutil.copy2(src / d["skill"], tmp / "SKILL.md")
         for cand in (cfg_p.parent / "metadata" / "logo.jpg", src / str(d.get("icon") or "-"), cfg_p.parent / "logo.jpg"):

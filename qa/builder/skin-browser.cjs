@@ -1,6 +1,6 @@
 // Generated app inside the real shell + five accepted skins. Asserts it sits on the window glass like Chats,
 // follows live skin changes without losing state, and never steals Back. Writes only to this app's API.
-const fs=require('fs'),path=require('path'),os=require('os');let pw;try{pw=require('playwright')}catch{pw=require('playwright-core')}
+const fs=require('fs'),path=require('path'),os=require('os');const pw=require('../qa-playwright.cjs');
 const url=process.argv[2],out=process.env.QA_OUT||path.join(os.tmpdir(),'builder-skin-qa');
 const SKINS=['nebula','grove','tide','ember','signal'];
 const today='new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10)';

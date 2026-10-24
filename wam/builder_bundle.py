@@ -22,6 +22,7 @@ SOURCE = Path(__file__).resolve().parent.parent
 SCHEMA = 1
 MARKER = 'wizard-builder-bundle-v1'
 RUNTIME = '/opt/wizard-builder'
+COMPANION_SKILLS = ('wizard-guide',)
 
 
 def _files(root):
@@ -180,6 +181,15 @@ def install(os_home, source=SOURCE):
         skill.rename(saved)
     if not skill.is_symlink():
         _switch(skill, expected)
+    # Companion system skills (the onboarding guide) beside wizard-builder. The container mounts the whole
+    # release `system-skills`; the host dir holds one managed link per skill. An owner's own folder of the
+    # same name is preserved, never replaced.
+    for extra in COMPANION_SKILLS:
+        link, target = skill.parent / extra, base / 'current' / 'system-skills' / extra
+        if not target.is_dir():
+            continue
+        if not link.exists() and not link.is_symlink():
+            _switch(link, target)
     bindir = home / 'bin'
     bindir.mkdir(exist_ok=True)
     cmd = bindir / 'wam'

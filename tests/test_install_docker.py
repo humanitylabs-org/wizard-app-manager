@@ -36,6 +36,15 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
 if [ "$1" = image ]; then exit 1; fi
+# Model Compose's interrupted recreate: both the canonical name and a temporary
+# replacement exist. Only service-scoped rm clears them; unrelated apps survive.
+case "$*" in
+  *"rm --stop --force wizard-release-index")
+    [ "${INDEX_REMOVE_RC:-0}" = 0 ] || exit "$INDEX_REMOVE_RC"
+    rm -f "$HOME/stale-release-index";;
+  *"up -d --force-recreate --wait wizard-release-index")
+    if [ -f "$HOME/stale-release-index" ]; then echo 'Conflict: runtipi-wizard-release-index-1' >&2; exit 1; fi;;
+esac
 case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
 ''')
     for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't
@@ -306,3 +315,14 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
     assert outcome["status"] == "ok"
+
+
+def test_fresh_install_sets_up_the_store_routes_after_links(tmp_path):
+    """Fresh boxes: the Store's store-data / store-install routes are set up after `wam links` (alongside boxes do it
+    in their own block). Before: only alongside ran `wam store-data`, so the fresh Store had no installed status."""
+    p, home, root, calls, outcome = sandbox(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = [line for line in calls.read_text().splitlines() if line.startswith("wam ")]
+    names = [line.split()[3] for line in log]
+    assert "store-data" in names, names
+    assert names.index("links") < names.index("store-data") < names.index("troubleshooter")

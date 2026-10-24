@@ -111,3 +111,19 @@ def test_store_get_unexpected_error_answers_json(monkeypatch, tmp_path):
     class C: index = "x"; home = tmp_path
     code, body = _serve_store(monkeypatch, C())
     assert code == 500 and "Update Wizard" in body["error"]
+
+
+def test_installed_is_reported_only_after_links_published(monkeypatch):
+    """Fresh boxes: the Store re-reads the shell's apps as soon as the job says `installed`, so the same-origin
+    route and registry rewrite (`_links`) must already be done by then, or the Store shows '✓ Installed', not Open."""
+    si._jobs.clear()
+    monkeypatch.setattr(si, "allowed", lambda c, a: True)
+    seen = []
+    monkeypatch.setattr(si, "_links", lambda c: seen.append(dict(si._jobs["mr"])))
+    code, job = si.start(None, "mr", lambda c, a: {"status": "running"}, set)
+    for _ in range(100):
+        if job["state"] != "installing":
+            break
+        threading.Event().wait(0.02)
+    assert job["state"] == "installed"
+    assert seen and seen[0]["state"] == "installing"

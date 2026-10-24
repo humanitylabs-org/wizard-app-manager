@@ -255,7 +255,8 @@ def test_dead_runner_pid_is_interrupted_and_the_stale_lock_is_released(tmp_path)
     assert updates.installing(h) is False
     st = json.loads((h / "install-status.json").read_text())
     assert st["state"] == "interrupted" and st["interrupted_step"] == "starting"
-    assert st["interrupted_reason"] == "runner exited" and "retried" in st["message"]
+    assert st["interrupted_reason"] == "runner exited" and "Update now" in st["message"]
+    assert "will be retried" not in st["message"]  # an unpinned / Ask-me box is never retried by itself
     assert not (h / "install.lock").exists()
 
 

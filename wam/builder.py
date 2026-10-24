@@ -107,11 +107,27 @@ def confinement_rows(root, doc):
     return rows
 
 
+def kit_rows(root):
+    """The shell swaps a hosted app's vendored wizard-ui.css for its live kit, so app edits to the kit vanish."""
+    pinned = REPO / 'templates' / 'hello-wizard' / 'web' / 'wizard-ui.css'
+    rows = []
+    for p in sorted(Path(root).rglob('wizard-ui.css')):
+        if any(part in {'.git', 'node_modules'} for part in p.parts) or not pinned.is_file():
+            continue
+        if p.read_bytes() != pinned.read_bytes():
+            rows.append({'rule': 'appearance: kit is shared, not forked', 'ok': False, 'severity': 'warning',
+                         'detail': f'{p.relative_to(root)} differs from the current Wizard UI kit. Inside Wizard the shell '
+                                   'replaces it with /wizard-os-home/kit/wizard-ui.css, so put app styles in styles.css and '
+                                   'refresh the copy from templates/hello-wizard/web/.'})
+    return rows
+
+
 def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
     rows = [{'rule': n, 'ok': ok, 'severity': 'error', 'detail': d} for n, ok, d in approved]
     rows += system_functions.check(root)
+    rows += kit_rows(root)
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)

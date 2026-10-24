@@ -59,6 +59,8 @@ def table(reg: dict, defaults: dict[str, dict] | None = None) -> list[dict]:
                          "external": f"external: {e.get('name', e.get('id'))}", "note": d.get("note", "")})
             continue
         apps = have.get(slot, [])
+        if slot == 'chats':
+            apps = ['wizard-chats', *apps]
         if not apps and d.get("app") in installed:   # a default that fills several spots before it's split
             apps = [d["app"]]
         rows.append({
@@ -76,6 +78,8 @@ def to_install(reg: dict, defaults: dict[str, dict] | None = None) -> list[str]:
     defaults = load_defaults() if defaults is None else defaults
     out: list[str] = []
     for row in table(reg, defaults):
+        if defaults[row["slot"]].get("install") == "on-demand":
+            continue
         if row["state"] == "external":
             continue
         # Multi-provider slots are additive: Claude must not suppress the release's ChatGPT default.

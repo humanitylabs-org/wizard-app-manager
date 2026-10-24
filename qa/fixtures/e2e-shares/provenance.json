@@ -1,0 +1,30 @@
+[
+  {
+    "repo": "claude-connection",
+    "sha": "c89b18e3ec6f06263a93333402b8b75fa78e48c4",
+    "source": "wizard.md",
+    "file": "qa/fixtures/e2e-shares/claude-connection/wizard.md",
+    "sha256": "76676df6a73ef7a202ea64084e3e159cfd94220f19e9a3d650683e434002f16b"
+  },
+  {
+    "repo": "claude-connection",
+    "sha": "c89b18e3ec6f06263a93333402b8b75fa78e48c4",
+    "source": "runtipi/docker-compose.yml",
+    "file": "qa/fixtures/e2e-shares/claude-connection/runtipi/docker-compose.yml",
+    "sha256": "cd7e254df57df2e40ceabc0391ab258ab4a516a66abc588e4ee4d706d0639682"
+  },
+  {
+    "repo": "wizard-app-store",
+    "sha": "be198edfc4f36fb64061eb508d931dbebcb968e6",
+    "source": "apps/hermes-agent/wizard.md",
+    "file": "qa/fixtures/e2e-shares/wizard-app-store/apps/hermes-agent/wizard.md",
+    "sha256": "42ce7da5183a1df113dbce27cfa041a1465d655b67bb00a4e1d0580a8f5f0a5d"
+  },
+  {
+    "repo": "wizard-app-store",
+    "sha": "be198edfc4f36fb64061eb508d931dbebcb968e6",
+    "source": "apps/hermes-agent/docker-compose.yml",
+    "file": "qa/fixtures/e2e-shares/wizard-app-store/apps/hermes-agent/docker-compose.yml",
+    "sha256": "251a39247466fec1dd095d4405f92889e678f4bfcb6fbc7881e9246579fba711"
+  }
+]

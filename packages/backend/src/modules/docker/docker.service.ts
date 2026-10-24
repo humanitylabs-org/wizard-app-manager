@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { WizardStorage } from './wizard-storage';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -8,6 +10,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
+import { AppsRepository } from '../apps/apps.repository';
 
 @Injectable()
 export class DockerService {
@@ -17,6 +20,7 @@ export class DockerService {
     private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
     private readonly appsService: AppsService,
+    private readonly appsRepository: AppsRepository,
   ) {}
 
   /**
@@ -77,7 +81,46 @@ export class DockerService {
    * @param {string} appUrn - App name
    * @param {string} command - Command to execute
    */
-  public async composeApp(appUrn: AppUrn, command: string) {
+  private storageInstance?: WizardStorage;
+  get storage() {
+    if (!this.storageInstance)
+      this.storageInstance = new WizardStorage(
+        this.config.get('directories'),
+        () => this.appsRepository.getApps(),
+        undefined,
+        undefined,
+        (message) => this.logger.warn(message),
+      );
+    return this.storageInstance;
+  }
+
+  public async prepareApp(appUrn: AppUrn, apply?: () => Promise<void>) {
+    const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
+    if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
+    await this.storage.prepare(appUrn, generated.content, async (prepared) => {
+      if (prepared !== generated.content) {
+        await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
+        await fs.rename(`${generated.path}.tmp-storage`, generated.path);
+      }
+      await apply?.();
+    });
+  }
+
+  public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
+    if (command.split(' ')[0] === 'up') {
+      let result!: { success: boolean; stdout: string; stderr: string };
+      await this.prepareApp(appUrn, async () => {
+        // Validate storage/shares/bridge before a restart can stop anything,
+        // holding the grant lock continuously through down and up.
+        await beforeStart?.();
+        result = await this.runComposeApp(appUrn, command);
+      });
+      return result;
+    }
+    return this.runComposeApp(appUrn, command);
+  }
+
+  private async runComposeApp(appUrn: AppUrn, command: string) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
@@ -88,7 +131,8 @@ export class DockerService {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    const exitCode = await new Promise((resolve) => {
+    const exitCode = await new Promise((resolve, reject) => {
+      cmd.once('error', reject);
       cmd.stdout.on('data', (data) => {
         this.logger.debug(`docker-compose: ${String(data).trim()}`);
         stdout.push(String(data).trim());

@@ -19,12 +19,16 @@ Wizard additions:
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
+  wam hermes status [--json]    host Hermes version vs the box's release pin
+  wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                 [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
+  wam backup export|verify|import|undo|activate|key|schedule|run|status
+                                one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
 from __future__ import annotations
 
@@ -127,6 +131,8 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
@@ -168,6 +174,13 @@ def share_registry(c: Config) -> bool:
                     if not os.path.islink(f):
                         os.chmod(f, 0o644)
         from .view_share import publish
+        from . import chats_views
+        chats_reg = json.loads((c.home / 'apps.json').read_text())
+        for app in chats_reg.get('apps', []):
+            view = app.get('chats_view')
+            if view:
+                app['_chats_src'] = str(c.home / 'chats-views' / app['id'] / (view['sha256'] + '.js'))
+        chats_views.publish(chats_reg, shared)
         for metadata in (c.home / "views").glob("*/view.json"):
             if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
                 publish(metadata.parent.name, c.home, shared)
@@ -220,6 +233,14 @@ def shell_origins(c: Config) -> set[str]:
         return set()
 
 
+def is_origin_list(f: dict) -> bool:
+    """A required list of trusted browser origins with no real default, e.g. `X_ALLOWED_ORIGINS` (url) or Wisdom's
+    `WISDOM_ORIGINS` (text, default ''). Runtipi takes an empty default as the value, so the app would start
+    trusting no Wizard origin and answer 'Unknown host' inside the shell."""
+    var = str(f.get("env_variable") or "")
+    return f.get("type") in ("url", "text") and var.endswith("_ORIGINS") and f.get("default", "") == ""
+
+
 def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: list[str] | None = None) -> tuple[dict, list[str]]:
     """Defaults and `random` fields are left to the App Manager. Required passwords the owner didn't give are
     generated and saved 0600 in ~/.wizard-os/secrets/<id>.json (never printed). Ports stay box-only: the app's
@@ -235,12 +256,12 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             form[var] = given[var]
         elif f.get("required") and (v := shared_value(c, var, uses or [])):
             form[var] = v
-        elif "default" in f:
-            continue
-        elif f.get("required") and f.get("type") == "url" and var.endswith("_ALLOWED_ORIGINS") and (origins := shell_origins(c)):
+        elif f.get("required") and is_origin_list(f) and (origins := shell_origins(c)):
             # Origin-list configuration is distinct from arbitrary required URLs
             # (provider endpoints etc.). Only existing owner Serve mounts qualify.
             form[var] = ",".join(sorted(origins))
+        elif "default" in f:
+            continue
         elif f.get("required") and f.get("type") == "password":
             form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
@@ -306,6 +327,10 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                          f"installing {app_id} beside it would start a second Agent Service")
     if (al := alongside.load(c.home)) and role:
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+        # Alongside is configured before bootstrap creates this app. Prepare upload storage here too,
+        # not only in `wam alongside`'s already-installed-app loop.
+        if role != "shell":
+            alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     if "port" not in form:
@@ -318,7 +343,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         if want and (want in reserved or not port_free(want)):
             form["port"] = free_port(want + 1, avoid=reserved)
             print(f"note: port {want} is in use or reserved; {app_id} gets {form['port']}", file=sys.stderr)
-    trust_env = trusted_origin_env(c, app_id)
+    trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
     if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
@@ -357,8 +382,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             agent_link(c, STORE)
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
             print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
-    if role == "shell" and status == "running" and alongside.load(c.home):
-        try:
+    if role == "shell" and status == "running":
+        try:   # alongside and fresh: the Store data adapter follows the installed shell's commit
             store_data_cmd(c)
         except Exception as e:  # noqa: BLE001 - the Store window is optional; never fail the shell install for it
             print(f"note: App Store data not set up ({str(e)[:120]}); run `wam store-data`", file=sys.stderr)
@@ -368,10 +393,12 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
 
 
-def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
+def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
     """Apps built with the Wizard builder answer only hosts/origins they are told to trust
-    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). On an alongside box with Tailscale, trust the shell's
-    tailnet origin, so the app opens inside Wizard instead of answering 'untrusted_host_or_site'."""
+    (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). With Tailscale, trust the shell's tailnet origin so the app
+    opens inside Wizard instead of answering 'untrusted_host_or_site'. A fresh box (Runtipi shell, no alongside.json)
+    takes the shell port from apps.json and also trusts the app's own private address, `https://<box>:<app port>`,
+    which is where `wam links` publishes it there (alongside boxes route such apps under the shell origin)."""
     # Before install the recipe is only in Runtipi's store copy (repos/), after it also in apps/.
     text = ""
     for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
@@ -383,15 +410,36 @@ def trusted_origin_env(c: Config, app_id: str) -> dict[str, str]:
             continue
     if "WIZARD_TRUSTED_HOSTS" not in text:
         return {}
-    al = alongside.load(c.home) or {}
-    port = int((al.get("shell") or {}).get("port") or 0)
+    al = alongside.load(c.home)
+    own = 0
+    if al:
+        port = int((al.get("shell") or {}).get("port") or 0)
+    else:
+        from . import store_data
+        try:
+            reg = json.loads((c.home / "apps.json").read_text())
+        except (OSError, ValueError):
+            reg = {}
+        port = store_data.fresh_ports(reg)[0]
+        own = int(app_port or 0) if app_port and 0 < int(app_port) < 65536 and int(app_port) != port else 0
     try:
         host = json.loads((c.home / "links.json").read_text()).get("host") or ""
     except (OSError, ValueError):
         host = ""
-    if not host or not port:
+    if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         return {}
-    return {"WIZARD_TRUSTED_HOSTS": f"{host}:{port},{host}", "WIZARD_TRUSTED_ORIGINS": f"https://{host}:{port}"}
+    hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
+    if own:
+        hosts.insert(1, f"{host}:{own}")
+        origins.append(f"https://{host}:{own}")
+    env = {"WIZARD_TRUSTED_HOSTS": ",".join(hosts), "WIZARD_TRUSTED_ORIGINS": ",".join(origins)}
+    # Cloudflare and other owner-login recipes need the box owner's tailnet identity.
+    if "WIZARD_OWNER_LOGINS" in text:
+        from . import store_install
+        owner = store_install.owner_login()
+        if owner:
+            env["WIZARD_OWNER_LOGINS"] = owner
+    return env
 
 
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
@@ -846,25 +894,27 @@ def host_dashboard_cmd(c: Config, rt: Runtipi | None = None, apply: bool = True)
 
 
 def store_data_cmd(c: Config, apply: bool = True) -> dict:
-    """Install/refresh the App Store browse-data service for the installed shell (alongside boxes)."""
-    from . import store_data
+    """Install/refresh the App Store browse-data service for the installed shell and route it, with the owner-gated
+    Store Get listener, on the shell's tailnet ports. Alongside boxes name their ports in alongside.json; fresh boxes
+    (Runtipi apps on loopback ports) take them from apps.json."""
+    from . import links, store_data
     al = alongside.load(c.home)
-    if not al:
-        return {"state": "skipped", "note": "not an alongside box (fresh boxes serve Store data from the shell image)"}
     reg = write_registry(c, c.runtipi())
-    svc_port = int((al.get("service") or {}).get("port") or 0)
-    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
-    if out.get("state") == "ready" and apply and shutil.which("tailscale"):
+    if al:
         shell_port = int((al.get("shell") or {}).get("port") or 0)
-        if shell_port:
-            try:
-                r = subprocess.run(store_data.route(shell_port), capture_output=True, text=True, timeout=60)
-                out["tailnet"] = "routed" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
-                from . import store_install
-                r2 = subprocess.run(store_install.route(shell_port), capture_output=True, text=True, timeout=60)
-                out["get"] = "routed" if r2.returncode == 0 else (r2.stderr or r2.stdout).strip()[:200]
-            except (OSError, subprocess.TimeoutExpired) as e:
-                out["tailnet"] = str(e)[:200]
+        svc_port = int((al.get("service") or {}).get("port") or 0)
+    else:
+        shell_port, svc_port = store_data.fresh_ports(reg)
+        if not shell_port:
+            return {"state": "skipped", "note": "no Wizard shell with a loopback port is installed"}
+    out = store_data.ensure(reg, apply=apply, service=f"http://127.0.0.1:{svc_port}" if svc_port else None)
+    out["mode"] = "alongside" if al else "fresh"
+    if out.get("state") == "ready" and apply and shutil.which("tailscale") and shell_port:
+        ts = links.tailnet()
+        if ts["state"] != "Running" or not ts["host"]:
+            out["tailnet"] = "Tailscale isn't connected yet; rerun after `sudo tailscale up`"
+        else:
+            out.update(store_data.publish_routes(ts["host"], shell_port))
     return out
 
 
@@ -1070,6 +1120,12 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out.append(("API token present (0600)", c.token_file.is_file() and (c.token_file.stat().st_mode & 0o077) == 0, str(c.token_file)))
     regp = c.home / "apps.json"
     out.append(("apps.json written", regp.is_file(), str(regp)))
+    from . import updates
+    run = updates.install_state(c.home)  # also heals a stale running state and its lock (wizard-os#90)
+    if run == "interrupted":
+        out.append(("Wizard OS update completed", False,
+                    "the last install or update was interrupted before it finished; retry with "
+                    "`wam updates --apply`, or `curl -fsSL https://aiwizards.com/os.sh | bash -s start`"))
     st = alongside.load(c.home)
     if st:
         a = st["agent"]
@@ -1244,6 +1300,13 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id.startswith('_views/'):
             return self._view_revert(method, app_id.removeprefix('_views/'))
+        if app_id == '_slots/chats':
+            return self._chats_default(method)
+        if app_id == '_recommended':
+            from . import recommended
+            if method == 'GET':
+                return self._json(200, recommended.listing(c))
+            return self._json(202, recommended.start(c))
         if method == "POST":
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -1265,6 +1328,23 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _chats_default(self, method: str) -> None:
+        from . import chats_views
+        try:
+            if method == 'POST':
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 256:
+                    raise ValueError('invalid body size')
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict) or set(body) != {'default'}:
+                    raise ValueError('send {default: installed-provider-id}')
+                chats_views.choose(self.cfg.home, body['default'])
+                share_registry(self.cfg)
+            reg = json.loads((self.cfg.home / 'apps.json').read_text())
+            return self._json(200, (reg.get('slots') or {}).get('chats', {'default': chats_views.BUILTIN}))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
 
     def _view_revert(self, method: str, app_id: str) -> None:
         """Shell-owned Use original action, behind exactly the Settings/Store owner gate."""
@@ -1395,6 +1475,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "hermes":
+        from .hermes_update import main as hermes_main
+        return hermes_main(argv[1:])
     if argv and argv[0] == "agent-link":
         from .agent_link import main as agent_link_main
         return agent_link_main(argv[1:])
@@ -1407,6 +1490,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
+        from .backup.cli import main as backup_main
+        return backup_main(argv[1:])
     if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
         res = app_lifecycle(Config(), argv[1], argv[2])
         print(json.dumps(res, indent=2))
@@ -1431,7 +1517,8 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
     sub.add_parser("serve")
-    sd = sub.add_parser("store-data", help="set up the App Store browse data for the installed shell (alongside)")
+    sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
+    sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
@@ -1480,6 +1567,9 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
+        elif args.cmd == "prefetch":
+            from . import recommended
+            print(json.dumps(recommended.prefetch(c), indent=2))
         elif args.cmd == "recover":
             print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":
@@ -1525,6 +1615,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import recommended
+            recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
             try:

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APPS = {
     "voice": ("wizard-voice-service", ["voice"]),
     "connection-router": ("wizard-connection-router", ["connection-router"]),
-    "accounts": ("wizard-connectors", ["connector-status", "simulated-private-summary"]),
+    "connected-accounts": ("wizard-connectors", ["connector-status", "simulated-private-summary"]),
     "troubleshooter": ("wizard-troubleshooter", None),
     "agent-history": (None, None),
 }
@@ -34,7 +34,7 @@ def test_launch_default_metadata_and_bootstrap(slot):
     if provides is not None:
         assert default["provides"] == provides
     if app_id:
-        assert app_id in slots.to_install({"apps": []})
+        assert (app_id in slots.to_install({"apps": []})) is (default.get("install") != "on-demand")
         reg = {"apps": [{"id": app_id, "provides": provides or [slot]}]}
         assert app_id not in slots.to_install(reg)
         assert not slots.blocks_uninstall(reg, app_id)
@@ -43,6 +43,18 @@ def test_launch_default_metadata_and_bootstrap(slot):
         assert row["state"] == "no default yet"
         assert None not in slots.to_install({"apps": []})
         assert "wizard-agent-history" not in slots.to_install({"apps": []})
+
+
+def test_connectors_keep_the_main_on_demand_slot_only():
+    defaults = slots.load_defaults()
+    assert "accounts" not in defaults
+    assert [slot for slot, row in defaults.items() if row.get("app") == "wizard-connectors"] == ["connected-accounts"]
+    row = defaults["connected-accounts"]
+    assert row["install"] == "on-demand"
+    assert row["recommended"] is True
+    assert row["prefetch"] is True
+    assert row["gateway"] == {"path": "/wizard-connectors/", "strip_prefix": True}
+    assert "wizard-connectors" not in slots.to_install({"apps": []})
 
 
 def test_voice_keeps_transcriber_as_its_engine():
