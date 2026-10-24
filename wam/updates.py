@@ -91,9 +91,12 @@ def channel(home: Path | None = None) -> str:
 
 
 def installed(home: Path | None = None) -> str | None:
-    """The release this box was last installed/updated to; None for an unpinned (developer) box."""
+    """The successfully read-back release; a failed attempt is not an installed version."""
     try:
-        rel = json.loads((_home(home) / "release.json").read_text()).get("release")
+        receipt = json.loads((_home(home) / "release.json").read_text())
+        if receipt.get("status") not in ("pinned", "drift"):
+            return None
+        rel = receipt.get("release")
     except (OSError, ValueError, AttributeError):
         return None
     return rel if isinstance(rel, str) and VERSION.fullmatch(rel) else None
@@ -334,11 +337,17 @@ def _retry_target(home: Path | None, run: str | None, have: str | None) -> str |
     A developer's explicit unpinned receipt always wins over old release-pins.json. These pins are only a retry
     hint; get.sh fetches and validates the named release again before installing anything.
     """
-    if run != "interrupted":
-        return None
     h = _home(home)
     receipt = _read_status(h / "release.json") or {}
-    if receipt.get("status") == "unpinned":
+    if receipt.get("status") == "unpinned" or run in ACTIVE:
+        return None
+    # A completed but failed read-back records the attempted release, not an
+    # installed version. Keep its Update button usable, including offline and
+    # same-release repair. Like an interrupted target, get.sh validates it anew.
+    if run != "interrupted" and receipt.get("status") in ("install-failed", "mismatch"):
+        target = receipt.get("release")
+        return target if isinstance(target, str) and VERSION.fullmatch(target) else None
+    if run != "interrupted":
         return None
     pins = _read_status(h / "release-pins.json") or {}
     target = pins.get("version")
@@ -349,7 +358,10 @@ def _retry_target(home: Path | None, run: str | None, have: str | None) -> str |
     commit = wam.get("commit") if isinstance(wam, dict) else None
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         return None
-    return target if have is None or _key(target) >= _key(have) else None
+    floor = have or receipt.get("release")
+    if not isinstance(floor, str) or not VERSION.fullmatch(floor):
+        floor = None
+    return target if floor is None or _key(target) >= _key(floor) else None
 
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
@@ -369,6 +381,7 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "installing": run == "running",
             # Health is independent of whether a release pointer is reachable/newer (wizard-os#90).
             "interrupted": run == "interrupted",
+            "failed": (_read_status(_home(home) / "release.json") or {}).get("status") in ("install-failed", "mismatch"),
             "hermes": hermes_update.status(home, base)}
 
 
@@ -442,12 +455,13 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
     st = status(home, base, fresh=True)
+    retrying = st["interrupted"] or st["failed"]
     if target:
-        if st["interrupted"] and st["update_available"] and st["latest"] != target:
+        if retrying and st["update_available"] and st["latest"] != target:
             return {**st, "started": False, "skipped": "interrupted-target",
-                    "note": "the interrupted release must be retried before a different release"}
+                    "note": "the incomplete release must be retried before a different release"}
         newer = (st["installed"] is not None and _key(target) > _key(st["installed"])) or (
-            st["interrupted"] and st["update_available"] and st["latest"] == target)
+            retrying and st["update_available"] and st["latest"] == target)
         st = {**st, "latest": target, "update_available": newer}
     if not st["checked"]:
         return {**st, "started": False, "error": "could not read the current release pointer; try again later"}
