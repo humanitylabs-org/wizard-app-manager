@@ -1031,7 +1031,15 @@ def cmd_link(ns) -> dict:
             rec["plugin_installed"] = True   # recorded first: a half-finished install is removed on rollback
             save_record(rec)
             fault("before:plugin")
-            run_hermes(home, *args)
+            local = Path(ns.plugin_source or '').expanduser()
+            if local.is_dir():
+                # Stock Hermes discovers local plugins in HERMES_HOME/plugins; no core changes.
+                if not (local / '__init__.py').is_file():
+                    raise Fail('usage', 'local plugin source has no __init__.py')
+                (home / 'plugins').mkdir(exist_ok=True)
+                shutil.copytree(local, home / 'plugins' / PLUGIN_NAME)
+            else:
+                run_hermes(home, *args)
             rec['plugin_sha256'] = plugin_fingerprint(home)
             rec['plugin_ref'] = ns.plugin_ref
             save_record(rec)

@@ -6,6 +6,23 @@ One encrypted file holds a whole Wizard. The same file backs a Wizard up, restor
 it to another machine (VPS ↔ Mac app ↔ home machine). Every Wizard host runs the same Linux stack (the Mac app's VM is
 provisioned by the same `os.sh`), so one engine serves all of them; the Mac app only carries the file in and out.
 
+## Mac 0.4.0 managed-runtime integration
+
+The Mac 0.4.0 port is based on the shipped WAM revision `0696805f`, not current main. Install the release-line
+integration as a whole; do not replace the guest's WAM package with the main-based backup branch, which lacks
+`wam/managed_runtime.py` and other Mac release fixes.
+
+When `/opt/wizard/managed-runtime.json` is present, export, import (file or repository), undo, activate and scheduled
+run hold one `managed_runtime.operation()` reservation for the entire command, including staging, app lifecycle,
+cleanup and receipt/status writes. Nested engine calls reuse that reservation. Every one-off agent container uses
+the manifest's pinned image and mounts `/var/lib/wizard/managed:/wizard-managed-state`; it cannot launch without
+an owned reservation. Active update/recovery maintenance refuses the command before any backup/restore change.
+The managed-runtime implementation and its security checks remain the release's own. With no manifest (ordinary
+Linux/VPS installs), image discovery and container arguments are unchanged.
+
+Tests use disposable homes and fake Docker/Runtipi, plus real local flock admission and optional local restic.
+They do not constitute a new live Mac-guest release or installation rehearsal.
+
 ## What the owner sees
 
 - **Back up now / Move this Wizard**: produces `<name>-<YYYYMMDD-HHMMSS>.wizardbackup`. On a Mac: menu

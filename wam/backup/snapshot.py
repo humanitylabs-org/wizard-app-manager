@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import bundle, capture, restore
-from .box import Box, human, log
+from .box import Box, human, log, managed_operation
 from .fmt import Damaged
 from .restic import Repo, ResticError
 
@@ -76,6 +76,7 @@ class PeakDisk:
 
 # ---------------------------------------------------------------- backup
 
+@managed_operation
 def backup(box: Box, repo: Repo, host: str) -> dict:
     t0 = time.time()
     got: dict = {}
@@ -158,6 +159,7 @@ def stage_from_repo(box: Box, repo: Repo, snap: dict):
     return r, res
 
 
+@managed_operation
 def import_from_repo(box: Box, repo: Repo, snapshot: str | None = "latest", *, yes: bool = False,
                      confirm=None) -> dict:
     snap = resolve(repo, snapshot)

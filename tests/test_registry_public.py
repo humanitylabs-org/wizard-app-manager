@@ -109,7 +109,9 @@ def test_registry_rewrite_keeps_routing_skills(config):
         result = cli.write_registry(c)
         assert_public_and_skills(c, source, result)
         assert (sk / "wizard-job-files" / "SKILL.md").read_text() == "routing\n"
-        assert (sk / ".wizard-jobs").read_text() == "1\n"
-        assert not (sk / "removed-app").exists()   # per-app skills of uninstalled apps are still pruned
+        # Managed Mac refreshes the pointer stamp after every registry write.
+        assert (sk / ".wizard-jobs").read_text().strip().isdigit()
+        # Unknown skills are owner data, not ours to prune without an ownership hash.
+        assert (sk / "removed-app" / "SKILL.md").read_text() == "stale\n"
         shared = c.runtipi_root / "app-data" / "wizard-os" / "skills"
         assert (shared / "wizard-job-files" / "SKILL.md").read_text() == "routing\n"

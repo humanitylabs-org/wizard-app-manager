@@ -1,0 +1,16 @@
+{
+  "repo": "humanitylabs-org/wizard-agent-service",
+  "commit": "40974955557dd76299b7b7cfde49b417bf074fd3",
+  "plugin_source": "humanitylabs-org/wizard-agent-service#hermes-plugin/wizard-os",
+  "files": {
+    "wizard_os_plugin/__init__.py": "hermes-plugin/wizard-os/__init__.py",
+    "wizard_os_plugin/kernel.py": "hermes-plugin/wizard-os/kernel.py",
+    "wizard_os_plugin/plugin.yaml": "hermes-plugin/wizard-os/plugin.yaml"
+  },
+  "sha256": {
+    "wizard_os_plugin/__init__.py": "b49f47a337c7cb347b708ca033197c74f340fba48ec686c8e0da727dda6a262d",
+    "wizard_os_plugin/kernel.py": "2be066247434ffb287ec9c6c6199411203895dd123f6e91b2b922bc987d64aaf",
+    "wizard_os_plugin/plugin.yaml": "b1c08d744f508dc8f91307aa7e23235496cf3f5c583e2b86bfe329cafd9108ab"
+  },
+  "about": "The wizard-os Hermes plugin at a commit on wizard-agent-service main. WAM renders the wizard-job-* pointer skills with this kernel.py (the same renderer the plugin and the Agent Service use), and `wam fresh-agent connect` installs the plugin into the container Hermes from plugin_source at this commit, then checks the installed files against these sha256 values. tests/test_fresh_agent.py fails when they drift."
+}
