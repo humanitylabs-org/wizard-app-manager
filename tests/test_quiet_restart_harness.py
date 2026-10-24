@@ -94,8 +94,16 @@ def test_existing_vm_refusal_does_not_stop_it(monkeypatch, tmp_path):
         return SimpleNamespace(stdout='{"name":"wos-maint-qa","status":"Running"}', returncode=0)
     monkeypatch.setattr(host, 'run', run)
     monkeypatch.setattr(host, 'collect', lambda: pytest.fail('Must not touch existing VM'))
-    with pytest.raises(AssertionError, match='already exists'):
-        host.main()
+    # main() intentionally selects the Mac worker PATH/TMPDIR. Register both
+    # with monkeypatch so this unit test cannot hide Node from later tests.
+    previous_path, previous_tmpdir = host.os.environ.get('PATH'), host.os.environ.get('TMPDIR')
+    with monkeypatch.context() as environment:
+        environment.setenv('PATH', previous_path or '')
+        environment.setenv('TMPDIR', previous_tmpdir or '')
+        with pytest.raises(AssertionError, match='already exists'):
+            host.main()
+    assert host.os.environ.get('PATH') == previous_path
+    assert host.os.environ.get('TMPDIR') == previous_tmpdir
     assert calls == [[host.LIMA, 'list', '--json', host.VM]]
 
 
