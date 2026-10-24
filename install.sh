@@ -263,6 +263,8 @@ pre_restart_doctor() {
   printf '%s\n' "$out" | sed -E "s/$WAIT_CHECKS/WAIT  \1 (after the Hermes restart)/"
   [ "$rc" -eq 0 ] && return 0
   printf '%s\n' "$out" | grep -E '^FAIL  ' | grep -qvE "$WAIT_CHECKS" && return 1
+  # A nonzero exit with no WAIT-able FAIL line (e.g. doctor crashed with a traceback) is a real failure.
+  printf '%s\n' "$out" | grep -qE "$WAIT_CHECKS" || return 1
   PENDING+=("Hermes restarts last; checks marked WAIT pass after it ('wizard doctor' shows them)")
   return 0
 }
