@@ -211,6 +211,10 @@ def _entry(app: dict, info: dict, urn: str, name: str, store: str, host: str, ru
     return entry
 
 
+class DuplicateInstalledApp(ValueError):
+    """Ambiguous installed identity must abort the complete projection."""
+
+
 def build(installed: list[dict], store: str, host: str, runtipi_root: Path, network: str = "host") -> dict:
     host, network = service_app_host(host), service_app_network(network)
     apps = []
@@ -225,8 +229,10 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, netw
             if not meta or (st != store and not meta.get("private")):
                 continue
             if any(a["id"] == name for a in apps):
-                raise ValueError(f"Duplicate installed Wizard app id: {name}")
+                raise DuplicateInstalledApp(f"Duplicate installed Wizard app id: {name}")
             entry = _entry(app, info, urn, name, st, host, runtipi_root, network)
+        except DuplicateInstalledApp:
+            raise
         except (ValueError, TypeError, AttributeError, OSError, yaml.YAMLError):
             # One malformed app stays visible/uninstallable, but contributes no unsafe routes/skills/slots.
             entry = {"id": name, "name": name, "urn": urn, "status": app.get("status"),
