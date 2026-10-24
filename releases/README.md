@@ -170,3 +170,8 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os` PR #189 (branch `release/promote-0.3.34`, merge `5d7823f99ec8932b13163f7260a32be618956eb8`), `releases/stable` (SHA-256 `9bfdc0fda10c4841166b035a7c6d794879ec5bb2438c98a5cff8f897e5ccecad`) and `releases/promotions/0.3.34.json` (SHA-256 `b39449ac389001a96f8b47f90f4f0807f1b67a868bed0e8fb020ec750fbec2f3`).
 - Fast-tracked feature promotion (DECISIONS #93, launch phase): upgrade 0.3.32 -> 0.3.34 passed on the demo box, evidence `docs/acceptance/promote-0.3.34.md`.
 - Channel: `stable` and `latest` both 0.3.34. Rollback: point `stable` back at 0.3.32.
+
+## 0.3.35 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.35.json`, SHA-256 `5cb16a802b380129e7377622af8205843ad904a673909efea119ab9f098926f4`.
+- 0.3.34 plus Agent Service `039eff5` (#141 phone setup on alongside boxes, #142 owner message shows). Channel: on latest.
