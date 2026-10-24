@@ -81,6 +81,12 @@ if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   # The released manager image consumes its usual index protocol; start the local pin view first.
   # Pins are atomically replaced; recreate the file mount and clear the manager's index cache.
   RECREATE=(--force-recreate)
+  # A power cut during Compose's rename/recreate can leave both the old
+  # canonical name and its temporary replacement. Remove only this WAM-owned
+  # service (Compose project/service labels, not a name wildcard), including
+  # stopped leftovers, before creating the new pin view. Never down the stack,
+  # remove orphans, or remove volumes: the database and owner apps stay intact.
+  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml rm --stop --force wizard-release-index)
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
