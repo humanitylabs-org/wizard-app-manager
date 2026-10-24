@@ -347,7 +347,7 @@ def _retry_target(home: Path | None, run: str | None, have: str | None) -> str |
     if run != "interrupted" and receipt.get("status") in ("install-failed", "mismatch"):
         target = receipt.get("release")
         return target if isinstance(target, str) and VERSION.fullmatch(target) else None
-    if run != "interrupted":
+    if run not in ("interrupted", "failed"):
         return None
     pins = _read_status(h / "release-pins.json") or {}
     target = pins.get("version")
@@ -375,13 +375,20 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     want = retry or want
     unpinned = have is None and retry is None
     newer = bool(want) and have is not None and _key(want) > _key(have)
+    receipt = _read_status(_home(home) / "release.json") or {}
+    failed = run == "failed" or receipt.get("status") in ("install-failed", "mismatch")
+    installer = _read_status(_home(home) / "install-status.json") or {}
+    reason = receipt.get("status")
+    if run == "failed":
+        reason = (installer.get("failure_reason") or installer.get("message")
+                  or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
             "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
             # Health is independent of whether a release pointer is reachable/newer (wizard-os#90).
             "interrupted": run == "interrupted",
-            "failed": (_read_status(_home(home) / "release.json") or {}).get("status") in ("install-failed", "mismatch"),
+            "failed": failed, "failure_reason": reason if failed else None,
             "hermes": hermes_update.status(home, base)}
 
 
