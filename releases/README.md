@@ -214,3 +214,9 @@ Promoted under DECISIONS #93 (classification feature: the default first-run tour
 
 Release JSON SHA256: `6aa5201e633339f71b3854c13dff30189d0a03d57799854713c1455e19a60243`.
 Promotion JSON SHA256: `ca495855d7f5b917fac0eb20037df1523cf1aff974214ae9633fe26431914bbe`.
+
+## 0.3.40 provenance
+
+Canonical: wizard-os releases/0.3.40.json (wizard-os #209). SHA256: `947cb1e88bf758e8e4889f85a352e1d04f688fc3543f9e3e9c8dedc8eda7fd53`.
+0.3.39 plus wizard-ux #482/#483 (`9fcf86c`): alongside first launch starts the first-message orientation once (phone tour, desktop composer guide), Setup stays manual, the desktop shell loads the tour; UX image `sha256:c369207da4392095a2be02c6c56c05f877b6bf079546c6816c375b11659b6c90`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade verification.
