@@ -207,3 +207,10 @@ Promotion JSON SHA256: `61927c23be97586486781c4b932b40351cd7c6bed637666f0c120f0b
 Canonical: wizard-os releases/0.3.39.json (wizard-os #203). SHA256: `6aa5201e633339f71b3854c13dff30189d0a03d57799854713c1455e19a60243`.
 0.3.38 plus wizard-ux #456 (`c8433e3`): first-run tour without the Command beat and with per-step skip; UX image `sha256:57bb8e26154aeec5a1316497ab6e22570858a842b6e8ecda7890568ea594ee19`. Other pins unchanged.
 Channel: on latest only; stable remains 0.3.38 pending installed-demo upgrade verification.
+
+## stable 0.3.39
+
+Promoted under DECISIONS #93 (classification feature: the default first-run tour changes) after a supported strict installer upgrade of the alongside demo from stable 0.3.38. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.39.md (wizard-os #204). Rollback: point `stable` back at 0.3.38.
+
+Release JSON SHA256: `6aa5201e633339f71b3854c13dff30189d0a03d57799854713c1455e19a60243`.
+Promotion JSON SHA256: `ca495855d7f5b917fac0eb20037df1523cf1aff974214ae9633fe26431914bbe`.
