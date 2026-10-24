@@ -261,6 +261,7 @@ def check_inner_archive(fileobj, mode: str = "r|gz") -> dict:
         with tarfile.open(fileobj=fileobj, mode=mode) as t:
             for m in t:
                 g.check(m)
+        g.finish()
     except UnsafeMember as e:
         raise Unsafe(str(e)) from None
     except (tarfile.TarError, EOFError, OSError, ValueError) as e:

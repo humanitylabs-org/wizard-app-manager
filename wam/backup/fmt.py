@@ -143,6 +143,10 @@ def unlock(header: dict, signed: bytes, mac: bytes, keys: Keys, aead=None) -> by
                     raise Damaged("the file's header is damaged (passphrase slot)") from None
                 if (r, pp) != (crypto.SCRYPT_R, crypto.SCRYPT_P) and not (1 <= r <= 32 and 1 <= pp <= 16):
                     raise Damaged("the file's header is damaged (passphrase slot)")
+                if not 2 <= n <= crypto.SCRYPT_MAX_N or n & (n - 1):
+                    # checked before any work: a file must not choose how much memory/CPU opening it costs
+                    raise Damaged(f"the file's passphrase slot asks for scrypt n={n} (at most "
+                                  f"{crypto.SCRYPT_MAX_N} is accepted): damaged or hostile header")
                 wrap = crypto.scrypt(p, _unb64(s.get("salt"), "slot salt"), n, r, pp)
                 try:
                     file_key = aead.open(wrap, _unb64(s.get("nonce"), "slot nonce"), _unb64(s.get("wrapped"), "slot"), MAGIC)

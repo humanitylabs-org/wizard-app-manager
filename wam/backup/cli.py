@@ -262,8 +262,9 @@ def _dispatch(args, box: Box) -> dict:
         pw = keylib.passphrase_for_export(box.env) if args.passphrase else None
         if args.passphrase and not pw:
             raise BackupCryptoError("--passphrase: none given (WIZARD_BACKUP_PASSPHRASE or a terminal prompt)")
-        return capture.export(box, Path(args.output) if args.output else None, passphrase=pw,
-                              include_files=not args.no_files, key_file=args.key_file)
+        with schedule.lock(box):
+            return capture.export(box, Path(args.output) if args.output else None, passphrase=pw,
+                                  include_files=not args.no_files, key_file=args.key_file)
     if c == "verify":
         return restore.verify(box, Path(args.file), _keys_to_open(box, args.key_file, Path(args.file)))
     if c == "import":

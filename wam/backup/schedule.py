@@ -401,8 +401,26 @@ def run(box: Box, scheduled: bool = False, now: float | None = None) -> dict:
                             "first")
     if scheduled and not cfg.get("enabled"):
         return {"ok": True, "skipped": "scheduled backups are off"}
-    with lock(box):
-        return _run(box, cfg, now)
+    try:
+        with lock(box):
+            return _run(box, cfg, now)
+    except Busy as e:
+        if scheduled:
+            _note_skipped(box, str(e))
+        raise
+
+
+def _note_skipped(box: Box, reason: str) -> None:
+    """A scheduled run that found another backup/restore running: recorded in backup-status.json (`last_skipped`)
+    so status shows why there is no new snapshot, without touching the last run's own record."""
+    try:
+        st = read_status(box) or {}
+        st["last_skipped"] = {"at": int(time.time()), "reason": reason, "scheduled": True}
+        tmp = box.home / f"{STATUS}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(st, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, box.home / STATUS)
+    except OSError:
+        pass
 
 
 def apply_retention(repo: restic.Repo, cfg: dict, host: str | None, *, owner: bool = False) -> dict:

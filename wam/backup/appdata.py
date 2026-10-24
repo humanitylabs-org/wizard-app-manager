@@ -61,6 +61,7 @@ class MemberGuard:
     def __init__(self) -> None:
         self.files: set[str] = set()
         self.links: set[str] = set()
+        self.targets: dict[str, str] = {}
         self.entries = 0
         self.bytes = 0
 
@@ -83,6 +84,7 @@ class MemberGuard:
             if not link_inside(name, m.linkname):
                 raise UnsafeMember(f"an app data archive holds a link that leaves its folder: {name[:120]!r}")
             self.links.add(name)
+            self.targets[name] = m.linkname
         elif m.islnk():
             if _clean(m.linkname) not in self.files:
                 raise UnsafeMember(f"an app data archive holds a hard link to an unknown file: {name[:120]!r}")
@@ -93,6 +95,11 @@ class MemberGuard:
             raise UnsafeMember(f"an app data archive holds a device, FIFO or special file: {name[:120]!r}")
         self.entries += 1
         return name
+
+    def finish(self) -> None:
+        """After the last member: every symlink chain resolves inside the root its link lives in (link_inside is
+        only textual: `l -> ..` plus `esc -> l/../..` passes it but leaves the root)."""
+        _check_link_chains(self.targets)
 
 
 def link_root(name: str) -> str:
@@ -130,13 +137,16 @@ def _data_member(m: tarfile.TarInfo, name: str) -> bool:
     return True
 
 
-def _check_data_links(links: dict[str, str], kept: list[str]) -> None:
+def _check_link_chains(links: dict[str, str], kept: list[str] = (), root_of=None, what: str = "symlink") -> None:
     """Lexical normalization alone is insufficient: `alias/../x` can escape through `alias -> .`.
 
-    Resolve archive symlink chains component by component, including forward references. Links into kept local
-    trees are refused: their targets are not described or validated by this archive.
+    Resolve archive symlink chains component by component, including forward references, and refuse any chain that
+    climbs above the root its link lives in (`root_of(name)`, default link_root: app-data/, app/, user-config/ or one
+    volume). Links into `kept` local trees are refused: their targets are not described or validated by this archive.
     """
+    root_of = root_of or link_root
     for name, target in links.items():
+        depth = len(root_of(name).split("/"))
         stack = name.split("/")[:-1]
         pending = target.split("/")
         hops = 0
@@ -145,20 +155,27 @@ def _check_data_links(links: dict[str, str], kept: list[str]) -> None:
             if part in ("", "."):
                 continue
             if part == "..":
-                if len(stack) <= 2:
-                    raise UnsafeMember("mapped app data symlink chain leaves the data folder")
+                if len(stack) <= depth:
+                    raise UnsafeMember(f"an app data archive holds a {what} chain that leaves its folder: "
+                                       f"{name[:120]!r}")
                 stack.pop()
                 continue
             stack.append(part)
             path = "/".join(stack)
             if any(path == k or path.startswith(k + "/") for k in kept):
-                raise UnsafeMember("mapped app data symlink enters a kept local tree")
+                raise UnsafeMember(f"an app data archive holds a {what} that enters a kept local tree: {name[:120]!r}")
             if path in links:
                 hops += 1
                 if hops > 40:
-                    raise UnsafeMember("mapped app data symlink chain loops or is too long")
+                    raise UnsafeMember(f"an app data archive holds a {what} chain that loops or is too long: "
+                                       f"{name[:120]!r}")
                 pending = links[path].split("/") + pending
                 stack.pop()
+
+
+def _check_data_links(links: dict[str, str], kept: list[str]) -> None:
+    """Mapped app data (app-data/data only): the tighter data-folder boundary, and no links into kept trees."""
+    _check_link_chains(links, kept, root_of=lambda _n: "app-data/data", what="mapped app data symlink")
 
 
 def check_archive(fileobj, mode: str = "r|gz") -> dict:
@@ -167,6 +184,7 @@ def check_archive(fileobj, mode: str = "r|gz") -> dict:
     with tarfile.open(fileobj=fileobj, mode=mode) as t:
         for m in t:
             g.check(m)
+    g.finish()
     return {"entries": g.entries, "bytes": g.bytes}
 
 
@@ -306,7 +324,7 @@ class AppData:
 
     def _run(self, argv: list[str], timeout: int = 120) -> str:
         try:
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=self.box.env,
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=self.box.child_env,
                                stdin=subprocess.DEVNULL)
         except FileNotFoundError:
             raise AppDataError("docker is not installed on this box") from None
@@ -351,7 +369,7 @@ class AppData:
         out = Path(out)
         part = out.with_name(out.name + ".part")
         with tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL, env=self.box.env)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL, env=self.box.child_env)
             try:
                 fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", compresslevel=6) as w, \
@@ -399,7 +417,7 @@ class AppData:
             cmd += ["-e", f"{k}={v}"]
         cmd += ["--entrypoint", "sh", self.image(), "-c", script]
         with tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err, env=self.box.env)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err, env=self.box.child_env)
             try:
                 if stdin_tar is not None:
                     stdin_tar(proc.stdin)
@@ -513,6 +531,7 @@ done
                     selected.check(m)
                     if data_only and m.issym():
                         data_links[name] = m.linkname
+        guard.finish()      # every root: link chains stay inside the root they live in
         if data_only:
             _check_data_links(data_links, kept_out)
         vols = [v for v in vols if "volumes" in parts]
@@ -530,7 +549,7 @@ done
         kept_out = ["app-data/" + k for k in keep]
         links: list[bytes] = []
         with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as outf:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=outf, stderr=err, env=self.box.env)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=outf, stderr=err, env=self.box.child_env)
             failed: BaseException | None = None
             try:
                 with tarfile.open(archive, "r|gz") as t, tarfile.open(fileobj=proc.stdin, mode="w|") as w:

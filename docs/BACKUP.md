@@ -47,7 +47,8 @@ The owner holds the key; the box never sends anything readable off the machine.
 - **Recovery key** (default): 32 random bytes shown once as `WZRK-XXXX-XXXX-…` (base32, with a checksum so a typo is
   reported as a typo, not as a wrong key). The owner saves it (password manager / printed). Scheduled backups need it
   on the box: it is stored 0600 in `~/.wizard-os/secrets/backup-key.json` (the box already holds the data in clear).
-- **Passphrase** (optional, e.g. for a one-off move): scrypt-derived.
+- **Passphrase** (optional, e.g. for a one-off move): scrypt-derived (n = 2^17 written; a file asking for more than
+  2^18 is refused as damaged before any key-derivation work).
 - A file can carry both slots; either opens it. Keys and passphrases are never printed, logged or put on a command
   line; the CLI reads them from a TTY prompt, `--key-file`, or the `WIZARD_BACKUP_KEY` / `WIZARD_BACKUP_PASSPHRASE`
   environment for automation.
@@ -301,7 +302,15 @@ wam backup status   [--json]
 
 Every command prints one JSON object with `--json` (human text otherwise; progress on stderr). Keys come from
 `--key-file`, `WIZARD_BACKUP_KEY` / `WIZARD_BACKUP_PASSPHRASE`, this box's stored key, or a TTY prompt; S3 keys
-from `WIZARD_S3_ACCESS_KEY_ID` / `WIZARD_S3_SECRET_ACCESS_KEY`, `--s3-credentials-file` or a TTY prompt.
+from `WIZARD_S3_ACCESS_KEY_ID` / `WIZARD_S3_SECRET_ACCESS_KEY`, `--s3-credentials-file` or a TTY prompt. These
+variables are read by the engine only: they are removed from the environment of every child process (stock `hermes`,
+`docker` helpers; restic gets its own minimal environment).
+
+`export`, `import`, `undo`, `activate`, `run` and `prune` take one engine lock per box; a second one exits 1 with
+"another backup or restore is running" (a scheduled `run` exits 0 and records `last_skipped` in
+`backup-status.json`). `import` is refused (exit 1, nothing changed) while the last restore is unfinished (`failed`,
+`applying`, `setting-aside`, `undo-failed`, or an undo that stopped part way): run `wam backup undo` first, so the
+real previous Wizard is never replaced as the thing undo puts back.
 
 ## Engine notes (v1)
 

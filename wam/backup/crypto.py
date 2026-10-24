@@ -43,7 +43,9 @@ def hkdf(ikm: bytes, salt: bytes = b"", info: bytes = b"", length: int = 32) -> 
 
 
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 131072, 8, 1
-SCRYPT_MAX_N = 1 << 20
+# The most work a file may ask for: a passphrase slot names its own n, and 2^20 would make opening an untrusted
+# file cost ~1 GiB of memory. 2^18 (256 MiB) leaves room above the 2^17 default every file is written with.
+SCRYPT_MAX_N = 1 << 18
 
 
 def scrypt(passphrase: str, salt: bytes, n: int = SCRYPT_N, r: int = SCRYPT_R, p: int = SCRYPT_P) -> bytes:

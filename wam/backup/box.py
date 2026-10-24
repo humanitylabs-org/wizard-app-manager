@@ -82,6 +82,17 @@ def log(msg: str) -> None:
     print(f"wam backup: {msg}", file=sys.stderr, flush=True)
 
 
+# Secrets the engine itself reads from its environment (keys.py, capture.py, schedule.py). They stay in Box.env for
+# the engine and are removed from every child process environment (docker, hermes, restic builds its own).
+ENGINE_SECRET_ENV = ("WIZARD_BACKUP_KEY", "WIZARD_BACKUP_PASSPHRASE")
+ENGINE_SECRET_PREFIXES = ("WIZARD_S3_",)
+
+
+def child_env(env: dict) -> dict:
+    """`env` without the backup engine's own secrets: for subprocesses (hermes import, gateway start, docker)."""
+    return {k: v for k, v in env.items() if k not in ENGINE_SECRET_ENV and not k.startswith(ENGINE_SECRET_PREFIXES)}
+
+
 def is_test_env(env=os.environ) -> bool:
     return bool(env.get("PYTEST_CURRENT_TEST") or env.get("WAM_BACKUP_TEST"))
 
@@ -105,6 +116,11 @@ class Box:
         self.disk_free = disk_free or (lambda p: shutil.disk_usage(p).free)
         self.after_restore = after_restore
         self.sleep = sleep or time.sleep
+
+    @property
+    def child_env(self) -> dict:
+        """The environment for child processes: Box.env without WIZARD_BACKUP_KEY/PASSPHRASE or WIZARD_S3_*."""
+        return child_env(self.env)
 
     # ------------------------------------------------------------ Runtipi
     @property
@@ -323,7 +339,7 @@ class HermesRunner:
     def _run(self, argv: list[str], *, env=None, stdin: str | None = None, timeout: int = 3600) -> str:
         try:
             p = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout,
-                               env=env or self.box.env, stdin=None if stdin is not None else subprocess.DEVNULL)
+                               env=child_env(env or self.box.env), stdin=None if stdin is not None else subprocess.DEVNULL)
         except FileNotFoundError:
             raise HermesError(f"{Path(argv[0]).name} is not installed on this box") from None
         except subprocess.TimeoutExpired:
@@ -427,7 +443,7 @@ class HermesRunner:
         raise HermesError("cannot find the Python that runs the host Hermes (set WIZARD_HERMES_PYTHON)")
 
     def _host_env(self, agent: Agent) -> dict:
-        return {**self.box.env, "HERMES_HOME": str(agent.home)}
+        return {**self.box.child_env, "HERMES_HOME": str(agent.home)}
 
     # ---- the three operations
     def backup(self, agent: Agent, out_zip: Path) -> None:

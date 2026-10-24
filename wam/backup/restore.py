@@ -413,11 +413,37 @@ def _target_agent(box: Box, a: dict, existing: dict[str, Agent]) -> Agent:
     return Agent(a["id"], False, folder / "home", "container", f"{a.get('app') or 'agent-' + a['id']}:{STORE}", folder)
 
 
+# A new import may start only when the last one ended in one of these: anything else (setting-aside, applying,
+# failed, undo-failed, or an undo that stopped part way) leaves the box half restored, and a second import would set
+# that half-restored state aside as its "before" and point restores/last.json away from the real original.
+SETTLED = {"restored", "undone"}
+NEVER_STARTED = {"staging"}   # nothing was set aside yet (`undo` refuses it as "never changed anything")
+
+
+def check_can_import(box: Box) -> None:
+    if not (box.home / "restores" / "last.json").exists():
+        return
+    try:
+        _, j = last_restore(box)
+    except RestoreError:
+        raise RestoreError("restores/last.json names a restore whose journal cannot be read; refusing to import over "
+                           "it (the previous Wizard may still be set aside there)") from None
+    st = j.get("status")
+    if st in NEVER_STARTED:
+        return
+    if st not in SETTLED or (st != "undone" and j.get("undo_error")):
+        why = f"its undo stopped part way ({j['undo_error']})" if st in SETTLED else f"it is {st}"
+        raise RestoreError(f"the last restore ({j.get('stamp')}) did not finish: {why}. Nothing was changed. Run "
+                           f"`wam backup undo` to put the previous Wizard back first; a new import now would set the "
+                           f"half-restored box aside instead of the original")
+
+
 def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
                   stager=None) -> dict:
     """`stager()` (optional) replaces the file's unlock+stage with another verified source (a restic snapshot:
     wam/backup/snapshot.py); everything after staging is the same path."""
     t0 = time.time()
+    check_can_import(box)
     before_digest_agents = box.agents()
     log("checking the whole file before changing anything")
     r, res = stager() if stager is not None else stage(box, path, keys)
@@ -1181,4 +1207,4 @@ def activate(box: Box, old_is_off: bool) -> dict:
     return out
 
 
-__all__ = ["verify", "verify_stream", "import_bundle", "undo", "activate", "RestoreError", "SpaceError", "human"]
+__all__ = ["verify", "verify_stream", "import_bundle", "check_can_import", "SETTLED", "undo", "activate", "RestoreError", "SpaceError", "human"]
