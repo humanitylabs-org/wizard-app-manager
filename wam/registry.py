@@ -98,6 +98,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            # Provider privacy is an explicit manifest claim, never inferred from repository visibility.
+            **({"private": True} if w.get("private") is True else {}),
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
