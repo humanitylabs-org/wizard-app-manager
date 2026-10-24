@@ -231,6 +231,20 @@ def test_needrestart_parser_dedupes_and_is_list_only(monkeypatch):
     assert op.restart_check()["services"] == ["foo.service"]
 
 
+def test_needrestart_invalid_name_is_skipped_not_fatal(monkeypatch):
+    monkeypatch.setattr(op, "detect", lambda: type("Backend", (), {"reboot_required": lambda s: False})())
+    monkeypatch.setattr(op.shutil, "which", lambda n: "/usr/bin/" + n)
+    out = "NEEDRESTART-SVC: foo.service\nNEEDRESTART-SVC: ../evil\nNEEDRESTART-SVC: user@1000.service\n"
+    monkeypatch.setattr(op, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 0, "running\n" if argv[0] == "systemctl" else out, ""))
+    doc = op.restart_check()
+    assert doc["state"] == "current"
+    assert doc["services"] == ["foo.service", "user@1000.service"]
+    assert doc["skipped"] == ["'../evil'"]
+    monkeypatch.setattr(op.os, "geteuid", lambda: 0)
+    assert op.restart_service("../evil")["state"] == "refused"
+
+
 def test_needrestart_error_never_invents_an_empty_healthy_list(monkeypatch):
     monkeypatch.setattr(op, "detect", lambda: type("Backend", (), {"reboot_required": lambda s: False})())
     monkeypatch.setattr(op.shutil, "which", lambda n: n)

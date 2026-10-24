@@ -455,9 +455,12 @@ def restart_check():
     if p.returncode != 0:
         return dict(doc, state="error", reason=(p.stderr or p.stdout)[-600:])
     names = [line.partition(":")[2].strip() for line in p.stdout.splitlines() if line.startswith("NEEDRESTART-SVC:")]
-    if any(not SERVICE.fullmatch(n) for n in names):
-        return dict(doc, state="error", reason="needrestart returned an invalid service name.")
-    doc["services"] = sorted(set(names))
+    # A name outside the strict unit pattern is never restarted, but it must not hide the valid ones
+    # (real needrestart on a box with pending systemd updates emits such lines). Record it for Health.
+    bad = sorted({n for n in names if not SERVICE.fullmatch(n)})
+    if bad:
+        doc["skipped"] = [repr(n)[:120] for n in bad[:20]]
+    doc["services"] = sorted({n for n in names if SERVICE.fullmatch(n)})
     return doc
 
 
