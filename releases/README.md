@@ -175,3 +175,8 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 
 - Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.35.json`, SHA-256 `5cb16a802b380129e7377622af8205843ad904a673909efea119ab9f098926f4`.
 - 0.3.34 plus Agent Service `039eff5` (#141 phone setup on alongside boxes, #142 owner message shows). Channel: on latest.
+
+## 0.3.36 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.36.json`, SHA-256 `3f6727df061f5f092e273aa3c20fc65c99a1b86c87bb02f83735ce4a64c186ca`.
+- 0.3.35 plus Agent Service `35b2463` (#143 owner message matching on real Hermes history). Channel: on latest.
