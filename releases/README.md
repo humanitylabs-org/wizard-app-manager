@@ -7,7 +7,7 @@ This directory publishes only the installer’s release metadata. The canonical 
 ## Channels (wizard-os DECISIONS #75)
 
 - `latest`: every release as soon as it is cut. Mirror it with each new release JSON.
-- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix-only release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
+- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix or feature release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82 and #93); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
@@ -158,3 +158,46 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os` PR #122 (merge `261f554`), `releases/0.3.28.json`. Byte-identical SHA-256: `0a1c633798b839e5498c4e3b3254afff0656055c7196b48541ebcb240a27ca17`.
 - 0.3.27 plus App Manager #146 (`b44c109`, wizard-os#87): on fresh boxes an app installed from the Store opens. `WIZARD_TRUSTED_HOSTS/ORIGINS` now name the shell origin and the app's own private address; before, they were empty without alongside.json and the app answered 403 "Unknown host". Also carries #140 (additive Chats slot, no default app). The App Manager image moves to the official `v4.10.2-wizard.391-8d6e7bd` (`sha256:197c4b57…`, amd64+arm64); its image inputs are unchanged up to b44c109.
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.28 has a promotion record. Every other pin is identical to 0.3.27.
+
+## 0.3.34 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #187 (merge `b9e2f17`), `releases/0.3.34.json`. Byte-identical SHA-256: `86006b42f04e5cb55e70e46aae09c01661b2b4d8ac4b869cf3f486d0fdb7ddd9`.
+- Current main for the private launch: Wizard UX `788affe`, Agent Service `65d33e1`, App Manager `0f8a58b` (image `db4325a`, image inputs unchanged). Default apps and Hermes pin unchanged from 0.3.33.
+- Channel: on latest only.
+
+## stable 0.3.34 (promoted 24 Oct 2026)
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #189 (branch `release/promote-0.3.34`, merge `5d7823f99ec8932b13163f7260a32be618956eb8`), `releases/stable` (SHA-256 `9bfdc0fda10c4841166b035a7c6d794879ec5bb2438c98a5cff8f897e5ccecad`) and `releases/promotions/0.3.34.json` (SHA-256 `b39449ac389001a96f8b47f90f4f0807f1b67a868bed0e8fb020ec750fbec2f3`).
+- Fast-tracked feature promotion (DECISIONS #93, launch phase): upgrade 0.3.32 -> 0.3.34 passed on the demo box, evidence `docs/acceptance/promote-0.3.34.md`.
+- Channel: `stable` and `latest` both 0.3.34. Rollback: point `stable` back at 0.3.32.
+
+## 0.3.35 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.35.json`, SHA-256 `5cb16a802b380129e7377622af8205843ad904a673909efea119ab9f098926f4`.
+- 0.3.34 plus Agent Service `039eff5` (#141 phone setup on alongside boxes, #142 owner message shows). Channel: on latest.
+
+## 0.3.36 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.36.json`, SHA-256 `3f6727df061f5f092e273aa3c20fc65c99a1b86c87bb02f83735ce4a64c186ca`.
+- 0.3.35 plus Agent Service `35b2463` (#143 owner message matching on real Hermes history). Channel: on latest.
+
+## stable 0.3.36 (promoted 24 Oct 2026)
+
+- Fast-tracked fix promotion: upgrade 0.3.34 -> 0.3.36 passed on the demo box, evidence `docs/acceptance/promote-0.3.36.md`. Rollback: point `stable` back at 0.3.34.
+
+## 0.3.37 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.37.json`, SHA-256 `4046b9ce04ef80663c644dce05526cc24fd677c5fa741158830a6641c55cb266`.
+- 0.3.36 plus Wizard UX `78b3311` (#440) and App Manager `cfd13ec` (#194). Channel: on latest.
+
+## 0.3.38 provenance
+
+Canonical: wizard-os releases/0.3.38.json. SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Channel: on latest only; stable remains 0.3.36 pending installed-demo upgrade verification.
+
+## stable 0.3.38
+
+Promoted under DECISIONS #93 after supported installed-demo upgrade from stable 0.3.36. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.38.md (wizard-os #197). Feature classification records shared-kit/My-skin/default-change ride-alongs.
+
+Release JSON SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Promotion JSON SHA256: `61927c23be97586486781c4b932b40351cd7c6bed637666f0c120f0bc072dd03`.

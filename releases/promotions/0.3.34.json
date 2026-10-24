@@ -1,0 +1,15 @@
+{
+  "version": "0.3.34",
+  "latest_since": "2026-10-24T06:13:12Z",
+  "promoted_at": "2026-10-24T06:29:11Z",
+  "upgrade_test": {
+    "from": "0.3.32",
+    "to": "0.3.34",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.34.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Private launch: stable shipped a shell 356 merges behind main; 0.3.32 -> 0.3.34 upgrade passed on the demo box (DECISIONS #93)"
+  }
+}

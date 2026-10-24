@@ -1,0 +1,15 @@
+{
+  "version": "0.3.36",
+  "latest_since": "2026-10-24T08:14:12Z",
+  "promoted_at": "2026-10-24T08:22:37Z",
+  "upgrade_test": {
+    "from": "0.3.34",
+    "to": "0.3.36",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.36.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Phone setup dead end on alongside boxes and stuck Sent/Dismiss bubble; 0.3.34 -> 0.3.36 upgrade passed on the demo box"
+  }
+}

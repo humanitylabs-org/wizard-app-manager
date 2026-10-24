@@ -325,6 +325,10 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                          f"installing {app_id} beside it would start a second Agent Service")
     if (al := alongside.load(c.home)) and role:
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+        # Alongside is configured before bootstrap creates this app. Prepare upload storage here too,
+        # not only in `wam alongside`'s already-installed-app loop.
+        if role != "shell":
+            alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     if "port" not in form:

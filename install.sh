@@ -259,10 +259,25 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ "$healthy" = 1 ]; then
     || DEGRADED+=("the App Store data service could not be set up (wam store-data)")
 fi
 PENDING=()
+# Before the deferred Hermes restart, Hermes has not loaded the link (or the API key the link added), so the checks
+# that need its API can only say "not yet". Print them as WAIT, not FAIL, so the log never reads as a failed install;
+# any other FAIL still fails. The Hermes restart runs last; 'wizard doctor' afterwards shows them PASS.
+WAIT_CHECKS='^FAIL  (Hermes API answers|shell reaches this Hermes|alongside: host Hermes API answers|live request through the bridge)'
+pre_restart_doctor() {
+  local out rc
+  out="$("$@" 2>&1)"; rc=$?
+  printf '%s\n' "$out" | sed -E "s/$WAIT_CHECKS/WAIT  \1 (after the Hermes restart)/"
+  [ "$rc" -eq 0 ] && return 0
+  printf '%s\n' "$out" | grep -E '^FAIL  ' | grep -qvE "$WAIT_CHECKS" && return 1
+  # A nonzero exit with no WAIT-able FAIL line (e.g. doctor crashed with a traceback) is a real failure.
+  printf '%s\n' "$out" | grep -qE "$WAIT_CHECKS" || return 1
+  PENDING+=("Hermes restarts last; checks marked WAIT pass after it ('wizard doctor' shows them)")
+  return 0
+}
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -eq 0 ]; then
   if [ -n "$RESTART_LATER" ]; then
     # Hermes has not loaded the link yet (its restart comes last), so FAIL lines here may only mean "not yet".
-    echo; "$HOME/.local/bin/wizard" doctor || PENDING+=("wizard doctor: some checks pass only after the Hermes restart; run 'wizard doctor' again in a minute")
+    echo; pre_restart_doctor "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
   else
     echo; "$HOME/.local/bin/wizard" doctor || DEGRADED+=("wizard doctor reported FAIL lines (above)")
   fi
@@ -270,7 +285,11 @@ fi
 if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
   "$HOME/.local/bin/wam" builder-bundle fresh --restart || FAILED+=("stock Hermes could not adopt builder discovery/mount")
 fi
-"$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
+if [ -n "$RESTART_LATER" ]; then
+  pre_restart_doctor "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
+else
+  "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
+fi
 
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
 python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" ${FAILED[@]+"${FAILED[@]}"} ${DEGRADED[@]+"${DEGRADED[@]}"} <<'PY' || true
