@@ -38,7 +38,18 @@ The first time it shows a Tailscale link, send the owner this short explanation 
 
 5. Tell the owner: Hermes restarts once at the end, so this chat goes quiet for about a minute.
 
-6. When status says done, send the owner the private Wizard link it shows. If it shows no link, send its message instead.
+6. When status says done, send the owner this message, word for word, with the private Wizard link that status shows in place of `<link>`. Put the link alone on its own line. If status shows no link, send its message instead.
+
+> Your Wizard is ready. Your private link:
+>
+> <link>
+>
+> 1. Open it on a phone or computer that has the Tailscale app installed, signed in with the same account, and turned on. Anywhere else it won't load. If it doesn't load, open Tailscale and switch it on.
+> 2. Open it in your normal browser, not inside this chat app: press and hold the link, tap Copy, then paste it into Safari (iPhone) or Chrome (Android). On a computer, just click it.
+> 3. This chat shows no preview for the link. That's normal: it's private.
+> 4. You'll first see a short guide to send your first message. Follow it, or tap Skip tour.
+> 5. To keep it on your phone: in Safari tap Share, then Add to Home Screen. In Chrome tap ⋮, then Add to Home screen (or Install app).
+> 6. Later: Setup is with your apps (swipe the orb up on a phone; Alt+O, or Option+O on a Mac). To see the guide again: Settings, then Gestures & help on a phone; Alt+/ (Option+/ on a Mac), then Show me again on a computer.
 
 ## Never
 
