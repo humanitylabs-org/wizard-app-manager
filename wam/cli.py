@@ -16,6 +16,7 @@ Wizard additions:
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
+  wam backup                   encrypted backups: export, import, undo, schedule (--help)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
@@ -25,10 +26,11 @@ Wizard additions:
                 [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
+  wam fresh-agent prepare|connect|status|disconnect [--no-restart]
+                                fresh mode: connect the hermes-agent container to the one Wizard gateway, shared
+                                skills and the wizard-os plugin (docs/lifecycle-bridge.md, "Fresh mode")
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
-  wam backup export|verify|import|undo|activate|key|schedule|run|status
-                                one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
 from __future__ import annotations
 
@@ -49,7 +51,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, fresh_agent, index, private, registry, slots, release_pins
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -184,8 +186,10 @@ def share_registry(c: Config) -> bool:
         for metadata in (c.home / "views").glob("*/view.json"):
             if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", metadata.parent.name):
                 publish(metadata.parent.name, c.home, shared)
+        # Re-render container pointers after publishing all shared metadata.
+        registry.write_pointers(json.loads((c.home / "apps.json").read_text()), shared, "internal")
         return True
-    except OSError as e:
+    except (OSError, ValueError) as e:
         print(f"note: could not share apps.json at {shared} ({e}); apps in containers won't see it", file=sys.stderr)
         return False
 
@@ -333,6 +337,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
+    elif not al:
+        fresh_agent.write_install_overlay(c.runtipi_root, STORE, app_id, c.home)
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
@@ -1474,6 +1480,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "backup":
+        from .backup.cli import main as backup_main
+        return backup_main(argv[1:])
     # Builder lives in its own module; lifecycle/global registry remains separate.
     if argv and argv[0] == "hermes":
         from .hermes_update import main as hermes_main
@@ -1490,9 +1499,6 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
-    if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
-        from .backup.cli import main as backup_main
-        return backup_main(argv[1:])
     if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
         res = app_lifecycle(Config(), argv[1], argv[2])
         print(json.dumps(res, indent=2))
@@ -1527,6 +1533,8 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
+    fa = sub.add_parser("fresh-agent"); fa.add_argument("action", choices=["prepare", "connect", "status", "disconnect"])
+    fa.add_argument("--no-restart", action="store_true")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
     up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
@@ -1594,6 +1602,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2))
             if args.detect:
                 return 0 if res["found"] else 3
+        elif args.cmd == "fresh-agent":
+            res = fresh_agent.main(c, args.action, restart=not args.no_restart)
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("ok") else 1
         elif args.cmd == "troubleshooter":
             from . import troubleshooter
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)

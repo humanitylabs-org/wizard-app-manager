@@ -28,6 +28,7 @@
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
 #      box-only, the `wam` command, then the default app in every parking spot).
 #
+# Owner behind Tailscale Serve: WIZARD_APP_OWNER_LOGINS (and WIZARD_ALLOWED_HOSTS), else this box's tailscale status.
 # Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: on a first install, alongside when an
 # existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN,
 # WIZARD_CHECK=1 (read-only preflight), WIZARD_HERMES_USER / HERMES_HOME (which Hermes), WIZARD_AGENT_SAFE=1|0.

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from . import capture, crypto, fmt, keys as keylib, restic, restore, schedule, snapshot
@@ -172,7 +172,8 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     args = _parser().parse_args(argv)
     box = box or Box()
     try:
-        res = _dispatch(args, box)
+        with box.operation() if args.cmd in {"export", "import", "undo", "activate", "run"} else nullcontext():
+            res = _dispatch(args, box)
         code = 0 if res.get("ok", True) else (PARTIAL if res.get("partial") else 1)
     except schedule.Busy as e:
         res, code = ({"ok": True, "skipped": str(e)}, 0) if args.cmd == "run" else ({"ok": False, "error": str(e)}, 1)

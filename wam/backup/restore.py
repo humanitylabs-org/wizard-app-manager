@@ -36,6 +36,7 @@ from pathlib import Path
 
 from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
+from .box import managed_operation
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
                   box_digest, digest_differences, human, log, need_space, skip_home_entry)
@@ -438,6 +439,7 @@ def check_can_import(box: Box) -> None:
                            f"half-restored box aside instead of the original")
 
 
+@managed_operation
 def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
                   stager=None) -> dict:
     """`stager()` (optional) replaces the file's unlock+stage with another verified source (a restic snapshot:
@@ -964,6 +966,7 @@ def last_restore(box: Box) -> tuple[Path, dict]:
         raise RestoreError("there is no restore to undo or activate on this box") from None
 
 
+@managed_operation
 def undo(box: Box) -> dict:
     try:
         return _undo(box)
@@ -1170,6 +1173,7 @@ def _walk_back(held: Path) -> list[str]:
 
 # ---------------------------------------------------------------- activate
 
+@managed_operation
 def activate(box: Box, old_is_off: bool) -> dict:
     if not old_is_off:
         raise RestoreError("confirm the old Wizard is off first: run `wam backup activate --old-is-off` "

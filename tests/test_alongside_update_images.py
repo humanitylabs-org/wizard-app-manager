@@ -34,7 +34,7 @@ def box(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     home, hh, rtroot = tmp_path / "wos", tmp_path / "hermes", tmp_path / "runtipi"
     home.mkdir(); hh.mkdir()
-    (hh / "config.yaml").write_text("owner sentinel\n")
+    (hh / "config.yaml").write_text("owner_sentinel: unchanged\nplatforms:\n  api:\n    key: fixture-api-key\n")
     st = {"mode": "alongside", "agent": {"id": "host-hermes", "name": "host Hermes", "external": True,
           "hermes_home": str(hh), "origin": "http://127.0.0.1:8642", "uid": os.getuid(), "gid": os.getgid()},
           "shell": {"port": 8796, "share_history": False, "share_sessions": False},
@@ -84,7 +84,7 @@ def test_app_update_reconciles_stale_override_before_queue(box, app):
     assert state["previous_images"][app] == OLD
     assert read_override(c, app)["network_mode"] == "host"
     assert state["shell"]["port"] == 8796 and state["service"]["port"] == 8797
-    assert (Path(state["agent"]["hermes_home"]) / "config.yaml").read_text() == "owner sentinel\n"
+    assert (Path(state["agent"]["hermes_home"]) / "config.yaml").read_text() == "owner_sentinel: unchanged\nplatforms:\n  api:\n    key: fixture-api-key\n"
     cli.app_update(c, f"{app}:wizardapps")
     assert alongside.load(c.home)["previous_images"][app] == OLD  # reruns keep rollback
 

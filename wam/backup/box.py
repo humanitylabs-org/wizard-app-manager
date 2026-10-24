@@ -25,10 +25,12 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import ExitStack, contextmanager
+from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import alongside, registry
+from .. import alongside, managed_runtime, registry
 from ..runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -97,6 +99,15 @@ def is_test_env(env=os.environ) -> bool:
     return bool(env.get("PYTEST_CURRENT_TEST") or env.get("WAM_BACKUP_TEST"))
 
 
+def managed_operation(fn):
+    """Reserve admission for a whole engine operation, including cleanup on failure."""
+    @wraps(fn)
+    def wrapped(box, *args, **kwargs):
+        with box.operation():
+            return fn(box, *args, **kwargs)
+    return wrapped
+
+
 class Box:
     def __init__(self, home: Path | None = None, runtipi_root: Path | None = None, *, rt=None, env=None,
                  runner=None, systemctl=None, disk_free=None, after_restore=None, sleep=None) -> None:
@@ -116,6 +127,52 @@ class Box:
         self.disk_free = disk_free or (lambda p: shutil.disk_usage(p).free)
         self.after_restore = after_restore
         self.sleep = sleep or time.sleep
+        self._operation_active = False
+        self._managed_config = None
+        self._reservation = None
+
+    @contextmanager
+    def operation(self):
+        """One Mac admission reservation for the entire command, not each container.
+
+        Nested engine entry points reuse it (run -> snapshot -> export). Acquire
+        before locks, staging, app stops or repository writes. No manifest is a
+        no-op on ordinary Linux installs.
+        """
+        if self._operation_active:
+            yield
+            return
+        with ExitStack() as stack:
+            try:
+                cfg = managed_runtime.configuration()
+                reservation = stack.enter_context(managed_runtime.operation()) if cfg else None
+                if cfg and (reservation is None or reservation.closed):
+                    raise RuntimeError("managed backup requires an owned operation reservation")
+            except RuntimeError as e:
+                if str(e) == "maintenance_active":
+                    raise HermesError("Wizard maintenance is active; backup/restore refused. Nothing was changed.") from None
+                raise HermesError(str(e)) from None
+            self._operation_active = True
+            self._managed_config, self._reservation = dict(cfg) if cfg else None, reservation
+            try:
+                yield
+            finally:
+                self._operation_active = False
+                self._managed_config = self._reservation = None
+
+    def managed_image(self) -> str | None:
+        """Fail closed if admission or the installed image changed during a run."""
+        try:
+            cfg = managed_runtime.configuration()
+        except RuntimeError as e:
+            raise HermesError(str(e)) from None
+        if cfg is None and self._managed_config is None:
+            return None
+        if not self._operation_active or self._reservation is None or self._reservation.closed:
+            raise HermesError("managed backup requires an owned operation reservation")
+        if not cfg or cfg != self._managed_config:
+            raise HermesError("managed backup manifest changed during the operation")
+        return cfg["image"]
 
     @property
     def child_env(self) -> dict:
@@ -353,6 +410,8 @@ class HermesRunner:
     def image(self, agent: Agent) -> str:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
         (Runtipi's stop is `compose down`, so a stopped app has no container)."""
+        if image := self.box.managed_image():
+            return image
         project = (agent.urn or "").replace(":", "_")
         ids = self._run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
         if ids:
@@ -415,7 +474,13 @@ class HermesRunner:
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
         for src, dst, ro in mounts:
             cmd += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
-        cmd += ["--entrypoint", entry, self.image(agent), *args]
+        image = self.image(agent)
+        managed_image = self.box.managed_image()
+        if managed_image:
+            if image != managed_image:
+                raise HermesError("managed backup image does not match installed manifest")
+            cmd += ["-v", managed_runtime.STATE + ":/wizard-managed-state"]
+        cmd += ["--entrypoint", entry, image, *args]
         return self._run(cmd, stdin=stdin, timeout=timeout)
 
     # ---- host agent

@@ -6,11 +6,16 @@ requires-python = ">=3.10"
 dependencies = ["PyYAML>=6"]
 license = {text = "GPL-3.0-only"}
 
+[project.optional-dependencies]
+test = ["pytest>=8", "ruamel.yaml>=0.18", "PyJWT>=2"]
+
 [project.scripts]
 wam = "wam.cli:main"
 
 [tool.setuptools]
-packages = ["wam", "wam.backup"]
+packages = ["wam", "wam.backup", "wam.vendor", "wam.vendor.wizard_os_plugin"]
 
 [tool.setuptools.package-data]
-wam = ["release-index.mjs"]
+"wam" = ["defaults.json", "release-index.mjs"]
+"wam.vendor" = ["SOURCE.json"]
+"wam.vendor.wizard_os_plugin" = ["plugin.yaml"]

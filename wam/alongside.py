@@ -26,6 +26,7 @@ import re
 import secrets
 import shutil
 import socket
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -155,6 +156,49 @@ def gateway_token(wizard_home: Path) -> str:
     return t
 
 
+_LOGIN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9._-]+$")
+_HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def _tailscale_status() -> dict:
+    try:
+        p = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
+        return json.loads(p.stdout) if p.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+
+
+def owner_identity() -> dict:
+    """Who counts as the owner behind a reverse proxy (Tailscale Serve), for the Agent Service's
+    WIZARD_APP_OWNER_LOGINS, and the box's tailnet name for its Host fence (WIZARD_ALLOWED_HOSTS).
+    Explicit $WIZARD_APP_OWNER_LOGINS / $WIZARD_ALLOWED_HOSTS win; else this node's own `tailscale status`
+    (Self's user login and DNS name). Never "every tailnet user": no login found means none."""
+    logins = [x.strip().lower() for x in os.environ.get("WIZARD_APP_OWNER_LOGINS", "").split(",") if x.strip()]
+    hosts = [x.strip().lower() for x in os.environ.get("WIZARD_ALLOWED_HOSTS", "").split(",") if x.strip()]
+    if not logins or not hosts:
+        ts = _tailscale_status()
+        me = ts.get("Self") or {}
+        user = (ts.get("User") or {}).get(str(me.get("UserID"))) or {}
+        if not logins and user.get("LoginName"):
+            logins = [str(user["LoginName"]).lower()]
+        if not hosts and me.get("DNSName"):
+            hosts = [str(me["DNSName"]).rstrip(".").lower()]
+    bad = [x for x in logins if not _LOGIN.match(x)] + [x for x in hosts if not _HOSTNAME.match(x)]
+    if bad:
+        raise SystemExit(f"owner login / host {bad[0]!r} is not a plain login or hostname")
+    return {"logins": logins, "hosts": hosts}
+
+
+def owner_env(logins, hosts) -> str:
+    """Compose environment lines for the Service's owner logins and trusted host names (validated values only)."""
+    out = ""
+    if logins and all(_LOGIN.match(x) for x in logins):
+        out += f'\n      WIZARD_APP_OWNER_LOGINS: "{",".join(logins)}"'
+    if hosts and all(_HOSTNAME.match(x) for x in hosts):
+        out += f'\n      WIZARD_ALLOWED_HOSTS: "{",".join(hosts)}"'
+    return out
+
+
 def port_free(port: int, host: str = "127.0.0.1") -> bool:
     s = socket.socket()
     try:
@@ -238,6 +282,16 @@ def role_of(app_id: str, provides: list | None) -> str | None:
     return None
 
 
+# The host-only lifecycle bridge (python3 -m wam.lifecycle serve; docs/lifecycle-bridge.md). The alongside shell runs
+# on the host network, so it reaches the bridge on the host's loopback.
+LIFECYCLE_ORIGIN = "http://127.0.0.1:7791"
+
+
+def is_bridge_app(app_id: str) -> bool:
+    """The modular bridge replaces the legacy combined shell, not the separate wizard-ux app."""
+    return app_id in {"wizard-shell", "wizard-agent-service"}
+
+
 def pick_port(start: int = DEFAULT_SHELL_PORT, avoid: set[int] | None = None) -> int:
     for p in range(start, start + 200):
         if p not in (avoid or set()) and port_free(p):
@@ -267,6 +321,12 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
                   "share_sessions": bool((prev.get("shell") or {}).get("share_sessions")
                                          if share_sessions is None else share_sessions)},
     }
+    # The owner behind Tailscale Serve (optional here: without it only direct loopback callers are the owner).
+    ident = owner_identity()
+    for k in ("logins", "hosts"):
+        v = ident[k] or (prev.get("shell") or {}).get(f"owner_{k}")
+        if v:
+            st["shell"][f"owner_{k}"] = v
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
     # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
     st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
@@ -329,9 +389,12 @@ services:
       WIZARD_HOST: 127.0.0.1
       WIZARD_PORT: "{port}"
       WIZARD_SETUP_MODE: alongside
+      WIZARD_UX_PREFIX: wizard-os-home
       HERMES_ORIGIN: {origin}{state_env}{media_env}{artifact_env}{stt_env}
       WIZARD_APPS_MCP_ADDRESS: url
-      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}{volumes}
+      WIZARD_MCP_TOKEN: ${{WIZARD_MCP_TOKEN}}
+      WIZARD_APP_MANAGER_URL: {manager}
+      WIZARD_APP_MANAGER_TOKEN: ${{WIZARD_APP_MANAGER_TOKEN}}{owner}{volumes}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{port}/wizard/health >/dev/null || exit 1"]
 """
@@ -589,7 +652,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
             raise SystemExit(f"Transcriber address {stt_origin!r} is not a loopback origin")
         stt_env = f"\n      WIZARD_STT_ORIGIN: {stt_origin}"
     return SHELL_OVERRIDE.format(
-        app=app_id, origin=a["origin"], port=port,
+        app=app_id, origin=a["origin"], port=port, manager=LIFECYCLE_ORIGIN,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"
                 "# read-only, so the shell can read every file there, credentials included."
                 if share else "The owner opted in to --share-sessions: only the Hermes session database (state.db and\n"
@@ -599,7 +662,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         image=image_lines(st, app_id),
         user=f'\n    user: "{container_user(a, rootless)}"',
         state_env=f'\n      WIZARD_HERMES_STATE_PATH: "{"/hermes/state.db" if share or sessions else ""}"',
-        media_env=media_env, artifact_env=artifact_env, stt_env=stt_env, volumes=volumes)
+        media_env=media_env, artifact_env=artifact_env, stt_env=stt_env, owner=owner_env(st["shell"].get("owner_logins"), st["shell"].get("owner_hosts")), volumes=volumes)
 
 
 def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_home: Path,
@@ -621,9 +684,18 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
         (d / "app.env").unlink(missing_ok=True)
         return d / "docker-compose.yml"
     envp = d / "app.env"
+    from .lifecycle import token_file   # late: lifecycle imports this module
+    # The same dedicated token the host lifecycle bridge (wizard-app-lifecycle.service) checks; server-side only.
+    manager_token = token_file(wizard_home / "lifecycle-token")
     fd = os.open(envp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(f"WIZARD_MCP_TOKEN={gateway_token(wizard_home)}\n")
+        f.write(f"WIZARD_APP_MANAGER_TOKEN={manager_token}\n")
+        # Re-read after link/relink: unlink removes a generated Hermes API key.
+        # The stock Runtipi user-config app.env overrides the saved install form.
+        host_key = api_key(Path(st["agent"]["hermes_home"]))
+        if host_key:
+            f.write(f"WIZARD_HERMES_API_KEY={host_key}\n")
     os.chmod(envp, 0o600)
     return d / "docker-compose.yml"
 

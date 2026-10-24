@@ -6,12 +6,21 @@
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "fad49e4e563d20f177cfd952ae85ed1c3fd82973326d52f60872afaf7e566720",
+    "wizard": "b484171b1f5ae366b3d065505f5bdeb4f82e02eae0178ad6dfea6a755783efae",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
-  "about": "Upstream base is pinned by commit and upstream_sha256. WAM maintains local stock-builder provisioning/link lifecycle changes in wizard; sha256 records the shipped files. Do not replace local changes with an unreviewed upstream sync.",
   "upstream_sha256": {
     "wizard": "0e3a08aaaefdb1ca664e1418b75921290e40edee08234c2b59c1a80e0f2b4c2b",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
-  }
+  },
+  "local_patches": [
+    {
+      "source": "af9f4d6f5443194631be2cc84c0f928db9c21f0a",
+      "description": "Preserve Mac offline bundled plugin-source installation inside current write-ahead journal; no stock Hermes changes."
+    },
+    {
+      "description": "Retain stock-builder link lifecycle and plugin fingerprint journal alongside the managed Mac offline plugin source."
+    }
+  ],
+  "about": "Vendored wizard-os source at commit plus the declared Mac local patch. sha256 covers actual distributed bytes; upstream_sha256 records the unpatched source. This is not a byte-identical upstream copy."
 }

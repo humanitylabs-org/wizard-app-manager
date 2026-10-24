@@ -156,7 +156,7 @@ def test_template_mcp_server_speaks_mcp(tmp_path):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
     proc = subprocess.Popen([sys.executable, "-c", src], cwd=tmp_path,
-                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "DATA_DIR": str(tmp_path / "data")})
+                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "DATA_DIR": str(tmp_path / "data")})
     try:
         for _ in range(50):
             try:
@@ -316,6 +316,22 @@ def test_alongside_external_agent_slot_and_shell_override(tmp_path, monkeypatch)
     assert 'WIZARD_HERMES_STATE_PATH: ""' in text
     yaml.safe_load(text.replace("!reset", ""))   # valid compose YAML (Runtipi's loader knows !reset)
     assert 'WIZARD_PORT: "18796"' in text and "host-key-not-real" not in text
+    assert "WIZARD_UX_PREFIX: wizard-os-home" in text   # the UX's Store/System/PWA paths, also on the legacy image
+    envp = p.parent / "app.env"
+    assert (envp.stat().st_mode & 0o777) == 0o600 and envp.read_text().startswith("WIZARD_MCP_TOKEN=")
+    # The shell reaches the host lifecycle bridge with the bridge's own dedicated token, server-side only.
+    assert "WIZARD_APP_MANAGER_URL: http://127.0.0.1:7791" in text
+    assert "WIZARD_APP_MANAGER_TOKEN: ${WIZARD_APP_MANAGER_TOKEN}" in text
+    lifecycle_token = (wh / "lifecycle-token").read_text().strip()
+    assert f"WIZARD_APP_MANAGER_TOKEN={lifecycle_token}\n" in envp.read_text() and lifecycle_token not in text
+    assert "WIZARD_APP_OWNER_LOGINS" not in text   # no owner known: only direct loopback callers are the owner
+    # The owner behind Tailscale Serve: this box's tailnet login and name (or the explicit env), pinned in the override.
+    monkeypatch.setattr(alongside, "_tailscale_status", lambda: {
+        "Self": {"UserID": 7, "DNSName": "box.tail0.ts.net."}, "User": {"7": {"LoginName": "Owner@GitHub"}}})
+    alongside.enable(wh, hh, 18796)
+    spec = yaml.safe_load(alongside.write_shell_override(tmp_path / "rt", "wizardapps", "wizard-shell", wh)
+                          .read_text().replace("!reset", ""))["services"]["wizard-shell"]["environment"]
+    assert spec["WIZARD_APP_OWNER_LOGINS"] == "owner@github" and spec["WIZARD_ALLOWED_HOSTS"] == "box.tail0.ts.net"
     # attachments: the host Hermes is handed the host path of the user-files folder, not the container's /media
     env = yaml.safe_load(text.replace("!reset", ""))["services"]["wizard-shell"]["environment"]
     assert env["WIZARD_MEDIA_AGENT_ROOT"] == str(tmp_path / "rt" / "media")
@@ -832,8 +848,8 @@ def test_get_sh_rerun_on_an_alongside_box_stays_alongside(tmp_path):
     assert _mode(tmp_path, wos="alongside", runtipi=True) == "alongside"
 
 
-def test_vendored_wizard_cli_matches_recorded_provenance():
-    """Verify local hashes and the unchanged upstream base separately."""
+def test_vendored_wizard_cli_matches_its_wizard_os_source():
+    """Verify distributed hashes and upstream hashes, including explicitly declared local patches."""
     import hashlib
     d = Path(__file__).resolve().parents[1] / "wizard-cli"
     src = json.loads((d / "SOURCE.json").read_text())
@@ -843,9 +859,21 @@ def test_vendored_wizard_cli_matches_recorded_provenance():
         import urllib.request
         for name, path in src["files"].items():
             url = f"https://raw.githubusercontent.com/{src['repo']}/{src['commit']}/{path}"
-            with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
-                assert hashlib.sha256(r.read()).hexdigest() == src['upstream_sha256'][name], f"{name} base differs from {url}"
+            # The checked-in Mac composition declares a local patch separately; do not compare
+            # patched distributed bytes to unpatched upstream and call that source parity.
+            expected = src.get("upstream_sha256", {}).get(name, src["sha256"][name])
+            if os.environ.get("WIZARD_SOURCE_GITHUB_AUTH") == "1":
+                # Opt-in existing gh authentication; no token values enter logs or environment here.
+                # An authenticated lookup failure FAILS instead of skipping the source gate.
+                raw = subprocess.check_output(["gh", "api", f"repos/{src['repo']}/contents/{path}?ref={src['commit']}",
+                                               "-H", "Accept: application/vnd.github.raw+json"], timeout=30)
+            else:
+                with urllib.request.urlopen(url, timeout=10) as r:   # noqa: S310
+                    raw = r.read()
+            assert hashlib.sha256(raw).hexdigest() == expected, f"{name} differs from pinned upstream {url}"
     except OSError as e:   # wizard-os is private: CI without a token checks the local pin only
+        if os.environ.get("WIZARD_SOURCE_GITHUB_AUTH") == "1":
+            raise
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
 
