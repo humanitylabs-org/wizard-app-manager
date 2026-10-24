@@ -184,3 +184,8 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 ## stable 0.3.36 (promoted 24 Oct 2026)
 
 - Fast-tracked fix promotion: upgrade 0.3.34 -> 0.3.36 passed on the demo box, evidence `docs/acceptance/promote-0.3.36.md`. Rollback: point `stable` back at 0.3.34.
+
+## 0.3.37 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.37.json`, SHA-256 `4046b9ce04ef80663c644dce05526cc24fd677c5fa741158830a6641c55cb266`.
+- 0.3.36 plus Wizard UX `78b3311` (#440) and App Manager `cfd13ec` (#194). Channel: on latest.
