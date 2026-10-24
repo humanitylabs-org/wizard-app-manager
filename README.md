@@ -73,6 +73,7 @@ Wizard additions:
 | `wam apps [--json]` | Installed apps with their MCP addresses; writes `~/.wizard-os/apps.json` + `skills/` for agents |
 | `wam doctor [--fix]` | Check the whole chain |
 | `wam updates [--ask\|--auto] [--channel stable\|latest] [--apply]` | Update check and the owner's choice. Ask me is the default; Automatic installs only promoted **stable** releases. `--channel latest` follows every release as it is cut (testers); stable is the default |
+| `wam release init\|check\|update\|rebuild\|auto\|status\|off` | The owner's own release: their commits on a local wizard-ux branch, merged on top of the channel's shell, tested, built and served (see [docs/my-release.md](docs/my-release.md), wizard-os#186) |
 | `wam serve` | Box-only HTTP API on `127.0.0.1:7790` (the `wizard-app-manager-api` user service runs it) |
 | `wam prefetch` | Cache recommended Docker images only; never install apps or create containers |
 

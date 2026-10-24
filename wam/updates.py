@@ -329,8 +329,10 @@ def installing(home: Path | None = None) -> bool:
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
     """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
-    from . import hermes_update
+    from . import hermes_update, release
     run = install_state(home)
+    if release.enabled(home):      # the owner's own release: "an update" is the channel's newest shell under their changes
+        return {**_release_status(home, run), "hermes": hermes_update.status(home, base)}
     chan = channel(home)
     have, want = installed(home), latest(base, fresh=fresh, chan=chan)
     stable = want if chan == "stable" else latest(base, chan="stable")
@@ -407,13 +409,17 @@ def set_channel(new: str, home: Path | None = None) -> dict:
 
 
 def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False,
-          target: str | None = None) -> dict:
+          target: str | None = None, spawn=None) -> dict:
     """Start the update now: the installer's own detached, agent-safe rerun. Progress: `os.sh | bash -s status`.
 
     The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
     narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
-    moves onto stable pins)."""
+    moves onto stable pins). On a box running the owner's own release (`wam release`) it starts `wam release update`
+    instead (`spawn`: tests)."""
+    from . import release
+    if release.enabled(home):
+        return _release_apply(home, runner, spawn)
     st = status(home, base, fresh=True)
     if target:
         newer = st["installed"] is not None and _key(target) > _key(st["installed"])
@@ -479,6 +485,9 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     box, and not while the agent is working (skipped; the next nightly window tries again)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
+    from . import release
+    if release.enabled(home):      # `wam release`'s own hourly timer applies the channel in Automatic; never twice
+        return {**status(home), "started": False, "note": "the release timer handles Automatic on this box"}
     st = status(home, base, fresh=True)
     stable = st["stable"]
     newer = bool(stable) and st["installed"] is not None and _key(stable) > _key(st["installed"])
@@ -491,3 +500,59 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     if (is_busy or (lambda: busy(service_origin(home))))():
         return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
     return apply(home, base, runner, target=stable)
+
+
+# ---------------------------------------------------------------- a box running the owner's own release (wizard-os#186)
+# `wam release` keeps the owner's commits on top of the channel's shell and serves that build. The box keeps the same
+# single choice, but its "update" is `wam release update`, not the installer: Automatic = the release's hourly timer
+# merges the channel by itself; Ask me = the timer only checks and nothing lands until the owner presses Update. The
+# owner's own changes (`wam release rebuild`) always build, whatever the mode. Stock boxes never reach this code.
+
+def _release_status(home: Path | None, run: str | None) -> dict:
+    from . import release
+    rel = release.release(home)
+    latest_main, checked = rel.pop("_latest"), rel.pop("_checked")
+    return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": channel(home),
+            "installed": rel["build"], "latest": latest_main, "stable": None,
+            "update_available": rel["behind"] > 0 and not rel["building"], "unpinned": False, "checked": checked,
+            "installing": rel["building"] or run == "running", "interrupted": False, "release": rel}
+
+
+def _spawn_detached(home: Path | None) -> None:
+    import shutil
+    from . import release
+    env = dict(os.environ)
+    sock = f"/run/user/{os.getuid()}/docker.sock"
+    if "DOCKER_HOST" not in env and os.path.exists(sock):   # rootless docker, as the systemd unit sets it
+        env["DOCKER_HOST"] = f"unix://{sock}"
+    env["WIZARD_OS_HOME"] = str(_home(home))
+    logs = release.paths(home).logs
+    logs.mkdir(parents=True, exist_ok=True)
+    wam = shutil.which("wam") or str(Path.home() / ".local/bin/wam")
+    with open(logs / "update.log", "ab") as log:
+        subprocess.Popen([wam, "release", "update"], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                         env=env, start_new_session=True, close_fds=True)
+
+
+def _release_apply(home: Path | None, runner, spawn) -> dict:
+    """Update now: `wam release update` (merge the channel, test, build, switch) in its own systemd unit so it
+    outlives this request; a detached run when the unit cannot be started."""
+    from . import release
+    st = _release_status(home, install_state(home))
+    if st["release"]["building"]:
+        return {**st, "started": False, "note": "a build of your release is already running"}
+    if st["checked"] and st["release"]["behind"] == 0:
+        return {**st, "started": False}
+    try:
+        r = runner(["systemctl", "--user", "start", "--no-block", release.UPDATE_UNIT], capture_output=True, text=True,
+                   timeout=30)
+        ok, how = r.returncode == 0, "systemd"
+    except (OSError, subprocess.SubprocessError):
+        ok, how = False, None
+    if not ok:
+        try:
+            (spawn or _spawn_detached)(home)
+            ok, how = True, "detached"
+        except OSError as e:
+            return {**st, "started": False, "error": f"could not start the update: {e}"[:300]}
+    return {**st, "started": True, "via": how}
