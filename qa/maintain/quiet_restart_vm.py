@@ -2,9 +2,12 @@
 """Destructive quiet-restart QA. ONLY wos-maint-qa (disposable Lima guest).
 Invoked by the durable Thales worker, never on the host or an owner's install.
 """
+import hashlib
 import json
 import os
 import shutil
+import tarfile
+import urllib.request
 import sqlite3
 import subprocess
 import sys
@@ -63,6 +66,7 @@ def services():
 def prepare():
     assert os.geteuid() == 0
     assert cmd('hostname') in ('wos-maint-qa', 'lima-wos-maint-qa'), 'Refuse any other machine'
+    os.umask(0o022)  # The suite owner must traverse BASE and the verified Node directory.
     OUT.mkdir(parents=True, exist_ok=True)
     HH.mkdir(parents=True, exist_ok=True)
     os.environ['WIZARD_OS_HOME'] = str(HOME)
@@ -71,12 +75,68 @@ def prepare():
     (BASE / 'tmp').mkdir(exist_ok=True)
 
 
+NATIVE_APT = ('apt-daily.timer', 'apt-daily-upgrade.timer', 'apt-daily.service',
+              'apt-daily-upgrade.service', 'unattended-upgrades.service')
+NODE_VERSION = '22.22.0'
+NODE_SHA256 = '1bf1eb9ee63ffc4e5d324c0b9b62cf4a289f44332dfef9607cea1a0d9596ba6f'
+
+
+def isolate_native_apt():
+    # A native unattended-upgrade restarted the fixture during cycle 27. Stop
+    # both queued timers and in-flight services before preparing the baseline.
+    cmd('systemctl', 'mask', '--now', *NATIVE_APT)
+    for unit in NATIVE_APT:
+        assert cmd('systemctl', 'is-enabled', unit, check=False) == 'masked', unit
+        assert cmd('systemctl', 'is-active', unit, check=False) in ('inactive', 'failed'), unit
+    save('native-apt-isolation', {'masked': list(NATIVE_APT)})
+
+
+def install_test_node():
+    # Match CI's Node 22 (Ubuntu's nodejs is too old for strip-types).
+    assert os.uname().machine == 'aarch64', 'This disposable Thales rig is arm64 only'
+    name = f'node-v{NODE_VERSION}-linux-arm64'
+    archive = BASE / (name + '.tar.xz')
+    with urllib.request.urlopen(f'https://nodejs.org/dist/v{NODE_VERSION}/{archive.name}', timeout=120) as response:
+        with archive.open('wb') as target:
+            shutil.copyfileobj(response, target)
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == NODE_SHA256, 'Node archive digest mismatch'
+    with tarfile.open(archive) as source:
+        source.extractall(BASE, filter='data')
+    node_bin = BASE / name / 'bin'
+    # Tests build their own PATH from this one; env is also preserved in runuser.
+    os.environ['PATH'] = str(node_bin) + ':' + os.environ['PATH']
+    version = cmd('node', '--version')
+    assert version == 'v' + NODE_VERSION
+    cmd('node', '--experimental-strip-types', '--input-type=module', '-e', 'const x = 1;')
+    return version
+
+
+def suite_command(root, home, temporary):
+    # Installer unit fixtures assume an ordinary owner, not root. Running them
+    # as root called the real usermod and system-scope systemd-run in the VM.
+    return ['runuser', '-u', 'wam-suite-qa', '--', 'env', '-i',
+            'HOME=' + str(home), 'TMPDIR=' + str(temporary), 'LANG=C.UTF-8',
+            'PATH=' + os.environ['PATH'], 'PYTHONPATH=' + str(root),
+            'python3', '-m', 'pytest', '-q', str(root / 'tests')]
+
+
+def run_suite(root, name, log):
+    p = subprocess.run(suite_command(root, BASE / 'suite-home', BASE / 'suite-tmp'),
+                       cwd=root, text=True, capture_output=True, timeout=1200)
+    (OUT / log).write_text(p.stdout + p.stderr)
+    save(name, {'returncode': p.returncode, 'tail': (p.stdout + p.stderr)[-5000:]})
+    return p.returncode
+
+
 def pre():
     # All package mutations and systemctl actions run INSIDE this asserted VM.
+    os.umask(0o022)
+    isolate_native_apt()
     with op._no_service_restarts():
         cmd('apt-get', 'update', '-qq')
         cmd('env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_SUSPEND=1', 'apt-get', 'install', '-y', '-q',
-            'needrestart', 'python3-pytest', 'python3-yaml', 'sudo', 'git')
+            'needrestart', 'python3-pytest', 'python3-yaml', 'python3-jwt', 'sudo', 'git', 'curl', 'xz-utils')
+    node_version = install_test_node()
     root = str(Path(__file__).resolve().parents[2])
     bundle = Path(root) / 'source.bundle'
     if bundle.exists():
@@ -93,21 +153,27 @@ def pre():
             cmd('git', '-C', str(combined_root), 'add', '-A', '-f', '.')
             save('source', {'candidate': cmd('git', '-C', root, 'rev-parse', 'HEAD'),
                             'integration_tree': cmd('git', '-C', str(combined_root), 'write-tree')})
-    tests = subprocess.run(['python3', '-m', 'pytest', '-q', root + '/tests'], cwd=root,
-                           text=True, capture_output=True, timeout=1200, env={**os.environ, 'PYTHONPATH': root})
-    (OUT / 'pytest.log').write_text(tests.stdout + tests.stderr)
-    save('full-suite', {'returncode': tests.returncode, 'tail': (tests.stdout + tests.stderr)[-5000:]})
+    cmd('useradd', '-m', '-d', str(BASE / 'suite-home'), 'wam-suite-qa')
+    (BASE / 'suite-tmp').mkdir()
+    cmd('chown', '-R', 'wam-suite-qa:wam-suite-qa', root, str(BASE / 'suite-home'), str(BASE / 'suite-tmp'))
+    save('suite-environment', {'user': cmd('runuser', '-u', 'wam-suite-qa', '--', 'id', '-u'),
+                               'node': node_version, 'clean_environment': True})
+    tests_failed = run_suite(Path(root), 'full-suite', 'pytest.log')
     integration = Path(root) / 'backup-integration'
-    integration_failed = False
-    if integration.exists():
-        combined = subprocess.run(['python3', '-m', 'pytest', '-q', str(integration / 'tests')], cwd=integration,
-                                  text=True, capture_output=True, timeout=1200,
-                                  env={**os.environ, 'PYTHONPATH': str(integration)})
-        (OUT / 'backup-integration-pytest.log').write_text(combined.stdout + combined.stderr)
-        save('backup-integration-suite', {'returncode': combined.returncode,
-                                          'tail': (combined.stdout + combined.stderr)[-5000:]})
-        integration_failed = combined.returncode != 0
-    # Keep going after a test-suite failure to collect the independent VM gates.
+    assert integration.is_dir(), 'Missing backup integration export; both suites are required'
+    integration_failed = run_suite(integration, 'backup-integration-suite', 'backup-integration-pytest.log')
+    # Test failures must not be treated as ancillary evidence or proceed to reboot.
+    assert not tests_failed and not integration_failed, 'Candidate/integration test suite failed; see retained logs'
+    # Seed a real reboot-required condition without consuming the held platform
+    # candidates. Do not bulk-upgrade non-held reverse dependencies of systemd.
+    with op._no_service_restarts():
+        cmd('env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_SUSPEND=1', 'apt-get', 'install',
+            '-y', '-q', '--only-upgrade', 'linux-virtual', 'linux-image-virtual', 'linux-headers-virtual')
+    baseline = op.check()
+    save('security-baseline', baseline)
+    assert baseline.get('held') and baseline.get('reboot_required'), 'Fresh image lacks held/reboot baseline'
+    # Keep package setup out of the fixture's controlled observation interval.
+    isolate_native_apt()
     BIN.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile('/usr/bin/sleep', BIN); BIN.chmod(0o755)
     Path('/etc/systemd/system/' + UNIT).write_text('[Unit]\nDescription=Disposable quiet maintenance proof\n'
@@ -161,8 +227,13 @@ def pre():
                  'active': cmd('systemctl', 'is-active', UNIT, check=False)}
         cycles.append(entry)
         save('restart-cycles', {'completed': len(cycles), 'cycles': cycles})
-        assert old != new and new != '0' and entry['active'] == 'active'
-        assert any(r.get('service') == UNIT and r['state'] == 'restarted' for r in entry['results'])
+        valid = (old != new and new != '0' and entry['active'] == 'active'
+                 and any(r.get('service') == UNIT and r['state'] == 'restarted' for r in entry['results']))
+        if not valid:
+            save('cycle-failure', {'run': result, 'unit': cmd('systemctl', 'show', UNIT),
+                 'journal': cmd('journalctl', '-u', UNIT, '-u', 'apt-daily-upgrade.service', '-n', '100', '--no-pager'),
+                 'fresh_scan': op.restart_check()})
+        assert valid, f'Restart cycle {index + 1} failed; see cycle-failure.json'
 
     # Real failure: a stale executable whose unit's next ExecStart fails once; recovery
     # starts the original executable again. Later services still get their own attempt.
@@ -220,8 +291,6 @@ def pre():
                             'health': m.health(HOME)})
     assert reboot['restarts']['reboot']['state'] == 'scheduled'
     (OUT / 'pre-complete').write_text('ready for boot verification\n')
-    if tests.returncode or integration_failed:
-        (OUT / 'suite-failed').write_text('See pytest.log and backup-integration-pytest.log\n')
 
 
 def post():
@@ -236,8 +305,11 @@ def post():
     assert receipt['state'] == 'rebooted' and receipt['new_boot_id'] != receipt['boot_id']
     assert row['value'] == 'rebooted' and row['status'] == 'ok'
     assert state == 'running' and cmd('systemctl', 'is-active', UNIT) == 'active'
-    assert not (OUT / 'suite-failed').exists(), 'VM gates passed but full unit suite failed: see pytest.log'
-    save('acceptance', {'passed': True, 'restart_cycles': 51, 'attended_enablement': 'not performed'})
+    for name in ('full-suite', 'backup-integration-suite'):
+        assert json.loads((OUT / (name + '.json')).read_text())['returncode'] == 0, name
+    cycles = json.loads((OUT / 'restart-cycles.json').read_text())
+    assert cycles['completed'] == len(cycles['cycles']) == 51
+    save('acceptance', {'passed': True, 'restart_cycles': cycles['completed'], 'attended_enablement': 'not performed'})
 
 
 if __name__ == '__main__':

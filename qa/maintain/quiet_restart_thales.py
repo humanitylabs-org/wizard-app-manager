@@ -51,6 +51,33 @@ def main():
     os.environ['PATH'] = '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
     os.environ['TMPDIR'] = str(ROOT / '.tmp')
     (ROOT / '.tmp').mkdir(exist_ok=True)
+    assert not list(OUT.iterdir()), 'Refuse to mix this run with existing evidence'
+    # Never touch an already-existing VM, even on the refusal path.
+    existing = run([LIMA, 'list', '--json', VM], check=False, timeout=30)
+    assert not existing.stdout.strip(), 'Disposable VM already exists; archive evidence and remove it first'
+    try:
+        # Never reuse an already-mutated disk (the failed run consumed its held
+        # security baseline). Creation must happen under the durable heavy lease.
+        run([LIMA, 'create', '--tty=false', '--name=' + VM,
+             str(ROOT / 'qa/maintain/quiet_restart_lima.yaml')], timeout=300)
+        return exercise()
+    finally:
+        cleanup()
+
+
+def cleanup():
+    try:
+        collect()
+    finally:
+        # Evidence collection failure must not leak a running guest.
+        stopped = run([LIMA, 'stop', '--force', VM], check=False, timeout=120)
+        (OUT / 'cleanup.log').write_text(stopped.stdout + stopped.stderr)
+        state = run([LIMA, 'list', '--json', VM], check=False, timeout=30)
+        (OUT / 'vm-final-state.jsonl').write_text(state.stdout)
+        assert all(json.loads(line).get('status') == 'Stopped' for line in state.stdout.splitlines() if line.strip()), 'Disposable VM did not stop'
+
+
+def exercise():
     run([LIMA, 'start', '--tty=false', VM], timeout=600)
     shell('sudo', 'mkdir', '-p', GUEST)
     tar = subprocess.Popen(['tar', '-C', str(ROOT), '--exclude=./vm-evidence', '--exclude=./.tmp', '-cf', '-', '.'], stdout=subprocess.PIPE)
