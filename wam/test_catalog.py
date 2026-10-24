@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -69,6 +70,58 @@ def check_architecture(entry):
     return arch
 
 
+def _loaded_identity(asset, archive, arch):
+    """Bind Docker's local identity to the approved config on classic AND containerd stores.
+
+    Docker 29's containerd store uses a manifest ID, not the config ID reported by classic
+    Docker. Never accept the tag alone: verify both content-addressed blobs in the already
+    checksummed archive before returning the daemon-local immutable ID to compose.
+    """
+    from .private import PrivateError
+    try:
+        r = subprocess.run(['docker', 'image', 'inspect', asset['image_id']],
+                           capture_output=True, text=True, check=True)
+        image = json.loads(r.stdout)[0]
+        if image['Id'] != asset['image_id'] or image['Architecture'] != arch:
+            raise PrivateError('loaded image identity/architecture mismatch')
+        return asset
+    except subprocess.CalledProcessError:
+        if not asset.get('image'):
+            raise PrivateError('loaded config identity not found') from None
+    r = subprocess.run(['docker', 'image', 'inspect', asset['image']],
+                       capture_output=True, text=True, check=True)
+    image = json.loads(r.stdout)[0]
+    descriptor = image.get('Descriptor') or {}
+    manifest_id = descriptor.get('digest', '')
+    if (not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_id)
+            or image['Id'] != manifest_id or image['Architecture'] != arch):
+        raise PrivateError('loaded image identity/architecture mismatch')
+    expected = {manifest_id, asset['image_id']}
+    blobs = {}
+    wanted = {'blobs/sha256/' + key.removeprefix('sha256:'): key for key in expected}
+    with tarfile.open(archive, mode='r|*') as tar:
+        for member in tar:
+            key = wanted.get(member.name)
+            if key is None:
+                continue
+            if key in blobs or not member.isfile() or member.size > 4 * 1024 * 1024:
+                raise PrivateError('invalid loaded image descriptor blob')
+            source = tar.extractfile(member)
+            if source is None:
+                raise PrivateError('missing loaded image descriptor blob')
+            data = source.read()
+            if 'sha256:' + hashlib.sha256(data).hexdigest() != key:
+                raise PrivateError('loaded image descriptor checksum mismatch')
+            blobs[key] = json.loads(data)
+    if set(blobs) != expected:
+        raise PrivateError('loaded image descriptor missing from approved archive')
+    config = blobs[asset['image_id']]
+    if (blobs[manifest_id].get('config', {}).get('digest') != asset['image_id']
+            or config.get('architecture') != arch or config.get('os') != 'linux'):
+        raise PrivateError('loaded manifest does not bind the approved config/architecture')
+    return {**asset, 'image_id': manifest_id, 'config_id': asset['image_id']}
+
+
 def preload(entry, tok):
     """Download with existing GitHub authorization; verify archive AND loaded image on the target daemon."""
     from .private import PrivateError
@@ -90,11 +143,7 @@ def preload(entry, tok):
         if digest != asset['sha256']:
             raise PrivateError('release archive checksum mismatch; refusing docker load')
         subprocess.run(['docker', 'load', '-i', str(archive)], capture_output=True, check=True, timeout=900)
-    r = subprocess.run(['docker', 'image', 'inspect', asset['image_id']], capture_output=True, text=True, check=True)
-    image = json.loads(r.stdout)[0]
-    if image['Id'] != asset['image_id'] or image['Architecture'] != arch:
-        raise PrivateError('loaded image identity/architecture mismatch')
-    return asset
+        return _loaded_identity(asset, archive, arch)
 
 
 def gateway_fragment(entry, port):
