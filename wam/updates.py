@@ -5,7 +5,7 @@ mode the box already has (get.sh). Two channels (James, 21 Oct 2026):
 
 - `releases/latest` names every new release as soon as it is cut (testers opt in with `wam updates --channel latest`);
 - `releases/stable` moves only after a release has soaked on latest and passed the upgrade test
-  (releases/promotions/<version>.json); a fix-only release with a passed upgrade test may skip the soak
+  (releases/promotions/<version>.json); a fix or feature release with a passed upgrade test may skip the soak (DECISIONS #82, #93)
   (`fast_track`, wizard-os DECISIONS #82). Every box is on stable unless its owner chose latest.
 
 Automatic updates install stable releases only, whatever the channel: a latest box gets newer releases when its
@@ -41,7 +41,7 @@ DEFAULT_MODE = "ask"          # nothing installs unless the owner chose Automati
 CHANNELS = ("stable", "latest")
 DEFAULT_CHANNEL = "stable"    # tested releases only; "latest" is the testers' opt-in
 SOAK_HOURS = 72               # a release runs on latest this long before it can be promoted to stable
-FAST_TRACK_CLASSES = ("fix",)        # DECISIONS #82 (wizard-os): verified fixes skip the soak; nothing else does
+FAST_TRACK_CLASSES = ("fix", "feature")   # DECISIONS #82 + #93 (wizard-os): any release with a passed upgrade test may skip the soak
 GRANDFATHERED_THROUGH = "0.3.25"   # stable when the channels split; every later promotion passes the full gate
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
 INSTALLER = "https://aiwizards.com/os.sh"
@@ -138,7 +138,7 @@ def promotion_problems(rec, version: str) -> list[str]:
     """Why a releases/promotions/<version>.json record does not let <version> be stable ([] = it does).
 
     A promotion needs the release to have been on latest for SOAK_HOURS (or a `fast_track` block classifying it as
-    fixes, DECISIONS #82) and a passed upgrade test onto it from an older release, with evidence. Only releases up to GRANDFATHERED_THROUGH may carry a `grandfathered` reason instead."""
+    fix or feature, DECISIONS #82 and #93) and a passed upgrade test onto it from an older release, with evidence. Only releases up to GRANDFATHERED_THROUGH may carry a `grandfathered` reason instead."""
     if not isinstance(rec, dict):
         return ["no promotion record"]
     if rec.get("version") != version:
@@ -156,7 +156,7 @@ def promotion_problems(rec, version: str) -> list[str]:
         ft = rec.get("fast_track")
         if ft is None:
             out.append(f"soaked {(at - since) / 3600:.1f}h on latest; stable needs {SOAK_HOURS}h "
-                       "(a verified fix may fast-track: DECISIONS #82)")
+                       "(a release with a passed upgrade test may fast-track: DECISIONS #82, #93)")
         else:
             out += fast_track_problems(ft)
     t = rec.get("upgrade_test")
@@ -172,14 +172,13 @@ def promotion_problems(rec, version: str) -> list[str]:
 
 
 def fast_track_problems(ft) -> list[str]:
-    """Why a `fast_track` block does not waive the soak ([] = it does). DECISIONS #82: only a release classified as
-    fixes, with the reason recorded, skips the soak; it still needs the passed upgrade test. Same as the other repo."""
+    """Why a `fast_track` block does not waive the soak ([] = it does). DECISIONS #82 and #93: a release classified as
+    fix or feature, with the reason recorded, skips the soak; it still needs the passed upgrade test. Same as the other repo."""
     if not isinstance(ft, dict):
         return ["fast_track must be an object"]
     out = []
     if ft.get("classification") not in FAST_TRACK_CLASSES:
-        out.append(f"fast_track is only for {'/'.join(FAST_TRACK_CLASSES)} releases; features, data-format changes and "
-                   f"big UX changes soak {SOAK_HOURS}h")
+        out.append(f"fast_track is only for {'/'.join(FAST_TRACK_CLASSES)} releases; anything else soaks {SOAK_HOURS}h")
     if not str(ft.get("reason", "")).strip():
         out.append("fast_track needs a reason")
     return out
