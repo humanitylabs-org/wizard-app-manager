@@ -189,3 +189,8 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 
 - Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.37.json`, SHA-256 `4046b9ce04ef80663c644dce05526cc24fd677c5fa741158830a6641c55cb266`.
 - 0.3.36 plus Wizard UX `78b3311` (#440) and App Manager `cfd13ec` (#194). Channel: on latest.
+
+## 0.3.38 provenance
+
+Canonical: wizard-os releases/0.3.38.json. SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Channel: on latest only; stable remains 0.3.36 pending installed-demo upgrade verification.
