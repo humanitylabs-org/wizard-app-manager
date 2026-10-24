@@ -133,7 +133,18 @@ def pre():
     os.umask(0o022)
     isolate_native_apt()
     with op._no_service_restarts():
-        cmd('apt-get', 'update', '-qq')
+        # A fresh cloud image's first update can exit 0 with index fetches missing (slow ports mirror):
+        # retry until every package we install has a candidate, so the install never races stale lists.
+        want = ['needrestart', 'python3-pytest', 'python3-yaml', 'python3-jwt', 'sudo', 'git', 'curl', 'xz-utils']
+        for _ in range(4):
+            cmd('apt-get', '-o', 'Acquire::Retries=5', 'update', '-qq')
+            policy = {n: subprocess.run(['apt-cache', 'policy', n], text=True, capture_output=True).stdout for n in want}
+            missing = [n for n, out in policy.items() if not out.strip() or 'Candidate: (none)' in out]
+            if not missing:
+                break
+            time.sleep(10)
+        else:
+            raise RuntimeError(f'apt candidates still missing after retries: {missing}')
         cmd('env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_SUSPEND=1', 'apt-get', 'install', '-y', '-q',
             'needrestart', 'python3-pytest', 'python3-yaml', 'python3-jwt', 'sudo', 'git', 'curl', 'xz-utils')
     node_version = install_test_node()
