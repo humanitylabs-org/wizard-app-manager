@@ -406,7 +406,19 @@ if mode == "end":
             with open(log_path, "rb") as f:
                 f.seek(0, os.SEEK_END); f.seek(max(0, f.tell() - 4096))
                 lines = [ansi.sub("", s).strip() for s in f.read().decode("utf-8", "replace").splitlines() if s.strip()]
-            st["failure_reason"] = lines[-1][-1000:] if lines else None
+            # The read-back summary ("-> install-failed; recorded in ...") and report noise are not the
+            # cause; prefer the last real error line, and never echo credentials into the status file.
+            noise = re.compile(r"^(->|PASS |FAIL |DRIFT |fix:|Wizard OS \S+: what runs vs the release|\[wizard-os\] )")
+            errs = [s for s in lines if not noise.match(s)]
+            hits = [s for s in errs if re.search(r"(?i)\b(error|fatal|failed|refus|denied|cannot|not found|abort)", s)]
+            pick = (hits or errs or lines or [None])[-1]
+            if pick:
+                pick = re.sub(r"(?i)(\w+://)[^/\s:@]+(:[^/\s@]*)?@", r"\1***@", pick)
+                pick = re.sub(r"(?i)\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})", "***", pick)
+                pick = re.sub(r"(?i)\b(token|password|passwd|secret|api[_-]?key|authorization)(\s*[=:]\s*)(bearer\s+|basic\s+)?\S+", r"\1\2\3***", pick)
+                pick = re.sub(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 ***", pick)
+                pick = re.sub(r"(?i)([?&](?:token|key|sig|signature|access_token|auth)=)[^&\s]+", r"\1***", pick)
+            st["failure_reason"] = pick[-1000:] if pick else None
         except OSError: pass
     st["approval_url"] = None
     if rc == 3 and st.get("admin_command") and st.get("admin_message"):
@@ -1197,13 +1209,13 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
     dirty="$(git -C "$DIR" status --porcelain --untracked-files=no)" || {
       echo "Cannot verify App Manager checkout; refusing to overwrite it." >&2; exit 1;
     }
-    if [ -n "$dirty" ]; then
-      if [ -n "$PINS" ] && [ -z "${WAM_REF:-}" ] && managed_checkout recover; then
-        : # own interrupted pinned run, not a developer override
-      else
-        echo "$DIR has local changes; a pinned install would run them. Commit/stash them, or use WAM_REF for a dev checkout." >&2
-        exit 1
-      fi
+    # A cut can leave the target's NEW files untracked while tracked files look clean (a target that
+    # only adds files), so try the receipt-proven recovery whether or not tracked files are dirty.
+    if [ -n "$PINS" ] && [ -z "${WAM_REF:-}" ] && [ -f "$CHECKOUT_RECEIPT" ] && managed_checkout recover; then
+      RECOVERED=1   # own interrupted pinned run, not a developer override
+    elif [ -n "$dirty" ]; then
+      echo "$DIR has local changes; a pinned install would run them. Commit/stash them, or use WAM_REF for a dev checkout." >&2
+      exit 1
     fi
   else
     git clone -q "$REPO" "$DIR"
@@ -1215,7 +1227,13 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
     trap 'sync -f "$DIR" && managed_checkout finish' EXIT
   fi
   git -C "$DIR" -c core.fsync=all fetch -q origin "$REF"
-  git -C "$DIR" -c core.fsync=all checkout -q --detach "$REF"
+  if [ "${RECOVERED:-0}" = 1 ]; then
+    # The interrupted checkout's half-written new files are untracked now and would abort a plain
+    # checkout forever. -f replaces only paths in the target tree; other untracked/ignored files stay.
+    git -C "$DIR" -c core.fsync=all checkout -q -f --detach "$REF"
+  else
+    git -C "$DIR" -c core.fsync=all checkout -q --detach "$REF"
+  fi
   [ "$(git -C "$DIR" rev-parse HEAD)" = "$REF" ] || { echo "App Manager checkout is not $REF" >&2; exit 1; }
 elif [ -d "$DIR/.git" ]; then
   # (an `a && b` list doesn't trip set -e: without this a bad WAM_REF ran whatever was checked out and exited 0)

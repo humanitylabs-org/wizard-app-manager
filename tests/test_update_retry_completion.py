@@ -54,10 +54,11 @@ def test_failed_readback_is_not_installed_and_update_retries_the_failed_target(t
     st = updates.status(h, base)
     assert st["installed"] is None and st["failed"] is True
     assert st["update_available"] is True and st["unpinned"] is False
-    assert st["latest"] == "0.3.33"
+    expect = "0.3.34" if pointer == "0.3.34" else "0.3.33"   # a newer release supersedes the failed one
+    assert st["latest"] == expect
     calls = []
     assert updates.apply(h, base, _ok_runner(calls))["started"] is True
-    assert "WIZARD_RELEASE=0.3.33 bash -s start" in calls[0][-1]
+    assert f"WIZARD_RELEASE={expect} bash -s start" in calls[0][-1]
     # Read-back, not the install-status label alone, is the successful release authority.
     (h / "install-status.json").write_text('{"state":"done"}')
     assert updates.installed(h) is None
@@ -72,7 +73,7 @@ def test_installed_requires_a_successful_release_readback(tmp_path, receipt_stat
     assert updates.installed(tmp_path) == ("0.3.33" if receipt_status in ("pinned", "drift") else None)
 
 
-@pytest.mark.parametrize("stable,gate", [("0.3.33", "busy"), ("0.3.34", "interrupted-target"),
+@pytest.mark.parametrize("stable,gate", [("0.3.33", "busy"), ("0.3.34", "busy"),
                                          ("0.3.32", "interrupted-target")])
 def test_failed_retry_keeps_automatic_stable_and_busy_gates(tmp_path, stable, gate):
     h = tmp_path / "wos"

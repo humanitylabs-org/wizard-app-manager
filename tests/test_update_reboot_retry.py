@@ -31,11 +31,13 @@ def test_update_button_retries_exact_interrupted_target_even_without_receipt_or_
     st = updates.status(h, base)
     assert st["interrupted"] is True and st["installing"] is False
     assert st["update_available"] is True and st["unpinned"] is False
-    assert st["installed"] == have and st["latest"] == "0.3.33"
+    # A newer channel release supersedes the interrupted target; otherwise the exact target is retried.
+    expect = "0.3.34" if pointer == "0.3.34" else "0.3.33"
+    assert st["installed"] == have and st["latest"] == expect
     calls = []
     res = updates.apply(h, base, _ok_runner(calls))
     assert res["started"] is True
-    assert "WIZARD_RELEASE=0.3.33 bash -s start" in calls[0][-1]
+    assert f"WIZARD_RELEASE={expect} bash -s start" in calls[0][-1]
     assert json.loads((h / "install-status.json").read_text())["state"] == "interrupted"
     # Successful completion clears retry, so the next ordinary check follows the channel again.
     _pin(h, "0.3.33")
@@ -67,7 +69,7 @@ def test_explicit_developer_unpinned_receipt_wins_over_stale_target(tmp_path, mo
     assert st["unpinned"] is True and st["started"] is False and not calls
 
 
-@pytest.mark.parametrize("stable,expected", [("0.3.33", True), ("0.3.34", False), ("0.3.32", False)])
+@pytest.mark.parametrize("stable,expected", [("0.3.33", True), ("0.3.34", True), ("0.3.32", False)])
 def test_automatic_retries_only_when_interrupted_target_is_stable(tmp_path, monkeypatch, stable, expected):
     h = tmp_path / "wos"
     _cut(h, monkeypatch, tmp_path)

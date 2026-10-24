@@ -9,7 +9,7 @@ import pytest
 
 from wam import updates
 from test_release_pins import box, git, STUB_INSTALL
-from test_updates import _base, _pin, _ok_runner
+from test_updates import _base, _dead_pid, _pin, _ok_runner
 
 
 def cut_checkout(box):
@@ -144,3 +144,71 @@ def test_detached_status_records_real_failure_line_and_clears_it_on_success(tmp_
     subprocess.run([sys.executable, '-c', code, str(status), str(log), 'end', '0'], check=True)
     st = updates.status(h, _base(tmp_path, '0.3.33'))
     assert st['failed'] is False and st['failure_reason'] is None
+
+
+def _target_adds_file(box):
+    """A completed install, then a new release whose commit adds a file; return the cut receipt path."""
+    p, _ = box['run']()
+    assert p.returncode == 0, p.stdout + p.stderr
+    checkout = box['home'] / 'wam'
+    before = git('rev-parse', 'HEAD', cwd=checkout)
+    (box['src'] / 'added.sh').write_text('echo complete\n')
+    git('add', 'added.sh', cwd=box['src'])
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'target adds a file', cwd=box['src'])
+    target = git('rev-parse', 'HEAD', cwd=box['src'])
+    release = box['rel'] / '9.9.9.json'
+    rel = json.loads(release.read_text())
+    rel['components']['wizard-app-manager']['commit'] = target
+    release.write_text(json.dumps(rel))
+    receipt = box['home'] / '.wizard-os/managed-checkout.json'
+    # The write-ahead receipt as `managed_checkout begin` left it, then a cut mid-checkout.
+    receipt.write_text(json.dumps({'directory': str(checkout.resolve()), 'target': target, 'repo': str(box['src']),
+                                   'before': before, 'pid': _dead_pid(), 'boot_id': None}))
+    (checkout / 'added.sh').write_text('ech')                # half-written new file, untracked after reset
+    return checkout, target, receipt
+
+
+@pytest.mark.parametrize('tracked_dirty', [True, False])
+def test_cut_checkout_whose_target_adds_a_file_recovers(box, tracked_dirty):
+    checkout, target, receipt = _target_adds_file(box)
+    if tracked_dirty:
+        (checkout / 'install.sh').write_text('')
+    keep = checkout / 'owner-note.txt'
+    keep.write_text('must survive')
+    p, rec = box['run']()
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert 'untracked working tree files would be overwritten' not in p.stderr
+    assert git('rev-parse', 'HEAD', cwd=checkout) == target
+    assert (checkout / 'added.sh').read_text() == 'echo complete\n'
+    assert keep.read_text() == 'must survive'
+    assert rec['status'] == 'pinned' and not receipt.exists()
+
+
+def test_untracked_target_path_without_proof_is_never_forced(box):
+    checkout, _, receipt = _target_adds_file(box)
+    receipt.unlink()                                         # no installer proof: a developer's own file
+    p, _ = box['run']()
+    assert p.returncode != 0
+    assert (checkout / 'added.sh').read_text() == 'ech'
+
+
+@pytest.mark.parametrize('tail,expected', [
+    ('fatal: unable to access https://oscar:ghp_abcdefghijklmnopqrstuvwx@github.com/x.git/: 403\n'
+     '\nWizard OS 0.3.33: what runs vs the release\n  FAIL  read-back: error\n  -> install-failed; recorded in /h/release.json\n',
+     'fatal: unable to access https://***@github.com/x.git/: 403'),
+    ('pull failed: token=supersecretvalue123 for https://r.test/p?sig=abc&x=1\n',
+     'pull failed: token=*** for https://r.test/p?sig=***&x=1'),
+    ('step one\nlast plain line\n', 'last plain line'),
+])
+def test_failure_reason_prefers_real_error_and_redacts_credentials(tmp_path, tail, expected):
+    h = tmp_path / 'wos'; h.mkdir()
+    status = h / 'install-status.json'
+    status.write_text('{"state":"running"}')
+    log = h / 'install.log'
+    log.write_text(tail)
+    source = (Path(__file__).resolve().parents[1] / 'get.sh').read_text()
+    code = source.split("STATUS_PY='\n", 1)[1].split("\n'\ninstall_status()", 1)[0]
+    subprocess.run([sys.executable, '-c', code, str(status), str(log), 'end', '1'], check=True)
+    reason = json.loads(status.read_text())['failure_reason']
+    assert reason == expected
+    assert 'ghp_' not in reason and 'supersecret' not in reason and 'recorded in' not in reason
