@@ -1021,7 +1021,7 @@ def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     rt = tmp_path / "rt"
-    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    assert alongside.adopt_media(rt, "", "1001:1001") is False  # invalid pin never creates storage
     (rt / "media").mkdir(parents=True)
     assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
     assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False
