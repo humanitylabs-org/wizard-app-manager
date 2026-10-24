@@ -132,7 +132,16 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
     grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    try:
+        reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    except PermissionError:
+        # The daemon owns state/ and creates this file 0600. The non-root
+        # owner installer must use the authenticated projection, not chmod,
+        # sudo, or silently drop grants after a successful app lifecycle.
+        grants = rt.req('GET', '/apps/wizard/grants')
+        if not isinstance(grants, list) or any(not isinstance(row, dict) for row in grants):
+            raise ValueError('Invalid authenticated Wizard grants projection')
+        reg['grants'] = grants
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)

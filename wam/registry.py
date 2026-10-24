@@ -77,11 +77,23 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         info = row.get("info") or {}
         urn = info.get("urn") or ""
         name, _, st = urn.partition(":")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        private_local = re.fullmatch(r"[a-z0-9][a-z0-9-]*_private", name) is not None
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not (re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) or private_local):
             continue
         meta = app_meta(runtipi_root, st, name)
         if not meta or (st != store and not meta.get("private")):
             continue
+        # A private-local relay uses a physical suffix to avoid catalogue
+        # materialization. Resolve only an installed, provenance-checked row;
+        # retain its exact lifecycle URN while projecting its declared identity.
+        if private_local:
+            canonical = name.removesuffix('_private')
+            capability = meta['w'].get('private_inference')
+            if (st != store or not meta.get('private') or meta.get('repo') != 'local:' + name
+                    or meta['w'].get('id') != canonical or not isinstance(capability, dict)
+                    or capability.get('kind') != 'attested-relay'):
+                continue
+            name = canonical
         # A fork can retain its canonical app id in a Git-backed store without the
         # public index replacing its recipe. Project its actual installed identity.
         if any(a["id"] == name for a in apps):
