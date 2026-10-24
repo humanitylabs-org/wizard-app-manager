@@ -32,7 +32,7 @@ If it shows an owner action with a link (an approval link or a Tailscale link), 
 
 The first time it shows a Tailscale link, send the owner this short explanation once, word for word, before the link:
 
-> To open your Wizard from your phone and laptop, this server joins Tailscale. Tailscale is free for personal use. It builds a private network just for your own devices: they talk to each other directly, peer to peer, and everything is encrypted. Your Wizard never goes on the public internet, so only your devices can reach it, from anywhere.
+> To open your Wizard from your phone and laptop, this server joins Tailscale. Tailscale is free for personal use. It builds a private network just for your own devices: they talk to each other directly, peer to peer, and everything is encrypted. Your Wizard never goes on the public internet, so only devices on your Tailscale network can reach it, from anywhere. If you share that network with family or work, they can reach it too unless you limit access in Tailscale.
 > 1. Open the link below and sign in. No account yet? Sign up free with Google, Apple, Microsoft or GitHub.
 > 2. Install the Tailscale app on your phone and laptop, and sign in with that same account.
 

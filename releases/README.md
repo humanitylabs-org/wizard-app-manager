@@ -7,7 +7,7 @@ This directory publishes only the installer’s release metadata. The canonical 
 ## Channels (wizard-os DECISIONS #75)
 
 - `latest`: every release as soon as it is cut. Mirror it with each new release JSON.
-- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix-only release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
+- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix or feature release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82 and #93); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
@@ -167,6 +167,6 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 
 ## stable 0.3.34 (promoted 24 Oct 2026)
 
-- Canonical source: `humanitylabs-org/wizard-os` PR #189, `releases/stable` and `releases/promotions/0.3.34.json` (SHA-256 `b39449ac389001a96f8b47f90f4f0807f1b67a868bed0e8fb020ec750fbec2f3`).
+- Canonical source: `humanitylabs-org/wizard-os` PR #189 (branch `release/promote-0.3.34`, merge `5d7823f99ec8932b13163f7260a32be618956eb8`), `releases/stable` (SHA-256 `9bfdc0fda10c4841166b035a7c6d794879ec5bb2438c98a5cff8f897e5ccecad`) and `releases/promotions/0.3.34.json` (SHA-256 `b39449ac389001a96f8b47f90f4f0807f1b67a868bed0e8fb020ec750fbec2f3`).
 - Fast-tracked feature promotion (DECISIONS #93, launch phase): upgrade 0.3.32 -> 0.3.34 passed on the demo box, evidence `docs/acceptance/promote-0.3.34.md`.
 - Channel: `stable` and `latest` both 0.3.34. Rollback: point `stable` back at 0.3.32.
