@@ -68,7 +68,8 @@ def _api_block(cfg: dict) -> tuple[dict, dict]:
 
 def _config(home: Path) -> dict:
     try:
-        return yaml.safe_load((home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((home / "config.yaml").read_text())
+        return config if isinstance(config, dict) else {}
     except (OSError, yaml.YAMLError):
         return {}
 

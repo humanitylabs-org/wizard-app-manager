@@ -57,7 +57,7 @@ def test_pinned_install_share_selection_and_uninstall(tmp_path, monkeypatch):
     assert json.loads((home / 'apps.json').read_text())['apps'][0]['chats_view'] == view
     assert public['slots']['chats'] == {'default': 'wizard-chats', 'candidates': ['wizard-chats', 'mizel-chats']}
     assert cv.choose(home, 'mizel-chats')['default'] == 'mizel-chats'
-    reg = registry.build([row], 'wizardapps', '', tipi)
+    reg = registry.build([row], 'wizardapps', '127.0.0.1', tipi)
     registry.write(reg, home)
     assert reg['slots']['chats']['default'] == 'mizel-chats'
     assert registry.collisions(reg) == []
@@ -66,7 +66,7 @@ def test_pinned_install_share_selection_and_uninstall(tmp_path, monkeypatch):
     shared = tipi / 'app-data/wizard-os'
     assert json.loads((shared / 'apps.json').read_text())['slots']['chats']['default'] == 'mizel-chats'
     assert (shared / f"chats-views/mizel-chats/{view['sha256']}.js").read_text() == MODULE
-    registry.write(registry.build([], 'wizardapps', '', tipi), home)
+    registry.write(registry.build([], 'wizardapps', '127.0.0.1', tipi), home)
     cli.share_registry(cfg)
     assert not (shared / 'chats-views/mizel-chats').exists()
     assert json.loads((home / 'apps.json').read_text())['slots']['chats']['default'] == 'wizard-chats'
@@ -77,8 +77,12 @@ def test_pinned_install_share_selection_and_uninstall(tmp_path, monkeypatch):
 def test_recipe_tampering_is_not_resealed_by_registry_refresh(tmp_path, monkeypatch):
     _, tipi, _, row, _ = admitted(tmp_path, monkeypatch)
     (tipi / 'repos/wizardapps/apps/mizel-chats/web/chats.js').write_text(MODULE + '// changed')
-    with pytest.raises(ValueError, match='integrity'):
-        registry.build([row], 'wizardapps', '', tipi)
+    reg = registry.build([row], 'wizardapps', '127.0.0.1', tipi)
+    damaged = next(app for app in reg['apps'] if app['id'] == 'mizel-chats')
+    assert damaged['metadata_error'] == 'metadata_invalid'
+    assert damaged['provides'] == [] and damaged['view'] is None
+    assert 'chats_view' not in damaged
+    assert 'chats' not in reg['slots']
 
 
 def test_several_chats_providers_are_additive_and_owner_choice_survives(tmp_path, monkeypatch):
@@ -91,9 +95,9 @@ def test_several_chats_providers_are_additive_and_owner_choice_survives(tmp_path
     (dest / 'wizard.md').write_text('---\n' + yaml.safe_dump(second) + '---\n# Chats\n')
     (dest / '.wizard-commit').write_text('b' * 40)
     rows = [row, {'info': {'urn': 'other-chats:wizardapps'}, 'app': {'status': 'running'}}]
-    registry.write(registry.build(rows, 'wizardapps', '', tipi), home)
+    registry.write(registry.build(rows, 'wizardapps', '127.0.0.1', tipi), home)
     assert cv.choose(home, 'other-chats')['candidates'] == ['wizard-chats', 'mizel-chats', 'other-chats']
-    reg = registry.build(rows, 'wizardapps', '', tipi)
+    reg = registry.build(rows, 'wizardapps', '127.0.0.1', tipi)
     registry.write(reg, home)
     assert reg['slots']['chats']['default'] == 'other-chats'
     assert registry.collisions(reg) == []

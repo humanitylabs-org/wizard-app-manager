@@ -223,7 +223,7 @@ if ! PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1; t
 fi
 # Same interpreter as wam: under an agent, `env python3` can be the agent's bundled Python, which lacks PyYAML, and
 # `wizard link` would then misread the owner's config.yaml as empty.
-[ -z "$WIZ_CLI" ] || sed -i "1s|.*|#!$PY|" "$WIZ_CLI"
+[ -z "$WIZ_CLI" ] || { sed -i.bak "1s|.*|#!$PY|" "$WIZ_CLI" && rm -f "$WIZ_CLI.bak"; }
 
 # Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
 # agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
