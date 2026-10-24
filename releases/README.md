@@ -194,3 +194,10 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 
 Canonical: wizard-os releases/0.3.38.json. SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
 Channel: on latest only; stable remains 0.3.36 pending installed-demo upgrade verification.
+
+## stable 0.3.38
+
+Promoted under DECISIONS #93 after supported installed-demo upgrade from stable 0.3.36. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.38.md (wizard-os #197). Feature classification records shared-kit/My-skin/default-change ride-alongs.
+
+Release JSON SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Promotion JSON SHA256: `61927c23be97586486781c4b932b40351cd7c6bed637666f0c120f0bc072dd03`.
