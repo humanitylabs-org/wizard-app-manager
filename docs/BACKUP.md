@@ -79,6 +79,32 @@ a changed header fails the MAC; a changed, reordered, dropped or appended chunk 
 Crypto: AES-256-GCM from the system OpenSSL `libcrypto` (always present: Python's `ssl` links it) through `ctypes`, or
 `cryptography` when importable; scrypt from `hashlib`. No new dependency.
 
+## What travels / what re-enrols (box moves)
+
+A backup moves owner data, **not another machine's identity**. This table is also
+the small-group release's checklist; "paused" is not a blanket guarantee that
+every possible background process is fenced.
+
+| State | Travels in the encrypted backup | Arrival / owner action |
+| --- | --- | --- |
+| Settings, app data, grants and owner Files | Wizard home entries, checked app archives and the opaque Files tree (unless `--no-files`) | Restored; this box keeps its installed release and wiring. Undo retains the pre-import state. External/interpolated Docker volumes and host folders outside captured roots do **not** travel. |
+| Bring your Hermes: alongside | Host Hermes home selected by `alongside.json`, through stock `hermes backup`; its main agent maps to this box's main agent | `alongside.json` and `linked.json` do **not** travel. Install/link the destination's own Hermes first if it should remain alongside. Otherwise restore targets its container agent; it does not install a host Hermes binary. |
+| Bring your Hermes: linked configuration | Owner config, skills, memory and stock-backup chats; non-Wizard environment values | Destination Wizard config and `API_SERVER_*` / `WIZARD_*` / `HERMES_DASHBOARD*` wiring win. Runtime, code, services, symlinks and external login folders are not a portable host clone. Re-link/re-grant host shares. |
+| Hermes cron | `cron/jobs.json` in each stock Hermes archive | Imported jobs paused; `activate --old-is-off` resumes only job IDs active at export. Completed/already-paused jobs stay off. |
+| Wizard scheduler / run queue | Only files actually under captured home/app-data roots; Service defaults are `state/wizard-mobile/schedules.sqlite3` and `run-queue.sqlite3` under its Hermes home | **Known limitation:** no scheduler-specific SQLite checkpoint, occurrence reconciliation or pause-on-arrival. Custom `WIZARD_SCHEDULER_STATE_PATH` / `WIZARD_RUN_QUEUE_STATE_PATH` outside captured roots do not travel. Stop the source Service before export, keep it off, and keep the destination Service stopped/offline until inspecting/recreating schedules. Hermes cron pause does not fence Wizard schedules or pending runs. |
+| AI logins / refresh tokens | Logins in a stock Hermes archive or captured app-data / declared non-external named volume | **Known limitation:** agents and ordinary connection apps can start before activation; login refresh is not fenced by `--old-is-off`. Shut down/disconnect the source after export **before import** and leave it off, or keep the destination offline/stopped until exclusive refresh handover. Re-authenticate host/external logins not captured, or if the provider invalidates the transferred session. `activate` is not a refresh-token lock. |
+| Scheduled backups | `backup.json`, repository key and stored S3 credentials | Copied **off**, new box ID; enable after the old box is off. Local-path targets need a destination mount; SFTP SSH keys/config and environment-only S3 credentials must be provisioned again. History/status is regenerated. |
+| Tailscale / phone access | No host Tailscale node identity or daemon state | Enrol the destination through Setup, re-authorize phone access and use its new URL. Copied settings do not confer tailnet membership. Do not copy `/var/lib/tailscale`. |
+| Local Wizard identity / install | No API/MCP token, operator login, agent SSH keys, release pins or link metadata | Kept from the destination installation. GitHub/other host-only credentials and external mounts need fresh authorization. |
+
+For an initial tester moving an existing box: stop its Wizard Service to quiesce
+scheduler SQLite, export, power off/disconnect the old box, import on the new box,
+inspect data and schedules, re-enrol Tailscale and any external login/share, then
+`wam backup activate --old-is-off`. Keep the destination offline during import
+if it already has schedules/pending runs. Retain the old box and recovery key
+until verification succeeds. For rollback, stop the new copy before starting
+the old one. This is **not** an online clone or seamless scheduler/login failover.
+
 ## Inside: a tar stream
 
 | Entry | What |

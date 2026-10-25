@@ -846,8 +846,7 @@ def _merge_back(held: Path, home: Path) -> None:
         if not src.is_dir():
             continue
         dst = home / d
-        if not dst.exists():
-            continue
+        dst.mkdir(parents=True, exist_ok=True, mode=0o700)
         for n in sorted(os.listdir(src)):
             if not (dst / n).exists() and (src / n).is_file() and not (src / n).is_symlink():
                 shutil.copy2(src / n, dst / n)
