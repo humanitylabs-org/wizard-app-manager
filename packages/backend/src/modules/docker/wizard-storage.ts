@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import * as yaml from 'yaml';
+import { prepareMainPrivateData } from './wizard-private-data';
 
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
@@ -491,6 +492,9 @@ rm -f ".$1.wizard-copy-ready"`;
         svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
         doc['x-wizard-share-mounts'].push(m.path);
       }
+      // Establish private bind ownership before Docker can auto-create it as
+      // root:root. Non-root apps may then set their own restrictive modes.
+      await prepareMainPrivateData(app, confined);
       const prepared = yaml.stringify(doc);
       // Hold the same grant lock through the actual create/start. Otherwise a
       // concurrent revoke can finish before a stale prepared mount is started.
