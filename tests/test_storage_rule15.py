@@ -45,3 +45,36 @@ def test_registry_mirror_preserves_share_grants(tmp_path):
     registry.write(reg,root)
     registry.write(reg,root)
     assert json.loads((root/'apps.json').read_text())['grants']==[grant]
+
+
+def _grants_config(tmp_path):
+    from types import SimpleNamespace
+    (tmp_path/'state').mkdir()
+    return SimpleNamespace(runtipi_root=tmp_path), tmp_path/'state'/'wizard-grants.json'
+
+def test_cli_reads_readable_grants_file_directly(tmp_path):
+    from wam import cli
+    c,f=_grants_config(tmp_path);grant={'kind':'share','from':'a','to':'b','share':'s'}
+    f.write_text(json.dumps({'schema':1,'grants':[grant]}))
+    class NoApi:
+        def req(self,*a,**k):raise AssertionError('readable file must not need the backend')
+    assert cli.read_grants(c,NoApi())==[grant]
+
+def test_cli_missing_grants_file_is_empty(tmp_path):
+    from wam import cli
+    c,_=_grants_config(tmp_path)
+    assert cli.read_grants(c,None)==[]
+
+def test_cli_asks_backend_when_root_only_grants_file_is_unreadable(tmp_path,monkeypatch):
+    from wam import cli
+    c,f=_grants_config(tmp_path);f.write_text('{}');grant={'kind':'share','from':'a','to':'b','share':'s'}
+    real=Path.read_text
+    def denied(self,*a,**k):
+        if self==f:raise PermissionError(13,'Permission denied',str(f))
+        return real(self,*a,**k)
+    monkeypatch.setattr(Path,'read_text',denied)
+    calls=[]
+    class Api:
+        def req(self,method,path,body=None,timeout=60):calls.append((method,path));return [grant]
+    assert cli.read_grants(c,Api())==[grant]
+    assert calls==[('GET','/apps/wizard/grants')]

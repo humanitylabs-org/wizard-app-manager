@@ -130,11 +130,25 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 
 
+def read_grants(c: Config, rt: Runtipi) -> list:
+    """Canonical share grants. The App Manager backend owns <dataDir>/state/wizard-grants.json and writes it
+    root-only (0600) from its container, so the unprivileged CLI asks the backend when it cannot read the file."""
+    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+    try:
+        return json.loads(grants_file.read_text()).get('grants', [])
+    except FileNotFoundError:
+        return []
+    except PermissionError:
+        rows = rt.req("GET", "/apps/wizard/grants")
+        if not isinstance(rows, list):
+            raise RuntipiError(f"GET /apps/wizard/grants returned {type(rows).__name__}, not a grant list")
+        return rows
+
+
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
-    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
