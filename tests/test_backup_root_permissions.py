@@ -55,7 +55,7 @@ def denied_host(monkeypatch):
             return fn(path, *a, **kw)
         return wrapped
 
-    for name in ('stat', 'lstat', 'listdir', 'mkdir', 'chmod', 'unlink', 'rmdir', 'rename'):
+    for name in ('stat', 'lstat', 'listdir', 'mkdir', 'chmod', 'chown', 'unlink', 'rmdir', 'rename'):
         monkeypatch.setattr(os, name, guarded(getattr(os, name)))
     import builtins
     monkeypatch.setattr(builtins, 'open', guarded(builtins.open))
@@ -101,7 +101,7 @@ def test_helper_refuses_escape_and_preserves_data(tmp_path, denied_host):
     protect(root)
     b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE':'example/wam:test'})
     with b.operation():
-        with pytest.raises(OSError, match='protected file link'):
+        with pytest.raises(OSError, match='symbolic links'):
             (b.runtipi_root / 'app-data/escape').read_text()
         with pytest.raises(PermissionError, match='outside'):
             fs._current.get().call('rename', root / 'escape', dst=str(secret))

@@ -54,13 +54,22 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       case 'listdir': v=fs.readdirSync(p); break;
       case 'readlink': v=fs.readlinkSync(p); break;
       case 'mkdir': fs.mkdirSync(p,{mode:q.mode}); break;
-      case 'chmod': fs.chmodSync(p,q.mode); break;
+      case 'chmod': case 'chown': {
+        const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+        try { if(q.op==='chmod') fs.fchmodSync(fd,q.mode); else fs.fchownSync(fd,q.uid,q.gid); }
+        finally { fs.closeSync(fd); } break;
+      }
       case 'unlink': fs.unlinkSync(p); break;
       case 'rmdir': fs.rmdirSync(p); break;
       case 'rmtree': fs.rmSync(p,{recursive:true,force:false}); break;
       case 'rename': fs.renameSync(p,checked(q.dst)); break;
       case 'sync': { const fd=fs.openSync(p,'r'); try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);} break; }
-      case 'open': { if (fs.existsSync(p) && fs.lstatSync(p).isSymbolicLink()) throw Error('refusing protected file link'); const fd=fs.openSync(p,q.flags,q.mode); v=next++; handles.set(v,fd); break; }
+      case 'open': {
+        const flags = q.flags === 'r' ? fs.constants.O_RDONLY
+          : fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC;
+        const fd=fs.openSync(p,flags|fs.constants.O_NOFOLLOW,q.mode);
+        v=next++; handles.set(v,fd); break;
+      }
       case 'read': { const b=Buffer.alloc(Math.min(q.size,1048576)); const n=fs.readSync(handles.get(q.handle),b,0,b.length,null); v=b.subarray(0,n).toString('base64'); break; }
       case 'write': { const b=Buffer.from(q.data,'base64'); v=fs.writeSync(handles.get(q.handle),b); break; }
       case 'close': fs.closeSync(handles.get(q.handle)); handles.delete(q.handle); break;
@@ -89,10 +98,12 @@ class Access:
             raise PermissionError(f"outside container-owned backup roots: {path}")
         if self.proc is None:
             cmd = ['docker', 'run', '--rm', '-i', '--network', 'none', '-u', '0:0']
-            # The restore journal deliberately renames across app-data and its
-            # undo staging. Bind their common filesystem ancestors, never /.
-            for p in dict.fromkeys((self.box.runtipi_root, self.box.home)):
-                cmd += ['-v', f'{p}:{p}']
+            # Atomic set-aside/Undo renames must remain within ONE bind mount:
+            # separate app-data/home binds return EXDEV even on one host fs.
+            common = HostPath(os.path.commonpath((self.box.runtipi_root, self.box.home)))
+            if common == HostPath('/'):
+                raise OSError('backup trees have no safe common mount ancestor')
+            cmd += ['-v', f'{common}:{common}']
             cmd += ['--entrypoint', 'node', self.box.appdata.image(), '-e', NODE, json.dumps(self.roots)]
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, text=True, env=self.box.child_env)
@@ -184,6 +195,13 @@ def rename(src, dst):
         return os.rename(src, dst)
     except PermissionError:
         return _fallback('rename', src, dst=str(dst))
+
+
+def chown(path, uid, gid):
+    try:
+        return os.chown(path, uid, gid, follow_symlinks=False)
+    except PermissionError:
+        return _fallback('chown', path, uid=uid, gid=gid)
 
 
 def sync_dir(path):

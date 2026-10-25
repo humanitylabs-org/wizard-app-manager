@@ -246,6 +246,8 @@ def env_merge(home: Path, wizard_lines: list[str]) -> list[str]:
     tmp = envp.with_name(".env.wam-import")
     with tmp.open("w") as f:
         f.write(text)
+    owner = envp.stat() if envp.exists() else home.stat()
+    datafs.chown(tmp, owner.st_uid, owner.st_gid)
     tmp.chmod(0o600)
     datafs.rename(tmp, envp)
     return replaced
