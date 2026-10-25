@@ -293,6 +293,34 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True}) + "\n")
         if release or source_pin:
             (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
-        shutil.rmtree(dst, ignore_errors=True)
-        tmp.rename(dst)
+        replace_recipe(tmp, dst)
     return rec
+
+
+def replace_recipe(tmp: Path, dst: Path) -> None:
+    """Publish a complete recipe without deleting the active one in place.
+
+    The backend and CLI share this cache. Backend-owned descendants may not be
+    removable by the CLI, even though the parent permits an atomic rename. Never
+    suppress a failed removal and then rename onto a partially deleted directory.
+    Keep an undeletable retired cache as evidence; it is not an active recipe.
+    """
+    import uuid
+    backup = dst.with_name(f'.{dst.name}.retired-{uuid.uuid4().hex}')
+    if backup.exists() or backup.is_symlink() or dst.is_symlink() or tmp.is_symlink():
+        raise PrivateError('recipe publication has a symlink or unresolved retired cache')
+    moved = dst.exists()
+    if moved:
+        dst.rename(backup)
+    try:
+        tmp.rename(dst)
+    except OSError:
+        if moved:
+            backup.rename(dst)
+        raise
+    if moved:
+        try:
+            shutil.rmtree(backup)
+        except OSError as error:
+            import warnings
+            warnings.warn(f'retired recipe cache retained at {backup}: {error}', RuntimeWarning)
