@@ -137,7 +137,7 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     except PermissionError:
         # The container atomically writes state as root:0600. Host orchestration
         # needs only public metadata, not permission to read provider key files.
-        reg['grants'] = rt.req('GET', '/apps/wizard/grants')['grants']
+        reg['grants'] = rt.req('GET', '/apps/wizard/grants')
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
