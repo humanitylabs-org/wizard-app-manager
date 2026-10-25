@@ -1,11 +1,54 @@
 {
   "apps": [
-    { "id": "wizard-connection-router", "store": "wizardapps", "status": "running", "uses": ["ai-connection"], "provides": ["connection-router"] },
-    { "id": "wizard-claude", "store": "core", "status": "running", "provides": ["ai-connection", "claude-subscription"] },
-    { "id": "wizard-chatgpt", "store": "core", "status": "running", "provides": ["ai-connection", "chatgpt-subscription"] },
-    { "id": "wizard-tinfoil", "store": "wizardapps", "status": "stopped", "provides": ["ai-connection"] },
-    { "id": "wizard-calendar", "store": "wizardapps", "status": "running", "uses": ["wizard-connectors"] },
-    { "id": "wizard-connectors", "store": "wizardapps", "status": "running", "provides": ["connector-status", "simulated-private-summary"] }
+    {
+      "id": "wizard-connection-router",
+      "store": "wizardapps",
+      "status": "running",
+      "main_service": "wizard-connection-router",
+      "port": 8802,
+      "uses": ["ai-connection"],
+      "provides": ["connection-router"]
+    },
+    {
+      "id": "wizard-claude",
+      "store": "core",
+      "status": "running",
+      "main_service": "wizard-claude",
+      "port": 8799,
+      "provides": ["ai-connection", "claude-subscription"]
+    },
+    {
+      "id": "wizard-chatgpt",
+      "store": "core",
+      "status": "running",
+      "main_service": "wizard-chatgpt",
+      "port": 8801,
+      "provides": ["ai-connection", "chatgpt-subscription"]
+    },
+    {
+      "id": "wizard-tinfoil",
+      "store": "wizardapps",
+      "status": "stopped",
+      "main_service": "wizard-tinfoil",
+      "port": 18804,
+      "provides": ["ai-connection"]
+    },
+    {
+      "id": "wizard-calendar",
+      "store": "wizardapps",
+      "status": "running",
+      "main_service": "wizard-calendar",
+      "port": 8799,
+      "uses": ["wizard-connectors"]
+    },
+    {
+      "id": "wizard-connectors",
+      "store": "wizardapps",
+      "status": "running",
+      "main_service": "ingress",
+      "port": 8799,
+      "provides": ["connector-status", "simulated-private-summary"]
+    }
   ],
   "router": {
     "enforce": true,
