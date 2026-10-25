@@ -132,7 +132,12 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
     grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    try:
+        reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    except PermissionError:
+        # The container atomically writes state as root:0600. Host orchestration
+        # needs only public metadata, not permission to read provider key files.
+        reg['grants'] = rt.req('GET', '/apps/wizard/grants')['grants']
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)

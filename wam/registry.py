@@ -186,8 +186,10 @@ def write(reg: dict, root: Path | None = None) -> Path:
         return out
 
     grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
-    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
-    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
+    grants = reg.get('grants')
+    if grants is None:
+        grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
+    public = {**reg, "grants": grants, "apps": [project(a) for a in reg["apps"]]}
     tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev
