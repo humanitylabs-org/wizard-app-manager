@@ -440,7 +440,12 @@ def write_agent_overlay(runtipi_root: Path, store: str, home: Path) -> bool:
     agent_ssh = f"\n      - {ssh_dir}:{CONTAINER_AGENT_SSH}:ro" if ssh_dir.is_dir() and _SAFE_PATH.fullmatch(str(ssh_dir)) else ""
     from .managed_runtime import render
     compose = AGENT_OVERLAY.format(engine=ENGINE, os_home=CONTAINER_OS_HOME, agent_ssh=agent_ssh)
-    return _write_overlay(runtipi_root, store, AGENT_APP, render(compose, ENGINE), {})
+    compose = render(compose, ENGINE)
+    if (home / "builder" / "current").exists():
+        # `wam builder-bundle fresh` mounts the Wizard builder into this same overlay; keep it on every rewrite.
+        from . import builder_bundle
+        compose = builder_bundle.with_builder_mount(compose, home, AGENT_APP, where="the agent overlay")
+    return _write_overlay(runtipi_root, store, AGENT_APP, compose, {})
 
 
 def write_install_overlay(runtipi_root: Path, store: str, app_id: str, home: Path) -> bool:

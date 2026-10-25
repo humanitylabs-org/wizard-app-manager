@@ -569,3 +569,23 @@ def test_agent_ssh_key_is_mounted_from_outside_app_data(fresh):
     vols = yaml.safe_load((uc / "docker-compose.yml").read_text())["services"]["hermes-agent-engine"]["volumes"]
     assert f"{f.c.home / 'agent-ssh'}:/opt/agent-ssh:ro" in vols
     assert not fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)   # idempotent
+
+
+def test_agent_overlay_rewrite_keeps_the_builder_bundle_mount(fresh):
+    """builder-bundle and fresh-agent both write the agent overlay; fresh-agent's rewrite must not drop the builder."""
+    from wam import builder_bundle
+    f = fresh
+    uc = f.c.runtipi_root / "user-config" / "wizardapps" / "hermes-agent"
+    fresh_agent.prepare(f.c)
+    (f.c.home / "builder" / "current").mkdir(parents=True)
+    assert fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)
+    text = (uc / "docker-compose.yml").read_text()
+    assert text.startswith(fresh_agent.MARK + " (fresh mode)")
+    engine = yaml.safe_load(text)["services"]["hermes-agent-engine"]
+    assert engine["environment"]["WIZARD_BUILDER_ROOT"] == builder_bundle.RUNTIME
+    assert {"type": "bind", "source": str((f.c.home / "builder").resolve()), "target": builder_bundle.RUNTIME,
+            "read_only": True} in engine["volumes"]
+    assert engine["environment"]["WIZARD_OS_HOME"]
+    assert not fresh_agent.write_agent_overlay(f.c.runtipi_root, "wizardapps", f.c.home)   # idempotent
+    # builder-bundle's own merge over fresh-agent's file is a no-op and keeps the ownership mark
+    assert builder_bundle.with_builder_mount(text, f.c.home) == text
