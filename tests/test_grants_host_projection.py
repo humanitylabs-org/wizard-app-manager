@@ -15,7 +15,7 @@ def test_registry_refresh_uses_authenticated_metadata_when_state_is_private(tmp_
     calls = []
     def request(method, path):
         calls.append((method, path))
-        return {'schema': 1, 'grants': grants}
+        return grants
     runtime = SimpleNamespace(installed=lambda: [], req=request)
     config = SimpleNamespace(home=tmp_path / 'owner', runtipi_root=root,
                              host_ip=lambda: '127.0.0.1', runtipi=lambda: runtime)
