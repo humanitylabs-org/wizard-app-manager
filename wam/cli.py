@@ -1568,6 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    phone = sub.add_parser("phone-sync", help="mirror the public phone APK; never installs or restarts anything")
+    phone.add_argument("--ensure-timer", action="store_true", help="installer: enable the independent hourly mirror")
     up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
                                         "(--channel stable default, or latest)")
     upg = up.add_mutually_exclusive_group()
@@ -1578,6 +1580,17 @@ def main(argv: list[str] | None = None) -> int:
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     args = ap.parse_args(argv)
+    if args.cmd == "phone-sync":
+        from . import phone_sync
+        c = Config()
+        try:
+            outcome = (phone_sync.ensure_timer(c.home, c.runtipi_root) if args.ensure_timer
+                       else phone_sync.sync(c.home, c.runtipi_root))
+        except OSError:
+            print("phone-sync failed:timer_setup")
+            return 1
+        print(f"phone-sync {outcome}")
+        return 0
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:

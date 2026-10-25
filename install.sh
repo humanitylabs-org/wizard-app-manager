@@ -137,6 +137,8 @@ systemctl --user restart wizard-app-manager-api.service
 # Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
 # update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
+# Public phone bytes only: always mirror, even when box updates/maintenance are report-only.
+RUNTIPI_ROOT="$RUNTIPI_ROOT" "$HOME/.local/bin/wam" phone-sync --ensure-timer || echo "note: could not set up the hourly phone mirror (wam phone-sync --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
 # happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
