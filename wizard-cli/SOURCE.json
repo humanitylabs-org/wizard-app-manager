@@ -6,7 +6,7 @@
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "b484171b1f5ae366b3d065505f5bdeb4f82e02eae0178ad6dfea6a755783efae",
+    "wizard": "88a69a2dbd274c1ef474dc885d2a37c2ad17d372e75c7828526c010cdf90d030",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
   "upstream_sha256": {
@@ -20,6 +20,10 @@
     },
     {
       "description": "Retain stock-builder link lifecycle and plugin fingerprint journal alongside the managed Mac offline plugin source."
+    },
+    {
+      "source": "235d867701b1946f5dc64b2e20e99fc54513f4c8",
+      "description": "An unset --plugin-source is never the current directory (Path('') == '.'); only an explicit nonempty source takes the local-plugin branch."
     }
   ],
   "about": "Vendored wizard-os source at commit plus the declared Mac local patch. sha256 covers actual distributed bytes; upstream_sha256 records the unpatched source. This is not a byte-identical upstream copy."
