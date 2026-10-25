@@ -207,3 +207,21 @@ def test_private_agent_metadata_export_and_undo(world, denied_host):  # noqa: F8
     assert restore.undo(new.box())['digest_match']
     with new.box().operation():
         assert (fs.Path(destination) / '.main-agent.json').read_text() == '{"fixture":"destination"}'
+
+
+def test_root_owned_owner_files_folder_is_read_through_helper(tmp_path, denied_host):
+    """0.3.48 Thales gate: export died on root-owned media/Wisdom/launch-public."""
+    protect, launches = denied_host
+    home, rt = tmp_path / 'wizard', tmp_path / 'runtipi'
+    home.mkdir(); rt.mkdir()
+    (rt / 'app-data').mkdir()
+    wisdom = rt / 'media/Wisdom/launch-public'
+    wisdom.mkdir(parents=True)
+    (wisdom / 'reading.md').write_text('public reading')
+    (rt / 'media/notes.md').write_text('owner note')
+    protect(wisdom)
+    b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE': 'example/wam:test'})
+    with b.operation():
+        assert fs.listdir(wisdom) == ['reading.md']
+        assert bundle.tree_size(b.files_root())['count'] == 2
+    assert launches
