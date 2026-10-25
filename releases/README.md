@@ -220,3 +220,8 @@ Promotion JSON SHA256: `ca495855d7f5b917fac0eb20037df1523cf1aff974214ae9633fe264
 Canonical: wizard-os releases/0.3.40.json (wizard-os #209). SHA256: `947cb1e88bf758e8e4889f85a352e1d04f688fc3543f9e3e9c8dedc8eda7fd53`.
 0.3.39 plus wizard-ux #482/#483 (`9fcf86c`): alongside first launch starts the first-message orientation once (phone tour, desktop composer guide), Setup stays manual, the desktop shell loads the tour; UX image `sha256:c369207da4392095a2be02c6c56c05f877b6bf079546c6816c375b11659b6c90`. Other pins unchanged.
 Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade verification.
+
+## 0.3.50 provenance
+
+Canonical wizard-os PR #233. Channel: on latest only; stable remains 0.3.39.
+Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca13044f`. Complete 0.3.49 non-UX pins retained; compatible Android/onboarding/Spaces UX is immutable 03b07142. No passed runtime release gate or promotion implied.
