@@ -969,6 +969,20 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
 BOOTSTRAP_RETRY_DELAY = 10
 
 
+def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True) -> dict:
+    """`wam install <app>` with the same single retry bootstrap gives defaults: a `compose up` whose image pull
+    was cancelled mid-way makes the App Manager remove the app, and a second attempt on the same box succeeds
+    (seen live 0.3.6 and on the 0.3.40 retained launch box). A second failure is raised unchanged."""
+    try:
+        return install(c, app_id, given, wait=wait)
+    except SystemExit as e:
+        if "install failed" not in str(e):
+            raise
+        time.sleep(BOOTSTRAP_RETRY_DELAY)
+        print(f"retrying {app_id} once", file=sys.stderr)
+        return install(c, app_id, given, wait=wait)
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -1582,7 +1596,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
+            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
         elif args.cmd == "uninstall":
             print(json.dumps(uninstall(c, args.id, force=args.force), indent=2))
         elif args.cmd == "slots":
