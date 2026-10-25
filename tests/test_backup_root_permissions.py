@@ -307,3 +307,21 @@ def test_other_root_owned_runtipi_trees_export_and_undo(world, denied_host, part
     assert restore.import_bundle(new.box(), out, keys, yes=True)['ok']
     assert restore.undo(new.box())['digest_match']
     assert box_digest(new.box()) == before
+
+
+def test_verify_and_import_open_backup_inside_private_media(world, denied_host):
+    # Keys and bundle metadata are authenticated through the same streaming pass;
+    # verify must not bypass Access just because it does not write a restore.
+    out, _ = _export(world)
+    new = world['new'].box()
+    folder = new.files_root() / 'private-backups'
+    folder.mkdir()
+    carried = folder / out.name
+    shutil.copyfile(out, carried)
+    protect, launches = denied_host
+    protect(folder)
+    keys = fmt.Keys(recovery=[world['key']])
+    assert restore.verify(new, carried, keys)['ok']
+    assert restore.import_bundle(new, carried, keys, yes=True)['ok']
+    assert restore.undo(new)['digest_match']
+    assert launches
