@@ -122,9 +122,17 @@ def skills_mount(c, store='wizardapps'):
 
 def add_skills_mount(c, store='wizardapps'):
     """Additive user-config override on the agent's engine service. True when it changed."""
-    from .builder_bundle import _atomic
+    from .builder_bundle import _atomic, _leading_comments, OVERLAY_MARK
     override = Path(c.runtipi_root) / 'user-config' / store / AGENT_APP / 'docker-compose.yml'
-    doc = (yaml.safe_load(override.read_text()) or {}) if override.exists() else {}
+    if override.is_symlink():
+        raise ValueError(f'symlink overlay refused: {override}')
+    previous = override.read_text() if override.exists() else None
+    # This helper runs during bootstrap, after fresh-agent and builder-bundle.
+    # PyYAML drops comments: retain their ownership or fresh-agent connect refuses
+    # the very overlay we just wrote. Never adopt an existing owner-written file.
+    header = ''.join(_leading_comments(previous)) if previous is not None else \
+        OVERLAY_MARK + ' (agent-link): read-only Agent Service skills mount.\n'
+    doc = (yaml.safe_load(previous) or {}) if previous is not None else {}
     service = doc.setdefault('services', {}).setdefault(AGENT_APP + '-engine', {})
     vols = service.setdefault('volumes', [])
     mount = skills_mount(c, store)
@@ -137,7 +145,7 @@ def add_skills_mount(c, store='wizardapps'):
     if not Path(mount['source']).is_dir():
         raise ValueError(f"{mount['source']} is missing: start the Agent Service once so it writes its skills")
     vols.append(mount)
-    _atomic(override, yaml.safe_dump(doc, sort_keys=False))
+    _atomic(override, header + yaml.safe_dump(doc, sort_keys=False))
     return True
 
 
