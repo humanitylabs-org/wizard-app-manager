@@ -320,11 +320,28 @@ fwd_env() {
     WIZARD_DETACHED="${WIZARD_DETACHED:-}" WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-}" \
     WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}"
 }
+# Cloud-init can race logind's D-Bus startup. Retry, but never hide exhaustion.
+enable_linger() {
+  local user="$1" attempt rc=1
+  for attempt in 1 2 3 4; do
+    if loginctl enable-linger "$user"; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [ "$attempt" -lt 4 ]; then
+      printf 'Waiting for logind before enabling linger for %s (attempt %s/4)\n' "$user" "$attempt" >&2
+      sleep "$((attempt * 2))"
+    fi
+  done
+  printf 'Could not enable linger for %s after 4 attempts\n' "$user" >&2
+  return "$rc"
+}
 # as_user <user> <mode> [HERMES_HOME]: run this installer again as <user> (a user session bus, no root left over).
 as_user() {
   local u="$1" m="$2" uid; uid="$(id -u "$u")"
   local -a env; mapfile -t env < <(fwd_env)
-  loginctl enable-linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
+  enable_linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
@@ -910,7 +927,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       as_user "$ALONG_USER" alongside "$ALONG_HOME"
     fi
     # Root owns this Hermes: Wizard OS runs as root too. Its user units need root's user manager (linger).
-    loginctl enable-linger root >/dev/null 2>&1 || true
+    enable_linger root >/dev/null 2>&1 || true
     for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S /run/user/0/bus ] && break; sleep 1; done
     export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
     [ -z "$ALONG_HOME" ] || export HERMES_HOME="$ALONG_HOME"
@@ -933,7 +950,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
     install -d -m 700 -o "$WUSER" -g "$WUSER" "/home/$WUSER/.ssh"
     install -m 600 -o "$WUSER" -g "$WUSER" /root/.ssh/authorized_keys "/home/$WUSER/.ssh/authorized_keys"
   fi
-  loginctl enable-linger "$WUSER"
+  enable_linger "$WUSER"
   WUID="$(id -u "$WUSER")"
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$WUID/bus" ] && break; sleep 1; done
 
