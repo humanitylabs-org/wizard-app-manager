@@ -90,6 +90,8 @@ def test_app_undo_archive_fsynced_before_publish_and_parent_after(tmp_path, monk
     stream.seek(0)
     proc = SimpleNamespace(stdout=stream, wait=lambda: 0, kill=lambda: None)
     monkeypatch.setattr(appdata.subprocess, 'Popen', lambda *a, **kw: proc)
+    # This test owns only archive fsync ordering, not Docker access probing.
+    monkeypatch.setattr(appdata, 'docker', lambda env: ['docker'])
     box = SimpleNamespace(child_env={})
     ad = appdata.AppData(box)
     monkeypatch.setattr(ad, 'image', lambda: 'unused-fixture-image')

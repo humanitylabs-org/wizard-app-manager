@@ -14,7 +14,7 @@ agent's own container image with the home bind-mounted (container agents) or fro
 (the alongside host agent). Stock Hermes is never modified.
 """
 from __future__ import annotations
-from .dockercli import docker, verb  # noqa: F401
+from .dockercli import docker
 
 import hashlib
 import json
@@ -366,9 +366,9 @@ class HermesRunner:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
         (Runtipi's stop is `compose down`, so a stopped app has no container)."""
         project = (agent.urn or "").replace(":", "_")
-        ids = self._run([*docker(), "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
+        ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
         if ids:
-            info = json.loads(self._run([*docker(), "inspect", *ids]) or "[]")
+            info = json.loads(self._run([*docker(self.box.child_env), "inspect", *ids]) or "[]")
             for c in info:
                 if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
                     return c["Config"]["Image"]
@@ -423,7 +423,7 @@ class HermesRunner:
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:
         st = datafs.stat(agent.home)
-        cmd = [*docker(), "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
+        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
         for src, dst, ro in mounts:
             cmd += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
