@@ -5,7 +5,7 @@ import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -13,7 +13,17 @@ import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
 
 @Injectable()
-export class DockerService {
+export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
+  private grantsTimer?: NodeJS.Timeout;
+  onApplicationBootstrap() {
+    const run = () => this.storage.reconcile().catch((e) => this.logger.error('App grants reconcile failed', e));
+    void run();
+    this.grantsTimer = setInterval(() => void run(), 5 * 60 * 1000);
+    this.grantsTimer.unref?.();
+  }
+  onModuleDestroy() {
+    if (this.grantsTimer) clearInterval(this.grantsTimer);
+  }
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,

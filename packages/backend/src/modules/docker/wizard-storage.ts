@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import * as yaml from 'yaml';
+import { appProposals, sameAppGrant, reconcileAppGrants } from './wizard-app-grants';
 
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
@@ -15,12 +16,20 @@ const isId = (value: unknown): value is string => typeof value === 'string' && I
 const VOLUME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 export type Share = { id: string; path: string };
 export type Mount = { app: string; share: string; path: string };
-export type Manifest = { id: string; shares?: Share[]; mounts?: Mount[] };
+export type Manifest = {
+  id: string;
+  shares?: Share[];
+  mounts?: Mount[];
+  uses?: string[];
+  provides?: string[];
+  requires?: { models?: unknown; services?: unknown };
+  api?: { endpoint?: string };
+};
 export type Grant = { kind: string; from: string; to: string; share?: string; reason?: string; approved?: string; created_at?: number };
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
 // Compose is extensible; preserve unknown fields rather than normalizing them away.
 export type Compose = { services: Record<string, any>; volumes?: Record<string, any>; [key: string]: any };
-type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string };
+export type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string };
 type Run = (file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>;
 export const relativePath = (p: unknown): p is string =>
   typeof p === 'string' &&
@@ -237,9 +246,10 @@ export class WizardStorage {
           known.add(key(g));
         }
       }
-    return out;
+    return [...out, ...appProposals(apps, file)];
   }
   async proposed(id?: string) {
+    if (id && !ID.test(id)) throw new Error('Invalid app id');
     const apps = await this.apps();
     // The install sheet asks before the consumer is installed. Materialized store
     // recipes are candidates only: prepare() still acts solely on installed apps.
@@ -265,12 +275,40 @@ export class WizardStorage {
         break;
       }
     }
-    return this.proposals(apps, await this.readGrants()).filter((g) => !id || g.from === id || g.to === id);
+    if (id) {
+      const consumer = apps.find((a) => a.manifest.id === id);
+      for (const dep of consumer?.manifest.uses ?? []) {
+        if (!ID.test(dep) || apps.some((a) => a.manifest.id === dep)) continue;
+        const candidate = await this.app(dep, 'wizardapps', path.join(this.dirs.dataDir, 'repos/wizardapps/apps', dep));
+        if (candidate) apps.push(candidate);
+      }
+    }
+    return this.proposals(apps, await this.readGrants()).filter((g) => !id || g.from === id);
   }
   async change(grant: Grant, approve: boolean): Promise<string> {
     return this.serial(async () => {
       const apps = await this.apps();
       const file = await this.readGrants();
+      if (grant.kind === 'app') {
+        if (!ID.test(grant.from) || !ID.test(grant.to.replace(/^slot:/, '')) || grant.from === grant.to) throw new Error('Invalid app grant');
+        const consumer = apps.find((a) => a.manifest.id === grant.from);
+        if (!consumer) throw new Error('Consumer not installed');
+        // Explicit owner grants need not be manifest defaults. Revocations are remembered.
+        file.grants = file.grants.filter((g) => !sameAppGrant(g, grant));
+        file.denied = file.denied.filter((g) => !sameAppGrant(g, grant));
+        (approve ? file.grants : file.denied).push({
+          kind: 'app',
+          from: grant.from,
+          to: grant.to,
+          reason: 'owner',
+          approved: 'owner',
+          created_at: Math.floor(Date.now() / 1000),
+        });
+        file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== grant.from);
+        await this.writeGrants(file);
+        await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+        return consumer.urn;
+      }
       if (grant.kind !== 'share' || !ID.test(grant.from) || !ID.test(grant.to) || !ID.test(grant.share ?? '')) throw new Error('Invalid share grant');
       const consumer = apps.find((a) => a.manifest.id === grant.from);
       if (!consumer) throw new Error('Consumer not installed');
@@ -300,9 +338,16 @@ export class WizardStorage {
       const affected = file.grants.filter((g) => g.kind === 'share' && g.to === id).map((g) => g.from);
       file.grants = file.grants.filter((g) => g.from !== id && g.to !== id);
       file.seeded = (file.seeded ?? []).filter((x) => x !== id);
+      file.layer2_removing = [...new Set([...((file.layer2_removing as string[]) ?? []), id])];
       await this.writeGrants(file);
+      // The DB row still exists during uninstall; do not immediately re-seed it.
+      await reconcileAppGrants(await this.apps(), file, this.dirs.dataDir, (f) => this.writeGrants(f), id);
       return affected;
     });
+  }
+
+  async reconcile() {
+    return this.serial(async () => reconcileAppGrants(await this.apps(), await this.readGrants(), this.dirs.dataDir, (f) => this.writeGrants(f)));
   }
 
   /** Only the already-created local bind alias is safe for legacy consumers.
@@ -409,6 +454,8 @@ rm -f ".$1.wizard-copy-ready"`;
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
       const file = await this.readGrants();
+      file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
       const provider = apps.find((a) => a.manifest.id === 'wizard-claude');
       const hermes = apps.find((a) => a.manifest.id === 'hermes-agent');
       // Only an existing fixed-volume pair inherits authority. New installs require consent.

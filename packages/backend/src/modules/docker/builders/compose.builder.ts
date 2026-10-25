@@ -6,6 +6,7 @@ import deepmerge from 'deepmerge';
 import * as yaml from 'yaml';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { rewriteVolumes } from '../wizard-storage';
+import { mountAppGrants } from '../wizard-app-grants';
 
 /**
  * Interpolate {{RUNTIPI_APP_ID}} placeholders in labels with the actual app ID
@@ -214,6 +215,6 @@ export class DockerComposeBuilder {
       '\n',
     );
 
-    return header + yaml.stringify(appStoreId === 'wizardapps' ? rewriteVolumes(inputCopy, appName) : inputCopy, { nullStr: '' });
+    return header + yaml.stringify(appStoreId === 'wizardapps' ? mountAppGrants(rewriteVolumes(inputCopy, appName)) : inputCopy, { nullStr: '' });
   };
 }

@@ -1214,6 +1214,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
                 return self._json(503, {"error": "server_resources_unavailable"})
+        grant_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/proposed-grants", u.path)
+        if grant_match:
+            if not self._authorized(): return
+            try:
+                return self._json(200, c.runtipi().req("GET", f"/apps/{grant_match[1]}:wizardapps/proposed-grants"))
+            except RuntipiError:
+                return self._json(503, {"error": "grants_unavailable"})
         if u.path == "/api/apps":
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
@@ -1475,6 +1482,24 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "grants":
+        gp = argparse.ArgumentParser(prog="wam grants")
+        gs = gp.add_subparsers(dest="action", required=True)
+        gs.add_parser("list")
+        proposed = gs.add_parser("proposed"); proposed.add_argument("app")
+        for action in ("grant", "revoke"):
+            p = gs.add_parser(action); p.add_argument("app"); p.add_argument("to")
+        ga = gp.parse_args(argv[1:])
+        if any(not re.fullmatch(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}", value) for value in (getattr(ga, "app", "valid"), getattr(ga, "to", "valid"))):
+            gp.error("invalid app or slot id")
+        c = Config(); rt = c.runtipi()
+        if ga.action == "list": result = rt.req("GET", "/apps/wizard/grants")
+        elif ga.action == "proposed": result = rt.req("GET", f"/apps/{ga.app}:wizardapps/proposed-grants")
+        else:
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action == "grant"})
+            write_registry(c)
+        print(json.dumps(result, indent=2))
+        return 0
     if argv and argv[0] == "hermes":
         from .hermes_update import main as hermes_main
         return hermes_main(argv[1:])

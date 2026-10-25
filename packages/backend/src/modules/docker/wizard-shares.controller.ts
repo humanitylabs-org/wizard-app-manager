@@ -16,6 +16,12 @@ export class WizardSharesController {
   async grants() {
     return (await this.docker.storage.readGrants()).grants;
   }
+  @Post(':id/app-grants')
+  async appChange(@Param('id') id: string, @Body() body: { to: string; approve: boolean }) {
+    if (typeof body.approve !== 'boolean' || typeof body.to !== 'string') throw new BadRequestException('to and approve required');
+    await this.docker.storage.change({ kind: 'app', from: id.split(':')[0]!, to: body.to }, body.approve);
+    return { grants: (await this.docker.storage.readGrants()).grants };
+  }
   @Post(':id/share-grants')
   async change(@Param('id') id: string, @Body() body: { to: string; share: string; approve: boolean }) {
     if (typeof body.approve !== 'boolean') throw new BadRequestException('approve must be boolean');
