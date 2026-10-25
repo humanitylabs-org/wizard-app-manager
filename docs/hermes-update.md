@@ -15,7 +15,7 @@ certified latest release and never automatically downgrades an alongside host.
 Promotion requires seven full days after publication, bug review, exact-source
 acceptance/canary and rollback evidence, a recommendation, and non-author admin
 approval (James for stable). See
-[the shared contract](https://github.com/humanitylabs-org/wizard-os/blob/main/spec/HERMES_LOCK.md).
+[the shared contract](https://github.com/humanitylabs-org/wizard-os/pull/215).
 Do not deploy the global/default change without its clean-VM fresh/alongside
 installer acceptance and non-author approval. Raw Docker/Runtipi admin commands,
 stock `hermes update` and owner cron must be audited separately.
