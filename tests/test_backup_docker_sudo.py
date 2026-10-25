@@ -168,15 +168,20 @@ os.execv(os.path.join(os.path.dirname(__file__), 'docker'), sys.argv[2:])
     root = rt / "app-data"
     root.mkdir()
     (root / "marker").write_text("preserved")
-    access = filesystem.Access(box)
-    try:
-        assert "marker" in access.call("listdir", root)
-    finally:
-        access.close()
+    # The shipped Node filesystem helper intentionally uses Linux /proc fd
+    # paths. A daemon-free macOS probe still exercises sudo + streamed shell
+    # and Hermes paths; the exact filesystem helper runs in Linux CI/guests.
+    if sys.platform == "linux":
+        access = filesystem.Access(box)
+        try:
+            assert "marker" in access.call("listdir", root)
+        finally:
+            access.close()
     assert HermesRunner(box)._run([*dockercli.docker(box.child_env), "echo"], stdin="hermes bytes") == "hermes bytes"
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert rows[0]["sudo"] is None  # real denied unprivileged process
     assert all(not row["secrets"] for row in rows)
     assert all(row["sudo"] == "1" for row in rows[1:])
-    assert any("node" in row["argv"] for row in rows)
+    if sys.platform == "linux":
+        assert any("node" in row["argv"] for row in rows)
     assert any("sh" in row["argv"] for row in rows)
