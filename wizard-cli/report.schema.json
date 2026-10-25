@@ -1,0 +1,457 @@
+{
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "wizard-report-v1"
+    },
+    "cli_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "python_version": {
+      "type": "string"
+    },
+    "os": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "enum": [
+            "ubuntu",
+            "debian",
+            "fedora",
+            "arch",
+            "alpine",
+            "other"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pinned",
+            "drift",
+            "mismatch",
+            "install-failed",
+            "unpinned",
+            "unavailable"
+          ]
+        },
+        "mismatches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identities": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "commit",
+                  "digest"
+                ]
+              },
+              "expected": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observed": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "expected",
+              "observed",
+              "ok"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "status",
+        "mismatches",
+        "identities"
+      ],
+      "additionalProperties": false
+    },
+    "expected_pins": {
+      "type": "object",
+      "properties": {
+        "wizard-app-manager": {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "digest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "commit",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        "wizard-agent-service": {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "digest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "commit",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        "wizard-ux": {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "digest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "commit",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        "wizard-troubleshooter": {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "digest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "commit",
+            "digest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "wizard-app-manager",
+        "wizard-agent-service",
+        "wizard-ux",
+        "wizard-troubleshooter"
+      ],
+      "additionalProperties": false
+    },
+    "services": {
+      "type": "object",
+      "properties": {
+        "wizard-app-manager-api.service": {
+          "enum": [
+            "active",
+            "inactive",
+            "failed",
+            "activating",
+            "deactivating",
+            "unavailable"
+          ]
+        },
+        "wizard-troubleshooter.service": {
+          "enum": [
+            "active",
+            "inactive",
+            "failed",
+            "activating",
+            "deactivating",
+            "unavailable"
+          ]
+        },
+        "wizard-guardian.timer": {
+          "enum": [
+            "active",
+            "inactive",
+            "failed",
+            "activating",
+            "deactivating",
+            "unavailable"
+          ]
+        }
+      },
+      "required": [
+        "wizard-app-manager-api.service",
+        "wizard-troubleshooter.service",
+        "wizard-guardian.timer"
+      ],
+      "additionalProperties": false
+    },
+    "recent_errors": {
+      "type": "object",
+      "properties": {
+        "wizard-app-manager-api.service": {
+          "type": "object",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "classes": {
+              "type": "object",
+              "properties": {
+                "timeout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "connection_refused": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "permission_denied": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "out_of_memory": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "error": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "timeout",
+                "connection_refused",
+                "permission_denied",
+                "out_of_memory",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "available",
+            "classes"
+          ],
+          "additionalProperties": false
+        },
+        "wizard-troubleshooter.service": {
+          "type": "object",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "classes": {
+              "type": "object",
+              "properties": {
+                "timeout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "connection_refused": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "permission_denied": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "out_of_memory": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "error": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "timeout",
+                "connection_refused",
+                "permission_denied",
+                "out_of_memory",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "available",
+            "classes"
+          ],
+          "additionalProperties": false
+        },
+        "wizard-guardian.timer": {
+          "type": "object",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "classes": {
+              "type": "object",
+              "properties": {
+                "timeout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "connection_refused": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "permission_denied": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "out_of_memory": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "error": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "timeout",
+                "connection_refused",
+                "permission_denied",
+                "out_of_memory",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "available",
+            "classes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "wizard-app-manager-api.service",
+        "wizard-troubleshooter.service",
+        "wizard-guardian.timer"
+      ],
+      "additionalProperties": false
+    },
+    "updates": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "ask",
+            "auto"
+          ]
+        },
+        "channel": {
+          "enum": [
+            "stable",
+            "latest"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "channel"
+      ],
+      "additionalProperties": false
+    },
+    "privacy": {
+      "const": "allowlisted-identities-and-enums-only; no raw logs or content; not uploaded"
+    }
+  },
+  "required": [
+    "schema",
+    "cli_version",
+    "python_version",
+    "os",
+    "release",
+    "expected_pins",
+    "services",
+    "recent_errors",
+    "updates",
+    "privacy"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Wizard offline report v1"
+}
