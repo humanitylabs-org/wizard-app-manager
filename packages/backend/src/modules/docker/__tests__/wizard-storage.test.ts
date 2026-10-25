@@ -85,6 +85,21 @@ describe('rule 15 and volume compile', () => {
     await expect(confined(root, '../outside', true)).rejects.toThrow('Unsafe');
   });
 });
+describe('fresh volume ownership', () => {
+  it('initialises a new bind for its numeric service user and never chowns existing data', async () => {
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    const source = { services: { main: { ...compose.services.main, user: `${uid}:${gid}`, volumes: ['fresh:/data'] } }, volumes: { fresh: {} } };
+    const urn = await install({ id: 'fresh-app' }, source);
+    const built = new DockerComposeBuilder().getDockerCompose(source as any, {}, urn as AppUrn, '10.1.0.0/24');
+    await store.prepare(urn, built);
+    const folder = path.join(root, 'app-data/wizardapps/fresh-app/volumes/fresh');
+    expect((await fs.stat(folder)).uid).toBe(uid);
+    await fs.writeFile(path.join(folder, 'owner-state'), 'preserved');
+    await store.prepare(urn, built);
+    expect(await fs.readFile(path.join(folder, 'owner-state'), 'utf8')).toBe('preserved');
+  });
+});
 describe('owner share grants', () => {
   it('offers a share on the install sheet before the consumer is installed', async () => {
     await install(provider);

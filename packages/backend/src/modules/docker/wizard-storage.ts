@@ -396,7 +396,32 @@ export class WizardStorage {
     // still use its bind alias, and no login bytes need to be copied again.
     if (marked) return;
     const names = (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/);
-    if (!names.includes(old)) return;
+    if (!names.includes(old)) {
+      // An empty bind replaces Docker's new named volume. Initialise its owner
+      // from the recipe so non-root services can chmod/create their store. Never
+      // chown an existing directory or migrated owner data.
+      const exists = await fs.lstat(path.join(app.data, relative)).catch((e) => {
+        if (e.code !== 'ENOENT') throw e;
+        return null;
+      });
+      if (!exists) {
+        const folder = await confined(app.data, relative, true);
+        const volume = relative.startsWith('volumes/') ? relative.slice(8) : '';
+        const users = [
+          ...new Set(
+            Object.values(app.compose.services)
+              .filter((svc) => (svc.volumes ?? []).some((v: any) => (typeof v === 'string' ? v.split(':')[0] === volume : v.source === volume)))
+              .map((svc) => String(svc.user ?? '0:0')),
+          ),
+        ];
+        const owner = users[0];
+        if (users.length === 1 && owner && /^\d+:\d+$/.test(owner)) {
+          const [uid, gid] = owner.split(':').map(Number);
+          await fs.chown(folder, uid!, gid!);
+        }
+      }
+      return;
+    }
     if (old === this.legacyClaudeVolume && (await this.isClaudeAlias(app, relative))) {
       await confined(app.data, parent, true);
       await fs.writeFile(marker, '', { mode: 0o600, flag: 'wx' });

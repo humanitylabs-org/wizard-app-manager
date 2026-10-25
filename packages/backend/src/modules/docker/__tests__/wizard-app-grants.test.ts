@@ -169,6 +169,21 @@ describe('app grants layer 2', () => {
     expect(mountAppGrants(out)).toEqual(out);
     expect(source.services.ui).not.toHaveProperty('volumes');
   });
+  it('updates derived endpoints after provider update, but preserves owner overrides', async () => {
+    await install('wizard-connectors');
+    await install('wizard-calendar', { uses: ['wizard-connectors'] });
+    await store.reconcile();
+    const pathToManifest = path.join(root, 'apps/wizardapps/wizard-connectors/wizard.md');
+    await fs.writeFile(pathToManifest, `---\n${yaml.stringify({ id: 'wizard-connectors', api: { endpoint: 'http://changed:8798' } })}---\n`);
+    await store.reconcile();
+    expect((await file('wizard-calendar')).provider_endpoints['wizard-connectors']).toBe('http://changed:8798');
+    const doc = await file('wizard-calendar');
+    doc.provider_endpoints['wizard-connectors'] = 'http://owner:8797';
+    await fs.writeFile(path.join(data('wizard-calendar'), 'wizard/grants.json'), JSON.stringify(doc));
+    await store.reconcile();
+    await store.reconcile();
+    expect((await file('wizard-calendar')).provider_endpoints['wizard-connectors']).toBe('http://owner:8797');
+  });
   it('rejects malformed files rather than erasing valid keys and respects explicit endpoint', async () => {
     await install('wizard-connectors');
     await store.reconcile();
@@ -177,7 +192,10 @@ describe('app grants layer 2', () => {
     const app = (await store.apps())[0]!;
     app.manifest.api = { endpoint: 'http://ingress:8799' };
     expect(providerEndpoint(app)).toBe('http://ingress:8799');
-    app.manifest.api.endpoint = 'http://secret@ingress:8799';
+    delete app.manifest.api;
+    app.compose.networks = { main: { external: true, name: '${WIZARD_MAIN_NETWORK:-runtipi_tipi_main_network}' } };
+    expect(providerEndpoint(app)).toBe('http://wizard-connectors_wizardapps-main-1:8799');
+    app.manifest.api = { endpoint: 'http://secret@ingress:8799' };
     expect(() => providerEndpoint(app)).toThrow();
   });
 });

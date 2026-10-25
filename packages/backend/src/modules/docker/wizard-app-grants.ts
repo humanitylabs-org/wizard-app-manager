@@ -50,7 +50,15 @@ export function providerEndpoint(app: App): string | undefined {
   if (!Number.isInteger(port) || port < 1 || port > 65535 || svc.network_mode) return undefined;
   const networks = Object.values(svc.networks ?? {}) as any[];
   const alias = networks.flatMap((n) => n?.aliases ?? []).find((s) => typeof s === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(s));
-  return `http://${alias ?? name}:${port}`;
+  // Compose collapses duplicate logical networks by physical name. Its injected
+  // tipi_main_network attachment wins and can discard the recipe alias on main.
+  // Use the daemon's unique project/service container alias in that case, without
+  // changing any networks (Layer 1 remains off).
+  const duplicateMain = Object.entries(app.compose.networks ?? {}).some(
+    ([key, net]: [string, any]) => key !== 'tipi_main_network' && net?.name?.includes('runtipi_tipi_main_network') && key in (svc.networks ?? {}),
+  );
+  const container = svc.container_name ?? `${app.urn.replace(':', '_')}-${name}-1`;
+  return `http://${duplicateMain ? container : (alias ?? name)}:${port}`;
 }
 export function mountAppGrants(input: any): any {
   const doc = structuredClone(input);
@@ -155,7 +163,11 @@ export async function reconcileAppGrants(
   const apps = installedApps.filter(
     (a) => a.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(a.manifest.id) && a.urn.endsWith(':wizardapps'),
   );
-  const previous = (file.layer2 ?? {}) as { managed?: Record<string, string[]>; adopted?: string[] };
+  const previous = (file.layer2 ?? {}) as {
+    managed?: Record<string, string[]>;
+    adopted?: string[];
+    endpoints?: Record<string, Record<string, string>>;
+  };
   const adopted = new Set(previous.adopted ?? []);
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
@@ -188,8 +200,17 @@ export async function reconcileAppGrants(
   }
   file.grants.push(...appProposals(apps, file).map((g) => ({ ...g, approved: 'install', created_at: Math.floor(Date.now() / 1000) })));
   const managed: Record<string, string[]> = {};
+  const endpoints: Record<string, Record<string, string>> = {};
+  const adoptedHashes: Record<string, string[]> = {};
+  for (const d of docs.values())
+    for (const [to, key] of Object.entries(d.old.outgoing)) {
+      for (const provider of providers(to, apps)) {
+        adoptedHashes[provider.manifest.id] ??= [];
+        adoptedHashes[provider.manifest.id]?.push(hash(key));
+      }
+    }
   for (const [id, d] of docs) {
-    const oldHashes = previous.managed?.[id] ?? [];
+    const oldHashes = [...(previous.managed?.[id] ?? []), ...(adoptedHashes[id] ?? [])];
     d.doc.incoming = d.doc.incoming.filter((i) => !oldHashes.includes(i.sha256));
   }
   for (const g of file.grants.filter(appGrant)) {
@@ -205,8 +226,16 @@ export async function reconcileAppGrants(
       if (!p.doc.incoming.some((r) => r.sha256 === digest)) p.doc.incoming.push(existing ?? { from: g.from, sha256: digest });
       managed[provider.manifest.id] ??= [];
       managed[provider.manifest.id]?.push(digest);
-      const endpoint = consumer.old.provider_endpoints?.[g.to] ?? providerEndpoint(provider);
-      if (endpoint) consumer.doc.provider_endpoints![g.to] = endpoint;
+      const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
+      const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
+      const endpoint = ownerOverride ? oldEndpoint : providerEndpoint(provider);
+      if (endpoint) {
+        consumer.doc.provider_endpoints![g.to] = endpoint;
+        if (!ownerOverride) {
+          endpoints[g.from] ??= {};
+          endpoints[g.from]![g.to] = endpoint;
+        }
+      }
     }
   }
   file.seeded = [...new Set([...(file.seeded ?? []), ...apps.map((a) => a.manifest.id)])];
@@ -217,11 +246,11 @@ export async function reconcileAppGrants(
       [...new Set([...(previous.managed?.[id] ?? []), ...(managed[id] ?? [])])],
     ]),
   );
-  file.layer2 = { managed: pending, adopted: [...adopted] };
+  file.layer2 = { managed: pending, adopted: [...adopted], endpoints: previous.endpoints ?? {} };
   await save(file);
   // Providers first: no consumer receives a newly minted key before its hash.
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, { ...d.doc, outgoing: d.old.outgoing });
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, d.doc);
-  file.layer2 = { managed, adopted: [...adopted] };
+  file.layer2 = { managed, adopted: [...adopted], endpoints };
   await save(file);
 }
