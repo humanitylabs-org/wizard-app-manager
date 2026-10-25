@@ -1,0 +1,178 @@
+{
+  "version": "0.3.45",
+  "name": "Wizard OS 0.3.45 — container-owned backup permission fix",
+  "date": "2026-10-25",
+  "about": "Published 0.3.44 bundle (including Voice and Connection Router defaults), with WAM #221 fixing owner-user backup discovery, metadata reads and restore/Undo of root-only container-owned agent trees. 0.3.40 bundle with WAM main through #213: backup/restore #61 (verified encrypted export/import, paused cron/messaging/backups and Undo, Mac companion engine), report and strict contact #166, install retry #209; non-author review fixes kept-app credential loss, durable app/volume Undo archives, kept-tree interrupted-swap recovery and confirmed agent stops. All non-WAM pins remain 0.3.40; does not take the separately reserved 0.3.41 defaults/UI candidate. Small tester group only. Known limitations: Wizard scheduler is not paused/checkpointed/reconciled; stop source Service before export, inspect schedules with destination stopped/offline. AI login refresh is not fenced by activation: old box off before import or destination offline until exclusive handover. Tailscale and external alongside/linked grants re-enrol. Not an online clone. James explicitly waived the 72h latest soak on 25 Oct 2026; stable promotion still requires fresh install, upgrades from 0.3.39 and 0.3.40, and new-version backup/restore evidence.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "f179a9245be6fdaa4e45ae55c48e718389c46237",
+      "branch": "main",
+      "note": "Main through #221: protected agent discovery, metadata, digest and journaled atomic restore/Undo use the offline root Manager helper instead of inaccessible owner filesystem paths; live permissions stay unchanged. Independent final review PASS, gitleaks/test/backend green. Image inputs unchanged from attested 80c76cf."
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "4b1f0efc09ea6a57f5fe35e8e52e014258d634e7",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; c434bbe plus #9 (connection app links follow apps.json; no dead Claude button when Claude Code is missing)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "6424db094d03af255b7ec35cb731bfc0087c61ef",
+      "branch": "main",
+      "note": "Official main through #151; preserves final #149 guards after #150 supersession."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "9fcf86c9c11f88e5b87737d6925c920b8ac52d5d",
+      "branch": "main",
+      "note": "Official main through #483; first-run orientation for alongside installs and the desktop shell."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.571-80c76cf",
+      "digest": "sha256:ff30d81d103c7ca408692fb25b98827d0fb382a8034e2bcbd0daf46b99547e39",
+      "built_from": "wizard-app-manager",
+      "source_commit": "80c76cf9e61df78abe4c09ffa419ad899bbc61a6",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/40171067383",
+      "note": "Official multi-arch main image from 80c76cf, workflow run 40171067383. Attestation reverified; full image-input diff to f179a924 is empty. Python backup engine is host-installed WAM source, not an image build input; no hand-built image."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-9fcf86c9c11f88e5b87737d6925c920b8ac52d5d",
+      "digest": "sha256:c369207da4392095a2be02c6c56c05f877b6bf079546c6816c375b11659b6c90",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/40125557617"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-6424db094d03af255b7ec35cb731bfc0087c61ef",
+      "digest": "sha256:840a371ca864755e01490ab7e5e31a1fc8bd0d698637ecd7e9b1523b3419a9b8",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/40088580225"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "9fcf86c9c11f88e5b87737d6925c920b8ac52d5d",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "6424db094d03af255b7ec35cb731bfc0087c61ef"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.1.4",
+      "commit": "f87d5ddc449535418ee92ebeb24aaec36cc58058",
+      "note": "Host Hermes owns and renews its sign-in; the connection app reads sanitized usage through the wizard-os dashboard plugin. Claude is installed by default as its own `claude-subscription` row below."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.1.2",
+      "commit": "3b2d6186b86a896f254150ad056b9eaa495e738e",
+      "note": "Installed on every box next to ChatGPT. Alongside with host Hermes on a claude-subscription provider: App Manager binds the agent's own Claude Code login folder at the engine's /claude, so Connect/Test and auto-renew act on the agent's sign-in; tokens are never copied."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard2",
+      "commit": "8a4dd8ac5189d7d9d8af2bb8a2416936668e90df"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7…c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "0.3.42 backup/restore bundle with WAM host registry permission fixes (#217). Root-only grants resolve through the App Manager API; the projection writer no longer eagerly reopens backend state. James explicitly waived the 72h latest soak on 25 Oct for the first small tester group by Tue 27 Oct; real fresh, 0.3.39/0.3.40 upgrade and backup/restore/Undo gates remain required before stable. Stable stays 0.3.39; this cut is not acceptance evidence. Other component and image pins are unchanged. 0.3.44 preserves the complete published 0.3.43 bundle and adds only Voice (0.2.2-rc1.app1) and Connection Router (0.1.4) default pins; Agent History is explicitly reserved null and Connected accounts remains on-demand. James approved publishing these two defaults with “Publish” on 24 Oct 2026 (PR #206). This does not include the separate PR #211 UX amendment: 0.3.43 UX source/image/shell remain exact. No channel promotion or acceptance is implied; current-stable upgrade, fresh install and inherited backup/restore/Undo gates remain required. Existing per-app compose files pin their engine digests; no additional top-level images are required. 0.3.45 changes only WAM source to #221; all other component/image/default-app pins remain exactly 0.3.44. Real disposable root0700 leaf and ancestor permission probes reproduce the old failure and pass fixed discovery, metadata and atomic set-aside/Undo with env owner/mode preserved. Linux CI also exercises the exact descriptor-anchored helper and a replaced-ancestor attack regression. These cheap checks are not the pending fresh/upgrade/backup acceptance gates. Stable stays 0.3.39; no soak/promotion or passed-upgrade evidence is manufactured."
+}
