@@ -179,7 +179,7 @@ def _rm(p: Path) -> None:
 # ---------------------------------------------------------------- open, verify
 
 def _open(path: Path, keys: fmt.Keys):
-    f = open(path, "rb")
+    f = datafs.open(path, "rb")
     try:
         header, signed, mac = fmt.read_header(f)
         file_key = fmt.unlock(header, signed, mac, keys)
@@ -189,6 +189,7 @@ def _open(path: Path, keys: fmt.Keys):
         raise
 
 
+@datafs.with_access
 def verify(box: Box, path: Path, keys: fmt.Keys) -> dict:
     """Decrypt and check everything, write nothing."""
     t0 = time.time()
@@ -196,7 +197,7 @@ def verify(box: Box, path: Path, keys: fmt.Keys) -> dict:
     with f:
         res = bundle.scan(reader, None, progress=log)
     m = res["manifest"]
-    return {"ok": True, "file": str(path), "bytes": path.stat().st_size, "entries": res["entries"],
+    return {"ok": True, "file": str(path), "bytes": datafs.stat(path).st_size, "entries": res["entries"],
             "content_bytes": res["bytes"], "seconds": round(time.time() - t0, 1), "manifest": summary(m),
             "plan": plan(box, m, probe=False)}
 
