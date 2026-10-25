@@ -102,10 +102,16 @@ def test_helper_refuses_escape_and_preserves_data(tmp_path, denied_host):
     protect(root)
     b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE':'example/wam:test'})
     with b.operation():
-        with pytest.raises(OSError, match='symbolic links'):
+        with pytest.raises(OSError, match='symbolic link'):
             (b.runtipi_root / 'app-data/escape').read_text()
         with pytest.raises(PermissionError, match='outside'):
             fs._current.get().call('rename', root / 'escape', dst=str(secret))
+        outside_dir = tmp_path / 'private-directory'
+        outside_dir.mkdir()
+        linked_dir = root / 'linked-directory'
+        linked_dir.symlink_to(outside_dir)
+        with pytest.raises(OSError, match='symbolic link'):
+            fs.listdir(linked_dir)
         dangling = root / 'dangling'
         missing = tmp_path / 'must-not-be-created'
         dangling.symlink_to(missing)

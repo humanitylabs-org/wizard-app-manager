@@ -46,6 +46,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   try {
     const q = JSON.parse(line); let v;
     const p = q.path === undefined ? undefined : checked(q.path);
+    if (p && ['stat','listdir','chmod','chown','open','sync','rmtree'].includes(q.op)) {
+      try { if (fs.lstatSync(p).isSymbolicLink()) throw Error('refusing protected final symbolic link'); }
+      catch(e) { if(e.code !== 'ENOENT') throw e; }
+    }
     switch(q.op) {
       case 'stat': case 'lstat': {
         const s = q.op === 'stat' ? fs.statSync(p) : fs.lstatSync(p);
@@ -331,7 +335,8 @@ def walk(root):
     root = Path(root)
     try: names = sorted(root.iterdir())
     except FileNotFoundError: return
-    dirs = [p.name for p in names if p.is_dir()]
+    import stat as s
+    dirs = [p.name for p in names if s.S_ISDIR(p.lstat().st_mode)]
     files = [p.name for p in names if p.name not in dirs]
     yield str(root), dirs, files
     for name in dirs:

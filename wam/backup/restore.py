@@ -1188,6 +1188,7 @@ def _walk_back(held: Path) -> list[str]:
 
 # ---------------------------------------------------------------- activate
 
+@datafs.with_access
 def activate(box: Box, old_is_off: bool) -> dict:
     if not old_is_off:
         raise RestoreError("confirm the old Wizard is off first: run `wam backup activate --old-is-off` "
