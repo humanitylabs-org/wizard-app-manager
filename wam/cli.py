@@ -134,11 +134,9 @@ def read_grants(c: Config, rt) -> list:
     (0.3.42 fresh install: PermissionError aborted `wam apps` and `wam bootstrap`). Read the file when we can,
     else ask the App Manager API (the same source `wam grants list` uses), else keep the grants already
     mirrored in apps.json rather than fail the registry write."""
-    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    try:
-        return json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
-    except PermissionError:
-        pass
+    grants = registry.read_grants_file(c.runtipi_root / 'state' / 'wizard-grants.json')
+    if grants is not None:
+        return grants
     try:
         got = rt.req("GET", "/apps/wizard/grants")
         if isinstance(got, list):
