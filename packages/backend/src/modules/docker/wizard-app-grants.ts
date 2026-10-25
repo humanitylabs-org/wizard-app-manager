@@ -222,8 +222,11 @@ export async function reconcileAppGrants(
     const digest = hash(key);
     for (const provider of dests) {
       const p = docs.get(provider.manifest.id)!;
-      const existing = p.old.incoming.find((r) => r.sha256 === digest);
-      if (!p.doc.incoming.some((r) => r.sha256 === digest)) p.doc.incoming.push(existing ?? { from: g.from, sha256: digest });
+      // Retain legacy identities for their existing keys (old providers may check
+      // calendar), and also publish the canonical ID for updated providers.
+      for (const row of [...p.old.incoming.filter((r) => r.sha256 === digest), { from: g.from, sha256: digest }]) {
+        if (!p.doc.incoming.some((r) => r.sha256 === digest && r.from === row.from)) p.doc.incoming.push(row);
+      }
       managed[provider.manifest.id] ??= [];
       managed[provider.manifest.id]?.push(digest);
       const oldEndpoint = consumer.old.provider_endpoints?.[g.to];

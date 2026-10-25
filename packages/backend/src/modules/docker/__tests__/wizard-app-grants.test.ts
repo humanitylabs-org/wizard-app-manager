@@ -136,18 +136,32 @@ describe('app grants layer 2', () => {
       await fs.writeFile(path.join(conf, 'docker-compose.yml'), yaml.stringify({ services: { main: { volumes: [`${bridge}:/wizard:ro`] } } }));
     }
     await install('wizard-connection-router');
+    await install('wizard-claude');
+    await install('wizard-tinfoil');
     await fs.mkdir(path.join(data('wizard-connection-router'), 'wizard'), { recursive: true });
     const router = {
-      outgoing: {},
-      incoming: [{ from: 'agent-service', sha256: 'f'.repeat(64) }],
-      provider_endpoints: { legacy: 'http://127.0.0.1:18799' },
+      outgoing: { 'wizard-claude': 'fixture-router-claude-key', 'wizard-tinfoil': 'fixture-router-tinfoil-key' },
+      incoming: [
+        { from: 'wisdom', sha256: 'f'.repeat(64) },
+        { from: 'wizard-recorder', sha256: 'e'.repeat(64) },
+      ],
+      provider_endpoints: {
+        'wizard-claude': 'http://127.0.0.1:18799',
+        'wizard-chatgpt': 'http://127.0.0.1:18801',
+        'wizard-tinfoil': 'http://127.0.0.1:18804',
+      },
       enforce: true,
     };
     await fs.writeFile(path.join(data('wizard-connection-router'), 'wizard/grants.json'), JSON.stringify(router));
     await store.reconcile();
     expect((await file('wizard-calendar')).outgoing['wizard-connectors']).toBe(key);
-    expect((await file('wizard-connectors')).incoming).toEqual([{ from: 'calendar', sha256: digest }]);
+    expect((await file('wizard-connectors')).incoming).toEqual([
+      { from: 'calendar', sha256: digest },
+      { from: 'wizard-calendar', sha256: digest },
+    ]);
     expect((await file('wizard-connection-router')).incoming).toEqual(router.incoming);
+    expect((await file('wizard-connection-router')).outgoing).toEqual(router.outgoing);
+    expect((await file('wizard-connection-router')).provider_endpoints).toEqual(router.provider_endpoints);
     expect((await file('wizard-connection-router')).enforce).toBe(true);
     expect(Object.keys(await file('wizard-connection-router')).sort()).toEqual(Object.keys(router).sort());
     await store.change({ kind: 'app', from: 'wizard-calendar', to: 'wizard-connectors' }, false);
