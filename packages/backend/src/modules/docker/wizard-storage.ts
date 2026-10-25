@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import * as yaml from 'yaml';
+import { appProposals, sameAppGrant, reconcileAppGrants } from './wizard-app-grants';
 
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
@@ -15,12 +16,20 @@ const isId = (value: unknown): value is string => typeof value === 'string' && I
 const VOLUME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 export type Share = { id: string; path: string };
 export type Mount = { app: string; share: string; path: string };
-export type Manifest = { id: string; shares?: Share[]; mounts?: Mount[] };
+export type Manifest = {
+  id: string;
+  shares?: Share[];
+  mounts?: Mount[];
+  uses?: string[];
+  provides?: string[];
+  requires?: { models?: unknown; services?: unknown };
+  api?: { endpoint?: string };
+};
 export type Grant = { kind: string; from: string; to: string; share?: string; reason?: string; approved?: string; created_at?: number };
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
 // Compose is extensible; preserve unknown fields rather than normalizing them away.
 export type Compose = { services: Record<string, any>; volumes?: Record<string, any>; [key: string]: any };
-type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string };
+export type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string };
 type Run = (file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>;
 export const relativePath = (p: unknown): p is string =>
   typeof p === 'string' &&
@@ -163,14 +172,19 @@ export class WizardStorage {
     await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await fs.rename(tmp, this.grantsPath);
     // Preserve the registry's other fields and do not publish keys.
-    const mirror = path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json');
-    const reg = await fs.readFile(mirror, 'utf8').catch((e) => {
-      if (e.code !== 'ENOENT') throw e;
-      return null;
-    });
-    if (reg) {
-      await fs.writeFile(`${mirror}.tmp-grants`, `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`);
-      await fs.rename(`${mirror}.tmp-grants`, mirror);
+    const mirrors = new Set([
+      path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json'),
+      path.join(this.dirs.appDataDir, 'wizard-os', 'apps.json'),
+    ]);
+    for (const mirror of mirrors) {
+      const reg = await fs.readFile(mirror, 'utf8').catch((e) => {
+        if (e.code !== 'ENOENT') throw e;
+        return null;
+      });
+      if (reg) {
+        await fs.writeFile(`${mirror}.tmp-grants`, `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`);
+        await fs.rename(`${mirror}.tmp-grants`, mirror);
+      }
     }
   }
   async apps(): Promise<App[]> {
@@ -237,9 +251,10 @@ export class WizardStorage {
           known.add(key(g));
         }
       }
-    return out;
+    return [...out, ...appProposals(apps, file)];
   }
   async proposed(id?: string) {
+    if (id && !ID.test(id)) throw new Error('Invalid app id');
     const apps = await this.apps();
     // The install sheet asks before the consumer is installed. Materialized store
     // recipes are candidates only: prepare() still acts solely on installed apps.
@@ -265,12 +280,49 @@ export class WizardStorage {
         break;
       }
     }
-    return this.proposals(apps, await this.readGrants()).filter((g) => !id || g.from === id || g.to === id);
+    if (id) {
+      const consumer = apps.find((a) => a.manifest.id === id);
+      for (const dep of consumer?.manifest.uses ?? []) {
+        if (!ID.test(dep) || apps.some((a) => a.manifest.id === dep)) continue;
+        const dir = path.join(this.dirs.dataDir, 'repos/wizardapps/apps', dep);
+        const text = await fs.readFile(path.join(dir, 'wizard.md'), 'utf8').catch((e) => {
+          if (e.code !== 'ENOENT') throw e;
+          return '';
+        });
+        if (!text) continue;
+        const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        const manifest = match ? yaml.parse(match[1]!) : null;
+        if (!manifest || manifest.id !== dep) throw new Error('Invalid dependency manifest');
+        const compose = yaml.parse(await fs.readFile(path.join(dir, 'docker-compose.yml'), 'utf8'));
+        apps.push({ urn: `${dep}:wizardapps`, manifest, compose, data: '', hostData: '' });
+      }
+    }
+    return this.proposals(apps, await this.readGrants()).filter((g) => !id || g.from === id);
   }
   async change(grant: Grant, approve: boolean): Promise<string> {
     return this.serial(async () => {
       const apps = await this.apps();
       const file = await this.readGrants();
+      if (grant.kind === 'app') {
+        if (!ID.test(grant.from) || !ID.test(grant.to.replace(/^slot:/, '')) || grant.from === grant.to) throw new Error('Invalid app grant');
+        const consumer = apps.find((a) => a.manifest.id === grant.from);
+        if (!consumer) throw new Error('Consumer not installed');
+        // Explicit owner grants need not be manifest defaults. Revocations are remembered.
+        file.grants = file.grants.filter((g) => !sameAppGrant(g, grant));
+        file.denied = file.denied.filter((g) => !sameAppGrant(g, grant));
+        (approve ? file.grants : file.denied).push({
+          kind: 'app',
+          from: grant.from,
+          to: grant.to,
+          reason: 'owner',
+          approved: 'owner',
+          created_at: Math.floor(Date.now() / 1000),
+        });
+        file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== grant.from);
+        await this.writeGrants(file);
+        await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+        return consumer.urn;
+      }
       if (grant.kind !== 'share' || !ID.test(grant.from) || !ID.test(grant.to) || !ID.test(grant.share ?? '')) throw new Error('Invalid share grant');
       const consumer = apps.find((a) => a.manifest.id === grant.from);
       if (!consumer) throw new Error('Consumer not installed');
@@ -300,9 +352,16 @@ export class WizardStorage {
       const affected = file.grants.filter((g) => g.kind === 'share' && g.to === id).map((g) => g.from);
       file.grants = file.grants.filter((g) => g.from !== id && g.to !== id);
       file.seeded = (file.seeded ?? []).filter((x) => x !== id);
+      file.layer2_removing = [...new Set([...((file.layer2_removing as string[]) ?? []), id])];
       await this.writeGrants(file);
+      // The DB row still exists during uninstall; do not immediately re-seed it.
+      await reconcileAppGrants(await this.apps(), file, this.dirs.dataDir, (f) => this.writeGrants(f), id);
       return affected;
     });
+  }
+
+  async reconcile() {
+    return this.serial(async () => reconcileAppGrants(await this.apps(), await this.readGrants(), this.dirs.dataDir, (f) => this.writeGrants(f)));
   }
 
   /** Only the already-created local bind alias is safe for legacy consumers.
@@ -337,7 +396,32 @@ export class WizardStorage {
     // still use its bind alias, and no login bytes need to be copied again.
     if (marked) return;
     const names = (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/);
-    if (!names.includes(old)) return;
+    if (!names.includes(old)) {
+      // An empty bind replaces Docker's new named volume. Initialise its owner
+      // from the recipe so non-root services can chmod/create their store. Never
+      // chown an existing directory or migrated owner data.
+      const exists = await fs.lstat(path.join(app.data, relative)).catch((e) => {
+        if (e.code !== 'ENOENT') throw e;
+        return null;
+      });
+      if (!exists) {
+        const folder = await confined(app.data, relative, true);
+        const volume = relative.startsWith('volumes/') ? relative.slice(8) : '';
+        const users = [
+          ...new Set(
+            Object.values(app.compose.services)
+              .filter((svc) => (svc.volumes ?? []).some((v: any) => (typeof v === 'string' ? v.split(':')[0] === volume : v.source === volume)))
+              .map((svc) => String(svc.user ?? '0:0')),
+          ),
+        ];
+        const owner = users[0];
+        if (users.length === 1 && owner && /^\d+:\d+$/.test(owner)) {
+          const [uid, gid] = owner.split(':').map(Number);
+          await fs.chown(folder, uid!, gid!);
+        }
+      }
+      return;
+    }
     if (old === this.legacyClaudeVolume && (await this.isClaudeAlias(app, relative))) {
       await confined(app.data, parent, true);
       await fs.writeFile(marker, '', { mode: 0o600, flag: 'wx' });
@@ -409,6 +493,8 @@ rm -f ".$1.wizard-copy-ready"`;
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
       const file = await this.readGrants();
+      file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
       const provider = apps.find((a) => a.manifest.id === 'wizard-claude');
       const hermes = apps.find((a) => a.manifest.id === 'hermes-agent');
       // Only an existing fixed-volume pair inherits authority. New installs require consent.

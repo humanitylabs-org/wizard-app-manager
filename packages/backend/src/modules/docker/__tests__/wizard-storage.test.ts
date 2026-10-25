@@ -38,7 +38,7 @@ describe('rule 15 and volume compile', () => {
     const source = { ...compose, volumes: { login: {} }, services: { main: { ...compose.services.main, volumes: ['login:/login'] } } };
     const builder = new DockerComposeBuilder();
     const wizard = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:wizardapps' as AppUrn, '10.1.0.0/24'));
-    expect(wizard.services.main.volumes).toEqual(['${APP_DATA_DIR}/volumes/login:/login']);
+    expect(wizard.services.main.volumes).toEqual(['${APP_DATA_DIR}/volumes/login:/login', '${APP_DATA_DIR}/wizard:/wizard:ro']);
     expect(wizard.volumes).toBeUndefined();
     const stock = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:stock' as AppUrn, '10.1.0.0/24'));
     expect(stock.services.main.volumes).toEqual(['login:/login']);
@@ -83,6 +83,21 @@ describe('rule 15 and volume compile', () => {
     await fs.symlink(path.join(root, 'outside'), path.join(root, 'link'));
     await expect(confined(root, 'link/sub', true)).rejects.toThrow('real directory');
     await expect(confined(root, '../outside', true)).rejects.toThrow('Unsafe');
+  });
+});
+describe('fresh volume ownership', () => {
+  it('initialises a new bind for its numeric service user and never chowns existing data', async () => {
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    const source = { services: { main: { ...compose.services.main, user: `${uid}:${gid}`, volumes: ['fresh:/data'] } }, volumes: { fresh: {} } };
+    const urn = await install({ id: 'fresh-app' }, source);
+    const built = new DockerComposeBuilder().getDockerCompose(source as any, {}, urn as AppUrn, '10.1.0.0/24');
+    await store.prepare(urn, built);
+    const folder = path.join(root, 'app-data/wizardapps/fresh-app/volumes/fresh');
+    expect((await fs.stat(folder)).uid).toBe(uid);
+    await fs.writeFile(path.join(folder, 'owner-state'), 'preserved');
+    await store.prepare(urn, built);
+    expect(await fs.readFile(path.join(folder, 'owner-state'), 'utf8')).toBe('preserved');
   });
 });
 describe('owner share grants', () => {
@@ -262,8 +277,8 @@ describe('live legacy Claude compatibility', () => {
       );
       const result = yaml.parse(await store.prepare(urn, built));
       expect(result.volumes).toEqual({ login: { name: LEGACY_CLAUDE } });
-      expect(result.services.main.volumes).toEqual(['login:/claude:rw', '${APP_DATA_DIR}/volumes/cache:/cache']);
-      expect(result.services.sidecar.volumes).toEqual(source.services.sidecar.volumes);
+      expect(result.services.main.volumes).toEqual(['login:/claude:rw', '${APP_DATA_DIR}/volumes/cache:/cache', '${APP_DATA_DIR}/wizard:/wizard:ro']);
+      expect(result.services.sidecar.volumes).toEqual([...source.services.sidecar.volumes, '${APP_DATA_DIR}/wizard:/wizard:ro']);
       expect(result['x-wizard-volumes']).toEqual([{ name: 'cache', old: 'cache', relative: 'volumes/cache' }]);
       expect(run.mock.calls.some(([, args]) => args[0] === 'volume' && args[1] === 'inspect')).toBe(true);
       expect(run.mock.calls.some(([, args]) => args[0] === 'run')).toBe(false);
