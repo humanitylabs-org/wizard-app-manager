@@ -109,7 +109,7 @@ def test_selected_lifecycle_uses_prepared_record_and_native_backup_update(c,monk
     def prepare(root,store,repo,**kwargs):
         calls.append(('prepare',repo,kwargs))
         folder=root/'repos'/store/'apps'/'demo';folder.mkdir(parents=True)
-        (folder/'.wizard-source').write_text(json.dumps({'repo':repo}))
+        (folder/'.wizard-source').write_text(json.dumps({'repo':repo, 'source':kwargs['source']}))
         (folder/'.wizard-commit').write_text(PIN)
         return dict(ENTRY)
     def finish(c,app,**kwargs):

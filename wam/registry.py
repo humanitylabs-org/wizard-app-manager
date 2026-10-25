@@ -38,10 +38,17 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
         if wm.is_file():
             w = _front(wm.read_text())
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
-            src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
-            commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
-                    "private": src.get("private") is True}
+            installed = runtipi_root / 'apps' / store / app_id
+            identity = installed if (installed / '.wizard-source').is_file() else d
+            src = json.loads((identity / '.wizard-source').read_text()) if (identity / '.wizard-source').is_file() else {}
+            commit = (identity / '.wizard-commit').read_text().strip() if (identity / '.wizard-commit').is_file() else None
+            repo, source = src.get('repo'), src.get('source')
+            if src.get('local') or (isinstance(repo, str) and repo.startswith('local/')):
+                source = 'local'
+            elif not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
+                source = 'standard'  # legacy installs without a recorded source stay Public
+            return {"w": w, "cfg": cfg, "dir": d, "repo": repo, "commit": commit,
+                    "source": source, "private": src.get("private") is True}
     return None
 
 
@@ -100,7 +107,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         apps.append({
             "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
             "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
-            "repo": meta["repo"], "commit": meta["commit"],
+            "repo": meta["repo"], "commit": meta["commit"], "source": meta["source"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
             **({"voice_names": spoken} if spoken else {}),

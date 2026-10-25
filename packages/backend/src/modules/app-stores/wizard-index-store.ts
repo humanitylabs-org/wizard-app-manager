@@ -281,7 +281,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     await this.filesystem.writeTextFile(path.join(tmp, '.wizard-commit'), `${rec.install.commit}\n`);
     await this.filesystem.writeTextFile(
       path.join(tmp, '.wizard-source'),
-      `${JSON.stringify({ repo: rec.repo, git: rec.install.git, index: this.indexUrl })}\n`,
+      `${JSON.stringify({ repo: rec.repo, git: rec.install.git, index: this.indexUrl, source: 'standard' })}\n`,
     );
 
     await this.filesystem.removeDirectory(dst);
