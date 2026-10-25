@@ -44,14 +44,20 @@ export class AppLifecycleService {
   }
 
   async invokeCommand(data: typeof appEventSchema.infer, reply: (response: typeof appEventResultSchema.infer) => Promise<void>) {
-    const release = await this.mutex.acquire(data.appUrn);
+    // Allocation and storage work are host-wide, not just per app. Keep the
+    // whole down/up/completion sequence exclusive, including direct invocations.
+    const release = await this.mutex.acquire('wizard-app-lifecycle');
 
     try {
       const command = this.commandFactory.createCommand(data);
-      await reply(await command.execute(data.appUrn, data.form));
+      const result = await command.execute(data.appUrn, data.form);
+      if (data.command === 'install') await this.installAppHandler.complete(data.appUrn, result, !!data.form.skipRun);
+      await reply(result);
     } catch (err) {
       this.logger.error('Error invoking command:', err);
-      await reply({ success: false, message: String(err) });
+      const result = { success: false, message: String(err) };
+      if (data.command === 'install') await this.installAppHandler.complete(data.appUrn, result, !!data.form.skipRun);
+      await reply(result);
     } finally {
       release();
     }

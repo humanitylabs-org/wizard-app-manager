@@ -86,6 +86,31 @@ describe('rule 15 and volume compile', () => {
   });
 });
 describe('owner share grants', () => {
+  it('starts Hermes without an unavailable optional Claude share, drops stale binds, and restores only after repair', async () => {
+    await install(provider);
+    const urn = await install(consumer);
+    const grant = (await store.proposed())[0]!;
+    await store.change(grant, true);
+    const mounted = await store.prepare(urn, yaml.stringify(compose));
+    installed = installed.filter((a) => a.appName !== 'wizard-claude');
+    const warn = vi.fn();
+    store = new WizardStorage({ dataDir: root, appDataDir: path.join(root, 'app-data') }, async () => installed, run, LEGACY_CLAUDE, warn);
+    const apply = vi.fn();
+    const degraded = await store.prepare(urn, mounted, apply);
+    expect(apply).toHaveBeenCalled();
+    expect(yaml.parse(degraded).services.main.volumes).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Optional connection unavailable'));
+    expect((await store.readGrants()).grants).toContainEqual(expect.objectContaining({ to: 'wizard-claude' }));
+    installed.push({ appName: 'wizard-claude', appStoreSlug: 'wizardapps' });
+    expect(yaml.parse(await store.prepare(urn, degraded)).services.main.volumes).toHaveLength(1);
+  });
+  it('still refuses missing required shares and never starts that consumer', async () => {
+    const urn = await install({ id: 'required-consumer', mounts: [{ app: 'provider', share: 'state', path: '/state' }] });
+    await store.writeGrants({ schema: 1, updated_at: 0, seeded: [], denied: [], grants: [{ kind: 'share', from: 'required-consumer', to: 'provider', share: 'state', approved: 'owner', reason: 'mounts', created_at: 0 }] });
+    const apply = vi.fn();
+    await expect(store.prepare(urn, yaml.stringify(compose), apply)).rejects.toThrow('Granted share unavailable');
+    expect(apply).not.toHaveBeenCalled();
+  });
   it('offers a share on the install sheet before the consumer is installed', async () => {
     await install(provider);
     const candidate = path.join(root, 'repos/wizardapps/apps/hermes-agent');

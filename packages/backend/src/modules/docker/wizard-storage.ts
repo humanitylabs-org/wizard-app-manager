@@ -452,7 +452,17 @@ rm -f ".$1.wizard-copy-ready"`;
         if (!file.grants.some((g) => g.kind === 'share' && g.from === app.manifest.id && g.to === m.app && g.share === m.share)) continue;
         const p = apps.find((p) => p.manifest.id === m.app);
         const share = p?.manifest.shares?.find((s) => s.id === m.share);
-        if (!p || !share) throw new Error(`Granted share unavailable: ${m.app}/${m.share}`);
+        if (!p || !share) {
+          // This stock connection is optional; it must not take the agent down.
+          // Keep consent on disk but inject no bind/fallback credential folder.
+          // Other shares still fail closed. A present but invalid provider also
+          // continues through the strict validation below.
+          if (app.manifest.id === 'hermes-agent' && m.app === 'wizard-claude' && m.share === 'claude-login' && m.path === '/claude') {
+            this.warn(`Optional connection unavailable: ${m.app}/${m.share}; starting ${app.manifest.id} without this share; restart after repairing the connection`);
+            continue;
+          }
+          throw new Error(`Granted share unavailable: ${m.app}/${m.share}`);
+        }
         validateStorage(p.manifest, p.compose, p.manifest.id === 'wizard-claude');
         const missing = await fs.lstat(path.join(p.data, 'data', share.path)).then(
           () => false,

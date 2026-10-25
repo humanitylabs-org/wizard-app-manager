@@ -84,6 +84,12 @@ export class AppStatusSyncService {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
+        // A timer/container absence cannot finish an install. Only the actual
+        // command consumer owns that terminal result, even after RPC expiry.
+        if (app.status === 'installing') {
+          skippedCount++;
+          continue;
+        }
         if (isTransitional) {
           const timeSinceUpdate = Math.floor(Date.now() / 1000) - app.updatedAt;
 

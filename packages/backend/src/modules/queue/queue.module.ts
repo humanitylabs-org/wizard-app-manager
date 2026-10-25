@@ -19,7 +19,9 @@ import { QueueHealthIndicator } from './queue.health';
 
         return await queueFactory.createQueue({
           queueName: 'app-events-queue',
-          workers: 3,
+          // Subnet allocation and storage preparation span multiple awaits. A
+          // second app must not reuse resources while the first is down/up.
+          workers: 1,
           eventSchema: appEventSchema,
           timeout: timeout,
         });

@@ -1,6 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { ConflictException, HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { type } from 'arktype';
 import { AppsRepository } from '../../apps/apps.repository';
@@ -40,6 +40,9 @@ export class InstallAppHandler implements ILifecycleHandler<InstallAppParams> {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
     }
 
+    if (app?.status === 'installing') {
+      throw new ConflictException(`Install still in progress for ${appUrn}; wait for completion before retrying`);
+    }
     if (app) {
       await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
       return this.startAppHandler.execute(appUrn);
@@ -57,7 +60,7 @@ export class InstallAppHandler implements ILifecycleHandler<InstallAppParams> {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
-    const createdApp = await this.appRepository.createApp({
+    await this.appRepository.createApp({
       appName,
       status: 'installing',
       config: parsedForm,
@@ -78,22 +81,24 @@ export class InstallAppHandler implements ILifecycleHandler<InstallAppParams> {
 
     const requestId = generateRequestId();
 
-    this.appEventsQueue
-      .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun: skipRun ?? false } })
-      .then(async ({ success, message }) => {
-        if (success) {
-          await this.statusManager.emitSuccess({
-            appId: createdApp.id,
-            appUrn,
-            event: 'install_success',
-            status: skipRun ? 'stopped' : 'running',
-          });
-        } else {
-          await this.statusManager.deleteApp(createdApp.id);
-          this.statusManager.emitEvent({ appUrn, event: 'install_error', error: message });
-        }
-      });
+    // RPC expiry is not command completion: the consumer may still be in
+    // compose down/up. Only complete(), called by that consumer, may remove
+    // this row or publish a terminal install state.
+    void this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun: skipRun ?? false } });
 
     return { requestId };
+  }
+
+  async complete(appUrn: AppUrn, result: { success: boolean; message: string }, skipRun = false) {
+    const app = await this.appRepository.getAppByUrn(appUrn);
+    if (!app || app.status !== 'installing') return;
+    if (result.success) {
+      await this.statusManager.emitSuccess({ appId: app.id, appUrn, event: 'install_success', status: skipRun ? 'stopped' : 'running' });
+    } else {
+      // Record the real worker error before removal; polling clients can now
+      // distinguish this from a lost/slow RPC reply in the runtime log.
+      await this.statusManager.emitError({ appId: app.id, appUrn, event: 'install_error', status: 'stopped', error: result.message });
+      await this.statusManager.deleteApp(app.id);
+    }
   }
 }

@@ -938,7 +938,10 @@ def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monke
     class RT:
         def app(self, urn): return {"info": {"id": "x"}}
         def install(self, urn, form): pass
-        def wait_status(self, urn, want, timeout=900): waits.append(set(want)); return "missing"
+        def wait_status(self, urn, want, timeout=900):
+            assert timeout is None  # install cannot advance while down/up is pending
+            waits.append(set(want))
+            return "missing"
     monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
     monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
     monkeypatch.setattr(cli, "installed_ids", lambda rt: set())

@@ -189,15 +189,18 @@ class Runtipi:
             raise RuntipiError(f"upload backup {urn} -> {e.code}: {e.read()[:300]!r}") from None
         return json.loads(raw) if raw else {}
 
-    def wait_status(self, urn: str, want: set[str], timeout: int = 900) -> str:
-        deadline = time.time() + timeout
+    def wait_status(self, urn: str, want: set[str], timeout: int | None = 900) -> str:
+        # None is an operation-completion wait, bounded by the caller/job, not
+        # by a short timer which would allow the next install to overlap.
+        deadline = None if timeout is None else time.monotonic() + timeout
         status = "unknown"
-        while time.time() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             try:
                 info = self.app(urn)
                 status = ((info.get("app") or {}).get("status")) or "missing"
             except RuntipiError:
-                status = "missing"
+                # Failed observation is not evidence of a removed install.
+                status = "unknown"
             if status in want:
                 return status
             time.sleep(3)

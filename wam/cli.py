@@ -381,7 +381,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
     # A failed install (e.g. an image that can't be pulled) deletes the app record, so "missing" means failed:
     # stop waiting then instead of polling for the full timeout.
-    status = rt.wait_status(urn, {"running", "stopped", "missing"}) if wait else "installing"
+    status = rt.wait_status(urn, {"running", "missing"}, timeout=None) if wait else "installing"
     if status == "missing":
         reason = install_failure_reason(urn)
         raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
