@@ -56,8 +56,10 @@ export function mountAppGrants(input: any): any {
   const doc = structuredClone(input);
   for (const svc of Object.values(doc.services) as any[]) {
     const target = (v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target);
-    if ((svc.volumes ?? []).some((v: any) => target(v) === '/wizard')) throw new Error('Reserved grants mount /wizard');
-    svc.volumes = [...(svc.volumes ?? []), '${APP_DATA_DIR}/wizard:/wizard:ro'];
+    const source = (v: any) => (typeof v === 'string' ? v.split(':')[0] : v.source);
+    if ((svc.volumes ?? []).some((v: any) => target(v) === '/wizard' && source(v) !== '${APP_DATA_DIR}/wizard'))
+      throw new Error('Reserved grants mount /wizard');
+    svc.volumes = [...(svc.volumes ?? []).filter((v: any) => target(v) !== '/wizard'), '${APP_DATA_DIR}/wizard:/wizard:ro'];
     if (Array.isArray(svc.environment)) {
       svc.environment = [...svc.environment.filter((e: string) => !e.startsWith('WIZARD_GRANTS_FILE=')), 'WIZARD_GRANTS_FILE=/wizard/grants.json'];
     } else svc.environment = { ...svc.environment, WIZARD_GRANTS_FILE: '/wizard/grants.json' };

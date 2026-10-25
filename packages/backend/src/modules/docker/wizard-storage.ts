@@ -172,14 +172,19 @@ export class WizardStorage {
     await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await fs.rename(tmp, this.grantsPath);
     // Preserve the registry's other fields and do not publish keys.
-    const mirror = path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json');
-    const reg = await fs.readFile(mirror, 'utf8').catch((e) => {
-      if (e.code !== 'ENOENT') throw e;
-      return null;
-    });
-    if (reg) {
-      await fs.writeFile(`${mirror}.tmp-grants`, `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`);
-      await fs.rename(`${mirror}.tmp-grants`, mirror);
+    const mirrors = new Set([
+      path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json'),
+      path.join(this.dirs.appDataDir, 'wizard-os', 'apps.json'),
+    ]);
+    for (const mirror of mirrors) {
+      const reg = await fs.readFile(mirror, 'utf8').catch((e) => {
+        if (e.code !== 'ENOENT') throw e;
+        return null;
+      });
+      if (reg) {
+        await fs.writeFile(`${mirror}.tmp-grants`, `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`);
+        await fs.rename(`${mirror}.tmp-grants`, mirror);
+      }
     }
   }
   async apps(): Promise<App[]> {

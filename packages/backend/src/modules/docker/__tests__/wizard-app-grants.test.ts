@@ -55,6 +55,11 @@ describe('app grants layer 2', () => {
     expect(mirror.other).toBe(1);
     expect(mirror.grants).toEqual((await store.readGrants()).grants);
     expect(JSON.stringify(mirror)).not.toContain(key);
+    const shared = path.join(root, 'app-data/wizard-os');
+    await fs.mkdir(shared, { recursive: true });
+    await fs.writeFile(path.join(shared, 'apps.json'), '{"apps":[],"other":2}');
+    await store.reconcile();
+    expect(JSON.parse(await fs.readFile(path.join(shared, 'apps.json'), 'utf8')).grants).toEqual((await store.readGrants()).grants);
   });
   it('revoke and regrant change both files immediately without Docker/restart; denial survives boot and reinstall', async () => {
     await install('wizard-connectors');
@@ -161,6 +166,7 @@ describe('app grants layer 2', () => {
     expect(out.services.broker.environment.WIZARD_GRANTS_FILE).toBe('/wizard/grants.json');
     expect(out.services.ui.networks).toEqual(source.services.ui.networks);
     expect(out.networks).toEqual(source.networks);
+    expect(mountAppGrants(out)).toEqual(out);
     expect(source.services.ui).not.toHaveProperty('volumes');
   });
   it('rejects malformed files rather than erasing valid keys and respects explicit endpoint', async () => {
