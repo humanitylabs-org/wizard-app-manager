@@ -64,6 +64,27 @@ def _keep_parent(rel: str) -> bool:
     return any(k.startswith(rel + "/") for k in KEEP_DIRS)
 
 
+# Service store-migration.mjs uses one lifetime lease and one lock per store.
+ROOT_RUNTIME_RE = re.compile(r"(?:\.agent-pairs\.service-lease\.sqlite|.*\.agent-pairs\.lock\.sqlite)")
+
+
+def root_runtime_file(name: str) -> bool:
+    """Service coordination inodes, not owner stores; keep them on this machine.
+
+    The Service uses SQLite EXCLUSIVE locks for its lifetime lease and JSON
+    writers. Moving/copying these files can split a live lock across two inodes.
+    Include only these exact database names and their SQLite sidecars, never
+    generic *.sqlite-journal files (which may hold owner transactions).
+    """
+    if '/' in name:
+        return False
+    for suffix in ('-journal', '-wal', '-shm'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return bool(ROOT_RUNTIME_RE.fullmatch(name))
+
+
 def root_files(root: Path) -> list[str]:
     """The Agent Service's own files beside the agent folders (`.agent-grants.json`, `.main-agent.json`,
     `.apps-seen.json`): plain top-level files of the agents root, without temporary or lock files."""
@@ -75,7 +96,7 @@ def root_files(root: Path) -> list[str]:
     out = []
     for n in names:
         p = Path(root) / n
-        if p.is_symlink() or not p.is_file() or ".tmp" in n or KEEP_RE.search(n):
+        if p.is_symlink() or not p.is_file() or ".tmp" in n or KEEP_RE.search(n) or root_runtime_file(n):
             continue
         out.append(n)
     return out

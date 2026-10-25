@@ -608,11 +608,26 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
     return h.hexdigest(), n
 
 
+def root_runtime_digest_path(box: Box, rel: str, tree: str = 'runtipi/app-data') -> bool:
+    """Only coordination files immediately in this box's known agents root."""
+    from .agents import root_runtime_file
+    if not root_runtime_file(rel.rsplit('/', 1)[-1]):
+        return False
+    base = box.home if tree == 'wizard-os' else box.runtipi_root / 'app-data'
+    try:
+        prefix = box.agents_root().relative_to(base).as_posix() + '/'
+    except ValueError:
+        return False
+    return rel.startswith(prefix) and root_runtime_file(rel[len(prefix):])
+
+
 @datafs.with_access
 def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, owners=True) -> dict:
     """What an import may change, as digests: the Wizard home (owner state), Runtipi app-data/user-config/apps, the
     owner's files and each agent home. Regenerated and engine-owned entries are left out."""
     def home_skip(rel, is_dir):
+        if not is_dir and root_runtime_digest_path(box, rel, 'wizard-os'):
+            return True
         top = rel.split("/", 1)[0]
         return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
             or rel.endswith(".lock")
@@ -632,6 +647,8 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
                 pass
 
     def rt_skip(rel, is_dir):   # app-data/wizard-os is regenerated, except an agents/ folder there
+        if not is_dir and root_runtime_digest_path(box, rel):
+            return True
         if rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/")):
             return True
         return any(rel.startswith(h) and keep_in_place(rel[len(h):]) for h in homes)

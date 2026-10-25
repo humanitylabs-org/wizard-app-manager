@@ -39,7 +39,7 @@ from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
-                  box_digest, digest_differences, human, log, need_space, skip_home_entry)
+                  box_digest, digest_differences, human, log, need_space, root_runtime_digest_path, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -124,9 +124,18 @@ def _aside(r: _Restore, area: str, src: Path, dst: Path) -> None:
 def _undo_journaled_trees(box: Box, root: Path, j: dict, targets: dict, files_root: Path, froot: Path) -> None:
     """Freeze the undo move plan once. Retrying never sets aside an already restored original."""
     save = lambda: _write_json(root / "journal.json", j)
+
+    def coordination_move(row):
+        # Old journals may contain lock inodes. Never replace the current
+        # Service's lock with a saved copy, including an already frozen plan.
+        if row.get('area') != 'agents-root' or not j.get('agents_root'):
+            return False
+        live = Path(row['dst'] if row['kind'] == 'undo_restore' else row['src'])
+        return live.parent == Path(j['agents_root']) and agentlib.root_runtime_file(live.name)
+
     if "undo_moves" not in j:
         complete = {s["area"] for s in j["steps"] if s["kind"] == "set_aside"}
-        originals = [s for s in j["steps"] if s["kind"] == "set_aside_entry"
+        originals = [s for s in j["steps"] if s["kind"] == "set_aside_entry" and not coordination_move(s)
                      and (Path(s["dst"]).exists() or Path(s["dst"]).is_symlink())]
         current = []
         if "wizard-os" in complete:
@@ -156,7 +165,8 @@ def _undo_journaled_trees(box: Box, root: Path, j: dict, targets: dict, files_ro
                             for s in originals]
         save()
     for s in j["undo_moves"]:
-        _journal_move(j, save, s["kind"], s["area"], Path(s["src"]), Path(s["dst"]))
+        if not coordination_move(s):
+            _journal_move(j, save, s["kind"], s["area"], Path(s["src"]), Path(s["dst"]))
 
 
 def _rm(p: Path) -> None:
@@ -986,6 +996,23 @@ def undo(box: Box) -> dict:
         raise
 
 
+def _undo_comparison(box, want, after, before_detail, detail):
+    mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
+    if before_detail is None:
+        return mismatch, None
+    # Older restores fingerprinted Service lock databases. Preserve the original
+    # evidence, but compare only the stable state if that is the ONLY difference.
+    # No arbitrary SQLite journal or other tree is exempted.
+    stable_before = dict(before_detail)
+    for tree in ('wizard-os', 'runtipi/app-data'):
+        old = before_detail.get(tree, {})
+        ignored = {p for p in old if root_runtime_digest_path(box, p, tree)}
+        stable_before[tree] = {p: v for p, v in old.items() if p not in ignored}
+        if ignored and tree in mismatch and tree in detail and stable_before[tree] == detail[tree]:
+            mismatch.remove(tree)
+    return mismatch, digest_differences(stable_before, detail)
+
+
 def _undo(box: Box) -> dict:
     root, j = last_restore(box)
     if j.get("status") == "undone":
@@ -1125,7 +1152,9 @@ def _undo(box: Box) -> dict:
     after = box_digest(box, current, entries=detail, owners=(root / "digest-before.json").is_file())
     _write_json(root / "digest-after.json", detail)
     detail_before = root / "digest-before.json"
-    differences = digest_differences(json.loads(detail_before.read_text()), detail) if detail_before.is_file() else None
+    mismatch, differences = _undo_comparison(box, j.get('digest_before') or {}, after,
+                                             json.loads(detail_before.read_text()) if detail_before.is_file() else None,
+                                             detail)
     # start what ran before
     was = j.get("installed_before") or {}
     for urn, info in was.items():
@@ -1145,8 +1174,6 @@ def _undo(box: Box) -> dict:
             notes.append(f"regenerating apps.json failed: {e}")
     else:
         notes += _regenerate(box)
-    want = j.get("digest_before") or {}
-    mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
     j["status"] = "undo-failed" if mismatch else "undone"
     if not mismatch:
         j["undone_at"] = int(time.time())
