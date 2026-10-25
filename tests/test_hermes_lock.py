@@ -57,21 +57,55 @@ def test_host_target_refuses_an_arbitrary_snapshot_pin(tmp_path, monkeypatch):
         hermes_update.target(tmp_path, tmp_path.as_uri())
 
 
-def test_release_rerun_skips_hermes_but_updates_unrelated_app(tmp_path, monkeypatch):
+@pytest.mark.parametrize('promotion', [None, '', 'stale-review-id', 'invalid'])
+def test_release_rerun_skips_hermes_but_updates_unrelated_app(tmp_path, monkeypatch, promotion):
     rows = [{'app': a, 'repo': 'fixture/' + a, 'commit': 'b' * 40} for a in ('hermes-agent', 'files')]
     monkeypatch.setattr(cli.release_pins, 'load', lambda: {'default_apps': dict(enumerate(rows))})
     monkeypatch.setattr(cli, 'installed_ids', lambda _: {'hermes-agent', 'files'})
-    monkeypatch.delenv('WIZARD_HERMES_PROMOTION', raising=False)
+    if promotion is None:
+        monkeypatch.delenv('WIZARD_HERMES_PROMOTION', raising=False)
+    else:
+        monkeypatch.setenv('WIZARD_HERMES_PROMOTION', promotion)
     c = SimpleNamespace(runtipi_root=tmp_path)
     for row in rows:
         live = tmp_path / 'apps' / cli.STORE / row['app']; live.mkdir(parents=True)
         (live / '.wizard-commit').write_text('a' * 40)
         (live / '.wizard-source').write_text(json.dumps({'repo': row['repo']}))
+    staged = tmp_path / 'repos' / cli.STORE / 'apps' / 'hermes-agent'
+    staged.mkdir(parents=True)
+    (staged / '.wizard-selection').write_text('original selection\n')
+    (staged / '.wizard-commit').write_text('a' * 40)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     calls = []
-    monkeypatch.setattr(cli, 'resolve_any', lambda _, app: calls.append(('resolve', app)))
+    def resolve(_, app):
+        calls.append(('resolve', app))
+        if app == 'hermes-agent':
+            (staged / '.wizard-selection').write_text('poisoned selection\n')
+            (staged / '.wizard-commit').write_text('b' * 40)
+    monkeypatch.setattr(cli, 'resolve_any', resolve)
     monkeypatch.setattr(cli, 'app_update', lambda _, app: calls.append(('update', app)) or {})
     assert cli.release_updates(c, object(), {}) == ['files']
     assert calls == [('resolve', 'files'), ('update', 'files')]
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+def test_release_rerun_authorizes_before_preparing_approved_hermes(tmp_path, monkeypatch):
+    from wam import hermes_lock
+    recipe = hermes_lock.load()['agent_recipe']
+    row = {'app': 'hermes-agent', 'repo': recipe['repo'], 'commit': recipe['commit']}
+    monkeypatch.setattr(cli.release_pins, 'load', lambda: {'default_apps': {'agent': row}})
+    monkeypatch.setattr(cli, 'installed_ids', lambda _: {'hermes-agent'})
+    monkeypatch.setenv('WIZARD_HERMES_PROMOTION', 'approved-test')
+    live = tmp_path / 'apps' / cli.STORE / 'hermes-agent'
+    live.mkdir(parents=True)
+    (live / '.wizard-commit').write_text('a' * 40)
+    (live / '.wizard-source').write_text(json.dumps({'repo': recipe['repo']}))
+    calls = []
+    monkeypatch.setattr(hermes_lock, 'authorize', lambda: calls.append('authorize') or 'approved-test')
+    monkeypatch.setattr(cli, 'resolve_any', lambda *a: calls.append('resolve'))
+    monkeypatch.setattr(cli, 'app_update', lambda *a: calls.append('update') or {})
+    assert cli.release_updates(SimpleNamespace(runtipi_root=tmp_path), object(), {}) == ['hermes-agent']
+    assert calls == ['authorize', 'resolve', 'update']
 
 
 def test_flag_first_or_bulk_passthrough_cannot_bypass_pause(tmp_path, monkeypatch):

@@ -1012,8 +1012,12 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id
-        if app_id == 'hermes-agent' and not os.environ.get('WIZARD_HERMES_PROMOTION'):
-            continue  # independent Hermes pause; unrelated release defaults still update
+        if app_id == 'hermes-agent':
+            from .hermes_lock import authorize
+            try:
+                authorize()
+            except (ValueError, OSError):
+                continue  # independent Hermes pause; unrelated release defaults still update
         try:
             commit = (live / ".wizard-commit").read_text().strip()
             source = json.loads((live / ".wizard-source").read_text()).get("repo")
