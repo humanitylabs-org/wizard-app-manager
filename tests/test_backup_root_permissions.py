@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from wam.backup import agents, bundle, filesystem as fs, fmt, restore
+from wam.backup import agents, bundle, crypto, filesystem as fs, fmt, restore
 from wam.backup.box import Box
 from test_backup_flow import _export, isolated, world  # noqa: F401
 
@@ -50,13 +50,14 @@ def denied_host(monkeypatch):
                 if frame.f_code.co_filename.endswith('backup_fakes.py'):
                     return fn(path, *a, **kw)
                 frame = frame.f_back
-            if isinstance(path, (str, bytes, os.PathLike)) and any(
-                    str(path) == r or str(path).startswith(r + '/') for r in roots):
-                raise PermissionError(13, 'simulated root-only app-data', str(path))
+            paths = (path, a[0]) if fn.__name__ == 'rename' and a else (path,)
+            if any(isinstance(p, (str, bytes, os.PathLike)) and any(
+                    str(p) == r or str(p).startswith(r + '/') for r in roots) for p in paths):
+                raise PermissionError(13, 'simulated root-only backup tree', str(path))
             return fn(path, *a, **kw)
         return wrapped
 
-    for name in ('stat', 'lstat', 'listdir', 'mkdir', 'chmod', 'chown', 'unlink', 'rmdir', 'rename'):
+    for name in ('stat', 'lstat', 'listdir', 'mkdir', 'chmod', 'chown', 'unlink', 'rmdir', 'rename', 'open'):
         monkeypatch.setattr(os, name, guarded(getattr(os, name)))
     import builtins
     monkeypatch.setattr(builtins, 'open', guarded(builtins.open))
@@ -207,3 +208,138 @@ def test_private_agent_metadata_export_and_undo(world, denied_host):  # noqa: F8
     assert restore.undo(new.box())['digest_match']
     with new.box().operation():
         assert (fs.Path(destination) / '.main-agent.json').read_text() == '{"fixture":"destination"}'
+
+
+def test_root_owned_owner_files_folder_is_read_through_helper(tmp_path, denied_host):
+    """0.3.48 Thales gate: export died on root-owned media/Wisdom/launch-public."""
+    protect, launches = denied_host
+    home, rt = tmp_path / 'wizard', tmp_path / 'runtipi'
+    home.mkdir(); rt.mkdir()
+    (rt / 'app-data').mkdir()
+    wisdom = rt / 'media/Wisdom/launch-public'
+    wisdom.mkdir(parents=True)
+    (wisdom / 'reading.md').write_text('public reading')
+    (rt / 'media/notes.md').write_text('owner note')
+    protect(wisdom)
+    b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE': 'example/wam:test'})
+    with b.operation():
+        assert fs.listdir(wisdom) == ['reading.md']
+        assert bundle.tree_size(b.files_root())['count'] == 2
+    assert launches
+
+
+@pytest.mark.parametrize('external', [False, True])
+def test_root_owned_media_export_verify_import_receipt_and_undo(world, denied_host, monkeypatch, external):
+    """A denied Wisdom folder must survive every real backup engine phase."""
+    from wam.backup.box import box_digest
+    old, new = world['old'], world['new']
+    if external:
+        for fake in (old, new):
+            media = world['tmp'] / (fake.home.parent.parent.name + '-external') / 'media'
+            media.parent.mkdir(exist_ok=True)
+            shutil.move(str(fake.box().files_root()), str(media))
+            # Exercise production discovery, not only the test-only files override.
+            (fake.runtipi / '.env').write_text('RUNTIPI_MEDIA_PATH=' + str(media.parent) + '\n')
+    src, dst = old.box().files_root(), new.box().files_root()
+    for root, text in ((src, 'carried reading'), (dst, 'original reading')):
+        folder = root / 'Wisdom/launch-public'
+        folder.mkdir(parents=True)
+        (folder / 'reading.md').write_text(text)
+        folder.chmod(0o700)
+    protect, launches = denied_host
+    protect(src / 'Wisdom')
+    protect(dst / 'Wisdom')
+    # A common mount + one external media bind (not per-tree binds).
+    real_popen = subprocess.Popen
+    if external:
+        def popen(cmd, **kw):
+            if '--entrypoint' in cmd and cmd[cmd.index('--entrypoint') + 1] == 'node':
+                assert cmd.count('-v') == 2
+                # Fixture checks the remaining confinement/secret properties.
+                i = cmd.index('-v', cmd.index('-v') + 1)
+                return real_popen(cmd[:i] + cmd[i+2:], **kw)
+            return real_popen(cmd, **kw)
+        monkeypatch.setattr(subprocess, 'Popen', popen)
+    before = box_digest(new.box())
+    out, exported = _export(world)
+    keys = fmt.Keys(recovery=[world['key']])
+    assert exported['ok'] and restore.verify(new.box(), out, keys)['ok']
+    assert box_digest(new.box()) == before  # verify writes nothing
+    real_apply = restore._apply
+    def apply(box, r, p, agents):
+        # After staging, renamed root-owned originals remain inaccessible. Also
+        # deny future Undo stashes so cleanup must use the helper, not skip them.
+        protect(r.froot / 'before')
+        protect(r.froot / 'undone')
+        return real_apply(box, r, p, agents)
+    monkeypatch.setattr(restore, '_apply', apply)
+    report = restore.import_bundle(new.box(), out, keys, yes=True)
+    assert report['ok'] and not report['partial']
+    with new.box().operation():
+        assert (dst / 'Wisdom/launch-public/reading.md').read_text() == 'carried reading'
+        root, journal = restore.last_restore(new.box())
+        assert json.loads((root / 'receipt.json').read_text())['ok']
+        held = dst / '.wizard-restore' / report['stamp']
+        assert (held / 'before/Wisdom/launch-public/reading.md').read_text() == 'original reading'
+    undone = restore.undo(new.box())
+    assert undone['ok'] and undone['digest_match'] and not undone['mismatch']
+    assert box_digest(new.box()) == before
+    with new.box().operation():
+        assert (dst / 'Wisdom/launch-public/reading.md').read_text() == 'original reading'
+        assert not held.exists()
+        assert restore.last_restore(new.box())[1]['status'] == 'undone'
+    assert launches
+
+
+@pytest.mark.parametrize('part', ['apps', 'user-config', 'repos'])
+def test_other_root_owned_runtipi_trees_export_and_undo(world, denied_host, part):
+    """Runtipi creates packages/overrides as root too; host reads cannot skip them."""
+    from wam.backup.box import box_digest
+    old, new = world['old'], world['new']
+    protect, _ = denied_host
+    from wam.backup import versions
+    packages = [(fake.box(), fake.runtipi / part / 'wizardapps' / 'files-app')
+                for fake in (old, new)] if part == 'apps' else [
+                    (fake.box(), fake.runtipi / 'repos/wizardapps/apps/agent-research')
+                    for fake in (old, new)] if part == 'repos' else []
+    expected = [versions.package_release(pkg) for _, pkg in packages]
+    assert all(rec is not None for rec in expected)
+    for fake in (old, new):
+        protect(fake.runtipi / part)
+    # Pathlib on newer Python can silently turn PermissionError into False;
+    # do not let a denied package become an unknown-version restore warning.
+    for (box, pkg), rec in zip(packages, expected):
+        with box.operation():
+            assert versions.package_release(pkg) == rec
+    before = box_digest(new.box())
+    out, exported = _export(world)
+    assert exported['ok']
+    keys = fmt.Keys(recovery=[world['key']])
+    assert restore.verify(new.box(), out, keys)['ok']
+    assert restore.import_bundle(new.box(), out, keys, yes=True)['ok']
+    assert restore.undo(new.box())['digest_match']
+    assert box_digest(new.box()) == before
+
+
+def test_verify_and_import_open_backup_inside_private_media(world, denied_host, monkeypatch):
+    # Keys and bundle metadata are authenticated through the same streaming pass;
+    # verify must not bypass Access just because it does not write a restore.
+    out, _ = _export(world)
+    new = world['new'].box()
+    folder = new.files_root() / 'private-backups'
+    folder.mkdir()
+    carried = folder / out.name
+    shutil.copyfile(out, carried)
+    keyfile = folder / 'recovery-key'
+    keyfile.write_text(crypto.encode_recovery_key(world['key']))
+    protect, launches = denied_host
+    protect(folder)
+    from wam.backup import cli
+    import sys
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    keys = cli._keys_to_open(new, str(keyfile), carried)
+    assert keys.recovery == [world['key']]
+    assert restore.verify(new, carried, keys)['ok']
+    assert restore.import_bundle(new, carried, keys, yes=True)['ok']
+    assert restore.undo(new)['digest_match']
+    assert launches

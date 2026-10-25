@@ -1,10 +1,11 @@
 """Permission-safe access to container-owned backup trees.
 
-The owner runs WAM, not root. Only inaccessible app-data and backup staging
-paths use a root, offline one-off container of the already installed Manager
-image (as AppData does). Never chmod/chown live state to make it readable.
-The helper accepts filesystem operations, not shell fragments, and lives for
-one operation. Ordinary owner paths and alongside Hermes stay host-side.
+The owner runs WAM, not root. Inaccessible container-written Runtipi trees,
+Wizard state and backup staging use a root, offline one-off container of the
+already installed Manager image (as AppData does). Never chmod/chown live state
+to make it readable. The helper accepts filesystem operations, not shell
+fragments, and lives for one operation. Accessible paths stay host-side;
+alongside Hermes outside these roots is never admitted.
 """
 from __future__ import annotations
 from .dockercli import docker
@@ -103,8 +104,15 @@ readline.createInterface({input:process.stdin}).on('line', line => {
 class Access:
     def __init__(self, box):
         self.box, self.proc = box, None
+        # Owner files (Runtipi media/) are written by app containers too: Wisdom's
+        # public reading folder is root-owned on a fresh box. Same rule as app-data.
+        self.files = HostPath(box.files_root()).absolute()
+        # Runtipi also writes installed packages, compose overrides and store
+        # packages as root. Capture estimates/package reads and Undo digests
+        # traverse them on the host, not only AppData's privileged tar path.
         self.roots = [str(HostPath(p).absolute()) for p in
-                      (box.runtipi_root / 'app-data', box.home / 'restores', box.home / 'backup-work')]
+                      (box.home, *(box.runtipi_root / part for part in
+                                   ('app-data', 'apps', 'user-config', 'repos')), self.files)]
 
     def owns(self, p):
         p = str(HostPath(p).absolute())
@@ -123,6 +131,10 @@ class Access:
             if common == HostPath('/'):
                 raise OSError('backup trees have no safe common mount ancestor')
             cmd += ['-v', f'{common}:{common}']
+            if self.files != common and not str(self.files).startswith(str(common) + '/'):
+                # A media path elsewhere (RUNTIPI_MEDIA_PATH) gets its own bind; renames
+                # stay inside it, so EXDEV cannot split a set-aside.
+                cmd += ['-v', f'{self.files}:{self.files}']
             cmd += ['--entrypoint', 'node', self.box.appdata.image(), '-e', NODE, json.dumps(self.roots)]
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, text=True, env=self.box.child_env)
