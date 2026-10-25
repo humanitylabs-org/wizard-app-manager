@@ -1,5 +1,25 @@
 # Owner-controlled host Hermes updates
 
+**Hermes updates are paused by the shared Wizard lock.** Status and dry-run are
+read-only; real host or `hermes-agent` app updates refuse until a reviewed
+promotion exists in `wam/hermes-lock.json` and the operator explicitly sets
+`WIZARD_HERMES_PROMOTION=<approved-id>`. Ordinary OS reruns skip installed Hermes;
+Automatic clears this opt-in. Other Wizard app updates are unchanged. Fresh
+installs consume the locked recipe even without an OS snapshot. Public installer
+metadata in `releases/hermes-lock.json` must be byte-identical to the packaged
+lock. Both vendor wizard-os `releases/hermes-lock.json` and `tools/hermes_lock.py`.
+
+The initial freeze preserves the existing September baseline, whose acceptance
+record has a known compacted-history visibility limitation. It is not a newly
+certified latest release and never automatically downgrades an alongside host.
+Promotion requires seven full days after publication, bug review, exact-source
+acceptance/canary and rollback evidence, a recommendation, and non-author admin
+approval (James for stable). See
+[the shared contract](https://github.com/humanitylabs-org/wizard-os/blob/main/spec/HERMES_LOCK.md).
+Do not deploy the global/default change without its clean-VM fresh/alongside
+installer acceptance and non-author approval. Raw Docker/Runtipi admin commands,
+stock `hermes update` and owner cron must be audited separately.
+
 ```sh
 wam hermes status --json
 wam hermes update --dry-run --json

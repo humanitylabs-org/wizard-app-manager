@@ -314,6 +314,7 @@ fwd_env() {
   printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
     WIZARD_CHANNEL="${WIZARD_CHANNEL:-}" \
+    WIZARD_HERMES_PROMOTION="${WIZARD_HERMES_PROMOTION:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
@@ -1064,8 +1065,9 @@ print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2
     case "$REL" in *[!0-9A-Za-z.+-]*|.*) echo "WIZARD_RELEASE '$REL' is not a version" >&2; exit 2 ;; esac
     PINS="$HOME/.wizard-os/release-pins.json"
     fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
+    fetch_release hermes-lock.json "$PINS.lock" || { echo "Could not read the shared Hermes lock; nothing installed" >&2; exit 1; }
     # Only validated values leave Python (40-hex commit, sha256 digests, plain image names), shell-quoted.
-    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" <<'PY'
+    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" "$PINS.lock" <<'PY'
 import json, re, shlex, sys
 path, want = sys.argv[1], sys.argv[2]
 try:
@@ -1074,6 +1076,14 @@ except ValueError as e:
     sys.exit(f"release {want}: not JSON ({e})")
 if str(rel.get("version")) != want:
     sys.exit(f"release file says version {rel.get('version')!r}, expected {want!r}")
+lock = json.load(open(sys.argv[3]))
+if lock.get('schema') != 1 or lock.get('automatic_updates') != 'paused':
+    sys.exit('invalid shared Hermes lock')
+if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
+    sys.exit('release Hermes differs from the shared exact lock')
+agent = (rel.get('default_apps') or {}).get('agent') or {}
+if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
+    sys.exit('release agent recipe differs from the shared exact Hermes lock')
 def image(name):
     im = (rel.get("images") or {}).get(name) or {}
     ref, dig = str(im.get("ref", "")), str(im.get("digest", ""))
