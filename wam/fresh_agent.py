@@ -209,8 +209,6 @@ SERVICE_OVERLAY = """\
 # Tokens are in the 0600 app.env next to this file. Remove with `wam fresh-agent disconnect`.
 services:
   {app}:
-    image: wizard-shell:mac-mvp-20261013
-    pull_policy: never
     extra_hosts:
       - "{bridge_host}:{bridge_ip}"
     environment:
@@ -228,8 +226,6 @@ AGENT_OVERLAY = """\
 # Remove with `wam fresh-agent disconnect`.
 services:
   {engine}:
-    image: ghcr.io/humanitylabs-org/hermes-agent:v2026.9.24-wizard-slim1
-    pull_policy: missing
     extra_hosts:
       - "wizard-vm:host-gateway"
     environment:
@@ -310,6 +306,36 @@ def _env_text(path: Path, values: dict[str, str]) -> str:
     return "\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n"
 
 
+def preserve_digest_images(previous: str, compose: str) -> str:
+    import yaml
+    import re
+    class Loader(yaml.SafeLoader):
+        pass
+    # Reading image fields must not erase/serialize the generated !reset routing.
+    def tagged(loader, tag, node):
+        return {yaml.ScalarNode: loader.construct_scalar,
+                yaml.SequenceNode: loader.construct_sequence,
+                yaml.MappingNode: loader.construct_mapping}[type(node)](node)
+    Loader.add_multi_constructor('!', tagged)
+    before = yaml.load(previous, Loader=Loader) or {}
+    after = yaml.load(compose, Loader=Loader) or {}
+    for service, row in before.get('services', {}).items():
+        image = row.get('image') if isinstance(row, dict) else None
+        if not isinstance(image, str) or not re.fullmatch(r'[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}', image):
+            continue
+        if not re.fullmatch(r'[a-zA-Z0-9_.-]+', service):
+            raise FreshError('invalid_service', service)
+        if (after.get('services', {}).get(service) or {}).get('image'):
+            continue
+        lines = f'    image: {image}\n    pull_policy: if_not_present\n'
+        anchor = f'  {service}:\n'
+        if anchor in compose:
+            compose = compose.replace(anchor, anchor + lines, 1)
+        else:
+            compose += anchor + lines
+    return compose
+
+
 def _write_overlay(runtipi_root: Path, store: str, app_id: str, compose: str, env: dict[str, str]) -> bool:
     """One app's stock Runtipi user-config: our compose file (refusing to replace one wam didn't write) and our keys
     in its app.env (0600), keeping any others there (e.g. an image pin). Returns whether anything changed."""
@@ -320,6 +346,10 @@ def _write_overlay(runtipi_root: Path, store: str, app_id: str, compose: str, en
         raise FreshError("overlay_symlink", str(d))
     if cp.is_file() and not cp.read_text().startswith(MARK):
         raise FreshError("overlay_not_ours", f"{cp} was not written by wam; merge the fresh-mode settings by hand")
+    # The recipe owns the default image. Keep only immutable image pins from our
+    # own overlay (factory security or an owner pin); never carry legacy local tags.
+    if cp.is_file():
+        compose = preserve_digest_images(cp.read_text(), compose)
     changed = False
     if not cp.is_file() or cp.read_text() != compose:
         registry.atomic_write(cp, compose.encode())
