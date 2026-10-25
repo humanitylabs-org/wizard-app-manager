@@ -128,11 +128,34 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 
 
+def read_grants(c: Config, rt) -> list:
+    """Approved app grants for the registry. The App Manager writes state/wizard-grants.json 0600 as root, and
+    since automatic grants (#211) it exists on every fresh box, so the host CLI user usually cannot open it
+    (0.3.42 fresh install: PermissionError aborted `wam apps` and `wam bootstrap`). Read the file when we can,
+    else ask the App Manager API (the same source `wam grants list` uses), else keep the grants already
+    mirrored in apps.json rather than fail the registry write."""
+    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+    try:
+        return json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    except PermissionError:
+        pass
+    try:
+        got = rt.req("GET", "/apps/wizard/grants")
+        if isinstance(got, list):
+            return got
+    except Exception:
+        pass
+    try:
+        cur = json.loads((c.home / "apps.json").read_text())
+        return cur.get("grants", []) if isinstance(cur.get("grants"), list) else []
+    except (OSError, ValueError):
+        return []
+
+
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
-    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
