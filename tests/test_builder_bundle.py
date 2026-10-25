@@ -140,6 +140,28 @@ def test_fresh_merges_mounts_preserves_terminal_and_is_idempotent(homes, tmp_pat
     assert all(r[1] for r in bb.health(osh, data, bb.RUNTIME + '/current/system-skills'))
 
 
+def test_fresh_keeps_the_wam_ownership_mark_so_fresh_agent_can_rewrite_the_overlay(homes, tmp_path):
+    from wam import fresh_agent
+    osh, hh = homes
+    c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
+    data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+    data.mkdir(parents=True)
+    shutil.copy(hh / 'config.yaml', data / 'config.yaml')
+    override = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    override.parent.mkdir(parents=True)
+    override.write_text(fresh_agent.MARK + ' (fresh mode): test header\n# second line\n'
+                        'services:\n  hermes-agent-engine:\n    environment:\n      WIZARD_OS_HOME: /wizard-os\n')
+    bb.fresh(c)
+    text = override.read_text()
+    assert text.startswith(fresh_agent.MARK + ' (fresh mode): test header\n# second line\n')
+    assert yaml.safe_load(text)['services']['hermes-agent-engine']['environment']['WIZARD_BUILDER_ROOT'] == bb.RUNTIME
+    first = override.read_bytes()
+    bb.fresh(c)
+    assert override.read_bytes() == first
+    # fresh-agent's own rewrite accepts the overlay builder-bundle touched (no overlay_not_ours).
+    fresh_agent._write_overlay(c.runtipi_root, 'wizardapps', 'hermes-agent', fresh_agent.MARK + ' again\nservices: {}\n', {})
+
+
 @pytest.fixture
 def wizard(homes, monkeypatch):
     loader = importlib.machinery.SourceFileLoader('wizard_test_bundle', str(bb.SOURCE / 'wizard-cli/wizard'))

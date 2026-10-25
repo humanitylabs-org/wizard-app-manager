@@ -294,6 +294,15 @@ def register(hermes_home, os_home, runtime=None):
     return path
 
 
+def _leading_comments(text):
+    out = []
+    for line in text.splitlines(keepends=True):
+        if not line.startswith('#'):
+            break
+        out.append(line if line.endswith('\n') else line + '\n')
+    return out
+
+
 def fresh(c, app_id='hermes-agent', store='wizardapps'):
     """Prepare the stock Runtipi Hermes data directory and additive override.
 
@@ -322,7 +331,10 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     if mount not in vols:
         vols.append(mount)
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
-    _atomic(override, yaml.safe_dump(doc, sort_keys=False))
+    # Keep the file's leading comment block: it carries the ownership mark (`# Written by wam`) that
+    # fresh-agent requires before it will rewrite this overlay; yaml.safe_dump alone drops comments.
+    header = ''.join(_leading_comments(before[0].decode()) if before[0] is not None else [])
+    _atomic(override, header + yaml.safe_dump(doc, sort_keys=False))
     after = (override.read_bytes(), _read_bytes(data / 'config.yaml'))
     pending = Path(c.home) / 'builder/restart-required'
     if before != after:
