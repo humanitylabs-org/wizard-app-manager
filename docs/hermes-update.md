@@ -9,6 +9,14 @@ installs consume the locked recipe even without an OS snapshot. Public installer
 metadata in `releases/hermes-lock.json` must be byte-identical to the packaged
 lock. Both vendor wizard-os `releases/hermes-lock.json` and `tools/hermes_lock.py`.
 
+The normal Apps UI and bulk-update handler also enforce the pause before status
+or queue changes. The CLI forwards the approved id as optional `hermesPromotion`;
+the backend validates it against its own bundled policy. The index store forces
+the locked source even on legacy installs without `.wizard-selection`, and rejects
+an out-of-lock owner selection. Bulk updates still update unrelated apps.
+The backend Docker build includes `wam/hermes-lock.json`: promotion snapshots
+that reuse old images must include that file in their `image_inputs` comparison.
+
 The initial freeze preserves the existing September baseline, whose acceptance
 record has a known compacted-history visibility limitation. It is not a newly
 certified latest release and never automatically downgrades an alongside host.

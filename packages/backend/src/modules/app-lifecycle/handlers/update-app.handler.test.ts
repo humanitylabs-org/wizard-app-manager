@@ -10,6 +10,38 @@ import { mock } from 'vitest-mock-extended';
 import { StatusManagerService } from '../services/status-manager.service';
 import { UpdateAppHandler } from './update-app.handler';
 import { UpdateConfigHandler } from './update-config.handler';
+import { AppLifecycleService } from '../app-lifecycle.service';
+import { AppLifecycleController } from '../app-lifecycle.controller';
+
+// Real UI/controller and batch service paths share the pre-queue guard.
+test('Hermes UI updates refuse before repository, status or queue access', async () => {
+  const { handler, appRepository, statusManager, appEventsQueue } = createHandler();
+  const service = Object.assign(Object.create(AppLifecycleService.prototype), { updateAppHandler: handler }) as AppLifecycleService;
+  const controller = new AppLifecycleController(service);
+  await expect(controller.updateApp('hermes-agent:wizardapps', { performBackup: true })).rejects.toThrow('Hermes updates are paused');
+  expect(appRepository.getAppByUrn).not.toHaveBeenCalled();
+  expect(statusManager.transitionTo).not.toHaveBeenCalled();
+  expect(appEventsQueue.publish).not.toHaveBeenCalled();
+});
+
+test('update-all leaves Hermes untouched and still queues unrelated app updates', async () => {
+  const { handler, logger, appRepository, appEventsQueue } = createHandler();
+  const service = Object.assign(Object.create(AppLifecycleService.prototype), {
+    updateAppHandler: handler,
+    logger,
+    appsService: {
+      getInstalledApps: async () =>
+        ['hermes-agent', 'files'].map((appName) => ({
+          app: { id: appName, appName, appStoreSlug: 'wizardapps', version: 1 },
+          metadata: { latestVersion: 2 },
+        })),
+    },
+  }) as AppLifecycleService;
+  await new AppLifecycleController(service).updateAllApps();
+  expect(appRepository.getAppByUrn).toHaveBeenCalledTimes(1);
+  expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+  expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'files:wizardapps' }));
+});
 
 const appUrn = 'app:test' as AppUrn;
 

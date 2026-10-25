@@ -82,6 +82,23 @@ def test_flag_first_or_bulk_passthrough_cannot_bypass_pause(tmp_path, monkeypatc
             cli.runtipi_cli(tmp_path, args)
 
 
+def test_runtime_client_forwards_only_explicit_approved_promotion(monkeypatch):
+    from wam.runtipi import Runtipi
+    from wam import hermes_lock
+    client = object.__new__(Runtipi)
+    calls = []
+    monkeypatch.setattr(client, 'req', lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.delenv('WIZARD_HERMES_PROMOTION', raising=False)
+    with pytest.raises(ValueError, match='paused'):
+        client.update('hermes-agent:wizardapps')
+    assert not calls
+    client.update('files:wizardapps')
+    assert calls[-1][0][2] == {'performBackup': True}
+    monkeypatch.setattr(hermes_lock, 'authorize', lambda: 'fixture-approved')
+    client.update('hermes-agent:wizardapps')
+    assert calls[-1][0][2] == {'performBackup': True, 'hermesPromotion': 'fixture-approved'}
+
+
 def test_public_lock_and_packaged_lock_are_identical():
     root = Path(__file__).resolve().parents[1]
     assert (root / 'releases/hermes-lock.json').read_bytes() == (root / 'wam/hermes-lock.json').read_bytes()
