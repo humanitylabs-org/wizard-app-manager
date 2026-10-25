@@ -9,7 +9,7 @@ import { mountAppGrants, providerEndpoint } from '../wizard-app-grants';
 import crossStore from './fixtures/grants-cross-store.json';
 
 let root: string;
-let installed: { appName: string; appStoreSlug: string }[];
+let installed: Array<{ appName: string; appStoreSlug: string; status: string }>;
 let store: WizardStorage;
 const comp = {
   services: {
@@ -18,12 +18,12 @@ const comp = {
 };
 const data = (id: string, slug = 'wizardapps') => path.join(root, 'app-data', slug, id);
 const file = async (id: string, slug = 'wizardapps') => JSON.parse(await fs.readFile(path.join(data(id, slug), 'wizard/grants.json'), 'utf8'));
-async function install(id: string, fields: any = {}, compose: any = comp, slug = 'wizardapps') {
+async function install(id: string, fields: any = {}, compose: any = comp, slug = 'wizardapps', status = 'running') {
   const dir = path.join(root, 'apps', slug, id);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'wizard.md'), `---\n${yaml.stringify({ id, ...fields })}---\n`);
   await fs.writeFile(path.join(dir, 'docker-compose.yml'), yaml.stringify(compose));
-  installed.push({ appName: id, appStoreSlug: slug });
+  installed.push({ appName: id, appStoreSlug: slug, status });
 }
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), 'app-grants-'));
@@ -41,8 +41,17 @@ describe('app grants layer 2', () => {
   it('adopts the cross-store owner topology without slot replacement or key/endpoint/hash loss', async () => {
     // Shapes match the private migration checkpoint; all keys/hashes are dummy.
     // Status is included deliberately: stopped installed providers still exist.
-    for (const { id, store: slug, status, ...fields } of crossStore.apps) {
-      await install(id, { ...fields, status }, comp, slug);
+    for (const { id, store: slug, status, main_service, port, ...fields } of crossStore.apps) {
+      const compose = {
+        services: {
+          [main_service]: {
+            'x-runtipi': { is_main: true, internal_port: port },
+            ports: [`127.0.0.1:\${APP_PORT}:${port}`],
+            ...(id === 'wizard-connectors' ? { networks: { main: { aliases: ['wizard-connectors-calendar'] } } } : {}),
+          },
+        },
+      };
+      await install(id, fields, compose, slug, status);
     }
     for (const [id, doc] of [
       ['wizard-connection-router', crossStore.router],
