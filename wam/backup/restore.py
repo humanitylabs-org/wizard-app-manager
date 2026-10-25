@@ -1017,6 +1017,15 @@ def _undo(box: Box) -> dict:
                     raise RestoreError(f"agent {k} did not stop (status {st}); Undo has not moved any trees")
         except (RuntipiError, HermesError) as e:
             raise RestoreError(f"agent {k} did not stop; Undo has not moved any trees: {e}") from e
+    # Agent homes can be nested inside kept app data. Recover interrupted app
+    # swaps BEFORE tree Undo recreates that live path and masks .wizard-old.
+    for s in j["steps"]:
+        if s["kind"] == "app_snapshot":
+            app_id, store = s["urn"].split(":")
+            try:
+                box.appdata.recover_swaps(store, app_id)
+            except AppDataError as e:
+                raise RestoreError(f"{s['urn']}: interrupted app swap needs recovery before Undo: {e}") from e
     if j.get("move_journal_version") == 1:
         _undo_journaled_trees(box, root, j, targets, files_root, froot)
     else:

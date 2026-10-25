@@ -214,6 +214,26 @@ def compose_volumes(package: Path, project: str) -> list[str]:
     return sorted(set(out))
 
 
+RECOVER_SH = r'''
+set -eu
+for base in "$RT/app-data" "$RT/apps" "$RT/user-config"; do
+  for p in "$base" "$base/$STORE"; do
+    [ ! -L "$p" ] || { echo "symlinked swap recovery ancestor" >&2; exit 1; }
+  done
+  for live in "$base/$STORE/$APP" "$base/$STORE/$APP/data"; do
+    [ ! -L "$live" ] || { echo "symlinked swap recovery destination" >&2; exit 1; }
+    if [ -e "$live.wizard-old" ] || [ -L "$live.wizard-old" ]; then
+      if [ -e "$live" ] || [ -L "$live" ]; then
+        echo "interrupted swap has both copies; preserve both for manual recovery" >&2
+        exit 1
+      fi
+      mv "$live.wizard-old" "$live"
+      sync "$(dirname "$live")"
+    fi
+  done
+done
+'''
+
 RESTORE_SH = r'''
 set -eu
 # Never traverse symlinked destination ancestors (including the data subtree we preserve entries from).
@@ -536,6 +556,15 @@ done
 ''')
 
     # ------------------------------------------------------------ restore
+    def recover_swaps(self, store: str, app_id: str) -> None:
+        """Reconcile a killed app swap BEFORE Undo can recreate nested agent paths.
+
+        Both live/old present is ambiguous: refuse and preserve both, never
+        choose a partial recreated tree over the only per-machine originals.
+        """
+        self._helper([f"{self.box.runtipi_root}:/rt"],
+                     {"RT": "/rt", "STORE": store, "APP": app_id}, RECOVER_SH)
+
     def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS, rewrite=(), data_only=False) -> dict:
         """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced. `rewrite`
         ((old, new) text pairs, most specific first) is applied to user-config/ files: compose overrides there name

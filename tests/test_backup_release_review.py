@@ -16,12 +16,14 @@ from wam.backup import appdata, restore
 from wam.backup.box import Agent
 
 
-@pytest.mark.parametrize('phase', ['before-swap', 'new-publication', 'killed-after-rename'])
-def test_kept_agent_tree_survives_error_after_staging_before_swap(tmp_path, phase):
+@pytest.mark.parametrize('phase', ['before-swap', 'new-publication', 'killed-after-rename', 'killed-then-undo'])
+def test_kept_agent_tree_survives_error_after_staging_before_swap(tmp_path, phase, monkeypatch):
     live = tmp_path / 'app-data/wizardapps/wizard-agent-service'
     kept = live / 'data/wizard-os/agents/hermes/local-identity'
     kept.parent.mkdir(parents=True)
     kept.write_text('destination-only fixture')
+    token = live / 'data/wizard-os/mcp-token'
+    token.write_text('synthetic per-machine token')
     tools = tmp_path / 'bin'
     tools.mkdir()
     mv = tools / 'mv'
@@ -41,16 +43,42 @@ def test_kept_agent_tree_survives_error_after_staging_before_swap(tmp_path, phas
         ti.size = 3
         t.addfile(ti, io.BytesIO(b'new'))
     env = dict(os.environ, PATH=str(tools) + ':' + os.environ['PATH'], RT=str(tmp_path),
-               STORE='wizardapps', APP='wizard-agent-service', KEEP='data/wizard-os/agents',
+               STORE='wizardapps', APP='wizard-agent-service', KEEP='data/wizard-os/agents\ndata/wizard-os/mcp-token',
                DATA_ONLY='0', VOLS='', V=str(tmp_path / 'volumes'), FAIL_RENAME=str(live))
     r = subprocess.run(['sh', '-c', appdata.RESTORE_SH], input=incoming.getvalue(), env=env, capture_output=True)
     assert r.returncode != 0
-    if phase == 'killed-after-rename':
+    if phase in ('killed-after-rename', 'killed-then-undo'):
         assert (live.with_name(live.name + '.wizard-old') / kept.relative_to(live)).read_text() == 'destination-only fixture'
         env['PATH'] = os.environ['PATH']
+        if phase == 'killed-then-undo':
+            box = SimpleNamespace(files_root=lambda: tmp_path / 'files', runtipi_root=tmp_path)
+            ad = appdata.AppData(box)
+            box.appdata = ad
+            def helper(mounts, values, script, **kw):
+                values = dict(values, RT=str(tmp_path))
+                rep = subprocess.run(['sh', '-c', script], env=dict(os.environ, **values), capture_output=True)
+                if rep.returncode:
+                    raise appdata.AppDataError(rep.stderr.decode())
+            monkeypatch.setattr(ad, '_helper', helper)
+            j = {'stamp': 'fixture', 'agents': {}, 'move_journal_version': 1,
+                 'steps': [{'kind': 'app_snapshot', 'urn': 'wizard-agent-service:wizardapps'}]}
+            monkeypatch.setattr(restore, 'last_restore', lambda b: (tmp_path, j))
+            class ReachedNestedTrees(Exception):
+                pass
+            def nested_trees(*args):
+                # Actual Undo must reconcile the app BEFORE nested home paths
+                # are recreated. Without the preflight both originals are absent.
+                assert token.read_text() == 'synthetic per-machine token'
+                assert kept.read_text() == 'destination-only fixture'
+                (kept.parent / 'restored-owner-entry').write_text('owner Undo fixture')
+                raise ReachedNestedTrees()
+            monkeypatch.setattr(restore, '_undo_journaled_trees', nested_trees)
+            with pytest.raises(ReachedNestedTrees):
+                restore._undo(box)
         r = subprocess.run(['sh', '-c', appdata.RESTORE_SH], input=incoming.getvalue(), env=env, capture_output=True)
         assert r.returncode == 0, r.stderr
     assert kept.read_text() == 'destination-only fixture', 'cleanup must never delete live kept agents'
+    assert token.read_text() == 'synthetic per-machine token'
 
 
 def test_app_undo_archive_fsynced_before_publish_and_parent_after(tmp_path, monkeypatch):
