@@ -26,6 +26,10 @@ export type Manifest = {
   api?: { endpoint?: string };
 };
 export type Grant = { kind: string; from: string; to: string; share?: string; reason?: string; approved?: string; created_at?: number };
+/** wizard-grants.json holds grant rows and key hashes only (keys live in each consumer's
+ * wizard/grants.json), and the same rows are mirrored into apps.json. It must stay readable by
+ * the host owner: the manager runs as root, and a 0600 file broke `wam apps` / `wam uninstall`. */
+export const GRANTS_MODE = 0o644;
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
 // Compose is extensible; preserve unknown fields rather than normalizing them away.
 export type Compose = { services: Record<string, any>; volumes?: Record<string, any>; [key: string]: any };
@@ -160,6 +164,8 @@ export class WizardStorage {
       return null;
     });
     if (!raw) return { schema: 1, updated_at: 0, seeded: [], grants: [], denied: [] };
+    // Boxes written before this fix hold a root-only copy; the host `wam` CLI (the owner) reads it.
+    await fs.chmod(this.grantsPath, GRANTS_MODE).catch(() => undefined);
     const file = JSON.parse(raw);
     if (file.schema !== 1 || !Array.isArray(file.grants) || !Array.isArray(file.denied))
       throw new Error('Invalid wizard-grants.json; refusing to start');
@@ -169,7 +175,9 @@ export class WizardStorage {
     file.updated_at = Math.floor(Date.now() / 1000);
     await fs.mkdir(path.dirname(this.grantsPath), { recursive: true });
     const tmp = `${this.grantsPath}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: GRANTS_MODE });
+    // writeFile's mode only applies on create and is umask-filtered; set it explicitly.
+    await fs.chmod(tmp, GRANTS_MODE);
     await fs.rename(tmp, this.grantsPath);
     // Preserve the registry's other fields and do not publish keys.
     const mirrors = new Set([

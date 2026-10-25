@@ -143,6 +143,18 @@ describe('owner share grants', () => {
     );
     await expect(store.change({ kind: 'share', from: 'hermes-agent', to: 'other', share: 'login' }, true)).rejects.toThrow('declared');
   });
+  it('keeps wizard-grants.json owner-readable (0644) on write and repairs an old 0600 copy on read', async () => {
+    const old = process.umask(0o077);
+    try {
+      await store.writeGrants(await store.readGrants());
+    } finally {
+      process.umask(old);
+    }
+    expect((await fs.stat(store.grantsPath)).mode & 0o777).toBe(0o644);
+    await fs.chmod(store.grantsPath, 0o600);
+    await store.readGrants();
+    expect((await fs.stat(store.grantsPath)).mode & 0o777).toBe(0o644);
+  });
   it('preserves non-share grants, seeded flags, denies, and apps.json mirror on writes', async () => {
     await install(provider);
     await install(consumer);
