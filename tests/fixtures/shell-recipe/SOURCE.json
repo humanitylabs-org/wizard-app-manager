@@ -1,0 +1,9 @@
+{
+  "repo": "humanitylabs-org/wizard-ux",
+  "commit": "e1bc34fa571fddbb2badf0c6dbb97597a3d0d2ba",
+  "sha256": {
+    "nginx.conf.template": "c173a2583564bee805fcaa58dbba089eda6ac7bc4495b496bbe4e9d2686cf45d",
+    "static.conf": "273f5081279c22c2bb4dbd976e048884d3b4fb4431e03eeb82dd56d5e975f5a7",
+    "entrypoint.sh": "8db9be8e7435b02936789d7edff78a79c407d87a044be865e21ff1efb0c325f0"
+  }
+}

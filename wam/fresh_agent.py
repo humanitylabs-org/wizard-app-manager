@@ -269,7 +269,8 @@ src=/etc/wizard-shell; dst=/tmp/wizard-shell-adapted
 rm -rf "$dst"; mkdir -p "$dst"; cp "$src"/* "$dst"/
 t="$dst/nginx.conf.template"; s="$dst/static.conf"
 grep -q '^    server_name _;$' "$t" && grep -q '^    location /wizard-os-home/ {$' "$t" \
-  && grep -q "frame-ancestors 'none'" "$s" && grep -q 'X-Frame-Options "DENY"' "$s" \
+  && { { grep -q "frame-ancestors 'none'" "$s" && grep -q 'X-Frame-Options "DENY"' "$s"; } \
+    || { grep -q "frame-ancestors 'self'" "$s" && grep -q 'X-Frame-Options "SAMEORIGIN"' "$s"; }; } \
   || { echo "wam adapter: the shell recipe's nginx files changed; regenerate the adapter" >&2; exit 3; }
 sed -e 's|^    server_name _;$|&\
     allow 127.0.0.1;\
