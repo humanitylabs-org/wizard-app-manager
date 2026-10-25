@@ -155,6 +155,26 @@ def test_private_fchmod_failure_uses_helper(tmp_path, denied_host, monkeypatch):
     assert target.read_text() == 'private'
 
 
+def test_replaced_ancestor_cannot_redirect_helper(tmp_path, denied_host, monkeypatch):
+    home, rt = tmp_path / 'wizard', tmp_path / 'runtipi'
+    home.mkdir(); rt.mkdir()
+    parent = rt / 'app-data/agent'
+    parent.mkdir(parents=True)
+    held = parent.with_name('original-pinned-agent')
+    outside = tmp_path / 'outside-root'
+    outside.mkdir()
+    marker = "const p = q.path === undefined ? undefined : checked(q.path);"
+    attack = (marker + "\nif(q.op==='mkdir') { fs.renameSync(" + json.dumps(str(parent)) + "," +
+              json.dumps(str(held)) + "); fs.symlinkSync(" + json.dumps(str(outside)) + "," +
+              json.dumps(str(parent)) + "); }")
+    monkeypatch.setattr(fs, 'NODE', fs.NODE.replace(marker, attack))
+    b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE':'example/wam:test'})
+    with b.operation():
+        fs._current.get().call('mkdir', parent / 'new-entry', mode=0o700)
+    assert (held / 'new-entry').is_dir()
+    assert not (outside / 'new-entry').exists()
+
+
 def test_private_agent_metadata_export_and_undo(world, denied_host):  # noqa: F811
     """Use the real exporter/importer/journal with the existing fake app lifecycle."""
     old, new = world["old"], world["new"]

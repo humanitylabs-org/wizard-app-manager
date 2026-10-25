@@ -28,18 +28,30 @@ const fs = require('node:fs');
 const readline = require('node:readline');
 const roots = JSON.parse(process.argv[1]);
 const path = require('node:path');
+// Container runtime is Linux. Pin every ancestor with O_DIRECTORY|O_NOFOLLOW,
+// then operate relative to its proc-fd alias. A renamed/replaced ancestor cannot
+// redirect a privileged operation; pathname lstat-then-use is not sufficient.
+let held = [];
+const dirFlags = fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW;
+function pin(fd) { held.push(fd); return fd; }
+function alias(fd) { return '/proc/self/fd/' + fd; }
 function checked(p) {
   if (typeof p !== 'string' || !path.isAbsolute(p)) throw Error('absolute path required');
   p = path.normalize(p);
   if (!roots.some(r => p === r || p.startsWith(r + '/'))) throw Error('outside backup roots');
-  // Ancestor links must not turn a confined operation into a host-tree escape.
-  let cur = '/';
-  for (const part of p.split('/').filter(Boolean).slice(0, -1)) {
-    cur = path.join(cur, part);
-    try { if (fs.lstatSync(cur).isSymbolicLink()) throw Error('symlinked backup ancestor'); }
-    catch (e) { if (e.code === 'ENOENT') break; throw e; }
-  }
-  return p;
+  const parts = p.split('/').filter(Boolean);
+  let fd = pin(fs.openSync('/',dirFlags));
+  for (const part of parts.slice(0,-1)) fd = pin(fs.openSync(alias(fd)+'/'+part,dirFlags));
+  return alias(fd)+'/'+parts.at(-1);
+}
+function directory(p) { return pin(fs.openSync(p,dirFlags)); }
+function removeTree(p) {
+  const st=fs.lstatSync(p);
+  if (!st.isDirectory()) { fs.unlinkSync(p); return; }
+  const fd=directory(p);
+  try { for (const n of fs.readdirSync(alias(fd))) removeTree(alias(fd)+'/'+n); }
+  finally { held.splice(held.indexOf(fd),1); fs.closeSync(fd); }
+  fs.rmdirSync(p);
 }
 const handles = new Map(); let next = 1;
 readline.createInterface({input:process.stdin}).on('line', line => {
@@ -52,10 +64,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     }
     switch(q.op) {
       case 'stat': case 'lstat': {
-        const s = q.op === 'stat' ? fs.statSync(p) : fs.lstatSync(p);
+        const s = fs.lstatSync(p);
         v = [s.mode,s.ino,s.dev,s.nlink,s.uid,s.gid,s.size,s.atimeMs/1000,s.mtimeMs/1000,s.ctimeMs/1000]; break;
       }
-      case 'listdir': v=fs.readdirSync(p); break;
+      case 'listdir': v=fs.readdirSync(alias(directory(p))); break;
       case 'readlink': v=fs.readlinkSync(p); break;
       case 'mkdir': fs.mkdirSync(p,{mode:q.mode}); break;
       case 'chmod': case 'chown': {
@@ -65,9 +77,9 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       }
       case 'unlink': fs.unlinkSync(p); break;
       case 'rmdir': fs.rmdirSync(p); break;
-      case 'rmtree': fs.rmSync(p,{recursive:true,force:false}); break;
+      case 'rmtree': removeTree(p); break;
       case 'rename': fs.renameSync(p,checked(q.dst)); break;
-      case 'sync': { const fd=fs.openSync(p,'r'); try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);} break; }
+      case 'sync': fs.fsyncSync(directory(p)); break;
       case 'open': {
         const flags = q.flags === 'r' ? fs.constants.O_RDONLY
           : fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC;
@@ -82,6 +94,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     }
     console.log(JSON.stringify({ok:true,value:v===undefined?null:v}));
   } catch(e) { console.log(JSON.stringify({ok:false,code:e.code||'EIO',message:e.message})); }
+  finally { for (const fd of held.reverse()) fs.closeSync(fd); held=[]; }
 });
 '''
 
