@@ -129,6 +129,26 @@ def test_private_temp_mode_before_writing(tmp_path):
         os.umask(previous)
 
 
+def test_private_fchmod_failure_uses_helper(tmp_path, denied_host, monkeypatch):
+    _, launches = denied_host
+    home, rt = tmp_path / 'wizard', tmp_path / 'runtipi'
+    home.mkdir(); rt.mkdir()
+    target = rt / 'app-data/env-temp'
+    target.parent.mkdir()
+    target.write_text('old')
+    target.chmod(0o666)
+    def denied(*a):
+        raise PermissionError('different file owner')
+    monkeypatch.setattr(os, 'fchmod', denied)
+    b = Box(home, rt, env={**os.environ, 'WAM_BACKUP_HELPER_IMAGE':'example/wam:test'})
+    with b.operation():
+        with fs.private_open(target) as f:
+            assert target.stat().st_mode & 0o777 == 0o600
+            f.write('private')
+    assert launches
+    assert target.read_text() == 'private'
+
+
 def test_private_agent_metadata_export_and_undo(world, denied_host):  # noqa: F811
     """Use the real exporter/importer/journal with the existing fake app lifecycle."""
     old, new = world["old"], world["new"]

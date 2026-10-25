@@ -264,12 +264,19 @@ def open(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None)
 def private_open(path):
     def opener(p, flags):
         fd = os.open(p, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        os.fchmod(fd, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except BaseException:
+            os.close(fd)
+            raise
         return fd
     try:
         return builtins.open(path, 'w', opener=opener)
     except PermissionError:
-        return open(path, 'w')  # root helper opens/chmods 0600 before any write
+        # Do not retry a normal owner open: it could succeed while fchmod
+        # failed on a writable file owned by another uid.
+        raw = RemoteFile(path, 'w', 0o600)
+        return io.TextIOWrapper(io.BufferedWriter(raw), encoding='utf-8')
 
 
 class Path(type(HostPath())):
