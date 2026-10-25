@@ -12,7 +12,7 @@ function harness(owner = stat()) {
   return {
     calls,
     confined: async (...args: any[]) => { calls.push(['confined', ...args]); return '/confined/data'; },
-    io: { lstat: async () => owner, chown: async (...args: any[]) => { calls.push(['chown', ...args]); } } as any,
+    io: { lstat: async () => owner, lchown: async (...args: any[]) => { calls.push(['chown', ...args]); } } as any,
   };
 }
 
@@ -33,7 +33,7 @@ describe('factory Recorder private data ownership', () => {
       const h = harness(s); await expect(prepareMainPrivateData(fixture(), h.confined, h.io)).rejects.toThrow();
       expect(h.calls.filter((c) => c[0] === 'chown')).toHaveLength(0);
     }
-    const h = harness(); h.io.chown = async () => { throw new Error('denied'); };
+    const h = harness(); h.io.lchown = async () => { throw new Error('denied'); };
     await expect(prepareMainPrivateData(fixture(), h.confined, h.io)).rejects.toThrow('denied');
   });
   test('uses existing confinement helper; refuses path validation errors', async () => {

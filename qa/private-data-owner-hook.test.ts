@@ -18,7 +18,7 @@ for (const fail of [false, true]) test(`factory ownership hook ${fail ? 'blocks 
     const s = await (original as any)(...args);
     return args[0] === folder ? Object.assign(Object.create(s), { uid: 0, gid: 0 }) : s;
   });
-  const owner = spyOn(fs, 'chown').mockImplementation(async (p, uid, gid) => {
+  const owner = spyOn(fs, 'lchown').mockImplementation(async (p: any, uid: number, gid: number) => {
     expect([p, uid, gid]).toEqual([folder, 1000, 1000]); events.push('chown');
     if (fail) throw new Error('ownership denied');
   });

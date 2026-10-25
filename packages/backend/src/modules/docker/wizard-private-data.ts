@@ -36,5 +36,7 @@ export async function prepareMainPrivateData(app: App, confined: Confined, io = 
   // Repair only the platform-created root:root case. Other existing owners need
   // an explicit migration, not a recursive or silent ownership takeover.
   if (st.uid !== 0 || st.gid !== 0) throw new Error('Private data root has an unexpected owner; refusing ownership takeover');
-  await io.chown(folder, uid, gid);
+  // Never follow a final-component symlink swapped after the confinement/stat
+  // checks. If an app races its mount root, only the link itself can change owner.
+  await io.lchown(folder, uid, gid);
 }
