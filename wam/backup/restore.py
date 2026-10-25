@@ -32,7 +32,8 @@ import os
 import shutil
 import time
 import uuid
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
@@ -77,11 +78,7 @@ def _write_json(path: Path, obj: dict) -> None:
 
 
 def _sync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    datafs.sync_dir(path)
 
 
 def _move(src: Path, dst: Path) -> None:
@@ -89,7 +86,7 @@ def _move(src: Path, dst: Path) -> None:
     if dst.exists() or dst.is_symlink():
         raise RestoreError(f"refusing to overwrite {dst}")
     try:
-        os.rename(src, dst)
+        datafs.rename(src, dst)
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
@@ -166,7 +163,7 @@ def _rm(p: Path) -> None:
     if p.is_symlink() or p.is_file():
         p.unlink(missing_ok=True)
     elif p.exists():
-        shutil.rmtree(p)
+        datafs.rmtree(p)
 
 
 # ---------------------------------------------------------------- open, verify
@@ -371,8 +368,8 @@ def stage_stream(box: Box, stream, stamp: str | None = None) -> tuple[_Restore, 
         r.journal["manifest"] = res["manifest"]
         return r, res
     except BaseException:
-        shutil.rmtree(r.root, ignore_errors=True)
-        shutil.rmtree(r.froot, ignore_errors=True)
+        datafs.rmtree(r.root, ignore_errors=True)
+        datafs.rmtree(r.froot, ignore_errors=True)
         for p in created:   # deepest first: only folders this run made
             try:
                 p.rmdir()
@@ -383,14 +380,14 @@ def stage_stream(box: Box, stream, stamp: str | None = None) -> tuple[_Restore, 
 
 def _home_entries(home: Path) -> list[str]:
     try:
-        return sorted(n for n in os.listdir(home) if not skip_home_entry(n, (home / n).is_dir()))
+        return sorted(n for n in datafs.listdir(home) if not skip_home_entry(n, (home / n).is_dir()))
     except FileNotFoundError:
         return []
 
 
 def _files_entries(root: Path) -> list[str]:
     try:
-        return sorted(n for n in os.listdir(root) if n != RESTORE_DIR)
+        return sorted(n for n in datafs.listdir(root) if n != RESTORE_DIR)
     except FileNotFoundError:
         return []
 
@@ -438,6 +435,7 @@ def check_can_import(box: Box) -> None:
                            f"half-restored box aside instead of the original")
 
 
+@datafs.with_access
 def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
                   stager=None) -> dict:
     """`stager()` (optional) replaces the file's unlock+stage with another verified source (a restic snapshot:
@@ -482,8 +480,8 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
 
 
 def discard(r: _Restore) -> None:
-    shutil.rmtree(r.root, ignore_errors=True)
-    shutil.rmtree(r.froot, ignore_errors=True)
+    datafs.rmtree(r.root, ignore_errors=True)
+    datafs.rmtree(r.froot, ignore_errors=True)
     for p in (r.files_root / RESTORE_DIR, r.box.home / "restores"):
         try:
             p.rmdir()
@@ -752,7 +750,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     # Wizard home (identity entries never come from a bundle, and the box keeps its own)
     src = stage / "wizard-os"
     if src.is_dir():
-        for n in sorted(os.listdir(src)):
+        for n in sorted(datafs.listdir(src)):
             if n in PER_MACHINE or skip_home_entry(n, (src / n).is_dir()):
                 continue
             _move(src / n, box.home / n)
@@ -781,7 +779,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
 
     if (m.get("files") or {}).get("included"):
         fs = r.froot / "stage"
-        for n in sorted(os.listdir(fs)) if fs.is_dir() else []:
+        for n in sorted(datafs.listdir(fs)) if fs.is_dir() else []:
             _move(fs / n, r.files_root / n)
         r.step(kind="placed", area="files")
 
@@ -819,8 +817,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             _start_agent(box, a)
         except (RuntipiError, HermesError) as e:
             notes.append(f"agent {k}: start failed: {e}")
-    shutil.rmtree(stage, ignore_errors=True)
-    shutil.rmtree(r.froot / "stage", ignore_errors=True)
+    datafs.rmtree(stage, ignore_errors=True)
+    datafs.rmtree(r.froot / "stage", ignore_errors=True)
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
     refused = list(p.get("refused") or [])
     receipt = {"ok": not refused, "partial": bool(refused), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
@@ -853,7 +851,7 @@ def _merge_back(held: Path, home: Path) -> None:
             continue
         dst = home / d
         dst.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for n in sorted(os.listdir(src)):
+        for n in sorted(datafs.listdir(src)):
             if not (dst / n).exists() and (src / n).is_file() and not (src / n).is_symlink():
                 shutil.copy2(src / n, dst / n)
 
@@ -866,11 +864,11 @@ def _keep_refused_secrets(held: Path, home: Path, refused: list[str]) -> None:
             def mine(n: str) -> bool:
                 return n == app_id or n.startswith(app_id + ".")
             dst = home / d
-            for n in sorted(os.listdir(dst)) if dst.is_dir() else []:
+            for n in sorted(datafs.listdir(dst)) if dst.is_dir() else []:
                 if mine(n) and not (held / d / n).exists():
                     _rm(dst / n)
             src = held / d
-            for n in sorted(os.listdir(src)) if src.is_dir() else []:
+            for n in sorted(datafs.listdir(src)) if src.is_dir() else []:
                 if mine(n) and (src / n).is_file() and not (src / n).is_symlink():
                     dst.mkdir(parents=True, exist_ok=True, mode=0o700)
                     _rm(dst / n)
@@ -915,7 +913,7 @@ def _prepare_agent_folder(r: _Restore, k: str, a: Agent) -> None:
         a.folder.mkdir(parents=True, mode=0o700)
         r.step(kind="agent_folder_created", agent=k, path=str(top or a.folder))
     fsrc = r.root / "stage" / "agents" / k / "folder"
-    for n in sorted(os.listdir(fsrc)) if fsrc.is_dir() else []:
+    for n in sorted(datafs.listdir(fsrc)) if fsrc.is_dir() else []:
         if not (a.folder / n).exists():
             _move(fsrc / n, a.folder / n)
     a.home.mkdir(parents=True, exist_ok=True)
@@ -971,6 +969,7 @@ def last_restore(box: Box) -> tuple[Path, dict]:
         raise RestoreError("there is no restore to undo or activate on this box") from None
 
 
+@datafs.with_access
 def undo(box: Box) -> dict:
     try:
         return _undo(box)
@@ -1033,7 +1032,7 @@ def _undo(box: Box) -> dict:
         if "wizard-os" in areas:
             for n in _home_entries(box.home):
                 _move(box.home / n, undone / "wizard-os" / n)
-            for n in sorted(os.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
+            for n in sorted(datafs.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
                 _move(before / "wizard-os" / n, box.home / n)
         # agents
         for k, a in targets.items():
@@ -1058,7 +1057,7 @@ def _undo(box: Box) -> dict:
             for n in _files_entries(files_root):
                 _move(files_root / n, froot / "undone" / n)
             fb = froot / "before"
-            for n in sorted(os.listdir(fb)) if fb.is_dir() else []:
+            for n in sorted(datafs.listdir(fb)) if fb.is_dir() else []:
                 _move(fb / n, files_root / n)
     # apps: uninstall what the restore installed, put back what it replaced
     done = {s["urn"] for s in steps if s["kind"] == "app_installed"}
@@ -1157,11 +1156,11 @@ def _undo(box: Box) -> dict:
     _write_json(root / "journal.json", j)
     # A mismatched undo remains retryable, with every recovery copy retained.
     if not mismatch:
-        shutil.rmtree(root / "stage", ignore_errors=True)
-        shutil.rmtree(froot / "stage", ignore_errors=True)
-        shutil.rmtree(undone, ignore_errors=True)
-        shutil.rmtree(before, ignore_errors=True)
-        shutil.rmtree(froot, ignore_errors=True)
+        datafs.rmtree(root / "stage", ignore_errors=True)
+        datafs.rmtree(froot / "stage", ignore_errors=True)
+        datafs.rmtree(undone, ignore_errors=True)
+        datafs.rmtree(before, ignore_errors=True)
+        datafs.rmtree(froot, ignore_errors=True)
         for p in (files_root / RESTORE_DIR,):
             try:
                 p.rmdir()
@@ -1177,7 +1176,7 @@ def _walk_back(held: Path) -> list[str]:
     out = []
 
     def walk(d: Path, prefix: str) -> None:
-        for n in sorted(os.listdir(d)) if d.is_dir() else []:
+        for n in sorted(datafs.listdir(d)) if d.is_dir() else []:
             rel = prefix + n
             if agentlib._keep_parent(rel) and (d / n).is_dir():
                 walk(d / n, rel + "/")
