@@ -334,14 +334,23 @@ enable_linger() {
       sleep "$((attempt * 2))"
     fi
   done
-  # logind can stay unresponsive for minutes on a fresh server (apt upgrades restarting
-  # systemd units). Linger is only a flag file plus the user's manager: write the flag
-  # the way logind does and start user@UID directly; logind adopts it when it answers.
+  # logind can stay unresponsive for minutes after fresh-server apt upgrades.
+  # user@UID pulls in user-runtime-dir@UID and the user's sockets.target (including
+  # dbus.socket on supported Ubuntu/Debian hosts); keep the later bus-socket wait.
+  # Only root may bypass logind. Restrict this fallback to ordinary account names:
+  # logind C-escapes unusual names in its linger filename rather than using them raw.
   local uid; uid="$(id -u "$user" 2>/dev/null)" || uid=""
-  if [ -n "$uid" ] && [ "$(id -u)" -eq 0 ] && install -d -m 0755 /var/lib/systemd/linger \
-     && touch "/var/lib/systemd/linger/$user" && systemctl start "user@$uid.service"; then
-    printf 'logind did not answer; enabled linger for %s directly\n' "$user" >&2
-    return 0
+  if [ -n "$uid" ] && [ "$(id -u)" -eq 0 ] && [[ "$user" =~ ^[a-zA-Z0-9_-]+\$?$ ]] \
+     && install -d -m 0755 /var/lib/systemd/linger && touch "/var/lib/systemd/linger/$user"; then
+    # mkdir/touch do not use logind's SELinux label-aware helpers. Restore policy
+    # labels when available, and never claim success if that or manager start fails.
+    if command -v restorecon >/dev/null 2>&1; then
+      restorecon /var/lib/systemd/linger "/var/lib/systemd/linger/$user" || return "$rc"
+    fi
+    if systemctl start "user@$uid.service"; then
+      printf 'logind did not answer; enabled linger for %s directly\n' "$user" >&2
+      return 0
+    fi
   fi
   printf 'Could not enable linger for %s after 4 attempts\n' "$user" >&2
   return "$rc"
