@@ -68,6 +68,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
         const flags = q.flags === 'r' ? fs.constants.O_RDONLY
           : fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC;
         const fd=fs.openSync(p,flags|fs.constants.O_NOFOLLOW,q.mode);
+        if (q.flags !== 'r') fs.fchmodSync(fd,q.mode);
         v=next++; handles.set(v,fd); break;
       }
       case 'read': { const b=Buffer.alloc(Math.min(q.size,1048576)); const n=fs.readSync(handles.get(q.handle),b,0,b.length,null); v=b.subarray(0,n).toString('base64'); break; }
@@ -258,6 +259,17 @@ def open(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None)
         buffered = io.BufferedReader(raw) if mode.startswith('r') else io.BufferedWriter(raw)
         return buffered if 'b' in mode else io.TextIOWrapper(buffered, encoding=encoding or 'utf-8', errors=errors,
                                                            newline=newline)
+
+
+def private_open(path):
+    def opener(p, flags):
+        fd = os.open(p, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        os.fchmod(fd, 0o600)
+        return fd
+    try:
+        return builtins.open(path, 'w', opener=opener)
+    except PermissionError:
+        return open(path, 'w')  # root helper opens/chmods 0600 before any write
 
 
 class Path(type(HostPath())):

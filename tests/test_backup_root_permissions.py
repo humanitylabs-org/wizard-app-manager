@@ -29,6 +29,7 @@ def denied_host(monkeypatch):
         if '--entrypoint' in cmd and cmd[cmd.index('--entrypoint') + 1] == 'node':
             launches.append(cmd)
             assert cmd[:8] == ['docker', 'run', '--rm', '-i', '--network', 'none', '-u', '0:0']
+            assert cmd.count('-v') == 1  # cross-bind rename would be EXDEV on Linux
             assert not any('docker.sock' in arg for arg in cmd)
             assert 'WIZARD_BACKUP_KEY' not in kw['env']
             return real_popen([node, '-e', fs.NODE, cmd[-1]], **kw)
@@ -105,6 +106,27 @@ def test_helper_refuses_escape_and_preserves_data(tmp_path, denied_host):
             (b.runtipi_root / 'app-data/escape').read_text()
         with pytest.raises(PermissionError, match='outside'):
             fs._current.get().call('rename', root / 'escape', dst=str(secret))
+        dangling = root / 'dangling'
+        missing = tmp_path / 'must-not-be-created'
+        dangling.symlink_to(missing)
+        with pytest.raises(OSError):
+            with fs.private_open(dangling) as f:
+                f.write('private')
+        assert not missing.exists()
+
+
+def test_private_temp_mode_before_writing(tmp_path):
+    target = tmp_path / 'temporary-env'
+    previous = os.umask(0o022)
+    try:
+        with fs.private_open(target) as f:
+            assert target.stat().st_mode & 0o777 == 0o600
+            f.write('SECRET=private')
+        target.chmod(0o644)
+        with fs.private_open(target):
+            assert target.stat().st_mode & 0o777 == 0o600
+    finally:
+        os.umask(previous)
 
 
 def test_private_agent_metadata_export_and_undo(world, denied_host):  # noqa: F811

@@ -244,7 +244,7 @@ def env_merge(home: Path, wizard_lines: list[str]) -> list[str]:
     keep = [ln for ln in lines if not WIZARD_ENV.match(ln)]
     text = "\n".join(keep + ["", "# Wizard OS (this box's wiring, kept by wam backup import)"] + wizard_lines) + "\n"
     tmp = envp.with_name(".env.wam-import")
-    with tmp.open("w") as f:
+    with datafs.private_open(tmp) as f:
         f.write(text)
     owner = envp.stat() if envp.exists() else home.stat()
     datafs.chown(tmp, owner.st_uid, owner.st_gid)
