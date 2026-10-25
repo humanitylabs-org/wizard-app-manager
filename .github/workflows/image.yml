@@ -7,9 +7,9 @@ name: image
 on:
   push:
     branches: [main]
-    paths: ["packages/**", "Dockerfile", "package.json", "bun.lock", "turbo.json", ".github/workflows/image.yml"]
+    paths: ["packages/**", "Dockerfile", ".dockerignore", "package.json", "bun.lock", "turbo.json", "wam/hermes-lock.json", "releases/hermes-lock.json", ".github/workflows/image.yml"]
   pull_request:
-    paths: ["packages/**", "Dockerfile", "package.json", "bun.lock", "turbo.json", ".github/workflows/image.yml"]
+    paths: ["packages/**", "Dockerfile", ".dockerignore", "package.json", "bun.lock", "turbo.json", "wam/hermes-lock.json", "releases/hermes-lock.json", ".github/workflows/image.yml"]
   workflow_dispatch: {}
 
 permissions:

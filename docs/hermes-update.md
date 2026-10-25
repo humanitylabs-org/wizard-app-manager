@@ -14,8 +14,22 @@ or queue changes. The CLI forwards the approved id as optional `hermesPromotion`
 the backend validates it against its own bundled policy. The index store forces
 the locked source even on legacy installs without `.wizard-selection`, and rejects
 an out-of-lock owner selection. Bulk updates still update unrelated apps.
-The backend Docker build includes `wam/hermes-lock.json`: promotion snapshots
-that reuse old images must include that file in their `image_inputs` comparison.
+The backend Docker build includes `wam/hermes-lock.json`. Both copies of the
+lock (and `.dockerignore`) trigger image builds on push and pull request. A
+promotion must pin the newly built image, not a prior frozen-policy image.
+
+For future release snapshots that reuse an image, `images.wizard-app-manager.image_inputs`
+must cover **all** image workflow paths, including the policy, for example:
+
+```json
+["packages/**", "Dockerfile", ".dockerignore", "package.json", "bun.lock", "turbo.json", "wam/hermes-lock.json", "releases/hermes-lock.json", ".github/workflows/image.yml"]
+```
+
+The canonical wizard-os `tools/check_release.py` reads the pinned image workflow's
+paths and rejects an `image_inputs` list omitting any of them, then compares those
+inputs between image source and component commits. Its workflow-file comparison
+also prevents reusing an older image across this trigger change. Keep the inline
+workflow paths parseable by that checker; never rewrite historical manifests.
 
 The initial freeze preserves the existing September baseline, whose acceptance
 record has a known compacted-history visibility limitation. It is not a newly

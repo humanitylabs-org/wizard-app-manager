@@ -133,6 +133,32 @@ def test_runtime_client_forwards_only_explicit_approved_promotion(monkeypatch):
     assert calls[-1][0][2] == {'performBackup': True, 'hermesPromotion': 'fixture-approved'}
 
 
+@pytest.mark.parametrize('event', ['push', 'pull_request'])
+@pytest.mark.parametrize('policy_input', ['wam/hermes-lock.json', 'releases/hermes-lock.json', '.dockerignore'])
+def test_backend_policy_inputs_trigger_image_rebuild(event, policy_input):
+    import fnmatch
+    import yaml
+    root = Path(__file__).resolve().parents[1]
+    # BaseLoader keeps GitHub's `on` key a string (not YAML 1.1 boolean True).
+    workflow = yaml.load((root / '.github/workflows/image.yml').read_text(), Loader=yaml.BaseLoader)
+    paths = workflow['on'][event]['paths']
+    assert any(fnmatch.fnmatch(policy_input, pattern) for pattern in paths)
+
+
+def test_future_release_image_inputs_cover_workflow_and_policy():
+    import re
+    root = Path(__file__).resolve().parents[1]
+    text = (root / '.github/workflows/image.yml').read_text()
+    # Same inline paths format consumed by wizard-os check_release.workflow_paths.
+    required = {x.strip().strip('\"\'') for m in re.finditer(r'^\s*paths:\s*\[([^\]]*)\]', text, re.M)
+                for x in m.group(1).split(',') if x.strip()}
+    match = re.search(r'```json\n(.*?)\n```', (root / 'docs/hermes-update.md').read_text(), re.S)
+    assert match, 'future release image_inputs must have a concrete policy-aware example'
+    example = json.loads(match.group(1))
+    assert required <= set(example)
+    assert {'wam/hermes-lock.json', 'releases/hermes-lock.json', '.dockerignore'} <= required
+
+
 def test_public_lock_and_packaged_lock_are_identical():
     root = Path(__file__).resolve().parents[1]
     assert (root / 'releases/hermes-lock.json').read_bytes() == (root / 'wam/hermes-lock.json').read_bytes()
