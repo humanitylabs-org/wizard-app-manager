@@ -6,6 +6,7 @@ import { beforeEach, afterEach, describe, it, expect } from 'vitest';
 import * as yaml from 'yaml';
 import { WizardStorage } from '../wizard-storage';
 import { mountAppGrants, providerEndpoint } from '../wizard-app-grants';
+import crossStore from './fixtures/grants-cross-store.json';
 
 let root: string;
 let installed: { appName: string; appStoreSlug: string }[];
@@ -15,14 +16,14 @@ const comp = {
     main: { image: 'example', 'x-runtipi': { is_main: true, internal_port: 8799 }, networks: { main: { aliases: ['wizard-connectors-calendar'] } } },
   },
 };
-const data = (id: string) => path.join(root, 'app-data/wizardapps', id);
-const file = async (id: string) => JSON.parse(await fs.readFile(path.join(data(id), 'wizard/grants.json'), 'utf8'));
-async function install(id: string, fields: any = {}, compose: any = comp) {
-  const dir = path.join(root, 'apps/wizardapps', id);
+const data = (id: string, slug = 'wizardapps') => path.join(root, 'app-data', slug, id);
+const file = async (id: string, slug = 'wizardapps') => JSON.parse(await fs.readFile(path.join(data(id, slug), 'wizard/grants.json'), 'utf8'));
+async function install(id: string, fields: any = {}, compose: any = comp, slug = 'wizardapps') {
+  const dir = path.join(root, 'apps', slug, id);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'wizard.md'), `---\n${yaml.stringify({ id, ...fields })}---\n`);
   await fs.writeFile(path.join(dir, 'docker-compose.yml'), yaml.stringify(compose));
-  installed.push({ appName: id, appStoreSlug: 'wizardapps' });
+  installed.push({ appName: id, appStoreSlug: slug });
 }
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), 'app-grants-'));
@@ -37,6 +38,161 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 describe('app grants layer 2', () => {
+  it('adopts the cross-store owner topology without slot replacement or key/endpoint/hash loss', async () => {
+    // Shapes match the private migration checkpoint; all keys/hashes are dummy.
+    // Status is included deliberately: stopped installed providers still exist.
+    for (const { id, store: slug, status, ...fields } of crossStore.apps) {
+      await install(id, { ...fields, status }, comp, slug);
+    }
+    for (const [id, doc] of [
+      ['wizard-connection-router', crossStore.router],
+      ['wizard-tinfoil', crossStore.tinfoil],
+    ] as const) {
+      await fs.mkdir(path.join(data(id), 'wizard'), { recursive: true });
+      await fs.writeFile(path.join(data(id), 'wizard/grants.json'), JSON.stringify(doc));
+    }
+    const bridgeRoot = path.join(root, 'repos/wizardapps/apps/.calendar-grants');
+    // The core provider keeps its own legacy /run/router-grants mount.
+    const claudeLegacy = path.join(data('wizard-claude', 'core'), 'router-grants');
+    await fs.mkdir(claudeLegacy, { recursive: true });
+    await fs.writeFile(path.join(claudeLegacy, 'grants.json'), JSON.stringify(crossStore.claude));
+    const claudeConfig = path.join(root, 'user-config/core/wizard-claude');
+    await fs.mkdir(claudeConfig, { recursive: true });
+    await fs.writeFile(
+      path.join(claudeConfig, 'docker-compose.yml'),
+      yaml.stringify({
+        services: {
+          'wizard-claude-engine': {
+            environment: { WIZARD_GRANTS_FILE: '/run/router-grants/grants.json' },
+            volumes: [`${claudeLegacy}:/run/router-grants:ro`],
+          },
+        },
+      }),
+    );
+    for (const [id, role, doc] of [
+      ['wizard-calendar', 'consumer', crossStore.calendar],
+      ['wizard-connectors', 'provider', crossStore.connectors],
+    ] as const) {
+      const bridge = path.join(bridgeRoot, role);
+      await fs.mkdir(bridge, { recursive: true });
+      await fs.writeFile(path.join(bridge, 'grants.json'), JSON.stringify(doc));
+      const config = path.join(root, 'user-config/wizardapps', id);
+      await fs.mkdir(config, { recursive: true });
+      await fs.writeFile(path.join(config, 'docker-compose.yml'), yaml.stringify({ services: { [id]: { volumes: [`${bridge}:/wizard:ro`] } } }));
+    }
+    for (let boot = 0; boot < 2; boot++) {
+      await store.reconcile();
+      expect(await file('wizard-connection-router')).toEqual(crossStore.router);
+      expect(await file('wizard-tinfoil')).toMatchObject({ ...crossStore.tinfoil, outgoing: {} });
+      expect((await file('wizard-tinfoil')).incoming).toEqual(crossStore.tinfoil.incoming);
+      expect(await file('wizard-calendar')).toEqual(crossStore.calendar);
+      const connectors = await file('wizard-connectors');
+      expect(connectors.incoming).toEqual([
+        ...crossStore.connectors.incoming,
+        { from: 'wizard-calendar', sha256: crossStore.connectors.incoming[0]?.sha256 },
+      ]);
+      expect(await file('wizard-claude', 'core')).toMatchObject({
+        incoming: [
+          { from: 'wizard-connection-router', sha256: createHash('sha256').update(crossStore.router.outgoing['wizard-claude']).digest('hex') },
+        ],
+      });
+      expect((await file('wizard-chatgpt', 'core')).incoming).toEqual([]);
+      expect(JSON.parse(await fs.readFile(path.join(claudeLegacy, 'grants.json'), 'utf8'))).toEqual({
+        ...crossStore.claude,
+        outgoing: {},
+        provider_endpoints: {},
+      });
+      const grants = (await store.readGrants()).grants;
+      expect(grants).toHaveLength(2);
+      expect(grants).toContainEqual(expect.objectContaining({ from: 'wizard-connection-router', to: 'wizard-claude', approved: 'owner' }));
+      expect(grants).toContainEqual(expect.objectContaining({ from: 'wizard-calendar', to: 'wizard-connectors', approved: 'owner' }));
+      expect(grants.some((g) => g.to === 'slot:ai-connection')).toBe(false);
+      expect(await store.proposed()).toEqual([]);
+      expect(JSON.parse(await fs.readFile(path.join(bridgeRoot, 'consumer/grants.json'), 'utf8'))).toEqual(crossStore.calendar);
+      expect(JSON.parse(await fs.readFile(path.join(bridgeRoot, 'provider/grants.json'), 'utf8'))).toEqual(connectors);
+    }
+    // Explicit revoke must still remove both the adopted direct key and hash.
+    await store.change({ kind: 'app', from: 'wizard-connection-router', to: 'wizard-claude' }, false);
+    expect((await file('wizard-connection-router')).outgoing).not.toHaveProperty('wizard-claude');
+    expect((await file('wizard-claude', 'core')).incoming).toEqual([]);
+    expect(JSON.parse(await fs.readFile(path.join(claudeLegacy, 'grants.json'), 'utf8')).incoming).toEqual([]);
+    expect((await file('wizard-tinfoil')).incoming).toEqual(crossStore.tinfoil.incoming);
+  });
+  it('defaults only missing outgoing and preserves provider-only extension fields and verification rows', async () => {
+    await install('wizard-tinfoil');
+    const doc = {
+      ...crossStore.tinfoil,
+      owner: { note: '  literal\\nvalue  ', enabled: false },
+      incoming: [{ ...crossStore.tinfoil.incoming[0], owner_extension: { scope: 'original' } }],
+    };
+    await fs.mkdir(path.join(data('wizard-tinfoil'), 'wizard'), { recursive: true });
+    await fs.writeFile(path.join(data('wizard-tinfoil'), 'wizard/grants.json'), JSON.stringify(doc));
+    await store.reconcile();
+    expect(await file('wizard-tinfoil')).toEqual({ ...doc, outgoing: {}, provider_endpoints: {} });
+  });
+  it.each([null, [], '', 7, false, { provider: 7 }, { provider: '' }])(
+    'rejects malformed outgoing %j without changing the file',
+    async (outgoing) => {
+      await install('wizard-tinfoil');
+      const target = path.join(data('wizard-tinfoil'), 'wizard/grants.json');
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      const bytes = JSON.stringify({ ...crossStore.tinfoil, outgoing });
+      await fs.writeFile(target, bytes);
+      await expect(store.reconcile()).rejects.toThrow('Invalid app grants file');
+      expect(await fs.readFile(target, 'utf8')).toBe(bytes);
+    },
+  );
+  it.each([null, [], '', 7, { provider: false }])('rejects malformed endpoint maps %j', async (provider_endpoints) => {
+    await install('wizard-tinfoil');
+    const target = path.join(data('wizard-tinfoil'), 'wizard/grants.json');
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const bytes = JSON.stringify({ ...crossStore.tinfoil, provider_endpoints });
+    await fs.writeFile(target, bytes);
+    await expect(store.reconcile()).rejects.toThrow('Invalid app grants file');
+    expect(await fs.readFile(target, 'utf8')).toBe(bytes);
+  });
+  it('keeps unresolved and opaque owner outgoing keys and endpoints until explicit revoke', async () => {
+    await install('consumer-one', {}, comp, 'core');
+    const target = path.join(data('consumer-one', 'core'), 'wizard/grants.json');
+    const doc = {
+      outgoing: { 'missing-provider': 'dummy-missing-key', 'owner.alias': 'dummy-opaque-key' },
+      incoming: [],
+      provider_endpoints: { 'missing-provider': 'http://owner:42', 'owner.alias': 'http://owner:43' },
+      enforce: true,
+    };
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify(doc));
+    await store.reconcile();
+    await store.reconcile();
+    expect(await file('consumer-one', 'core')).toEqual(doc);
+    await store.change({ kind: 'app', from: 'consumer-one', to: 'missing-provider' }, false);
+    expect(await file('consumer-one', 'core')).toMatchObject({ outgoing: { 'owner.alias': 'dummy-opaque-key' } });
+    expect((await file('consumer-one', 'core')).outgoing).not.toHaveProperty('missing-provider');
+  });
+  it('does not overwrite duplicate consumer installs in different stores', async () => {
+    await install('wizard-connectors');
+    for (const slug of ['wizardapps', 'wizard']) {
+      await install('consumer-one', { uses: ['wizard-connectors'] }, comp, slug);
+      await fs.mkdir(path.join(data('consumer-one', slug), 'wizard'), { recursive: true });
+      await fs.writeFile(
+        path.join(data('consumer-one', slug), 'wizard/grants.json'),
+        JSON.stringify({
+          outgoing: { 'wizard-connectors': `dummy-key-${slug}` },
+          incoming: [],
+          enforce: true,
+        }),
+      );
+    }
+    await store.reconcile();
+    await store.reconcile();
+    for (const slug of ['wizardapps', 'wizard']) {
+      expect((await file('consumer-one', slug)).outgoing['wizard-connectors']).toBe(`dummy-key-${slug}`);
+      expect((await file('wizard-connectors')).incoming).toContainEqual({
+        from: 'consumer-one',
+        sha256: createHash('sha256').update(`dummy-key-${slug}`).digest('hex'),
+      });
+    }
+  });
   it('seeds uses with unique 32-byte keys, endpoints, hashes; boot/restart retains keys and mirrors only metadata', async () => {
     await install('wizard-connectors');
     await install('wizard-calendar', { uses: ['wizard-connectors'] });

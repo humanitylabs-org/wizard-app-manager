@@ -1,0 +1,39 @@
+{
+  "apps": [
+    { "id": "wizard-connection-router", "store": "wizardapps", "status": "running", "uses": ["ai-connection"], "provides": ["connection-router"] },
+    { "id": "wizard-claude", "store": "core", "status": "running", "provides": ["ai-connection", "claude-subscription"] },
+    { "id": "wizard-chatgpt", "store": "core", "status": "running", "provides": ["ai-connection", "chatgpt-subscription"] },
+    { "id": "wizard-tinfoil", "store": "wizardapps", "status": "stopped", "provides": ["ai-connection"] },
+    { "id": "wizard-calendar", "store": "wizardapps", "status": "running", "uses": ["wizard-connectors"] },
+    { "id": "wizard-connectors", "store": "wizardapps", "status": "running", "provides": ["connector-status", "simulated-private-summary"] }
+  ],
+  "router": {
+    "enforce": true,
+    "incoming": [{ "from": "wisdom", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    "outgoing": { "wizard-claude": "dummy-router-claude-key-not-a-secret" },
+    "provider_endpoints": {
+      "wizard-claude": "http://127.0.0.1:18799",
+      "wizard-chatgpt": "http://127.0.0.1:18801"
+    }
+  },
+  "tinfoil": {
+    "enforce": true,
+    "incoming": [{ "from": "wizard-connection-router", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }]
+  },
+  "claude": {
+    "enforce": true,
+    "incoming": [{ "from": "wizard-connection-router", "sha256": "563e23c6c091d5bbbd0002f8d61f8e5f912ac3320f8ed33d590e5e327e4ab580" }]
+  },
+  "calendar": {
+    "outgoing": { "wizard-connectors": "dummy-calendar-bridge-key-not-a-secret" },
+    "incoming": [],
+    "provider_endpoints": { "wizard-connectors": "http://wizard-connectors-calendar:8799" },
+    "enforce": true
+  },
+  "connectors": {
+    "outgoing": {},
+    "incoming": [{ "from": "calendar", "sha256": "33c942bca618b67c90c6dc69905cfc161f696d17514459e227d4c80c0ad33022" }],
+    "provider_endpoints": {},
+    "enforce": true
+  }
+}
