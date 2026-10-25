@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from wam.backup import agents, bundle, filesystem as fs, fmt, restore
+from wam.backup import agents, bundle, crypto, filesystem as fs, fmt, restore
 from wam.backup.box import Box
 from test_backup_flow import _export, isolated, world  # noqa: F401
 
@@ -297,8 +297,20 @@ def test_other_root_owned_runtipi_trees_export_and_undo(world, denied_host, part
     from wam.backup.box import box_digest
     old, new = world['old'], world['new']
     protect, _ = denied_host
+    from wam.backup import versions
+    packages = [(fake.box(), fake.runtipi / part / 'wizardapps' / 'files-app')
+                for fake in (old, new)] if part == 'apps' else [
+                    (fake.box(), fake.runtipi / 'repos/wizardapps/apps/agent-research')
+                    for fake in (old, new)] if part == 'repos' else []
+    expected = [versions.package_release(pkg) for _, pkg in packages]
+    assert all(rec is not None for rec in expected)
     for fake in (old, new):
         protect(fake.runtipi / part)
+    # Pathlib on newer Python can silently turn PermissionError into False;
+    # do not let a denied package become an unknown-version restore warning.
+    for (box, pkg), rec in zip(packages, expected):
+        with box.operation():
+            assert versions.package_release(pkg) == rec
     before = box_digest(new.box())
     out, exported = _export(world)
     assert exported['ok']
@@ -309,7 +321,7 @@ def test_other_root_owned_runtipi_trees_export_and_undo(world, denied_host, part
     assert box_digest(new.box()) == before
 
 
-def test_verify_and_import_open_backup_inside_private_media(world, denied_host):
+def test_verify_and_import_open_backup_inside_private_media(world, denied_host, monkeypatch):
     # Keys and bundle metadata are authenticated through the same streaming pass;
     # verify must not bypass Access just because it does not write a restore.
     out, _ = _export(world)
@@ -318,9 +330,15 @@ def test_verify_and_import_open_backup_inside_private_media(world, denied_host):
     folder.mkdir()
     carried = folder / out.name
     shutil.copyfile(out, carried)
+    keyfile = folder / 'recovery-key'
+    keyfile.write_text(crypto.encode_recovery_key(world['key']))
     protect, launches = denied_host
     protect(folder)
-    keys = fmt.Keys(recovery=[world['key']])
+    from wam.backup import cli
+    import sys
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    keys = cli._keys_to_open(new, str(keyfile), carried)
+    assert keys.recovery == [world['key']]
     assert restore.verify(new, carried, keys)['ok']
     assert restore.import_bundle(new, carried, keys, yes=True)['ok']
     assert restore.undo(new)['digest_match']

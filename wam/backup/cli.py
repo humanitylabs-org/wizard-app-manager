@@ -10,7 +10,8 @@ import argparse
 import json
 import sys
 from contextlib import contextmanager
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from . import capture, crypto, fmt, keys as keylib, restic, restore, schedule, snapshot
 from .box import Box, HermesError, RuntipiError, SpaceError, human
@@ -186,13 +187,14 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     return code
 
 
+@datafs.with_access
 def _keys_to_open(box: Box, key_file: str | None, path: Path) -> fmt.Keys:
     """Every key given, plus this box's own. In a terminal, when none of them opens the file (a backup from another
     box), ask for its recovery key or passphrase."""
     ks = keylib.gather(box.home, key_file, env=box.env, prompt=False)
     if sys.stdin.isatty():
         try:
-            with open(path, "rb") as f:
+            with datafs.open(path, "rb") as f:
                 header, signed, mac = fmt.read_header(f)
                 fmt.unlock(header, signed, mac, ks)
         except fmt.WrongKey:

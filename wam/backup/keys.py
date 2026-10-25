@@ -14,7 +14,7 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
+from .filesystem import Path
 
 from . import crypto
 from .fmt import Keys
