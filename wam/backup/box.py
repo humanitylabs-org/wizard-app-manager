@@ -26,7 +26,8 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from .. import alongside, registry
 from ..runtipi import Runtipi, RuntipiError, read_env
@@ -72,6 +73,11 @@ class Agent:
     urn: str | None = None           # the Runtipi app for a container agent
     folder: Path | None = None       # extra agents: <wizard home>/agents/<id>
     meta: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.home = Path(self.home)
+        if self.folder is not None:
+            self.folder = Path(self.folder)
 
     def describe(self) -> dict:
         return {"id": self.id, "main": self.main, "runtime": self.runtime, "app": (self.urn or "").split(":")[0] or None,
@@ -184,6 +190,7 @@ class Box:
             return Path(mp) / "media"
         return self.runtipi_root / "media"
 
+    @datafs.with_access
     def agents_root(self) -> Path:
         """Where extra agents' folders live: the Agent Service keeps them in its own app data (its /state volume:
         app-data/<store>/wizard-agent-service/data/wizard-os/agents, or the same path under the pre-split bundle).
@@ -207,6 +214,9 @@ class Box:
             from .appdata import AppData
             self._appdata = AppData(self)
         return self._appdata
+
+    def operation(self):
+        return datafs.operation(self)
 
     def work_dir(self) -> Path:
         d = Path(self.env.get("WAM_BACKUP_WORK") or self.home / "backup-work")
@@ -260,6 +270,7 @@ class Box:
         return out
 
     # ------------------------------------------------------------ agents
+    @datafs.with_access
     def agents(self, installed: dict[str, dict] | None = None) -> list[Agent]:
         out: list[Agent] = []
         st = alongside.load(self.home)
@@ -410,7 +421,7 @@ class HermesRunner:
 
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:
-        st = os.stat(agent.home)
+        st = datafs.stat(agent.home)
         cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
         for src, dst, ro in mounts:
@@ -546,7 +557,7 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
     root = Path(root)
     if not root.exists():
         return h.hexdigest(), 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in datafs.walk(root):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(root).as_posix()
         dirnames.sort()
@@ -565,19 +576,19 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
             if hide and name in keep and hide(rel):
                 continue
             try:
-                st = os.lstat(p)
+                st = datafs.lstat(p)
             except FileNotFoundError:
                 continue
             n += 1
             line = f"{rel}\0{stat.S_IFMT(st.st_mode)}\0{stat.S_IMODE(st.st_mode) if modes else ''}"
             if stat.S_ISLNK(st.st_mode):
-                line += "\0" + os.readlink(p)
+                line += "\0" + datafs.readlink(p)
             elif stat.S_ISREG(st.st_mode):
                 line += f"\0{st.st_size}"
                 if content or st.st_size <= DIGEST_HASH_MAX:
                     try:
                         fh = hashlib.sha256()
-                        with open(p, "rb") as f:
+                        with datafs.open(p, "rb") as f:
                             while b := f.read(1 << 20):
                                 fh.update(b)
                         line += "\0" + fh.hexdigest()
@@ -596,6 +607,7 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
     return h.hexdigest(), n
 
 
+@datafs.with_access
 def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, owners=True) -> dict:
     """What an import may change, as digests: the Wizard home (owner state), Runtipi app-data/user-config/apps, the
     owner's files and each agent home. Regenerated and engine-owned entries are left out."""

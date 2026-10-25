@@ -21,7 +21,8 @@ import os
 import re
 import shutil
 import zipfile
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 import yaml
 
@@ -66,8 +67,9 @@ def _keep_parent(rel: str) -> bool:
 def root_files(root: Path) -> list[str]:
     """The Agent Service's own files beside the agent folders (`.agent-grants.json`, `.main-agent.json`,
     `.apps-seen.json`): plain top-level files of the agents root, without temporary or lock files."""
+    root = Path(root)
     try:
-        names = sorted(os.listdir(root))
+        names = sorted(datafs.listdir(root))
     except (FileNotFoundError, NotADirectoryError):
         return []
     out = []
@@ -86,7 +88,7 @@ def movable_entries(home: Path) -> list[str]:
 
     def walk(d: Path, prefix: str) -> None:
         try:
-            names = sorted(os.listdir(d))
+            names = sorted(datafs.listdir(d))
         except FileNotFoundError:
             return
         for n in names:
@@ -242,10 +244,12 @@ def env_merge(home: Path, wizard_lines: list[str]) -> list[str]:
     keep = [ln for ln in lines if not WIZARD_ENV.match(ln)]
     text = "\n".join(keep + ["", "# Wizard OS (this box's wiring, kept by wam backup import)"] + wizard_lines) + "\n"
     tmp = envp.with_name(".env.wam-import")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with datafs.private_open(tmp) as f:
         f.write(text)
-    os.replace(tmp, envp)
+    owner = envp.stat() if envp.exists() else home.stat()
+    datafs.chown(tmp, owner.st_uid, owner.st_gid)
+    tmp.chmod(0o600)
+    datafs.rename(tmp, envp)
     return replaced
 
 
