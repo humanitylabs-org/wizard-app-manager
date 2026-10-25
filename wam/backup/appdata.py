@@ -220,8 +220,20 @@ set -eu
 for p in "$RT/app-data" "$RT/app-data/$STORE" "$RT/app-data/$STORE/$APP"; do
   [ ! -L "$p" ] || { echo "symlinked app data destination" >&2; exit 1; }
 done
+# A killed swap may have renamed the original aside but not published its
+# replacement. Recover it BEFORE inspecting kept paths or cleaning staging.
+recover_swap() {
+  if [ ! -e "$1" ] && [ ! -L "$1" ] && { [ -e "$1.wizard-old" ] || [ -L "$1.wizard-old" ]; }; then
+    mv "$1.wizard-old" "$1"
+    sync "$(dirname "$1")"
+  fi
+}
+recover_swap "$RT/app-data/$STORE/$APP"
+recover_swap "$RT/app-data/$STORE/$APP/data"
+recover_swap "$RT/apps/$STORE/$APP"
+recover_swap "$RT/user-config/$STORE/$APP"
 S="$RT/app-data/$STORE/.$APP.wizard-new"
-trap 'rm -rf "$S"' EXIT
+trap 'recover_swap "$RT/app-data/$STORE/$APP"; recover_swap "$RT/app-data/$STORE/$APP/data"; recover_swap "$RT/apps/$STORE/$APP"; recover_swap "$RT/user-config/$STORE/$APP"; rm -rf "$S"' EXIT
 rm -rf "$S"
 mkdir -p "$S"
 chmod 700 "$S"
@@ -249,15 +261,26 @@ if [ -d "$S/app-data" ]; then
     if [ -e "$live/$e" ] || [ -L "$live/$e" ]; then
       mkdir -p "$(dirname "$S/app-data/$e")"
       rm -rf "$S/app-data/$e"
-      mv "$live/$e" "$S/app-data/$e"
+      # Never move the only copy into cleanup-on-error staging. A failed
+      # extraction/swap must leave destination-only agents/identity intact.
+      cp -a "$live/$e" "$S/app-data/$e"
     fi
   done
+  # Flush copied files and bottom-up directory entries, not the entire host.
+  find "$S/app-data" -type f -exec sync {} +
+  find "$S/app-data" -depth -type d -exec sync {} +
 fi
 swap() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$2")"
-  if [ -e "$2" ] || [ -L "$2" ]; then rm -rf "$2.wizard-old"; mv "$2" "$2.wizard-old"; fi
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    rm -rf "$2.wizard-old"
+    mv "$2" "$2.wizard-old"
+    sync "$(dirname "$2")"
+  fi
   mv "$1" "$2"
+  # Publish copied kept data before deleting its original tree.
+  sync "$(dirname "$2")"
   rm -rf "$2.wizard-old"
 }
 if [ "$DATA_ONLY" = "1" ]; then
@@ -406,7 +429,16 @@ class AppData:
         if rc not in (0, 1) or (rc == 1 and other):
             part.unlink(missing_ok=True)
             raise AppDataError(f"archiving {what} failed: {' '.join(other)[-300:] or f'tar exit {rc}'}")
+        # Closing gzip is not a disk flush. Undo snapshots must be durable
+        # before the journal can name them and live data can be replaced.
+        with part.open("rb") as f:
+            os.fsync(f.fileno())
         os.replace(part, out)
+        fd = os.open(out.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         return {"entries": g.entries, "bytes": g.bytes, "volumes": vols, "skipped": skipped, "kept_in_place": keep}
 
     def _helper(self, mounts: list[str], env: dict[str, str], script: str, stdin_tar=None) -> None:

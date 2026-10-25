@@ -493,10 +493,14 @@ def discard(r: _Restore) -> None:
 
 def _stop_agent(box: Box, a: Agent, installed: dict) -> bool:
     if a.runtime == "host":
-        return box.runner.gateway(a, "stop")
+        if not box.runner.gateway(a, "stop"):
+            raise RestoreError(f"agent {a.id} did not stop; nothing of its home was replaced")
+        return True
     if a.urn in installed and installed[a.urn].get("status") in LIVE:
         box.rt.stop(a.urn)
-        box.wait_status(a.urn, {"stopped"}, timeout=300)
+        st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+        if st != "stopped":
+            raise RestoreError(f"agent {a.id} did not stop (status {st}); nothing of its home was replaced")
         return True
     return False
 
@@ -536,6 +540,7 @@ def _snapshot_app(box: Box, r: "_Restore", a: dict) -> None:
         rep = box.appdata.archive(store, app_id, out)
     except AppDataError as e:
         raise RestoreError(f"could not keep an undo copy of {app_id}: {e}; nothing of it was replaced") from None
+    _sync_dir(out.parent.parent)  # persist a newly-created before/apps entry before the journal
     r.step(kind="app_snapshot", urn=a["urn"], archive=str(out), volumes=rep["volumes"], skipped=len(rep["skipped"]))
 
 
@@ -552,6 +557,7 @@ def _snapshot_volumes(box: Box, r: "_Restore", a: dict, taken: set[str]) -> None
     except AppDataError as e:
         raise RestoreError(f"could not keep an undo copy of volumes {', '.join(vols)}: {e}") from None
     taken.update(vols)
+    _sync_dir(out.parent.parent)  # persist before/volumes as well as the archive's own directory
     r.step(kind="volume_snapshot", urn=a["urn"], archive=str(out), volumes=vols)
 
 
@@ -932,7 +938,9 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
         _install_app(box, r, rec)
     if a.runtime == "container" and box.app_status(a.urn) in LIVE:
         box.rt.stop(a.urn)
-        box.wait_status(a.urn, {"stopped"}, timeout=300)
+        st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+        if st != "stopped":
+            raise RestoreError(f"agent {k} did not stop (status {st}); import refused")
     # wiring: what this box's own agent home had (read from the set-aside copy)
     held = r.root / "before" / "agents" / k / "home"
     wiring = agentlib.wizard_wiring(held) if k in existing else {"present": False}
@@ -998,14 +1006,17 @@ def _undo(box: Box) -> dict:
     for k, a in targets.items():
         try:
             if a.runtime == "host":
-                box.runner.gateway(a, "stop")
+                if not box.runner.gateway(a, "stop"):
+                    raise RestoreError(f"agent {k} did not stop; Undo has not moved any trees")
             elif box.app_status(a.urn) in LIVE:
                 # a container agent left up keeps writing its home while it is put back, and its restart policy
                 # re-creates a removed home: every live state is stopped, "starting" included
                 box.rt.stop(a.urn)
-                box.wait_status(a.urn, {"stopped"}, timeout=300)
+                st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+                if st != "stopped":
+                    raise RestoreError(f"agent {k} did not stop (status {st}); Undo has not moved any trees")
         except (RuntipiError, HermesError) as e:
-            notes.append(f"agent {k}: stop: {e}")
+            raise RestoreError(f"agent {k} did not stop; Undo has not moved any trees: {e}") from e
     if j.get("move_journal_version") == 1:
         _undo_journaled_trees(box, root, j, targets, files_root, froot)
     else:
