@@ -384,3 +384,10 @@ def test_fresh_on_a_box_whose_wizard_user_is_not_the_agents_uid(homes, tmp_path,
     assert bb.RUNTIME + '/current/system-skills' in doc['skills']['external_dirs']
     cfg.chmod(0)
     assert all(r[1] for r in bb.health(osh, data, bb.RUNTIME + '/current/system-skills'))
+
+
+def test_unset_plugin_source_is_never_the_current_directory():
+    """Path('') is '.', so a missing --plugin-source once copied the cwd as the plugin."""
+    src = (Path(__file__).resolve().parents[1] / 'wizard-cli' / 'wizard').read_text()
+    assert "Path(ns.plugin_source or '')" not in src
+    assert "Path(ns.plugin_source).expanduser() if ns.plugin_source else None" in src
