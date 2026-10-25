@@ -279,8 +279,17 @@ export class WizardStorage {
       const consumer = apps.find((a) => a.manifest.id === id);
       for (const dep of consumer?.manifest.uses ?? []) {
         if (!ID.test(dep) || apps.some((a) => a.manifest.id === dep)) continue;
-        const candidate = await this.app(dep, 'wizardapps', path.join(this.dirs.dataDir, 'repos/wizardapps/apps', dep));
-        if (candidate) apps.push(candidate);
+        const dir = path.join(this.dirs.dataDir, 'repos/wizardapps/apps', dep);
+        const text = await fs.readFile(path.join(dir, 'wizard.md'), 'utf8').catch((e) => {
+          if (e.code !== 'ENOENT') throw e;
+          return '';
+        });
+        if (!text) continue;
+        const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        const manifest = match ? yaml.parse(match[1]!) : null;
+        if (!manifest || manifest.id !== dep) throw new Error('Invalid dependency manifest');
+        const compose = yaml.parse(await fs.readFile(path.join(dir, 'docker-compose.yml'), 'utf8'));
+        apps.push({ urn: `${dep}:wizardapps`, manifest, compose, data: '', hostData: '' });
       }
     }
     return this.proposals(apps, await this.readGrants()).filter((g) => !id || g.from === id);
