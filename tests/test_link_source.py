@@ -233,3 +233,27 @@ def test_authenticated_git_fetch_does_not_persist_header(linked, tmp_path):
     assert 'fixture-only-token' not in config
     assert 'extraheader' not in config.lower()
     assert 'Authorization' not in config
+
+
+def test_link_preloads_private_images_with_server_login(linked, monkeypatch):
+    c, body = linked
+    pulled = []
+    monkeypatch.setattr(private, 'token', lambda: 'server-token')
+    monkeypatch.setattr(private, 'images', lambda compose: ['ghcr.io/owner/private-app:1'])
+    monkeypatch.setattr(private, 'pull', lambda img, tok: pulled.append((img, tok)))
+    private.prepare(c.runtipi_root, cli.STORE, REPO, source='link',
+                    source_pin={'id': APP, 'repo': REPO, 'commit': body['commit']})
+    assert pulled == [('ghcr.io/owner/private-app:1', 'server-token')]
+
+
+def test_link_image_preload_is_best_effort_and_standard_pins_never_pull(linked, monkeypatch):
+    c, body = linked
+    monkeypatch.setattr(private, 'token', lambda: 'server-token')
+    monkeypatch.setattr(private, 'images', lambda compose: ['ghcr.io/owner/app:1'])
+    monkeypatch.setattr(private, 'pull', lambda *a: (_ for _ in ()).throw(private.PrivateError('no docker access')))
+    private.prepare(c.runtipi_root, cli.STORE, REPO, source='link',
+                    source_pin={'id': APP, 'repo': REPO, 'commit': body['commit']})
+    assert (c.runtipi_root / 'repos' / cli.STORE / 'apps' / APP / '.wizard-source').is_file()
+    monkeypatch.setattr(private, 'pull', lambda *a: pytest.fail('standard pins use Runtipi pulls'))
+    private.prepare(c.runtipi_root, cli.STORE, REPO, source='standard',
+                    source_pin={'id': APP, 'repo': REPO, 'commit': body['commit']})

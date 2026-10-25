@@ -273,10 +273,18 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             raise PrivateError(f"{repo}: {e}") from e
         # Runtipi pulls public release images through its normal install path. A fresh
         # sudo user need not have Docker socket access or a registry login on the CLI.
-        if not source_pin:
+        # A share link may name a private repo whose images sit in private GHCR: preload those with the
+        # server-side login. Best effort, so a public link on a box without Docker CLI access still installs.
+        if not source_pin or (source == 'link' and tok):
             for img in images({"services": {n: s for n, s in (compose.get("services") or {}).items()
                                             if isinstance(s, dict) and not s.get("build")}}):
-                pull(img, tok)
+                if source_pin:
+                    try:
+                        pull(img, tok)
+                    except (PrivateError, OSError):
+                        pass
+                else:
+                    pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
         old_tipi = 0
