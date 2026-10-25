@@ -13,6 +13,7 @@ export class StartAppCommand extends AppLifecycleCommand {
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
 
+    let deploymentUnchanged = true;
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
 
@@ -22,7 +23,7 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       logger.info(`Starting app ${appUrn}`);
 
-      await this.ensureAppDir(appUrn, form);
+      await this.ensureAppDir(appUrn, form, { pruneContainers: false });
 
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);
@@ -30,13 +31,15 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && (form.forcePull ?? config.force_pull);
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`, async () => {
+        deploymentUnchanged = false;
+      });
 
       logger.info(`App ${appUrn} started`);
 
       return { success: true, message: `App ${appUrn} started successfully` };
     } catch (err) {
-      return this.handleAppError(err, appUrn, 'start');
+      return { ...(await this.handleAppError(err, appUrn, 'start')), deploymentUnchanged };
     }
   }
 }

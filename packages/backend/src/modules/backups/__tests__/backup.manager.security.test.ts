@@ -53,6 +53,36 @@ describe('BackupManager file security', () => {
   });
 });
 
+describe('BackupManager former named-volume data', () => {
+  it('passes volume data (including a volume called backups) and provider login bytes into the archive', async () => {
+    const dataDir = path.join(DATA_DIR, 'storage-backup-proof');
+    const appDataDir = path.join(dataDir, 'app-data');
+    const appInstalledDir = path.join(dataDir, 'app');
+    const staging = path.join(dataDir, 'staging');
+    await writeFile(path.join(appDataDir, 'volumes', 'backups', '.login'), 'former-volume-proof');
+    await writeFile(path.join(appDataDir, 'data', 'claude', '.credentials.json'), 'provider-owned-proof');
+    await writeFile(path.join(appInstalledDir, 'wizard.md'), 'manifest');
+    const logger = createLogger();
+    const filesystem = new FilesystemService(logger);
+    vi.spyOn(filesystem, 'createTempDirectory').mockResolvedValue(staging);
+    const createTarGz = vi.fn(async (source: string, dest: string) => {
+      expect(await fs.promises.readFile(path.join(source, 'app-data/volumes/backups/.login'), 'utf8')).toBe('former-volume-proof');
+      expect(await fs.promises.readFile(path.join(source, 'app-data/data/claude/.credentials.json'), 'utf8')).toBe('provider-owned-proof');
+      await writeFile(dest, 'archive-placeholder-only');
+      return { stdout: '', stderr: '' };
+    });
+    const manager = new BackupManager(
+      { createTarGz } as unknown as ArchiveService,
+      logger,
+      { get: () => ({ dataDir }) } as unknown as ConfigurationService,
+      filesystem,
+      { getAppPaths: () => ({ appDataDir, appInstalledDir }) } as unknown as AppFilesManager,
+    );
+    await manager.backupApp(createAppUrn('wizard-claude', 'wizardapps'));
+    expect(createTarGz).toHaveBeenCalledOnce();
+  });
+});
+
 describe('BackupManager restore security', () => {
   const appUrn = createAppUrn('test-app', 'test-store');
 

@@ -36,6 +36,15 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
 if [ "$1" = image ]; then exit 1; fi
+# Model Compose's interrupted recreate: both the canonical name and a temporary
+# replacement exist. Only service-scoped rm clears them; unrelated apps survive.
+case "$*" in
+  *"rm --stop --force wizard-release-index")
+    [ "${INDEX_REMOVE_RC:-0}" = 0 ] || exit "$INDEX_REMOVE_RC"
+    rm -f "$HOME/stale-release-index";;
+  *"up -d --force-recreate --wait wizard-release-index")
+    if [ -f "$HOME/stale-release-index" ]; then echo 'Conflict: runtipi-wizard-release-index-1' >&2; exit 1; fi;;
+esac
 case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
 ''')
     for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't

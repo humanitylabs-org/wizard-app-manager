@@ -55,11 +55,20 @@ def test_listing_is_source_qualified_and_does_not_install(tmp_path, monkeypatch)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_unpublished_entry_is_visible_but_not_installable(tmp_path, monkeypatch):
+def test_unpublished_entry_is_left_out_of_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(index, 'resolve', lambda *a: (_ for _ in ()).throw(index.IndexError_('404')))
-    result = rec.listing(cfg(tmp_path))
-    assert len(result['apps']) == 2
-    assert all(a['selection'] is None and a['unavailable'] for a in result['apps'])
+    assert rec.listing(cfg(tmp_path)) == {'apps': []}
+
+
+def test_only_the_unpublished_entry_is_left_out(tmp_path, monkeypatch):
+    def resolve(base, repo):
+        if repo.endswith('wizard-connectors'):
+            raise index.IndexError_('404')
+        return {'id': 'wizard-cloudflare', 'repo': repo, 'install': {'commit': SHA}}
+    monkeypatch.setattr(index, 'resolve', resolve)
+    monkeypatch.setattr(rec.store_selection, 'resolve', lambda c, app, body: None)
+    ids = [a['id'] for a in rec.listing(cfg(tmp_path))['apps']]
+    assert ids == ['wizard-cloudflare']
 
 
 def test_prefetch_pulls_only_with_fake_runner_and_keeps_registry_unchanged(tmp_path, monkeypatch):

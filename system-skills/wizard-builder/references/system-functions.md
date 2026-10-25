@@ -1,6 +1,6 @@
 # Shared system functions — v1 (James-approved)
 
-Read this **before** writing any Wizard app screen or port. This is a build rule, not an optional dependency suggestion. Apps implement the owner's task; Wizard implements platform behavior once. The approved `wizard.md` schema is unchanged. API/MCP/view-source proposals keep their separate opt-in approval gate.
+Read this **before** writing any app screen or port for Wizard OS. This is a build rule, not an optional dependency suggestion. Apps implement the owner's task; Wizard implements platform behavior once. The approved `wizard.md` schema is unchanged. API/MCP/view-source proposals keep their separate opt-in approval gate.
 
 ## Load, trust and ownership
 

@@ -229,9 +229,24 @@ def ensure(runtipi_root: Path, store: str, app_id: str, provides: list | None, h
     if not uses_claude_subscription(cfg):
         return {"state": "skipped", "changed": False,
                 "note": "the host Hermes does not use a Claude subscription; the app keeps its own sign-in"}
+    override = runtipi_root / "user-config" / store / app_id / "docker-compose.yml"
+    # Share-aware apps use the generic owner-granted folder mechanism (#79/#80).
+    # Preserve a pre-existing alongside binding: silently copying/moving the host's
+    # live, single-use refresh token would invalidate the owner's other client.
+    for base in (runtipi_root / 'apps' / store / app_id,
+                 runtipi_root / 'repos' / store / 'apps' / app_id):
+        manifest = base / 'wizard.md'
+        if not manifest.is_file():
+            continue
+        text = manifest.read_text()
+        match = re.match(r'^---\r?\n(.*?)\r?\n---', text, re.S)
+        front = yaml.safe_load(match.group(1)) if match else {}
+        if isinstance(front, dict) and front.get('shares'):
+            return {'state': 'legacy' if override.is_file() and MARK in _load(override) else 'shared',
+                    'changed': False, 'note': 'App-owned sign-in uses owner share grants; an existing host alongside binding is retained until explicitly disconnected'}
+        break
     folder = login_dir(hermes_home, uid)
     # The owner's folder must exist before the mount, or the Docker daemon creates it (root-owned on rootful Docker).
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    override = runtipi_root / "user-config" / store / app_id / "docker-compose.yml"
     changed = apply(override, engine_services(recipe_compose(runtipi_root, store, app_id), app_id), folder, engine_user(uid, gid, rootless))
     return {"state": "ready", "folder": str(folder), "changed": changed}

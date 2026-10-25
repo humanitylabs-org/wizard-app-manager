@@ -67,6 +67,11 @@ QUICK = {**GOOD, "promoted_at": "2026-10-21T15:00:00Z"}
 FIX = {"classification": "fix", "reason": "Store 404s on fresh boxes"}
 
 
+def test_a_fast_tracked_feature_passes_without_the_soak():
+    """wizard-os DECISIONS #93: during launch a tested feature release reaches stable the same day too."""
+    assert updates.promotion_problems({**QUICK, "fast_track": {**FIX, "classification": "feature"}}, "1.2.3") == []
+
+
 def test_a_fast_tracked_fix_passes_without_the_soak():
     """wizard-os DECISIONS #82: verified fixes reach stable the same day; the upgrade test is still required."""
     assert updates.promotion_problems({**QUICK, "fast_track": FIX}, "1.2.3") == []
@@ -74,7 +79,7 @@ def test_a_fast_tracked_fix_passes_without_the_soak():
 
 
 @pytest.mark.parametrize("change, why", [
-    ({"fast_track": {**FIX, "classification": "feature"}}, "features, data-format changes and big UX changes soak"),
+    ({"fast_track": {**FIX, "classification": "other"}}, "fast_track is only for fix/feature releases"),
     ({"fast_track": {**FIX, "reason": ""}}, "needs a reason"),
     ({"fast_track": "fix"}, "must be an object"),
     ({"fast_track": FIX, "upgrade_test": None}, "no passed upgrade test"),

@@ -10,7 +10,7 @@ license = {text = "GPL-3.0-only"}
 wam = "wam.cli:main"
 
 [tool.setuptools]
-packages = ["wam"]
+packages = ["wam", "wam.backup"]
 
 [tool.setuptools.package-data]
-wam = ["release-index.mjs"]
+wam = ["release-index.mjs", "defaults.json"]

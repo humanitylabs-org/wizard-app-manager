@@ -149,13 +149,14 @@ def test_api_requires_token_for_changes(tmp_path, monkeypatch):
         srv.shutdown()
 
 
-def test_template_mcp_server_speaks_mcp():
+def test_template_mcp_server_speaks_mcp(tmp_path):
     import subprocess
     src = (TEMPLATE / "app" / "server.py").read_text()
     import socket
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
-    proc = subprocess.Popen([sys.executable, "-c", src], env={"PORT": str(port), "PATH": "/usr/bin:/bin"})
+    proc = subprocess.Popen([sys.executable, "-c", src], cwd=tmp_path,
+                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "DATA_DIR": str(tmp_path / "data")})
     try:
         for _ in range(50):
             try:
@@ -1021,7 +1022,7 @@ def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     rt = tmp_path / "rt"
-    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    assert alongside.adopt_media(rt, "", "1001:1001") is False  # invalid pin never creates storage
     (rt / "media").mkdir(parents=True)
     assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
     assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False

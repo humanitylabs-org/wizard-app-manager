@@ -51,6 +51,7 @@ export const appEventResultSchema = type({
   success: 'boolean',
   message: 'string',
   rollbackSucceeded: type('boolean | undefined').optional(),
+  deploymentUnchanged: type('boolean | undefined').optional(),
   recoverySnapshotPath: type('string | undefined').optional(),
 });
 

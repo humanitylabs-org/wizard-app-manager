@@ -87,6 +87,11 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         if any(a["id"] == name for a in apps):
             raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
+        from .wizardmd import voice_names
+        try:
+            spoken = voice_names(w)
+        except ValueError:
+            spoken = []  # optional field: a bad list drops the names, never the app or the registry (wam check reports it)
         from . import chats_views
         chats = chats_views.installed(meta['dir'], w, meta['commit'])
         port = app.get("port") or cfg.get("port")
@@ -98,9 +103,14 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({"voice_names": spoken} if spoken else {}),
+            "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
+            # Optional tag (James, 23 Oct 2026): `privacy: private` keeps the app off every non-private agent until
+            # the owner ticks one. Anything else, or no line at all, is a standard app.
+            **({"privacy": "private"} if str(w.get("privacy", "")).strip().lower() == "private" else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
@@ -175,7 +185,9 @@ def write(reg: dict, root: Path | None = None) -> Path:
                         "staged": True})
         return out
 
-    public = {**reg, "apps": [project(a) for a in reg["apps"]]}
+    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
+    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
     tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev

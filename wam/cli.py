@@ -27,6 +27,8 @@ Wizard additions:
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
+  wam backup export|verify|import|undo|activate|key|schedule|run|status
+                                one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
 from __future__ import annotations
 
@@ -129,6 +131,8 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
@@ -323,6 +327,10 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                          f"installing {app_id} beside it would start a second Agent Service")
     if (al := alongside.load(c.home)) and role:
         alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+        # Alongside is configured before bootstrap creates this app. Prepare upload storage here too,
+        # not only in `wam alongside`'s already-installed-app loop.
+        if role != "shell":
+            alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
     if "port" not in form:
@@ -1112,6 +1120,12 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out.append(("API token present (0600)", c.token_file.is_file() and (c.token_file.stat().st_mode & 0o077) == 0, str(c.token_file)))
     regp = c.home / "apps.json"
     out.append(("apps.json written", regp.is_file(), str(regp)))
+    from . import updates
+    run = updates.install_state(c.home)  # also heals a stale running state and its lock (wizard-os#90)
+    if run == "interrupted":
+        out.append(("Wizard OS update completed", False,
+                    "the last install or update was interrupted before it finished; retry with "
+                    "`wam updates --apply`, or `curl -fsSL https://aiwizards.com/os.sh | bash -s start`"))
     st = alongside.load(c.home)
     if st:
         a = st["agent"]
@@ -1476,6 +1490,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
+        from .backup.cli import main as backup_main
+        return backup_main(argv[1:])
     if len(argv) >= 3 and argv[0] == "app" and argv[1] in LIFECYCLE_WANT and not argv[2].startswith("-"):
         res = app_lifecycle(Config(), argv[1], argv[2])
         print(json.dumps(res, indent=2))

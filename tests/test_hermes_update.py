@@ -69,7 +69,7 @@ def box(tmp_path, monkeypatch):
     alongside = {'mode': 'alongside', 'agent': {'hermes_home': str(hh), 'origin': f'http://127.0.0.1:{port}',
                                               'uid': os.getuid()}, 'service': {'port': port}}
     (h / 'alongside.json').write_text(json.dumps(alongside))
-    (h / 'release.json').write_text(json.dumps({'release': '1.0.0'}))
+    (h / 'release.json').write_text(json.dumps({'release': '1.0.0', 'status': 'pinned'}))
     releases = tmp_path / 'releases'; releases.mkdir()
     (releases / 'stable').write_text('9.0.0')  # never selects a newer release than the box follows
     pin = {'tag': 'v0.0.2', 'commit': commits[1], 'image': None, 'test_record': 'fixture',

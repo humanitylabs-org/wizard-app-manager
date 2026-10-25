@@ -13,8 +13,17 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     try {
       logger.info(`Uninstalling app ${appUrn}`);
 
+      const removedId = appUrn.split(':')[0]!;
+      const installed = await dockerService.storage.apps();
+      const affected = await dockerService.storage.remove(removedId);
+      // Provider deletion must detach consumers before deleting provider-owned files.
+      for (const app of installed.filter((a) => affected.includes(a.manifest.id) && a.urn !== appUrn)) {
+        await dockerService.composeApp(app.urn as AppUrn, 'down --remove-orphans');
+        await dockerService.composeApp(app.urn as AppUrn, 'up --detach --force-recreate --remove-orphans');
+      }
       try {
-        await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi all');
+        // Never delete the legacy Docker volume: it is the owner's rollback copy.
+        await dockerService.composeApp(appUrn, 'down --remove-orphans --rmi all');
         logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
       } catch (err) {
         logger.warn('Error taking down app', appUrn, err);

@@ -5,7 +5,7 @@ mode the box already has (get.sh). Two channels (James, 21 Oct 2026):
 
 - `releases/latest` names every new release as soon as it is cut (testers opt in with `wam updates --channel latest`);
 - `releases/stable` moves only after a release has soaked on latest and passed the upgrade test
-  (releases/promotions/<version>.json); a fix-only release with a passed upgrade test may skip the soak
+  (releases/promotions/<version>.json); a fix or feature release with a passed upgrade test may skip the soak (DECISIONS #82, #93)
   (`fast_track`, wizard-os DECISIONS #82). Every box is on stable unless its owner chose latest.
 
 Automatic updates install stable releases only, whatever the channel: a latest box gets newer releases when its
@@ -41,7 +41,7 @@ DEFAULT_MODE = "ask"          # nothing installs unless the owner chose Automati
 CHANNELS = ("stable", "latest")
 DEFAULT_CHANNEL = "stable"    # tested releases only; "latest" is the testers' opt-in
 SOAK_HOURS = 72               # a release runs on latest this long before it can be promoted to stable
-FAST_TRACK_CLASSES = ("fix",)        # DECISIONS #82 (wizard-os): verified fixes skip the soak; nothing else does
+FAST_TRACK_CLASSES = ("fix", "feature")   # DECISIONS #82 + #93 (wizard-os): any release with a passed upgrade test may skip the soak
 GRANDFATHERED_THROUGH = "0.3.25"   # stable when the channels split; every later promotion passes the full gate
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
 INSTALLER = "https://aiwizards.com/os.sh"
@@ -91,9 +91,12 @@ def channel(home: Path | None = None) -> str:
 
 
 def installed(home: Path | None = None) -> str | None:
-    """The release this box was last installed/updated to; None for an unpinned (developer) box."""
+    """The successfully read-back release; a failed attempt is not an installed version."""
     try:
-        rel = json.loads((_home(home) / "release.json").read_text()).get("release")
+        receipt = json.loads((_home(home) / "release.json").read_text())
+        if receipt.get("status") not in ("pinned", "drift"):
+            return None
+        rel = receipt.get("release")
     except (OSError, ValueError, AttributeError):
         return None
     return rel if isinstance(rel, str) and VERSION.fullmatch(rel) else None
@@ -138,7 +141,7 @@ def promotion_problems(rec, version: str) -> list[str]:
     """Why a releases/promotions/<version>.json record does not let <version> be stable ([] = it does).
 
     A promotion needs the release to have been on latest for SOAK_HOURS (or a `fast_track` block classifying it as
-    fixes, DECISIONS #82) and a passed upgrade test onto it from an older release, with evidence. Only releases up to GRANDFATHERED_THROUGH may carry a `grandfathered` reason instead."""
+    fix or feature, DECISIONS #82 and #93) and a passed upgrade test onto it from an older release, with evidence. Only releases up to GRANDFATHERED_THROUGH may carry a `grandfathered` reason instead."""
     if not isinstance(rec, dict):
         return ["no promotion record"]
     if rec.get("version") != version:
@@ -156,7 +159,7 @@ def promotion_problems(rec, version: str) -> list[str]:
         ft = rec.get("fast_track")
         if ft is None:
             out.append(f"soaked {(at - since) / 3600:.1f}h on latest; stable needs {SOAK_HOURS}h "
-                       "(a verified fix may fast-track: DECISIONS #82)")
+                       "(a release with a passed upgrade test may fast-track: DECISIONS #82, #93)")
         else:
             out += fast_track_problems(ft)
     t = rec.get("upgrade_test")
@@ -172,14 +175,13 @@ def promotion_problems(rec, version: str) -> list[str]:
 
 
 def fast_track_problems(ft) -> list[str]:
-    """Why a `fast_track` block does not waive the soak ([] = it does). DECISIONS #82: only a release classified as
-    fixes, with the reason recorded, skips the soak; it still needs the passed upgrade test. Same as the other repo."""
+    """Why a `fast_track` block does not waive the soak ([] = it does). DECISIONS #82 and #93: a release classified as
+    fix or feature, with the reason recorded, skips the soak; it still needs the passed upgrade test. Same as the other repo."""
     if not isinstance(ft, dict):
         return ["fast_track must be an object"]
     out = []
     if ft.get("classification") not in FAST_TRACK_CLASSES:
-        out.append(f"fast_track is only for {'/'.join(FAST_TRACK_CLASSES)} releases; features, data-format changes and "
-                   f"big UX changes soak {SOAK_HOURS}h")
+        out.append(f"fast_track is only for {'/'.join(FAST_TRACK_CLASSES)} releases; anything else soaks {SOAK_HOURS}h")
     if not str(ft.get("reason", "")).strip():
         out.append("fast_track needs a reason")
     return out
@@ -305,7 +307,7 @@ def install_state(home: Path | None = None, boot_path: Path | None = None, stat_
         cur.update({"state": "interrupted", "interrupted_step": cur.get("step"), "interrupted_reason": why,
                     "interrupted_at": stamp, "updated_at": stamp, "tailscale_login_url": None, "approval_url": None,
                     "message": "The update was interrupted (" + ("the box restarted" if why == "reboot"
-                               else "the installer stopped") + ") before it finished; it will be retried."})
+                               else "the installer stopped") + ") before it finished. Retry it with Update now or by rerunning the install command."})
         try:
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(json.dumps(cur, indent=2) + "\n")
@@ -328,6 +330,39 @@ def installing(home: Path | None = None) -> bool:
     return install_state(home) == "running"
 
 
+def _retry_target(home: Path | None, run: str | None, have: str | None) -> str | None:
+    """The validated release this interrupted run was installing, including pre-fix boxes whose receipt was deleted.
+
+    A developer's explicit unpinned receipt always wins over old release-pins.json. These pins are only a retry
+    hint; get.sh fetches and validates the named release again before installing anything.
+    """
+    h = _home(home)
+    receipt = _read_status(h / "release.json") or {}
+    if receipt.get("status") == "unpinned" or run in ACTIVE:
+        return None
+    # A completed but failed read-back records the attempted release, not an
+    # installed version. Keep its Update button usable, including offline and
+    # same-release repair. Like an interrupted target, get.sh validates it anew.
+    if run != "interrupted" and receipt.get("status") in ("install-failed", "mismatch"):
+        target = receipt.get("release")
+        return target if isinstance(target, str) and VERSION.fullmatch(target) else None
+    if run not in ("interrupted", "failed"):
+        return None
+    pins = _read_status(h / "release-pins.json") or {}
+    target = pins.get("version")
+    if not isinstance(target, str) or not VERSION.fullmatch(target):
+        return None
+    components = pins.get("components")
+    wam = components.get("wizard-app-manager") if isinstance(components, dict) else None
+    commit = wam.get("commit") if isinstance(wam, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return None
+    floor = have or receipt.get("release")
+    if not isinstance(floor, str) or not VERSION.fullmatch(floor):
+        floor = None
+    return target if floor is None or _key(target) >= _key(floor) else None
+
+
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
     """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
     from . import hermes_update
@@ -335,14 +370,28 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     chan = channel(home)
     have, want = installed(home), latest(base, fresh=fresh, chan=chan)
     stable = want if chan == "stable" else latest(base, chan="stable")
-    unpinned = have is None
-    newer = bool(want) and not unpinned and _key(want) > _key(have)
+    retry = _retry_target(home, run, have)
+    # A failed/interrupted target is retried only while the channel has nothing newer: a fixed newer
+    # release supersedes it (otherwise a bad release could never be replaced on this box).
+    superseded = bool(retry and want and _key(want) > _key(retry))
+    want = want if superseded or not retry else retry
+    unpinned = have is None and retry is None
+    newer = bool(want) and have is not None and _key(want) > _key(have)
+    receipt = _read_status(_home(home) / "release.json") or {}
+    failed = run == "failed" or receipt.get("status") in ("install-failed", "mismatch")
+    installer = _read_status(_home(home) / "install-status.json") or {}
+    reason = receipt.get("status")
+    if run == "failed":
+        reason = (installer.get("failure_reason") or installer.get("message")
+                  or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
-            "update_available": newer, "unpinned": unpinned, "checked": want is not None,
+            "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
-            # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
-            "interrupted": run == "interrupted" and newer,
+            # Health is independent of whether a release pointer is reachable/newer (wizard-os#90).
+            "interrupted": run == "interrupted",
+            "failed": failed, "failure_reason": reason if failed else None,
+            "retry_target": retry, "superseded": superseded,
             "hermes": hermes_update.status(home, base)}
 
 
@@ -416,8 +465,13 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
     st = status(home, base, fresh=True)
+    retry = st["retry_target"]
     if target:
-        newer = st["installed"] is not None and _key(target) > _key(st["installed"])
+        if retry and _key(target) < _key(retry):
+            return {**st, "started": False, "skipped": "interrupted-target",
+                    "note": f"the incomplete release {retry} is newer than {target}; it is not moved backwards"}
+        # The same release retries it; a newer one supersedes it.
+        newer = (st["installed"] is not None and _key(target) > _key(st["installed"])) or retry is not None
         st = {**st, "latest": target, "update_available": newer}
     if not st["checked"]:
         return {**st, "started": False, "error": "could not read the current release pointer; try again later"}
@@ -433,6 +487,8 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
+    if ok and not target:
+        _auto_retry_clear(home)        # a manual Update re-arms Automatic's single retry
     return {**st, "started": ok, **({} if ok else {"error": (r.stderr or r.stdout or "").strip()[-300:]})}
 
 
@@ -475,6 +531,33 @@ def service_origin(home: Path | None = None) -> str | None:
     return None
 
 
+AUTO_RETRY = "auto-retry.json"
+
+
+def _auto_retried(home: Path | None) -> str | None:
+    """The failed/interrupted release Automatic already retried once (None: no retry spent)."""
+    rel = (_read_status(_home(home) / AUTO_RETRY) or {}).get("release")
+    return rel if isinstance(rel, str) and VERSION.fullmatch(rel) else None
+
+
+def _auto_retry_mark(home: Path | None, release: str) -> None:
+    h = _home(home)
+    tmp = h / (AUTO_RETRY + ".tmp")
+    try:
+        tmp.write_text(json.dumps({"release": release,
+                                   "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+        tmp.replace(h / AUTO_RETRY)
+    except OSError:
+        pass
+
+
+def _auto_retry_clear(home: Path | None) -> None:
+    try:
+        (_home(home) / AUTO_RETRY).unlink()
+    except OSError:
+        pass
+
+
 def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
     """The nightly timer: apply only in Automatic, only a stable release (whatever the channel), never on an unpinned
     box, and not while the agent is working (skipped; the next nightly window tries again)."""
@@ -482,13 +565,29 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
     stable = st["stable"]
-    newer = bool(stable) and st["installed"] is not None and _key(stable) > _key(st["installed"])
+    retry = st["retry_target"]
+    if retry is None and _auto_retried(home):
+        _auto_retry_clear(home)        # the failed release was repaired or replaced: re-arm for the next one
+    if retry and stable and _key(stable) < _key(retry):
+        return {**st, "started": False, "skipped": "interrupted-target",
+                "note": "retry the incomplete release with Update now; Automatic installs stable only"}
+    # Retrying the same failed release (capped below; a reboot-interrupted run is not the release's fault).
+    # A newer stable supersedes it and is a fresh install.
+    retrying = bool(retry) and retry == stable and st["failed"] and not st["interrupted"]
+    newer = bool(stable) and ((st["installed"] is not None and _key(stable) > _key(st["installed"]))
+                              or (retry is not None and _key(stable) >= _key(retry)))
     st = {**st, "latest": stable, "update_available": newer}
     if not newer:
         return {**st, "started": False}
+    if retrying and _auto_retried(home) == stable:
+        return {**st, "started": False, "skipped": "retry-cap",
+                "note": f"Automatic already retried {stable} once; Update now retries it, a newer release replaces it"}
     if not promoted(stable, base):
         return {**st, "started": False, "skipped": "unpromoted",
                 "note": f"stable {stable} has no valid promotion record; Automatic waits for a tested release"}
     if (is_busy or (lambda: busy(service_origin(home))))():
         return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(home, base, runner, target=stable)
+    res = apply(home, base, runner, target=stable)
+    if res.get("started") and retrying:
+        _auto_retry_mark(home, stable)
+    return res
