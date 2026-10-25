@@ -30,7 +30,16 @@ export function providers(to: string, apps: App[]): App[] {
 export function appProposals(apps: App[], file: Grants): Grant[] {
   return apps
     .flatMap((a) => targets(a, apps))
-    .filter((g) => providers(g.to, apps).length && ![...file.grants, ...file.denied].some((old) => sameAppGrant(old, g)));
+    .filter((g) => {
+      const dests = providers(g.to, apps);
+      // A direct owner edge already satisfies this capability. Do not mint a
+      // broader slot key (potentially authorizing other, stopped providers),
+      // including as an automatic fallback after an explicit direct revoke.
+      const direct =
+        g.to.startsWith('slot:') &&
+        [...file.grants, ...file.denied].some((old) => appGrant(old) && old.from === g.from && dests.some((p) => p.manifest.id === old.to));
+      return dests.length && !direct && ![...file.grants, ...file.denied].some((old) => sameAppGrant(old, g));
+    });
 }
 /** Prefer an explicit advertised ingress; otherwise the main service's shared
  * network alias and internal port. Never use a public/owner URL from apps.json.
@@ -88,18 +97,28 @@ async function read(file: string): Promise<AppFile | null> {
   });
   if (text === null) return null;
   const d = JSON.parse(text);
+  // Older provider-only files omit outgoing. Only absence is defaultable;
+  // null, arrays and scalar values are corrupt, not an empty grants map.
+  const outgoing = d?.outgoing === undefined ? {} : d.outgoing;
   if (
     !d ||
-    !d.outgoing ||
-    Array.isArray(d.outgoing) ||
-    typeof d.outgoing !== 'object' ||
-    Object.values(d.outgoing).some((v) => typeof v !== 'string' || !v) ||
+    typeof d !== 'object' ||
+    Array.isArray(d) ||
+    !outgoing ||
+    Array.isArray(outgoing) ||
+    typeof outgoing !== 'object' ||
+    Object.values(outgoing).some((v) => typeof v !== 'string' || !v) ||
     !Array.isArray(d.incoming) ||
-    d.incoming.some((v: any) => !v || typeof v.from !== 'string' || !/^[a-f0-9]{64}$/.test(v.sha256)) ||
+    d.incoming.some((v: any) => !v || typeof v.from !== 'string' || typeof v.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(v.sha256)) ||
+    (d.provider_endpoints !== undefined &&
+      (!d.provider_endpoints ||
+        typeof d.provider_endpoints !== 'object' ||
+        Array.isArray(d.provider_endpoints) ||
+        Object.values(d.provider_endpoints).some((v) => typeof v !== 'string' || !v))) ||
     typeof d.enforce !== 'boolean'
   )
     throw new Error('Invalid app grants file; refusing to replace');
-  return d;
+  return { ...d, outgoing };
 }
 async function atomic(file: string, value: unknown, mode = 0o644) {
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
@@ -160,15 +179,15 @@ export async function reconcileAppGrants(
   exclude?: string,
 ) {
   file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => installedApps.some((a) => a.manifest.id === id));
-  const apps = installedApps.filter(
-    (a) => a.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(a.manifest.id) && a.urn.endsWith(':wizardapps'),
-  );
+  const apps = installedApps.filter((a) => a.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(a.manifest.id));
   const previous = (file.layer2 ?? {}) as {
     managed?: Record<string, string[]>;
     adopted?: string[];
     endpoints?: Record<string, Record<string, string>>;
   };
   const adopted = new Set(previous.adopted ?? []);
+  const revoked = (from: string, to: string) =>
+    to === exclude || (file.layer2_removing as string[]).includes(to) || file.denied.some((g) => sameAppGrant(g, { kind: 'app', from, to }));
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
     await confined(app.data, 'wizard', true);
@@ -178,21 +197,28 @@ export async function reconcileAppGrants(
     const existing = await read(canonical);
     const old = existing ??
       (await Promise.all(legacy.map(read))).find(Boolean) ?? { outgoing: {}, incoming: [], provider_endpoints: {}, enforce: false };
-    docs.set(app.manifest.id, {
+    // Key by install, not ID: unrelated old copies in other stores are legal.
+    docs.set(app.urn, {
       app,
       paths: [canonical, ...legacy],
       old,
       doc: {
         ...old,
-        outgoing: {},
+        // Adopt, don't reconstruct. A missing recipe/provider must not destroy
+        // an owner's key or endpoint. Only explicit revoke/uninstall removes it.
+        outgoing: Object.fromEntries(Object.entries(old.outgoing).filter(([to]) => !revoked(app.manifest.id, to))),
         incoming: [...old.incoming],
-        provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing))),
+        provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !revoked(app.manifest.id, to))),
       },
     });
-    if (!adopted.has(app.manifest.id)) {
+    if (!previous.adopted?.includes(app.manifest.id)) {
       for (const to of Object.keys(old.outgoing)) {
         const g = { kind: 'app', from: app.manifest.id, to, reason: 'owner', approved: 'owner', created_at: Math.floor(Date.now() / 1000) };
-        if ((ID.test(to) || /^slot:[a-z0-9][a-z0-9-]{1,40}$/.test(to)) && ![...file.grants, ...file.denied].some((x) => sameAppGrant(x, g)))
+        if (
+          !revoked(app.manifest.id, to) &&
+          (ID.test(to) || /^slot:[a-z0-9][a-z0-9-]{1,40}$/.test(to)) &&
+          ![...file.grants, ...file.denied].some((x) => sameAppGrant(x, g))
+        )
           file.grants.push(g);
       }
       adopted.add(app.manifest.id);
@@ -209,34 +235,36 @@ export async function reconcileAppGrants(
         adoptedHashes[provider.manifest.id]?.push(hash(key));
       }
     }
-  for (const [id, d] of docs) {
+  for (const d of docs.values()) {
+    const id = d.app.manifest.id;
     const oldHashes = [...(previous.managed?.[id] ?? []), ...(adoptedHashes[id] ?? [])];
     d.doc.incoming = d.doc.incoming.filter((i) => !oldHashes.includes(i.sha256));
   }
   for (const g of file.grants.filter(appGrant)) {
-    const consumer = docs.get(g.from);
     const dests = providers(g.to, apps).filter((p) => p.manifest.id !== g.from);
-    if (!consumer || !dests.length) continue;
-    const key = consumer.old.outgoing[g.to] ?? randomBytes(32).toString('hex');
-    consumer.doc.outgoing[g.to] = key;
-    const digest = hash(key);
-    for (const provider of dests) {
-      const p = docs.get(provider.manifest.id)!;
-      // Retain legacy identities for their existing keys (old providers may check
-      // calendar), and also publish the canonical ID for updated providers.
-      for (const row of [...p.old.incoming.filter((r) => r.sha256 === digest), { from: g.from, sha256: digest }]) {
-        if (!p.doc.incoming.some((r) => r.sha256 === digest && r.from === row.from)) p.doc.incoming.push(row);
-      }
-      managed[provider.manifest.id] ??= [];
-      managed[provider.manifest.id]?.push(digest);
-      const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
-      const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
-      const endpoint = ownerOverride ? oldEndpoint : providerEndpoint(provider);
-      if (endpoint) {
-        consumer.doc.provider_endpoints![g.to] = endpoint;
-        if (!ownerOverride) {
-          endpoints[g.from] ??= {};
-          endpoints[g.from]![g.to] = endpoint;
+    if (!dests.length) continue;
+    for (const consumer of [...docs.values()].filter((d) => d.app.manifest.id === g.from)) {
+      const key = consumer.old.outgoing[g.to] ?? randomBytes(32).toString('hex');
+      consumer.doc.outgoing[g.to] = key;
+      const digest = hash(key);
+      for (const provider of dests) {
+        const p = docs.get(provider.urn)!;
+        // Retain legacy identities for their existing keys (old providers may check
+        // calendar), and also publish the canonical ID for updated providers.
+        for (const row of [...p.old.incoming.filter((r) => r.sha256 === digest), { from: g.from, sha256: digest }]) {
+          if (!p.doc.incoming.some((r) => r.sha256 === digest && r.from === row.from)) p.doc.incoming.push(row);
+        }
+        managed[provider.manifest.id] ??= [];
+        managed[provider.manifest.id]?.push(digest);
+        const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
+        const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
+        const endpoint = ownerOverride ? oldEndpoint : providerEndpoint(provider);
+        if (endpoint) {
+          consumer.doc.provider_endpoints![g.to] = endpoint;
+          if (!ownerOverride) {
+            endpoints[g.from] ??= {};
+            endpoints[g.from]![g.to] = endpoint;
+          }
         }
       }
     }
