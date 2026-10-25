@@ -51,7 +51,7 @@ def box(tmp_path, monkeypatch):
         def update(self, urn, perform_backup=True):
             app = urn.split(":")[0]
             calls.append((urn, read_override(c, app)["image"], perform_backup))
-        def wait_status(self, *a):
+        def wait_status(self, *a, **kw):
             return "running"
 
     rt = RT()

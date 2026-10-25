@@ -114,7 +114,7 @@ def install_box(tmp_path, monkeypatch, pins):
             compose = yaml.safe_load((dest / 'docker-compose.yml').read_text())
             calls.append((app, compose['services'][app]['image'], form))
             installed.add(app)
-        def wait_status(self, *a):
+        def wait_status(self, *a, **kw):
             return 'running'
     rt = RT()
     c = SimpleNamespace(home=home, runtipi_root=root, secrets=home / 'secrets', runtipi=lambda: rt,
