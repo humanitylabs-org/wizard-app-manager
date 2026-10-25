@@ -334,6 +334,15 @@ enable_linger() {
       sleep "$((attempt * 2))"
     fi
   done
+  # logind can stay unresponsive for minutes on a fresh server (apt upgrades restarting
+  # systemd units). Linger is only a flag file plus the user's manager: write the flag
+  # the way logind does and start user@UID directly; logind adopts it when it answers.
+  local uid; uid="$(id -u "$user" 2>/dev/null)" || uid=""
+  if [ -n "$uid" ] && [ "$(id -u)" -eq 0 ] && install -d -m 0755 /var/lib/systemd/linger \
+     && touch "/var/lib/systemd/linger/$user" && systemctl start "user@$uid.service"; then
+    printf 'logind did not answer; enabled linger for %s directly\n' "$user" >&2
+    return 0
+  fi
   printf 'Could not enable linger for %s after 4 attempts\n' "$user" >&2
   return "$rc"
 }
