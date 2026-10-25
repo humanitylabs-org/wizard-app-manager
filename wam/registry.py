@@ -135,6 +135,16 @@ def public_projection(reg: dict) -> dict:
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
 
 
+def read_grants_file(path: Path) -> list | None:
+    """Read public grant metadata when accessible; never require root-owned backend state."""
+    try:
+        doc = json.loads(path.read_text())
+        grants = doc.get('grants') if isinstance(doc, dict) else None
+        return grants if isinstance(grants, list) else None
+    except (OSError, ValueError):
+        return None
+
+
 def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
@@ -185,9 +195,15 @@ def write(reg: dict, root: Path | None = None) -> Path:
                         "staged": True})
         return out
 
-    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
-    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
-    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
+    # write_registry already resolved these through the API. Do not eagerly reopen
+    # the backend's 0600 file before considering that value (including an empty list).
+    grants = reg.get('grants')
+    if not isinstance(grants, list):
+        grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+        grants = read_grants_file(grants_path)
+        if grants is None:
+            grants = old.get('grants', [])
+    public = {**reg, "grants": grants, "apps": [project(a) for a in reg["apps"]]}
     tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev
