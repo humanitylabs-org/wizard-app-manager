@@ -20,6 +20,7 @@ regular files, folders, hard links to earlier files, and symlinks whose target s
 nothing below a symlink. Anything else is refused.
 """
 from __future__ import annotations
+from .dockercli import docker, verb  # noqa: F401
 
 import io
 import json
@@ -329,7 +330,7 @@ class AppData:
         if self.box.env.get("WAM_BACKUP_HELPER_IMAGE"):
             return self.box.env["WAM_BACKUP_HELPER_IMAGE"]
         if self._image is None:
-            p = self._run(["docker", "inspect", "--format", "{{.Config.Image}}", "runtipi"])
+            p = self._run([*docker(), "inspect", "--format", "{{.Config.Image}}", "runtipi"])
             img = p.strip().splitlines()[0] if p.strip() else ""
             if not img:
                 raise AppDataError("the Runtipi container (runtipi) was not found: is the App Manager running?")
@@ -347,7 +348,7 @@ class AppData:
 
     def volume_exists(self, name: str) -> bool:
         try:
-            self._run(["docker", "volume", "inspect", name])
+            self._run([*docker(), "volume", "inspect", name])
             return True
         except AppDataError:
             return False
@@ -372,9 +373,9 @@ class AppData:
         except FileNotFoundError:
             raise AppDataError("docker is not installed on this box") from None
         except subprocess.TimeoutExpired:
-            raise AppDataError(f"docker {argv[1]} timed out") from None
+            raise AppDataError(f"docker {verb(argv)} timed out") from None
         if p.returncode:
-            raise AppDataError(f"docker {argv[1]} failed: {(p.stderr or p.stdout).strip()[-300:]}")
+            raise AppDataError(f"docker {verb(argv)} failed: {(p.stderr or p.stdout).strip()[-300:]}")
         return p.stdout
 
     # ------------------------------------------------------------ archive
@@ -396,7 +397,7 @@ class AppData:
         for v in vols:
             if not VOLUME_NAME.match(v):
                 raise AppDataError(f"bad volume name {v[:60]!r}")
-        cmd = ["docker", "run", "--rm", "--network", "none", "-u", "0:0"]
+        cmd = [*docker(), "run", "--rm", "--network", "none", "-u", "0:0"]
         for k, p in paths.items():
             cmd += ["-v", f"{p}:/w/{k}:ro"]
         for v in vols:
@@ -462,7 +463,7 @@ class AppData:
         return {"entries": g.entries, "bytes": g.bytes, "volumes": vols, "skipped": skipped, "kept_in_place": keep}
 
     def _helper(self, mounts: list[str], env: dict[str, str], script: str, stdin_tar=None) -> None:
-        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0"]
+        cmd = [*docker(), "run", "--rm", "-i", "--network", "none", "-u", "0:0"]
         for mnt in mounts:
             cmd += ["-v", mnt]
         for k, v in env.items():
@@ -536,7 +537,7 @@ class AppData:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
             raise AppDataError("bad app/store id for orphan cleanup")
         project = f"{app_id}_{store}"
-        rows = self._run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+        rows = self._run([*docker(), "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
                           "--format", "{{.ID}} {{.Names}}"])
         ids = []
         for row in rows.splitlines():
@@ -546,7 +547,7 @@ class AppData:
             elif row.strip():
                 raise AppDataError("refusing to clean a compose project with unexpected container names")
         if ids:
-            self._run(["docker", "rm", "-f", *ids])
+            self._run([*docker(), "rm", "-f", *ids])
         self._helper([f"{self.box.runtipi_root}:/rt"], {"STORE": store, "APP": app_id}, r'''
 set -eu
 for part in app-data apps; do
@@ -599,7 +600,7 @@ done
         for v in vols:
             if not VOLUME_NAME.match(v):
                 raise UnsafeMember(f"bad volume name {v[:60]!r}")
-        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0",
+        cmd = [*docker(), "run", "--rm", "-i", "--network", "none", "-u", "0:0",
                "-v", f"{self.box.runtipi_root}:/rt", "-e", "RT=/rt", "-e", "V=/v", "-e", f"STORE={store}",
                "-e", f"APP={app_id}", "-e", f"DATA_ONLY={int(data_only)}",
                "-e", "KEEP=" + "\n".join(keep), "-e", "VOLS=" + " ".join(vols)]

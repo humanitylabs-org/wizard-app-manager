@@ -7,6 +7,7 @@ The helper accepts filesystem operations, not shell fragments, and lives for
 one operation. Ordinary owner paths and alongside Hermes stay host-side.
 """
 from __future__ import annotations
+from .dockercli import docker, verb  # noqa: F401
 
 import base64
 import builtins
@@ -115,7 +116,7 @@ class Access:
         if path is not None and not self.owns(path):
             raise PermissionError(f"outside container-owned backup roots: {path}")
         if self.proc is None:
-            cmd = ['docker', 'run', '--rm', '-i', '--network', 'none', '-u', '0:0']
+            cmd = [*docker(), 'run', '--rm', '-i', '--network', 'none', '-u', '0:0']
             # Atomic set-aside/Undo renames must remain within ONE bind mount:
             # separate app-data/home binds return EXDEV even on one host fs.
             common = HostPath(os.path.commonpath((self.box.runtipi_root, self.box.home)))
