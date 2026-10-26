@@ -11,7 +11,18 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.61
+## stable 0.3.63
+
+Promoted under DECISIONS #82/#93 (fast-track, classification **fix**). Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4: the same accounts page as Claude, sign-in through the agent, "Device code sign-in for Codex" named up front) and Claude claude-connection eb434ae → d0b59dd (0.2.6: no Claude Code fallback on alongside boxes, one row per account); both report an unreachable agent with Retry and answer `/api/connection` with `unreachable` instead of an empty inventory (wizard-app-store #32). Installed upgrade 0.3.61 → 0.3.63 passed on the demo box through `os.sh` with `WIZARD_STRICT=1`: pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, Home shows ChatGPT with usage. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.63.md (wizard-os #259 cut, #261 promotion). Rollback: point `stable` back at 0.3.61.
+
+Release JSON SHA256: `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+Promotion JSON SHA256: `80eb7f616dd25b5a2da0548d3284f55d2379a7f06082e1e6f34aea06bddc1534`.
+
+## 0.3.64 provenance
+
+Latest continuity: 0.3.62 (the 0.3.60 runtime pins) plus the same two AI connection app pins as Stable 0.3.63, so Latest never trails Stable. Channel: latest. Canonical: wizard-os #261. SHA256 `0c19f7bd3436fe7c8c00738c8e8cea09af2db62964f2638c05f97c88aea9e8a4`.
+
+## stable 0.3.61 (superseded by 0.3.63)
 
 Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: approved final wording verbatim, "ship it"). Stable 0.3.59 with only the shell pin changed: wizard-ux 325be039 → 87b35bcb1314961887c06da5f96ad10b50786fe6 (`release/stable-onboarding`; #567 Recommended fix: the orb never freezes in an iPhone Safari tab; #568: three-step guide "Step N of 3" with the owner's words, Hide and Install beats removed; image `sha256:ecaba88e568ff2b6d90c6ca19a5b9bba153fcbb2eb7a4ee1aca3073c9e9acdb6`, official dispatch run 40339463332). Every other pin is identical to 0.3.59. Installed upgrade 0.3.59 → 0.3.61 passed on demo-4 through `os.sh` with `WIZARD_STRICT=1` (mirror-head base disclosed): pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, live WebKit check 61/61. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.61.md (wizard-os #257 cut, #258 promotion). Rollback: point `stable` back at 0.3.59.
 
@@ -20,7 +31,7 @@ Promotion JSON SHA256: `ce5b9ff2811b108ccfc6d2ffb4744897dea9b5e54985d2c339a70c75
 
 ## 0.3.63 provenance
 
-Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4, engine `wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418`) and Claude claude-connection eb434ae → d0b59dd (0.2.6, engine `wizard-claude:0.2.6@sha256:5c7ca0b3b38803794aa3296f69bed11253a4136c26acded9f3298ed115580745`), both from wizard-app-store #32. Channel: on latest only (stable stays 0.3.61 until promotion). Canonical: wizard-os #259. SHA256 `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4, engine `wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418`) and Claude claude-connection eb434ae → d0b59dd (0.2.6, engine `wizard-claude:0.2.6@sha256:5c7ca0b3b38803794aa3296f69bed11253a4136c26acded9f3298ed115580745`), both from wizard-app-store #32. Channel: stable since wizard-os #261. Canonical: wizard-os #259. SHA256 `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
 
 ## 0.3.62 provenance
 
