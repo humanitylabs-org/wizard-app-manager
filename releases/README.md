@@ -18,6 +18,10 @@ Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-auth
 Release JSON SHA256: `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
 Promotion JSON SHA256: `ce5b9ff2811b108ccfc6d2ffb4744897dea9b5e54985d2c339a70c759174c076`.
 
+## 0.3.63 provenance
+
+Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4, engine `wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418`) and Claude claude-connection eb434ae → d0b59dd (0.2.6, engine `wizard-claude:0.2.6@sha256:5c7ca0b3b38803794aa3296f69bed11253a4136c26acded9f3298ed115580745`), both from wizard-app-store #32. Channel: on latest only (stable stays 0.3.61 until promotion). Canonical: wizard-os #259. SHA256 `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+
 ## 0.3.62 provenance
 
 Latest continuity only: exactly the 0.3.60 runtime pins (only version, name and about differ), so Latest never trails Stable. It does not carry the 0.3.61 guide or fix; those reach main through wizard-ux #569. Channel: latest. Canonical: wizard-os #257 (file) and #258 (latest → 0.3.62). SHA256 `c6b9fde9bcd21fbd159ded564f59453b9f0bd8be925488238afef03df10ad057`.
