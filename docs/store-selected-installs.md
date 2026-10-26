@@ -10,6 +10,14 @@ A link request supplies exactly `{source: 'link', repo: 'OWNER/REPO', commit: '<
 
 Link `update` and `switch` require an installed `.wizard-source` with the same repository **and** `source: 'link'`; a link cannot silently take over a Standard, owner-private, Alpha or legacy unlabelled install. Existing non-link selection policy is unchanged. Installs and release changes retain native manager install/update/backup handling.
 
+### Link grants require the owner's approval
+
+The manager reads provenance from the installed recipe's manager-written `.wizard-source`, never from `wizard.md` or the browser request. A `source: 'link'` app receives no automatic `approved: 'install'` app, Router or legacy share grants. Automatic grants to a link provider are also suppressed. Declared `uses`, `requires` and `mounts` remain proposals in the owner's approval sheet; explicit `approved: 'owner'` grants and denials still work.
+
+Reconciliation removes historical automatic rows involving an installed link app and their managed keys/hashes; it does not relabel old outgoing keys as owner approval. The legacy Claude-volume compatibility upgrade also cannot auto-grant a link consumer or provider. Missing provenance retains the pre-source legacy policy; malformed or symlinked provenance refuses reconciliation rather than treating the app as trusted legacy. Standard, owner-private and Alpha defaults are unchanged.
+
+This is not browser isolation or per-app network isolation. Link enablement still depends on wizard-os #133, including native bridge refusal and opaque-origin compatibility. The owner approval sheet must run in the trusted shell once that boundary is enabled.
+
 ## Recorded install source
 
 Every newly prepared recipe records `source` in `.wizard-source`: `standard`, `owner-private`, the subscribed Alpha source id, or `link`. Standard manager/index installs also record `standard`. The Alpha adapter's existing invocation/activation policy is unchanged; WAM passes its resolved source id in the owner-local `WAM_INSTALL_SOURCE` environment for the child WAM preparation. Registry generation copies the installed identity's source to `apps.json`; a prospective store recipe cannot relabel a Link install. A local-folder identity (`{"local": "<folder>"}`), `repo: 'local/…'`, or explicit `source: 'local'` records `local`. Legacy identities without a source remain `standard` unless local. Local paths are not copied into the registry.
