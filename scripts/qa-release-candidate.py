@@ -27,6 +27,7 @@ def stage(original, candidate, evidence):
     (evidence / 'original-release.json').write_bytes(raw)
     releases = evidence / 'candidate-manifests'
     releases.mkdir()
+    (releases / 'hermes-lock.json').write_bytes((Path(__file__).resolve().parents[1] / 'releases/hermes-lock.json').read_bytes())
     (releases / (release['version'] + '.json')).write_text(json.dumps(release, indent=2) + '\n')
     record = {'kind': 'candidate-bootstrap-not-release-acceptance', 'release_exact': False,
               'original_manifest_sha256': hashlib.sha256(raw).hexdigest(),

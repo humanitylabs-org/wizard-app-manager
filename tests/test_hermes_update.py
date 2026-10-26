@@ -24,6 +24,10 @@ def test_updates_status_has_hermes_without_a_pin(tmp_path):
 def box(tmp_path, monkeypatch):
     # Import inside the fixture: the integration test above also fails on main.
     from wam import hermes_update as hu
+    # Transaction/rollback fixtures use synthetic commits. Policy refusal and
+    # seven-day approval are covered independently in test_hermes_lock.py.
+    monkeypatch.setattr(hu.hermes_lock, 'check_pin', lambda pin: pin)
+    monkeypatch.setattr(hu.hermes_lock, 'authorize', lambda: 'fixture')
     h, hh = tmp_path / 'wizard', tmp_path / 'hermes'
     h.mkdir(); hh.mkdir()
     monkeypatch.setenv('HOME', str(tmp_path))

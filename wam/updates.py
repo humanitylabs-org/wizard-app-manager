@@ -484,6 +484,8 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
         return {**st, "started": False}
     pin = st["latest"] if st["latest"] and VERSION.fullmatch(st["latest"]) else None
     env = f"WIZARD_RELEASE={pin} " if pin else ""
+    if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
+        env = 'WIZARD_HERMES_PROMOTION= ' + env
     r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0

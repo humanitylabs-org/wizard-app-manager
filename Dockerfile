@@ -57,6 +57,7 @@ RUN timeout 600 bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
 COPY ./packages ./packages
+COPY ./wam/hermes-lock.json ./wam/hermes-lock.json
 RUN bun run build
 
 RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"

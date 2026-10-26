@@ -132,6 +132,83 @@ def test_selected_lifecycle_uses_prepared_record_and_native_backup_update(c,monk
     assert json.loads((c.runtipi_root/'apps/wizardapps/demo/.wizard-selection').read_text())=={'repo':'org/demo','commit':PIN}
 
 
+@pytest.mark.parametrize('source', ['standard', 'owner-private', 'alpha-test'])
+@pytest.mark.parametrize('operation,drift', [
+    (operation, drift) for operation in ('install', 'update', 'switch')
+    for drift in ('repo', 'commit', None) if drift or operation != 'install'
+])
+def test_hermes_selection_rejected_before_any_mutation(c, monkeypatch, source, operation, drift):
+    from wam import hermes_lock
+    recipe = hermes_lock.load()['agent_recipe']
+    selection = {'source': source, 'operation': operation,
+                 'repo': recipe['repo'], 'commit': recipe['commit']}
+    if drift:
+        selection[drift] = 'other/hermes-agent' if drift == 'repo' else 'a' * 40
+    selection['entry'] = {'id': 'hermes-agent', 'repo': selection['repo'], 'commit': selection['commit']}
+    monkeypatch.delenv('WIZARD_HERMES_PROMOTION', raising=False)
+    app = 'hermes-agent'
+    installed = c.runtipi_root / 'apps' / cli.STORE / app
+    staged = c.runtipi_root / 'repos' / cli.STORE / 'apps' / app
+    for folder in (installed, staged):
+        folder.mkdir(parents=True)
+        (folder / '.wizard-source').write_text(json.dumps({'repo': selection['repo']}))
+        (folder / '.wizard-commit').write_text(recipe['commit'])
+        (folder / '.wizard-selection').write_text(json.dumps({'repo': recipe['repo'], 'commit': recipe['commit']}))
+    before = {p.relative_to(c.home): p.read_bytes() for p in c.home.rglob('*') if p.is_file()}
+    monkeypatch.setattr(cli, 'installed_ids', lambda rt: set() if operation == 'install' else {app})
+    calls = []
+    def prepare(*args, **kwargs):
+        calls.append('prepare')
+        (staged / '.wizard-commit').write_text(selection['commit'])
+        return selection['entry']
+    monkeypatch.setattr(private, 'prepare', prepare)
+    monkeypatch.setattr(cli, 'install', lambda *a, **k: calls.append('install'))
+    monkeypatch.setattr(ss.subprocess, 'run', lambda *a, **k: pytest.fail('must not invoke Alpha adapter'))
+    with pytest.raises(ValueError, match='shared exact lock' if drift else 'paused'):
+        ss.execute(c, app, selection)
+    assert calls == []
+    assert {p.relative_to(c.home): p.read_bytes() for p in c.home.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('source', ['standard', 'owner-private'])
+@pytest.mark.parametrize('operation', ['install', 'update', 'switch'])
+def test_exact_hermes_selection_preflights_promotion_before_prepare(c, monkeypatch, source, operation):
+    import shutil
+    from wam import hermes_lock
+    recipe = hermes_lock.load()['agent_recipe']
+    app = 'hermes-agent'
+    entry = {'id': app, 'repo': recipe['repo'], 'commit': recipe['commit']}
+    selection = {'source': source, 'operation': operation, 'entry': entry,
+                 'repo': recipe['repo'], 'commit': recipe['commit']}
+    calls = []
+    monkeypatch.setattr(hermes_lock, 'authorize', lambda: calls.append('authorize') or 'approved-test')
+    monkeypatch.setattr(cli, 'installed_ids', lambda rt: set() if operation == 'install' else {app})
+    installed = c.runtipi_root / 'apps' / cli.STORE / app
+    if operation != 'install':
+        installed.mkdir(parents=True)
+        (installed / '.wizard-source').write_text(json.dumps({'repo': recipe['repo']}))
+    def prepare(root, store, repo, **kwargs):
+        calls.append('prepare')
+        assert repo == recipe['repo']
+        assert (kwargs['release'] or kwargs['source_pin'])['commit'] == recipe['commit']
+        folder = root / 'repos' / store / 'apps' / app
+        folder.mkdir(parents=True)
+        (folder / '.wizard-source').write_text(json.dumps({'repo': repo}))
+        (folder / '.wizard-commit').write_text(recipe['commit'])
+        return entry
+    def finish(*args, **kwargs):
+        calls.append('lifecycle')
+        shutil.copytree(c.runtipi_root / 'repos' / cli.STORE / 'apps' / app, installed, dirs_exist_ok=True)
+        return {'status': 'running'}
+    monkeypatch.setattr(private, 'prepare', prepare)
+    monkeypatch.setattr(cli, 'install', finish)
+    monkeypatch.setattr(cli, 'app_update', finish)
+    monkeypatch.setattr(cli, 'write_registry', lambda c: None)
+    assert ss.execute(c, app, selection)['status'] == 'running'
+    assert calls == ([] if operation == 'install' else ['authorize']) + ['prepare', 'lifecycle']
+    assert json.loads((installed / '.wizard-selection').read_text()) == {'repo': recipe['repo'], 'commit': recipe['commit']}
+
+
 def test_http_selection_and_auth_fail_closed(c,monkeypatch):
     from http.server import ThreadingHTTPServer
     from urllib.request import Request,urlopen

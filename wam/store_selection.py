@@ -69,6 +69,15 @@ def resolve(c, app_id, body):
 def execute(c, app_id, selection):
     from . import cli, private
     source, entry = selection['source'], selection['entry']
+    if app_id == 'hermes-agent':
+        from . import hermes_lock
+        recipe = hermes_lock.load()['agent_recipe']
+        if any(selection[k] != recipe[k] for k in ('repo', 'commit')):
+            raise ValueError('Hermes is frozen: Store selection differs from the shared exact lock')
+        # Reject before prepare (or the Alpha adapter) can replace staged files or
+        # .wizard-selection. The downstream lifecycle guard is too late for this.
+        if selection['operation'] != 'install':
+            hermes_lock.authorize()
     installed = cli.installed_ids(c.runtipi())
     if selection['operation'] == 'install' and app_id in installed:
         raise ValueError('already installed; refresh and choose an explicit release change')
