@@ -16,6 +16,7 @@ dashboard URL variable is whatever `${VAR:-http://hermes-agent:9119}` the recipe
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import secrets
 import shutil
@@ -42,6 +43,15 @@ def read_env(p: Path) -> dict[str, str]:
             if sep and k.strip() and not k.lstrip().startswith("#"):
                 out[k.strip()] = v.strip()
     return out
+
+
+def applied_path(wizard_home: Path) -> Path:
+    """sha256 of the environment file the running dashboard was (re)started with."""
+    return wizard_home / "state" / "host-dashboard-env.sha256"
+
+
+def _env_sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ""
 
 
 def credentials(wizard_home: Path) -> dict[str, str]:
@@ -134,10 +144,17 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         unit.write_text(text)
         _systemctl("daemon-reload")
     _systemctl("enable", UNIT)
-    # The environment file is read only at start: a new value needs a restart too.
-    r = _systemctl("restart", UNIT) if changed or env_changed else _systemctl("start", UNIT)
+    # The environment file is read only at start: a value this run added, or one the owner edited since the last
+    # (re)start (e.g. WIZARD_ACCOUNT_CHANGES=0), needs a restart too.
+    applied = applied_path(wizard_home)
+    env_sha = _env_sha(env_path(wizard_home))
+    stale = env_changed or (applied.read_text().strip() if applied.is_file() else "") != env_sha
+    r = _systemctl("restart", UNIT) if changed or stale else _systemctl("start", UNIT)
     if r.returncode != 0:
         out.update(state="error", error=(r.stderr or r.stdout).strip()[:300])
+    else:
+        applied.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        applied.write_text(env_sha + "\n")
     for app_id, url_vars in apps.items():
         want = {PASSWORD_VAR: creds[PASSWORD_VAR], "HERMES_DASHBOARD_BASIC_AUTH_USERNAME":
                 creds.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or USER, **{v: url for v in url_vars}}

@@ -107,10 +107,67 @@ def test_owner_can_keep_account_changes_off(tmp_path, monkeypatch):
     assert hd.read_env(p)[hd.ACCOUNT_CHANGES_VAR] == "0"
 
 
+def test_owner_edit_of_the_environment_restarts_the_running_dashboard(tmp_path, monkeypatch):
+    """An owner who flips WIZARD_ACCOUNT_CHANGES and reruns `wam alongside` gets it applied (start would not)."""
+    wh = tmp_path / "wos"
+    _run(tmp_path, monkeypatch, wh)
+    p = hd.env_path(wh)
+    p.write_text(p.read_text().replace(f"{hd.ACCOUNT_CHANGES_VAR}=1", f"{hd.ACCOUNT_CHANGES_VAR}=0"))
+    calls = _run(tmp_path, monkeypatch, wh)
+    assert ("restart", hd.UNIT) in calls and hd.read_env(p)[hd.ACCOUNT_CHANGES_VAR] == "0"
+    assert ("restart", hd.UNIT) not in _run(tmp_path, monkeypatch, wh)
+
+
+def test_a_failed_restart_is_retried_on_the_next_run(tmp_path, monkeypatch):
+    wh = tmp_path / "wos"
+    rt, units = box(tmp_path), tmp_path / "units"
+    monkeypatch.setattr(hd, "tailnet_ip", lambda: "100.64.0.7")
+    monkeypatch.setattr(hd, "_systemctl", lambda *a: type("R", (), {"returncode": 1, "stderr": "boom", "stdout": ""})())
+    out = hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env, unit_dir=units)
+    assert out["state"] == "error" and not hd.applied_path(wh).exists()
+    assert ("restart", hd.UNIT) in _run(tmp_path, monkeypatch, wh)
+
+
 def test_install_reloads_the_dashboard_after_link_refreshes_the_plugin():
     src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
     link = src.index('"$HOME/.local/bin/wizard" link')
-    reload = src.index("systemctl --user try-restart wizard-host-dashboard.service")
+    reload = src.index("systemctl --user restart wizard-host-dashboard.service")
     bootstrap = src.index("# 3) Fill every empty parking spot")
     assert link < reload < bootstrap
-    assert '[ ${#FAILED[@]} -gt 0 ] || systemctl --user try-restart wizard-host-dashboard.service' in src
+    block = src[src.rindex("\n", 0, reload) - 400:reload + 600]
+    assert "is-enabled --quiet wizard-host-dashboard.service" in block  # only an installed dashboard is restarted
+    assert "DEGRADED+=" in block and "|| true" not in block           # a failed restart is reported
+
+
+def _reload_block():
+    src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+    start = src.index("  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service")
+    return src[start:src.index("\n  fi\n", start) + 6]
+
+
+def test_install_reload_block_behaviour(tmp_path):
+    import subprocess
+    # (enabled, active before, restart ok, active after) -> (degraded, restarted)
+    cases = (((False, False, True, True), (False, False)),   # not installed: nothing to do
+             ((True, True, True, True), (False, True)),       # running: restarted, back up
+             ((True, True, False, False), (True, True)),      # restart fails
+             ((True, True, True, False), (True, True)),       # restarted but does not stay up
+             ((True, False, False, False), (True, True)),     # installed but left down by `wam alongside`
+             ((False, True, True, True), (False, True)))      # running but not enabled
+    for (enabled, active, restart_ok, after), (degraded, restarted) in cases:
+        log = tmp_path / "log"
+        log.write_text("")
+        stub = tmp_path / "systemctl"
+        stub.write_text(f"""#!/bin/bash
+echo "$*" >> {log}
+case "$*" in
+  *is-enabled*) exit {0 if enabled else 1} ;;
+  *is-active*) if grep -q " restart" {log}; then exit {0 if after else 3}; else exit {0 if active else 3}; fi ;;
+  *restart*) exit {0 if restart_ok else 1} ;;
+esac
+""")
+        stub.chmod(0o755)
+        script = "FAILED=(); DEGRADED=(); sleep() { :; }\n" + _reload_block() + 'echo "DEG=${#DEGRADED[@]}"\n'
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+        assert out.stdout.strip() == f"DEG={1 if degraded else 0}", (enabled, active, restart_ok, after, out.stdout, out.stderr)
+        assert ("restart wizard-host-dashboard.service" in log.read_text()) == restarted
