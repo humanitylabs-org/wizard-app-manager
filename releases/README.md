@@ -11,6 +11,13 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## 0.3.52 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #240, `releases/0.3.52.json`.
+- Byte-identical SHA-256: `c4c5b95b97bb35291008f133fb82f44942724f4dc127fdf3ed694004d6c3bd89`.
+- Latest-only continuity, requested by the independent reviewer on #237. Every runtime component/image/default-app/Hermes pin is identical to 0.3.50. No new feature acceptance, code or image build; do not promote this as the onboarding repair.
+- The separate fix-only Stable repair is 0.3.51, based on 0.3.39. This cut prevents Latest testers being rolled back to the older Stable component set.
+
 ## 0.3.51 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
