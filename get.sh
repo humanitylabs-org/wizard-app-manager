@@ -1311,6 +1311,36 @@ if links and str(links[0].get("url", "")).startswith("https://"):
     print(f"[wizard-os] wizard-url: {links[0]['url']}")
 PY
 }
+hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
+  # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
+  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
+}
+hermes_api_watchdog_job() {  # $1 = hermes binary, $2 = Hermes API origin. Evergreen safety net for every pinned release:
+  # an install.sh from before the retrying restart tried once, and Hermes >=0.22 refuses while the installing agent's
+  # chat turn is live, leaving the API down. Until the API answers: restart when Hermes allows it (15 s steps, 30 min),
+  # then interrupt deliberately. Never restarts a Hermes whose API already answers.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "up() { curl -fsS -m 5 -o /dev/null '$2/health'; }; for _ in \$(seq 1 $tries); do up && exit 0; $hh '$1' gateway restart && { sleep $every; up && exit 0; }; echo \"\$(date -u +%FT%TZ) Hermes API not answering yet; restart retried in ${every}s\"; sleep $every; done; up || $hh '$1' gateway restart --yes"
+}
+api_watchdog() {  # alongside, run by an agent: make sure the Hermes API comes up after the deferred restart
+  [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
+  local origin delay="${WIZARD_WATCHDOG_DELAY:-75}" log="$HOME/.wizard-os/hermes-restart.log" job
+  case "$delay" in ''|*[!0-9]*) delay=75 ;; esac
+  # The origin wam alongside recorded for the host Hermes (agent.origin); stock loopback port otherwise.
+  origin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["agent"]["origin"])' \
+    "$HOME/.wizard-os/alongside.json" 2>/dev/null || true)"
+  case "$origin" in http://127.0.0.1:*|http://localhost:*) ;; *) origin=http://127.0.0.1:8642 ;; esac
+  job="$(hermes_api_watchdog_job "$real" "$origin")"
+  local -a run=(systemd-run --user); [ "$(id -u)" -eq 0 ] && run=(systemd-run)
+  if ! { command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-api-watchdog-$(date +%s)" \
+      --on-active="${delay}s" --setenv=HOME="$HOME" --setenv=PATH="$PATH" /bin/bash -c "exec >>'$log' 2>&1; $job" >/dev/null 2>&1; }; then
+    setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
+  fi
+}
 deferred_restart() {  # after an older install.sh under an agent: schedule the restart it asked for, detached
   [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
   rm -f "$HOME/.wizard-os/agent-safe.active"
@@ -1319,7 +1349,7 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
   rm -f "$HOME/.wizard-os/hermes-restart.pending"
   local delay="${WIZARD_RESTART_DELAY:-20}" log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
-  job="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$real' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  job="$(hermes_restart_job "$real"); sleep 20; '$HOME/.local/bin/wizard' doctor"
   # Detached install: restart only once its runner has written the final status and exited (bounded to 30 min).
   local runner="${WIZARD_INSTALL_RUNNER_PID:-}"
   case "$runner" in ''|*[!0-9]*) ;; *) job="for _ in \$(seq 1 900); do [ -d /proc/$runner ] || break; sleep 2; done; $job" ;; esac
@@ -1339,6 +1369,7 @@ if [ -z "$PINS" ]; then
   rm -f "$HOME/.wizard-os/agent-safe.active"
   [ "$rc" -ne 0 ] || report_wizard_url
   [ "$rc" -ne 0 ] || deferred_restart
+  [ "$rc" -ne 0 ] || api_watchdog
   exit "$rc"
 fi
 
@@ -1451,6 +1482,6 @@ sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
 rm -f "$HOME/.wizard-os/agent-safe.active"
 [ "$rc" -ne 0 ] || report_wizard_url
-if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; fi
+if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; api_watchdog; fi
 [ "$rc" -eq 0 ] || exit "$rc"
 exit "$vrc"
