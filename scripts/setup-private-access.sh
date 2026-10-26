@@ -149,10 +149,9 @@ PY
     if ! kill -0 "$up_pid" 2>/dev/null; then
       current="$(state)"; [ "$current" = Running ] && break
       [ "$wait_s" -le 1 ] && break
-      # `up` finished successfully: the login went through. Never start a second `up` while the daemon is still
-      # switching to Running (that can begin a new sign-in and leave the just-approved one looking unfinished).
-      if [ -f "$out.ok" ]; then wait_running "${WIZARD_TAILSCALE_GRACE:-90}" && break; fi
-      rm -f "$out.ok"
+      # `up` finished successfully: the login went through. Never start another `up` after that (it can begin a
+      # new sign-in and leave the just-approved one looking unfinished); keep polling for Running until the deadline.
+      if [ -f "$out.ok" ]; then sleep 2; continue; fi
       start_up   # `up` gave up early (or its link expired): a fresh link while the owner still has time
     fi
     sleep 2
