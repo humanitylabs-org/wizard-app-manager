@@ -1,0 +1,16 @@
+{
+  "version": "0.3.51",
+  "latest_since": "2026-10-26T02:36:29Z",
+  "promoted_at": "2026-10-26T03:04:49Z",
+  "upgrade_test": {
+    "from": "0.3.39",
+    "to": "0.3.51",
+    "passed": true,
+    "evidence": "docs/acceptance/promote-0.3.51.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Broken alongside first launch/replay and unreadable WebKit guide repaired with failing-old regressions; actual installed 0.3.39 upgrade and fresh 0.3.51 alongside install passed both-shell Chromium/WebKit, denied-mic typing, real assistant replies and post-restart tool-routing doctors.",
+    "notes": "Only UX source/image/shell pin differ from Stable 0.3.39. Reviewed temporary official hosted publisher is CI-only. No 0.3.50 backup/restore/Undo, Spaces, Android or other feature/default ride-alongs. Separate 0.3.52 retains the old Latest bundle without promotion."
+  }
+}

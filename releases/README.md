@@ -11,6 +11,13 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## stable 0.3.51
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #241, `releases/stable` and `releases/promotions/0.3.51.json`.
+- Byte-identical SHA-256: release `9f28c6104767a5812cd429a2f086bda657d3aa782850f72a4873632b180ce2cd`; promotion record `216f372c8246dee69178f7d3752eb2bb1d8cee33811b0f3b2c95bdd1146ccffb`.
+- Fix-only fast-track after actual fresh current-Stable 0.3.39, installed 0.3.39 -> 0.3.51 upgrade, and fresh 0.3.51 alongside acceptance. Both real desktop and phone entrypoints passed installed Chromium/WebKit first-launch/replay/skip/exit/mic-denied typing/readability; real assistant replies and post-restart tool-routing doctors passed. Evidence: canonical `docs/acceptance/promote-0.3.51.md`.
+- Only UX differs from Stable 0.3.39; no unrelated 0.3.50 features promoted. Latest continuity 0.3.52 is separate and never promoted here. Rollback: valid 0.3.39 Stable pointer in both repositories.
+
 ## 0.3.51 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
