@@ -294,7 +294,7 @@ def test_an_approved_login_is_waited_for_while_the_daemon_is_still_starting(sand
     _, log, home, state, _ = sandbox
     state.write_text("NeedsLogin")
     p = run(sandbox, timeout=40, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="10", LOGIN_AFTER="1",
-            UP_OK_STARTING="4", WIZARD_TAILSCALE_GRACE="20")
+            UP_OK_STARTING="4", WIZARD_TAILSCALE_GRACE="1")   # Running arrives after any grace: still no 2nd `up`
     assert p.returncode == 0, p.stderr
     assert sum(line.startswith("tailscale up") for line in log.read_text().splitlines()) == 1
     assert "not connected yet" not in p.stdout
