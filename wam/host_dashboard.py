@@ -201,7 +201,7 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         if any(read_env(p).get(k) != v for k, v in want.items()):
             write_user_env(runtipi_root, app_id, want)
             out["changed_apps"].append(app_id)
-        elif stale_running(app_id, store, {v: url for v in url_vars}):
+        elif stale_running(app_id, store, want):   # address and login, wherever the container carries them
             out["changed_apps"].append(app_id)   # app.env is current, the running container is not
     return out
 
