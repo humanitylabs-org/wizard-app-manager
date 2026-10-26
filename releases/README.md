@@ -11,6 +11,13 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## 0.3.53 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #242, `releases/0.3.53.json`; byte-identical SHA-256 `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+- Corrected fix-only Stable onboarding candidate. Supersedes the unpromoted 0.3.51 candidate without rewriting its immutable manifest: UX #535 reserves native safe areas and gives absolute Done rows real WebKit/Chromium scroll reach. No unrelated Latest feature imported; all non-UX runtime pins are identical to Stable 0.3.39.
+- Official hosted signed maintenance publication and anonymous amd64/arm64 pulls: UX run `40264433758`, source `26c3b20fa484b79cb1b1836bfd05064195659360`, digest `sha256:03a93684174475546f38bcabd246894cecbde09bc6c78e4ae1178ed0045d91d9`.
+- Cut only: Stable stays 0.3.39 until new exact-candidate installed acceptance and separately reviewed promotion. Latest continuity will preserve the prior Latest bundle separately and never promote it as this repair.
+
 ## 0.3.51 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
