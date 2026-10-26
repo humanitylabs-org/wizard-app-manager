@@ -219,6 +219,7 @@ def test_candidate_helper_preserves_original_and_never_greens_source_exception(b
     raw = json.dumps(original).encode()
     path.write_bytes(raw)
     rel, record, releases = qa.stage(path, box['pinned'], tmp_path / 'evidence')
+    (releases / 'hermes-lock.json').write_text((REPO / 'wam/hermes-lock.json').read_text())
     assert path.read_bytes() == raw
     assert (releases.parent / 'original-release.json').read_bytes() == raw
     rel['components']['wizard-app-manager']['commit'] = '1' * 40

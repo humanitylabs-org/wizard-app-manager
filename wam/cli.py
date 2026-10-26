@@ -1047,6 +1047,12 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id
+        if app_id == 'hermes-agent':
+            from .hermes_lock import authorize
+            try:
+                authorize()
+            except (ValueError, OSError):
+                continue  # independent Hermes pause; unrelated release defaults still update
         try:
             commit = (live / ".wizard-commit").read_text().strip()
             source = json.loads((live / ".wizard-source").read_text()).get("repo")
@@ -1488,6 +1494,12 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    if app_id.split(':', 1)[0] == 'hermes-agent':
+        from .hermes_lock import authorize
+        try:
+            authorize()
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from None
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     before = ((rt.app(urn) or {}).get("app") or {})
@@ -1516,6 +1528,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
 
 
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
+    if args[:2] == ['app', 'update']:
+        targets = [arg for arg in args[2:] if not arg.startswith('-')]
+        if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
+            from .hermes_lock import authorize
+            authorize()  # flag-first and bulk passthrough must not bypass the pause
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)

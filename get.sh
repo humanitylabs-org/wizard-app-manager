@@ -314,6 +314,7 @@ fwd_env() {
   printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
     WIZARD_CHANNEL="${WIZARD_CHANNEL:-}" \
+    WIZARD_HERMES_PROMOTION="${WIZARD_HERMES_PROMOTION:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
@@ -368,8 +369,11 @@ as_user() {
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
+  # Fresh Ubuntu boots may still be applying automatic security updates. Let
+  # apt wait for dpkg instead of failing the whole install on its frontend lock.
+  say "Waiting for Ubuntu's automatic updates to finish, if needed (up to 10 minutes)"
+  apt-get -o DPkg::Lock::Timeout=600 update -qq
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
   if ! command -v docker >/dev/null || [ "$(docker version --format '{{.Server.Version}}' 2>/dev/null | cut -d. -f1)" -lt 28 ] 2>/dev/null; then
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
@@ -991,7 +995,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
-command -v git >/dev/null || sudo apt-get install -y -qq git >/dev/null
+command -v git >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq git >/dev/null
 if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
   printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
@@ -1099,8 +1103,9 @@ print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2
     case "$REL" in *[!0-9A-Za-z.+-]*|.*) echo "WIZARD_RELEASE '$REL' is not a version" >&2; exit 2 ;; esac
     PINS="$HOME/.wizard-os/release-pins.json"
     fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
+    fetch_release hermes-lock.json "$PINS.lock" || { echo "Could not read the shared Hermes lock; nothing installed" >&2; exit 1; }
     # Only validated values leave Python (40-hex commit, sha256 digests, plain image names), shell-quoted.
-    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" <<'PY'
+    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" "$PINS.lock" <<'PY'
 import json, re, shlex, sys
 path, want = sys.argv[1], sys.argv[2]
 try:
@@ -1109,6 +1114,14 @@ except ValueError as e:
     sys.exit(f"release {want}: not JSON ({e})")
 if str(rel.get("version")) != want:
     sys.exit(f"release file says version {rel.get('version')!r}, expected {want!r}")
+lock = json.load(open(sys.argv[3]))
+if lock.get('schema') != 1 or lock.get('automatic_updates') != 'paused':
+    sys.exit('invalid shared Hermes lock')
+if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
+    sys.exit('release Hermes differs from the shared exact lock')
+agent = (rel.get('default_apps') or {}).get('agent') or {}
+if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
+    sys.exit('release agent recipe differs from the shared exact Hermes lock')
 def image(name):
     im = (rel.get("images") or {}).get(name) or {}
     ref, dig = str(im.get("ref", "")), str(im.get("digest", ""))

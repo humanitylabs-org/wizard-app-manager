@@ -23,7 +23,7 @@ import time
 import urllib.request
 import uuid
 
-from . import alongside, updates
+from . import alongside, updates, hermes_lock
 
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -75,6 +75,7 @@ def target(home: Path, base: str | None = None) -> dict | None:
         raise ValueError('the release needs a final Hermes version tag')
     if not isinstance(pin.get('commit'), str) or not COMMIT.fullmatch(pin['commit']):
         raise ValueError('the release needs a full Hermes commit')
+    hermes_lock.check_pin(pin)
     return pin
 
 
@@ -363,6 +364,11 @@ def update(home: Path | None = None, base: str | None = None, *, dry_run: bool =
     h = updates._home(home)
     if wait_quiet < 0 or health_timeout < 0:
         return {'state': 'refused', 'reason': 'Wait times must not be negative.'}
+    if not dry_run:
+        try:
+            hermes_lock.authorize()
+        except (ValueError, OSError) as exc:
+            return {'state': 'refused', 'reason': str(exc)}
     try:
         with _lock(h):
             return _update(h, base, dry_run, wait_quiet, health_timeout)

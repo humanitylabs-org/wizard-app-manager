@@ -10,6 +10,7 @@ import json
 import os
 import re
 from pathlib import Path
+from . import hermes_lock
 
 IMAGE_VARS = {"wizard-shell": "WIZARD_SHELL_IMAGE", "wizard-ux": "WIZARD_UX_IMAGE",
               "wizard-agent-service": "WIZARD_AGENT_SERVICE_IMAGE"}
@@ -54,6 +55,8 @@ def load(path=None):
     for var in IMAGE_VARS.values():
         if os.environ.get(var) and not re.fullmatch(r"[A-Za-z0-9._/:@-]+", os.environ[var]):
             raise ValueError(f"{var}: invalid image reference")
+    if doc.get('hermes') is not None:
+        hermes_lock.check_release(doc)
     return doc
 
 
@@ -71,6 +74,10 @@ def image_ref(im):
 
 def resolve(ref):
     doc = load()
+    lock = hermes_lock.load()
+    row = lock['agent_recipe']
+    if ref in (row['app'], row['repo'], 'https://github.com/' + row['repo']):
+        return {'id': row['app'], 'repo': row['repo'], 'commit': row['commit'], 'image': None}
     for row in doc.get("default_apps", {}).values():
         if row and row.get("commit") and ref in (row["app"], row["repo"], "https://github.com/" + row["repo"]):
             app = row["app"]

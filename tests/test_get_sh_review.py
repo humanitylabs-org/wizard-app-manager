@@ -104,7 +104,7 @@ def test_modern_outer_installer_schedules_after_inner_completion(box, tmp_path):
 @pytest.mark.parametrize('mismatch', [False, True])
 def test_pinned_restart_waits_for_successful_release_receipt(box, tmp_path, modern, mismatch):
     import json
-    from test_release_pins import FAKE_DOCKER, WAM_DIGEST, SHELL_DIGEST, OTHER, git
+    from test_release_pins import FAKE_DOCKER, WAM_DIGEST, SHELL_DIGEST, OTHER, git, REPO
     box.add_user('alice', 1001)
     box.hermes('alice')
     body = ('# wizard-install: defers-hermes-restart\n'
@@ -113,6 +113,7 @@ def test_pinned_restart_waits_for_successful_release_receipt(box, tmp_path, mode
     src = _local_wam(tmp_path, body)
     sha = git('rev-parse', 'HEAD', cwd=src)
     rel = tmp_path / 'release'; rel.mkdir()
+    (rel / 'hermes-lock.json').write_text((REPO / 'wam/hermes-lock.json').read_text())
     (rel / 'stable').write_text('9.9.9\n')
     (rel / '9.9.9.json').write_text(json.dumps({
         'version': '9.9.9', 'components': {'wizard-app-manager': {'commit': sha}},

@@ -15,6 +15,7 @@ import * as yaml from 'yaml';
 import { AppStoreFilesManager } from './app-store-files-manager';
 import { prepareChatsModule } from './chats-module';
 import { preparePackage, sourceDir } from './packaging';
+import { hermesRecipe } from '../app-lifecycle/hermes-lock';
 
 export const WIZARD_STORE_SLUG = 'wizardapps';
 export const DEFAULT_WIZARD_INDEX = 'https://apps.aiwizards.com';
@@ -150,7 +151,15 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) return hit.rec;
     try {
       const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
-      const rec = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
+      const listed = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
+      const rec =
+        listed && appName === 'hermes-agent'
+          ? {
+              ...listed,
+              repo: hermesRecipe.repo,
+              install: { ...listed.install, git: `https://github.com/${hermesRecipe.repo}`, commit: hermesRecipe.commit },
+            }
+          : listed;
       this.lastCheck.set(appName, { at: Date.now(), rec });
       return rec;
     } catch (e) {
@@ -184,6 +193,8 @@ export class WizardIndexStore extends AppStoreFilesManager {
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
       if (!SHA.test(pin.commit ?? '') || pin.commit !== (await this.localCommit(appName)) || pin.repo !== source.repo)
         throw new Error('invalid owner-local selection pin');
+      if (appName === 'hermes-agent' && (pin.commit !== hermesRecipe.commit || pin.repo !== hermesRecipe.repo))
+        throw new Error('Hermes selection differs from the shared exact lock');
       return;
     }
     const rec = await this.lookup(appName, fresh);
