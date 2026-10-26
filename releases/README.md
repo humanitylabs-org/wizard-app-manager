@@ -11,7 +11,22 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.59
+## stable 0.3.61
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: approved final wording verbatim, "ship it"). Stable 0.3.59 with only the shell pin changed: wizard-ux 325be039 → 87b35bcb1314961887c06da5f96ad10b50786fe6 (`release/stable-onboarding`; #567 Recommended fix: the orb never freezes in an iPhone Safari tab; #568: three-step guide "Step N of 3" with the owner's words, Hide and Install beats removed; image `sha256:ecaba88e568ff2b6d90c6ca19a5b9bba153fcbb2eb7a4ee1aca3073c9e9acdb6`, official dispatch run 40339463332). Every other pin is identical to 0.3.59. Installed upgrade 0.3.59 → 0.3.61 passed on demo-4 through `os.sh` with `WIZARD_STRICT=1` (mirror-head base disclosed): pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, live WebKit check 61/61. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.61.md (wizard-os #257 cut, #258 promotion). Rollback: point `stable` back at 0.3.59.
+
+Release JSON SHA256: `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+Promotion JSON SHA256: `ce5b9ff2811b108ccfc6d2ffb4744897dea9b5e54985d2c339a70c759174c076`.
+
+## 0.3.62 provenance
+
+Latest continuity only: exactly the 0.3.60 runtime pins (only version, name and about differ), so Latest never trails Stable. It does not carry the 0.3.61 guide or fix; those reach main through wizard-ux #569. Channel: latest. Canonical: wizard-os #257 (file) and #258 (latest → 0.3.62). SHA256 `c6b9fde9bcd21fbd159ded564f59453b9f0bd8be925488238afef03df10ad057`.
+
+## 0.3.61 provenance
+
+Cut in wizard-os #257 (merge `d1793589`) and promoted to stable in #258 (merge `e094225d`). SHA256 `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+
+## stable 0.3.59 (superseded by 0.3.61)
 
 Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: "Ship it (not limited to just 2 though)"). Stable 0.3.57 plus any number of Claude subscriptions:
 - **Claude app.** claude-connection 3b2d618 → eb434ae (0.2.5; engine `wizard-claude:0.2.5@sha256:4a8f91cfa6abc829d17af533f18d23932a131ca48e2e821e870db0f474a2436f`, wizard-app-store #31).
