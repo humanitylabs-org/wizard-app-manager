@@ -341,3 +341,9 @@ Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade ve
 
 Canonical wizard-os PR #233. Channel: on latest only; stable remains 0.3.39.
 Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca13044f`. Complete 0.3.49 non-UX pins retained; compatible Android/onboarding/Spaces UX is immutable 03b07142. No passed runtime release gate or promotion implied.
+
+## 0.3.65 provenance
+
+Canonical: wizard-os releases/0.3.65.json (wizard-os #262). SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Stable 0.3.63 plus wizard-app-manager #258 on the Stable maintenance branch (#259, `8607981`): installer reruns recreate connection apps on an address/login change or stale running container, HTTPS-off owner step, approved Tailscale login waited for, official-installer Hermes routes to `hermes update`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.63 pending the upgrade test.
