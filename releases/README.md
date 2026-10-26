@@ -11,6 +11,13 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## stable 0.3.53
+
+Promoted under DECISIONS #82 (fast-track, classification fix: only the wizard-ux Stable onboarding fix vs stable 0.3.39) after a supported strict installer upgrade of the alongside demo from stable 0.3.39. Authorized by Miguel (@mistermizel), 26 Oct 2026. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.53.md (wizard-os #244). Rollback: point `stable` back at 0.3.39.
+
+Release JSON SHA256: `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+Promotion JSON SHA256: `55dadebe6e5711dbd8f1b1fcc601ba4ea461c06c1e464eee53868c5e5adb816f`.
+
 ## 0.3.53 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os` PR #242, `releases/0.3.53.json`; byte-identical SHA-256 `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.

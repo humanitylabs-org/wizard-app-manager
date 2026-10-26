@@ -1,0 +1,16 @@
+{
+  "version": "0.3.53",
+  "latest_since": "2026-10-26T03:34:45Z",
+  "promoted_at": "2026-10-26T04:08:02Z",
+  "upgrade_test": {
+    "from": "0.3.39",
+    "to": "0.3.53",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.53.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Miguel-authorized fix: corrects the Stable first-run onboarding (alongside/desktop first-message orientation, replay, per-step skip, readable WebKit copy, safe-area reachable Done/Skip). Supported strict installer upgrade of the alongside demo from stable 0.3.39 passed with the exact public digest; 23/23 release checks, outcome ok, both doctors pass incl. real wizard_apps bridge call, Hermes config/.env/auth hashes preserved; installed Chromium+WebKit phone and real desktop shell onboarding matrix, inset/rotation reach and real model replies verified.",
+    "notes": "Only wizard-ux pins change vs stable 0.3.39 (components.wizard-ux, images.wizard-ux, default_apps.shell -> maintenance source 26c3b20, digest sha256:03a93684, hosted run 40264433758). No trunk features ride along; App Manager, Agent Service, Hermes, other default apps unchanged; no migrations or owner-data deletion. Not claimed: fresh 0.3.53 install, physical mic/iOS/Telegram webview/Add to Home Screen. Older 0.3.26-0.3.31 Automatic updaters skip fast-tracked stable (Update now works)."
+  }
+}
