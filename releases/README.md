@@ -11,7 +11,32 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.57
+## stable 0.3.59
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: "Ship it (not limited to just 2 though)"). Stable 0.3.57 plus any number of Claude subscriptions:
+- **Claude app.** claude-connection 3b2d618 → eb434ae (0.2.5; engine `wizard-claude:0.2.5@sha256:4a8f91cfa6abc829d17af533f18d23932a131ca48e2e821e870db0f474a2436f`, wizard-app-store #31).
+- **Shell.** wizard-ux ffa4c636 → 325be039 (#564: #537 + #558 cherry-picked on `release/stable-onboarding`; image `sha256:cd80f6f823cfc2fd74532fbad5d002eebf2b584cdf080ad30a944b97566db06d`, differs only in `core/chat-models.js`).
+- **App Manager.** d926eec → e3f76a68 on `maintenance/stable-0.3.57` (#250 = #249 + #252: alongside host dashboards turn on the account broker and reload after the plugin refresh; image inputs unchanged).
+
+Every other pin is identical to 0.3.57. The upgrade 0.3.57 → 0.3.59 passed at component level: the pinned App Manager steps (`claude_login.ensure`, `host_dashboard.ensure`) plus a Compose recreate of both Claude versions. The original sign-in stayed byte-identical, and rollback was verified. No full `os.sh` run happened on a real box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.59.md (wizard-os #256). Rollback: point `stable` back at 0.3.57.
+
+Release JSON SHA256: `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+Promotion JSON SHA256: `6d6a2c84c0151263179607ddaba9dfcd9aedd7c79580a4c37255bf3d7f11dc36`.
+
+## 0.3.60 provenance
+
+Latest 0.3.58 plus the same multi-account Claude change, so Latest never trails Stable:
+- **Claude app.** claude-connection eb434ae.
+- **App Manager.** 4879531820cec4680ab19ed0a47ee8f094421c8a on `maintenance/latest-0.3.58` (#251).
+- **Shell.** Wizard UX main a0399680 (#558, includes #537; image `sha256:a4b018a26f62ee42b9a5399a52ba6e5371a5ce3f714a16e576ff183b25611223`). 16 other main UX PRs since e0900880 ride along; they are listed in its `about`.
+
+Channel: latest. Canonical: wizard-os #255 (cut) and #256 (latest → 0.3.60). SHA256 `ab3258adb9fe60252550af96a9f62445a4768c0be5a3addca3c43c1e9c93f5d9`.
+
+## 0.3.59 provenance
+
+Cut in wizard-os #255 (merge `109c46b3`) and promoted to stable in #256. SHA256 `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+
+## stable 0.3.57 (superseded by 0.3.59)
 
 Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-requested and authorized by Miguel, 26 Oct 2026). It is stable 0.3.55 with only the wizard-ux pin changed: `components.wizard-ux`, `images.wizard-ux` and `default_apps.shell` move from 26c3b20 to ffa4c6366f9267e3ed5ca2fbc710ca9c8ad97686 (wizard-ux #548 on `release/stable-onboarding`), image `sha256:a667cd87f0446dce9e6117ff05adf741df47979d380a31c946cd400e11ed721c`. The phone tour ends with an optional Add to Home Screen beat, replacing the install text removed from os.md (#246). Every other pin is identical to 0.3.55. The upgrade 0.3.55 → 0.3.57 passed at component level, the same standard as 0.3.55. It used the pinned App Manager d926eec `write_shell_override` step with the release pins, a Compose recreate onto the new digest, and a browser matrix on the upgraded container (11/11), with rollback verified. No full `os.sh` installer run happened on a real box (see the evidence). Canonical evidence: wizard-os/docs/acceptance/promote-0.3.57.md (wizard-os #251). Rollback: point `stable` back at 0.3.55.
 
