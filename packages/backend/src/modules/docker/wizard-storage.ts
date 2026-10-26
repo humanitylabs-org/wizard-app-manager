@@ -29,7 +29,27 @@ export type Grant = { kind: string; from: string; to: string; share?: string; re
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
 // Compose is extensible; preserve unknown fields rather than normalizing them away.
 export type Compose = { services: Record<string, any>; volumes?: Record<string, any>; [key: string]: any };
-export type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string };
+export type App = { urn: string; manifest: Manifest; compose: Compose; data: string; hostData: string; source?: string };
+
+/** Provenance is manager-written recipe metadata, never the app's manifest.
+ * Invalid metadata must not silently recover the legacy automatic-grant policy. */
+async function recipeSource(dir: string): Promise<string | undefined> {
+  const metadata = path.join(dir, '.wizard-source');
+  const info = await fs.lstat(metadata).catch((e) => {
+    if (e.code !== 'ENOENT') throw e;
+    return null;
+  });
+  if (info === null) return undefined;
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error('Unsafe app source metadata');
+  const record = JSON.parse(await fs.readFile(metadata, 'utf8'));
+  if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('Invalid app source metadata');
+  // Older manager-written records predate the source field. Alpha source IDs
+  // use the same grammar as private.prepare(); do not reduce them to Standard.
+  if (record.source === undefined) return undefined;
+  if (typeof record.source !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(record.source))
+    throw new Error('Invalid app source metadata');
+  return record.source;
+}
 type Run = (file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>;
 export const relativePath = (p: unknown): p is string =>
   typeof p === 'string' &&
@@ -226,7 +246,7 @@ export class WizardStorage {
           return '';
         });
         const hostData = env.match(/^APP_DATA_DIR=['"]?([^\n'"]+)/m)?.[1] ?? data;
-        out.push({ urn: `${id}:${store}`, manifest, compose, data, hostData });
+        out.push({ urn: `${id}:${store}`, manifest, compose, data, hostData, source: await recipeSource(dir) });
       }
     }
     // Count database rows, including a second install whose recipe is missing.
@@ -501,6 +521,8 @@ rm -f ".$1.wizard-copy-ready"`;
       if (
         provider &&
         hermes &&
+        provider.source !== 'link' &&
+        hermes.source !== 'link' &&
         !file.claude_share_upgrade_v1 &&
         [provider, hermes].every((a) => Object.values(a.compose.volumes ?? {}).some((v: any) => v?.name === LEGACY_CLAUDE)) &&
         (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/).includes(this.legacyClaudeVolume)
