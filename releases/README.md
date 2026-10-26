@@ -11,7 +11,26 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.53
+## stable 0.3.55
+
+Promoted under DECISIONS #82 (fast-track, classification fix). It is stable 0.3.53 with only the Troubleshooter pin changed: `components.wizard-troubleshooter` 4b1f0ef → c1b4c432fd7b162d23d42fb7d3d8fb049bee764e (wizard-troubleshooter #12 and #13, plus the #10 license). This is host tooling with no image, and every other pin is identical to 0.3.53. Upgrade 0.3.53 → 0.3.55 of the `wam troubleshooter` step passed in a disposable systemd box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.55.md (wizard-os #249). Rollback: point `stable` back at 0.3.53.
+
+Release JSON SHA256: `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+Promotion JSON SHA256: `7dd2fbedeb54949b388837ccfec91ea9c3d80eabb576b9e46f3ff8487b41428a`.
+
+## 0.3.56 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248 (file) and PR #249 (cut onto latest), `releases/0.3.56.json`; byte-identical SHA-256 `a9d449c424e653c63b905a0d31cb0cee886dce5c696fd4688f9e214a21e028c5`.
+- Latest 0.3.54 plus the same Troubleshooter pin as stable 0.3.55 (c1b4c43). Every image and every other pin is identical to 0.3.54.
+- Channel: on latest only. It keeps the 0.3.54 backup bundle, which still needs its own gates before promotion.
+
+## 0.3.55 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248, `releases/0.3.55.json`; byte-identical SHA-256 `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+- Stable 0.3.53 plus Troubleshooter c1b4c43. This adds the bounded owner-approved repair tools shared by Claude, ChatGPT and Tinfoil (#12), and lets Claude fall back to the agent's second Claude sign-in on a usage limit (#13). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.55` above.
+
+## stable 0.3.53 (superseded by 0.3.55)
 
 Promoted under DECISIONS #82 (fast-track, classification fix: only the wizard-ux Stable onboarding fix vs stable 0.3.39) after a supported strict installer upgrade of the alongside demo from stable 0.3.39. Authorized by Miguel (@mistermizel), 26 Oct 2026. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.53.md (wizard-os #244). Rollback: point `stable` back at 0.3.39.
 
