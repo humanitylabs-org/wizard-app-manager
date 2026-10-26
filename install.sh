@@ -236,6 +236,16 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
     for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && { up=1; break; }; sleep 2; done
     [ "$up" = 1 ] || DEGRADED+=("your Hermes API ($ORIGIN) did not answer after the restart")
   fi
+  # `wizard link` refreshes the wizard-os plugin; the host dashboard (the apps' account broker and usage reader)
+  # loads plugins only when it starts, so restart it if it runs. It holds no chats; apps retry on their next read.
+  # Not installed is fine; an installed (enabled) or running dashboard that is not running afterwards is reported,
+  # including one that an earlier restart in `wam alongside` left down.
+  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service 2>/dev/null \
+      || systemctl --user is-active --quiet wizard-host-dashboard.service 2>/dev/null; }; then
+    systemctl --user restart wizard-host-dashboard.service >/dev/null 2>&1 && sleep 3 \
+      && systemctl --user is-active --quiet wizard-host-dashboard.service \
+      || DEGRADED+=("the agent dashboard (wizard-host-dashboard.service) did not come back after the plugin refresh, so app sign-in and usage may be unavailable; see: systemctl --user status wizard-host-dashboard")
+  fi
 fi
 
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
