@@ -23,7 +23,8 @@ Promotion JSON SHA256: `55dadebe6e5711dbd8f1b1fcc601ba4ea461c06c1e464eee53868c5e
 - Canonical source: `humanitylabs-org/wizard-os` PR #242, `releases/0.3.53.json`; byte-identical SHA-256 `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
 - Corrected fix-only Stable onboarding candidate. Supersedes the unpromoted 0.3.51 candidate without rewriting its immutable manifest: UX #535 reserves native safe areas and gives absolute Done rows real WebKit/Chromium scroll reach. No unrelated Latest feature imported; all non-UX runtime pins are identical to Stable 0.3.39.
 - Official hosted signed maintenance publication and anonymous amd64/arm64 pulls: UX run `40264433758`, source `26c3b20fa484b79cb1b1836bfd05064195659360`, digest `sha256:03a93684174475546f38bcabd246894cecbde09bc6c78e4ae1178ed0045d91d9`.
-- Cut only: Stable stays 0.3.39 until new exact-candidate installed acceptance and separately reviewed promotion. Latest continuity will preserve the prior Latest bundle separately and never promote it as this repair.
+- At cut (superseded): Stable stayed 0.3.39 until new exact-candidate installed acceptance and separately reviewed promotion. Latest continuity will preserve the prior Latest bundle separately and never promote it as this repair.
+- Channel now: promoted to stable 26 Oct 2026 after the installed 0.3.39 → 0.3.53 acceptance; see `## stable 0.3.53` above.
 
 ## 0.3.51 provenance
 
