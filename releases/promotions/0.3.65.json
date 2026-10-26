@@ -1,0 +1,16 @@
+{
+  "version": "0.3.65",
+  "latest_since": "2026-10-26T17:44:40Z",
+  "promoted_at": "2026-10-26T18:11:40Z",
+  "upgrade_test": {
+    "from": "0.3.63",
+    "to": "0.3.65",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.65.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Recommended fix from a live customer install (Heidi, 26 Oct 2026): installer reruns left the ChatGPT/Claude apps on a dead agent address after a tailnet move, finished box-only on HTTPS-off tailnets with no owner action, and could miss an approved Tailscale login. wizard-app-manager #258 (Stable #259, Latest #260): CI green, 11 failing-first tests, Codex findings fixed. Disposable KVM guests with official-installer root Hermes: old 0.3.61 reproduces the stale containers (connection endpoints hang 15-20 s); 0.3.65 fresh install reaches done in ~9 min with an explicit HTTPS owner step that continues by itself, a tailnet move recreates both apps on the new address in 3 min, and the 0.3.63 -> 0.3.65 WIZARD_STRICT=1 upgrade is pinned with 0 failed checks, unchanged Hermes config/env/auth and doctor 0 FAIL.",
+    "notes": "Changed pins vs 0.3.63: wizard-app-manager only (e3f76a68 -> 8607981). No image, app, UX, Agent Service, Troubleshooter or Hermes change; no migrations. Not checked: real Tailscale control plane/HTTPS certificates/serve links (headscale + test wrapper), real provider sign-in, physical phone. Latest continuity 0.3.66 = 0.3.64 + the same WAM change on the Latest branch."
+  }
+}

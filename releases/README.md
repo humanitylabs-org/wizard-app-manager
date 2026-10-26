@@ -347,3 +347,16 @@ Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca1304
 Canonical: wizard-os releases/0.3.65.json (wizard-os #262). SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
 Stable 0.3.63 plus wizard-app-manager #258 on the Stable maintenance branch (#259, `8607981`): installer reruns recreate connection apps on an address/login change or stale running container, HTTPS-off owner step, approved Tailscale login waited for, official-installer Hermes routes to `hermes update`. Other pins unchanged.
 Channel: on latest only; stable remains 0.3.63 pending the upgrade test.
+
+## stable 0.3.65
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after a passed 0.3.63 -> 0.3.65 upgrade test with WIZARD_STRICT=1 on a disposable guest. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.65.md (wizard-os #263). Rollback: point `stable` back at 0.3.63.
+
+Release JSON SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Promotion JSON SHA256: `b66b41d3fcf982410a70c2ff31efba8589cf11a6be87ea32508a63acbc40f50b`.
+
+## 0.3.66 provenance
+
+Canonical: wizard-os releases/0.3.66.json (wizard-os #263). SHA256: `68605bbc445ec12a38f6350a304e91b17773a3bdb289d10dcebebac2d34ab8b7`.
+Latest continuity: 0.3.64 plus wizard-app-manager #258 on the Latest maintenance branch (#260, `da2f01d`). Other pins unchanged.
+Channel: on latest only.
