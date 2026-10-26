@@ -135,33 +135,39 @@ def test_install_reloads_the_dashboard_after_link_refreshes_the_plugin():
     bootstrap = src.index("# 3) Fill every empty parking spot")
     assert link < reload < bootstrap
     block = src[src.rindex("\n", 0, reload) - 400:reload + 600]
-    assert "is-active --quiet wizard-host-dashboard.service" in block   # only a running dashboard is restarted
+    assert "is-enabled --quiet wizard-host-dashboard.service" in block  # only an installed dashboard is restarted
     assert "DEGRADED+=" in block and "|| true" not in block           # a failed restart is reported
 
 
 def _reload_block():
     src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-    start = src.index("  if [ ${#FAILED[@]} -eq 0 ] && systemctl --user is-active --quiet wizard-host-dashboard.service")
-    return src[start:src.index("  fi\n", start) + 5]
+    start = src.index("  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service")
+    return src[start:src.index("\n  fi\n", start) + 6]
 
 
 def test_install_reload_block_behaviour(tmp_path):
     import subprocess
-    for active, restart_ok, after, degraded, restarted in ((False, True, True, False, False), (True, True, True, False, True),
-                                                           (True, False, False, True, True), (True, True, False, True, True)):
+    # (enabled, active before, restart ok, active after) -> (degraded, restarted)
+    cases = (((False, False, True, True), (False, False)),   # not installed: nothing to do
+             ((True, True, True, True), (False, True)),       # running: restarted, back up
+             ((True, True, False, False), (True, True)),      # restart fails
+             ((True, True, True, False), (True, True)),       # restarted but does not stay up
+             ((True, False, False, False), (True, True)),     # installed but left down by `wam alongside`
+             ((False, True, True, True), (False, True)))      # running but not enabled
+    for (enabled, active, restart_ok, after), (degraded, restarted) in cases:
         log = tmp_path / "log"
         log.write_text("")
         stub = tmp_path / "systemctl"
-        # is-active answers `active` before the restart and `after` once it ran; restart succeeds or fails.
         stub.write_text(f"""#!/bin/bash
 echo "$*" >> {log}
 case "$*" in
-  *is-active*) if grep -q restart {log}; then exit {0 if after else 3}; else exit {0 if active else 3}; fi ;;
+  *is-enabled*) exit {0 if enabled else 1} ;;
+  *is-active*) if grep -q " restart" {log}; then exit {0 if after else 3}; else exit {0 if active else 3}; fi ;;
   *restart*) exit {0 if restart_ok else 1} ;;
 esac
 """)
         stub.chmod(0o755)
         script = "FAILED=(); DEGRADED=(); sleep() { :; }\n" + _reload_block() + 'echo "DEG=${#DEGRADED[@]}"\n'
         out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
-        assert out.stdout.strip() == f"DEG={1 if degraded else 0}", (active, restart_ok, after, out.stdout, out.stderr)
+        assert out.stdout.strip() == f"DEG={1 if degraded else 0}", (enabled, active, restart_ok, after, out.stdout, out.stderr)
         assert ("restart wizard-host-dashboard.service" in log.read_text()) == restarted
