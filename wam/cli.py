@@ -826,7 +826,10 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         # Connection apps (ChatGPT, Claude) whose dashboard address/login this run changed, or whose running
         # containers still carry an old one (a tailnet move): recreate them now. Runtipi reads app.env only when it
         # creates a container, so without this they keep the old address until someone restarts them by hand.
-        changed = [a for a in [*(dash.get("changed_apps") or []), *(login.get("changed_apps") or [])] if a not in apps]
+        # Only when the dashboard is up: recreating against a dashboard that failed to (re)start would trade a
+        # still-usable app for one pointing at nothing. The error is reported and the next run retries.
+        dash_changed = dash.get("changed_apps") or [] if dash.get("state") == "ready" else []
+        changed = [a for a in [*dash_changed, *(login.get("changed_apps") or [])] if a not in apps]
         if changed:
             out["recreated"] = recreate_apps(c, rt, list(dict.fromkeys(changed)))
             order += [a for a, r in out["recreated"].items() if r.startswith("error") and a not in order]
