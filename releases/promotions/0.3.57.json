@@ -1,0 +1,16 @@
+{
+  "version": "0.3.57",
+  "latest_since": "2026-10-26T08:40:19Z",
+  "promoted_at": "2026-10-26T08:43:06Z",
+  "upgrade_test": {
+    "from": "0.3.55",
+    "to": "0.3.57",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.57.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-requested (Miguel, 26 Oct 2026; DECISIONS #93 launch-phase feature fast-track): install guidance moves from the chat handoff (os.md, WAM #246) into onboarding as one optional phone tour beat (UX #548). Unit 760/760 incl. failing-first tests; real-browser matrix 11/11 on source and on the exact published image (5/11 on old code); installer pin validation of the mirrored manifest; image diff shows only tour.js/tour.css/pwa-install.js changed.",
+    "notes": "Only wizard-ux component/image/default shell pin change vs stable 0.3.55; no other pins, no migrations. Not a full installer upgrade on a real box: demo deliberately untouched (wiped for owner's first-install test), no other disposable box reachable; exact image runtime exercised directly. Not provable in emulation: real iPhone Add to Home Screen, real Telegram webview, real Android install sheet. Older 0.3.26-0.3.31 Automatic updaters skip fast-tracked stable (Update now works)."
+  }
+}

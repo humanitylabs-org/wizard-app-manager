@@ -11,7 +11,26 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.55
+## stable 0.3.57
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-requested and authorized by Miguel, 26 Oct 2026). It is stable 0.3.55 with only the wizard-ux pin changed: `components.wizard-ux`, `images.wizard-ux` and `default_apps.shell` move from 26c3b20 to ffa4c6366f9267e3ed5ca2fbc710ca9c8ad97686 (wizard-ux #548 on `release/stable-onboarding`), image `sha256:a667cd87f0446dce9e6117ff05adf741df47979d380a31c946cd400e11ed721c`. The phone tour ends with an optional Add to Home Screen beat, replacing the install text removed from os.md (#246). Every other pin is identical to 0.3.55. Image-level acceptance was run, but no full installer upgrade on a real box (see the evidence). Canonical evidence: wizard-os/docs/acceptance/promote-0.3.57.md (wizard-os #251). Rollback: point `stable` back at 0.3.55.
+
+Release JSON SHA256: `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+Promotion JSON SHA256: `841d522aeb0132d2539d5e61493f7bd8d5f16e422d9d69a88b48bc48e10abc4e`.
+
+## 0.3.58 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250 (file) and PR #251 (cut onto latest), `releases/0.3.58.json`; byte-identical SHA-256 `e9de77dddc22dfe3301f210e4fa276bb5bafd6e80514d6322ce2b88ea5c9405f`.
+- Latest continuity only: exactly the 0.3.56 runtime pins (only version, name and about differ), so Latest testers keep the 0.3.54 backup bundle while stable moves to 0.3.57. It does not carry the 0.3.57 Install beat.
+- Channel: on latest only.
+
+## 0.3.57 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250, `releases/0.3.57.json`; byte-identical SHA-256 `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+- Stable 0.3.55 plus wizard-ux #548 (official maintenance publication run 40292759016). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.57` above.
+
+## stable 0.3.55 (superseded by 0.3.57)
 
 Promoted under DECISIONS #82 (fast-track, classification fix). It is stable 0.3.53 with only the Troubleshooter pin changed: `components.wizard-troubleshooter` 4b1f0ef → c1b4c432fd7b162d23d42fb7d3d8fb049bee764e (wizard-troubleshooter #12 and #13, plus the #10 license). This is host tooling with no image, and every other pin is identical to 0.3.53. Upgrade 0.3.53 → 0.3.55 of the `wam troubleshooter` step passed in a disposable systemd box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.55.md (wizard-os #249). Rollback: point `stable` back at 0.3.53.
 
