@@ -400,7 +400,7 @@ if mode == "end":
     st["tailscale_login_url"] = st.get("tailscale_login_url") if rc else None
     st["state"] = "done" if rc == 0 else "failed"
     st["exit_code"] = rc
-    st["approval_url"] = None
+    st["approval_url"] = st["owner_url"] = None
     if rc == 3 and st.get("admin_command") and st.get("admin_message"):
         st["state"], st["message"] = "needs_admin", st["admin_message"]
         save(st); sys.exit(0)
@@ -430,6 +430,11 @@ def handle(line):
         m = url.search(s)
         st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
         st["message"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-step:"):
+        # An owner action that is not a sign-in (e.g. turn on HTTPS certificates); the runner keeps waiting.
+        m = url.search(s)
+        st["state"], st["owner_url"] = "needs_owner", m.group(0) if m else None
+        st["message"] = s.split(":", 1)[1].replace(m.group(0) if m else "\0", "").strip()
     elif s.startswith("[wizard-os] owner-approval:"):
         m = re.search(r"https?://\S+", s)
         st["state"], st["approval_url"] = "needs_owner", m.group(0) if m else None
@@ -442,7 +447,7 @@ def handle(line):
         st["notice"] = s.split(":", 1)[1].strip()
     elif s.startswith("[wizard-os] owner-action-done"):
         st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
-        st["approval_url"], st["notice"] = None, None
+        st["approval_url"], st["notice"], st["owner_url"] = None, None, None
     elif s.startswith("[wizard-os] wizard-url:"):
         m = url.search(s)
         st["wizard_url"] = m.group(0) if m else None
@@ -506,6 +511,9 @@ if state in ("running", "needs_owner"):
     elif st.get("tailscale_login_url"):
         print("Owner action: Open this link to connect your Wizard to your Tailscale:")
         print(st["tailscale_login_url"])
+    elif st.get("owner_url"):
+        print(f"Owner action: {st.get('message') or 'Open this link:'}")
+        print(st["owner_url"])
     elif state == "needs_owner" and st.get("message"):
         print(f"Owner action: {st['message']}")
 elif state == "done":

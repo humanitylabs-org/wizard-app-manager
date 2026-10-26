@@ -819,17 +819,43 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         dash = host_dashboard_cmd(c, rt)
         if dash.get("state") != "skipped":
             out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
-        order += [a for a in dash.get("changed_apps") or [] if a not in order]
         reg_apps = registry_apps(c)
         login = claude_login_cmd(c, {a: (reg_apps.get(a) or {}).get("provides") or [] for a in installed_ids(rt)})
         if login.get("apps"):
             out["claude_login"] = login
-        order += [a for a in login.get("changed_apps") or [] if a not in order]
+        # Connection apps (ChatGPT, Claude) whose dashboard address/login this run changed, or whose running
+        # containers still carry an old one (a tailnet move): recreate them now. Runtipi reads app.env only when it
+        # creates a container, so without this they keep the old address until someone restarts them by hand.
+        # Only when the dashboard is up: recreating against a dashboard that failed to (re)start would trade a
+        # still-usable app for one pointing at nothing. The error is reported and the next run retries.
+        dash_changed = dash.get("changed_apps") or [] if dash.get("state") == "ready" else []
+        changed = [a for a in [*dash_changed, *(login.get("changed_apps") or [])] if a not in apps]
+        if changed:
+            out["recreated"] = recreate_apps(c, rt, list(dict.fromkeys(changed)))
+            order += [a for a, r in out["recreated"].items() if r.startswith("error") and a not in order]
         if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    return out
+
+
+def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
+    """Restart (Runtipi regenerates app.env and force-recreates the containers) each RUNNING app; a stopped app
+    picks the settings up on its next start. app id -> recreated | not running (...) | error: ..."""
+    out = {}
+    for app_id in ids:
+        urn = f"{app_id}:{STORE}"
+        try:
+            status = ((rt.app(urn) or {}).get("app") or {}).get("status")
+            if status != "running":
+                out[app_id] = f"not running ({status or 'not installed'}); applies on its next start"
+                continue
+            res = app_lifecycle(c, "restart", urn)
+            out[app_id] = f"error: {res['error']}" if res.get("error") else "recreated"
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - reported per app; never fails the alongside run
+            out[app_id] = f"error: {str(e)[:160] or type(e).__name__}"
     return out
 
 
