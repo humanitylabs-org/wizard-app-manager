@@ -59,3 +59,115 @@ def test_ensure_skips_or_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(hd, "tailnet_ip", lambda: None)
     out = hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env)
     assert out["state"] == "error" and not hd.env_path(wh).exists()   # never binds a public or loopback address
+
+
+def _run(tmp_path, monkeypatch, wh):
+    rt = tmp_path / "runtipi" if (tmp_path / "runtipi").is_dir() else box(tmp_path)
+    units, calls = tmp_path / "units", []
+    monkeypatch.setattr(hd, "tailnet_ip", lambda: "100.64.0.7")
+    monkeypatch.setattr(hd, "_systemctl", lambda *a: calls.append(a) or type("R", (), {"returncode": 0})())
+    hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/home/o/.hermes", cli.write_user_env,
+              unit_dir=units)
+    return calls
+
+
+def test_account_changes_are_on_for_the_dashboard(tmp_path, monkeypatch):
+    """The Claude app adds/removes any number of subscriptions through the plugin broker, which ships off."""
+    wh = tmp_path / "wos"
+    _run(tmp_path, monkeypatch, wh)
+    assert hd.read_env(hd.env_path(wh))[hd.ACCOUNT_CHANGES_VAR] == "1"
+    assert (hd.env_path(wh).stat().st_mode & 0o777) == 0o600
+
+
+def test_upgraded_box_keeps_its_login_and_restarts_once_for_account_changes(tmp_path, monkeypatch):
+    wh = tmp_path / "wos"
+    p = hd.env_path(wh)
+    p.parent.mkdir(parents=True)
+    old = {"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "hermes", hd.PASSWORD_VAR: "kept-password-abcdefghijklmnop",
+           "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "kept-secret"}
+    p.write_text("".join(f"{k}={v}\n" for k, v in old.items()))
+    units = tmp_path / "units"
+    units.mkdir()
+    (units / hd.UNIT).write_text(hd.unit_text("/usr/bin/hermes", "/home/o/.hermes", "100.64.0.7", wh))
+    calls = _run(tmp_path, monkeypatch, wh)
+    env = hd.read_env(p)
+    assert {k: env[k] for k in old} == old and env[hd.ACCOUNT_CHANGES_VAR] == "1"
+    assert ("restart", hd.UNIT) in calls   # the unit is unchanged, but the new environment needs a restart
+    calls = _run(tmp_path, monkeypatch, wh)
+    assert ("restart", hd.UNIT) not in calls and ("start", hd.UNIT) in calls
+
+
+def test_owner_can_keep_account_changes_off(tmp_path, monkeypatch):
+    wh = tmp_path / "wos"
+    p = hd.env_path(wh)
+    p.parent.mkdir(parents=True)
+    p.write_text(f"{hd.PASSWORD_VAR}=pw-abcdefghijklmnopqrstuvwxyz\nHERMES_DASHBOARD_BASIC_AUTH_SECRET=s\n"
+                 f"{hd.ACCOUNT_CHANGES_VAR}=0\n")
+    _run(tmp_path, monkeypatch, wh)
+    assert hd.read_env(p)[hd.ACCOUNT_CHANGES_VAR] == "0"
+
+
+def test_owner_edit_of_the_environment_restarts_the_running_dashboard(tmp_path, monkeypatch):
+    """An owner who flips WIZARD_ACCOUNT_CHANGES and reruns `wam alongside` gets it applied (start would not)."""
+    wh = tmp_path / "wos"
+    _run(tmp_path, monkeypatch, wh)
+    p = hd.env_path(wh)
+    p.write_text(p.read_text().replace(f"{hd.ACCOUNT_CHANGES_VAR}=1", f"{hd.ACCOUNT_CHANGES_VAR}=0"))
+    calls = _run(tmp_path, monkeypatch, wh)
+    assert ("restart", hd.UNIT) in calls and hd.read_env(p)[hd.ACCOUNT_CHANGES_VAR] == "0"
+    assert ("restart", hd.UNIT) not in _run(tmp_path, monkeypatch, wh)
+
+
+def test_a_failed_restart_is_retried_on_the_next_run(tmp_path, monkeypatch):
+    wh = tmp_path / "wos"
+    rt, units = box(tmp_path), tmp_path / "units"
+    monkeypatch.setattr(hd, "tailnet_ip", lambda: "100.64.0.7")
+    monkeypatch.setattr(hd, "_systemctl", lambda *a: type("R", (), {"returncode": 1, "stderr": "boom", "stdout": ""})())
+    out = hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env, unit_dir=units)
+    assert out["state"] == "error" and not hd.applied_path(wh).exists()
+    assert ("restart", hd.UNIT) in _run(tmp_path, monkeypatch, wh)
+
+
+def test_install_reloads_the_dashboard_after_link_refreshes_the_plugin():
+    src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+    link = src.index('"$HOME/.local/bin/wizard" link')
+    reload = src.index("systemctl --user restart wizard-host-dashboard.service")
+    bootstrap = src.index("# 3) Fill every empty parking spot")
+    assert link < reload < bootstrap
+    block = src[src.rindex("\n", 0, reload) - 400:reload + 600]
+    assert "is-enabled --quiet wizard-host-dashboard.service" in block  # only an installed dashboard is restarted
+    assert "DEGRADED+=" in block and "|| true" not in block           # a failed restart is reported
+
+
+def _reload_block():
+    src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+    start = src.index("  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service")
+    return src[start:src.index("\n  fi\n", start) + 6]
+
+
+def test_install_reload_block_behaviour(tmp_path):
+    import subprocess
+    # (enabled, active before, restart ok, active after) -> (degraded, restarted)
+    cases = (((False, False, True, True), (False, False)),   # not installed: nothing to do
+             ((True, True, True, True), (False, True)),       # running: restarted, back up
+             ((True, True, False, False), (True, True)),      # restart fails
+             ((True, True, True, False), (True, True)),       # restarted but does not stay up
+             ((True, False, False, False), (True, True)),     # installed but left down by `wam alongside`
+             ((False, True, True, True), (False, True)))      # running but not enabled
+    for (enabled, active, restart_ok, after), (degraded, restarted) in cases:
+        log = tmp_path / "log"
+        log.write_text("")
+        stub = tmp_path / "systemctl"
+        stub.write_text(f"""#!/bin/bash
+echo "$*" >> {log}
+case "$*" in
+  *is-enabled*) exit {0 if enabled else 1} ;;
+  *is-active*) if grep -q " restart" {log}; then exit {0 if after else 3}; else exit {0 if active else 3}; fi ;;
+  *restart*) exit {0 if restart_ok else 1} ;;
+esac
+""")
+        stub.chmod(0o755)
+        script = "FAILED=(); DEGRADED=(); sleep() { :; }\n" + _reload_block() + 'echo "DEG=${#DEGRADED[@]}"\n'
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+        assert out.stdout.strip() == f"DEG={1 if degraded else 0}", (enabled, active, restart_ok, after, out.stdout, out.stderr)
+        assert ("restart wizard-host-dashboard.service" in log.read_text()) == restarted
