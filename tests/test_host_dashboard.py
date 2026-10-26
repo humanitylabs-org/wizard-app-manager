@@ -269,3 +269,35 @@ def test_install_reports_apps_it_could_not_recreate(tmp_path):
                              env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
         assert out.stdout.strip().endswith(f"DEG={deg} F=0"), (rec, out.stdout, out.stderr)
         assert (f"Restarted with the current agent address: {said}" in out.stdout) == bool(said)
+
+
+def test_stale_login_in_a_running_container_also_needs_a_recreate(tmp_path, monkeypatch):
+    """A rotated dashboard login already written to app.env, but the container still has the old one."""
+    rt, wh, units = box(tmp_path), tmp_path / "wos", tmp_path / "units"
+    monkeypatch.setattr(hd, "tailnet_ip", lambda: "100.64.0.7")
+    hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env, unit_dir=units)
+    monkeypatch.setattr(hd, "running_env", lambda a, s: [{"WIZARD_CHATGPT_HERMES_URL": "http://100.64.0.7:9119",
+                                                         hd.PASSWORD_VAR: "old-login"}])
+    assert hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env,
+                     unit_dir=units)["changed_apps"] == ["wizard-chatgpt"]
+
+
+def test_alongside_does_not_recreate_apps_when_the_dashboard_failed(tmp_path, monkeypatch):
+    from wam import alongside
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "wos"))
+    monkeypatch.setenv("RUNTIPI_ROOT", str(tmp_path / "runtipi"))
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    c = cli.Config()
+    restarted = []
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: type("RT", (), {"app": lambda s, u: {"app": {"status": "running"}}})())
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt=None: {})
+    monkeypatch.setattr(alongside, "enable", lambda *a, **k: {"detected": {}, "agent": {}, "service": {}})
+    monkeypatch.setattr(cli, "host_dashboard_cmd", lambda c, rt=None: {
+        "state": "error", "error": "restart failed", "changed_apps": ["wizard-chatgpt"]})
+    monkeypatch.setattr(cli, "claude_login_cmd", lambda c, apps: {"changed_apps": []})
+    monkeypatch.setattr(cli, "registry_apps", lambda c: {})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {"apps": []})
+    monkeypatch.setattr(cli, "app_lifecycle", lambda *a, **k: restarted.append(a) or {"status": "running"})
+    out = cli.alongside_cmd(c, False, False, None, None)
+    assert restarted == [] and "recreated" not in out and out["host_dashboard"]["state"] == "error"
