@@ -171,3 +171,101 @@ esac
         out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
         assert out.stdout.strip() == f"DEG={1 if degraded else 0}", (enabled, active, restart_ok, after, out.stdout, out.stderr)
         assert ("restart wizard-host-dashboard.service" in log.read_text()) == restarted
+
+
+def test_running_container_with_an_old_address_needs_a_recreate(tmp_path, monkeypatch):
+    """Heidi's box: a tailnet move rewrote app.env, but the ChatGPT/Claude containers kept the old dashboard
+    address. A later run whose app.env is already current must still flag the stale running container."""
+    rt, wh, units = box(tmp_path), tmp_path / "wos", tmp_path / "units"
+    monkeypatch.setattr(hd, "tailnet_ip", lambda: "100.126.185.50")
+    first = hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env,
+                      unit_dir=units)
+    assert first["changed_apps"] == ["wizard-chatgpt"]
+    seen = []
+    def env(app_id, store):
+        seen.append((app_id, store))
+        return [{"WIZARD_CHATGPT_HERMES_URL": "http://100.91.73.83:9119", "PATH": "/bin"}, {"OTHER": "x"}]
+    monkeypatch.setattr(hd, "running_env", env)
+    again = hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env,
+                      unit_dir=units)
+    assert again["changed_apps"] == ["wizard-chatgpt"] and seen == [("wizard-chatgpt", "wizardapps")]
+    monkeypatch.setattr(hd, "running_env", lambda a, s: [{"WIZARD_CHATGPT_HERMES_URL": "http://100.126.185.50:9119"}])
+    assert hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env,
+                     unit_dir=units)["changed_apps"] == []
+    monkeypatch.setattr(hd, "running_env", lambda a, s: None)   # Docker unreadable: no false alarm
+    assert hd.ensure(wh, rt, "wizardapps", {"wizard-chatgpt"}, "/usr/bin/hermes", "/h", cli.write_user_env,
+                     unit_dir=units)["changed_apps"] == []
+
+
+def test_running_env_reads_the_apps_compose_project(monkeypatch):
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        out = "abc\ndef\n" if argv[1] == "ps" else '["A=1","B=x=y"]\n["C="]\n'
+        return type("R", (), {"returncode": 0, "stdout": out})()
+    monkeypatch.undo()   # drop the suite guard's running_env stub (this test fakes Docker itself)
+    monkeypatch.setattr(hd.shutil, "which", lambda n: "/usr/bin/docker")
+    monkeypatch.setattr(hd.subprocess, "run", run)
+    assert hd.running_env("wizard-chatgpt", "wizardapps") == [{"A": "1", "B": "x=y"}, {"C": ""}]
+    assert calls[0][-1] == "label=com.docker.compose.project=wizard-chatgpt_wizardapps"
+    assert calls[1][:4] == ["/usr/bin/docker", "inspect", "--format", "{{json .Config.Env}}"]
+
+
+def test_alongside_rerun_recreates_running_connection_apps(tmp_path, monkeypatch):
+    """`wam alongside` (run by every install/rerun) restarts each running app whose dashboard address changed or
+    whose container still holds an old one; stopped apps are left for their next start; failures are reported."""
+    from wam import alongside
+    home = tmp_path / "wos"
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    monkeypatch.setenv("RUNTIPI_ROOT", str(tmp_path / "runtipi"))
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    c = cli.Config()
+    status = {"wizard-chatgpt:wizardapps": "running", "wizard-claude:wizardapps": "running",
+              "tinfoil:wizardapps": "stopped"}
+
+    class RT:
+        def app(self, urn): return {"app": {"status": status[urn]}}
+    restarted = []
+    def lifecycle(c, verb, urn, timeout=300):
+        restarted.append((verb, urn))
+        return {"status": "running"} if urn != "wizard-claude:wizardapps" else {"error": "restart did not finish"}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt=None: {"wizard-ux": "shell"})
+    monkeypatch.setattr(alongside, "enable", lambda *a, **k: {"detected": {}, "agent": {}, "service": {}})
+    monkeypatch.setattr(alongside, "write_shell_override", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "host_dashboard_cmd", lambda c, rt=None: {
+        "state": "ready", "changed_apps": ["wizard-chatgpt", "wizard-claude", "tinfoil"]})
+    monkeypatch.setattr(cli, "claude_login_cmd", lambda c, apps: {"changed_apps": ["wizard-claude"]})
+    monkeypatch.setattr(cli, "registry_apps", lambda c: {})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {"apps": []})
+    monkeypatch.setattr(cli, "app_lifecycle", lifecycle)
+    out = cli.alongside_cmd(c, False, False, None, None)
+    assert restarted == [("restart", "wizard-chatgpt:wizardapps"), ("restart", "wizard-claude:wizardapps")]
+    assert out["recreated"]["wizard-chatgpt"] == "recreated"
+    assert out["recreated"]["wizard-claude"].startswith("error")
+    assert out["recreated"]["tinfoil"].startswith("not running")
+    assert "wam app update wizard-claude" in out["next"] and "wizard-chatgpt" not in out["next"]
+
+
+def _alongside_block():
+    src = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+    start = src.index('  if ! al_out="$("$HOME/.local/bin/wam" alongside')
+    return src[start:src.index("\n  fi\n", start) + 6]
+
+
+def test_install_reports_apps_it_could_not_recreate(tmp_path):
+    import json as _json
+    import subprocess
+    for rec, deg, said in (({}, 0, ""), ({"wizard-chatgpt": "recreated"}, 0, "wizard-chatgpt"),
+                           ({"wizard-chatgpt": "recreated", "wizard-claude": "error: boom"}, 1, "wizard-chatgpt"),
+                           ({"tinfoil": "not running (stopped); applies on its next start"}, 0, "")):
+        wam = tmp_path / ".local" / "bin" / "wam"
+        wam.parent.mkdir(parents=True, exist_ok=True)
+        wam.write_text("#!/bin/sh\necho '" + _json.dumps({"mode": "alongside", "recreated": rec}) + "'\n")
+        wam.chmod(0o755)
+        script = "FAILED=(); DEGRADED=()\n" + _alongside_block() + 'echo "DEG=${#DEGRADED[@]} F=${#FAILED[@]}"\n'
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        assert out.stdout.strip().endswith(f"DEG={deg} F=0"), (rec, out.stdout, out.stderr)
+        assert (f"Restarted with the current agent address: {said}" in out.stdout) == bool(said)

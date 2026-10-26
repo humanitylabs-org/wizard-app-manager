@@ -222,8 +222,21 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   # Active threads use the supported Hermes HTTP session reader. Keep archive/database sharing opt-in.
-  if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
+  # `wam alongside` also recreates connection apps (ChatGPT, Claude) whose agent address changed or whose running
+  # containers still hold an old one (e.g. after a tailnet move); one it could not restart is reported.
+  if ! al_out="$("$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"})"; then
     FAILED+=("could not record alongside mode (wam alongside)")
+  else
+    al_rec="$(printf '%s' "$al_out" | python3 -c 'import json,sys
+r = json.load(sys.stdin).get("recreated") or {}
+print(", ".join(a for a, v in r.items() if v == "recreated"))
+print("; ".join(f"{a} ({v})" for a, v in r.items() if str(v).startswith("error")))' 2>/dev/null || true)"
+    [ -z "$(printf '%s\n' "$al_rec" | sed -n 1p)" ] || echo "Restarted with the current agent address: $(printf '%s\n' "$al_rec" | sed -n 1p)"
+    al_bad="$(printf '%s\n' "$al_rec" | sed -n 2p)"
+    [ -z "$al_bad" ] || DEGRADED+=("these apps still run with an old agent address, so signing in through them may not reach your agent: $al_bad (fix: wam app restart <app>)")
+  fi
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    :
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
       ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"}; then
     FAILED+=("'wizard link' failed (its message is above); your Hermes was left as it was. Fix it, then re-run the install")

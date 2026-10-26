@@ -17,6 +17,7 @@ dashboard URL variable is whatever `${VAR:-http://hermes-agent:9119}` the recipe
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 import shutil
@@ -92,6 +93,44 @@ def tailnet_ip() -> str | None:
     return ip if re.fullmatch(r"100\.\d{1,3}\.\d{1,3}\.\d{1,3}", ip) else None
 
 
+def running_env(app_id: str, store: str) -> list[dict[str, str]] | None:
+    """The environment of each running container of an installed app (Runtipi's compose project `<app>_<store>`),
+    or None when Docker can't be read. Values stay in memory; nothing is printed."""
+    docker = shutil.which("docker")
+    if not docker:
+        return None
+    try:
+        ps = subprocess.run([docker, "ps", "-q", "--filter", f"label=com.docker.compose.project={app_id}_{store}"],
+                            capture_output=True, text=True, timeout=30)
+        if ps.returncode:
+            return None
+        ids = ps.stdout.split()
+        if not ids:
+            return []
+        r = subprocess.run([docker, "inspect", "--format", "{{json .Config.Env}}", *ids],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode:
+            return None
+        out = []
+        for line in r.stdout.splitlines():
+            env = {}
+            for kv in json.loads(line) or []:
+                k, _, v = str(kv).partition("=")
+                env[k] = v
+            out.append(env)
+        return out
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def stale_running(app_id: str, store: str, want: dict[str, str]) -> bool:
+    """A running container of the app still carries an older value of a variable it was pointed at (e.g. the
+    dashboard address from before a tailnet move). Runtipi reads app.env only when it (re)creates a container, so
+    such an app needs a recreate even when this run did not change its app.env (wizard-os: Heidi install)."""
+    envs = running_env(app_id, store) or []
+    return any(k in env and env[k] != v for env in envs for k, v in want.items())
+
+
 def consumers(runtipi_root: Path, store: str, installed: set[str]) -> dict[str, list[str]]:
     """app id -> the dashboard URL variables its recipe reads, for installed apps that sign in via the dashboard."""
     out = {}
@@ -162,6 +201,8 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         if any(read_env(p).get(k) != v for k, v in want.items()):
             write_user_env(runtipi_root, app_id, want)
             out["changed_apps"].append(app_id)
+        elif stale_running(app_id, store, {v: url for v in url_vars}):
+            out["changed_apps"].append(app_id)   # app.env is current, the running container is not
     return out
 
 

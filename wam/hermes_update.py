@@ -98,8 +98,24 @@ def _installation(home: Path) -> dict:
         raise ValueError('alongside.json needs a loopback Hermes API origin')
     git = ((repo / '.git').exists() and (repo / 'venv/bin/python').is_file()
            and _git(repo, 'rev-parse', '--show-toplevel', check=False) == str(repo.resolve()))
-    return {'install_type': 'git' if git else 'manual', 'hermes_home': str(hh),
+    kind = 'git' if git else 'official' if _self_updating(repo) else 'manual'
+    return {'install_type': kind, 'hermes_home': str(hh),
             'repo': str(repo), 'origin': origin, 'uid': agent.get('uid')}
+
+
+def _self_updating(repo: Path) -> bool:
+    """The official Hermes installer's layout (install.sh, also `--skip-setup`): a launcher at
+    hermes-agent/.hermes/bin/hermes over managed environments, and an install stamp whose updateMechanism is
+    "self". There is no venv to pip into; the supported update is stock `hermes update`."""
+    try:
+        stamp = json.loads((repo / 'install-stamp.json').read_text())
+    except (OSError, ValueError):
+        stamp = {}
+    return (repo / '.hermes/bin/hermes').is_file() or (isinstance(stamp, dict) and stamp.get('updateMechanism') == 'self')
+
+
+OFFICIAL_REASON = ("This Hermes was installed by the official Hermes installer and updates itself: run `hermes update` "
+                   "(as the Hermes owner, outside a chat turn). Wizard OS updates never change its version.")
 
 
 def _health(origin: str) -> str | None:
@@ -152,6 +168,8 @@ def status(home: Path | None = None, base: str | None = None) -> dict:
         if install['install_type'] == 'container':
             return {**out, 'state': 'container', 'reason': "Hermes moves with the release's default app, not this command."}
         out['running_version'] = _health(install['origin'])
+        if install['install_type'] == 'official':
+            return {**out, 'state': 'self_updating', 'command': 'hermes update', 'reason': OFFICIAL_REASON}
         if install['install_type'] == 'manual':
             return {**out, 'state': 'manual', 'reason': 'update this Hermes by hand (not a git checkout with a venv).'}
         repo = Path(install['repo'])
@@ -388,7 +406,7 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         if not dry_run:
             _save(h / 'hermes-update.json', out)
         return dict(out)
-    if st['state'] in ('no_pin', 'manual', 'container', 'up_to_date'):
+    if st['state'] in ('no_pin', 'manual', 'self_updating', 'container', 'up_to_date'):
         return st
     if st['state'] == 'refused':
         return save('refused', st['reason'])
