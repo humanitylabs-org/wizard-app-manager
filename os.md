@@ -37,6 +37,15 @@ The first time it shows a Tailscale link, send the owner this short explanation 
 > 1. Make a free Tailscale account, and sign in on the phone or computer you'll use Wizard on.
 > 2. Open the link below and sign in with the same account. That connects this server, and you're done.
 
+If status shows an owner action to turn on HTTPS for Tailscale (every brand-new Tailscale account starts with it off), send the owner this message word for word, with the link status shows, then keep checking. The install continues by itself once it is on:
+
+> One switch in Tailscale gives your Wizard its private secure link.
+>
+> 1. Open the link below, signed in with the same Tailscale account.
+> 2. Turn on MagicDNS if it is off, then turn on HTTPS Certificates.
+>
+> That's it. The install continues by itself.
+
 5. Tell the owner: Hermes restarts once at the end, so this chat goes quiet for about a minute.
 
 6. When status says done, send the owner this message, word for word, with the private Wizard link that status shows in place of `<link>`. Put the link alone inside a code block (three backticks on the line before and after), never as a plain clickable link, so the owner copies it into their browser instead of opening it inside the chat app. If status shows no link, send its message instead.
@@ -60,7 +69,7 @@ The first time it shows a Tailscale link, send the owner this short explanation 
 
 - Never edit Hermes config by hand.
 - Never reinstall or update Hermes.
-- Owners can explicitly update the release-pinned host Hermes with `wam hermes update`; this is not an installer-agent step.
+- Owners update their own Hermes, never the installer agent: `hermes update` for a Hermes from the official Hermes installer (what `wam updates` names for it), or `wam hermes update` for a release-pinned source checkout.
 - Never run any other script.
 - Never improvise fixes.
 
