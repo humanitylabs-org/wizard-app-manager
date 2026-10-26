@@ -369,8 +369,11 @@ as_user() {
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
+  # Fresh Ubuntu boots may still be applying automatic security updates. Let
+  # apt wait for dpkg instead of failing the whole install on its frontend lock.
+  say "Waiting for Ubuntu's automatic updates to finish, if needed (up to 10 minutes)"
+  apt-get -o DPkg::Lock::Timeout=600 update -qq
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
   if ! command -v docker >/dev/null || [ "$(docker version --format '{{.Server.Version}}' 2>/dev/null | cut -d. -f1)" -lt 28 ] 2>/dev/null; then
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
@@ -992,7 +995,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
-command -v git >/dev/null || sudo apt-get install -y -qq git >/dev/null
+command -v git >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq git >/dev/null
 if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
   printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
