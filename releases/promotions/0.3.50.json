@@ -1,0 +1,16 @@
+{
+  "version": "0.3.50",
+  "latest_since": "2026-10-25T23:24:10Z",
+  "promoted_at": "2026-10-26T02:44:34Z",
+  "upgrade_test": {
+    "from": "0.3.39",
+    "to": "0.3.50",
+    "passed": true,
+    "evidence": "Gate A heavy_fa4ed5aecf3d4f6ab6182c9b8a410def; receipt b350-39/evidence/receipt.json; sha256 7485c3e9a919983313c4de079aaa2d04df551ae95e6ecf47160c64b49193a881. Gate B heavy_733abccb64a44aad86ac324a35101b27; receipt b350-40/evidence/receipt.json; sha256 6c9329578ce189e9d9f8144f85ac1877d9b5f11fae9a1dd8c9cea63a9daa8de9. Both passed=true for 0.3.50; evidence report docs/acceptance/release-0.3.50-stable.md."
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "James explicitly waived the 72-hour latest soak on 25 October 2026 for the first small Tuesday 27 October tester group (docs/DECISIONS.md, Tuesday small-group backup/restore release). Current delegated launch instruction authorizes 0.3.50 promotion. Both real release gates passed: fresh 0.3.50, upgrades from current Stable 0.3.39 and 0.3.40, plus export/verify/import/Undo across 11 synthetic data classes with matching Undo digest. This is a feature fast-track, not a fix-only maintenance backport or mass rollout.",
+    "notes": "Carries the published 0.3.50 bundle unchanged, including backup/restore, Voice/Connection Router defaults and the reconciled UX/Android/shell pins. Separate fix-only onboarding backport work at #237 is not included. Backup proof is same-release Linux round trip with synthetic login; no scheduler/refresh fencing, Mac GUI migration, physical phone or real-provider portability claim."
+  }
+}
