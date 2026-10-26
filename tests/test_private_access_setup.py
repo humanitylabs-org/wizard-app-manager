@@ -37,14 +37,25 @@ case "$1" in
 status)
   st="$(cat "$STATE_FILE")"; url=""
   if [ "$st" = NeedsLogin ] && [ -f "$STATE_FILE.up" ]; then url="https://login.tailscale.com/a/${LINK_ID:-abc123}"; fi
-  certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || certs=null
+  certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || [ -f "$STATE_FILE.certs" ] || certs=null
   printf '{"BackendState":"%s","AuthURL":"%s","CurrentTailnet":{"MagicDNSEnabled":%s},"CertDomains":%s}\\n' \\
     "$st" "$url" "${MAGICDNS:-true}" "$certs" ;;
+cert)
+  [ -f "$STATE_FILE.certs" ] || [ "${CERTS:-on}" = on ] || exit 1
+  [ ! -f "$STATE_FILE.certfail" ] || exit 1 ;;
 login)
   touch "$STATE_FILE.up"; echo "login keeps settings"
   if [ -n "${LOGIN_AFTER:-}" ]; then sleep "$LOGIN_AFTER"; echo Running > "$STATE_FILE"; exit 0; fi
   exit 1 ;;
 up)
+  if [ -n "${UP_OK_STARTING:-}" ]; then
+    # The owner approves; `up` exits 0 while the daemon still reports Starting, Running a few seconds later.
+    # A second `up` in that window starts a new sign-in (fresh link, NeedsLogin) and the first never completes.
+    if [ -f "$STATE_FILE.first" ]; then touch "$STATE_FILE.second"; echo NeedsLogin > "$STATE_FILE"; exit 1; fi
+    touch "$STATE_FILE.first" "$STATE_FILE.up"; sleep "${LOGIN_AFTER:-1}"; echo Starting > "$STATE_FILE"
+    ( sleep "$UP_OK_STARTING"; [ -f "$STATE_FILE.second" ] || echo Running > "$STATE_FILE" ) >/dev/null 2>&1 &
+    exit 0
+  fi
   if [ -n "${NONDEFAULT:-}" ] && [ "$#" -eq 2 ]; then
     echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags"
     echo "  tailscale up $2 ${PRESERVE_FLAGS:---accept-dns=false --accept-routes --hostname=fixture}"
@@ -77,9 +88,10 @@ done
     return bin_dir, log, home, state, env
 
 
-def run(sandbox, **overrides):
+def run(sandbox, timeout=10, **overrides):
     *_, env = sandbox
-    return subprocess.run(["bash", str(SCRIPT)], env={**env, **overrides}, capture_output=True, text=True, timeout=10)
+    return subprocess.run(["bash", str(SCRIPT)], env={**env, **overrides}, capture_output=True, text=True,
+                          timeout=timeout)
 
 
 def test_existing_connection_is_not_reconfigured(sandbox):
@@ -230,3 +242,60 @@ def test_joined_node_never_changes_custom_flags_or_serve_443(sandbox):
     assert run(sandbox, NONDEFAULT="1").returncode == 0
     commands = [line for line in log.read_text().splitlines() if line.startswith("tailscale ")]
     assert commands and all(line == "tailscale status --json" for line in commands)
+
+
+def test_https_off_is_an_owner_step_and_the_install_continues_once_certs_work(sandbox):
+    """Heidi's brand-new tailnet had HTTPS certificates off: the install must stop on one explicit owner step with
+    the admin link (needs_owner), then continue by itself as soon as `tailscale cert` succeeds."""
+    import threading, time
+    _, log, home, state, env = sandbox
+    def owner_turns_https_on():
+        time.sleep(2)
+        Path(str(state) + ".certs").write_text("")
+    threading.Thread(target=owner_turns_https_on, daemon=True).start()
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="20", WIZARD_CERT_POLL_SECS="1", CERTS="off")
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.splitlines()
+    step = next(l for l in out if l.startswith("[wizard-os] owner-step:"))
+    assert "HTTPS" in step and step.endswith("https://login.tailscale.com/admin/dns")
+    assert out.index(step) < out.index("[wizard-os] owner-action-done")
+    assert not any(l.startswith("[wizard-os] note:") for l in out), "continued, so it is not box-only"
+    assert "tailscale cert --cert-file" in log.read_text()
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is True
+
+
+def test_https_still_off_at_the_deadline_finishes_box_only_with_the_note(sandbox):
+    _, log, home, state, _ = sandbox
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="3", WIZARD_CERT_POLL_SECS="1", CERTS="off")
+    assert p.returncode == 0, p.stderr
+    assert "[wizard-os] owner-step:" in p.stdout and "[wizard-os] owner-action-done" in p.stdout
+    assert "[wizard-os] note: HTTPS certificates is off" in p.stdout
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is False
+
+
+def test_certificate_domains_without_a_working_cert_keep_waiting(sandbox):
+    """CertDomains can appear before a certificate can actually be issued; only a real `tailscale cert` counts."""
+    import threading, time
+    _, log, home, state, _ = sandbox
+    Path(str(state) + ".certfail").write_text("")
+    threading.Thread(target=lambda: (time.sleep(1), Path(str(state) + ".certs").write_text("")), daemon=True).start()
+    p = run(sandbox, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="4", WIZARD_CERT_POLL_SECS="1", CERTS="off")
+    assert p.returncode == 0, p.stderr
+    assert "tailscale cert --cert-file" in log.read_text()
+    assert "HTTPS certificates are on" not in p.stdout
+    assert "[wizard-os] note: HTTPS certificates is off" in p.stdout
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["serve_ready"] is False
+
+
+def test_an_approved_login_is_waited_for_while_the_daemon_is_still_starting(sandbox):
+    """Heidi's rerun after `tailscale logout`: the owner approved, but the install finished box-only ("not connected
+    yet") and Tailscale showed connected moments later. A successful `up` must be followed by waiting for Running,
+    never by a second `up` that restarts the sign-in."""
+    _, log, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, timeout=40, WIZARD_DETACHED="1", WIZARD_TAILSCALE_WAIT="10", LOGIN_AFTER="1",
+            UP_OK_STARTING="4", WIZARD_TAILSCALE_GRACE="20")
+    assert p.returncode == 0, p.stderr
+    assert sum(line.startswith("tailscale up") for line in log.read_text().splitlines()) == 1
+    assert "not connected yet" not in p.stdout
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"

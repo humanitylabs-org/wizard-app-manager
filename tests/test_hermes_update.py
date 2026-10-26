@@ -106,6 +106,25 @@ def test_status_states(box):
     assert hu.update(b['h'])['state'] == 'container'
 
 
+def test_official_installer_layout_routes_to_hermes_update(box):
+    """Heidi's box: stock root Hermes from the official install.sh has no venv/ (a .hermes/bin launcher over
+    managed environments, install stamp updateMechanism=self). `wam updates` must point at the supported
+    `hermes update`, not say "update this Hermes by hand (not a git checkout with a venv)"."""
+    b = box
+    (b['repo'] / 'venv' / 'bin' / 'python').unlink()
+    launcher = b['repo'] / '.hermes' / 'bin' / 'hermes'
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\n')
+    st = b['hu'].status(b['h'])
+    assert st['state'] == 'self_updating' and st['command'] == 'hermes update' and st['install_type'] == 'official'
+    assert 'hermes update' in st['reason'] and 'by hand' not in st['reason']
+    assert b['hu'].update(b['h'])['state'] == 'self_updating'
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]   # never touched
+    launcher.unlink()
+    (b['repo'] / 'install-stamp.json').write_text('{"updateMechanism": "self"}')
+    assert b['hu'].status(b['h'])['state'] == 'self_updating'
+
+
 def test_manual_installs_are_never_touched(box):
     b = box
     (b['repo'] / 'venv' / 'bin' / 'python').unlink()

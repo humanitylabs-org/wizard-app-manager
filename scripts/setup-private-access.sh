@@ -115,11 +115,22 @@ for line in text.splitlines():
 PY
 )
         if [ "${#preserved[@]}" -gt 0 ]; then
-          root tailscale up "${preserved[@]}" >>"$out" 2>&1 || true
+          root tailscale up "${preserved[@]}" >>"$out" 2>&1 && : > "$out.ok"
         fi
+      else
+        : > "$out.ok"
       fi
     ) &
     up_pid=$!
+  }
+  # wait_running <seconds>: the owner approved (or `up` said so) but the daemon can take a moment to report Running.
+  wait_running() {
+    local end=$(( $(date +%s) + $1 ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      current="$(state)"; [ "$current" = Running ] && return 0
+      sleep 2
+    done
+    current="$(state)"; [ "$current" = Running ]
   }
   start_up
   shown=""
@@ -138,15 +149,24 @@ PY
     if ! kill -0 "$up_pid" 2>/dev/null; then
       current="$(state)"; [ "$current" = Running ] && break
       [ "$wait_s" -le 1 ] && break
+      # `up` finished successfully: the login went through. Never start a second `up` while the daemon is still
+      # switching to Running (that can begin a new sign-in and leave the just-approved one looking unfinished).
+      if [ -f "$out.ok" ]; then wait_running "${WIZARD_TAILSCALE_GRACE:-90}" && break; fi
+      rm -f "$out.ok"
       start_up   # `up` gave up early (or its link expired): a fresh link while the owner still has time
     fi
     sleep 2
   done
+  # Out of time right after a link was shown: the owner may have just approved it. Give the daemon a short grace
+  # period to report Running instead of finishing box-only seconds before it connects.
+  if [ "$current" != Running ] && [ -n "$shown" ] && [ "$wait_s" -gt 1 ]; then
+    wait_running "${WIZARD_TAILSCALE_GRACE:-90}" || true
+  fi
   # Connected: let `up` finish on its own. Out of time: stop the CLI (the daemon keeps the pending login, so the
   # same link still works later; nothing is reset).
   [ "$current" = Running ] || kill "$up_pid" 2>/dev/null || true
   wait "$up_pid" 2>/dev/null || true
-  rm -f "$out"
+  rm -f "$out" "$out.ok"
   [ -z "$shown" ] || echo "[wizard-os] owner-action-done"
   current="$(state)"
   if [ "$current" != "Running" ] && [ "$current" != "NeedsLogin" ]; then
@@ -161,6 +181,43 @@ elif [ "$current" != "Running" ]; then
 fi
 serve=""
 [ "$current" != Running ] || serve="$(status_field serve)"
+
+# certs_work: the tailnet can issue this box an HTTPS certificate right now (the private https:// links need one).
+# CertDomains alone can lag the admin switch; a real `tailscale cert` into a private temp dir proves it, and
+# tailscaled caches the certificate for Serve. Nothing is kept on disk.
+certs_work() {
+  local dom tmp ok=1
+  dom="$({ root tailscale status --json 2>/dev/null || true; } | python3 -c 'import json,sys
+try: print((json.load(sys.stdin).get("CertDomains") or [""])[0])
+except ValueError: print("")')"
+  [ -n "$dom" ] || return 1
+  tmp="$(mktemp -d)"
+  root tailscale cert --cert-file "$tmp/c.pem" --key-file "$tmp/k.pem" "$dom" >/dev/null 2>&1 && ok=0
+  rm -rf "$tmp"
+  return "$ok"
+}
+# MagicDNS/HTTPS certificates off (every brand-new tailnet): one explicit owner action, then continue by itself as
+# soon as a certificate can be issued. Detached/terminal installs wait like the sign-in does; others note it.
+if [ "$current" = Running ] && [ "$serve" != on ] && [ "$wait_s" -gt 1 ]; then
+  what="MagicDNS"; [ "$serve" = https-off ] && what="HTTPS certificates"
+  echo "Private access: Tailscale connected, but $what is off on your tailnet, so there is no private Wizard link yet."
+  echo "Turn on MagicDNS and HTTPS Certificates here (one time); the install continues by itself:"
+  echo "$ADMIN_DNS"
+  echo "[wizard-os] owner-step: Your Tailscale network needs HTTPS turned on once, so your Wizard gets its private https link. Open this page, turn on MagicDNS and HTTPS Certificates, and the install continues by itself: $ADMIN_DNS"
+  deadline=$(( $(date +%s) + wait_s )); certs_ok=""
+  while :; do
+    serve="$(status_field serve)"
+    if [ "$serve" = on ] && certs_work; then certs_ok=1; break; fi
+    [ "$(date +%s)" -lt "$deadline" ] || break
+    sleep "${WIZARD_CERT_POLL_SECS:-10}"
+  done
+  echo "[wizard-os] owner-action-done"
+  if [ -n "$certs_ok" ]; then
+    echo "Private access: HTTPS certificates are on; continuing."
+  elif [ "$serve" = on ]; then
+    serve=https-off   # switched on, but no certificate could be issued in time: still no private link
+  fi
+fi
 
 home="${WIZARD_OS_HOME:-$HOME/.wizard-os}"
 mkdir -p "$home"

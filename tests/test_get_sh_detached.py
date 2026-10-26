@@ -98,6 +98,36 @@ def test_start_returns_at_once_and_status_walks_running_owner_action_done(box, t
     assert not (home / ".wizard-os/install-env").exists(), "the runner's settings file is deleted once read"
 
 
+ADMIN_DNS = "https://login.tailscale.com/admin/dns"
+HTTPS_STEP = (
+    "echo '==> Installing the App Manager'\n"
+    "echo '[wizard-os] owner-step: Your Tailscale network needs HTTPS turned on once, so your Wizard gets its private"
+    f" https link. Open this page, turn on MagicDNS and HTTPS Certificates, and the install continues by itself: {ADMIN_DNS}'\n"
+    "while [ ! -f \"$HOME/.https-on\" ]; do sleep 0.2; done\n"
+    "echo '[wizard-os] owner-action-done'\n"
+    f"mkdir -p \"$HOME/.wizard-os\"; printf '{{\"links\":[{{\"url\":\"{WIZ}\"}}]}}' > \"$HOME/.wizard-os/links.json\"\n"
+)
+
+
+def test_https_off_is_a_needs_owner_step_with_the_admin_link(box, tmp_path):
+    """A brand-new tailnet has HTTPS certificates off: status says needs_owner with the plain-language step and the
+    admin link (not the sign-in wording), then done WITH the Wizard link once the owner turned it on."""
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    assert box.run("alice", "start", **_wam(tmp_path, HTTPS_STEP)).returncode == 0
+    st = _wait(home, {"needs_owner"})
+    assert st["owner_url"] == ADMIN_DNS and st["tailscale_login_url"] is None
+    s = box.run("alice", "status").stdout.splitlines()
+    assert s[0] == "Wizard OS install: needs_owner"
+    assert s[2].startswith("Owner action: Your Tailscale network needs HTTPS turned on once") and s[3] == ADMIN_DNS
+    assert ADMIN_DNS not in s[2] and "connect your Wizard to your Tailscale" not in s[2]
+    (home / ".https-on").touch()
+    st = _wait(home, {"done", "failed"})
+    assert st["state"] == "done" and st["owner_url"] is None and st["wizard_url"] == WIZ
+    assert "box-only" not in st["message"]
+
+
 def test_second_start_while_running_does_not_start_another(box, tmp_path):
     box.add_user("alice", 1001)
     box.hermes("alice")
