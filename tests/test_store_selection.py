@@ -193,7 +193,8 @@ def test_exact_hermes_selection_preflights_promotion_before_prepare(c, monkeypat
         assert (kwargs['release'] or kwargs['source_pin'])['commit'] == recipe['commit']
         folder = root / 'repos' / store / 'apps' / app
         folder.mkdir(parents=True)
-        (folder / '.wizard-source').write_text(json.dumps({'repo': repo}))
+        assert kwargs['source'] == source
+        (folder / '.wizard-source').write_text(json.dumps({'repo': repo, 'source': kwargs['source']}))
         (folder / '.wizard-commit').write_text(recipe['commit'])
         return entry
     def finish(*args, **kwargs):
