@@ -11,6 +11,14 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## 0.3.51 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
+- Byte-identical SHA-256: `9f28c6104767a5812cd429a2f086bda657d3aa782850f72a4873632b180ce2cd`.
+- Fix-only backport atop Stable 0.3.39. Only the UX component/image/default-shell source changes; no unrelated 0.3.50 features are promoted. One-time maintenance-source exception reviewed in wizard-os #236 and UX #530; runtime backport UX #531.
+- Official hosted multi-architecture publish/sign/finalize/anonymous-pull run: `wizard-ux/actions/runs/40259576904`; exact maintenance source `c0bd9adc82f6d61cd156b9f2568249cff7d668ba`, digest `sha256:a36276aa5f63676c3217a24664831cac80e32c434adf3312b0fc66cb34ea9bd0`.
+- Channel: Latest only at this cut. Stable stays 0.3.39 until installed upgrade/fresh acceptance and a separately reviewed promotion record. This mirror does not claim that acceptance has passed.
+
 ## 0.2.2 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os`, merge `8f54a471535a66afbdda3520dd6b6374541bb143`, `releases/0.2.2.json`.
