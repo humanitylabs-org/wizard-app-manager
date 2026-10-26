@@ -38,6 +38,9 @@ Use the shell registry as the source of truth. The accepted set is **Nebula (def
 Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant", "chat about this") opens the real Chats thread over the app window with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping. The `wizard-ui.css` kit is styling, never a licence to build a composer or transcript. Isolation requirements are met with an agent bound to the app, not a separate UI. `wam check` fails `app-chat` markup. Read `references/chat.md` before planning any conversational feature; its parity + fault-injection gate is the definition of done.
 
 
+## Finishing actions leave the screen (James, 25 Oct 2026; every build)
+Dismiss, hide, skip, archive, delete, mark done, save-and-close: the one tap does the action AND returns the owner to the screen he came from. Never leave him on a confirmation view that needs a second tap (Back, ✕, Done). In a framed Wizard app call `WizardApp.nav.back()` right after the write succeeds (it runs the shell's Back past the app's own views; it returns false when the app is hidden or unfocused, then show a toast instead). In a list, the item disappears in place. Undo lives in a toast or inside the app, never as a step before leaving. QA asserts one tap lands on the previous screen (model: wizard-ux `tools/qa-app-done-returns.cjs`).
+
 ## Reuse check (mandatory, before writing code)
 One implementation per capability. Before planning, read the Wizard OS component inventory (`docs/COMPONENTS.md` in wizard-ux; its App section is the `WizardApp` facade). List every capability the job needs (chat, draft, back, theme, share, capture, upload, settings, auth, markdown, errors, model picker, reading place, anything drawn or animated) and write one line each in the plan, worker brief, PR body and completion report:
 ```

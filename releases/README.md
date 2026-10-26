@@ -11,6 +11,29 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
+## stable 0.3.53
+
+Promoted under DECISIONS #82 (fast-track, classification fix: only the wizard-ux Stable onboarding fix vs stable 0.3.39) after a supported strict installer upgrade of the alongside demo from stable 0.3.39. Authorized by Miguel (@mistermizel), 26 Oct 2026. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.53.md (wizard-os #244). Rollback: point `stable` back at 0.3.39.
+
+Release JSON SHA256: `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+Promotion JSON SHA256: `55dadebe6e5711dbd8f1b1fcc601ba4ea461c06c1e464eee53868c5e5adb816f`.
+
+## 0.3.53 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #242, `releases/0.3.53.json`; byte-identical SHA-256 `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+- Corrected fix-only Stable onboarding candidate. Supersedes the unpromoted 0.3.51 candidate without rewriting its immutable manifest: UX #535 reserves native safe areas and gives absolute Done rows real WebKit/Chromium scroll reach. No unrelated Latest feature imported; all non-UX runtime pins are identical to Stable 0.3.39.
+- Official hosted signed maintenance publication and anonymous amd64/arm64 pulls: UX run `40264433758`, source `26c3b20fa484b79cb1b1836bfd05064195659360`, digest `sha256:03a93684174475546f38bcabd246894cecbde09bc6c78e4ae1178ed0045d91d9`.
+- At cut (superseded): Stable stayed 0.3.39 until new exact-candidate installed acceptance and separately reviewed promotion. Latest continuity will preserve the prior Latest bundle separately and never promote it as this repair.
+- Channel now: promoted to stable 26 Oct 2026 after the installed 0.3.39 → 0.3.53 acceptance; see `## stable 0.3.53` above.
+
+## 0.3.51 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
+- Byte-identical SHA-256: `9f28c6104767a5812cd429a2f086bda657d3aa782850f72a4873632b180ce2cd`.
+- Fix-only backport atop Stable 0.3.39. Only the UX component/image/default-shell source changes; no unrelated 0.3.50 features are promoted. One-time maintenance-source exception reviewed in wizard-os #236 and UX #530; runtime backport UX #531.
+- Official hosted multi-architecture publish/sign/finalize/anonymous-pull run: `wizard-ux/actions/runs/40259576904`; exact maintenance source `c0bd9adc82f6d61cd156b9f2568249cff7d668ba`, digest `sha256:a36276aa5f63676c3217a24664831cac80e32c434adf3312b0fc66cb34ea9bd0`.
+- Channel: Latest only at this cut. Stable stays 0.3.39 until installed upgrade/fresh acceptance and a separately reviewed promotion record. This mirror does not claim that acceptance has passed.
+
 ## 0.2.2 provenance
 
 - Canonical source: `humanitylabs-org/wizard-os`, merge `8f54a471535a66afbdda3520dd6b6374541bb143`, `releases/0.2.2.json`.
@@ -220,3 +243,8 @@ Promotion JSON SHA256: `ca495855d7f5b917fac0eb20037df1523cf1aff974214ae9633fe264
 Canonical: wizard-os releases/0.3.40.json (wizard-os #209). SHA256: `947cb1e88bf758e8e4889f85a352e1d04f688fc3543f9e3e9c8dedc8eda7fd53`.
 0.3.39 plus wizard-ux #482/#483 (`9fcf86c`): alongside first launch starts the first-message orientation once (phone tour, desktop composer guide), Setup stays manual, the desktop shell loads the tour; UX image `sha256:c369207da4392095a2be02c6c56c05f877b6bf079546c6816c375b11659b6c90`. Other pins unchanged.
 Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade verification.
+
+## 0.3.50 provenance
+
+Canonical wizard-os PR #233. Channel: on latest only; stable remains 0.3.39.
+Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca13044f`. Complete 0.3.49 non-UX pins retained; compatible Android/onboarding/Spaces UX is immutable 03b07142. No passed runtime release gate or promotion implied.

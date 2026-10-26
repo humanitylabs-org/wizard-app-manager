@@ -32,13 +32,14 @@ import os
 import shutil
 import time
 import uuid
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
-                  box_digest, digest_differences, human, log, need_space, skip_home_entry)
+                  box_digest, digest_differences, human, log, need_space, root_runtime_digest_path, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -77,11 +78,7 @@ def _write_json(path: Path, obj: dict) -> None:
 
 
 def _sync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    datafs.sync_dir(path)
 
 
 def _move(src: Path, dst: Path) -> None:
@@ -89,7 +86,7 @@ def _move(src: Path, dst: Path) -> None:
     if dst.exists() or dst.is_symlink():
         raise RestoreError(f"refusing to overwrite {dst}")
     try:
-        os.rename(src, dst)
+        datafs.rename(src, dst)
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
@@ -127,9 +124,18 @@ def _aside(r: _Restore, area: str, src: Path, dst: Path) -> None:
 def _undo_journaled_trees(box: Box, root: Path, j: dict, targets: dict, files_root: Path, froot: Path) -> None:
     """Freeze the undo move plan once. Retrying never sets aside an already restored original."""
     save = lambda: _write_json(root / "journal.json", j)
+
+    def coordination_move(row):
+        # Old journals may contain lock inodes. Never replace the current
+        # Service's lock with a saved copy, including an already frozen plan.
+        if row.get('area') != 'agents-root' or not j.get('agents_root'):
+            return False
+        live = Path(row['dst'] if row['kind'] == 'undo_restore' else row['src'])
+        return live.parent == Path(j['agents_root']) and agentlib.root_runtime_file(live.name)
+
     if "undo_moves" not in j:
         complete = {s["area"] for s in j["steps"] if s["kind"] == "set_aside"}
-        originals = [s for s in j["steps"] if s["kind"] == "set_aside_entry"
+        originals = [s for s in j["steps"] if s["kind"] == "set_aside_entry" and not coordination_move(s)
                      and (Path(s["dst"]).exists() or Path(s["dst"]).is_symlink())]
         current = []
         if "wizard-os" in complete:
@@ -159,20 +165,21 @@ def _undo_journaled_trees(box: Box, root: Path, j: dict, targets: dict, files_ro
                             for s in originals]
         save()
     for s in j["undo_moves"]:
-        _journal_move(j, save, s["kind"], s["area"], Path(s["src"]), Path(s["dst"]))
+        if not coordination_move(s):
+            _journal_move(j, save, s["kind"], s["area"], Path(s["src"]), Path(s["dst"]))
 
 
 def _rm(p: Path) -> None:
     if p.is_symlink() or p.is_file():
         p.unlink(missing_ok=True)
     elif p.exists():
-        shutil.rmtree(p)
+        datafs.rmtree(p)
 
 
 # ---------------------------------------------------------------- open, verify
 
 def _open(path: Path, keys: fmt.Keys):
-    f = open(path, "rb")
+    f = datafs.open(path, "rb")
     try:
         header, signed, mac = fmt.read_header(f)
         file_key = fmt.unlock(header, signed, mac, keys)
@@ -182,6 +189,7 @@ def _open(path: Path, keys: fmt.Keys):
         raise
 
 
+@datafs.with_access
 def verify(box: Box, path: Path, keys: fmt.Keys) -> dict:
     """Decrypt and check everything, write nothing."""
     t0 = time.time()
@@ -189,7 +197,7 @@ def verify(box: Box, path: Path, keys: fmt.Keys) -> dict:
     with f:
         res = bundle.scan(reader, None, progress=log)
     m = res["manifest"]
-    return {"ok": True, "file": str(path), "bytes": path.stat().st_size, "entries": res["entries"],
+    return {"ok": True, "file": str(path), "bytes": datafs.stat(path).st_size, "entries": res["entries"],
             "content_bytes": res["bytes"], "seconds": round(time.time() - t0, 1), "manifest": summary(m),
             "plan": plan(box, m, probe=False)}
 
@@ -371,8 +379,8 @@ def stage_stream(box: Box, stream, stamp: str | None = None) -> tuple[_Restore, 
         r.journal["manifest"] = res["manifest"]
         return r, res
     except BaseException:
-        shutil.rmtree(r.root, ignore_errors=True)
-        shutil.rmtree(r.froot, ignore_errors=True)
+        datafs.rmtree(r.root, ignore_errors=True)
+        datafs.rmtree(r.froot, ignore_errors=True)
         for p in created:   # deepest first: only folders this run made
             try:
                 p.rmdir()
@@ -383,14 +391,14 @@ def stage_stream(box: Box, stream, stamp: str | None = None) -> tuple[_Restore, 
 
 def _home_entries(home: Path) -> list[str]:
     try:
-        return sorted(n for n in os.listdir(home) if not skip_home_entry(n, (home / n).is_dir()))
+        return sorted(n for n in datafs.listdir(home) if not skip_home_entry(n, (home / n).is_dir()))
     except FileNotFoundError:
         return []
 
 
 def _files_entries(root: Path) -> list[str]:
     try:
-        return sorted(n for n in os.listdir(root) if n != RESTORE_DIR)
+        return sorted(n for n in datafs.listdir(root) if n != RESTORE_DIR)
     except FileNotFoundError:
         return []
 
@@ -438,6 +446,7 @@ def check_can_import(box: Box) -> None:
                            f"half-restored box aside instead of the original")
 
 
+@datafs.with_access
 def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
                   stager=None) -> dict:
     """`stager()` (optional) replaces the file's unlock+stage with another verified source (a restic snapshot:
@@ -482,8 +491,8 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
 
 
 def discard(r: _Restore) -> None:
-    shutil.rmtree(r.root, ignore_errors=True)
-    shutil.rmtree(r.froot, ignore_errors=True)
+    datafs.rmtree(r.root, ignore_errors=True)
+    datafs.rmtree(r.froot, ignore_errors=True)
     for p in (r.files_root / RESTORE_DIR, r.box.home / "restores"):
         try:
             p.rmdir()
@@ -493,10 +502,14 @@ def discard(r: _Restore) -> None:
 
 def _stop_agent(box: Box, a: Agent, installed: dict) -> bool:
     if a.runtime == "host":
-        return box.runner.gateway(a, "stop")
+        if not box.runner.gateway(a, "stop"):
+            raise RestoreError(f"agent {a.id} did not stop; nothing of its home was replaced")
+        return True
     if a.urn in installed and installed[a.urn].get("status") in LIVE:
         box.rt.stop(a.urn)
-        box.wait_status(a.urn, {"stopped"}, timeout=300)
+        st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+        if st != "stopped":
+            raise RestoreError(f"agent {a.id} did not stop (status {st}); nothing of its home was replaced")
         return True
     return False
 
@@ -536,6 +549,7 @@ def _snapshot_app(box: Box, r: "_Restore", a: dict) -> None:
         rep = box.appdata.archive(store, app_id, out)
     except AppDataError as e:
         raise RestoreError(f"could not keep an undo copy of {app_id}: {e}; nothing of it was replaced") from None
+    _sync_dir(out.parent.parent)  # persist a newly-created before/apps entry before the journal
     r.step(kind="app_snapshot", urn=a["urn"], archive=str(out), volumes=rep["volumes"], skipped=len(rep["skipped"]))
 
 
@@ -552,6 +566,7 @@ def _snapshot_volumes(box: Box, r: "_Restore", a: dict, taken: set[str]) -> None
     except AppDataError as e:
         raise RestoreError(f"could not keep an undo copy of volumes {', '.join(vols)}: {e}") from None
     taken.update(vols)
+    _sync_dir(out.parent.parent)  # persist before/volumes as well as the archive's own directory
     r.step(kind="volume_snapshot", urn=a["urn"], archive=str(out), volumes=vols)
 
 
@@ -746,7 +761,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     # Wizard home (identity entries never come from a bundle, and the box keeps its own)
     src = stage / "wizard-os"
     if src.is_dir():
-        for n in sorted(os.listdir(src)):
+        for n in sorted(datafs.listdir(src)):
             if n in PER_MACHINE or skip_home_entry(n, (src / n).is_dir()):
                 continue
             _move(src / n, box.home / n)
@@ -775,7 +790,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
 
     if (m.get("files") or {}).get("included"):
         fs = r.froot / "stage"
-        for n in sorted(os.listdir(fs)) if fs.is_dir() else []:
+        for n in sorted(datafs.listdir(fs)) if fs.is_dir() else []:
             _move(fs / n, r.files_root / n)
         r.step(kind="placed", area="files")
 
@@ -813,8 +828,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             _start_agent(box, a)
         except (RuntipiError, HermesError) as e:
             notes.append(f"agent {k}: start failed: {e}")
-    shutil.rmtree(stage, ignore_errors=True)
-    shutil.rmtree(r.froot / "stage", ignore_errors=True)
+    datafs.rmtree(stage, ignore_errors=True)
+    datafs.rmtree(r.froot / "stage", ignore_errors=True)
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
     refused = list(p.get("refused") or [])
     receipt = {"ok": not refused, "partial": bool(refused), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
@@ -846,9 +861,8 @@ def _merge_back(held: Path, home: Path) -> None:
         if not src.is_dir():
             continue
         dst = home / d
-        if not dst.exists():
-            continue
-        for n in sorted(os.listdir(src)):
+        dst.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for n in sorted(datafs.listdir(src)):
             if not (dst / n).exists() and (src / n).is_file() and not (src / n).is_symlink():
                 shutil.copy2(src / n, dst / n)
 
@@ -861,11 +875,11 @@ def _keep_refused_secrets(held: Path, home: Path, refused: list[str]) -> None:
             def mine(n: str) -> bool:
                 return n == app_id or n.startswith(app_id + ".")
             dst = home / d
-            for n in sorted(os.listdir(dst)) if dst.is_dir() else []:
+            for n in sorted(datafs.listdir(dst)) if dst.is_dir() else []:
                 if mine(n) and not (held / d / n).exists():
                     _rm(dst / n)
             src = held / d
-            for n in sorted(os.listdir(src)) if src.is_dir() else []:
+            for n in sorted(datafs.listdir(src)) if src.is_dir() else []:
                 if mine(n) and (src / n).is_file() and not (src / n).is_symlink():
                     dst.mkdir(parents=True, exist_ok=True, mode=0o700)
                     _rm(dst / n)
@@ -910,7 +924,7 @@ def _prepare_agent_folder(r: _Restore, k: str, a: Agent) -> None:
         a.folder.mkdir(parents=True, mode=0o700)
         r.step(kind="agent_folder_created", agent=k, path=str(top or a.folder))
     fsrc = r.root / "stage" / "agents" / k / "folder"
-    for n in sorted(os.listdir(fsrc)) if fsrc.is_dir() else []:
+    for n in sorted(datafs.listdir(fsrc)) if fsrc.is_dir() else []:
         if not (a.folder / n).exists():
             _move(fsrc / n, a.folder / n)
     a.home.mkdir(parents=True, exist_ok=True)
@@ -933,7 +947,9 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
         _install_app(box, r, rec)
     if a.runtime == "container" and box.app_status(a.urn) in LIVE:
         box.rt.stop(a.urn)
-        box.wait_status(a.urn, {"stopped"}, timeout=300)
+        st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+        if st != "stopped":
+            raise RestoreError(f"agent {k} did not stop (status {st}); import refused")
     # wiring: what this box's own agent home had (read from the set-aside copy)
     held = r.root / "before" / "agents" / k / "home"
     wiring = agentlib.wizard_wiring(held) if k in existing else {"present": False}
@@ -964,6 +980,7 @@ def last_restore(box: Box) -> tuple[Path, dict]:
         raise RestoreError("there is no restore to undo or activate on this box") from None
 
 
+@datafs.with_access
 def undo(box: Box) -> dict:
     try:
         return _undo(box)
@@ -978,6 +995,23 @@ def undo(box: Box) -> dict:
         except Exception:  # noqa: BLE001 - the original error is the one to raise
             pass
         raise
+
+
+def _undo_comparison(box, want, after, before_detail, detail):
+    mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
+    if before_detail is None:
+        return mismatch, None
+    # Older restores fingerprinted Service lock databases. Preserve the original
+    # evidence, but compare only the stable state if that is the ONLY difference.
+    # No arbitrary SQLite journal or other tree is exempted.
+    stable_before = dict(before_detail)
+    for tree in ('wizard-os', 'runtipi/app-data'):
+        old = before_detail.get(tree, {})
+        ignored = {p for p in old if root_runtime_digest_path(box, p, tree)}
+        stable_before[tree] = {p: v for p, v in old.items() if p not in ignored}
+        if ignored and tree in mismatch and tree in detail and stable_before[tree] == detail[tree]:
+            mismatch.remove(tree)
+    return mismatch, digest_differences(stable_before, detail)
 
 
 def _undo(box: Box) -> dict:
@@ -999,14 +1033,26 @@ def _undo(box: Box) -> dict:
     for k, a in targets.items():
         try:
             if a.runtime == "host":
-                box.runner.gateway(a, "stop")
+                if not box.runner.gateway(a, "stop"):
+                    raise RestoreError(f"agent {k} did not stop; Undo has not moved any trees")
             elif box.app_status(a.urn) in LIVE:
                 # a container agent left up keeps writing its home while it is put back, and its restart policy
                 # re-creates a removed home: every live state is stopped, "starting" included
                 box.rt.stop(a.urn)
-                box.wait_status(a.urn, {"stopped"}, timeout=300)
+                st = box.wait_status(a.urn, {"stopped"}, timeout=300)
+                if st != "stopped":
+                    raise RestoreError(f"agent {k} did not stop (status {st}); Undo has not moved any trees")
         except (RuntipiError, HermesError) as e:
-            notes.append(f"agent {k}: stop: {e}")
+            raise RestoreError(f"agent {k} did not stop; Undo has not moved any trees: {e}") from e
+    # Agent homes can be nested inside kept app data. Recover interrupted app
+    # swaps BEFORE tree Undo recreates that live path and masks .wizard-old.
+    for s in j["steps"]:
+        if s["kind"] == "app_snapshot":
+            app_id, store = s["urn"].split(":")
+            try:
+                box.appdata.recover_swaps(store, app_id)
+            except AppDataError as e:
+                raise RestoreError(f"{s['urn']}: interrupted app swap needs recovery before Undo: {e}") from e
     if j.get("move_journal_version") == 1:
         _undo_journaled_trees(box, root, j, targets, files_root, froot)
     else:
@@ -1014,7 +1060,7 @@ def _undo(box: Box) -> dict:
         if "wizard-os" in areas:
             for n in _home_entries(box.home):
                 _move(box.home / n, undone / "wizard-os" / n)
-            for n in sorted(os.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
+            for n in sorted(datafs.listdir(before / "wizard-os")) if (before / "wizard-os").is_dir() else []:
                 _move(before / "wizard-os" / n, box.home / n)
         # agents
         for k, a in targets.items():
@@ -1039,7 +1085,7 @@ def _undo(box: Box) -> dict:
             for n in _files_entries(files_root):
                 _move(files_root / n, froot / "undone" / n)
             fb = froot / "before"
-            for n in sorted(os.listdir(fb)) if fb.is_dir() else []:
+            for n in sorted(datafs.listdir(fb)) if fb.is_dir() else []:
                 _move(fb / n, files_root / n)
     # apps: uninstall what the restore installed, put back what it replaced
     done = {s["urn"] for s in steps if s["kind"] == "app_installed"}
@@ -1107,7 +1153,9 @@ def _undo(box: Box) -> dict:
     after = box_digest(box, current, entries=detail, owners=(root / "digest-before.json").is_file())
     _write_json(root / "digest-after.json", detail)
     detail_before = root / "digest-before.json"
-    differences = digest_differences(json.loads(detail_before.read_text()), detail) if detail_before.is_file() else None
+    mismatch, differences = _undo_comparison(box, j.get('digest_before') or {}, after,
+                                             json.loads(detail_before.read_text()) if detail_before.is_file() else None,
+                                             detail)
     # start what ran before
     was = j.get("installed_before") or {}
     for urn, info in was.items():
@@ -1127,8 +1175,6 @@ def _undo(box: Box) -> dict:
             notes.append(f"regenerating apps.json failed: {e}")
     else:
         notes += _regenerate(box)
-    want = j.get("digest_before") or {}
-    mismatch = sorted(k for k in set(want) | set(after) if want.get(k) != after.get(k))
     j["status"] = "undo-failed" if mismatch else "undone"
     if not mismatch:
         j["undone_at"] = int(time.time())
@@ -1138,11 +1184,11 @@ def _undo(box: Box) -> dict:
     _write_json(root / "journal.json", j)
     # A mismatched undo remains retryable, with every recovery copy retained.
     if not mismatch:
-        shutil.rmtree(root / "stage", ignore_errors=True)
-        shutil.rmtree(froot / "stage", ignore_errors=True)
-        shutil.rmtree(undone, ignore_errors=True)
-        shutil.rmtree(before, ignore_errors=True)
-        shutil.rmtree(froot, ignore_errors=True)
+        datafs.rmtree(root / "stage", ignore_errors=True)
+        datafs.rmtree(froot / "stage", ignore_errors=True)
+        datafs.rmtree(undone, ignore_errors=True)
+        datafs.rmtree(before, ignore_errors=True)
+        datafs.rmtree(froot, ignore_errors=True)
         for p in (files_root / RESTORE_DIR,):
             try:
                 p.rmdir()
@@ -1158,7 +1204,7 @@ def _walk_back(held: Path) -> list[str]:
     out = []
 
     def walk(d: Path, prefix: str) -> None:
-        for n in sorted(os.listdir(d)) if d.is_dir() else []:
+        for n in sorted(datafs.listdir(d)) if d.is_dir() else []:
             rel = prefix + n
             if agentlib._keep_parent(rel) and (d / n).is_dir():
                 walk(d / n, rel + "/")
@@ -1170,6 +1216,7 @@ def _walk_back(held: Path) -> list[str]:
 
 # ---------------------------------------------------------------- activate
 
+@datafs.with_access
 def activate(box: Box, old_is_off: bool) -> dict:
     if not old_is_off:
         raise RestoreError("confirm the old Wizard is off first: run `wam backup activate --old-is-off` "

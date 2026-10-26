@@ -1,0 +1,178 @@
+{
+  "version": "0.3.50",
+  "name": "Wizard OS 0.3.50 \u2014 compatible Android companion and readable onboarding",
+  "date": "2026-10-25",
+  "about": "Preserve the complete 0.3.49 backup/restore, Voice and Connection Router bundle. Change only the UX source, official image and shell source to published main 03b07142: readable iPhone first-run guidance, signed Android 1.0.1 companion integration and James-approved one-agent Spaces. Feature-classified; latest only until exact released-source fresh/current-stable upgrade and inherited backup/restore/Undo acceptance pass. Published 0.3.48 bundle with WAM #230: root-owned owner-files and Runtipi trees use the existing descriptor-anchored privilege helper for key creation, discovery, metadata, version checks, import and Undo; denied-host boundaries remain fail-closed. All other source, image and default-app pins are unchanged. Latest only; fresh installs, upgrades from 0.3.39/0.3.40 and released-source backup/restore/Undo remain required. Published 0.3.47 bundle with WAM #228: exact Agent Service coordination databases and SQLite sidecars remain local and keep their live inodes across backup import and Undo. Owner metadata and owner SQLite journals remain captured and compared. Backward-compatible Undo ignores only those coordination fingerprints and does not replay saved coordination inodes from older journals. Real installed-CLI synthetic round trip passed on a retained 0.3.47 ARM guest with the fixed backup modules: export/verify/import/receipt, distinct-baseline Undo with exact digest, and newer-app refusal with unchanged refused scopes. Latest only; fresh install and upgrades from 0.3.39/0.3.40 with the released source remain required. Published 0.3.46 bundle, with WAM #226 fixing fresh installs that exhaust loginctl enable-linger retries after systemd package upgrades. Root-only fallback sets the linger flag and starts user@UID.service, restoring SELinux labels when available; ordinary non-root behavior is unchanged. All non-WAM pins, images and default apps remain exactly 0.3.46. Latest only; fresh/upgrade/backup release gates are still required. Published 0.3.45 bundle, with WAM #223 selecting noninteractive sudo for the same local Docker socket when the owner\u2019s Docker-group membership is not yet active. Sanitized child environments, streamed helpers and bounded environment-scoped access caching are covered by regression tests and a daemon-free Thales subprocess probe. Fresh/upgrade/backup release gates are still required; this cut is latest only. Published 0.3.44 bundle (including Voice and Connection Router defaults), with WAM #221 fixing owner-user backup discovery, metadata reads and restore/Undo of root-only container-owned agent trees. 0.3.40 bundle with WAM main through #213: backup/restore #61 (verified encrypted export/import, paused cron/messaging/backups and Undo, Mac companion engine), report and strict contact #166, install retry #209; non-author review fixes kept-app credential loss, durable app/volume Undo archives, kept-tree interrupted-swap recovery and confirmed agent stops. All non-WAM pins remain 0.3.40; does not take the separately reserved 0.3.41 defaults/UI candidate. Small tester group only. Known limitations: Wizard scheduler is not paused/checkpointed/reconciled; stop source Service before export, inspect schedules with destination stopped/offline. AI login refresh is not fenced by activation: old box off before import or destination offline until exclusive handover. Tailscale and external alongside/linked grants re-enrol. Not an online clone. James explicitly waived the 72h latest soak on 25 Oct 2026; stable promotion still requires fresh install, upgrades from 0.3.39 and 0.3.40, and new-version backup/restore evidence.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "44fded385c0555b6ee5adf7593c67f33cb701ac7",
+      "branch": "main",
+      "note": "Main through #230: repair root-owned owner-files/Runtipi backup permission boundaries across key creation, discovery, metadata, version checks, import and Undo, preserving denied-host regressions. All declared image inputs remain identical to attested 80c76cf."
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "4b1f0efc09ea6a57f5fe35e8e52e014258d634e7",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; c434bbe plus #9 (connection app links follow apps.json; no dead Claude button when Claude Code is missing)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "6424db094d03af255b7ec35cb731bfc0087c61ef",
+      "branch": "main",
+      "note": "Official main through #151; preserves final #149 guards after #150 supersession."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "03b07142e1245f9b4c4f6f77545f92652e97db6f",
+      "branch": "main",
+      "note": "Official main through #490 (one-agent Spaces strip, James-approved 25 Oct 2026) on #504; signed Android companion web integration, native hold/pause and serialized Send, async recording custody fixes; includes alongside/desktop orientation #482/#483 and immediately readable iPhone tour #486. Additional merged UX: #450 skin/tweak/resources integration, #460 installed-app transcription, #471 internal sharing; fixes #485/#492/#484/#495/#498/#500; hosted publication #501/#502. Classify as feature, not fix-only."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.571-80c76cf",
+      "digest": "sha256:ff30d81d103c7ca408692fb25b98827d0fb382a8034e2bcbd0daf46b99547e39",
+      "built_from": "wizard-app-manager",
+      "source_commit": "80c76cf9e61df78abe4c09ffa419ad899bbc61a6",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/40171067383",
+      "note": "Official multi-arch main image from 80c76cf, workflow run 40171067383. Attestation reverified; all declared image inputs and workflow are byte-identical through 44fded38. Python backup engine is host-installed WAM source, not an image input."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-03b07142e1245f9b4c4f6f77545f92652e97db6f",
+      "digest": "sha256:a498c985fddc25d1e8efc6df5a16436584ea886ba351ec62a192c89b674c9f77",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/40166980976"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-6424db094d03af255b7ec35cb731bfc0087c61ef",
+      "digest": "sha256:840a371ca864755e01490ab7e5e31a1fc8bd0d698637ecd7e9b1523b3419a9b8",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/40088580225"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "03b07142e1245f9b4c4f6f77545f92652e97db6f",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "6424db094d03af255b7ec35cb731bfc0087c61ef"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.1.4",
+      "commit": "f87d5ddc449535418ee92ebeb24aaec36cc58058",
+      "note": "Host Hermes owns and renews its sign-in; the connection app reads sanitized usage through the wizard-os dashboard plugin. Claude is installed by default as its own `claude-subscription` row below."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.1.2",
+      "commit": "3b2d6186b86a896f254150ad056b9eaa495e738e",
+      "note": "Installed on every box next to ChatGPT. Alongside with host Hermes on a claude-subscription provider: App Manager binds the agent's own Claude Code login folder at the engine's /claude, so Connect/Test and auto-renew act on the agent's sign-in; tokens are never copied."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard2",
+      "commit": "8a4dd8ac5189d7d9d8af2bb8a2416936668e90df"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7\u2026c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "0.3.42 backup/restore bundle with WAM host registry permission fixes (#217). Root-only grants resolve through the App Manager API; the projection writer no longer eagerly reopens backend state. James explicitly waived the 72h latest soak on 25 Oct for the first small tester group by Tue 27 Oct; real fresh, 0.3.39/0.3.40 upgrade and backup/restore/Undo gates remain required before stable. Stable stays 0.3.39; this cut is not acceptance evidence. Other component and image pins are unchanged. 0.3.44 preserves the complete published 0.3.43 bundle and adds only Voice (0.2.2-rc1.app1) and Connection Router (0.1.4) default pins; Agent History is explicitly reserved null and Connected accounts remains on-demand. James approved publishing these two defaults with \u201cPublish\u201d on 24 Oct 2026 (PR #206). This does not include the separate PR #211 UX amendment: 0.3.43 UX source/image/shell remain exact. No channel promotion or acceptance is implied; current-stable upgrade, fresh install and inherited backup/restore/Undo gates remain required. Existing per-app compose files pin their engine digests; no additional top-level images are required. 0.3.45 changes only WAM source to #221; all other component/image/default-app pins remain exactly 0.3.44. Real disposable root0700 leaf and ancestor permission probes reproduce the old failure and pass fixed discovery, metadata and atomic set-aside/Undo with env owner/mode preserved. Linux CI also exercises the exact descriptor-anchored helper and a replaced-ancestor attack regression. These cheap checks are not the pending fresh/upgrade/backup acceptance gates. Stable stays 0.3.39; no soak/promotion or passed-upgrade evidence is manufactured. 0.3.47 changes only WAM source to #226, with all other pins and defaults exactly 0.3.46. Focused installer tests: 25 passed; regression cases fail before the review hardening. Official WAM image attestation reverified; all declared image build inputs are byte-identical from source 80c76cf to d231656. The disposable acceptance fixture is repaired separately in wizard-os #225; no acceptance pass is claimed. Stable remains 0.3.39. 0.3.48 changes only WAM source to #228. All other pins/defaults/images are exactly 0.3.47. wizard-os #225 protects backup diagnostics; #230 provisions 24 GiB release guests. The retained debug roundtrip is not released-source fresh-install/upgrade evidence. Stable remains 0.3.39; James\u2019s explicit soak waiver does not waive those release gates. Scheduler and AI-login handover limitations above remain. 0.3.49 changes only WAM source to #230; every other component pin, image identity and default app is exactly 0.3.48. Source regression and full synthetic round-trip evidence do not replace the still-unrun released-source fresh/upgrade/backup gates. Stable remains 0.3.39; no acceptance or promotion is claimed. 0.3.50 supersedes the unmerged historical 0.3.41 UX amendment (#211), without changing any historical release. The complete 0.3.49 non-UX bundle is retained byte-equivalently. The UX diff 9fcf86c9..03b07142 includes #450 skins/tweaks/resources, #460 app transcription, #471 sharing, #486 readable WebKit tour, fixes #485/#492/#484/#495/#498/#500, publication #501/#502, native Android integration #504 and James-approved Spaces #490. No moving-main pins. Public signed Android 1.0.1 artifact, signature and checksums are unchanged. No promotion or passed release acceptance is implied."
+}

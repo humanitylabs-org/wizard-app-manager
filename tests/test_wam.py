@@ -1107,3 +1107,40 @@ def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(
     out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
     assert calls == [("prepare", "files"), ("update", "files")]
     assert out["updated"] == ["files"] and out["failed"] == {}
+
+
+def test_cli_install_retries_an_app_the_manager_removed_once(monkeypatch):
+    """0.3.40 retained launch box: `wam install wisdom` failed once on a cancelled pull; the retry succeeds."""
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    tries = []
+
+    def install(c, app_id, given=None, wait=True):
+        tries.append(app_id)
+        if len(tries) == 1:
+            raise SystemExit(f"{app_id}: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        return {"id": app_id}
+    monkeypatch.setattr(cli, "install", install)
+    assert cli.install_with_retry(None, "wisdom") == {"id": "wisdom"} and tries == ["wisdom", "wisdom"]
+
+
+def test_cli_install_does_not_retry_other_errors_and_reports_a_second_failure(monkeypatch):
+    import pytest
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    calls = []
+
+    def refused(c, app_id, given=None, wait=True):
+        calls.append(app_id)
+        raise SystemExit(f"{app_id}: not in the index")
+    monkeypatch.setattr(cli, "install", refused)
+    with pytest.raises(SystemExit):
+        cli.install_with_retry(None, "nope")
+    assert calls == ["nope"]
+
+    def always_removed(c, app_id, given=None, wait=True):
+        calls.append(app_id)
+        raise SystemExit(f"{app_id}: install failed (the App Manager removed it)")
+    calls.clear()
+    monkeypatch.setattr(cli, "install", always_removed)
+    with pytest.raises(SystemExit, match="install failed"):
+        cli.install_with_retry(None, "wisdom")
+    assert calls == ["wisdom", "wisdom"]

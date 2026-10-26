@@ -21,7 +21,8 @@ import os
 import re
 import shutil
 import zipfile
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 import yaml
 
@@ -63,17 +64,39 @@ def _keep_parent(rel: str) -> bool:
     return any(k.startswith(rel + "/") for k in KEEP_DIRS)
 
 
+# Service store-migration.mjs uses one lifetime lease and one lock per store.
+ROOT_RUNTIME_RE = re.compile(r"(?:\.agent-pairs\.service-lease\.sqlite|.*\.agent-pairs\.lock\.sqlite)")
+
+
+def root_runtime_file(name: str) -> bool:
+    """Service coordination inodes, not owner stores; keep them on this machine.
+
+    The Service uses SQLite EXCLUSIVE locks for its lifetime lease and JSON
+    writers. Moving/copying these files can split a live lock across two inodes.
+    Include only these exact database names and their SQLite sidecars, never
+    generic *.sqlite-journal files (which may hold owner transactions).
+    """
+    if '/' in name:
+        return False
+    for suffix in ('-journal', '-wal', '-shm'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return bool(ROOT_RUNTIME_RE.fullmatch(name))
+
+
 def root_files(root: Path) -> list[str]:
     """The Agent Service's own files beside the agent folders (`.agent-grants.json`, `.main-agent.json`,
     `.apps-seen.json`): plain top-level files of the agents root, without temporary or lock files."""
+    root = Path(root)
     try:
-        names = sorted(os.listdir(root))
+        names = sorted(datafs.listdir(root))
     except (FileNotFoundError, NotADirectoryError):
         return []
     out = []
     for n in names:
         p = Path(root) / n
-        if p.is_symlink() or not p.is_file() or ".tmp" in n or KEEP_RE.search(n):
+        if p.is_symlink() or not p.is_file() or ".tmp" in n or KEEP_RE.search(n) or root_runtime_file(n):
             continue
         out.append(n)
     return out
@@ -86,7 +109,7 @@ def movable_entries(home: Path) -> list[str]:
 
     def walk(d: Path, prefix: str) -> None:
         try:
-            names = sorted(os.listdir(d))
+            names = sorted(datafs.listdir(d))
         except FileNotFoundError:
             return
         for n in names:
@@ -242,10 +265,12 @@ def env_merge(home: Path, wizard_lines: list[str]) -> list[str]:
     keep = [ln for ln in lines if not WIZARD_ENV.match(ln)]
     text = "\n".join(keep + ["", "# Wizard OS (this box's wiring, kept by wam backup import)"] + wizard_lines) + "\n"
     tmp = envp.with_name(".env.wam-import")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with datafs.private_open(tmp) as f:
         f.write(text)
-    os.replace(tmp, envp)
+    owner = envp.stat() if envp.exists() else home.stat()
+    datafs.chown(tmp, owner.st_uid, owner.st_gid)
+    tmp.chmod(0o600)
+    datafs.rename(tmp, envp)
     return replaced
 
 

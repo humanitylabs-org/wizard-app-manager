@@ -7,8 +7,9 @@ root maps to the owner) can't reach it with a forged identity header. Unix-socke
   - it came through Tailscale Serve as the box owner (`Tailscale-User-Login` == the owner's tailnet login),
   - its Origin is the shell's own tailnet origin (no cross-site posts),
   - it is JSON with the `X-Wizard-Store: 1` header (a simple form or image tag can't send that),
-  - the app id is listed in the public App Index or the pinned private test catalog. Nothing else: no settings,
-    no repo URLs, no uninstall. A second tap while an install runs joins it instead of starting another.
+  - an exact selection resolves server-side against a catalog/subscription, or a link's pinned GitHub
+    manifest passes the wizard.md checker and matches the app id. No browser URLs, settings or uninstall.
+    A second tap while an install runs joins it instead of starting another.
 """
 from __future__ import annotations
 

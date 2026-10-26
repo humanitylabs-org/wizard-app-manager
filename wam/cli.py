@@ -128,11 +128,32 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 
 
+def read_grants(c: Config, rt) -> list:
+    """Approved app grants for the registry. The App Manager writes state/wizard-grants.json 0600 as root, and
+    since automatic grants (#211) it exists on every fresh box, so the host CLI user usually cannot open it
+    (0.3.42 fresh install: PermissionError aborted `wam apps` and `wam bootstrap`). Read the file when we can,
+    else ask the App Manager API (the same source `wam grants list` uses), else keep the grants already
+    mirrored in apps.json rather than fail the registry write."""
+    grants = registry.read_grants_file(c.runtipi_root / 'state' / 'wizard-grants.json')
+    if grants is not None:
+        return grants
+    try:
+        got = rt.req("GET", "/apps/wizard/grants")
+        if isinstance(got, list):
+            return got
+    except Exception:
+        pass
+    try:
+        cur = json.loads((c.home / "apps.json").read_text())
+        return cur.get("grants", []) if isinstance(cur.get("grants"), list) else []
+    except (OSError, ValueError):
+        return []
+
+
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
-    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
-    reg['grants'] = json.loads(grants_file.read_text()).get('grants', []) if grants_file.is_file() else []
+    reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
@@ -969,6 +990,20 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
 BOOTSTRAP_RETRY_DELAY = 10
 
 
+def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True) -> dict:
+    """`wam install <app>` with the same single retry bootstrap gives defaults: a `compose up` whose image pull
+    was cancelled mid-way makes the App Manager remove the app, and a second attempt on the same box succeeds
+    (seen live 0.3.6 and on the 0.3.40 retained launch box). A second failure is raised unchanged."""
+    try:
+        return install(c, app_id, given, wait=wait)
+    except SystemExit as e:
+        if "install failed" not in str(e):
+            raise
+        time.sleep(BOOTSTRAP_RETRY_DELAY)
+        print(f"retrying {app_id} once", file=sys.stderr)
+        return install(c, app_id, given, wait=wait)
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -1591,7 +1626,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
+            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
         elif args.cmd == "uninstall":
             print(json.dumps(uninstall(c, args.id, force=args.force), indent=2))
         elif args.cmd == "slots":

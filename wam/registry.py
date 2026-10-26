@@ -38,10 +38,17 @@ def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
         if wm.is_file():
             w = _front(wm.read_text())
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
-            src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
-            commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
-                    "private": src.get("private") is True}
+            installed = runtipi_root / 'apps' / store / app_id
+            identity = installed if (installed / '.wizard-source').is_file() else d
+            src = json.loads((identity / '.wizard-source').read_text()) if (identity / '.wizard-source').is_file() else {}
+            commit = (identity / '.wizard-commit').read_text().strip() if (identity / '.wizard-commit').is_file() else None
+            repo, source = src.get('repo'), src.get('source')
+            if src.get('local') or (isinstance(repo, str) and repo.startswith('local/')):
+                source = 'local'
+            elif not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
+                source = 'standard'  # legacy installs without a recorded source stay Public
+            return {"w": w, "cfg": cfg, "dir": d, "repo": repo, "commit": commit,
+                    "source": source, "private": src.get("private") is True}
     return None
 
 
@@ -100,7 +107,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         apps.append({
             "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
             "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
-            "repo": meta["repo"], "commit": meta["commit"],
+            "repo": meta["repo"], "commit": meta["commit"], "source": meta["source"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
             **({"voice_names": spoken} if spoken else {}),
@@ -133,6 +140,16 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
 def public_projection(reg: dict) -> dict:
     """Exclude copy-only app metadata from every JSON serialization boundary."""
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
+
+
+def read_grants_file(path: Path) -> list | None:
+    """Read public grant metadata when accessible; never require root-owned backend state."""
+    try:
+        doc = json.loads(path.read_text())
+        grants = doc.get('grants') if isinstance(doc, dict) else None
+        return grants if isinstance(grants, list) else None
+    except (OSError, ValueError):
+        return None
 
 
 def write(reg: dict, root: Path | None = None) -> Path:
@@ -185,9 +202,15 @@ def write(reg: dict, root: Path | None = None) -> Path:
                         "staged": True})
         return out
 
-    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
-    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
-    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
+    # write_registry already resolved these through the API. Do not eagerly reopen
+    # the backend's 0600 file before considering that value (including an empty list).
+    grants = reg.get('grants')
+    if not isinstance(grants, list):
+        grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+        grants = read_grants_file(grants_path)
+        if grants is None:
+            grants = old.get('grants', [])
+    public = {**reg, "grants": grants, "apps": [project(a) for a in reg["apps"]]}
     tmp.write_text(json.dumps(public, indent=2) + "\n")
     tmp.replace(prev)
     return prev

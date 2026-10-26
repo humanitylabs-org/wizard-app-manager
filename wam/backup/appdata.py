@@ -20,6 +20,7 @@ regular files, folders, hard links to earlier files, and symlinks whose target s
 nothing below a symlink. Anything else is refused.
 """
 from __future__ import annotations
+from .dockercli import docker, verb
 
 import io
 import json
@@ -214,14 +215,46 @@ def compose_volumes(package: Path, project: str) -> list[str]:
     return sorted(set(out))
 
 
+RECOVER_SH = r'''
+set -eu
+for base in "$RT/app-data" "$RT/apps" "$RT/user-config"; do
+  for p in "$base" "$base/$STORE"; do
+    [ ! -L "$p" ] || { echo "symlinked swap recovery ancestor" >&2; exit 1; }
+  done
+  for live in "$base/$STORE/$APP" "$base/$STORE/$APP/data"; do
+    [ ! -L "$live" ] || { echo "symlinked swap recovery destination" >&2; exit 1; }
+    if [ -e "$live.wizard-old" ] || [ -L "$live.wizard-old" ]; then
+      if [ -e "$live" ] || [ -L "$live" ]; then
+        echo "interrupted swap has both copies; preserve both for manual recovery" >&2
+        exit 1
+      fi
+      mv "$live.wizard-old" "$live"
+      sync "$(dirname "$live")"
+    fi
+  done
+done
+'''
+
 RESTORE_SH = r'''
 set -eu
 # Never traverse symlinked destination ancestors (including the data subtree we preserve entries from).
 for p in "$RT/app-data" "$RT/app-data/$STORE" "$RT/app-data/$STORE/$APP"; do
   [ ! -L "$p" ] || { echo "symlinked app data destination" >&2; exit 1; }
 done
+# A killed swap may have renamed the original aside but not published its
+# replacement. Recover it BEFORE inspecting kept paths or cleaning staging.
+recover_swap() {
+  if [ ! -e "$1" ] && [ ! -L "$1" ] && { [ -e "$1.wizard-old" ] || [ -L "$1.wizard-old" ]; }; then
+    mv "$1.wizard-old" "$1"
+    sync "$(dirname "$1")"
+  fi
+}
+recover_swap "$RT/app-data/$STORE/$APP"
+recover_swap "$RT/app-data/$STORE/$APP/data"
+recover_swap "$RT/apps/$STORE/$APP"
+recover_swap "$RT/user-config/$STORE/$APP"
 S="$RT/app-data/$STORE/.$APP.wizard-new"
-trap 'rm -rf "$S"' EXIT
+trap 'recover_swap "$RT/app-data/$STORE/$APP"; recover_swap "$RT/app-data/$STORE/$APP/data"; recover_swap "$RT/apps/$STORE/$APP"; recover_swap "$RT/user-config/$STORE/$APP"; rm -rf "$S"' EXIT
 rm -rf "$S"
 mkdir -p "$S"
 chmod 700 "$S"
@@ -249,15 +282,26 @@ if [ -d "$S/app-data" ]; then
     if [ -e "$live/$e" ] || [ -L "$live/$e" ]; then
       mkdir -p "$(dirname "$S/app-data/$e")"
       rm -rf "$S/app-data/$e"
-      mv "$live/$e" "$S/app-data/$e"
+      # Never move the only copy into cleanup-on-error staging. A failed
+      # extraction/swap must leave destination-only agents/identity intact.
+      cp -a "$live/$e" "$S/app-data/$e"
     fi
   done
+  # Flush copied files and bottom-up directory entries, not the entire host.
+  find "$S/app-data" -type f -exec sync {} +
+  find "$S/app-data" -depth -type d -exec sync {} +
 fi
 swap() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$2")"
-  if [ -e "$2" ] || [ -L "$2" ]; then rm -rf "$2.wizard-old"; mv "$2" "$2.wizard-old"; fi
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    rm -rf "$2.wizard-old"
+    mv "$2" "$2.wizard-old"
+    sync "$(dirname "$2")"
+  fi
   mv "$1" "$2"
+  # Publish copied kept data before deleting its original tree.
+  sync "$(dirname "$2")"
   rm -rf "$2.wizard-old"
 }
 if [ "$DATA_ONLY" = "1" ]; then
@@ -286,7 +330,7 @@ class AppData:
         if self.box.env.get("WAM_BACKUP_HELPER_IMAGE"):
             return self.box.env["WAM_BACKUP_HELPER_IMAGE"]
         if self._image is None:
-            p = self._run(["docker", "inspect", "--format", "{{.Config.Image}}", "runtipi"])
+            p = self._run([*docker(self.box.child_env), "inspect", "--format", "{{.Config.Image}}", "runtipi"])
             img = p.strip().splitlines()[0] if p.strip() else ""
             if not img:
                 raise AppDataError("the Runtipi container (runtipi) was not found: is the App Manager running?")
@@ -304,7 +348,7 @@ class AppData:
 
     def volume_exists(self, name: str) -> bool:
         try:
-            self._run(["docker", "volume", "inspect", name])
+            self._run([*docker(self.box.child_env), "volume", "inspect", name])
             return True
         except AppDataError:
             return False
@@ -329,9 +373,9 @@ class AppData:
         except FileNotFoundError:
             raise AppDataError("docker is not installed on this box") from None
         except subprocess.TimeoutExpired:
-            raise AppDataError(f"docker {argv[1]} timed out") from None
+            raise AppDataError(f"docker {verb(argv)} timed out") from None
         if p.returncode:
-            raise AppDataError(f"docker {argv[1]} failed: {(p.stderr or p.stdout).strip()[-300:]}")
+            raise AppDataError(f"docker {verb(argv)} failed: {(p.stderr or p.stdout).strip()[-300:]}")
         return p.stdout
 
     # ------------------------------------------------------------ archive
@@ -353,7 +397,7 @@ class AppData:
         for v in vols:
             if not VOLUME_NAME.match(v):
                 raise AppDataError(f"bad volume name {v[:60]!r}")
-        cmd = ["docker", "run", "--rm", "--network", "none", "-u", "0:0"]
+        cmd = [*docker(self.box.child_env), "run", "--rm", "--network", "none", "-u", "0:0"]
         for k, p in paths.items():
             cmd += ["-v", f"{p}:/w/{k}:ro"]
         for v in vols:
@@ -406,11 +450,20 @@ class AppData:
         if rc not in (0, 1) or (rc == 1 and other):
             part.unlink(missing_ok=True)
             raise AppDataError(f"archiving {what} failed: {' '.join(other)[-300:] or f'tar exit {rc}'}")
+        # Closing gzip is not a disk flush. Undo snapshots must be durable
+        # before the journal can name them and live data can be replaced.
+        with part.open("rb") as f:
+            os.fsync(f.fileno())
         os.replace(part, out)
+        fd = os.open(out.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         return {"entries": g.entries, "bytes": g.bytes, "volumes": vols, "skipped": skipped, "kept_in_place": keep}
 
     def _helper(self, mounts: list[str], env: dict[str, str], script: str, stdin_tar=None) -> None:
-        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0"]
+        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", "0:0"]
         for mnt in mounts:
             cmd += ["-v", mnt]
         for k, v in env.items():
@@ -484,7 +537,7 @@ class AppData:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", app_id) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", store):
             raise AppDataError("bad app/store id for orphan cleanup")
         project = f"{app_id}_{store}"
-        rows = self._run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+        rows = self._run([*docker(self.box.child_env), "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
                           "--format", "{{.ID}} {{.Names}}"])
         ids = []
         for row in rows.splitlines():
@@ -494,7 +547,7 @@ class AppData:
             elif row.strip():
                 raise AppDataError("refusing to clean a compose project with unexpected container names")
         if ids:
-            self._run(["docker", "rm", "-f", *ids])
+            self._run([*docker(self.box.child_env), "rm", "-f", *ids])
         self._helper([f"{self.box.runtipi_root}:/rt"], {"STORE": store, "APP": app_id}, r'''
 set -eu
 for part in app-data apps; do
@@ -504,6 +557,15 @@ done
 ''')
 
     # ------------------------------------------------------------ restore
+    def recover_swaps(self, store: str, app_id: str) -> None:
+        """Reconcile a killed app swap BEFORE Undo can recreate nested agent paths.
+
+        Both live/old present is ambiguous: refuse and preserve both, never
+        choose a partial recreated tree over the only per-machine originals.
+        """
+        self._helper([f"{self.box.runtipi_root}:/rt"],
+                     {"RT": "/rt", "STORE": store, "APP": app_id}, RECOVER_SH)
+
     def restore(self, store: str, app_id: str, archive: Path, *, parts=ROOTS, rewrite=(), data_only=False) -> dict:
         """Put an archive back (the app stopped by the caller). `parts` limits which roots are replaced. `rewrite`
         ((old, new) text pairs, most specific first) is applied to user-config/ files: compose overrides there name
@@ -538,7 +600,7 @@ done
         for v in vols:
             if not VOLUME_NAME.match(v):
                 raise UnsafeMember(f"bad volume name {v[:60]!r}")
-        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", "0:0",
+        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", "0:0",
                "-v", f"{self.box.runtipi_root}:/rt", "-e", "RT=/rt", "-e", "V=/v", "-e", f"STORE={store}",
                "-e", f"APP={app_id}", "-e", f"DATA_ONLY={int(data_only)}",
                "-e", "KEEP=" + "\n".join(keep), "-e", "VOLS=" + " ".join(vols)]

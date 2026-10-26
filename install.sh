@@ -197,11 +197,18 @@ fi
 RESTART_NOW=1
 [ "${WIZARD_AGENT_SAFE:-0}" = 1 ] && RESTART_NOW=""
 RESTART_LATER=""
+hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
+  # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
+  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
+}
 schedule_hermes_restart() {  # outside this process tree (its own systemd unit), so it survives the restart it does
   local delay="${WIZARD_RESTART_DELAY:-20}" hermes log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
   hermes="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
-  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$hermes' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; $(hermes_restart_job "$hermes"); sleep 20; '$HOME/.local/bin/wizard' doctor"
   local -a run=(systemd-run --user)
   [ "$(id -u)" -eq 0 ] && run=(systemd-run)
   if command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \

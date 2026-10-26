@@ -18,6 +18,25 @@ from wam.backup.box import Agent, Box, HermesRunner  # noqa: E402
 from test_backup_flow import _cli, _export, isolated, world  # noqa: E402,F401 (fixtures)
 
 
+# ---------------------------------------------------------------- absent secret directories must not lose kept-app credentials
+
+@pytest.mark.parametrize("directory", ["secrets", "app-tokens"])
+def test_merge_back_preserves_kept_credentials_when_bundle_has_no_directory(tmp_path, directory):
+    held, home = tmp_path / "before", tmp_path / "home"
+    source = held / directory
+    source.mkdir(parents=True)
+    home.mkdir()
+    (source / "kept-app.json").write_text('{"synthetic": "kept"}')
+    (source / "kept-app.json").chmod(0o600)
+    (source / "link.json").symlink_to("kept-app.json")
+    restore._merge_back(held, home)
+    assert (home / directory / "kept-app.json").read_bytes() == (source / "kept-app.json").read_bytes()
+    assert (home / directory / "kept-app.json").stat().st_mode & 0o777 == 0o600
+    assert (home / directory).stat().st_mode & 0o777 == 0o700
+    assert (source / "kept-app.json").is_file(), "Undo copy must remain whole"
+    assert not (home / directory / "link.json").exists()
+
+
 # ---------------------------------------------------------------- a second import over an unfinished restore
 
 def _last_journal(box):
