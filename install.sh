@@ -223,7 +223,12 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   fi
   # `wizard link` refreshes the wizard-os plugin; the host dashboard (the apps' account broker and usage reader)
   # loads plugins only when it starts, so restart it if it runs. It holds no chats; apps retry on their next read.
-  [ ${#FAILED[@]} -gt 0 ] || systemctl --user try-restart wizard-host-dashboard.service >/dev/null 2>&1 || true
+  # Not running (or not installed) is fine; a running dashboard that fails to come back is reported.
+  if [ ${#FAILED[@]} -eq 0 ] && systemctl --user is-active --quiet wizard-host-dashboard.service 2>/dev/null; then
+    systemctl --user restart wizard-host-dashboard.service >/dev/null 2>&1 && sleep 3 \
+      && systemctl --user is-active --quiet wizard-host-dashboard.service \
+      || DEGRADED+=("the agent dashboard (wizard-host-dashboard.service) did not come back after the plugin refresh, so app sign-in and usage may be unavailable; see: systemctl --user status wizard-host-dashboard")
+  fi
 fi
 
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
