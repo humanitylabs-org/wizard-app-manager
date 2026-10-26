@@ -32,9 +32,10 @@ If it shows an owner action with a link (an approval link or a Tailscale link), 
 
 The first time it shows a Tailscale link, send the owner this short explanation once, word for word, before the link:
 
-> Your Wizard is private: only devices on your Tailscale network can open it. For that, this server joins Tailscale, a free app that connects your devices securely.
-> 1. Open the link below and sign in, or sign up free with Google, Apple, Microsoft or GitHub.
-> 2. Install the Tailscale app on your phone and computer and sign in with the same account.
+> Your Wizard is private: only your own devices can reach it. A free app called Tailscale makes that work.
+>
+> 1. Make a free Tailscale account, and sign in on the phone or computer you'll use Wizard on.
+> 2. Open the link below and sign in with the same account. That connects this server, and you're done.
 
 5. Tell the owner: Hermes restarts once at the end, so this chat goes quiet for about a minute.
 
@@ -46,9 +47,14 @@ The first time it shows a Tailscale link, send the owner this short explanation 
 > <link>
 > ```
 >
-> 1. Make sure Tailscale is on, on this phone or computer.
-> 2. Paste the link into Safari (iPhone) or Chrome (Android or computer), not inside this chat app.
-> 3. A short guide helps you send your first message.
+> 1. Turn Tailscale on.
+> 2. Paste the link into Safari (iPhone) or Chrome (Android or computer).
+> 3. Save it as an app. iPhone: Share, then Add to Home Screen. Android: ⋮, then Install app. Computer: the install icon in the address bar.
+> 4. Open Wizard from the new app icon.
+>
+> DO NOT USE IT IN THE BROWSER. Save it as an app first, or voice won't work.
+>
+> \*This step goes away soon, when the phone and desktop apps arrive.
 
 ## Never
 
