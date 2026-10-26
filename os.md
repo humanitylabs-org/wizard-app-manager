@@ -32,7 +32,7 @@ If it shows an owner action with a link (an approval link or a Tailscale link), 
 
 The first time it shows a Tailscale link, send the owner this short explanation once, word for word, before the link:
 
-> Your Wizard is private: only your own devices can open it. For that, this server joins Tailscale, a free app that connects your devices securely.
+> Your Wizard is private: only devices on your Tailscale network can open it. For that, this server joins Tailscale, a free app that connects your devices securely.
 > 1. Open the link below and sign in, or sign up free with Google, Apple, Microsoft or GitHub.
 > 2. Install the Tailscale app on your phone and computer and sign in with the same account.
 
