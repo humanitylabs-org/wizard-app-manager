@@ -236,6 +236,9 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
     for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && { up=1; break; }; sleep 2; done
     [ "$up" = 1 ] || DEGRADED+=("your Hermes API ($ORIGIN) did not answer after the restart")
   fi
+  # `wizard link` refreshes the wizard-os plugin; the host dashboard (the apps' account broker and usage reader)
+  # loads plugins only when it starts, so restart it if it runs. It holds no chats; apps retry on their next read.
+  [ ${#FAILED[@]} -gt 0 ] || systemctl --user try-restart wizard-host-dashboard.service >/dev/null 2>&1 || true
 fi
 
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
