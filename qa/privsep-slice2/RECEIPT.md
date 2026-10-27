@@ -50,7 +50,7 @@ There are 44 new audit regression cases. They exercise host root, privileged mod
 
 ## Installed-box compatibility correction
 
-[The committed read-only harness and sanitized table](INSTALLED-AUDIT.md) enumerate all **32 installed app/store pairs** on the real long-lived box. False positives fell from **22 to 9**; exact upgrade grandfathering simulated in memory leaves **0 apps blocked**. No approvals were written on that box and no Docker/API calls or live service changes were made. The remaining risks are real host file/network integrations; 8 owner-local host-network overrides cannot be reproduced by a current WAM generator and are preserved visibly, not silently trusted via comments.
+[The committed read-only harness and sanitized table](INSTALLED-AUDIT.md) enumerate all **32 installed app/store pairs** on the real long-lived box. Flagged app/store pairs fell from **22 to 9**; exact upgrade grandfathering simulated in memory leaves **0 apps blocked**. No approvals were written on that box and no Docker/API calls or live service changes were made. The remaining risks are real host file/network integrations; 8 owner-local host-network overrides cannot be reproduced by a current WAM generator and are preserved visibly, not silently trusted via comments.
 
 - Default Docker capabilities now pass for all apps. Non-default capabilities still require the owner.
 - Same-app read-only pinned source paths pass in both managed layouts, with traversal/symlink/other-app/writable negatives.
