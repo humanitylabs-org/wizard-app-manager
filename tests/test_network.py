@@ -992,3 +992,55 @@ def test_an_app_that_becomes_custom_loses_only_wams_stale_override_block(tmp_pat
     text = f.read_text()
     assert net.MARK not in text and "networks" not in text and "x-engine" in text
     assert hand.read_text() == "services:\n  y:\n    network_mode: host\n"
+
+
+def test_a_failed_update_submission_restores_the_installed_topology(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wrNyC: the incoming-recipe preflight ran, then the update PATCH failed: the installed
+    recipe's networks/override are reconciled back before the error is raised."""
+    import pytest
+    plain = "services:\n  x:\n    image: a\n"
+    cli, updates, steps = update_env(tmp_path, monkeypatch, plain, plain)
+
+    def boom(self, urn, perform_backup=True):
+        raise cli.RuntipiError("HTTP 502 from the App Manager")
+    monkeypatch.setattr(type(cli.Config().runtipi()), "update", boom)
+    with pytest.raises(cli.RuntipiError):
+        cli.app_update(cli.Config(), "x")
+    assert steps == [({"x"}, False), (set(), False)]
+
+
+def test_network_deny_stops_a_running_app_that_still_has_the_access(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wrNyI: revoking an allowance must take the live access away too."""
+    from wam import cli
+    root, home = tmp_path / "runtipi", tmp_path / "home"
+    d = root / "apps" / "wizardapps" / "x"
+    d.mkdir(parents=True)
+    (d / "docker-compose.yml").write_text("services:\n  x:\n    image: a\n    network_mode: host\n")
+    home.mkdir()
+    monkeypatch.setenv("RUNTIPI_ROOT", str(root))
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    monkeypatch.setattr(cli.release_pins, "load", lambda *a, **k: None)
+    net.set_host_access_allowed(home, "x", True)
+    calls = []
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: object())
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"x"})
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, a: calls.append((verb, a)) or {"status": "stopped"})
+    monkeypatch.setattr(net, "reconcile", lambda c, **k: calls.append("reconcile") or {"errors": []})
+    assert cli.main(["network", "deny", "x"]) == 0
+    assert calls == [("stop", "x"), "reconcile"] and net.host_access_allowed(home) == set()
+    calls.clear()
+    assert cli.main(["network", "allow", "x"]) == 0 and calls == ["reconcile"]   # allowing never stops anything
+
+
+def test_a_service_that_must_be_on_the_shared_network_is_put_back():
+    """Codex PRRT_kwDOVCUOXM6wrNyM: isolation off (or an exposed service) but the container is only on its own
+    network: drift reports it so reconcile reconnects it."""
+    off = net.plan([app("x")], [], set(), on=False)
+    live = live_from(off)
+    rows = net.drift(off, live)
+    assert rows and rows[0]["should_share"] and not rows[0]["on_shared"]
+    ex = app("y")
+    ex["services"]["y"]["exposed"] = True
+    p = net.plan([ex], [], set())
+    rows = net.drift(p, live_from(p))
+    assert rows and rows[0]["should_share"] and not rows[0]["on_shared"]

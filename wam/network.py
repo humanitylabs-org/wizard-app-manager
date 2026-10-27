@@ -766,6 +766,7 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             row["lost"] = sorted(n for n in a["services"].get(c["service"], {}).get("docker_networks") or []
                                  if n not in c["networks"]) if bridged else []
             needs = bool(row["missing"] or row["extra"] or bad_alias or row["lost"] or
+                         (row["should_share"] and not on_shared) or   # e.g. isolation turned off, an exposed service
                          (a["state"] in ("isolated", "exposed") and c["service"] in (a.get("want") or {}) and on_shared
                           and not keeps_shared(a, c["service"])))
             if needs:

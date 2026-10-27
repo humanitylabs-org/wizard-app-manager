@@ -46,7 +46,7 @@ A recipe that attaches networks the app does not own is refused the same way and
 `name:` is `runtipi_tipi_main_network` or another app's compose network), a fixed Docker `name:` outside the app's own
 compose project (`<id>_wizardapps_*`), a non-bridge driver, and `network_mode: host|bridge|container:<x>`. The owner
 can allow one app explicitly (`wam install <id> --allow-host-access`, `wam app update <id> --allow-host-access` or
-`wam network allow <id>`; `wam network deny <id>` takes it back). If isolation is on and an app's networks can't be prepared (for example the address pool is full),
+`wam network allow <id>`; `wam network deny <id>` takes it back and stops the app if it is running with that access). If isolation is on and an app's networks can't be prepared (for example the address pool is full),
 `wam install` stops before the first start rather than start it on the shared network. `wam app update` writes the
 override for the incoming recipe before Runtipi applies it, and `wam grants grant|revoke` reconciles at once.
 

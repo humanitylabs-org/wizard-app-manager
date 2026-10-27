@@ -1734,9 +1734,14 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
-    rt.update(urn, perform_backup=backup)
-    time.sleep(3)
-    status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+    try:
+        rt.update(urn, perform_backup=backup)
+        time.sleep(3)
+        status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+    except BaseException:
+        if store == STORE:   # the update was never queued (or we lost track of it): back to the installed topology
+            network_step(c, rt, restart=False)
+        raise
     after = ((rt.app(urn) or {}).get("app") or {})
     restarted = False
     if was_running and status != "running":
@@ -1898,11 +1903,19 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
+                stopped = None
+                if args.action == "deny" and host_access_risks(c, args.app, "installed"):
+                    # the running containers still have the access the owner just took back: stop the app (its
+                    # next start is refused by the install/start gates until it is allowed again)
+                    rt = c.runtipi()
+                    if args.app in installed_ids(rt):
+                        stopped = app_lifecycle(c, "stop", args.app)
                 res = network.reconcile(c, restart=not args.no_restart,
                                         restart_fn=lambda a: app_lifecycle(c, "restart", a))
                 print(json.dumps({"app": args.app, "host_access_allowed": args.action == "allow",
+                                  **({"stopped": stopped} if stopped is not None else {}),
                                   "networks": _net_brief(res)}, indent=2))
-                return 1 if res.get("errors") else 0
+                return 1 if res.get("errors") or (isinstance(stopped, dict) and stopped.get("error")) else 0
             mode = None if args.action == "reconcile" else args.action == "on"
             if mode is not None and not args.dry_run:
                 network.set_enabled(c.home, mode)   # a dry run previews the mode without saving it
