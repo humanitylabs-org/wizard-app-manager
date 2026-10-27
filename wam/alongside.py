@@ -307,6 +307,9 @@ def shared_secret(wizard_home: Path, var: str) -> str | None:
     st = load(wizard_home)
     if not st or var.removeprefix("WIZARD_") not in ("HERMES_API_KEY", "API_SERVER_KEY"):
         return None
+    from .privsep import enabled
+    if enabled(wizard_home):
+        return None  # key handoff is read only by the Agent Service at the agent uid
     return api_key(Path(st["agent"]["hermes_home"])) or None
 
 
@@ -529,6 +532,11 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     handed to the host Hermes (wizard-agent-service#12); the UX-only shell mounts no media and gets none."""
     if role == "shell":
         return ux_override(st, app_id)
+    from .privsep import enabled, service_override
+    if wizard_home and enabled(wizard_home):
+        if role != "service":
+            raise ValueError("legacy bundled shell is unavailable on separated alongside installs")
+        return service_override(st, wizard_home)
     port = service_port(st) if role == "service" else int(st["shell"]["port"])
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):

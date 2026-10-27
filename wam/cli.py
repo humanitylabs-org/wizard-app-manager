@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins, host_policy
+from . import alongside, index, private, registry, slots, release_pins, host_policy, privsep
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -402,7 +402,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
-    if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
+    if al and not privsep.enabled(c.home):   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
         try:
             for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
                 if r.get("state") == "error":
@@ -442,7 +442,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                          " (the App Manager removed it; see `docker logs runtipi`)")
     net_post = network_step(c, rt)
     reg = write_registry(c, rt)
-    if status == "running" and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
+    if status == "running" and not privsep.enabled(c.home) and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
         try:   # e.g. ChatGPT: its sign-in runs through the agent's dashboard, which alongside lives on the host
             dash = host_dashboard_cmd(c, rt)
             if app_id in (dash.get("changed_apps") or []):
@@ -671,11 +671,49 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
 LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stopped"}}
 
 
+def agent_app_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,40}', value):
+        raise ValueError('use a public store app id, not a path, URN or repository')
+    return value
+
+
+def app_logs(c, app_id, tail=100):
+    agent_app_id(app_id)
+    if not 1 <= tail <= 1000:
+        raise ValueError('tail must be between 1 and 1000')
+    rt = c.runtipi()
+    if app_id not in installed_ids(rt):
+        raise ValueError('app is not installed')
+    # Derive the project from this installed app. No container name, path or
+    # raw Docker options are accepted from the client; cap total output as well.
+    urn = app_id + ':' + STORE
+    p = subprocess.run(['docker', 'ps', '-aq', '--filter',
+                        'label=com.docker.compose.project=' + urn.replace(':', '_')],
+                       capture_output=True, text=True, timeout=30)
+    ids = p.stdout.split()
+    # Runtipi project names use the app URN with a hyphen separator.
+    if not ids:
+        p = subprocess.run(['docker', 'ps', '-aq', '--filter',
+                            'label=com.docker.compose.project=' + app_id + '-' + STORE],
+                           capture_output=True, text=True, timeout=30)
+        ids = p.stdout.split()
+    output = []
+    for cid in ids[:20]:
+        if not re.fullmatch(r'[0-9a-f]{12,64}', cid):
+            raise RuntimeError('invalid container identity')
+        r = subprocess.run(['docker', 'logs', '--tail', str(tail), cid],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        output.append(r.stdout[-262144:].decode('utf-8', errors='replace'))
+    return {'app': app_id, 'logs': '\n'.join(output)[-262144:], 'containers': len(ids)}
+
+
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
     runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if verb in ("start", "restart"):
+        host_policy.require_app(c, urn.split(":")[0], where="installed")
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
     getattr(rt, verb)(urn)
@@ -1300,6 +1338,8 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
+    if privsep.enabled(c.home):
+        return privsep.doctor(c)
     out = host_policy.grandfathered_health(c.home)
     from . import owner
     if (c.home / 'owner-login').is_file():
@@ -1426,9 +1466,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
-    def _authorized(self) -> bool:
+    agent_token: str = ""
+
+    def _authorized(self, *, owner_only=False) -> bool:
         got = self.headers.get("Authorization", "")
         if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
+            return True
+        if self.agent_token and hmac.compare_digest(got.encode(), f"Bearer {self.agent_token}".encode()):
+            if owner_only:
+                self._json(403, {"error": "owner_only"})
+                return False
             return True
         self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         return False
@@ -1487,8 +1534,19 @@ class Handler(BaseHTTPRequestHandler):
             except RuntipiError:
                 return self._json(503, {"error": "grants_unavailable"})
         if u.path == "/api/apps":
+            if self.agent_token:
+                if not self._authorized(): return
+                return self._json(200, write_registry(c))
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
+        log_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/logs", u.path)
+        if log_match:
+            if not self._authorized(): return
+            try:
+                tail = int((parse_qs(u.query).get("tail") or ["100"])[0])
+                return self._json(200, app_logs(c, log_match[1], tail))
+            except (ValueError, RuntimeError, RuntipiError) as e:
+                return self._json(400, {"error": str(e)})
         if u.path == "/api/search":
             q = parse_qs(u.query)
             try:
@@ -1514,23 +1572,28 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if not self._authorized():
-            return
         c, path = self.cfg, urlparse(self.path).path
         from . import owner
+        if not self._authorized(owner_only=path in owner.PATHS):
+            return
         try:
             if path in owner.PATHS:
                 why = owner.check(self, post=True)
                 if why:
                     return self._json(403, {'error': why})
                 return self._json(200, owner.execute(c, path, self._body()))
-            if path == '/api/app/update':
+            if path in ('/api/app/start', '/api/app/stop', '/api/app/restart', '/api/app/update'):
                 body = self._body()
-                return self._json(200, app_update(c, str(body.get('app', ''))))
+                app_id = agent_app_id(body.get('app'))
+                verb = path.rsplit('/', 1)[-1]
+                result = app_update(c, app_id) if verb == 'update' else app_lifecycle(c, verb, app_id)
+                write_registry(c)
+                return self._json(200, result)
             if path == "/api/install":
                 b = self._body()
-                return self._json(200, install(c, str(b.get("app", "")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
+                return self._json(200, install_with_retry(c, agent_app_id(b.get("app")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
             if path == "/api/bootstrap":
+                if not self._authorized(owner_only=True): return
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
@@ -1544,7 +1607,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urlparse(self.path).path
-        if path.startswith("/api/apps/"):
+        if re.fullmatch(r"/api/apps/[a-z0-9][a-z0-9-]{1,40}", path):
             try:
                 return self._json(200, uninstall(self.cfg, path.split("/")[3]))
             except (RuntipiError, SystemExit, RuntimeError) as e:
@@ -2032,6 +2095,8 @@ def _main(argv: list[str] | None = None) -> int:
             from . import recommended
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
+            agent_token = c.home / "agent-token"
+            Handler.agent_token = agent_token.read_text().strip() if agent_token.is_file() else ""
             StoreHandler.cfg = c
             try:
                 import threading

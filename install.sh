@@ -106,6 +106,10 @@ fi
 # The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
 
+# Separated host preparation installs system units and provisions the agent itself.
+# Never execute the legacy same-uid user-unit/link/bootstrap path there.
+if [ "${WIZARD_SEPARATED:-0}" = 1 ]; then exit 0; fi
+
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
 cat > "$HOME/.local/bin/wam" <<EOF

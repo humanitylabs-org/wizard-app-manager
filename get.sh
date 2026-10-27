@@ -696,6 +696,7 @@ for k in sorted(os.environ):
   echo "$STATUS_CMD"
 }
 named_host_ready() {
+  [ ! -f "$HOME/.wizard-os/client.json" ] || return 0
   [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
   docker info >/dev/null 2>&1 || { docker_group_member && command -v sg >/dev/null &&
     sg docker -c 'docker info' >/dev/null 2>&1; } || return 1
@@ -904,6 +905,14 @@ if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] && [ "${WIZARD_APPROVED
     fi
   fi
 fi
+# A prepared separated account never re-enters the legacy same-uid installer.
+if [ "$(id -u)" -ne 0 ] && [ -f "$HOME/.wizard-os/client.json" ] &&
+   [ "${WIZARD_CHECK:-0}" != 1 ] && [[ "${1:-}" != check && "${1:-}" != --check ]]; then
+  case "${1:-}" in
+    status) echo 'Wizard OS is installed with a separate system account; wam doctor checks it.'; exit 0 ;;
+    *) exec /usr/local/bin/wam doctor ;;
+  esac
+fi
 case "${1:-}" in
   start) install_start; exit 0 ;;
   status) install_status; exit 0 ;;
@@ -950,6 +959,15 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       exit 2
     fi
     prepare_server
+    if [ "$ALONG_USER" != root ] && { [ "$(wos_mode "$ALONG_USER")" = none ] || [ -f /var/lib/wizard-os/.wizard-privsep ]; }; then
+      # Only NEW alongside installs use this layout. The root step fetches trusted
+      # code itself; nothing executed by the system lives in the Hermes home.
+      helper="$(mktemp)"
+      curl -fsSL "$REPO/raw/$REF/scripts/prepare-alongside.py" -o "$helper"
+      python3 "$helper" "$ALONG_USER" "$ALONG_HOME" "$REF"
+      rm -f "$helper"
+      exit 0
+    fi
     if [ "$ALONG_USER" != root ]; then
       # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
       # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
