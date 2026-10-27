@@ -4,7 +4,7 @@ For James: three small views built in your own launcher and Settings markup. The
 
 | File | What |
 |---|---|
-| `wizard-apps.js` | `renderMyApps(el, ctx)`, `renderStore(el, ctx)`, `renderResources(el, ctx)`, `renderCard(el, app, ctx)` |
+| `wizard-apps.js` | `renderMyApps(el, ctx)`, `renderStore(el, ctx)`, `renderResources(el, ctx)`, `renderConnections(el, ctx)` (a Settings-style group, ready for `renderSettings` if James wants it there), `renderCard(el, app, ctx)` |
 | `wizard-apps.css` | Only the added pieces (`.wam-*`): status dot, update badge, dashed ring for apps with no screen, pair wire, chip row, card, meters. Everything else uses your `.lgroup .lgrid .lapp .lrow .st-group .st-row` |
 | `overlay.js` | Box-local wiring into an unmodified Wizard UX (spec/SHELL.md layer 4), described below |
 | `index.html`, `standalone.*` | The same views full screen for desktop/web without the shell, with a small Admin menu. `wux.css` holds your classes scoped under `.wux`, for this page only |
@@ -12,7 +12,8 @@ For James: three small views built in your own launcher and Settings markup. The
 ## Where they go
 
 - **My Apps is the swipe-up launcher.** With an empty query, your "Wizard apps" group becomes Agents / Apps / System, and your other groups stay. An interface sits next to the app it `uses`, joined by a short wire. Apps with no screen get a dashed ring. Tapping a tile opens a short card with only the buttons that apply (Open, Update, Start/Stop). An app with no screen says "No screen: ask your agent to use it".
-- **The App Store is the same sheet.** "Get apps" swaps the sheet body. One chip row goes above `#searchForm` (All, the top tags, then Popular / New / A–Z), and `#search` searches the index until the sheet closes. Install runs the Runtipi install (the app's `uses` first), then `POST /v1/installs`.
+- **The App Store is the same sheet.** "Get apps" swaps the sheet body. One chip row goes above `#searchForm` (All, the top tags, then Popular / New / A–Z), and `#search` searches the index until the sheet closes. Install runs the Runtipi install (the app's `uses` first), then `POST /v1/installs`. App isolation still holds on this path: the App Manager applies the network policy at every start and `wam serve` adds the declared links right after (docs/APP_NETWORKS.md).
+- **Connections** (standalone App Manager page, `#connections` in the Admin menu; not injected into the shell's Settings): one row per app with what it can reach (its declared connections, the only networks it shares), who reaches it, how the agent gateway reaches it, internet access, and the live check of Docker's networks against those declarations (drift is flagged). Data: apps.json `connections`, written by `wam` from the same declarations that build the networks (`wam connections` prints the same).
 - **Resources is a Settings group** after "Wizard": Storage, Processor and Memory with small meters, then Start all / Stop all / Restart all. Stop all needs a second tap.
 
 To merge natively, call the render functions from `renderLauncher` and `renderSettings` instead of loading `overlay.js`.

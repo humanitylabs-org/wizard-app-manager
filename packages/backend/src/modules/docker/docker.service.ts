@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { WizardStorage } from './wizard-storage';
+import { enforceAppNetworks } from './wizard-networks';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -108,8 +109,10 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
-      if (prepared !== generated.content) {
-        await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
+      // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
+      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir);
+      if (enforced !== generated.content) {
+        await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
       }
       await apply?.();

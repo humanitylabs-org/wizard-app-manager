@@ -43,6 +43,8 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(alongside, "docker_rootless", lambda: False)
     monkeypatch.setattr(alongside, "detect", lambda *a: {"found": True, "api_origin": st["agent"]["origin"]})
     monkeypatch.setattr(cli.time, "sleep", lambda *a: None)
+    # These tests isolate release-image selection; network preflight has its own fail-closed tests.
+    monkeypatch.setattr(cli, "network_step", lambda *a, **k: {"ok": True, "errors": []})
     calls = []
 
     class RT:
