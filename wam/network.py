@@ -202,7 +202,8 @@ def link_name(consumer: str, provider: str) -> str:
     if "--" not in consumer and "--" not in provider and not consumer.endswith("-") and not provider.startswith("-"):
         return f"{LINK_PREFIX}{consumer}--{provider}"
     import hashlib
-    return f"{LINK_PREFIX}h-{hashlib.sha256(f'{consumer}\0{provider}'.encode()).hexdigest()[:24]}"
+    digest = hashlib.sha256((consumer + "\0" + provider).encode()).hexdigest()[:24]
+    return f"{LINK_PREFIX}h-{digest}"
 
 
 def app_net(app_id: str) -> str:
@@ -565,16 +566,32 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
     return {"apps": apps, "networks": nets, "edges": edges, "gateway": gateway, "enabled": on}
 
 
+def keeps_shared(a: dict, service: str) -> bool:
+    """Whether one service of an app stays on Runtipi's shared network: a service published through the reverse proxy
+    (Traefik reaches it there), or any shared service of an app wam leaves as it is (custom, host access, isolation
+    off). Every other service of an isolated or exposed app is taken off it, service by service."""
+    svc = (a.get("services") or {}).get(service) or {}
+    if not svc.get("on_shared"):
+        return False
+    if a.get("state") == "isolated":
+        return False
+    if a.get("state") == "exposed":
+        return bool(svc.get("exposed"))
+    return True
+
+
 def overlay_for(a: dict) -> dict:
     """The x-wizard-networks part of one isolated app's override: per service, its full network list (what Runtipi
     generated minus the shared network, plus its wizard networks), and the wizard networks as external."""
     services, top = {}, {}
-    keep_shared = a.get("state") == "exposed"   # the reverse proxy reaches it there; it only gains its links
-    if keep_shared and not any((a.get("want") or {}).values()):
+    # An exposed app keeps the shared network only on its published service(s), for the reverse proxy; its other
+    # services leave it like an isolated app's. With nothing to change, there is no override block.
+    if a.get("state") == "exposed" and not any((a.get("want") or {}).values()) and all(
+            keeps_shared(a, s) for s in (a.get("want") or {})):
         return {"services": {}, "networks": {}}
     for s, want in sorted((a.get("want") or {}).items()):
         nets = {k: (dict(v) if isinstance(v, dict) else {}) for k, v in a["services"][s]["networks"].items()
-                if k != SHARED or keep_shared}
+                if k != SHARED or keeps_shared(a, s)}
         for k in nets:
             nets[k].pop("gw_priority", None)
         for net, aliases in sorted(want.items()):
@@ -739,7 +756,7 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
                    "extra": sorted(have - want), "on_shared": on_shared,
-                   "should_share": a["state"] != "isolated" and a["services"].get(c["service"], {}).get("on_shared", False)}
+                   "should_share": keeps_shared(a, c["service"])}
             bad_alias = [n for n, al in ((a.get("want") or {}).get(c["service"]) or {}).items()
                          if n in c["networks"] and not set(al) <= set(c["networks"][n])]
             row["alias_missing"] = bad_alias
@@ -749,7 +766,8 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             row["lost"] = sorted(n for n in a["services"].get(c["service"], {}).get("docker_networks") or []
                                  if n not in c["networks"]) if bridged else []
             needs = bool(row["missing"] or row["extra"] or bad_alias or row["lost"] or
-                         (a["state"] == "isolated" and c["service"] in (a.get("want") or {}) and on_shared))
+                         (a["state"] in ("isolated", "exposed") and c["service"] in (a.get("want") or {}) and on_shared
+                          and not keeps_shared(a, c["service"])))
             if needs:
                 row["recreate"] = bool(row["lost"]) or (a["state"] == "isolated" and (on_shared or app_net(a["id"]) in row["missing"]))
                 rows.append(row)
@@ -879,11 +897,13 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     planned = {a["id"]: a for a in p["apps"]}
     base = Path(c.runtipi_root) / "user-config" / store
     for a in p["apps"]:
-        if a.get("custom"):
-            continue
+        f = override_path(c.runtipi_root, store, a["id"])
+        if a.get("custom") and not (f.is_file() and MARK in f.read_text()):
+            continue   # custom and nothing of ours in its override: never touch it
         try:
-            if write_overlay(override_path(c.runtipi_root, store, a["id"]),
-                             overlay_for(a) if a["state"] in ("isolated", "exposed") else None):
+            # custom apps (host access the owner allowed, hand-set networks, ...): only wam's own managed block is
+            # removed, so a stale !override from when the app was isolated never fights its new settings
+            if write_overlay(f, overlay_for(a) if a["state"] in ("isolated", "exposed") and not a.get("custom") else None):
                 out["overrides"].append(a["id"])
         except (OSError, yaml.YAMLError, NetworkError) as e:
             out["errors"].append(f"{a['id']}: override not written ({str(e)[:160]})")
@@ -939,7 +959,8 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
             continue
         for name in row["extra"]:
             disconnect(row["container"], name)
-        if a["state"] == "isolated" and row["on_shared"] and row["service"] in (a.get("want") or {}):
+        if (a["state"] in ("isolated", "exposed") and row["on_shared"] and row["service"] in (a.get("want") or {})
+                and not keeps_shared(a, row["service"])):
             if disconnect(row["container"], shared_docker) and not ports_answer(ports.get(row["container"])):
                 recreate.add(row["app"])
     # 4. recreate (restart through the App Manager, the path the UI uses) the apps that must leave or rejoin the
@@ -1075,7 +1096,7 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
         problems = []
         for r in by_app.get(a["id"], []):
-            if r["on_shared"] and a["state"] == "isolated":
+            if r["on_shared"] and not r["should_share"] and a["state"] in ("isolated", "exposed"):
                 problems.append(f"{r['service']} is still on the shared network (every app can reach it)")
             for n in r["missing"]:
                 problems.append(f"{r['service']} is not on {n}")

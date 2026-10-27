@@ -933,3 +933,62 @@ def test_fresh_report_shows_the_core_reaching_each_app_over_its_gateway_network(
     row = next(a for a in rep["apps"] if a["id"] == "transcriber")
     assert {b["from"] for b in row["reached_by"] if b["state"] == "core"} == {"wizard-ux", "wizard-agent-service", "hermes-agent"}
     assert "reached by: hermes-agent, wizard-agent-service, wizard-ux" in net.describe(rep)
+
+
+def test_an_exposed_app_keeps_the_shared_network_only_on_its_published_service(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wq1Yx: a multi-service app publishes `web` through Traefik and also has an unexposed
+    `worker` with add_to_main_network: only `web` stays on the shared network; `worker` leaves it (override + live),
+    matching the App Manager's per-service start gate."""
+    a = app("multi", services={
+        "web": {"main": True, "on_shared": True, "network_mode": "", "exposed": True,
+                "networks": {"tipi_main_network": {"gw_priority": 1}, "multi_wizardapps_network": {"gw_priority": 0}}},
+        "worker": {"main": False, "on_shared": True, "network_mode": "", "exposed": False,
+                   "networks": {"tipi_main_network": {}, "multi_wizardapps_network": {}}}})
+    p = net.plan([a], [], set())
+    assert p["apps"][0]["state"] == "exposed"
+    ov = net.overlay_for(p["apps"][0])
+    assert "tipi_main_network" in ov["services"]["web"] and "tipi_main_network" not in ov["services"]["worker"]
+    assert "multi_wizardapps_network" in ov["services"]["worker"]
+    live = live_from(p, on_shared={"multi"})
+    rows = {r["service"]: r for r in net.drift(p, live)}
+    assert "web" not in rows and rows["worker"]["on_shared"] and not rows["worker"]["should_share"]
+    c = Cfg(tmp_path)
+    live["networks"] = {"runtipi_tipi_main_network": {"labels": {}, "internal": False, "subnets": ["172.18.0.0/16"], "containers": []}}
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan([json.loads(json.dumps(a))], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
+    monkeypatch.setattr(net, "ports_answer", lambda ports, **k: True)
+    res = net.reconcile(c, restart_fn=lambda x: {"status": "running"})
+    assert not res["errors"] and res["drift"] == []
+    nets = {x["service"]: set(x["networks"]) for x in fake.live["containers"]}
+    assert net.SHARED_DOCKER in nets["web"] and net.SHARED_DOCKER not in nets["worker"]
+
+
+def test_an_app_that_becomes_custom_loses_only_wams_stale_override_block(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wq1Y2: an isolated app updated (with the owner's allowance) to host or foreign networking
+    is custom from then on; its old x-wizard-networks !override is removed, the rest of the file is kept, and a
+    custom app's override without wam's block is never touched."""
+    c = Cfg(tmp_path)
+    iso = net.plan([app("x")], [], set())["apps"][0]
+    f = net.override_path(c.runtipi_root, "wizardapps", "x")
+    f.parent.mkdir(parents=True)
+    f.write_text("services:\n  x-engine:\n    user: '0:0'\n")
+    net.write_overlay(f, net.overlay_for(iso))
+    assert net.MARK in f.read_text()
+    custom = app("x", custom="its compose attaches to networks outside the app: network sneak")
+    hand = net.override_path(c.runtipi_root, "wizardapps", "y")
+    hand.parent.mkdir(parents=True)
+    hand.write_text("services:\n  y:\n    network_mode: host\n")
+    custom_y = app("y", custom="its user-config override sets the networks of y by hand")
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan([custom, custom_y], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    fake = FakeDocker({"networks": {}, "containers": []})
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
+    res = net.reconcile(c)
+    assert "x" in res["overrides"] and not res["errors"]
+    text = f.read_text()
+    assert net.MARK not in text and "networks" not in text and "x-engine" in text
+    assert hand.read_text() == "services:\n  y:\n    network_mode: host\n"

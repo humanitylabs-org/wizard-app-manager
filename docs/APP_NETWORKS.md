@@ -53,8 +53,8 @@ override for the incoming recipe before Runtipi applies it, and `wam grants gran
 Apps whose recipe uses `network_mode: host` get a refusal from `wam install` unless the owner passes
 `--allow-host-access`, which prints a loud warning. The same applies to `privileged: true` and to a mounted
 Docker/containerd/podman socket. Apps installed that way, and apps with hand-written networks in their user-config
-override, stay as they are. An app exposed through Runtipi's reverse proxy keeps the shared network, because Traefik
-reaches it there, so every app can still reach it. It also gets its declared links. The Connections view flags all of
+override, stay as they are. The service an app publishes through Runtipi's reverse proxy keeps the shared network, because
+Traefik reaches it there, so every app can still reach that service; the app's other services leave it. It also gets its declared links. The Connections view flags all of
 these.
 
 ## Every start, whoever starts the app
