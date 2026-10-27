@@ -64,6 +64,13 @@ def test_named_lifecycle_and_logs(server):
     assert req('DELETE', '/api/apps/hello-wizard/extra')[0] == 404
 
 
+def test_server_token_keeps_legacy_urn_lifecycle(server):
+    req, calls = server
+    assert req('POST', '/api/app/restart', {'app': 'hello-wizard:wizardapps'}, token='s' * 43)[0] == 200
+    assert calls[-1] == ('restart', 'hello-wizard:wizardapps')
+    assert req('POST', '/api/app/restart', {'app': 'hello-wizard:wizardapps'})[0] == 400
+
+
 def test_thin_client_fails_closed_without_local_fallback(monkeypatch, capsys):
     def fail(*args, **kwargs): raise AssertionError('no subprocess fallback')
     monkeypatch.setattr(subprocess, 'run', fail)

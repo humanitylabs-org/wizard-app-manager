@@ -672,7 +672,7 @@ LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stoppe
 
 
 def agent_app_id(value):
-    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,40}', value):
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', value):
         raise ValueError('use a public store app id, not a path, URN or repository')
     return value
 
@@ -1468,6 +1468,10 @@ class Handler(BaseHTTPRequestHandler):
 
     agent_token: str = ""
 
+    def _agent_request(self):
+        return bool(self.agent_token and hmac.compare_digest(
+            self.headers.get('Authorization', '').encode(), ('Bearer ' + self.agent_token).encode()))
+
     def _authorized(self, *, owner_only=False) -> bool:
         got = self.headers.get("Authorization", "")
         if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
@@ -1539,7 +1543,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, write_registry(c))
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
-        log_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/logs", u.path)
+        log_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{0,62})/logs", u.path)
         if log_match:
             if not self._authorized(): return
             try:
@@ -1584,14 +1588,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, owner.execute(c, path, self._body()))
             if path in ('/api/app/start', '/api/app/stop', '/api/app/restart', '/api/app/update'):
                 body = self._body()
-                app_id = agent_app_id(body.get('app'))
+                app_id = agent_app_id(body.get('app')) if self._agent_request() else str(body.get('app', ''))
                 verb = path.rsplit('/', 1)[-1]
                 result = app_update(c, app_id) if verb == 'update' else app_lifecycle(c, verb, app_id)
                 write_registry(c)
                 return self._json(200, result)
             if path == "/api/install":
                 b = self._body()
-                return self._json(200, install_with_retry(c, agent_app_id(b.get("app")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
+                app_id = agent_app_id(b.get('app')) if self._agent_request() else str(b.get('app', ''))
+                execute = install_with_retry if self._agent_request() else install
+                return self._json(200, execute(c, app_id, {k: str(v) for k, v in (b.get("set") or {}).items()}))
             if path == "/api/bootstrap":
                 if not self._authorized(owner_only=True): return
                 return self._json(200, bootstrap(c))
@@ -1607,7 +1613,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urlparse(self.path).path
-        if re.fullmatch(r"/api/apps/[a-z0-9][a-z0-9-]{1,40}", path):
+        if (re.fullmatch(r"/api/apps/[a-z0-9][a-z0-9-]{0,62}", path) if self._agent_request()
+                else path.startswith("/api/apps/")):
             try:
                 return self._json(200, uninstall(self.cfg, path.split("/")[3]))
             except (RuntipiError, SystemExit, RuntimeError) as e:
