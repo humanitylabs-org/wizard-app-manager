@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from wam import cli, registry
+from wam import cli, network, registry
 
 
 def test_registry_refresh_uses_authenticated_metadata_when_state_is_private(tmp_path, monkeypatch):
@@ -25,6 +25,9 @@ def test_registry_refresh_uses_authenticated_metadata_when_state_is_private(tmp_
             raise PermissionError('root-owned metadata')
         return original(self, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', private_read)
+    # Connections has its own grant-read and Docker probes. Keep this host
+    # projection regression isolated from that separately tested subsystem.
+    monkeypatch.setattr(network, 'report', lambda *_: {'schema': 1, 'links': []})
     result = cli.write_registry(config)
     assert result['grants'] == grants
     assert calls == [('GET', '/apps/wizard/grants')]
