@@ -7,7 +7,7 @@ Oscar Henry Collins (@oscarhenrycollins), for Miguel, authored the implementatio
 ## Reuse plan
 
 - REUSE: the existing Settings group/rows and `renderConnections`; shared `WizardApp` from `/wizard-os-home/core/app-client.js` for Appearance; the real shared `appearance-host.js` and `skins.js` in the synthetic harness.
-- EXTEND: the existing standalone CSS aliases with `--wz-*` roles, readable light semantic colours, wrapping badges and 44px connection rows; existing network tests with fail-closed unavailable preflight and immediate CLI grant/revoke ordering.
+- EXTEND: the existing standalone `.wux` CSS aliases with `--wz-*` roles (embedded `.wam` keeps inheriting the shell's aliases), readable light semantic colours, wrapping badges and 44px connection rows; existing network tests with fail-closed unavailable preflight and immediate CLI grant/revoke ordering.
 - NEW: no production capability, private Appearance receiver or theme storage. `qa/connections-appearance.cjs` is an isolated synthetic acceptance harness, not a second UI implementation.
 
 ## Review finding → regression

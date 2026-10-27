@@ -335,15 +335,6 @@
   color: var(--amber);
 }
 
-/* The existing Settings rows consume these aliases; hosted Appearance owns their values. */
-.wam {
-  --ink: var(--wz-text, #f3efff);
-  --ink-2: var(--wz-text-secondary, #b9b0d8);
-  --ink-3: var(--wz-text-muted, #7d74a3);
-  --line: var(--wz-border, rgba(205, 190, 255, 0.13));
-  --glass: var(--wz-surface, rgba(18, 12, 38, 0.58));
-}
-
 /* Connections (Settings group): one row per app, tap for what it reaches; colours are Wizard UX tokens only */
 .wam-conn .wam-conn-row {
   width: 100%;

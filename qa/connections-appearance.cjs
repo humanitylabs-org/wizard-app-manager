@@ -104,6 +104,17 @@ const server = http.createServer((req, res) => {
           assert(!geometry.overflow && !geometry.bodyOverflow, 'Horizontal clipping');
           assert(geometry.rowHeights.every(h => h >= 44), 'Small connection touch target');
           assert.equal(geometry.text, skin === 'nebula' ? 'rgb(243, 239, 255)' : 'rgb(0, 0, 0)');
+          // Embedded Settings use the shell's legacy aliases, not the standalone .wux adapter.
+          const inheritedInk = await frame.evaluate(() => {
+            const parent = document.createElement('div');
+            parent.style.setProperty('--ink', 'rgb(12, 34, 56)');
+            parent.innerHTML = '<div class="wam"><span style="color:var(--ink)">test</span></div>';
+            document.body.append(parent);
+            const ink = getComputedStyle(parent.querySelector('span')).color;
+            parent.remove();
+            return ink;
+          });
+          assert.equal(inheritedInk, 'rgb(12, 34, 56)', 'Embedded view must inherit the shell skin');
           const filename = `${skin}-${device}-${scenario}.jpg`;
           await page.screenshot({ path: path.join(output, filename), type: 'jpeg', quality: 82 });
           assert(fs.statSync(path.join(output, filename)).size < 1000000, 'Oversize JPEG');
