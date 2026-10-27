@@ -38,7 +38,11 @@ describe('rule 15 and volume compile', () => {
     const source = { ...compose, volumes: { login: {} }, services: { main: { ...compose.services.main, volumes: ['login:/login'] } } };
     const builder = new DockerComposeBuilder();
     const wizard = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:wizardapps' as AppUrn, '10.1.0.0/24'));
-    expect(wizard.services.main.volumes).toEqual(['${APP_DATA_DIR}/volumes/login:/login', '${APP_DATA_DIR}/wizard:/wizard:ro']);
+    expect(wizard.services.main.volumes).toEqual([
+      '${APP_DATA_DIR}/volumes/login:/login',
+      '${APP_DATA_DIR}/wizard:/wizard:ro',
+      '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+    ]);
     expect(wizard.volumes).toBeUndefined();
     const stock = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:stock' as AppUrn, '10.1.0.0/24'));
     expect(stock.services.main.volumes).toEqual(['login:/login']);
@@ -277,8 +281,17 @@ describe('live legacy Claude compatibility', () => {
       );
       const result = yaml.parse(await store.prepare(urn, built));
       expect(result.volumes).toEqual({ login: { name: LEGACY_CLAUDE } });
-      expect(result.services.main.volumes).toEqual(['login:/claude:rw', '${APP_DATA_DIR}/volumes/cache:/cache', '${APP_DATA_DIR}/wizard:/wizard:ro']);
-      expect(result.services.sidecar.volumes).toEqual([...source.services.sidecar.volumes, '${APP_DATA_DIR}/wizard:/wizard:ro']);
+      expect(result.services.main.volumes).toEqual([
+        'login:/claude:rw',
+        '${APP_DATA_DIR}/volumes/cache:/cache',
+        '${APP_DATA_DIR}/wizard:/wizard:ro',
+        '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+      ]);
+      expect(result.services.sidecar.volumes).toEqual([
+        ...source.services.sidecar.volumes,
+        '${APP_DATA_DIR}/wizard:/wizard:ro',
+        '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+      ]);
       expect(result['x-wizard-volumes']).toEqual([{ name: 'cache', old: 'cache', relative: 'volumes/cache' }]);
       expect(run.mock.calls.some(([, args]) => args[0] === 'volume' && args[1] === 'inspect')).toBe(true);
       expect(run.mock.calls.some(([, args]) => args[0] === 'run')).toBe(false);

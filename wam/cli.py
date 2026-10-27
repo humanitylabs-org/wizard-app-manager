@@ -530,6 +530,22 @@ def start_network_watch(c: Config) -> None:
     print("app networks: reconciling after every Wizard app start", flush=True)
 
 
+def start_connections_watch(c: Config) -> None:
+    """`wam serve`: the owner's connection decisions in the Connections view (Disconnect / Reconnect, Approve / Deny,
+    Sensitive) and the App Manager's automatic approvals take effect within seconds, live, without restarts; the
+    App Manager's notices go to the owner's Notifications app (wam/connections.py)."""
+    if any(os.environ.get(k, "1").strip().lower() in ("0", "false", "off", "no")
+           for k in ("WAM_NETWORK_WATCH", "WAM_CONNECTIONS_WATCH")):
+        return
+    from . import connections
+
+    def apply() -> None:
+        res = network_step(c, restart=False) or {}
+        if res.get("errors"):
+            print(f"app networks: {'; '.join(res['errors'])[:400]}", file=sys.stderr, flush=True)
+    connections.start(c, apply, lambda: write_registry(c))
+
+
 def _net_brief(res: dict | None) -> dict:
     if not res:
         return {}
@@ -1790,17 +1806,30 @@ def main(argv: list[str] | None = None) -> int:
         gp = argparse.ArgumentParser(prog="wam grants")
         gs = gp.add_subparsers(dest="action", required=True)
         gs.add_parser("list")
+        gs.add_parser("pending")      # connections waiting for the owner (their provider is sensitive) + recent notices
         proposed = gs.add_parser("proposed"); proposed.add_argument("app")
-        for action in ("grant", "revoke"):
+        # grant = Reconnect / Approve, revoke = Disconnect / Deny (sticky: updates and app requests never re-add it)
+        for action in ("grant", "revoke", "approve", "deny"):
             p = gs.add_parser(action); p.add_argument("app"); p.add_argument("to")
+        sens = gs.add_parser("sensitive"); sens.add_argument("app"); sens.add_argument("on", choices=("on", "off"))
         ga = gp.parse_args(argv[1:])
         if any(not re.fullmatch(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}", value) for value in (getattr(ga, "app", "valid"), getattr(ga, "to", "valid"))):
             gp.error("invalid app or slot id")
         c = Config(); rt = c.runtipi()
         if ga.action == "list": result = rt.req("GET", "/apps/wizard/grants")
+        elif ga.action == "pending":
+            st = rt.req("GET", "/apps/wizard/connections")
+            result = {"pending": st.get("pending", []), "sensitive": st.get("sensitive", []),
+                      "notices": list(reversed(st.get("notices", [])))[:10]} if isinstance(st, dict) else st
         elif ga.action == "proposed": result = rt.req("GET", f"/apps/{ga.app}:wizardapps/proposed-grants")
+        elif ga.action == "sensitive":
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/sensitive", {"sensitive": ga.on == "on"})
+            net_res = _net_brief(network_step(c, rt))   # turning it off approves what was waiting: links now
+            if isinstance(result, dict) and net_res:
+                result = {**result, "networks": net_res}
+            write_registry(c)
         else:
-            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action == "grant"})
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action in ("grant", "approve")})
             # a grant is a declared connection: its link appears (or, revoked, disappears) now, live
             net_res = _net_brief(network_step(c, rt))
             if isinstance(result, dict) and net_res:
@@ -2008,6 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
             start_network_watch(c)
+            start_connections_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
