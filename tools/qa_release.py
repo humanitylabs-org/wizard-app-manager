@@ -57,7 +57,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="wam-release-e2e.") as tmp:
             root = Path(tmp)
             up = root / "upstream"; bare = root / "origin.git"; home = root / "box"
-            cmd(["git", "clone", "-q", "--no-hardlinks", a.ux, up]); git(up, "branch", "-M", "main")
+            cmd(["git", "clone", "-q", "--no-hardlinks", a.ux, up]); git(up, "checkout", "-q", "-B", "main")
             # Conflict fixtures are ordinary owner files, not changes to the test harness.
             commit(up, "web/release-test-mine.txt", "base\n", "Fixture base")
             cmd(["git", "clone", "-q", "--bare", up, bare])
