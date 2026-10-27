@@ -140,10 +140,18 @@ def test_exposed_custom_and_off_keep_the_shared_network():
     ex = app("exposed")
     ex["services"]["exposed"]["exposed"] = True
     cu = app("custom", custom="its user-config override sets the networks of custom by hand")
-    p = net.plan([ex, cu, app("plain", uses=["exposed"])], [], set())
+    p = net.plan([ex, cu, app("plain", uses=["exposed", "custom"]), app("lonely-exposed")], [], set())
     st = {a["id"]: a["state"] for a in p["apps"]}
-    assert st == {"exposed": "exposed", "custom": "custom", "plain": "isolated"}
-    assert next(e for e in p["edges"] if e["from"] == "plain")["state"] == "unmanaged"
+    assert st == {"exposed": "exposed", "custom": "custom", "plain": "isolated", "lonely-exposed": "isolated"}
+    states = {e["provider"]: e["state"] for e in p["edges"] if e["from"] == "plain"}
+    # an exposed provider stays on the shared network for the reverse proxy and still gets the declared link
+    assert states == {"exposed": "link", "custom": "unmanaged"}
+    ov = net.overlay_for(next(a for a in p["apps"] if a["id"] == "exposed"))
+    assert set(ov["services"]["exposed"]) == {"tipi_main_network", net.link_name("plain", "exposed")}
+    assert net.app_net("exposed") not in p["networks"]
+    ex2 = app("ex2")
+    ex2["services"]["ex2"]["exposed"] = True
+    assert net.overlay_for(net.plan([ex2], [], set())["apps"][0]) == {"services": {}, "networks": {}}
     off = net.plan(carlos(), [], set(), on=False)
     assert not off["networks"] and all(a["state"] == "shared" and a["want"] == {} for a in off["apps"])
 

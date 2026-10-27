@@ -374,10 +374,13 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             n["members"].append({"app": app["id"], "service": s, "aliases": aliases})
 
     iso = {a["id"]: a for a in apps if a["state"] == "isolated"}
+    # Apps exposed through Runtipi's reverse proxy keep the shared network, but still take part in links (and gateway
+    # networks), so an isolated app that uses one, or that one uses, keeps its declared path.
+    part = {a["id"]: a for a in apps if a["state"] in ("isolated", "exposed")}
     for a in iso.values():
         member(app_net(a["id"]), "app", a, svc_members(a), False, owner=a["id"])
     for e in edges:
-        c, p = iso.get(e["from"]), iso.get(e["provider"] or "")
+        c, p = part.get(e["from"]), part.get(e["provider"] or "")
         if not e["provider"]:
             continue
         if not c or not p:
@@ -398,7 +401,7 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         cores = [iso[c] for c in core_bridge]
         for c in cores:
             member(CORE_NET, "core", c, svc_members(c), True)
-        for a in iso.values():
+        for a in part.values():
             if a["id"] in core:
                 continue
             net = gw_net(a["id"])
@@ -407,7 +410,7 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
                 member(net, "gateway", c, svc_members(c), True, owner=a["id"])
     # per app, per service: the networks it should be on (Docker names) with aliases
     for a in apps:
-        a["want"] = {s: {} for s in svc_members(a)} if a["state"] == "isolated" else {}
+        a["want"] = {s: {} for s in svc_members(a)} if a["state"] in ("isolated", "exposed") else {}
     for n in nets.values():
         for m in n["members"]:
             a = by_id[m["app"]]
@@ -421,8 +424,12 @@ def overlay_for(a: dict) -> dict:
     """The x-wizard-networks part of one isolated app's override: per service, its full network list (what Runtipi
     generated minus the shared network, plus its wizard networks), and the wizard networks as external."""
     services, top = {}, {}
+    keep_shared = a.get("state") == "exposed"   # the reverse proxy reaches it there; it only gains its links
+    if keep_shared and not any((a.get("want") or {}).values()):
+        return {"services": {}, "networks": {}}
     for s, want in sorted((a.get("want") or {}).items()):
-        nets = {k: (dict(v) if isinstance(v, dict) else {}) for k, v in a["services"][s]["networks"].items() if k != SHARED}
+        nets = {k: (dict(v) if isinstance(v, dict) else {}) for k, v in a["services"][s]["networks"].items()
+                if k != SHARED or keep_shared}
         for k in nets:
             nets[k].pop("gw_priority", None)
         for net, aliases in sorted(want.items()):
@@ -465,6 +472,8 @@ def write_overlay(path: Path, overlay: dict | None) -> bool:
     doc = (load_yaml(before) or {}) if before else {}
     if not isinstance(doc, dict):
         raise NetworkError(f"{path}: expected a compose mapping")
+    if overlay is not None and not overlay.get("services"):
+        overlay = None
     if not overlay and MARK not in doc:
         return False    # nothing of ours in it: never rewrite another writer's file (alongside, Claude login, owner)
     doc = strip_overlay(doc)
@@ -667,7 +676,8 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
         if a.get("custom"):
             continue
         try:
-            if write_overlay(override_path(c.runtipi_root, store, a["id"]), overlay_for(a) if a["state"] == "isolated" else None):
+            if write_overlay(override_path(c.runtipi_root, store, a["id"]),
+                             overlay_for(a) if a["state"] in ("isolated", "exposed") else None):
                 out["overrides"].append(a["id"])
         except (OSError, yaml.YAMLError, NetworkError) as e:
             out["errors"].append(f"{a['id']}: override not written ({str(e)[:160]})")
