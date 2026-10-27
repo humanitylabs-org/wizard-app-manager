@@ -54,7 +54,7 @@ MANIFEST = "web/my-release.json"      # what the shell's Settings > My release r
 UPSTREAM_REF = "refs/wam-release/upstream"
 UNIT = "wam-release"                  # wam-release.service + .timer (auto), wam-release-update.service (Update)
 UPDATE_UNIT = f"{UNIT}-update.service"
-CHANNEL_LABEL = {"latest": "Latest", "stable": "Stable"}
+CHANNEL_LABEL = {"main": "Main", "latest": "Latest", "stable": "Stable"}
 NOTIFY_TOPIC = "wizard"
 KEEP_BACKUPS = 5
 SHA = re.compile(r"[0-9a-f]{4,40}")
@@ -162,6 +162,10 @@ def release(home: Path | None = None) -> dict:
             "base": _sha(built.get("base")), "build": _sha(built.get("build")), "behind": behind, "new": new,
             "building": building(p), "failed": last if last.startswith(("FAIL", "CONFLICT")) else None,
             "checked_at": pending.get("checked_at") if isinstance(pending.get("checked_at"), str) else None,
+            "changes": _read_json(p.dir / "items-state.json").get("items"),
+            "staging": _read_json(p.dir / "staging.json") or None,
+            "held": _read_json(p.dir / "holds.json").get("items", []),
+            "resolver_merges": _read_json(p.dir / "resolvers.json").get("merges", []),
             "_latest": _sha(pending.get("latest")), "_checked": bool(pending)}
 
 
@@ -205,6 +209,7 @@ class Ctx:
     wait: float = 30                          # seconds the new shell gets to come up
     sleep: Callable = time.sleep
     resolver: Callable | None = None          # tests: replaces the resolver command
+    pr_lookup: Callable | None = None         # tests: GitHub REST at the boundary
     p: Paths = field(init=False)
 
     def __post_init__(self):
@@ -373,6 +378,8 @@ def fetch_upstream(c: Ctx) -> str:
 def check(c: Ctx) -> dict:
     """What the channel has that this release is not built on yet. Reads git, writes pending.json, builds nothing."""
     target = fetch_upstream(c)
+    from . import release_policy as policy
+    policy.items(c)
     head = c.git("rev-parse", c.branch)
     behind = int(c.git("rev-list", "--count", f"{head}..{target}"))
     new = []
@@ -425,9 +432,9 @@ def _accept(c: Ctx, w: Path, ours: str, theirs: str, log: Path) -> str | None:
     for ref, what in ((theirs, "upstream"), (ours, "the owner's release")):
         if not c.ok("merge-base", "--is-ancestor", ref, head, cwd=w):
             return why(f"{what} is not in the result")
-    if c.git("status", "--porcelain", "--untracked-files=no", cwd=w):
+    if c.git("status", "--porcelain", cwd=w):
         return why("uncommitted edits left")
-    marks = subprocess.run(["git", "-C", str(w), "grep", "-nIE", r"^(<<<<<<<|>>>>>>>)( |$)", head, "--",
+    marks = subprocess.run(["git", "-C", str(w), "grep", "-nIE", r"^(<<<<<<<|=======|>>>>>>>)( |$)", head, "--",
                             ".", ":!node_modules"], capture_output=True, text=True)
     if marks.returncode == 0:
         return why("conflict markers left")
@@ -469,7 +476,11 @@ def merge_upstream(c: Ctx, theirs: str) -> tuple[str | None, bool]:
                                    stderr=subprocess.STDOUT, timeout=int(c.cfg.get("resolve_timeout", 2400)))
                 except (OSError, subprocess.TimeoutExpired) as e:
                     f.write(f"resolver did not finish: {e}\n")
-        return _accept(c, w, ours, theirs, log), True
+        accepted = _accept(c, w, ours, theirs, log)
+        if accepted:
+            c.git("notes", "--ref=wam-release-resolvers", "add", "-f", "-m",
+                  f"WAM-Resolver: true\nOurs: {ours}\nUpstream: {theirs}\nConflicts: {files}", accepted)
+        return accepted, True
 
 
 # ---------------------------------------------------------------- telling the owner
@@ -634,51 +645,28 @@ def switch(c: Ctx, image: str, build: str) -> tuple[bool, str | None]:
 
 
 def manifest(c: Ctx, base: str, head: str) -> dict:
-    out = c.git("log", "--no-merges", "--format=%h%x1f%s%x1f%cs", f"{base}..{head}")
-    changes = []
-    for line in filter(None, out.splitlines()):
-        sha, title, date = line.split("\x1f")
-        changes.append({"sha": sha, "title": title, "status": "Mine", "date": date})
-    return {"name": c.name, "base": {"ref": base, "label": f"{c.label} {base}"}, "build": head, "changes": changes,
-            "built_at": _now()}
+    from . import release_policy as policy
+    changes = policy.items(c)
+    return {"name": c.name, "base": {"ref": base, "label": f"{c.label} {base}"}, "build": head,
+            "source_revision": head, "changes": changes, "built_at": _now(),
+            "resolver_merges": _read_json(c.p.dir / "resolvers.json").get("merges", [])}
 
 
 # ---------------------------------------------------------------- update / rebuild
 
-def build(c: Ctx, action: str) -> dict:
-    """`update` (merge the newest upstream first) or `rebuild` (the base it already has). Caller holds the lock."""
+def build(c: Ctx, action: str, *, policy_checked=False, head_override=None, stage_only=False) -> dict:
+    """Build a verified, origin-reachable source. Caller holds the release lock."""
+    from . import release_policy as policy
+    if not policy_checked:
+        return policy.execute(c, action)
     src = c.src
     if c.git("branch", "--show-current") != c.branch:
         return {"state": "failed", "status": c.say(f"FAIL {src} is not on {c.branch}")}
     if c.git("status", "--porcelain", "--untracked-files=no"):
         return {"state": "failed", "status": c.say(f"FAIL uncommitted edits in {src}")}
-    if action == "update":
-        try:
-            target = fetch_upstream(c)
-        except GitError as e:
-            return {"state": "failed", "status": c.say(f"FAIL fetch ({e})")}
-        short = c.git("rev-parse", "--short=8", target)
-        if not c.ok("merge-base", "--is-ancestor", target, "HEAD"):
-            c.say(f"RESOLVING merging {c.label} {short} under your changes")
-            merged, _clashed = merge_upstream(c, target)
-            if not merged or not c.ok("merge", "-q", "--ff-only", merged) or c.git("rev-parse", "HEAD") != merged:
-                files = c.git("diff", "--name-only", f"HEAD...{target}", check=False).split()
-                line = c.say(f"CONFLICT a change of yours clashes with {c.label} {short} and couldn't be resolved "
-                             f"automatically (log {c.p.logs / 'resolve.log'}); kept the running build")
-                notified = notify_clash(c, short, files)
-                try:
-                    check(c)
-                except GitError:
-                    pass
-                return {"state": "conflict", "status": line, "notified": notified}
-    else:
-        if not c.git("rev-parse", "-q", "--verify", UPSTREAM_REF, check=False):
-            try:
-                fetch_upstream(c)
-            except GitError as e:
-                return {"state": "failed", "status": c.say(f"FAIL fetch ({e})")}
-    head_full = c.git("rev-parse", "HEAD")
-    base = c.git("rev-parse", "--short=8", c.git("merge-base", "HEAD", UPSTREAM_REF))
+    head_full = head_override or c.git("rev-parse", "HEAD")
+    policy.pushed(c, head_full)
+    base = c.git("rev-parse", "--short=8", c.git("merge-base", head_full, UPSTREAM_REF))
     head = head_full[:8]
     tests_log = c.log("tests.log")
     tests_log.write_text("")
@@ -691,20 +679,26 @@ def build(c: Ctx, action: str) -> dict:
         mp.write_text(json.dumps({**m, "build": head}, indent=1) + "\n")
         image = f"{c.cfg.get('image_name') or (c.cfg.get('app') or DEFAULT_APP)}:release-{head}"
         try:
-            r = c.run(["docker", "build", "-q", "-t", image, str(w)], capture_output=True, text=True, timeout=1800)
+            r = c.run(["docker", "build", "-q", "--label", f"org.opencontainers.image.revision={head_full}",
+                       "--label", f"ai.wizards.source-revision={head_full}", "-t", image, str(w)],
+                      capture_output=True, text=True, timeout=1800)
             built_ok = r.returncode == 0
         except (OSError, subprocess.SubprocessError):
             built_ok = False
         if not built_ok:
             return {"state": "failed", "status": c.say(f"FAIL image build {head}; kept the running build")}
+    if stage_only:
+        return {"state": "staged", "build": head, "source_revision": head_full, "image": image,
+                "status": c.say("STAGED your update is ready to review; the running build is unchanged")}
     ok, was = switch(c, image, head)
     if not ok:
         return {"state": "rolled_back", "status": c.say(f"FAIL new build {head} did not come up; rolled back to {was}")}
-    _write_json(c.p.built, {"base": base, "build": head, "image": image, "built_at": _now(), "previous_image": was})
+    _write_json(c.p.built, {"base": base, "build": head, "source_revision": head_full, "image": image,
+                           "built_at": _now(), "previous_image": was})
     pushed = None
     if c.cfg.get("push"):
-        pushed = c.ok("push", "-q", c.cfg["push"], c.branch, timeout=120)
-    n = int(c.git("rev-list", "--no-merges", "--count", f"{base}..HEAD"))
+        pushed = c.ok("push", "-q", c.cfg["push"], f"{head_full}:refs/heads/{c.branch}", timeout=120)
+    n = len(m["changes"])
     line = c.say(f"OK {c.name} {head} on {c.label} {base} · {n} changes of your own")
     if action == "update":
         try:
@@ -718,9 +712,11 @@ def build(c: Ctx, action: str) -> dict:
 def run(action: str, home: Path | None = None, **kw) -> dict:
     """check / update / rebuild / auto, under the lock (a second run returns busy)."""
     from . import updates
+    from . import release_policy as policy
+    approve = kw.pop("approve", ())
     c = ctx(home, **kw)
     if action == "auto":
-        action = "update" if updates.mode(c.home) == "auto" else "check"
+        action = "update"  # fixes cannot wait for an owner's feature-update preference
     with _locked(c.p) as got:
         if not got:
             return {"state": "busy", "note": "a release run is already going"}
@@ -731,9 +727,12 @@ def run(action: str, home: Path | None = None, **kw) -> dict:
                 return {"state": "failed", "error": str(e)}
         c.p.building.write_text(json.dumps({"pid": os.getpid(), "started_at": _now(), "action": action}) + "\n")
         try:
-            return build(c, action)
+            return policy.execute(c, action, approve)
         except GitError as e:
-            return {"state": "failed", "status": c.say(f"FAIL {e}")}
+            conflict = str(e).startswith("CONFLICT")
+            return {"state": "conflict" if conflict else "failed",
+                    "status": c.say(str(e) if conflict else f"FAIL {e}"),
+                    **({"notified": e.notified} if isinstance(e, policy.Conflict) else {})}
         finally:
             c.p.building.unlink(missing_ok=True)
 
@@ -809,8 +808,11 @@ def init(home: Path | None = None, name: str | None = None, channel: str = "late
          dir: str | None = None, test_cmd: str | None = None, timer: bool = True, unit_dir: Path | None = None,
          systemctl: bool = True, release_base: str | None = None) -> dict:
     """Set up the owner's release. Never clobbers an existing checkout or branch: they are adopted."""
+    from . import release_policy as policy
+    if not policy.developer(home):
+        raise SystemExit("turn on Developer mode in Settings first")
     if channel not in CHANNEL_LABEL:
-        raise SystemExit("--channel must be latest or stable")
+        raise SystemExit("--channel must be main, latest or stable")
     h = wizard_home(home)
     old = config(h)
     cfg = {**old, "name": name or old.get("name") or DEFAULT_NAME, "channel": channel, "branch": branch,
@@ -840,6 +842,7 @@ def init(home: Path | None = None, name: str | None = None, channel: str = "late
         cfg.setdefault("git_identity", {"name": cfg["name"], "email": "release@wizard.invalid"})
     _write_json(h / CONFIG, cfg)
     c = Ctx(h, cfg)
+    policy.require(c)
     target = fetch_upstream(c)
     have = c.git("rev-parse", "-q", "--verify", f"refs/heads/{branch}", check=False)
     if not have:
@@ -848,6 +851,7 @@ def init(home: Path | None = None, name: str | None = None, channel: str = "late
         if c.git("status", "--porcelain", "--untracked-files=no"):
             raise SystemExit(f"{src} has uncommitted edits; commit or stash them, then run init again")
         c.git("checkout", "-q", branch)
+    c.git("update-ref", "refs/wam-release/initial-base", c.git("merge-base", "HEAD", target))
     check(c)
     units = install_units(unit_dir, systemctl, home) if timer else []
     return {"name": cfg["name"], "channel": channel, "branch": branch, "checkout": str(src), "dir": str(p.dir),
@@ -905,11 +909,36 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--no-timer", action="store_true")
     for n in ("check", "update", "rebuild", "auto", "status"):
         sub.add_parser(n)
+    go = sub.add_parser("go", help="promote reviewed staging; hold named items")
+    go.add_argument("--hold", action="append", default=[], help="full SHA, PR URL or exact title to keep waiting")
+    item = sub.add_parser("item", help="register an existing change without rewriting history")
+    item.add_argument("status", choices=["proposed", "mine"])
+    item.add_argument("--pr"); item.add_argument("--sha"); item.add_argument("--title")
     o = sub.add_parser("off"); o.add_argument("--keep-build", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "init":
         res = init(name=a.name, channel=a.channel, repo=a.repo, source=a.source, branch=a.branch, push=a.push,
                    resolver=a.resolver, dir=a.dir, test_cmd=a.test_cmd, timer=not a.no_timer)
+    elif a.cmd == "item":
+        from . import release_policy as policy
+        res = policy.register(ctx(), a.status, a.pr, a.sha, a.title)
+    elif a.cmd == "go":
+        from . import release_policy as policy
+        c = ctx()
+        batch = _read_json(c.p.dir / "staging.json")
+        held = _read_json(c.p.dir / "holds.json").get("items", [])
+        pending_items = policy.pending(c, fetch_upstream(c))
+        choices = {x["sha"]: x for x in [*held, *pending_items] if x["kind"] != "fix"}
+        holds = set()
+        for name in a.hold:
+            matches = [sha for sha, x in choices.items() if name in (sha, x.get("pr"), x["title"])]
+            if len(matches) != 1:
+                ap.error("--hold must identify exactly one current item")
+            holds.add(matches[0])
+        if holds == set(choices) and holds:
+            res = {"state": "waiting", "note": "all features held; live build unchanged"}
+        else:
+            res = run("go", approve=list(set(choices) - holds))
     elif a.cmd == "status":
         res = status()
     elif a.cmd == "off":
@@ -917,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         res = run(a.cmd)
     print(json.dumps(res, indent=2))
-    return 0 if res.get("state") in (None, "ok", "checked", "busy", "off") else (2 if res.get("state") == "conflict" else 1)
+    return 0 if res.get("state") in (None, "ok", "checked", "busy", "off", "staged", "waiting") else (2 if res.get("state") == "conflict" else 1)
 
 
 if __name__ == "__main__":
