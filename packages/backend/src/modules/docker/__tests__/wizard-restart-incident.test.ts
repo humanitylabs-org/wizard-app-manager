@@ -76,7 +76,7 @@ beforeEach(async () => {
     content: await fs.readFile(generated(urn), 'utf8'),
   }));
   const appsService = mock<AppsService>();
-  appsService.getApp.mockResolvedValue({ app: { exposed: false, exposedLocal: false } } as never);
+  repository.getAppByUrn.mockResolvedValue({ exposed: false, exposedLocal: false } as never);
   service = new DockerService(logger, config, files, mock<FilesystemService>(), appsService, repository);
   running = new Set([claude, agent, connectors]);
   calls = [];
@@ -127,6 +127,32 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await fs.rm(root, { recursive: true, force: true });
+});
+
+describe('owner publication at the real pre-start seam', () => {
+  it.each([false, true])('does not trust secondary labels when publication=%s', async (published) => {
+    const compose = {
+      services: {
+        main: { image: 'example', 'x-runtipi': { is_main: true, internal_port: 80 },
+          labels: { 'traefik.enable': 'true' }, networks: { tipi_main_network: {} } },
+        engine: { image: 'example', labels: { 'traefik.enable': 'true' }, networks: { tipi_main_network: {} } },
+      }, networks: { tipi_main_network: { external: true, name: 'runtipi_tipi_main_network' } },
+      'x-runtipi': { schema_version: 2 },
+    };
+    await recipe(connectors, compose);
+    repository.getAppByUrn.mockResolvedValue({ exposed: published, exposedLocal: false } as never);
+    files.getSourceDockerComposeYaml.mockResolvedValue({ content: compose, path: 'source.yml' } as never);
+    await service.prepareApp(connectors);
+    const output = yaml.parse(await fs.readFile(generated(connectors), 'utf8'));
+    expect(Boolean(output.services.main.networks?.tipi_main_network)).toBe(published);
+    expect(output.services.engine.networks?.tipi_main_network).toBeUndefined();
+    expect(repository.getAppByUrn).toHaveBeenCalledWith(connectors);
+  });
+  it('an unavailable owner row never becomes permission and does not block private startup', async () => {
+    repository.getAppByUrn.mockRejectedValue(new Error('owner row temporarily unavailable'));
+    await expect(service.prepareApp(connectors)).resolves.toBeUndefined();
+    expect(files.getSourceDockerComposeYaml).not.toHaveBeenCalled();
+  });
 });
 
 describe('22 October stale provider directory incident', () => {

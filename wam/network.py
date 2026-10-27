@@ -300,6 +300,28 @@ def override_path(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "user-config" / store / app_id / "docker-compose.yml"
 
 
+def source_services(doc: dict) -> dict:
+    """Match ComposeBuilder: active-architecture mappings merge, arrays replace."""
+    import copy
+    services = copy.deepcopy(_plain(doc.get("services")) or {})
+    overrides = (_plain(doc.get("x-runtipi")) or {}).get("overrides") or []
+    if not overrides:
+        return services
+    from .test_catalog import host_architecture
+    architecture = host_architecture()
+    override = next((o for o in overrides if o.get("architecture") == architecture), {})
+
+    def merge(base, incoming):
+        if isinstance(base, dict) and isinstance(incoming, dict):
+            result = copy.deepcopy(base)
+            for key, value in incoming.items():
+                result[key] = merge(result.get(key), value)
+            return result
+        return copy.deepcopy(incoming)
+
+    return merge(services, override.get("services") or {})
+
+
 def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -> dict | None:
     """One installed (or about-to-be-installed) Wizard app as the planner needs it. Prefers the compose Runtipi
     generated (what actually runs), else the recipe from the installed or store copy (before the first install)."""
@@ -320,7 +342,7 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
         return {"id": app_id, "custom": f"compose does not parse ({str(e)[:80]})", "services": {}, "uses": []}
     w = _front(wm.read_text()) if wm else {}
     req = w.get("requires") if isinstance(w.get("requires"), dict) else {}
-    rsvcs = rdoc.get("services") or {}
+    rsvcs = source_services(rdoc)
     multi = len([s for s in rsvcs.values() if s]) > 1
     services = {}
     for name, rs in rsvcs.items():
@@ -773,7 +795,8 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
         for c in live["containers"]:
             if c["urn"] != urn or not c["running"]:
                 continue
-            have = {k for k in c["networks"] if ours(k)}
+            have = {k for k in c["networks"] if ours(k) and
+                    (k not in p["networks"] or k not in live["networks"] or network_matches(p["networks"][k], live["networks"][k]))}
             want = set((a.get("want") or {}).get(c["service"]) or {})
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
@@ -828,13 +851,25 @@ def _context(c, rt=None, extra=()):
     return rt, ids | set(extra), grants, ext, STORE, approved
 
 
+def published_urns(rt) -> set[str]:
+    """Unreadable or malformed lifecycle state authorizes no publication."""
+    try:
+        rows = rt.installed()
+    except Exception:  # noqa: BLE001 - an unavailable owner record is not permission
+        return set()
+    if not isinstance(rows, (list, tuple)):
+        return set()
+    return {r["info"]["urn"] for r in rows if isinstance(r, dict) and isinstance(r.get("info"), dict)
+            and isinstance(r["info"].get("urn"), str) and isinstance(r.get("app"), dict)
+            and (r["app"].get("exposed") is True or r["app"].get("exposedLocal") is True)}
+
+
 def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
     rt, ids, grants, ext, store, approved = _context(c, rt, extra)
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
     # Generated labels may predate the start gate or come from a malicious recipe. Only the App Manager's
     # owner-configured lifecycle state can publish an app; do not let the watcher rejoin it from labels alone.
-    published = {(r.get("info") or {}).get("urn") for r in rt.installed()
-                 if (r.get("app") or {}).get("exposed") is True or (r.get("app") or {}).get("exposedLocal") is True}
+    published = published_urns(rt)
     for a in apps:
         for service in a["services"].values():
             service["exposed"] = f"{a['id']}:{store}" in published and service.get("main", False) and not service.get("network_mode")

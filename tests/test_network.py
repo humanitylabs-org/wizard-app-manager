@@ -131,6 +131,45 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
     assert any("different network" in problem for problem in rep["apps"][0]["drift"])
     assert not next(row for row in rep["networks"] if row["name"] == name)["matches"]
     assert "matches the declarations" not in net.describe(rep)
+    assert bool(net.drift(p, live)) is running
+    if running:
+        assert name in net.drift(p, live)[0]["missing"]
+
+
+@pytest.mark.parametrize("rows", [None, object(), {"info": {}}, [None, {"info": None}, {"info": "x", "app": {"exposed": True}}]])
+def test_unreadable_lifecycle_state_never_authorizes_publication(rows):
+    rt = type("RT", (), {"installed": lambda self: rows})()
+    assert net.published_urns(rt) == set()
+
+
+def test_lifecycle_lookup_failure_never_authorizes_publication():
+    def unavailable(self):
+        raise RuntimeError("temporarily offline")
+    assert net.published_urns(type("RT", (), {"installed": unavailable})()) == set()
+
+
+@pytest.mark.parametrize("main_service", ["base", "arch-main"])
+def test_watcher_preserves_the_owner_published_architecture_specific_main(tmp_path, monkeypatch, main_service):
+    from wam import test_catalog
+    monkeypatch.setattr(test_catalog, "host_architecture", lambda: "arm64")
+    recipe = {"services": {"base": {"image": "a", "command": ["base"], "x-runtipi": {"is_main": False}}},
+              "x-runtipi": {"overrides": [
+                  {"architecture": "amd64", "services": {"other-arch": {"image": "a", "x-runtipi": {"is_main": True}}}},
+                  {"architecture": "arm64", "services": {main_service: {"image": "b", "command": ["override"],
+                    "x-runtipi": {"is_main": True, "internal_port": 80}}}}]}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {"exposed": True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == "exposed"
+    planned = p["apps"][0]
+    assert main_service in planned["services"] and "other-arch" not in planned["services"]
+    assert net.keeps_shared(planned, main_service)
+    if main_service != "base":
+        assert not net.keeps_shared(planned, "base")
+    assert net.source_services(recipe)[main_service]["command"] == ["override"]
+    assert recipe["services"]["base"]["command"] == ["base"]
 
 
 @pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])
