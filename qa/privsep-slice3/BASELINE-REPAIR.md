@@ -1,73 +1,142 @@
-# Slice 3 baseline handoff repair — debug evidence, not full acceptance
+# Slice 3: main cannot complete the clean named-Hermes handoff
 
 No merge, live deployment or heavy-job submission. PR remains draft / `do-not-merge`.
 
-## Exact baseline failure
+## Finding (supersedes the previous overlay-only repair)
 
-Main: `67141228f6f73516ab68ece1c4c72bf3f67aebe0`.
-Original evidence: `forum:/srv/work/privsep/slice3/20261027T200005Z-staging/evidence/`.
-`baseline-install.log` ended after successful root host preparation with another
-administrator-approval request (exit 2). It never reached the ordinary install.
+Current main is `67141228f6f73516ab68ece1c4c72bf3f67aebe0`.
+On a **clean Debian 12 cloud guest** with a working stock Hermes gateway owned by
+an unprivileged `hermes` account, main's documented administrator `start` route
+fails after successful host preparation. The exact failing condition in
+`get.sh:named_host_ready()` (main line 692, condition at 693) is:
 
-A short KVM debug guest used a child overlay of that stopped baseline disk; the
-original evidence disk was not changed. Evidence:
-`forum:/srv/work/privsep/slice3/20261027T211442Z-baseline-debug/`.
-The actual `sudo -iu hermes` session reported:
+```bash
+[ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
+```
 
-| Main `named_host_ready()` prerequisite | Observed |
+The **second test fails**: `/run/user/1000/bus` is absent. The Runtipi `.env`
+**does exist**: main's root host-preparation helper creates it on first install.
+The earlier inference that `.env` cannot exist on first install was incorrect.
+
+The previous overlay-only result did not establish a clean-install repair.
+Its bus was already present; suppressing the unsigned-in Tailscale operator gate
+then allowed continuation. This cannot be used as clean baseline acceptance.
+
+## Clean proof and documented owner routes
+
+Each new debug run created a new qcow2 disk backed **directly by**
+`/srv/work/images/debian-12-genericcloud-amd64.qcow2`, not a previous guest disk.
+Each boot asserted `/home/hermes` was absent, installed the same stock Hermes
+commit `74885f997bece88c1393bd174b25b32338336cb6`, verified API health and denied
+`sudo -n true`, and then ran the unchanged main installer. No tailnet/model
+credentials, approval bypass, production installer patch or sudo grant was used.
+
+Earlier clean synchronous evidence:
+`forum:/srv/work/privsep/slice3/20261027T212338Z-staging/evidence/baseline-install.log`
+ends with successful root prep, another administrator request, and exit **2**.
+
+New detached-route evidence (all under `forum:/srv/work/privsep/slice3/`):
+
+- `20261027T214541Z-clean-baseline-debug/`: first `bash -s start` / `status`
+  reproduction, terminal state `failed`, install exit **3**. The diagnostic shell
+  step itself returned 1 because it asserted the initial `.env` hypothesis; its
+  trace instead proved `.env` present and bus absent. VM stopped, QEMU exit 0.
+- `20261027T214957Z-clean-baseline-debug/`: independent clean repeat; all diagnostic
+  steps exit 0 and confirm bus absent, `.env` present, user manager active,
+  `Linger=yes`. `dbus`, `dbus-daemon` and `dbus-user-session` are installed. Do not
+  misreport the finding as a missing package or a stopped user manager.
+- `20261027T215600Z-runner-clean-baseline-debug/`: actual new runner command/probe;
+  installer fails identically. Its probe initially returned 2 for the extracted
+  function because a multiline `bash -c` argument crossed `sudo -i`; classifier
+  correctly rejected that mismatch. This probe transport was fixed to stdin.
+- **`20261027T220027Z-runner-clean-baseline-debug/`**: independent clean proof using
+  the repaired runner's actual bootstrap, VM, probe and classifier functions.
+  `baseline-install.log`: exit **3**. `baseline-failure-probe.log`: exit **0**,
+  `named_host_ready_exit=1`. `receipt.json` reports the exact documented reason,
+  `baseline_failure_matches_documented=true`, no unexpected failures, and
+  `candidate_passed=false` (candidate was deliberately not run in this debug).
+  VM PID 2877239 stopped with QEMU exit 0. Started 22:00:27Z, finished 22:04:54Z.
+
+The pinned equivalent of main's printed administrator command was run as root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/67141228f6f73516ab68ece1c4c72bf3f67aebe0/get.sh -o /root/get.sh
+WAM_REF=67141228f6f73516ab68ece1c4c72bf3f67aebe0 \
+WIZARD_MODE=alongside WIZARD_HERMES_USER=hermes \
+HERMES_HOME=/home/hermes/.hermes WIZARD_AGENT_SAFE=1 \
+WIZARD_PRIVATE_ACCESS=none WIZARD_TAILSCALE_WAIT=1 \
+bash -s start < /root/get.sh
+bash -s status < /root/get.sh
+```
+
+Downloading first preserves exact source identity instead of following a mutable
+public redirect. `status` was polled every 3 seconds with a finite bound. Its
+successful invocation/start exit does **not** mean installation succeeded.
+Actual terminal status is `failed`, `exit_code=3`, with:
+
+```text
+Administrator host preparation complete for hermes; no passwordless sudo was granted.
+Administrator rights are needed once for: host preparation
+[wizard-os] admin-command: curl -fsSL https://aiwizards.com/os.sh | sudo env WIZARD_HERMES_USER=hermes HERMES_HOME=/home/hermes/.hermes WIZARD_AGENT_SAFE=1 bash -s start
+[wizard-os] owner-admin: The account hermes is not in this server's sudo group, so its password cannot approve this. An administrator of this server must run this once in their own terminal:
+```
+
+Unprivileged post-prep tests, from that final clean guest:
+
+| Condition | Actual result |
 | --- | --- |
 | `~/runtipi/.env` | present |
-| `/run/user/1000/bus` | socket present |
-| `docker info` | exit 0 |
-| `sg docker -c 'docker info'` | exit 0 |
-| `tailscaled` | active |
-| `tailscale debug prefs` operator matches `$USER` | **false: `OperatorUser=None`, `USER=hermes`** |
-| `tailscale status --json` | `BackendState=NeedsLogin` |
+| `/run/user/1000/bus` | **absent** |
+| `docker info` / `sg docker -c 'docker info'` | both exit 0 |
+| exact extracted main `named_host_ready` | exit 1 |
+| `user@1000.service` / linger | active / yes |
+| Hermes `sudo -n true` | denied |
+| `~/wizard-app-manager` | absent; ordinary installation never reached |
 
-The failing condition is specifically main's required Tailscale operator check,
-not missing Docker membership, user-bus startup, or the Runtipi environment.
-Host prep's successful `tailscale set --operator=hermes` did not make the clean,
-unsigned-in daemon report that operator. No tailnet credentials were supplied.
+`WIZARD_PRIVATE_ACCESS=none` is main's supported box-only option and removes the
+unrelated unauthenticated operator condition. Both documented execution routes
+still hit the same unconditional bus check. Main cannot complete this clean
+scenario through either route tested. No claim is made that a manual systemd
+repair could not make it work; that would not be an untouched-main owner install.
+Why the installed user-bus socket was not activated is not further established.
 
-## Runner repair and explicit comparison limit
+## Runner contract
 
-- Baseline bootstrap now explicitly selects documented `WIZARD_PRIVATE_ACCESS=none`
-  (README, private-access alternatives). This is a real supported owner choice,
-  not `WIZARD_APPROVED`, a patched main installer or a fabricated successful baseline.
-- Candidate explicitly keeps `WIZARD_PRIVATE_ACCESS=tailscale`, so existing operator
-  provisioning and real agent Tailscale-mutation denial remain acceptance checks.
-  Using `none` on both would remove the daemon/operator under test from candidate.
-- All other bootstrap inputs remain identical except source SHA: mode, account,
-  Hermes home and wait setting. Both guests use the same pinned stock Hermes,
-  clean Debian image and registry mirror. Private-access provisioning is therefore
-  **not** an equal-input comparison; authenticated private links remain unproven.
-- `receipt.json` now includes `install_private_access` and
-  `install_input_difference`; both exact shell commands remain captured.
-- A failed download cannot run a stale `/root/get.sh`: download and execution are
-  joined with `&&`. Registry retries and baseline failure handling are unchanged.
-  A failed baseline is still a failure; it is not silently waived.
+REUSE: clean-image VM lifecycle, exact pinned bootstrap, documented start/status,
+registry-only retries, stock Hermes, doctor rows and candidate action/denial checks.
+EXTEND: bounded detached completion polling and strict known-main-failure matching.
+NEW: regression tests only; no production installer/runtime change.
 
-REUSE: the documented private-access option, existing installer/VM/retry/doctor checks.
-EXTEND: bootstrap command selection and machine-readable evidence of input differences.
-NEW: focused regression tests only; no production code or UI change.
+- Both main and candidate document `start/status`, so both now use that identical
+  route with `WIZARD_AGENT_SAFE=1`. Both still use the same stock Hermes/image.
+- Baseline keeps `WIZARD_PRIVATE_ACCESS=none`; candidate keeps `tailscale` for real
+  daemon/operator provisioning and mutation denial. This input difference is
+  explicit in the receipt. Authenticated private links remain unproven.
+- `candidate_passed` requires every named candidate install/action/denial check,
+  all candidate doctor rows OK, and VM teardown. It is independent of whether main
+  can install. A partially exercised candidate cannot pass.
+- `baseline_status` is either `completed`, `cannot complete on main: <reason>`, or
+  an unexpected failure. Expected failure requires **this exact main SHA**, exit
+  3 and failed status/reason, the successful host-prep and owner-admin markers,
+  plus every observed prerequisite value above. Network errors, timeouts, a
+  different SHA, missing `.env`, inaccessible Docker or a different function exit
+  are not waived.
+- Overall `passed` requires candidate acceptance, a completed baseline or exactly
+  matching documented baseline bug, existing full-suite policy, and teardown.
+  The raw baseline install step retains exit 3: it is never rewritten as success.
+- An uninstalled baseline has **no fabricated doctor rows**: comparison is marked
+  unavailable and baseline rows are null; candidate doctor must pass on its own.
 
-## Verified
+## Checks for this repair
 
-- In the debug guest, re-ran the **unchanged exact main** root alongside installer
-  with `WIZARD_PRIVATE_ACCESS=none`: exit **0**. Installed checkout readback:
-  `67141228f6f73516ab68ece1c4c72bf3f67aebe0`. Doctor: **15 rows, 15 OK**.
-- Main still reports unavailable default apps `wizard-troubleshooter` and
-  `wizard-voice-service` (not in the public index; private install unavailable).
-  These warnings are retained in `none-install.log`; exit 0 and doctor OK do not
-  assert that every optional/default app installed.
-- Debug steps `conditions`, `none-install`, `verify`: all exit 0.
-  `receipt.json` has `stopped: true`, QEMU exit 0; its PID was absent on readback.
-- New runner regressions before repair: **2 failed** (missing command helper and
-  missing machine-readable input evidence). After repair, focused runner and
-  alongside tests: **12 passed**. Node Open tests: **4 passed**.
-  `git diff --check`: exit 0.
+- Focused runner + alongside regressions: **38 passed** (real pytest execution).
+- Generated bootstrap/probe shell syntax and probe Python syntax are exercised in
+  those tests, including success/failure/stopped/timeout terminal states, failed
+  downloads, strict mismatch rejection and incomplete-candidate rejection.
+- `git diff --check`: exit 0. Only this report, the runner and its focused test
+  file changed; no production installer code changed.
 
-This is a repaired baseline continuation, not a fresh two-guest acceptance run.
-The next immutable source export / job specification is staged separately for
-coordinator admission. Full-suite and clean-guest rerun results remain pending;
-no new candidate acceptance result is claimed here.
+The next full two-guest rerun is **staged only**, not submitted. Prior candidate
+success does not verify the newly selected detached route; that remains pending
+in the staged full rerun. This document records clean baseline proof, not a new
+full acceptance pass.

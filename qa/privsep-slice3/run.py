@@ -22,20 +22,19 @@ import time
 import traceback
 import xml.etree.ElementTree as ET
 
-# Main's root->owner handoff requires a visible Tailscale operator before the
-# ordinary installer can reach its private-access setup. On a clean, unsigned-in
-# daemon `tailscale set --operator=hermes` leaves OperatorUser=None (NeedsLogin).
-# Use the documented box-only option for main, not an approval bypass or a fake
-# baseline. Keep candidate Tailscale provisioning and the kernel denial intact.
+# Main's documented box-only alternative isolates the proven missing user-bus
+# handoff bug from unauthenticated Tailscale operator state. Candidate keeps the
+# real daemon/operator denial under test. Both use documented start/status.
 INSTALL_PRIVATE_ACCESS = {'baseline': 'none', 'candidate': 'tailscale'}
 INSTALL_INPUT_DIFFERENCE = (
-    'Baseline uses documented WIZARD_PRIVATE_ACCESS=none: main named_host_ready '
-    'requires OperatorUser=hermes, but a clean unauthenticated daemon reports '
-    'OperatorUser=None / BackendState=NeedsLogin after host preparation. Candidate '
-    'keeps WIZARD_PRIVATE_ACCESS=tailscale to exercise real operator provisioning '
-    'and agent mutation denial. All other bootstrap inputs are identical apart '
-    'from the source SHA. Authenticated private links are not tested in either VM.'
+    'Baseline uses documented WIZARD_PRIVATE_ACCESS=none; candidate keeps '
+    'WIZARD_PRIVATE_ACCESS=tailscale for real operator provisioning and agent '
+    'mutation denial. Both use pinned get.sh via bash -s start/status with '
+    'WIZARD_AGENT_SAFE=1. Authenticated private links are not tested.'
 )
+KNOWN_BASELINE_SHA = '67141228f6f73516ab68ece1c4c72bf3f67aebe0'
+BASELINE_REASON = 'named_host_ready requires /run/user/1000/bus absent after successful host preparation'
+
 
 
 root, source = (Path(v).resolve() for v in sys.argv[1:3])
@@ -48,6 +47,8 @@ root.mkdir(mode=0o700, parents=True)
 private = root / 'private'; private.mkdir(mode=0o700)
 receipt = {'started': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'baseline': baseline,
            'candidate': candidate, 'smoke': smoke, 'steps': [], 'vms': [], 'failures': [],
+           'candidate_passed': False, 'baseline_status': 'not run',
+           'baseline_failure_matches_documented': False,
            'install_private_access': INSTALL_PRIVATE_ACCESS,
            'install_input_difference': INSTALL_INPUT_DIFFERENCE,
            'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
@@ -194,14 +195,84 @@ AGENT
 
 
 def guest_bootstrap_command(ref, label):
-    """Same owner/Hermes/bootstrap inputs, with the recorded private-access choice."""
+    """Pinned version of the documented owner start/status route, bounded."""
     private_access = INSTALL_PRIVATE_ACCESS[label]
     url = f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
     return (f'curl -fsSL {url} -o /root/get.sh && '
             f'WAM_REF={ref} WIZARD_MODE=alongside WIZARD_HERMES_USER=hermes '
             f'HERMES_HOME=/home/hermes/.hermes WIZARD_PRIVATE_ACCESS={private_access} '
-            'WIZARD_TAILSCALE_WAIT=1 bash /root/get.sh')
+            'WIZARD_AGENT_SAFE=1 WIZARD_TAILSCALE_WAIT=1 bash -s start < /root/get.sh\n'
+            'start_code=$?; [ "$start_code" -eq 0 ] || exit "$start_code"\n'
+            'deadline=$((SECONDS + 3000)); code=124\n'
+            'while [ "$SECONDS" -lt "$deadline" ]; do\n'
+            '  status=$(bash -s status < /root/get.sh); printf "%s\\n" "$status"\n'
+            '  state=$(python3 -c \'import json; print(json.load(open("/root/.wizard-os/install-status.json"))["state"])\')\n'
+            '  case "$status" in *"Wizard OS install: stopped"*|*"Wizard OS install: interrupted"*) code=125; break ;; esac\n'
+            '  case "$state" in\n'
+            '    done) code=0; break ;;\n'
+            '    failed|needs_admin) code=$(python3 -c \'import json; print(json.load(open("/root/.wizard-os/install-status.json")).get("exit_code",3) or 3)\'); break ;;\n'
+            '  esac\n'
+            '  sleep 3\n'
+            'done\n'
+            'cat /root/.wizard-os/install-status.json\n'
+            'cat /root/.wizard-os/install.log\n'
+            'exit "$code"')
 
+
+def baseline_failure_matches(ref, code, probe, log):
+    """Accept only the exact observed main bug; all other failures stay red."""
+    status = probe.get('status', {})
+    return (ref == KNOWN_BASELINE_SHA and code == 3
+            and status.get('state') == 'failed' and status.get('exit_code') == 3
+            and status.get('failure_reason') == 'Administrator rights are needed once for: host preparation'
+            and probe.get('runtime_env') is True and probe.get('user_bus') is False
+            and probe.get('docker_info') is True and probe.get('sg_docker_info') is True
+            and probe.get('named_host_ready_exit') == 1
+            and probe.get('user_manager') == 'active' and probe.get('linger') == 'yes'
+            and probe.get('checkout_exists') is False
+            and probe.get('sudo_available') is False
+            and 'Administrator host preparation complete for hermes; no passwordless sudo was granted.' in log
+            and '[wizard-os] owner-admin: The account hermes is not in this server' in log)
+
+
+def finalize_receipt(value):
+    required = {'candidate-' + n for n in ('fresh', 'tools', 'stock-hermes', 'install',
+                'mirror', 'source', 'doctor', 'denials', 'actions', 'service-uid')}
+    steps = {v['name']: v['exit'] for v in value['steps']}
+    candidate_failures = [v for v in value['failures'] if v.startswith('candidate-')]
+    vms = [v for v in value['vms'] if v['name'] == 'candidate']
+    value['candidate_passed'] = (value.get('candidate_doctor_passed') is True
+                                 and not candidate_failures and len(vms) == 1 and vms[0]['stopped']
+                                 and all(steps.get(n) == 0 for n in required))
+    baseline_ok = (value['smoke'] or value['baseline_status'] == 'completed'
+                   or value['baseline_failure_matches_documented'])
+    value['passed'] = value['candidate_passed'] and baseline_ok and not value['failures']
+
+
+BASELINE_PROBE = r'''python3 - <<'PY'
+import json, pathlib, subprocess
+s=pathlib.Path('/root/get.sh').read_text()
+functions='\n'.join(s[s.index(n+'() {'):s.index('\n}',s.index(n+'() {'))+2]
+                    for n in ('docker_group_member','named_host_ready'))
+def owner(command):
+    return subprocess.run(['sudo','-iu','hermes','env','WIZARD_PRIVATE_ACCESS=none','bash','-s'],
+                          input=command+'\n',capture_output=True,text=True)
+def root(*args):
+    return subprocess.check_output(args,text=True).strip()
+uid=root('id','-u','hermes')
+v={'status':json.loads(pathlib.Path('/root/.wizard-os/install-status.json').read_text()),
+   'runtime_env':owner('test -f "$HOME/runtipi/.env"').returncode == 0,
+   'user_bus':owner('test -S /run/user/'+uid+'/bus').returncode == 0,
+   'docker_info':owner('docker info').returncode == 0,
+   'sg_docker_info':owner("sg docker -c 'docker info'").returncode == 0,
+   'named_host_ready_exit':owner(functions+'\nnamed_host_ready').returncode,
+   'user_manager':root('systemctl','is-active','user@'+uid+'.service'),
+   'linger':root('loginctl','show-user','hermes','-p','Linger','--value'),
+   'checkout_exists':pathlib.Path('/home/hermes/wizard-app-manager').exists(),
+   'sudo_available':owner('sudo -n true').returncode == 0}
+print(json.dumps(v))
+PY
+'''
 
 def guest_vm(label, ref, image, key):
     vm = root / label; vm.mkdir()
@@ -237,7 +308,23 @@ def guest_vm(label, ref, image, key):
             'git -C "$HOME/hermes-agent" checkout --detach FETCH_HEAD')
         if guest('stock-hermes',setup,1500,True): return
         install=guest_bootstrap_command(ref, label)
-        code=guest('install',guest_install_command(install),3300,True)
+        code=guest('install',guest_install_command(install),9500,label == 'candidate')
+        if label == 'baseline':
+            if code:
+                probe_code = guest('failure-probe', BASELINE_PROBE, 120, True)
+                probe = {}
+                if probe_code == 0:
+                    probe = json.loads((root/'baseline-failure-probe.log').read_text().splitlines()[-1])
+                matched = baseline_failure_matches(ref, code, probe, (root/'baseline-install.log').read_text())
+                receipt['baseline_failure_probe'] = probe
+                receipt['baseline_failure_matches_documented'] = matched
+                receipt['baseline_status'] = ('cannot complete on main: ' + BASELINE_REASON if matched
+                                              else 'unexpected install failure: ' + str(code))
+                if not matched: receipt['failures'].append('baseline unexpected install failure')
+                save()
+                return
+            receipt['baseline_status'] = 'completed'
+            save()
         guest('mirror',"docker info --format '{{json .RegistryConfig.Mirrors}}' | python3 -c 'import json,sys; assert any(\"mirror.gcr.io\" in v for v in json.load(sys.stdin))'",60,True)
         manager='wizard-system' if label=='candidate' else 'hermes'
         home='/var/lib/wizard-os' if label=='candidate' else '/home/hermes'
@@ -328,14 +415,25 @@ try:
     run('image-hash',['sha256sum',str(image)])
     key=private/'id_ed25519'; run('key',['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key)])
     guest_vm('candidate',candidate,image,key)
+    candidate_doctor = doctor_rows('candidate')
+    receipt['candidate_doctor_passed'] = bool(candidate_doctor) and all(v['ok'] for v in candidate_doctor)
+    save()
     if not smoke:
         guest_vm('baseline',baseline,image,key)
         try:
-            cand,base=doctor_rows('candidate'),doctor_rows('baseline')
-            old={v['check'] for v in base if not v['ok']}
-            new=[v for v in cand if not v['ok'] and v['check'] not in old]
-            receipt['doctor_comparison']={'baseline_failures':sorted(old),'new_failures':new,'candidate':cand,'baseline':base}
-            if new: receipt['failures'].append('doctor regressions')
+            cand = doctor_rows('candidate')
+            if receipt['baseline_status'] == 'completed':
+                base = doctor_rows('baseline')
+                old = {v['check'] for v in base if not v['ok']}
+                new = [v for v in cand if not v['ok'] and v['check'] not in old]
+                receipt['doctor_comparison'] = {'baseline_failures': sorted(old), 'new_failures': new,
+                                                 'candidate': cand, 'baseline': base}
+            else:
+                # No invented main doctor rows: an install that cannot finish has no comparison.
+                new = [v for v in cand if not v['ok']]
+                receipt['doctor_comparison'] = {'status': 'unavailable: baseline did not install',
+                                                 'candidate': cand, 'baseline': None}
+            if new: receipt['failures'].append('doctor regressions or candidate failures')
         except Exception as e: receipt['failures'].append(str(e))
         suite()
 except Exception:
@@ -343,6 +441,6 @@ except Exception:
 finally:
     receipt['finished']=datetime.datetime.now(datetime.timezone.utc).isoformat()
     if not all(v['stopped'] for v in receipt['vms']): receipt['failures'].append('VM teardown incomplete')
-    receipt['passed']=not receipt['failures']; save()
+    finalize_receipt(receipt); save()
 print(json.dumps(receipt,indent=2))
 sys.exit(0 if receipt['passed'] else 1)
