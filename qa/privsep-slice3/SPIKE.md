@@ -27,10 +27,13 @@ mount for its UI state; that cannot grant privilege because neither wizard-syste
 The public index currently has no `hello-wizard` listing. The harness uses `wizard-calendar`, a tiny public
 source package with no `uses` dependencies, the upstream pinned Python Alpine image and no provider accounts.
 A silent app's logs are valid: prove the installed app has a selected container and the log request returns text,
-not fabricated nonempty output. Pin the same stock Hermes commit for both guests. Install with its checked-in
-`uv.lock` (`uv sync --active --frozen --extra messaging --extra mcp`) so upstream `[tool.uv]` overrides are honored;
-raw `uv pip install -e` rejects the upstream browser-harness/Pillow pin conflict. Never edit stock Hermes to fix it.
-Always `cd` to the account's home after `runuser`: otherwise uv attempts to read `/root/uv.toml` and fails.
+not fabricated nonempty output. Pin the same stock Hermes commit for both guests. Follow the current PM developer
+workflow (`source ./activate`), which provisions uv-backed locked dependencies and records extras for the canonical
+launcher. Raw editable pip rejects the upstream browser-harness/Pillow conflict; raw external `uv sync --active`
+initially works but the canonical gateway launcher selects a different PM generation without aiohttp after restart.
+Use stock `hermes gateway install` at the agent uid: an unrelated QA unit is treated as a manual process by
+`wizard link` and may be stopped without restarting. Never edit stock Hermes. Change to the account's home after
+`runuser` before entering its checkout; otherwise uv attempts to read `/root/uv.toml` and fails.
 
 ## Deferrals
 

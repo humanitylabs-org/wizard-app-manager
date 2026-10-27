@@ -55,14 +55,14 @@ systemctl start user@$uid.service
 runuser -u hermes -- env HOME=/home/hermes bash -se <<'AGENT'
 export PATH="$HOME/.local/bin:$PATH"
 cd "$HOME"
-curl -LsSf https://astral.sh/uv/install.sh | sh
-mkdir -p "$HOME/.hermes"
+mkdir -p "$HOME/.hermes" "$HOME/.local/bin"
 git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/hermes-agent"
-uv venv --python 3.14 "$HOME/.hermes/venv"
-# Respect stock Hermes' checked-in uv.lock and its upstream dependency
-# overrides; raw uv pip resolution rejects browser-harness' Pillow upper pin.
-VIRTUAL_ENV="$HOME/.hermes/venv" uv sync --project "$HOME/hermes-agent" --active --frozen --no-dev --extra messaging --extra mcp
-ln -s "$HOME/.hermes/venv/bin/hermes" "$HOME/.local/bin/hermes"
+# Current upstream docs require PM's uv-backed activation to record extras.
+# A raw external uv venv works once, then the canonical gateway launcher loses
+# messaging on restart because it uses PM's distinct selected environment.
+cd "$HOME/hermes-agent"
+source ./activate
+ln -s "$HOME/hermes-agent/.hermes/bin/hermes" "$HOME/.local/bin/hermes"
 cat > "$HOME/.hermes/config.yaml" <<'CFG'
 model:
   default: qa-no-inference

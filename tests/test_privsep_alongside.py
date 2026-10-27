@@ -92,6 +92,21 @@ def test_root_preparation_never_inherits_agent_code_environment(monkeypatch):
     assert not ({'PYTHONPATH', 'BASH_ENV', 'GIT_CONFIG_GLOBAL'} & env.keys())
 
 
+def test_kvm_acceptance_uses_stock_restartable_gateway_not_a_stub():
+    import ast
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / 'qa/privsep-slice3/run.py').read_text()
+    tree = ast.parse(text)
+    setup = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'HERMES_SETUP')
+    assert 'hermes gateway install </dev/null' in setup
+    assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus' in setup
+    assert 'qa-hermes.service' not in setup
+    assert 'source ./activate' in setup and '.hermes/bin/hermes' in setup
+    assert 'uv sync --project' not in setup  # do not fork PM's selected environment
+    assert 'v["upstream_reachable"]' in text
+
+
 def test_thin_client_fails_closed_without_local_fallback(monkeypatch, capsys):
     def fail(*args, **kwargs): raise AssertionError('no subprocess fallback')
     monkeypatch.setattr(subprocess, 'run', fail)
