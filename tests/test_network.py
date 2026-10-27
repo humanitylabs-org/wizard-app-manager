@@ -1414,6 +1414,7 @@ def test_report_and_describe_say_the_mode_plainly(monkeypatch):
     text = net.describe(rep)
     assert "Open: everything is connected unless you disconnect it" in text
     assert "can reach: every other app except resend-connector (you disconnected it" in text
+    assert "reached by: every other app except resend-connector;" in text
     from wam import connections
     assert connections.signature({**st, "mode": "open"}) != connections.signature({**st, "mode": "declared"})
 

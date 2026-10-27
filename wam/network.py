@@ -1519,6 +1519,9 @@ def describe(rep: dict) -> str:
             lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
         by = [b["from"] + (" (shared network)" if b["state"] == "shared-network" else "")
               for b in a["reached_by"] if b["state"] in ("link", "gateway", "core", "shared-network")]
+        if a.get("open") is not None:   # open mode is two-way: whoever it reaches reaches it
+            by = ["every other app" + (" except " + ", ".join(r["app"] for r in a["open"]["unreachable"])
+                                       if a["open"]["unreachable"] else "")]
         lines.append(f"  reached by: {', '.join(by) or 'no other app'}; agent gateway {a['gateway']}")
         lines.append(f"  internet: {'yes' if a['internet'] else 'no' if a['internet'] is False else 'unknown'}")
         for h in a["host_access"]:
