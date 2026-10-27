@@ -24,7 +24,7 @@ def test_recipe_mounting_host_root_needs_owner(tmp_path):
         policy.require(tmp_path, 'audit', [text])
     assert exc.value.payload['error'] == 'needs_owner_approval'
     assert 'outside app-data' in exc.value.payload['risks'][0]
-    assert exc.value.payload['command'] == f'wam approve audit {policy.digest([text])}'
+    assert exc.value.payload['command'] == 'wam approve audit ' + policy._read(tmp_path)['pending']['audit']['sha256']
 
 
 @pytest.mark.parametrize('fields,reason', [
@@ -81,28 +81,30 @@ def test_allow_host_access_flag_no_longer_approves(tmp_path, monkeypatch):
     assert code == policy.EXIT_APPROVAL
 
 
-def test_approval_invalidated_by_recipe_change(tmp_path, monkeypatch):
+def test_approval_survives_same_risks_but_new_risk_needs_owner(tmp_path, monkeypatch):
     c, installs, steps = gate_env(tmp_path, monkeypatch, compose(privileged=True))
     with pytest.raises(policy.NeedsOwnerApproval) as e:
         c.install(c.Config(), 'x')
     sha = e.value.payload['approve_url'].split('/')[-1]
     policy.approve(c.Config().home, 'x', sha)
-    assert policy._read(c.Config().home)['approvals']['x'] == sha
+    assert policy._read(c.Config().home)['approvals']['x']['source'] == 'owner approved'
     path = c.Config().runtipi_root / 'repos/wizardapps/apps/x/docker-compose.yml'
     path.write_text(path.read_text() + '# changed recipe\n')
+    c.install(c.Config(), 'x')
+    assert installs == ['x:wizardapps']
+    path.write_text(compose(privileged=True, volumes=['/:/host']))
     with pytest.raises(policy.NeedsOwnerApproval):
         c.install(c.Config(), 'x', allow_host_access=True)
-    assert installs == []
+    assert installs == ['x:wizardapps']
     with pytest.raises(ValueError):
         policy.approve(c.Config().home, 'x', sha)
 
 
-def test_same_risk_on_changed_update_needs_fresh_owner(tmp_path, monkeypatch):
+def test_same_risk_on_changed_update_is_grandfathered(tmp_path, monkeypatch):
     plain = compose(privileged=True)
     c, updates, steps = update_env(tmp_path, monkeypatch, plain, plain + '# v2\n')
-    with pytest.raises(policy.NeedsOwnerApproval):
-        c.app_update(c.Config(), 'x', allow_host_access=True)
-    assert updates == steps == []
+    assert c.app_update(c.Config(), 'x', allow_host_access=True)['status'] == 'running'
+    assert updates == ['x:wizardapps']
 
 
 def test_restored_override_with_a_host_mount_needs_owner(tmp_path):
@@ -156,7 +158,7 @@ def test_owner_approval_http_and_readback(tmp_path, monkeypatch):
     text = compose(privileged=True)
     with pytest.raises(policy.NeedsOwnerApproval) as e:
         policy.require(tmp_path, 'audit', [text])
-    sha = policy.digest([text])
+    sha = e.value.payload['approve_url'].split('/')[-1]
     request_handler(tmp_path, monkeypatch)
     monkeypatch.setattr(cli.StoreHandler, 'cfg', SimpleNamespace(home=tmp_path), raising=False)
     server = ThreadingHTTPServer(('127.0.0.1', 0), cli.StoreHandler)
@@ -170,11 +172,13 @@ def test_owner_approval_http_and_readback(tmp_path, monkeypatch):
         return res.status, data
     try:
         status, page = req('GET')
-        assert status == 200 and b'Approve this recipe' in page and sha.encode() in page
+        assert status == 200 and b'Approve this access' in page and sha.encode() in page
         assert policy._read(tmp_path)['approvals'] == {}
         assert req('POST', extra={'Origin': 'https://evil.test'})[0] == 403
         assert req('POST')[0] == 200
-        assert policy._read(tmp_path)['approvals'] == {'audit': sha}
+        record = policy._read(tmp_path)['approvals']['audit']
+        assert record['risks'] == policy.risks(text, 'audit') and record['source'] == 'owner approved'
+        assert record['timestamp']
         assert policy.require(tmp_path, 'audit', [text]) == sha
         monkeypatch.setattr(store_install, 'peer_uid', lambda *a: 1000)
         assert req('POST')[0] == 403

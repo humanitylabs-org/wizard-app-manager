@@ -357,7 +357,7 @@ SESSION_STATE_FILES = ("state.db", "state.db-wal", "state.db-shm")
 INODE_MARK = "wam-session-inodes:"
 
 
-def session_state_mounts(hermes_home: str, view: Path) -> list[tuple[str, str]]:
+def session_state_mounts(hermes_home: str, view: Path, *, prepare: bool = True) -> list[tuple[str, str]]:
     """File bind mounts for --share-sessions: [(host file, /hermes/<name>)]. Only files that exist are mounted
     (Docker would otherwise create a root-owned directory at the missing host path, inside the owner's Hermes home).
     Each needs an empty mount-point file in the read-only view. Without state.db nothing is mounted."""
@@ -370,7 +370,7 @@ def session_state_mounts(hermes_home: str, view: Path) -> list[tuple[str, str]]:
             continue
         point = view / name
         try:
-            if not point.exists():
+            if prepare and not point.exists():
                 point.touch(mode=0o600)
         except OSError:
             continue
@@ -523,7 +523,7 @@ def service_port(st: dict) -> int:
 
 def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role: str = "bundle",
                    media_root: Path | None = None, stt_origin: str | None = None,
-                   rootless: bool | None = None) -> str:
+                   rootless: bool | None = None, *, prepare: bool = True) -> str:
     """The override for the app that talks to the host Hermes: the Agent Service, or the pre-split bundle (which
     also serves the UX, so it keeps the shell's port). `media_root`: the host path of the /media both recipes mount,
     handed to the host Hermes (wizard-agent-service#12); the UX-only shell mounts no media and gets none."""
@@ -559,14 +559,15 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         if not _SAFE_PATH.match(str(view)):
             raise SystemExit(f"Wizard OS home path {str(view)!r} has characters a compose file can't carry safely")
         try:
-            (view / "cache" / "images").mkdir(parents=True, exist_ok=True)
-            Path(hh, "cache", "images").mkdir(parents=True, exist_ok=True)
+            if prepare:
+                (view / "cache" / "images").mkdir(parents=True, exist_ok=True)
+                Path(hh, "cache", "images").mkdir(parents=True, exist_ok=True)
             volumes = (f"\n    volumes:\n      - {view}:/hermes:ro"
                        f"\n      - {hh}/cache/images:/hermes/cache/images:ro")
         except OSError:
             volumes = f"\n    volumes:\n      - {view}:/hermes:ro" if view.is_dir() else ""
         # --share-sessions: only the session database (and its WAL sidecars), read-only, never the rest of the home.
-        mounted = session_state_mounts(hh, view) if sessions and volumes else []
+        mounted = session_state_mounts(hh, view, prepare=prepare) if sessions and volumes else []
         for src, dst in mounted:
             volumes += f"\n      - {src}:{dst}:ro"
         sessions = bool(mounted)
@@ -575,7 +576,8 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     for rel in AGENT_OUTPUT_DIRS:
         d = Path(hh, rel)
         try:
-            d.mkdir(parents=True, exist_ok=True)
+            if prepare:
+                d.mkdir(parents=True, exist_ok=True)
         except OSError:
             continue
         if not volumes:

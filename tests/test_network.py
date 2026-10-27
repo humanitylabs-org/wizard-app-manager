@@ -910,13 +910,11 @@ def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):
     host_policy.approve(cli.Config().home, "x", sha)
     assert cli.app_update(cli.Config(), "x", allow_host_access=True)["status"] == "running"
     assert updates == ["x:wizardapps"] and net.host_access_allowed(tmp_path / "home") == {"x"}
-    # Existing host access is not grandfathered without a recipe approval.
-    cli, updates, steps = update_env(tmp_path / "c", monkeypatch, sneaky, sneaky)
-    with pytest.raises(host_policy.NeedsOwnerApproval):
-        cli.app_update(cli.Config(), "x")
-    sha = host_policy._read(cli.Config().home)['pending']['x']['sha256']
-    host_policy.approve(cli.Config().home, 'x', sha)
-    assert cli.app_update(cli.Config(), "x")["status"] == "running"
+    # The first upgrade snapshot preserves access already in use, not new risks.
+    cli, updates, steps = update_env(tmp_path / "c", monkeypatch, sneaky, sneaky + '# new image\n')
+    cfg = cli.Config()
+    assert host_policy._read(cfg.home)['approvals']['x']['source'] == 'grandfathered at upgrade'
+    assert cli.app_update(cfg, "x")["status"] == "running"
 
 
 def test_exposed_core_components_stay_on_the_gateway_networks():

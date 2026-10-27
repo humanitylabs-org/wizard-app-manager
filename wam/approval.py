@@ -31,9 +31,9 @@ def respond(handler, method, tail):
 <title>Approve app access</title><link rel="stylesheet" href="../approve.css">
 <main><h1>Allow {html.escape(app)} to access this server?</h1>
 <p>This app asks for access outside its own data and your files. It could affect other apps or the server.</p>
-<ul>{risks}</ul><details><summary>Recipe fingerprint</summary><code>{sha}</code></details>
-<p>Approval applies only to this recipe. Changes need your approval again. Approving does not start the app; retry the refused action afterwards.</p>
-<button id="approve" type="button">Approve this recipe</button><p id="result" role="status"></p></main>
+<ul>{risks}</ul><details><summary>Access fingerprint</summary><code>{sha}</code></details>
+<p>Approval covers the access listed above. Updates that keep or reduce it can continue; additional access needs your approval. Approving does not start the app; retry the refused action afterwards.</p>
+<button id="approve" type="button">Approve this access</button><p id="result" role="status"></p></main>
 <script src="../approve.js" defer></script></html>''').encode()
     handler.send_response(200)
     handler.send_header('Content-Type', 'text/html; charset=utf-8')

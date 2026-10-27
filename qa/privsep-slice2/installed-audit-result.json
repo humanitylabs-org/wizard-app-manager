@@ -1,0 +1,442 @@
+{
+  "policy": {
+    "apps": 32,
+    "flagged": 9,
+    "blocked": 9,
+    "grandfather_dry_run": false,
+    "rows": [
+      {
+        "app": "browser",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "transcriber",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-chatgpt",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-claude",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "defleur-video",
+        "store": "wizard",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "hello-wizard",
+        "store": "wizard",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "agent-philosopher",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "agent-private",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "airlock",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "cinequeue",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "defleur-video",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "meditate",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "messenger",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "mizel",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "reads or writes files outside its own storage",
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "notes",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "notifications",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "reads or writes files outside its own storage",
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "outline-streaming-demo",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "profiles",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "reference",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "search-preview",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "stories",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "usuals",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wisdom",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-calendar",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-claude",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-connection-router",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-connectors",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "joins a shared network"
+        ]
+      },
+      {
+        "app": "wizard-files",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-quest",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-recorder",
+        "store": "wizardapps",
+        "blocked": true,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-shopping",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-tinfoil",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      }
+    ]
+  },
+  "simulated_upgrade": {
+    "apps": 32,
+    "flagged": 9,
+    "blocked": 0,
+    "grandfather_dry_run": true,
+    "rows": [
+      {
+        "app": "browser",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "transcriber",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-chatgpt",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-claude",
+        "store": "core",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "defleur-video",
+        "store": "wizard",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "hello-wizard",
+        "store": "wizard",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "agent-philosopher",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "agent-private",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "airlock",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "cinequeue",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "defleur-video",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "meditate",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "messenger",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "mizel",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "reads or writes files outside its own storage",
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "notes",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "notifications",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "reads or writes files outside its own storage",
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "outline-streaming-demo",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "profiles",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "reference",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "search-preview",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "stories",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "usuals",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wisdom",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-calendar",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-claude",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-connection-router",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-connectors",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "joins a shared network"
+        ]
+      },
+      {
+        "app": "wizard-files",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-quest",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-recorder",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": [
+          "uses the server network"
+        ]
+      },
+      {
+        "app": "wizard-shopping",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      },
+      {
+        "app": "wizard-tinfoil",
+        "store": "wizardapps",
+        "blocked": false,
+        "categories": []
+      }
+    ]
+  }
+}

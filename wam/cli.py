@@ -89,6 +89,9 @@ class Config:
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
         self.token_file = self.home / "api-token"
+        # Seal the installed disk snapshot before any install/update/restore can
+        # mutate recipes; never enroll a new app at admission time.
+        host_policy.migrate(self)
 
     def runtipi(self) -> Runtipi:
         rt = Runtipi.from_install(self.runtipi_root)
@@ -412,7 +415,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     # Check again after WAM-owned alongside/login overrides have been generated.
     approval_sha = host_policy.require_app(c, app_id, given=form)
     _network.set_host_access_allowed(c.home, app_id,
-        host_policy._read(c.home).get('approvals', {}).get(app_id) == approval_sha)
+        approval_sha != host_policy.risk_digest(app_id, []))
     # The app's networks exist and its override is written before its first start, so it never joins the shared
     # network; the apps it connects to join their new link live.
     net_pre = network_step(c, rt, extra={app_id}, restart=False)
@@ -1297,7 +1300,7 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
-    out = []
+    out = host_policy.grandfathered_health(c.home)
     from . import owner
     if (c.home / 'owner-login').is_file():
         state = owner.health(c.home)
@@ -1738,9 +1741,9 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
     from . import network as _network
-    host_policy.require_app(c, app, store, where='store')
+    approval_sha = host_policy.require_app(c, app, store, where='store')
     if store == STORE:
-        _network.set_host_access_allowed(c.home, app, bool(host_access_risks(c, app, 'store')))
+        _network.set_host_access_allowed(c.home, app, approval_sha != host_policy.risk_digest(app, [], store))
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
         pre = network_step(c, rt, restart=False, fresh={app})
         if _network.enabled(c.home) and (pre or {}).get("errors"):

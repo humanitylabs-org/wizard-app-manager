@@ -72,8 +72,8 @@ def execute(c, path: str, body: dict):
         if action not in ('allow', 'deny', 'off', 'on'):
             raise ValueError('send action: allow, deny, off or on')
         if action == 'allow':
-            # Network allow no longer grants an unversioned approval. It must refer
-            # to the exact pending recipe already reviewed by the owner.
+            # This must refer to the pending risk set already reviewed by the
+            # owner. It cannot grant blanket permission for future host access.
             host_policy.approve(c.home, app_id, str(body.get('sha256', '')))
             network.set_host_access_allowed(c.home, app_id, True)
         elif action == 'deny':
