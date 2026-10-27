@@ -37,6 +37,12 @@ def write(path, text, mode=0o644, uid=0, gid=0):
 def main():
     if os.getuid() != 0:
         raise SystemExit('An administrator must approve host preparation once.')
+    private_access = os.environ.get('WIZARD_PRIVATE_ACCESS', 'tailscale')
+    # Never resolve executables, Python/git hooks or shell startup in an agent's
+    # inherited environment. get.sh invokes this with the isolated system Python.
+    os.environ.clear()
+    os.environ.update(PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                      HOME='/root', WIZARD_PRIVATE_ACCESS=private_access)
     name, hh, ref = sys.argv[1:4]
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name) or not re.fullmatch(r'[A-Za-z0-9._/-]+', ref) or ref.startswith('-'):
         raise SystemExit('invalid account or source ref')

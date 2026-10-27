@@ -962,9 +962,9 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
     if [ "$ALONG_USER" != root ] && { [ "$(wos_mode "$ALONG_USER")" = none ] || [ -f /var/lib/wizard-os/.wizard-privsep ]; }; then
       # Only NEW alongside installs use this layout. The root step fetches trusted
       # code itself; nothing executed by the system lives in the Hermes home.
-      helper="$(mktemp)"
+      helper="$(mktemp /run/wizard-prepare.XXXXXXXX.py)"
       curl -fsSL "$REPO/raw/$REF/scripts/prepare-alongside.py" -o "$helper"
-      python3 "$helper" "$ALONG_USER" "$ALONG_HOME" "$REF"
+      /usr/bin/python3 -I "$helper" "$ALONG_USER" "$ALONG_HOME" "$REF"
       rm -f "$helper"
       exit 0
     fi

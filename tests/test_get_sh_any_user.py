@@ -60,6 +60,14 @@ if [[ "$url" == */scripts/prepare-alongside.py ]] && [ -n "$out" ]; then
 fi
 """
 
+STUBS['mktemp'] = r"""#!/bin/bash
+if [[ "${1:-}" == /run/wizard-prepare.* ]]; then
+  echo "root-helper-safe-directory $*" >> "$FAKE_LOG"
+  exec /usr/bin/mktemp "$(dirname "$FAKE_LOG")/root-helper.XXXXXXXX.py"
+fi
+exec /usr/bin/mktemp "$@"
+"""
+
 class Box:
     def __init__(self, tmp: Path):
         self.tmp = tmp

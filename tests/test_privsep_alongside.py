@@ -71,6 +71,27 @@ def test_server_token_keeps_legacy_urn_lifecycle(server):
     assert req('POST', '/api/app/restart', {'app': 'hello-wizard:wizardapps'})[0] == 400
 
 
+def test_root_preparation_never_inherits_agent_code_environment(monkeypatch):
+    import os
+    import runpy
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    get = (repo / 'get.sh').read_text()
+    assert 'mktemp /run/wizard-prepare.XXXXXXXX.py' in get
+    assert '/usr/bin/python3 -I "$helper"' in get
+    ns = runpy.run_path(str(repo / 'scripts/prepare-alongside.py'))
+    env = {'PATH': '/agent/bin', 'HOME': '/agent', 'PYTHONPATH': '/agent',
+           'BASH_ENV': '/agent/hook', 'GIT_CONFIG_GLOBAL': '/agent/gitconfig'}
+    monkeypatch.setattr(os, 'environ', env)
+    monkeypatch.setattr(os, 'getuid', lambda: 0)
+    monkeypatch.setattr(sys, 'argv', ['prepare', 'invalid;name', '/home/hermes/.hermes', 'main'])
+    with pytest.raises(SystemExit, match='invalid account'):
+        ns['main']()  # reject before touching passwd, filesystem, groups or services
+    assert env['HOME'] == '/root' and '/agent' not in env['PATH']
+    assert not ({'PYTHONPATH', 'BASH_ENV', 'GIT_CONFIG_GLOBAL'} & env.keys())
+
+
 def test_thin_client_fails_closed_without_local_fallback(monkeypatch, capsys):
     def fail(*args, **kwargs): raise AssertionError('no subprocess fallback')
     monkeypatch.setattr(subprocess, 'run', fail)
