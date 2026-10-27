@@ -405,15 +405,16 @@ export class WizardStorage {
   async collectRequests(): Promise<boolean> {
     const root = path.join(this.dirs.appDataDir, 'wizardapps');
     const ids = await fs.readdir(root).catch(() => [] as string[]);
-    let changed = false;
+    const seen = new Map<string, string>();
     for (const id of ids.filter((x) => ID.test(x))) {
       const st = await fs.lstat(path.join(root, id, REQUESTS_DIR, REQUESTS_FILE)).catch(() => null);
-      const stamp = st ? `${st.mtimeMs}:${st.size}:${st.ino}` : '';
-      if ((this.requestStamps.get(id) ?? '') !== stamp) changed = true;
-      this.requestStamps.set(id, stamp);
+      seen.set(id, st ? `${st.mtimeMs}:${st.size}:${st.ino}` : '');
     }
-    if (changed) await this.reconcile();
-    return changed;
+    const changed = [...seen].some(([id, stamp]) => (this.requestStamps.get(id) ?? '') !== stamp);
+    if (!changed) return false;
+    await this.reconcile();
+    this.requestStamps = seen; // only after the reconcile succeeded: a failed one is retried on the next check
+    return true;
   }
   async remove(id: string) {
     return this.serial(async () => {

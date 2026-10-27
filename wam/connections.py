@@ -22,6 +22,7 @@ POLL = 3.0
 NOTICE_MAX_AGE = 24 * 3600   # older undelivered notices (e.g. Notifications installed later) are marked, not sent
 RETRY_AFTER = 300            # a failing Notifications app is tried again after 5 minutes, not on every poll
 _failed_at = 0.0
+_sent: set[str] = set()      # sent but not yet acknowledged by the App Manager: never sent twice
 
 
 def signature(state: dict | None) -> str:
@@ -35,14 +36,18 @@ def signature(state: dict | None) -> str:
 
 
 def notifications_mcp(home: Path) -> str | None:
-    """The installed Notifications app's MCP URL (the provider of the `notifications` slot in apps.json)."""
+    """The MCP URL of the owner's active Notifications app: the `notifications` spot's saved choice in apps.json
+    (slots.notifications.default), else its only/first provider."""
     try:
         reg = json.loads((home / "apps.json").read_text())
     except (OSError, ValueError):
         return None
-    for a in reg.get("apps") or []:
-        if not isinstance(a, dict) or "notifications" not in (a.get("provides") or []):
-            continue
+    apps = [a for a in reg.get("apps") or [] if isinstance(a, dict) and "notifications" in (a.get("provides") or [])]
+    spot = (reg.get("slots") or {}).get("notifications") if isinstance(reg.get("slots"), dict) else None
+    chosen = spot.get("default") if isinstance(spot, dict) else None
+    if chosen in {a.get("id") for a in apps}:
+        apps = [a for a in apps if a.get("id") == chosen]
+    for a in apps:
         url = ((a.get("mcp") or {}) if isinstance(a.get("mcp"), dict) else {}).get("url")
         if isinstance(url, str) and url.startswith("http://127.0.0.1:"):
             return url
@@ -101,8 +106,8 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
     send = send or (lambda n: _mcp_call(str(url), "notify", notice_message(n)))
     done, sent = [], []
     for n in todo:
-        if now - float(n.get("at") or 0) > NOTICE_MAX_AGE:
-            done.append(n["id"])
+        if now - float(n.get("at") or 0) > NOTICE_MAX_AGE or n["id"] in _sent:
+            done.append(n["id"])   # too old, or sent already and only the acknowledgement is missing
             continue
         try:
             send(n)
@@ -112,10 +117,12 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
             break
         done.append(n["id"])
         sent.append(n["id"])
+        _sent.add(n["id"])
     if done:
         try:
             rt.req("POST", "/apps/wizard/connection-notices", {"delivered": done})
-        except Exception as e:  # noqa: BLE001
+            _sent.difference_update(done)
+        except Exception as e:  # noqa: BLE001 - acknowledged on a later poll; _sent keeps them from going out again
             print(f"connections: notices not marked delivered ({str(e)[:160]})", file=sys.stderr, flush=True)
     return sent
 
@@ -125,16 +132,18 @@ def step(c, rt, last: str, apply_fn, registry_fn) -> str:
     from . import network
     state = network.connection_state(c, rt)
     sig = signature(state)
+    applied = True
     if state is not None and sig != last:
         # The first poll applies too: a decision recorded while wam serve was stopped (the App Manager API keeps
         # running) must not wait for the next app start or the 10-minute idle reconcile. Reconcile is idempotent.
-        apply_fn()
+        # apply_fn() returns False when the reconcile could not run (Docker unavailable): the next poll retries.
+        applied = apply_fn() is not False
         try:
             registry_fn()
         except Exception as e:  # noqa: BLE001
             print(f"connections: registry not refreshed ({str(e)[:160]})", file=sys.stderr, flush=True)
     deliver(c, rt, state)
-    return sig if state is not None else last
+    return sig if state is not None and applied else last
 
 
 def start(c, apply_fn, registry_fn, stop: threading.Event | None = None) -> None:

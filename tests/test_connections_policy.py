@@ -204,3 +204,46 @@ def test_the_loopback_page_cannot_change_connections_without_the_owner():
     js = (Path(__file__).resolve().parent.parent / "wizard-views" / "wizard-apps.js").read_text()
     assert "/app-grants" in js and "/sensitive" in js
     assert "connections-change" not in js
+
+
+def test_a_failed_reconcile_is_retried_on_the_next_poll(monkeypatch):
+    st = {"grants": [], "denied": [g("a", "b", "owner", "owner")], "pending": [], "sensitive": [], "notices": []}
+    monkeypatch.setattr(net, "connection_state", lambda c, rt: st)
+    C = type("C", (), {"home": Path("/nonexistent")})()
+    calls = []
+    results = iter([False, True])
+    last = conn.step(C, None, "", lambda: calls.append(1) or next(results), lambda: None)
+    assert last == "" and calls == [1]          # Docker was unavailable: not recorded as handled
+    last = conn.step(C, None, last, lambda: calls.append(1) or next(results), lambda: None)
+    assert last and calls == [1, 1]             # retried and applied
+    conn.step(C, None, last, lambda: calls.append(1), lambda: None)
+    assert calls == [1, 1]                      # unchanged afterwards: no more work
+
+
+def test_the_owners_chosen_notifications_app_is_used(tmp_path):
+    (tmp_path / "apps.json").write_text(json.dumps({"apps": [
+        {"id": "notifications", "provides": ["notifications"], "mcp": {"url": "http://127.0.0.1:8790/mcp"}},
+        {"id": "my-ntfy", "provides": ["notifications"], "mcp": {"url": "http://127.0.0.1:9911/mcp"}}],
+        "slots": {"notifications": {"default": "my-ntfy", "candidates": ["notifications", "my-ntfy"]}}}))
+    assert conn.notifications_mcp(tmp_path) == "http://127.0.0.1:9911/mcp"
+
+
+def test_a_sent_notice_is_not_sent_again_while_its_acknowledgement_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(conn, "_sent", set())
+    C = type("C", (), {"home": tmp_path})()
+    up = {"ok": False}
+    acks = []
+
+    class RT:
+        def req(self, method, path, body=None):
+            if not up["ok"]:
+                raise OSError("App Manager restarting")
+            acks.append(body)
+    st = {"notices": [{"id": "a" * 12, "at": 1000, "kind": "added", "text": "t", "delivered": False}]}
+    sent = []
+    for _ in range(3):
+        conn.deliver(C, RT(), st, send=lambda n: sent.append(n["id"]), now=1000)
+    assert sent == ["a" * 12]                   # once, although the acknowledgement failed three times
+    up["ok"] = True
+    conn.deliver(C, RT(), st, send=lambda n: sent.append(n["id"]), now=1000)
+    assert sent == ["a" * 12] and acks == [{"delivered": ["a" * 12]}] and not conn._sent

@@ -99,6 +99,18 @@ describe('connection policy: seamless by default, owner in control', () => {
     expect(await store.collectRequests()).toBe(false); // unchanged file: no work
   });
 
+  it('retries a runtime request whose reconcile failed', async () => {
+    await request('carlos-campaigns', { connections: ['resend-connector'] });
+    const real = store.reconcile.bind(store);
+    store.reconcile = async () => {
+      throw new Error('transient');
+    };
+    await expect(store.collectRequests()).rejects.toThrow('transient');
+    store.reconcile = real;
+    expect(await store.collectRequests()).toBe(true);
+    expect((await state()).grants).toContainEqual(expect.objectContaining({ from: 'carlos-campaigns', to: 'resend-connector', approved: 'request' }));
+  });
+
   it('ignores a requests file that is a symlink (it could point anywhere on the host)', async () => {
     const target = path.join(root, 'elsewhere.json');
     await fs.writeFile(target, JSON.stringify({ connections: ['resend-connector'] }));
