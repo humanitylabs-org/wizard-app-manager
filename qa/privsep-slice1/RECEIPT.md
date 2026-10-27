@@ -25,6 +25,46 @@ change breaks nothing. No live deployment is authorized.
   pytest as a Python module uses the checkout correctly. That setup error is not
   counted as a test failure or hidden as a pass.
 
+## Failure analysis after the first forum run
+
+Evidence directory: `/srv/work/privsep/slice1/20261027T152731Z`.
+
+- `candidate-install.log:30-47`: upstream Runtipi copied files and generated
+  `.env`, then Docker Hub returned HTTP 429 for `rabbitmq:4-alpine`. The upstream
+  CLI printed failure but its setup script returned success, so preparation
+  continued (`:49`). This was **not** a Docker-group or sudo denial.
+- `candidate-install.log:282,307,322-323,379-415`: later Compose calls pulled the
+  images and brought up healthy DB/queue, the manager and proxy. Therefore the
+  eventual API 404 cannot be described merely as an image still missing.
+- Read-only QCOW2 inspection (no guest boot, mount or disk writes), retained as
+  `offline-config-inspection.log`, establishes the failure mechanism. Candidate
+  proxy StartedAt is **16:00:37.499972477Z** (`:369`); its static Traefik config
+  was written at **16:00:39.923519Z** (`:228`). Proxy logs report
+  **EntryPoint doesn't exist**, including dashboard `web`, followed by
+  **No valid entryPoint for this router** (`:370-383`). Both guests' saved
+  `.env` values are loopback/8480/8443 and both eventually have the same static
+  entrypoints (`:3-39`, `:189-225`). This rules out an env-file/port regression.
+- `install.sh` bypassed the proxy's healthy-manager dependency with `--no-deps`
+  while also starting the manager without `--wait`. That pre-existing cold-start
+  race was exposed by the failed upstream first start; moving host preparation
+  to root did not change the env values. The proxy loaded no static entrypoints
+  and did not reload them when the backend later wrote its config. Subsequent
+  internal manager health was insufficient (`candidate-containers.log:3`), and
+  its proxy-facing API/health still failed (`candidate-install.log:440,455`).
+- The repair waits for manager internal health before a missing proxy's first
+  start. A command-double regression models absent static config after partial
+  setup; another proves manager health failure stops before proxy/bootstrap.
+- The apt test counted a removed ordinary-user sudo/git fallback. It now audits
+  all three current package calls across bootstrap and root-only fresh-user
+  preparation, preserving the bounded-lock requirement. Retry tests with denied
+  Docker access now require exit 2, no sudo/Compose/bootstrap and unchanged index
+  and owner data, rather than expecting the deliberately removed sudo fallback.
+  The Tailscale HTTPS notice was incidental, not their failure cause.
+- Both clean guests now get the same `mirror.gcr.io` Docker daemon mirror from
+  cloud-init **before Docker is installed**; no registry credentials. The runner
+  records the configured mirror plus proxy diagnostics, installs the candidate
+  by immutable SHA and retains the existing VM-stop `finally` block.
+
 ## Still required on the admitted forum worker
 
 The committed `run.py` performs baseline and candidate full pytest/Node suites,

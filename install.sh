@@ -98,7 +98,11 @@ if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml rm --stop --force wizard-release-index)
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
-(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
+# A partially completed upstream setup can leave .env but no initialized manager.
+# The manager writes Traefik's STATIC entrypoints during startup. Wait for its
+# internal health check before starting a missing proxy; otherwise Traefik keeps
+# its empty startup config and serves 404 even after the manager becomes healthy.
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps --wait runtipi)
 # The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
 

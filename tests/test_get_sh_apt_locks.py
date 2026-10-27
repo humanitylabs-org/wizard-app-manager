@@ -54,7 +54,10 @@ exit "$APT_EXIT"''',
 
 def test_every_executed_bootstrap_apt_call_has_a_bounded_lock_wait():
     # Excludes the diagnostic echo that tells an owner how to install Python.
-    calls = [line for line in SCRIPT.read_text().splitlines()
-             if re.search(r'(^\s*|\|\| sudo )apt-get ', line)]
+    # The ordinary-user sudo/git fallback was removed. The third package call
+    # now belongs to the root-only fresh-user preparation, before sudo is revoked.
+    prep = SCRIPT.parent / 'scripts/prepare-fresh-user.sh'
+    calls = [line for path in (SCRIPT, prep) for line in path.read_text().splitlines()
+             if re.search(r'(^\s*|\|\| sudo |DEBIAN_FRONTEND=noninteractive )apt-get ', line)]
     assert len(calls) == 3
     assert all('apt-get -o DPkg::Lock::Timeout=600 ' in line for line in calls)

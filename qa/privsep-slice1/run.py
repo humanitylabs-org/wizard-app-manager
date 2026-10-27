@@ -63,17 +63,25 @@ def free_port():
         return s.getsockname()[1]
 
 
+def guest_cloud_config(public):
+    """Identical credential-free Docker Hub cache for both clean guests."""
+    return ('#cloud-config\nusers:\n  - name: root\n    lock_passwd: true\n'
+            '    ssh_authorized_keys:\n      - ' + public + '\n'
+            'disable_root: false\nssh_pwauth: false\n'
+            'write_files:\n  - path: /etc/ssh/sshd_config.d/99-privsep-test.conf\n'
+            '    content: |\n      PermitRootLogin prohibit-password\n      PasswordAuthentication no\n'
+            '  - path: /etc/docker/daemon.json\n'
+            '    permissions: "0644"\n'
+            '    content: |\n      {"registry-mirrors": ["https://mirror.gcr.io"]}\n')
+
+
 def guest_vm(label, ref, image, key):
     vm = root / label
     vm.mkdir()
     run(label + '-overlay', ['qemu-img', 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(image), str(vm / 'disk.qcow2'), '48G'])
     public = key.with_suffix('.pub').read_text().strip()
     user_data = vm / 'user-data'
-    user_data.write_text('#cloud-config\nusers:\n  - name: root\n    lock_passwd: true\n'
-                         '    ssh_authorized_keys:\n      - ' + public + '\n'
-                         'disable_root: false\nssh_pwauth: false\n'
-                         'write_files:\n  - path: /etc/ssh/sshd_config.d/99-privsep-test.conf\n'
-                         '    content: |\n      PermitRootLogin prohibit-password\n      PasswordAuthentication no\n')
+    user_data.write_text(guest_cloud_config(public))
     meta = vm / 'meta-data'
     meta.write_text('instance-id: privsep-' + label + '\nlocal-hostname: privsep-' + label + '\n')
     run(label + '-seed', ['cloud-localds', str(vm / 'seed.iso'), str(user_data), str(meta)])
@@ -106,13 +114,20 @@ def guest_vm(label, ref, image, key):
         else:
             raise RuntimeError('Guest SSH did not become ready; serial.log retained')
         guest('fresh', 'cloud-init status --wait; cat /etc/os-release; id; '
-              'test ! -d /home/wizard; test ! -d /root/.hermes; echo FRESH_NO_WIZARD_OR_HERMES', 600, True)
+              'test ! -d /home/wizard; test ! -d /root/.hermes; '
+              'cat /etc/docker/daemon.json; echo FRESH_NO_WIZARD_OR_HERMES', 600, True)
         guest('bootstrap-tools', 'apt-get -o DPkg::Lock::Timeout=600 update -qq; '
               'DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq curl sudo', 600, True)
         url = f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
         install = (f'curl -fsSL {url} | sudo WAM_REF={ref} WIZARD_TAILSCALE_WAIT=1 bash')
         (vm / 'install-command.txt').write_text(install + '\n')
         guest('install', 'umask 022\n' + install, 3300)
+        guest('registry-mirror', '''docker info --format '{{json .RegistryConfig.Mirrors}}' | python3 -c 'import json,sys; mirrors=json.load(sys.stdin); print(mirrors); assert "https://mirror.gcr.io/" in mirrors or "https://mirror.gcr.io" in mirrors'
+''')
+        guest('proxy-diagnostics', '''docker logs --tail 100 runtipi-reverse-proxy 2>&1
+stat -c '%y %n' /home/wizard/runtipi/traefik/traefik.yml
+docker inspect --format '{{.Name}} started={{.State.StartedAt}}' runtipi runtipi-reverse-proxy
+''')
         want = candidate if label == 'candidate' else baseline
         guest('installed-source', 'got="$(sudo -iu wizard git -C /home/wizard/wizard-app-manager rev-parse HEAD)"; '
               'echo "installed_source=$got"; test "$got" = ' + want)
@@ -209,7 +224,7 @@ try:
         raise RuntimeError('Cloud image checksum mismatch')
     receipt['cloud_image'] = {'url': mirror + image.name, 'sha512': actual}; save()
     guest_vm('baseline', baseline, image, private / 'key')
-    guest_vm('candidate', 'feature/agent-privilege-separation', image, private / 'key')
+    guest_vm('candidate', candidate, image, private / 'key')
     receipt['state'] = 'executed; inspect individual exits, baseline comparison and limitations'
 except BaseException:
     receipt['state'] = 'blocked-or-failed'
