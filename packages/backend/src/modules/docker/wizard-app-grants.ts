@@ -91,6 +91,8 @@ export async function readRequests(app: App): Promise<string[]> {
     await fh?.close();
   }
 }
+/** A requested target, named as a grant is (targets()): an installed app id, else a slot. */
+const requestTarget = (to: string, ids: Set<string>) => (to.startsWith('slot:') || ids.has(to) ? to : `slot:${to}`);
 const sensitiveTarget = (to: string, apps: App[], sensitive: string[]) => providers(to, apps).some((p) => sensitive.includes(p.manifest.id));
 /** Apply the owner's policy to everything new. `requests`: runtime requests by consumer id. `seededBefore`: apps the
  * App Manager had already seen (a declaration that appears for one of them came with an update: tell the owner). */
@@ -111,7 +113,7 @@ export function applyConnectionPolicy(
   file.grants = file.grants.filter((g) => !(appGrant(g) && g.approved === 'install' && ids.has(g.from) && !declared.has(`${g.from}\0${g.to}`)));
   // A pending request lapses when its declaration (or runtime request) is gone; when the provider is no longer
   // sensitive it is approved like any other new connection.
-  const asked = new Set([...requests].flatMap(([from, tos]) => tos.map((to) => `${from}\0${to}`)));
+  const asked = new Set([...requests].flatMap(([from, tos]) => tos.map((to) => `${from}\0${requestTarget(to, ids)}`)));
   const keep: Grant[] = [];
   for (const g of file.pending as Grant[]) {
     const k = `${g.from}\0${g.to}`;
@@ -152,7 +154,7 @@ export function applyConnectionPolicy(
   for (const [from, tos] of requests) {
     if (!ids.has(from)) continue;
     for (const to of tos) {
-      const g: Grant = { kind: 'app', from, to: to.startsWith('slot:') || ids.has(to) ? to : `slot:${to}`, reason: 'request' };
+      const g: Grant = { kind: 'app', from, to: requestTarget(to, ids), reason: 'request' };
       consider(g, 'request', false);
     }
   }

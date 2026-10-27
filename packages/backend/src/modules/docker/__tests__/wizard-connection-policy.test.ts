@@ -156,6 +156,18 @@ describe('connection policy: seamless by default, owner in control', () => {
     expect((await keys('carlos-campaigns')).outgoing['resend-connector']).toBeUndefined();
   });
 
+  it('a bare-slot runtime request to a sensitive provider stays one pending request with one notice', async () => {
+    await install('notifier', { name: 'Notifier', provides: ['alerts'] });
+    await store.setSensitive('notifier', true);
+    await request('carlos-campaigns', { connections: ['alerts'] });
+    await store.collectRequests();
+    await store.reconcile();
+    await store.reconcile();
+    const s = await state();
+    expect(s.pending).toEqual([pair('carlos-campaigns', 'slot:alerts')]);
+    expect(s.notices.filter((n) => n.kind === 'pending')).toHaveLength(1);
+  });
+
   it('turning Sensitive off approves what was waiting', async () => {
     await store.setSensitive('resend-connector', true);
     await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
