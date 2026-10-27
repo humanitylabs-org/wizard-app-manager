@@ -20,6 +20,8 @@ from pathlib import Path
 
 POLL = 3.0
 NOTICE_MAX_AGE = 24 * 3600   # older undelivered notices (e.g. Notifications installed later) are marked, not sent
+RETRY_AFTER = 300            # a failing Notifications app is tried again after 5 minutes, not on every poll
+_failed_at = 0.0
 
 
 def signature(state: dict | None) -> str:
@@ -90,9 +92,12 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
     todo = [n for n in state.get("notices") or [] if isinstance(n, dict) and not n.get("delivered") and isinstance(n.get("id"), str)]
     if not todo:
         return []
+    global _failed_at
     url = notifications_mcp(c.home)
     if send is None and url is None:
         return []   # no Notifications app: the notices stay in the Connections view
+    if send is None and now - _failed_at < RETRY_AFTER:
+        return []
     send = send or (lambda n: _mcp_call(str(url), "notify", notice_message(n)))
     done, sent = [], []
     for n in todo:
@@ -101,7 +106,8 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
             continue
         try:
             send(n)
-        except Exception as e:  # noqa: BLE001 - try again next round
+        except Exception as e:  # noqa: BLE001 - try again later
+            _failed_at = now
             print(f"connections: notice not delivered ({str(e)[:160]})", file=sys.stderr, flush=True)
             break
         done.append(n["id"])
@@ -120,12 +126,13 @@ def step(c, rt, last: str, apply_fn, registry_fn) -> str:
     state = network.connection_state(c, rt)
     sig = signature(state)
     if state is not None and sig != last:
-        if last:   # the first poll only learns the state; the start-up reconcile already applied it
-            apply_fn()
-            try:
-                registry_fn()
-            except Exception as e:  # noqa: BLE001
-                print(f"connections: registry not refreshed ({str(e)[:160]})", file=sys.stderr, flush=True)
+        # The first poll applies too: a decision recorded while wam serve was stopped (the App Manager API keeps
+        # running) must not wait for the next app start or the 10-minute idle reconcile. Reconcile is idempotent.
+        apply_fn()
+        try:
+            registry_fn()
+        except Exception as e:  # noqa: BLE001
+            print(f"connections: registry not refreshed ({str(e)[:160]})", file=sys.stderr, flush=True)
     deliver(c, rt, state)
     return sig if state is not None else last
 

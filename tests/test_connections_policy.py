@@ -117,11 +117,11 @@ def test_watcher_reconciles_when_connections_change_and_not_for_notices(monkeypa
     applied, regs = [], []
     C = type("C", (), {"home": Path("/nonexistent")})()
     last = conn.step(C, None, "", lambda: applied.append(1), lambda: regs.append(1))
-    assert applied == []                     # first poll learns the state (serve start-up already reconciled)
+    assert applied == [1]                    # first poll applies: a decision made while wam serve was down
     last = conn.step(C, None, last, lambda: applied.append(1), lambda: regs.append(1))
-    assert applied == []                     # a notice change alone moves no network
+    assert applied == [1]                    # a notice change alone moves no network
     conn.step(C, None, last, lambda: applied.append(1), lambda: regs.append(1))
-    assert applied == [1] and regs == [1]    # the owner's Disconnect: reconcile now, live
+    assert applied == [1, 1] and regs == [1, 1]   # the owner's Disconnect: reconcile now, live
 
 
 def test_notices_go_to_notifications_and_are_marked_delivered(tmp_path):
