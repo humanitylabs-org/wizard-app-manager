@@ -348,7 +348,10 @@ import os as _o, sqlite3 as _sq, sys as _s
 from pathlib import Path as _P
 try:
     import hermes_cli.backup as _hb
-    import hermes_cli.backup_sqlite as _hbs
+    try:                                   # newer Hermes moved the copy into its own module; v2026.9.24 has it inline
+        import hermes_cli.backup_sqlite as _hbs
+    except ImportError:
+        _hbs = None
 
     def _one_step_copy(src, dst, *, timeout_seconds=10.0):
         s = d = None
@@ -383,7 +386,9 @@ try:
         return _orig_entries(*a, on_error=_err, **k)
 
     if callable(getattr(_hb, "_safe_copy_db", None)) and callable(_orig_entries):
-        _hb._safe_copy_db = _hbs._safe_copy_db = _one_step_copy
+        _hb._safe_copy_db = _one_step_copy
+        if _hbs is not None and callable(getattr(_hbs, "_safe_copy_db", None)):
+            _hbs._safe_copy_db = _one_step_copy
         _hb._write_zip_entries = _entries
 except Exception as _e:                    # a Hermes without these names: run it stock
     print("wam: hermes backup runs stock (%s)" % _e, file=_s.stderr)

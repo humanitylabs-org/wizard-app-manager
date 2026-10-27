@@ -117,7 +117,29 @@ def test_app_with_missing_image_is_not_stopped(monkeypatch, tmp_path):
         rt = Rt()
 
     assert capture._missing_images(FakeBox(), "messenger:wizardapps") == ["wizard-messenger:gone"]
-    skipped = []
-    capture._emit_app_archive(FakeBox(), None, "messenger", "messenger:wizardapps",
-                              {"store": "wizardapps", "id": "messenger", "status": "running"}, [], tmp_path, True, skipped)
-    assert skipped and "wizard-messenger:gone" in skipped[0]
+    # an image that vanished after the manifest promised the app's data stops the backup instead of publishing a
+    # snapshot without it; the app is never stopped (the up-front check marks such apps data="missing" instead)
+    import pytest
+    with pytest.raises(capture.ExportError, match="wizard-messenger:gone"):
+        capture._emit_app_archive(FakeBox(), None, "messenger", "messenger:wizardapps",
+                                  {"store": "wizardapps", "id": "messenger", "status": "running"}, [], tmp_path,
+                                  True, [])
+
+
+def test_patch_works_on_hermes_with_inline_sqlite_copy(tmp_path):
+    """The pinned Hermes (v2026.9.24) defines _safe_copy_db in hermes_cli.backup itself, with no backup_sqlite."""
+    pkg = _fake_hermes(tmp_path)
+    (pkg / "backup_sqlite.py").unlink()
+    body = (pkg / "backup.py").read_text().replace(
+        "from hermes_cli.backup_sqlite import _safe_copy_db",
+        "def _safe_copy_db(src, dst, *, timeout_seconds=10.0):\n    return 'stock'")
+    (pkg / "backup.py").write_text(body)
+    src, dst = tmp_path / "state.db", tmp_path / "copy.db"
+    c = sqlite3.connect(src)
+    c.execute("create table t(x)")
+    c.executemany("insert into t values (?)", [(i,) for i in range(10)])
+    c.commit()
+    code = "import sys\nsys.path.insert(0, %r)\n" % str(tmp_path) + HERMES_BACKUP_PATCH + HERMES_MAIN
+    out = subprocess.run([sys.executable, "-c", code, "backup", str(src), str(dst)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "True ['denied.md'] 10", out.stderr

@@ -451,3 +451,20 @@ def test_agent_service_root_files_travel_and_undo_puts_this_boxs_back(world):
     assert (a / ".apps-seen.json").read_text() == '{"schema": 1, "apps": ["files-app"]}'
     assert not (a / ".agent-grants.json").exists() and not (a / ".main-agent.json").exists()
     assert box_digest(new.box()) == before
+
+
+def test_export_marks_an_app_with_a_missing_image_as_holding_no_data(world, monkeypatch):
+    """An app whose image is gone is left running (it could not start again) and the manifest says the backup has
+    no data for it, so a restore never installs it as if its data were restored (review of the busy-agent fix)."""
+    monkeypatch.setattr(capture, "_missing_images",
+                        lambda box, urn: ["notes:gone"] if urn.startswith("notes-app:") else [])
+    out, res = _export(world)
+    assert res["ok"]
+    assert len(res["apps_without_data"]) == 1 and "notes:gone" in res["apps_without_data"][0]
+    c = _contents(out, world["key"])
+    apps = {a["id"]: a for a in json.loads(c["manifest.json"])["apps"]}
+    assert apps["notes-app"]["data"] == "missing" and "notes:gone" in apps["notes-app"]["data_missing"]
+    assert apps["files-app"]["data"] == "archive"
+    assert not any(n.startswith("apps/notes-app/data.tar") for n in c)
+    assert any(n.startswith("apps/files-app/data.tar") for n in c)
+    assert "missing" not in restore.DATA_KINDS
