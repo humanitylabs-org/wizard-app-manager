@@ -72,6 +72,16 @@ def doctor(c):
         out.append(('alongside: host Hermes API answers', alongside.api_up(st['agent']['origin']), st['agent']['origin']))
         override = c.runtipi_root / 'user-config/wizardapps/wizard-agent-service/docker-compose.yml'
         out.append(('alongside: Agent Service uses agent uid', override.is_file() and f'user: "{st["agent"]["uid"]}:{st["agent"]["gid"]}"' in override.read_text(), str(override)))
+    # The Service itself, not a root read of the agent's key/config, proves the handoff.
+    if st:
+        import urllib.request
+        origin = 'http://127.0.0.1:' + str(alongside.service_port(st)) + '/wizard/health'
+        try:
+            with urllib.request.urlopen(origin, timeout=10) as response:
+                up = response.status == 200
+        except OSError:
+            up = False
+        out.append(('alongside: Agent Service answers', up, origin))
     # Ordinary network/policy checks still run; no builder bundle or agent-owned config reads.
     from . import network, host_policy
     out.extend(host_policy.grandfathered_health(c.home))

@@ -54,6 +54,7 @@ systemctl start user@$uid.service
 # docs/getting-started/installation + docs/reference/package-management.
 runuser -u hermes -- env HOME=/home/hermes bash -se <<'AGENT'
 export PATH="$HOME/.local/bin:$PATH"
+cd "$HOME"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 mkdir -p "$HOME/.hermes"
 git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/hermes-agent"
@@ -109,6 +110,14 @@ assert not os.access('/var/run/docker.sock',os.R_OK|os.W_OK)
 assert not os.access('/var/lib/wizard-os',os.W_OK)
 assert not os.access('/var/lib/wizard-os/wizard-app-manager',os.W_OK)
 assert not os.access('/var/lib/wizard-os/.wizard-os/api-token',os.R_OK)
+assert not os.access('/run/containerd/containerd.sock',os.R_OK|os.W_OK)
+for port in (2375,2376):
+ try:
+  connection=socket.create_connection(('127.0.0.1',port),timeout=2)
+ except OSError: pass
+ else:
+  connection.close()
+  raise AssertionError('Docker TCP API reachable on '+str(port))
 assert subprocess.run(['sudo','-n','true'],capture_output=True).returncode != 0
 p=subprocess.run(['docker','ps'],capture_output=True,text=True)
 assert p.returncode != 0 and 'permission denied' in p.stderr.lower(),p.stderr
@@ -188,7 +197,11 @@ def guest_vm(label, ref, image, key):
         else: raise RuntimeError('guest SSH timeout')
         guest('fresh','cloud-init status --wait; cat /etc/os-release; test ! -d /home/hermes; cat /etc/docker/daemon.json',600,True)
         guest('tools','apt-get -o DPkg::Lock::Timeout=600 update -qq; DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq curl sudo git python3 python3-venv python3-yaml build-essential libatomic1',600,True)
-        if guest('stock-hermes',HERMES_SETUP,1500,True): return
+        setup = HERMES_SETUP.replace('git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/hermes-agent"',
+            'git init "$HOME/hermes-agent"; git -C "$HOME/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git; '
+            'git -C "$HOME/hermes-agent" fetch --depth 1 origin ' + receipt['hermes_commit'] + '; '
+            'git -C "$HOME/hermes-agent" checkout --detach FETCH_HEAD')
+        if guest('stock-hermes',setup,1500,True): return
         url=f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
         install=f'curl -fsSL {url} -o /root/get.sh; WAM_REF={ref} WIZARD_MODE=alongside WIZARD_HERMES_USER=hermes HERMES_HOME=/home/hermes/.hermes WIZARD_TAILSCALE_WAIT=1 bash /root/get.sh'
         code=guest('install',guest_install_command(install),3300,True)
@@ -255,7 +268,12 @@ def interrupt(signum, frame):
 
 signal.signal(signal.SIGTERM,interrupt)
 signal.signal(signal.SIGINT,interrupt)
+signal.signal(signal.SIGALRM,interrupt)
+signal.alarm(10500)  # leave teardown time inside the admitted 10800-second job
 try:
+    hermes_commit = subprocess.check_output(['git', 'ls-remote', 'https://github.com/NousResearch/hermes-agent.git', 'HEAD'], text=True, timeout=60).split()[0]
+    assert re.fullmatch('[0-9a-f]{40}', hermes_commit)
+    receipt['hermes_commit'] = hermes_commit
     image=Path('/srv/work/images/debian-12-genericcloud-amd64.qcow2')
     if not image.is_file():
         image=root/'debian-12.qcow2'

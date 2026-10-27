@@ -55,7 +55,7 @@ def main():
         raise SystemExit('unsupported Hermes home path')
     # Probe existing layout at the account uid, not as root across home symlinks.
     old = subprocess.run(['runuser', '-u', name, '--', 'test', '-e', agent.pw_dir + '/.wizard-os/alongside.json'])
-    if old.returncode == 0:
+    if old.returncode == 0 and not (BASE / '.wizard-privsep').is_file():
         raise SystemExit('Existing alongside installs retain their layout; use the migration slice.')
     first = not BASE.exists()
     if not first and not (BASE / '.wizard-privsep').is_file():
@@ -119,7 +119,7 @@ def main():
             write(state / token, secrets.token_urlsafe(32) + '\n', 0o600, suid, sgid)
     sysenv = {**env, 'USER': 'wizard-system', 'LOGNAME': 'wizard-system', 'RUNTIPI_ROOT': str(BASE / 'runtipi'),
               'WIZARD_OS_HOME': str(state), 'WIZARD_MODE': 'alongside', 'WIZARD_SEPARATED': '1', 'WIZARD_TAILSCALE_WAIT': '1'}
-    run(['runuser', '-u', 'wizard-system', '--', 'env', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'])
+    run(['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'], cwd=BASE)
     unit_env = f'Environment=HOME={BASE}\nEnvironment=WIZARD_OS_HOME={state}\nEnvironment=RUNTIPI_ROOT={BASE}/runtipi\n'
     write(Path('/etc/systemd/system/wizard-app-manager-api.service'), f'''[Unit]
 Description=Wizard App Manager (privilege-separated)
@@ -169,12 +169,12 @@ for name,value in [('client.json',json.dumps(d['client'])),('agent-token',d['tok
  os.chmod(p,0o600)
 '''
     agentenv = {'HOME': agent.pw_dir, 'USER': name, 'PATH': agent.pw_dir + '/.local/bin:' + env['PATH'], 'HERMES_HOME': hh}
-    prefix = ['runuser', '-u', name, '--', 'env', *[k + '=' + v for k, v in agentenv.items()]]
+    prefix = ['runuser', '-u', name, '--', 'env', '-i', *[k + '=' + v for k, v in agentenv.items()]]
     run([*prefix, '/usr/bin/python3', '-c', script], input=json.dumps({'client': handoff,
-        'token': (state / 'agent-token').read_text().strip(), 'alongside': snapshot}).encode())
+        'token': (state / 'agent-token').read_text().strip(), 'alongside': snapshot}).encode(), cwd=agent.pw_dir)
     # wizard link installs the stock plugin and API config as the Hermes uid only.
-    run([*prefix, '/usr/local/bin/wizard', 'link', '--hermes-home', hh, '--url', 'http://127.0.0.1:8923/wizard/mcp', '--restart'])
-    cmd = ['runuser', '-u', 'wizard-system', '--', 'env', *[k + '=' + v for k, v in sysenv.items()], '/usr/bin/python3', '-m', 'wam']
+    run([*prefix, '/usr/local/bin/wizard', 'link', '--hermes-home', hh, '--url', 'http://127.0.0.1:8923/wizard/mcp', '--restart'], cwd=agent.pw_dir)
+    cmd = ['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], '/usr/bin/python3', '-m', 'wam']
     for app in ('wizard-agent-service', 'wizard-ux'):
         run(cmd + ['install', app], cwd=tree)
     run(cmd + ['apps'], cwd=tree)
