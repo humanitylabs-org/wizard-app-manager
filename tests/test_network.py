@@ -86,6 +86,15 @@ def test_overlay_replaces_the_shared_network_and_keeps_the_app_network():
     assert set(ov["services"]) == {"twenty-crm"}
 
 
+def test_a_slot_links_only_the_owners_active_provider_unless_the_slot_is_multi():
+    apps = [app("mailer", uses=["email"]), app("resend", provides=["email"]), app("smtp", provides=["email"]),
+            app("chat", uses=["ai-connection"]), app("claude", provides=["ai-connection"]), app("gpt", provides=["ai-connection"])]
+    p = net.plan(apps, [], set(), slot_choice={"email": "smtp"}, multi_slots={"ai-connection"})
+    pairs = reach(p)
+    assert ("mailer", "smtp") in pairs and ("mailer", "resend") not in pairs
+    assert ("chat", "claude") in pairs and ("chat", "gpt") in pairs
+
+
 def test_grants_and_router_requirements_are_declarations_too():
     apps = [app("wisdom", router=True), app("wizard-connection-router", provides=["connection-router"]),
             app("recorder"), app("transcriber", provides=["transcription"])]
@@ -112,6 +121,9 @@ def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(m
             app("files"), app("defleur-video", uses=["files"])]
     p = net.plan(apps, [], set())
     rep = net.report(type("C", (), {})(), p=p, live={"networks": {}, "containers": []})
+    ux = next(a for a in rep["apps"] if a["id"] == "wizard-ux")
+    assert {e["to"] for e in ux["can_reach"] if e["reason"] == "gateway network"} == {"files", "defleur-video"}
+    assert {e["from"] for e in ux["reached_by"] if e["state"] == "gateway"} == {"files", "defleur-video"}
     files = next(a for a in rep["apps"] if a["id"] == "files")
     assert {e["to"] for e in files["can_reach"] if e["state"] == "core"} == {"wizard-ux", "wizard-agent-service", "hermes-agent"}
     assert any(e["to"] == "defleur-video" and e["state"] == "peer" for e in files["can_reach"])
@@ -539,3 +551,14 @@ def test_wam_serve_shows_the_views_and_the_live_report(monkeypatch):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_network_off_dry_run_saves_nothing(tmp_path, monkeypatch):
+    from wam import cli
+    seen = {}
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.release_pins, "load", lambda *a, **k: None)
+    monkeypatch.setattr(net, "reconcile", lambda c, **k: seen.update(k) or {"errors": []})
+    assert cli.main(["network", "off", "--dry-run"]) == 0
+    assert seen["on"] is False and seen["apply"] is False
+    assert net.enabled(tmp_path) and not (tmp_path / "app-manager.json").exists()

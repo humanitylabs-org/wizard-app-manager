@@ -1788,10 +1788,11 @@ def main(argv: list[str] | None = None) -> int:
                 rep = network.report(c)
                 print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
                 return 0 if rep.get("ok") else 1
-            if args.action in ("off", "on"):
-                network.set_enabled(c.home, args.action == "on")
+            mode = None if args.action == "reconcile" else args.action == "on"
+            if mode is not None and not args.dry_run:
+                network.set_enabled(c.home, mode)   # a dry run previews the mode without saving it
             res = network.reconcile(c, apply=not args.dry_run, restart=not args.no_restart,
-                                    restart_fn=lambda a: app_lifecycle(c, "restart", a))
+                                    restart_fn=lambda a: app_lifecycle(c, "restart", a), on=mode)
             if not args.dry_run:
                 write_registry(c)
             print(json.dumps(res, indent=2))

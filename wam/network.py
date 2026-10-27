@@ -304,7 +304,8 @@ def _isolatable(a: dict) -> tuple[str, str]:
     return "isolated", ""
 
 
-def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: bool = True) -> dict:
+def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: bool = True,
+         slot_choice: dict | None = None, multi_slots=None) -> dict:
     """Desired topology. `apps`: read_app() records; `grants`: apps.json grants; `external_slots`: slots filled from
     outside Runtipi (alongside: the host's Hermes), by slot name and by the app id that normally fills it.
     Returns {apps, networks, edges, gateway}."""
@@ -324,12 +325,18 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
                           "with them" if core_bridge else
                           "the gateway runs on the server's network and calls apps on their published 127.0.0.1 port")}
 
+    slot_choice, multi_slots = slot_choice or {}, set(multi_slots or ())
+
     def resolve(to: str) -> tuple[list[str], str]:
         name = to.removeprefix("slot:")
         if not to.startswith("slot:") and name in by_id:
             return [name], ""
         if providers.get(name):
-            return list(providers[name]), ""
+            cands = providers[name]
+            if len(cands) == 1 or name in multi_slots:   # a multi slot (e.g. ai-connection) is every provider by design
+                return list(cands), ""
+            chosen = slot_choice.get(name)                # the owner's active app for this spot (apps.json slots)
+            return [chosen if chosen in cands else sorted(cands)[0]], ""
         return [], "external" if name in external_slots else "not-installed"
 
     edges, seen = [], set()
@@ -627,18 +634,25 @@ def _context(c, rt=None, extra=()):
     return rt, ids | set(extra), grants, ext, STORE
 
 
-def build(c, rt=None, extra=()) -> tuple[dict, str]:
+def build(c, rt=None, extra=(), on: bool | None = None) -> tuple[dict, str]:
     rt, ids, grants, ext, store = _context(c, rt, extra)
     apps = read_apps(c.runtipi_root, store, ids)
-    return plan(apps, grants, ext, on=enabled(c.home)), store
+    from . import slots as _slots
+    try:
+        chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()
+                  if isinstance(v, dict)}
+    except (OSError, ValueError):
+        chosen = {}
+    multi = {k for k, v in _slots.load_defaults().items() if (v or {}).get("multi")}
+    return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi), store
 
 
-def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None) -> dict:
+def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None) -> dict:
     """Make Docker and the overrides match the declarations. Idempotent; safe to run any time.
     apply=False: report only. restart=False: never restart an app (live connect/disconnect only; apps still on
     the shared network are listed under pending_restart). `extra`: app ids about to be installed (their store
     recipe is planned so they come up isolated on their first start)."""
-    p, store = build(c, rt, extra)
+    p, store = build(c, rt, extra, on=on) if on is not None else build(c, rt, extra)
     docker = docker_cmd()
     live = observe(docker, store)
     out = {"enabled": p["enabled"], "gateway": p["gateway"], "created": [], "removed": [], "overrides": [],
@@ -854,9 +868,18 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                          [{"to": core, "declared": None, "reason": "gateway network", "state": "core", "network": gw_net(a["id"])}
                           for core in p["gateway"]["core"] if gw_net(a["id"]) in p["networks"] and core != a["id"]
                           and any(m["app"] == core for m in p["networks"][gw_net(a["id"])]["members"])
-                          and not any(e["provider"] == core for e in out_edges)],
+                          and not any(e["provider"] == core for e in out_edges)] +
+                         # and the other way: a core component reaches every app whose gateway network it is on
+                         [{"to": n["name"].removeprefix(GW_PREFIX), "declared": None, "reason": "gateway network",
+                           "state": "gateway", "network": n["name"]}
+                          for n in p["networks"].values() if n["kind"] == "gateway" and a["id"] in p["gateway"]["core"]
+                          and any(m["app"] == a["id"] for m in n["members"])],
             "reached_by": [{"from": e["from"], "reason": e["reason"], "state": e["state"], "network": e.get("network")}
-                           for e in in_edges],
+                           for e in in_edges] +
+                          ([{"from": n["name"].removeprefix(GW_PREFIX), "reason": "gateway network", "state": "gateway",
+                             "network": n["name"]}
+                            for n in p["networks"].values() if n["kind"] == "gateway" and a["id"] in p["gateway"]["core"]
+                            and any(m["app"] == a["id"] for m in n["members"])]),
             "drift": problems,
         })
     shared_members = sorted(n for n in (live["networks"].get(shared_docker) or {}).get("containers", []))
