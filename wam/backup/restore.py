@@ -37,6 +37,7 @@ from . import filesystem as datafs
 
 from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
+from .box import managed_operation
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
                   box_digest, digest_differences, human, log, need_space, root_runtime_digest_path, skip_home_entry)
@@ -454,6 +455,7 @@ def check_can_import(box: Box) -> None:
                            f"half-restored box aside instead of the original")
 
 
+@managed_operation
 @datafs.with_access
 def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = False, confirm=None,
                   stager=None) -> dict:
@@ -988,6 +990,7 @@ def last_restore(box: Box) -> tuple[Path, dict]:
         raise RestoreError("there is no restore to undo or activate on this box") from None
 
 
+@managed_operation
 @datafs.with_access
 def undo(box: Box) -> dict:
     try:
@@ -1224,6 +1227,7 @@ def _walk_back(held: Path) -> list[str]:
 
 # ---------------------------------------------------------------- activate
 
+@managed_operation
 @datafs.with_access
 def activate(box: Box, old_is_off: bool) -> dict:
     if not old_is_off:

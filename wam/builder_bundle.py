@@ -294,6 +294,46 @@ def register(hermes_home, os_home, runtime=None):
     return path
 
 
+OVERLAY_MARK = '# Written by wam'  # == fresh_agent.MARK
+
+
+def _leading_comments(text):
+    out = []
+    for line in text.splitlines(keepends=True):
+        if not line.startswith('#'):
+            break
+        out.append(line if line.endswith('\n') else line + '\n')
+    return out
+
+
+def with_builder_mount(text, home, app_id='hermes-agent', where='overlay'):
+    """Return overlay text with the read-only builder mount and WIZARD_BUILDER_ROOT on the engine.
+
+    Shared by `builder-bundle fresh` and fresh-agent's agent overlay, which both own this one file: whichever
+    writes last keeps the other's settings. The leading comment block (the `# Written by wam` ownership mark that
+    fresh-agent requires) is kept; a new overlay is marked as ours.
+    """
+    header = ''.join(_leading_comments(text)) if text is not None else \
+        OVERLAY_MARK + ' (builder-bundle): read-only Wizard builder mount for stock Hermes.\n'
+    doc = (yaml.safe_load(text) or {}) if text is not None else {}
+    service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
+    mount = {'type': 'bind', 'source': str(Path(home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
+    vols = service.setdefault('volumes', [])
+    for v in vols:
+        target = v.get('target') if isinstance(v, dict) else str(v).split(':')[1] if ':' in str(v) else ''
+        if target == RUNTIME and v != mount:
+            raise ValueError(f'Builder mount collision in {where}; preserving override')
+    env = service.setdefault('environment', {})
+    if not isinstance(env, dict):
+        raise ValueError(f'Expected environment mapping in {where}; preserving override')
+    if env.get('WIZARD_BUILDER_ROOT', RUNTIME) != RUNTIME:
+        raise ValueError(f'Builder environment collision in {where}')
+    if mount not in vols:
+        vols.append(mount)
+    env['WIZARD_BUILDER_ROOT'] = RUNTIME
+    return header + yaml.safe_dump(doc, sort_keys=False)
+
+
 def fresh(c, app_id='hermes-agent', store='wizardapps'):
     """Prepare the stock Runtipi Hermes data directory and additive override.
 
@@ -305,24 +345,9 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
     before = (override.read_bytes() if override.exists() else None,
               _read_bytes(data / 'config.yaml') if (data / 'config.yaml').exists() else None)
-    doc = yaml.safe_load(override.read_text()) or {} if override.exists() else {}
-    service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
-    mount = {'type': 'bind', 'source': str(Path(c.home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
-    vols = service.setdefault('volumes', [])
-    for v in vols:
-        target = v.get('target') if isinstance(v, dict) else str(v).split(':')[1] if ':' in str(v) else ''
-        if target == RUNTIME and v != mount:
-            raise ValueError(f'Builder mount collision in {override}; preserving override')
-    env = service.setdefault('environment', {})
-    if not isinstance(env, dict):
-        raise ValueError(f'Expected environment mapping in {override}; preserving override')
-    if env.get('WIZARD_BUILDER_ROOT', RUNTIME) != RUNTIME:
-        raise ValueError(f'Builder environment collision in {override}')
+    text = with_builder_mount(before[0].decode() if before[0] is not None else None, c.home, app_id, where=override)
     register(data, c.home, RUNTIME + '/current/system-skills')
-    if mount not in vols:
-        vols.append(mount)
-    env['WIZARD_BUILDER_ROOT'] = RUNTIME
-    _atomic(override, yaml.safe_dump(doc, sort_keys=False))
+    _atomic(override, text)
     after = (override.read_bytes(), _read_bytes(data / 'config.yaml'))
     pending = Path(c.home) / 'builder/restart-required'
     if before != after:

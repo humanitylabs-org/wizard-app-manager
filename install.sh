@@ -124,6 +124,41 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
+# The host-only lifecycle bridge the Agent Service calls for app install/start/stop/update/uninstall
+# (docs/lifecycle-bridge.md). Loopback only; its dedicated token is ~/.wizard-os/lifecycle-token (0600).
+cat > "$HOME/.config/systemd/user/wizard-app-lifecycle.service" <<EOF
+[Unit]
+Description=wam lifecycle bridge (127.0.0.1:7791; needs ~/.wizard-os/lifecycle-token)
+After=network-online.target
+
+[Service]
+Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+WorkingDirectory=$HERE
+ExecStart=$PY -m wam.lifecycle serve --bind 127.0.0.1 --port 7791
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Fresh mode only (enabled below after `wam fresh-agent prepare`): the same bridge, also listening on this box's
+# address on the Runtipi Docker network, so the containerised Agent Service can reach it. Same token and home.
+cat > "$HOME/.config/systemd/user/wizard-app-lifecycle-containers.service" <<EOF
+[Unit]
+Description=wam lifecycle bridge for the Agent Service container (Runtipi network gateway:7791)
+After=network-online.target wizard-app-lifecycle.service
+
+[Service]
+Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
+WorkingDirectory=$HERE
+ExecStart=$PY -m wam.lifecycle serve --container --port 7791
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
 # Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
@@ -134,6 +169,8 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now wizard-app-manager-api.service
 systemctl --user restart wizard-app-manager-api.service
+systemctl --user enable --now wizard-app-lifecycle.service
+systemctl --user restart wizard-app-lifecycle.service
 # Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
 # update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
@@ -180,6 +217,10 @@ fi
 "$HOME/.local/bin/wam" backup restic-install >/dev/null || DEGRADED+=("could not install restic for scheduled backups (wam backup restic-install)")
 # The verdict is after bootstrap: a fresh agent cannot answer before it exists.
 
+# restic for scheduled backups: pinned official release, sha256-checked (wam/backup/restic.py).
+# Older boxes also install it on demand through `wam backup schedule set` / `run`.
+"$HOME/.local/bin/wam" backup restic-install >/dev/null || DEGRADED+=("could not install restic for scheduled backups (wam backup restic-install)")
+
 # The generic `wizard` CLI (apps, tools, call, link, unlink, doctor). Vendored from wizard-os tools/wizard.
 WIZ_CLI="$HOME/.local/bin/wizard"
 if ! PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1; then
@@ -188,7 +229,7 @@ if ! PYTHON="$PY" sh "$HERE/wizard-cli/install_wizard_cli.sh" >/dev/null 2>&1; t
 fi
 # Same interpreter as wam: under an agent, `env python3` can be the agent's bundled Python, which lacks PyYAML, and
 # `wizard link` would then misread the owner's config.yaml as empty.
-[ -z "$WIZ_CLI" ] || sed -i "1s|.*|#!$PY|" "$WIZ_CLI"
+[ -z "$WIZ_CLI" ] || { sed -i.bak "1s|.*|#!$PY|" "$WIZ_CLI" && rm -f "$WIZ_CLI.bak"; }
 
 # Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
 # agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
@@ -268,6 +309,20 @@ print("; ".join(f"{a} ({v})" for a, v in r.items() if str(v).startswith("error")
   fi
 fi
 
+# Match the lifecycle listener to the chosen mode without relinking Hermes a second time.
+if [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
+  systemctl --user disable --now wizard-app-lifecycle-containers.service 2>/dev/null || true
+elif [ ${#FAILED[@]} -eq 0 ]; then
+  # 2c) Fresh: the hermes-agent container is the agent. Record fresh mode before bootstrap so the Agent Service and
+  #     hermes-agent start with their generated overlays (gateway token, bridge route, shared skills mount).
+  if WAM_DOCKER="${DOCKER[*]}" "$HOME/.local/bin/wam" fresh-agent prepare >/dev/null; then
+    systemctl --user enable --now wizard-app-lifecycle-containers.service || true
+    systemctl --user restart wizard-app-lifecycle-containers.service || true
+  else
+    echo "note: 'wam fresh-agent prepare' did not finish; run it again later"
+  fi
+fi
+
 # 3) Fill every empty parking spot (shell, agent service, agent, files, ...) with its default app from the index.
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ] && [ "$healthy" = 1 ]; then
@@ -330,6 +385,9 @@ else
   "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 fi
 
+if [ "${WIZARD_MODE:-fresh}" != "alongside" ] && [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ] && [ "$healthy" = 1 ] && [ ${#FAILED[@]} -eq 0 ]; then
+  WAM_DOCKER="${DOCKER[*]}" "$HOME/.local/bin/wam" fresh-agent connect || DEGRADED+=("fresh agent gateway connection did not finish; run wam fresh-agent connect")
+fi
 if [ ${#FAILED[@]} -gt 0 ]; then status=failed; elif [ ${#DEGRADED[@]} -gt 0 ]; then status=degraded; else status=ok; fi
 python3 - "$OUTCOME" "$status" "${WIZARD_MODE:-fresh}" "${#FAILED[@]}" ${FAILED[@]+"${FAILED[@]}"} ${DEGRADED[@]+"${DEGRADED[@]}"} <<'PY' || true
 import json, os, sys, time

@@ -33,6 +33,7 @@ from . import filesystem as datafs
 
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
 from .appdata import AppDataError
+from .box import managed_operation
 from .box import (MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log, need_space, need_spaces,
                   skip_home_entry)
 
@@ -164,6 +165,7 @@ def _du(path: Path) -> int:
     return bundle.tree_size(path)["bytes"] if path.is_dir() else 0
 
 
+@managed_operation
 @datafs.with_access
 def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, passphrase: str | None = None,
            include_files: bool = True, key_file: str | None = None, scrypt_n: int = crypto.SCRYPT_N,

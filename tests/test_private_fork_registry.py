@@ -25,7 +25,8 @@ def test_private_fork_from_git_store_keeps_real_lifecycle_identity(tmp_path):
     assert fork['status'] == 'running'
     assert fork['commit'] == 'a' * 40
     assert fork['repo'] == 'example/release-fork'
-    assert fork['view']['url'] == 'http://127.0.0.1:18799/'
+    assert fork['view']['url'] == '/apps/fork/'
+    assert fork['_view_upstream'] == 'http://127.0.0.1:18799/'
     assert result['slots']['ai-connection']['candidates'] == ['fork', 'regular']
 
 

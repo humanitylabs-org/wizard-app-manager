@@ -92,6 +92,9 @@ def install_box(tmp_path, monkeypatch, pins):
     monkeypatch.setattr(cli, 'store_data_cmd', lambda *a: {})
     from wam import builder_bundle
     monkeypatch.setattr(builder_bundle, 'fresh', lambda *a: None)
+    # Docker media ownership is exercised by its dedicated alongside tests,
+    # not a real daemon from this fake release installer fixture.
+    monkeypatch.setattr(alongside, 'adopt_media', lambda *a, **kw: True)
 
     def reg(*args):
         apps = []

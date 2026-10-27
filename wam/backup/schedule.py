@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import crypto, keys as keylib, restic, snapshot
-from .box import Box, human, is_test_env, log
+from .box import Box, human, is_test_env, log, managed_operation
 
 CONFIG, TARGET_SECRET, STATUS = "backup.json", "backup-target.json", "backup-status.json"
 UNIT = "wizard-backup"
@@ -392,6 +392,7 @@ def lock(box: Box):
 
 # ---------------------------------------------------------------- one run
 
+@managed_operation
 def run(box: Box, scheduled: bool = False, now: float | None = None) -> dict:
     cfg = load(box)
     if not cfg or not cfg.get("target"):

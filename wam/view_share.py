@@ -14,10 +14,11 @@ from pathlib import Path
 def shared_home(home):
     config = Path(home) / 'app-manager.json'
     cfg = json.loads(config.read_text()) if config.is_file() else {}
-    root = os.environ.get('RUNTIPI_ROOT') or cfg.get('runtipi_root')
-    # An isolated views home with no manager config must never touch another install.
+    root = cfg.get('runtipi_root')
+    # Global worker/default-install environment must not redirect an isolated
+    # owner's explicitly configured projection into a different installation.
     if not root and Path(home).resolve() == (Path.home() / '.wizard-os').resolve():
-        root = Path.home() / 'runtipi'  # the same stock default as Config
+        root = os.environ.get('RUNTIPI_ROOT') or Path.home() / 'runtipi'
     if not root:
         return None
     return Path(root).expanduser() / 'app-data' / 'wizard-os'
