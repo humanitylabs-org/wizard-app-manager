@@ -15,6 +15,7 @@ import {
   sensitiveOf,
   noticesOf,
   appGrant,
+  providers,
   REQUESTS_DIR,
   REQUESTS_FILE,
 } from './wizard-app-grants';
@@ -334,6 +335,26 @@ export class WizardStorage {
           approved: 'owner',
           created_at: Math.floor(Date.now() / 1000),
         });
+        if (!approve) {
+          // A Disconnect / Deny is about the app reached: the same consumer's grants or requests that name it another
+          // way (its id, a slot it fills) are disconnected too, each kept as its own sticky row.
+          const cut = new Set(providers(grant.to, apps).map((p) => p.manifest.id));
+          const alias = (g: Grant) =>
+            appGrant(g) && g.from === grant.from && !sameAppGrant(g, grant) && providers(g.to, apps).some((p) => cut.has(p.manifest.id));
+          const also = [...file.grants.filter(alias), ...pendingOf(file).filter(alias)];
+          file.grants = file.grants.filter((g) => !alias(g));
+          file.pending = pendingOf(file).filter((g) => !alias(g));
+          for (const g of also)
+            if (!file.denied.some((d) => sameAppGrant(d, g)))
+              file.denied.push({
+                kind: 'app',
+                from: g.from,
+                to: g.to,
+                reason: g.reason ?? 'owner',
+                approved: 'owner',
+                created_at: Math.floor(Date.now() / 1000),
+              });
+        }
         file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== grant.from);
         await this.writeGrants(file);
         await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));

@@ -100,6 +100,24 @@ describe('connection policy: seamless by default, owner in control', () => {
     expect((await keys('carlos-campaigns')).outgoing).not.toHaveProperty('slot:email');
   });
 
+  it('Disconnect cuts every name for the same provider (id and slot)', async () => {
+    await install('resend-connector', { name: 'Resend', provides: ['email'] });
+    await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
+    await request('carlos-campaigns', { connections: ['slot:email'] });
+    await store.collectRequests();
+    expect(
+      (await state()).grants
+        .filter((g) => g.from === 'carlos-campaigns')
+        .map((g) => g.to)
+        .sort(),
+    ).toEqual(['resend-connector', 'slot:email', 'twenty-crm']);
+    await store.change({ kind: 'app', from: 'carlos-campaigns', to: 'resend-connector' }, false);
+    const s = await state();
+    expect(s.grants.filter((g) => g.from === 'carlos-campaigns').map((g) => g.to)).toEqual(['twenty-crm']);
+    expect(s.denied.map((g) => g.to).sort()).toEqual(['resend-connector', 'slot:email']);
+    expect(Object.keys((await keys('carlos-campaigns')).outgoing)).toEqual(['twenty-crm']);
+  });
+
   it('approves a runtime request automatically (the app asks in its own requests folder)', async () => {
     await request('carlos-campaigns', { connections: [{ to: 'resend-connector', why: 'send the campaign' }, 'carlos-campaigns', 'BAD id'] });
     expect(await store.collectRequests()).toBe(true);
