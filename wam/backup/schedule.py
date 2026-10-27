@@ -469,6 +469,9 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
             st.update({k: bk[k] for k in ("snapshot", "short_id", "data_added", "data_added_packed", "capture_bytes",
                                           "entries", "agents", "apps", "peak_extra_disk_bytes", "restic_cache_bytes")})
             st["backup_seconds"] = bk["seconds"]
+            st["apps_without_data"] = bk.get("apps_without_data") or []
+            for msg in st["apps_without_data"]:
+                log("warning: " + msg)
             log(f"snapshot {bk['short_id']}: {human(bk['data_added'] or 0)} new of {human(bk['capture_bytes'] or 0)}")
             st["retention"] = apply_retention(repo, cfg, host)
             log("restic check")

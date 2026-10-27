@@ -97,8 +97,20 @@ def blocks_uninstall(reg: dict, app_id: str, defaults: dict[str, dict] | None = 
     return [s for s, d in defaults.items() if d.get("required") and have.get(s) == [app_id] and s not in external]
 
 
+def system_apps(defaults: dict[str, dict] | None = None) -> set[str]:
+    """System apps are the apps Wizard OS publishes as the default for a spot (wizard-os docs/SYSTEM_APPS.md). On a
+    pinned box the release names them, so this is also the set a Wizard OS update brings to its pinned commits."""
+    defaults = load_defaults() if defaults is None else defaults
+    return {d["app"] for d in defaults.values() if (d or {}).get("app")}
+
+
 def merge_into_registry(reg: dict, defaults: dict[str, dict] | None = None) -> dict:
-    """apps.json gains `parking`: every slot including empty ones, so the UX can show placeholders."""
+    """apps.json gains `parking`: every slot including empty ones, so the UX can show placeholders. Each app also
+    gets `system`, so every shell marks the same apps (the launcher's system ring) without its own id list."""
+    defaults = load_defaults() if defaults is None else defaults
+    system = system_apps(defaults)
+    for a in reg.get("apps") or []:
+        a["system"] = a.get("id") in system
     reg["parking"] = [{k: r[k] for k in ("slot", "name", "required", "default_app", "active", "state", "external") if k in r}
                       for r in table(reg, defaults)]
     return reg

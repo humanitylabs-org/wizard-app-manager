@@ -72,12 +72,46 @@ def schedule_on(box: Box) -> bool:
         return False
 
 
+class _WouldNotRestart(Exception):
+    """The app's own images are gone from this box: stopping it for a backup would leave it down."""
+
+
+def _missing_images(box: Box, urn: str) -> list[str]:
+    """Image refs the app's containers were created from that this box no longer has (e.g. pruned by hand).
+    Runtipi recreates containers on start, so a missing one means the app cannot start again."""
+    import subprocess
+    from .dockercli import docker
+    env = box.child_env
+    try:
+        p = subprocess.run([*docker(env), "ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format",
+                            "{{.Image}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []                      # cannot tell: behave as before
+    if p.returncode:
+        return []
+    missing = []
+    for ref in sorted(set(p.stdout.split())):
+        if ref.startswith("sha256:"):
+            continue                   # an image id: the container itself pins it
+        try:
+            q = subprocess.run([*docker(env), "image", "inspect", "--format", "{{.Id}}", ref], capture_output=True,
+                               text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if q.returncode:
+            missing.append(ref)
+    return missing
+
+
 def _app_archive(box: Box, urn: str, info: dict, work: Path, volumes: list[str]) -> tuple[Path, dict]:
     """Stop the app through Runtipi, archive its folders and named volumes as root (appdata.AppData), start it again
     if it was running. Returns (archive path, report)."""
     store, app_id = info["store"], info["id"]
     was_running = info.get("status") == "running"
     if was_running:
+        gone = _missing_images(box, urn)
+        if gone:                       # checked before the manifest too; this catches an image pruned since then
+            raise _WouldNotRestart(", ".join(gone))
         box.rt.stop(urn)
         st = box.wait_status(urn, {"stopped"}, timeout=600)
         if st != "stopped":
@@ -111,7 +145,12 @@ def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: lis
             raise ExportError(f"app {app_id}: {e}") from None
     else:
         log(f"app {app_id}: archiving its data")
-        path, rep = _app_archive(box, urn, info, work, vols)
+        try:
+            path, rep = _app_archive(box, urn, info, work, vols)
+        except _WouldNotRestart as e:
+            # the manifest already promised this app's data: fail the backup rather than publish one without it
+            raise ExportError(f"app {app_id}: its image {e} went missing during the backup; it was left running "
+                              "and the backup was stopped (update or reinstall the app, then back up again)") from None
     try:
         if plain:
             bw.add_gunzipped(f"apps/{app_id}/data.tar", path)
@@ -204,7 +243,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             agent_rows.append({**a.describe(), "bytes": z.stat().st_size, "active": agentlib.active_from_zip(z)})
 
         # 2) apps: each app's folders and volumes (agent apps carry no data here: their home is the agent above)
-        app_rows, app_files, app_skipped, volumes_taken = [], {}, [], set()
+        app_rows, app_files, app_skipped, volumes_taken, apps_without_data = [], {}, [], set(), []
         for urn in sorted(installed):
             info = installed[urn]
             app_id, store = info["id"], info["store"]
@@ -228,7 +267,17 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 # travels as a small archive, put in place before Runtipi installs the app on the new box
                 rec["user_config"] = True
                 app_files[app_id] = (urn, info, None)
-            if not is_agent:
+            gone = _missing_images(box, urn) if not is_agent and info.get("status") == "running" else []
+            if gone:
+                # Runtipi could not start it again after a stop (Messenger, Oct 2026): leave it running, and say in
+                # the manifest that this backup holds no data for it, so a restore never treats it as restored data
+                reason = (f"{app_id}: not backed up this run and left running: its image {', '.join(gone)} is missing "
+                          "on this box, so it could not start again after a stop (update or reinstall the app)")
+                log("warning: " + reason)
+                rec["data"] = "missing"
+                rec["data_missing"] = reason
+                apps_without_data.append(reason)
+            elif not is_agent:
                 # each app is archived just in time, while the file reaches it, and deleted right after: at most one
                 # app archive is on disk at a time. Its named volumes are known now (the manifest comes first).
                 vols = [v for v in box.appdata.volumes(store, app_id) if v not in volumes_taken]
@@ -325,7 +374,8 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
            "entries": sums["count"], "content_bytes": sums["bytes"],
            "agents": [a["id"] for a in manifest["agents"]], "apps": [a["id"] for a in manifest["apps"]],
            "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20],
-           "skipped_in_apps": app_skipped[:50], "skipped_in_apps_count": len(app_skipped)}
+           "skipped_in_apps": app_skipped[:50], "skipped_in_apps_count": len(app_skipped),
+           "apps_without_data": apps_without_data}
     if bw.changed:
         log(f"note: {len(bw.changed)} files changed while being read (their new size was cut/padded)")
     if bw.skipped:

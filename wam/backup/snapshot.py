@@ -92,6 +92,7 @@ def backup(box: Box, repo: Repo, host: str) -> dict:
             "capture_bytes": summary.get("total_bytes_processed"), "entries": got.get("entries"),
             "agents": got.get("agents"), "apps": got.get("apps"), "files": got.get("files"),
             "changed_while_reading": got.get("changed_while_reading"),
+            "apps_without_data": got.get("apps_without_data") or [],
             "peak_extra_disk_bytes": peak.peak, "restic_cache_bytes": _tree_bytes(cache) if cache.is_dir() else 0,
             "seconds": round(time.time() - t0, 1)}
 
