@@ -161,12 +161,17 @@ _LOGIN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9._-]+$")
 _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
 
-def _tailscale_status() -> dict:
+def _tailscale_status() -> dict | None:
+    """This node's `tailscale status --json`. {} = Tailscale answered with no identity (logged out);
+    None = the lookup itself failed (missing binary, timeout, nonzero exit, malformed JSON)."""
     try:
         p = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
-        return json.loads(p.stdout) if p.returncode == 0 else {}
+        if p.returncode != 0:
+            return None
+        out = json.loads(p.stdout)
+        return out if isinstance(out, dict) else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return {}
+        return None
 
 
 def owner_identity() -> dict:
@@ -176,8 +181,11 @@ def owner_identity() -> dict:
     (Self's user login and DNS name). Never "every tailnet user": no login found means none."""
     logins = [x.strip().lower() for x in os.environ.get("WIZARD_APP_OWNER_LOGINS", "").split(",") if x.strip()]
     hosts = [x.strip().lower() for x in os.environ.get("WIZARD_ALLOWED_HOSTS", "").split(",") if x.strip()]
+    lookup_failed = False
     if not logins or not hosts:
         ts = _tailscale_status()
+        if ts is None:
+            lookup_failed, ts = True, {}
         me = ts.get("Self") or {}
         user = (ts.get("User") or {}).get(str(me.get("UserID"))) or {}
         if not logins and user.get("LoginName"):
@@ -187,7 +195,7 @@ def owner_identity() -> dict:
     bad = [x for x in logins if not _LOGIN.match(x)] + [x for x in hosts if not _HOSTNAME.match(x)]
     if bad:
         raise SystemExit(f"owner login / host {bad[0]!r} is not a plain login or hostname")
-    return {"logins": logins, "hosts": hosts}
+    return {"logins": logins, "hosts": hosts, "lookup_failed": lookup_failed}
 
 
 def owner_env(logins, hosts) -> str:
@@ -325,10 +333,12 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
     # The owner behind Tailscale Serve (optional here: without it only direct loopback callers are the owner).
     # Always this run's identity, never the previous pin: after `tailscale logout` and a move to another tailnet
     # the old owner must not stay pinned. No identity now = no pin (the Service then keeps its unconfigured rule).
+    # A failed lookup (Tailscale down, timeout, bad JSON) is not a logout: keep the previous pin for that value.
     ident = owner_identity()
     for k in ("logins", "hosts"):
-        if ident[k]:
-            st["shell"][f"owner_{k}"] = ident[k]
+        v = ident[k] or ((prev.get("shell") or {}).get(f"owner_{k}") if ident.get("lookup_failed") else None)
+        if v:
+            st["shell"][f"owner_{k}"] = v
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
     # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
     st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
