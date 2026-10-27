@@ -536,7 +536,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     if wizard_home and enabled(wizard_home):
         if role != "service":
             raise ValueError("legacy bundled shell is unavailable on separated alongside installs")
-        return service_override(st, wizard_home)
+        return service_override(st, wizard_home, stt_origin=stt_origin)
     port = service_port(st) if role == "service" else int(st["shell"]["port"])
     a = st["agent"]
     if not _SAFE_PATH.match(a["hermes_home"]):

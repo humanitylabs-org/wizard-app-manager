@@ -116,13 +116,16 @@ def test_separated_service_runs_at_agent_uid_without_privileged_credentials(tmp_
     monkeypatch.setattr(alongside, 'api_key', forbidden)
     monkeypatch.setattr(alongside, 'load', lambda home: st)
     assert alongside.shared_secret(tmp_path, 'WIZARD_HERMES_API_KEY') is None
-    text = alongside.shell_override(st, 'wizard-agent-service', tmp_path, 'service', prepare=False)
+    text = alongside.shell_override(st, 'wizard-agent-service', tmp_path, 'service', stt_origin='http://127.0.0.1:8791', prepare=False)
     assert 'user: "1001:1001"' in text
     assert 'cap_drop: !override [ALL]' in text
     assert 'security_opt: !override [no-new-privileges:true]' in text
     assert 'group_add: !override' in text
     assert '/var/run/docker.sock' not in text and 'api-token' not in text
     assert 'WIZARD_PRIVSEP_LINK: /state/link.json' in text
+    assert 'WIZARD_STT_ORIGIN: http://127.0.0.1:8791' in text
+    assert 'WIZARD_APPS_MCP_ADDRESS: url' in text
+    assert '/wizard/health' in text and 'healthcheck:' in text
     assert '/registry:ro' in text
     assert '/hermes:ro' not in text  # same agent uid retains normal Hermes/UI state writes
     assert '/var/lib/wizard-os/runtipi/media:/media' in text

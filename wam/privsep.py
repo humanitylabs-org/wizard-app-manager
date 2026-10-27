@@ -1,6 +1,7 @@
 """Protected alongside layout. This module never opens the agent's home."""
 from pathlib import Path
 import json
+import re
 
 BASE = Path('/var/lib/wizard-os')
 
@@ -9,12 +10,15 @@ def enabled(home):
     return (Path(home) / 'privsep.json').is_file()
 
 
-def service_override(st, wizard_home):
+def service_override(st, wizard_home, stt_origin=None):
     # Identity and paths were selected once by root, not discovered from agent config.
     a = st['agent']
     uid, gid = int(a['uid']), int(a['gid'])
     hh = a['hermes_home']
     state = f'/var/lib/wizard-agent/{uid}'
+    stt_origin = stt_origin or 'http://127.0.0.1:9'
+    if not re.fullmatch(r'http://127\.0\.0\.1:\d{2,5}', stt_origin):
+        raise ValueError('Transcriber must have a loopback origin')
     checkout = BASE / 'wizard-app-manager'
     from .alongside import image_lines, service_port
     # Reset the recipe's mounts/command/entrypoint. Only protected wiring is read
@@ -39,6 +43,9 @@ def service_override(st, wizard_home):
       WIZARD_OS_HOME: /state
       HERMES_HOME: /hermes
       HERMES_ORIGIN: {a['origin']}
+      WIZARD_STT_ORIGIN: {stt_origin}
+      WIZARD_APPS_MCP_ADDRESS: url
+      WIZARD_MEDIA_AGENT_ROOT: {BASE}/runtipi/media
       WIZARD_HERMES_STATE_PATH: /hermes/state.db
       WIZARD_PRIVSEP_LINK: /state/link.json
     volumes: !override
@@ -47,6 +54,8 @@ def service_override(st, wizard_home):
       - {BASE}/runtipi/app-data/wizard-os:/registry:ro
       - {checkout}/scripts/agent-service-start.mjs:/privsep/agent-service-start.mjs:ro
       - {BASE}/runtipi/media:/media
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{service_port(st)}/wizard/health >/dev/null || exit 1"]
 '''
 
 
