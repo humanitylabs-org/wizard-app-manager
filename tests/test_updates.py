@@ -214,6 +214,15 @@ def test_store_listener_updates_route(tmp_path, monkeypatch):
     assert call("GET", **{"Tailscale-User-Login": "intruder@example.com"})[0] == 403
     assert call("POST", {"mode": "ask"}, Origin="https://evil.example")[0] == 403
     assert call("POST", {"mode": "ask"}, **{"X-Wizard-Store": None})[0] == 403
+    assert call("GET")[1]["developer_mode"] is False
+    assert call("POST", {"developer_mode": True}, Origin="https://evil.example")[0] == 403
+    assert call("POST", {"developer_mode": True}, **{"Tailscale-User-Login": "intruder@example.com"})[0] == 403
+    assert call("GET")[1]["developer_mode"] is False
+    assert call("POST", {"developer_mode": "true"})[0] == 400
+    assert call("POST", {"developer_mode": True})[1]["developer_mode"] is True
+    assert call("GET")[1]["developer_mode"] is True
+    assert json.loads((h / "developer.json").read_text()) == {"enabled": True}
+    assert call("POST", {"developer_mode": False})[1]["developer_mode"] is False
     assert call("POST", {"mode": "ask"})[0] == 200 and calls[-1] == "ask"
     assert call("POST", {"mode": "never"})[0] == 400
     assert call("POST", {"action": "apply", "force": True})[0] == 400    # the browser can never force

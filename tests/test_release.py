@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from wam import release, updates
+from wam import release, updates, release_policy as policy
 
 ID = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
 
@@ -62,6 +62,7 @@ def box(tmp_path, monkeypatch):
 
     home = tmp_path / "wos"
     home.mkdir()
+    policy.set_developer(True, home)
     rt = tmp_path / "runtipi"
     (rt / "apps/wizardapps/wizard-ux").mkdir(parents=True)
     (rt / "apps/wizardapps/wizard-ux/docker-compose.generated.yml").write_text("services: {}\n")
@@ -83,6 +84,13 @@ def box(tmp_path, monkeypatch):
     b = B()
     b.home, b.up, b.bare, b.override, b.tmp = home, up_work, bare, ov / "docker-compose.yml", tmp_path
     b.posts = []
+    b.prs = {}
+    def lookup(endpoint):
+        if '/commits/' in endpoint:
+            sha = endpoint.split('/commits/')[1].split('/')[0]
+            return [b.prs.get(sha, {"merged_at": "2026-10-27T00:00:00Z", "merge_commit_sha": sha, "labels": [{"name": "fix"}]})]
+        return b.prs[endpoint.rsplit('/', 1)[-1]]
+    b.lookup = lookup
     b.served = {"build": None}
     b.docker = Docker()
 
@@ -107,7 +115,7 @@ def box(tmp_path, monkeypatch):
                 img = [ln.split("image:")[1].strip() for ln in b.override.read_text().splitlines() if "image:" in ln]
                 b.served["build"] = img[0].rsplit("release-", 1)[-1] if img and "release-" in img[0] else None
             return r
-        args = dict(run=docker, probe=probe, post=lambda url, doc: b.posts.append((url, doc)) or True,
+        args = dict(run=docker, probe=probe, pr_lookup=b.lookup, post=lambda url, doc: b.posts.append((url, doc)) or True,
                     wait=0, sleep=lambda s: None)
         args.update(kw)
         return release.run(action, home, **args)
@@ -116,7 +124,11 @@ def box(tmp_path, monkeypatch):
 
 
 def _owner_change(b, path="web/mine.js", text="mine\n", msg="Owner: my tweak"):
-    return commit(b.src, path, text, msg)
+    sha = commit(b.src, path, text, msg)
+    git(b.src, "push", "-q", "origin", "HEAD")
+    rec = release._read_json(release.paths(b.home).dir / "items.json").get("items", [])
+    release._write_json(release.paths(b.home).dir / "items.json", {"items": [*rec, {"sha": sha, "title": msg, "status": "mine", "date": "2026-10-27", "pr": None}]})
+    return sha
 
 
 def _upstream_change(b, path="web/new.js", text="new\n", msg="upstream: new thing"):
@@ -188,19 +200,17 @@ def test_rebuild_then_clean_merge_update_builds_tests_and_switches(box):
     assert m["name"] == "Owner's release" and m["build"] == head[:8]
     assert m["base"]["label"].startswith("Latest ") and m["base"]["ref"] == git(box.src, "rev-parse", "--short=8",
                                                                                   "refs/wam-release/upstream")
-    assert [c["title"] for c in m["changes"]] == ["Owner: my tweak"] and m["changes"][0]["status"] == "Mine"
+    assert [c["title"] for c in m["changes"]] == ["Owner: my tweak"] and m["changes"][0]["status"] == "mine"
 
 
-def test_auto_follows_the_owners_mode(box):
+def test_auto_applies_fixes_even_when_features_are_ask_me(box):
     box.init()
     _owner_change(box)
     box.run("rebuild")
     _upstream_change(box)
-    r = box.run("auto")                                  # Ask me: check only
-    assert r["state"] == "checked" and r["behind"] == 1 and len(box.docker.builds()) == 1
-    (box.home / "updates.json").write_text(json.dumps({"mode": "auto"}))
-    r = box.run("auto")                                  # Automatic: update
+    r = box.run("auto")                                  # fixes don't wait for a feature go
     assert r["state"] == "ok" and len(box.docker.builds()) == 2
+    assert box.run("auto")["state"] == "checked"
 
 
 # ---------------------------------------------------------------- clashes
@@ -223,7 +233,8 @@ def test_clash_resolved_by_a_resolver_is_accepted_after_the_checks(box):
         git(w, "add", "-A")
         git(w, "commit", "-q", "--no-edit", "-m", env["WAM_RELEASE_MESSAGE"])
     r = box.run("update", resolver=resolver)
-    assert r["state"] == "ok", r
+    assert r["state"] == "staged", r
+    assert box.run("go")["state"] == "ok"
     assert "web/app.js" in seen["env"]["WAM_RELEASE_FILES"] and "Owner's release" in seen["prompt"]
     head = git(box.src, "rev-parse", "HEAD")
     assert subprocess.run(["git", "-C", str(box.src), "merge-base", "--is-ancestor", up, head]).returncode == 0
@@ -309,7 +320,7 @@ def test_resolver_command_runs_in_the_worktree(box):
     script.chmod(0o755)
     cfg = json.loads((box.home / "my-release.json").read_text())
     (box.home / "my-release.json").write_text(json.dumps({**cfg, "resolver": str(script)}))
-    assert box.run("update")["state"] == "ok"
+    assert box.run("update")["state"] == "staged"
 
 
 # ---------------------------------------------------------------- tests, builds, rollback
@@ -321,6 +332,7 @@ def test_failing_tests_keep_the_running_build(box):
     built = json.loads((box.home / "release/built.json").read_text())
     ov = box.override.read_text()
     git(box.src, "rm", "-q", "tests/ok"); git(box.src, "commit", "-q", "-m", "Owner: oops")
+    _owner_change(box, "web/broken.js", "broken", "Owner tests fail")
     r = box.run("rebuild")
     assert r["state"] == "failed" and r["status"].startswith("FAIL tests on")
     assert box.override.read_text() == ov and json.loads((box.home / "release/built.json").read_text()) == built
@@ -449,7 +461,7 @@ def test_release_contract_fields(tmp_path, monkeypatch):
     _release_box(h)
     (h / "updates.json").write_text(json.dumps({"mode": "ask", "channel": "latest"}))
     st = updates.status(h)
-    assert st["release"] == {"name": "Owner's release", "base": "2ebbb689", "build": "26b1422a", "behind": 3,
+    assert {k: v for k, v in st["release"].items() if k not in ("changes", "staging", "held", "resolver_merges")} == {"name": "Owner's release", "base": "2ebbb689", "build": "26b1422a", "behind": 3,
                              "new": [{"sha": "abc12345", "title": "Newest on main"},
                                      {"sha": "def67890", "title": "Older on main"}],
                              "building": False, "failed": None, "checked_at": "2026-10-24T05:00:00Z"}

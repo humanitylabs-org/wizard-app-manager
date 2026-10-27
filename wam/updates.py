@@ -329,10 +329,11 @@ def installing(home: Path | None = None) -> bool:
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
     """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
-    from . import hermes_update, release
+    from . import hermes_update, release, release_policy
     run = install_state(home)
     if release.enabled(home):      # the owner's own release: "an update" is the channel's newest shell under their changes
-        return {**_release_status(home, run), "hermes": hermes_update.status(home, base)}
+        return {**_release_status(home, run), "hermes": hermes_update.status(home, base),
+            "developer_mode": release_policy.developer(home)}
     chan = channel(home)
     have, want = installed(home), latest(base, fresh=fresh, chan=chan)
     stable = want if chan == "stable" else latest(base, chan="stable")
@@ -344,7 +345,8 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "installing": run == "running",
             # the last update was cut short (a reboot or a killed runner): the Update button / nightly check retries
             "interrupted": run == "interrupted" and newer,
-            "hermes": hermes_update.status(home, base)}
+            "hermes": hermes_update.status(home, base),
+            "developer_mode": release_policy.developer(home)}
 
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
@@ -402,6 +404,15 @@ def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, s
 def set_channel(new: str, home: Path | None = None) -> dict:
     """Save the owner's channel: stable (tested releases, the default) or latest (every release, for testers).
     Leaves the mode alone; Automatic keeps installing stable releases only."""
+    from . import release, release_policy
+    cfg = release.config(home)
+    if cfg:
+        c = release.ctx(home)
+        release_policy.require(c)
+        if new not in release.CHANNEL_LABEL:
+            raise SystemExit("release base must be main, latest or stable")
+        release._write_json(release.wizard_home(home) / release.CONFIG, {**cfg, "channel": new})
+        return {"channel": new}
     if new not in CHANNELS:
         raise SystemExit(f"updates channel must be one of {', '.join(CHANNELS)}")
     _save(home, channel=new)
@@ -509,10 +520,11 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
 # owner's own changes (`wam release rebuild`) always build, whatever the mode. Stock boxes never reach this code.
 
 def _release_status(home: Path | None, run: str | None) -> dict:
-    from . import release
+    from . import release, release_policy
     rel = release.release(home)
     latest_main, checked = rel.pop("_latest"), rel.pop("_checked")
-    return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": channel(home),
+    return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": release.config(home).get("channel", "latest"),
+            "developer_mode": release_policy.developer(home),
             "installed": rel["build"], "latest": latest_main, "stable": None,
             "update_available": rel["behind"] > 0 and not rel["building"], "unpinned": False, "checked": checked,
             "installing": rel["building"] or run == "running", "interrupted": False, "release": rel}

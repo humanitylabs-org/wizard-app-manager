@@ -1379,12 +1379,15 @@ class StoreHandler(BaseHTTPRequestHandler):
                 raise ValueError("expected an object")
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
+        if set(body) == {"developer_mode"} and type(body["developer_mode"]) is bool:
+            from . import release_policy
+            return self._json(200, {**release_policy.set_developer(body["developer_mode"]), **updates.status()})
         if body.get("action") == "apply" and set(body) == {"action"}:
             res = updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
-        if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
+        if set(body) == {"channel"} and body["channel"] in (*updates.CHANNELS, "main"):
             return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
                                          '{"action": "apply"}'})

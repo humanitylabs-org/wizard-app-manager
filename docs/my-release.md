@@ -1,35 +1,58 @@
 # `wam release`: an owner's own release (wizard-os#186)
 
-An owner who wants shell changes that main does not have (or does not have yet) keeps them as commits on a branch
+A **developer owner** who wants shell changes that main does not have (or does not have yet) keeps them as commits on a branch
 of a local wizard-ux checkout. `wam release` keeps that branch on top of the box's channel and serves it as the
-box's shell. Stock boxes are unaffected until the owner runs `wam release init` **and** the first build succeeds.
+box's shell. Turn on **Settings → About & updates → Developer mode** first. It defaults off; a release file alone
+never exposes My release, Home notices or an owner layer. Turning it off leaves the last working image in place
+but hides developer surfaces and pauses release automation. Stock owners keep their existing update behaviour.
+WAM itself is never built this way; this first implementation builds wizard-ux only.
 
 ```sh
-wam release init --name "Ana's release"          # --channel latest (default) | stable
-# commit your changes on the branch (default release/mine) in ~/.wizard-os/release/src, then:
+wam release init --name "Ana's release" --channel main  # main | latest (default) | stable
+# Push the adopted branch to origin. Register each agent change by its OPEN source PR:
+wam release item proposed --pr https://github.com/your-org/wizard-ux/pull/123
+# Only the owner, at an interactive terminal, can confirm mine (maximum five):
+wam release item mine --sha FULL_SHA --title "My change"
 wam release rebuild                               # build your branch on the base it already has
 wam release update                                # merge the channel's newest shell under your changes, build, switch
 wam release check                                 # just record what is new upstream
 wam release status
+wam release go --hold "A feature to keep waiting"     # exact title, full SHA or PR URL; omit to accept the batch
 wam release off                                   # remove the timer, put the channel's shell image back (branch kept)
 ```
 
 `init` options: `--repo PATH` adopts an existing checkout instead of cloning; `--source URL` clones another fork;
 `--dir` moves the work dir (default `~/.wizard-os/release/`, or `$WAM_RELEASE_DIR`); `--push REMOTE` pushes the
-branch after each good build (off by default: owners may have no remote); `--resolver` picks the clash resolver;
+branch to an additional remote after each good build. Origin is always required: input HEAD must already be pushed; `--resolver` picks the clash resolver;
 `--test-cmd` the tests (default `node --test tests/*.test.mjs`); `--no-timer` skips the units.
 
 ## The channel
 
-- **Latest**: the shell source's `main`.
+- **Main**: the shell source's `main` (the developer-owner base).
+- **Latest**: the existing latest source track (`main`).
 - **Stable**: the wizard-ux commit the current stable release pins (`releases/<stable>.json` → `components.wizard-ux`).
 
 ## Timer and Update button
 
-`init` installs user units: `wam-release.timer` (hourly) runs `wam release auto`, which follows the owner's single
-updates choice (`~/.wizard-os/updates.json` `mode`): **Automatic** → `update`, **Ask me** → `check` only.
-`wam-release-update.service` is what Settings → Update starts. The owner's own commits (`rebuild`) always build,
-whatever the mode.
+`init` installs user units: `wam-release.timer` (hourly, persistent) runs `wam release auto`. Merged PRs labelled
+`fix` apply on the next successful check (within 72 hours on an online, healthy box), even in Ask me mode.
+`feature`, mixed fix/feature, direct and unlabelled commits wait in one staging image for the owner's go.
+A blocked fix stays on the last build and reports the failure; safety checks are never waived to meet the deadline.
+
+The integration merges upstream once, preserving both ancestries. Explicit policy revert commits hold features
+back, so an independent fix after a feature can land without releasing it. Go reverses those holds. A dependency
+or revert conflict fails closed rather than guessing. `go --hold` permits partial approval, with exact item titles,
+PR links or full SHAs; an unknown/ambiguous hold is an error. A changed upstream or owner HEAD invalidates go.
+Core-flow resolver changes require the exact staged result, never a newly generated resolution at promotion.
+Staging is a tested image, not a public preview or a second live install; review/run it in an isolated environment.
+The Review update action opens a context chat; it does not itself approve or install the batch.
+
+`wam-release-update.service` is what Settings → Update starts. `rebuild` validates all registered owner changes.
+Adopting `--repo PATH --branch EXISTING` never rewrites history. `item proposed --pr URL` records a PR head already
+in the branch; all non-upstream commits must be covered by registered item heads. Proposed items require open PRs.
+An item disappears when GitHub reports its PR merged, including squash merges. Closed, unmerged proposals block
+building until corrected. Mine needs explicit interactive owner confirmation; agents have no `--owner` bypass.
+GitHub/gh authentication or label lookup failure blocks release changes, rather than guessing.
 
 ## What the shell reads
 
@@ -58,11 +81,28 @@ nightly installer run is a no-op on a release box (the release timer does it). E
   uncommitted, no conflict markers remain and every test passes. Otherwise the branch is untouched, the box keeps
   its build, the status says `CONFLICT`, and the owner gets **one** notification per upstream commit through the
   box's Notifications app (whatever provides `notifications` in `apps.json`; nothing is sent when none is installed).
-- Only committed work is tested and built, in a temporary worktree; a dirty checkout refuses.
+- Only committed work already reachable from origin is tested and built, in a temporary worktree; a dirty checkout
+  (including untracked files) refuses. Generated merge/hold results are published to origin candidate refs before building.
+- Images inherit `org.opencontainers.image.revision` and `ai.wizards.source-revision` = the full built HEAD; the
+  served manifest and built record also carry `source_revision`.
+- Resolver merges are marked with Git notes (`wam-release-resolvers`) and listed in status/manifest. Resolutions
+  touching chats, service worker, outbox or boot are staged, never automatically switched live.
 - Tests run before anything is switched; a failing test or image build keeps the running build.
 - The switch pins the shell's image in its Runtipi user-config override (`pull_policy: never`) and recreates it.
   If the shell does not come back serving this build within the wait, the override is restored byte for byte and
   the container recreated. The override from before the first switch is kept for `wam release off`.
 
 Files (work dir): `status` (one line), `pending.json`, `built.json`, `building`, `lock`, `clash-notified`,
-`logs/{tests,resolve,update}.log`, `backups/`. Config: `~/.wizard-os/my-release.json`.
+`logs/{tests,resolve,update}.log`, `backups/`, `items.json`, `holds.json`, `staging.json`, `resolvers.json`,
+`policy-commits.json`. Config: `~/.wizard-os/my-release.json`; developer setting: `~/.wizard-os/developer.json`.
+Status includes `staging`, `held`, `resolver_merges`; `/_updates` includes `developer_mode` and accepts an
+owner-authenticated POST `{"developer_mode": true|false}` using the existing Store origin/owner checks.
+
+## Acceptance
+
+Unit regressions: `python -m pytest tests/test_release.py tests/test_release_policy.py`.
+On the Linux test worker, `python tools/qa_release.py --ux CHECKOUT --out EVIDENCE` creates a throwaway clone of
+wizard-ux, simulates PR metadata, builds real images and serves an isolated real container. It registers one
+proposed and one owner-confirmed mine item on Main, verifies a fix after a feature lands while that feature waits,
+checks image/container source labels, promotes on go, and proves a conflict preserves the exact last container.
+Nothing initialises or installs on the owner's box. Review both stacked PRs and the worker evidence first.
