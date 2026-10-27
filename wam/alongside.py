@@ -323,11 +323,12 @@ def enable(wizard_home: Path, home: Path, shell_port: int | None = None, share_h
                                          if share_sessions is None else share_sessions)},
     }
     # The owner behind Tailscale Serve (optional here: without it only direct loopback callers are the owner).
+    # Always this run's identity, never the previous pin: after `tailscale logout` and a move to another tailnet
+    # the old owner must not stay pinned. No identity now = no pin (the Service then keeps its unconfigured rule).
     ident = owner_identity()
     for k in ("logins", "hosts"):
-        v = ident[k] or (prev.get("shell") or {}).get(f"owner_{k}")
-        if v:
-            st["shell"][f"owner_{k}"] = v
+        if ident[k]:
+            st["shell"][f"owner_{k}"] = ident[k]
     # The Agent Service gets its own fixed loopback port; the shell reaches it there (both on the host network).
     # `active` says which app answers the agent's `wizard` gateway: the Agent Service after the split, else the shell.
     st["service"] = {"port": service_port, "active": bool((prev.get("service") or {}).get("active"))}
