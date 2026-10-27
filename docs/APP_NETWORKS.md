@@ -35,6 +35,11 @@ Anything else has no shared network: the name doesn't resolve and the address is
 - **Fresh boxes:** the shell, Agent Service and agent run in containers. They join every app's `wizard-gw-<id>`, so
   the gateway keeps its internal addresses. Apps still don't share a network with each other.
 
+A recipe that attaches itself to a reserved `wizard-link-*`/`wizard-gw-*`/`wizard-core` network is refused the same way
+and never isolated. If isolation is on and an app's networks can't be prepared (for example the address pool is full),
+`wam install` stops before the first start rather than start it on the shared network. `wam app update` writes the
+override for the incoming recipe before Runtipi applies it, and `wam grants grant|revoke` reconciles at once.
+
 Apps whose recipe uses `network_mode: host` get a refusal from `wam install` unless the owner passes
 `--allow-host-access`, which prints a loud warning. The same applies to `privileged: true` and to a mounted
 Docker/containerd/podman socket. Apps installed that way, and apps with hand-written networks in their user-config

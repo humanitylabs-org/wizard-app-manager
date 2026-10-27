@@ -150,7 +150,7 @@ def test_live_migration_keeps_the_app_bridge_as_default_route(tmp_path, monkeypa
     live = live_from(p0, on_shared={"solo"})
     live["networks"] = {}
     fake = FakeDocker(live)
-    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan([app("solo")], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan([app("solo")], [], set()), "wizardapps"))
     monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
     monkeypatch.setattr(net, "_run", fake.run)
     monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
@@ -414,7 +414,7 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
         restarted.append(app_id)
         return {"status": "running"}
 
-    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan(carlos(), [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(carlos(), [], set()), "wizardapps"))
     monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
     monkeypatch.setattr(net, "_run", fake.run)
     monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
@@ -446,15 +446,15 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
     # a new declared connection on a running app is connected live, without a restart
     apps2 = carlos()
     next(a for a in apps2 if a["id"] == "calendly-connector")["uses"].append("resend-connector")
-    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan(apps2, [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(apps2, [], set()), "wizardapps"))
     res3 = net.reconcile(c, restart_fn=restart)
     assert not restarted and any("wizard-link-calendly-connector--resend-connector" in x for x in res3["connected"])
     # and dropped again: disconnected and removed
-    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan(carlos(), [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(carlos(), [], set()), "wizardapps"))
     res3b = net.reconcile(c, restart_fn=restart)
     assert "wizard-link-calendly-connector--resend-connector" in res3b["removed"]
     # rollback: isolation off -> overrides stripped, apps back on the shared network, wam networks removed
-    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan(carlos(), [], set(), on=False), "wizardapps"))
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(carlos(), [], set(), on=False), "wizardapps"))
     res4 = net.reconcile(c, restart_fn=restart)
     assert not res4["errors"], res4["errors"]
     assert not [n for n in fake.live["networks"] if n.startswith("wizard-")]
@@ -499,7 +499,12 @@ def gate_env(tmp_path, monkeypatch, compose):
     monkeypatch.setattr(cli, "trusted_origin_env", lambda *a, **k: {})
     monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {"apps": [{"id": "x"}]})
     monkeypatch.setattr(cli, "host_dashboard_consumers", lambda c, ids: {})
-    monkeypatch.setattr(cli, "network_step", lambda c, rt=None, extra=(), restart=True: steps.append((set(extra), restart)) or {})
+    def step(c, rt=None, extra=(), restart=True, fresh=()):
+        steps.append((set(extra), restart))
+        return step_results.pop(0) if step_results else {}
+    step_results = []
+    monkeypatch.setattr(cli, "network_step", step)
+    gate_env.results = step_results
     return cli, installs, steps
 
 
@@ -562,3 +567,41 @@ def test_network_off_dry_run_saves_nothing(tmp_path, monkeypatch):
     assert cli.main(["network", "off", "--dry-run"]) == 0
     assert seen["on"] is False and seen["apply"] is False
     assert net.enabled(tmp_path) and not (tmp_path / "app-manager.json").exists()
+
+
+def test_install_fails_closed_when_its_networks_cannot_be_prepared(tmp_path, monkeypatch):
+    import pytest
+    cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n")
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
+    gate_env.results.append({"errors": ["no free /27 left in 10.255.0.0/16"]})
+    with pytest.raises(SystemExit, match="would start on the shared network"):
+        cli.install(cli.Config(), "x")
+    assert installs == [] and steps == [({"x"}, False), (set(), True)]
+
+
+def test_recipes_attached_to_reserved_wizard_networks_are_refused_and_never_isolated(tmp_path):
+    doc = {"services": {"x": {"image": "a", "networks": ["sneak"]}},
+           "networks": {"sneak": {"external": True, "name": "wizard-link-carlos-crm--twenty-crm"}}}
+    assert any("reserved Wizard network" in r for r in net.host_access(doc))
+    root = tmp_path / "runtipi"
+    d = root / "apps" / "wizardapps" / "x"
+    d.mkdir(parents=True)
+    (d / "docker-compose.yml").write_text(yaml.safe_dump(doc))
+    a = net.read_app(root, "wizardapps", "x")
+    assert a["custom"] and "reserved" in a["custom"]
+    assert net.plan([a], [], set())["apps"][0]["state"] == "custom"
+
+
+def test_update_plans_the_override_from_the_incoming_recipe(tmp_path):
+    root = tmp_path / "runtipi"
+    inst = root / "apps" / "wizardapps" / "x"
+    new = root / "repos" / "wizardapps" / "apps" / "x"
+    inst.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (inst / "docker-compose.yml").write_text("services:\n  old:\n    image: a\n    x-runtipi: {is_main: true}\n")
+    (new / "docker-compose.yml").write_text("services:\n  renamed:\n    image: a\n    x-runtipi: {is_main: true}\n")
+    assert set(net.read_app(root, "wizardapps", "x")["services"]) == {"old"}
+    a = net.read_app(root, "wizardapps", "x", fresh=True)
+    assert set(a["services"]) == {"renamed"}
+    p = net.plan([a], [], set())
+    assert set(net.overlay_for(p["apps"][0])["services"]) == {"renamed"}

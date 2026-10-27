@@ -398,6 +398,12 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     # The app's networks exist and its override is written before its first start, so it never joins the shared
     # network; the apps it connects to join their new link live.
     net_pre = network_step(c, rt, extra={app_id}, restart=False)
+    from . import network as _network
+    if _network.enabled(c.home) and (net_pre or {}).get("errors") and not (net_pre or {}).get("unavailable"):
+        network_step(c, rt)   # undo what was planned for it
+        raise SystemExit(f"{app_id} not installed: its isolated networks could not be prepared, so it would start on the "
+                         f"shared network ({'; '.join(net_pre['errors'])[:300]}). Fix that and retry "
+                         f"(`wam network reconcile`), or turn isolation off with `wam network off`")
     try:
         rt.install(urn, form)
     except BaseException:
@@ -456,12 +462,12 @@ def host_access_risks(c: Config, app_id: str) -> list[str]:
     return []
 
 
-def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True) -> dict | None:
+def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True, fresh=()) -> dict | None:
     """Reconcile the app networks after a lifecycle change. Never fails the change itself: a problem is reported
     (and `wam network reconcile` / `wam doctor` repeat it)."""
     from . import network
     try:
-        return network.reconcile(c, rt, extra=extra, restart=restart,
+        return network.reconcile(c, rt, extra=extra, restart=restart, fresh=fresh,
                                  restart_fn=lambda a: app_lifecycle(c, "restart", a))
     except Exception as e:  # noqa: BLE001
         print(f"note: app networks not reconciled ({str(e)[:200]}); run `wam network reconcile`", file=sys.stderr)
@@ -1633,6 +1639,9 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
+    if store == STORE:
+        # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
+        network_step(c, rt, restart=False, fresh={app})
     rt.update(urn, perform_backup=backup)
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
@@ -1682,6 +1691,10 @@ def main(argv: list[str] | None = None) -> int:
         elif ga.action == "proposed": result = rt.req("GET", f"/apps/{ga.app}:wizardapps/proposed-grants")
         else:
             result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action == "grant"})
+            # a grant is a declared connection: its link appears (or, revoked, disappears) now, live
+            net_res = _net_brief(network_step(c, rt))
+            if isinstance(result, dict) and net_res:
+                result = {**result, "networks": net_res}
             write_registry(c)
         print(json.dumps(result, indent=2))
         return 0

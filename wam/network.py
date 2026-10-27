@@ -167,6 +167,12 @@ def host_access(compose: dict | str) -> list[str]:
         except yaml.YAMLError as e:
             return [f"compose does not parse ({str(e)[:80]})"]
     out = []
+    top = (compose.get("networks") or {}) if isinstance(compose, dict) else {}
+    for key, d in (top.items() if isinstance(top, dict) else []):
+        d = _plain(d) or {}
+        name = str(d.get("name") or "") if isinstance(d, dict) else ""
+        if ours(name) or ours(str(key)):
+            out.append(f"network {key}: attaches to the reserved Wizard network {name or key} (reaches other apps)")
     for name, s in ((compose.get("services") or {}) if isinstance(compose, dict) else {}).items():
         s = _plain(s)
         if not isinstance(s, dict):
@@ -203,19 +209,22 @@ def override_path(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "user-config" / store / app_id / "docker-compose.yml"
 
 
-def read_app(runtipi_root: Path, store: str, app_id: str) -> dict | None:
+def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -> dict | None:
     """One installed (or about-to-be-installed) Wizard app as the planner needs it. Prefers the compose Runtipi
     generated (what actually runs), else the recipe from the installed or store copy (before the first install)."""
     root = Path(runtipi_root)
     installed, stored = root / "apps" / store / app_id, root / "repos" / store / "apps" / app_id
     wm = next((d / "wizard.md" for d in (installed, stored) if (d / "wizard.md").is_file()), None)
     gen = installed / "docker-compose.generated.yml"
-    recipe = next((d / "docker-compose.yml" for d in (installed, stored) if (d / "docker-compose.yml").is_file()), None)
+    order = (stored, installed) if fresh else (installed, stored)   # fresh: the recipe an update is about to apply
+    recipe = next((d / "docker-compose.yml" for d in order if (d / "docker-compose.yml").is_file()), None)
+    if fresh:
+        wm = next((d / "wizard.md" for d in order if (d / "wizard.md").is_file()), None)
     if not recipe:
         return None
     try:
         rdoc = load_yaml(recipe.read_text()) or {}
-        gdoc = load_yaml(gen.read_text()) if gen.is_file() else None
+        gdoc = load_yaml(gen.read_text()) if gen.is_file() and not fresh else None
     except (OSError, yaml.YAMLError) as e:
         return {"id": app_id, "custom": f"compose does not parse ({str(e)[:80]})", "services": {}, "uses": []}
     w = _front(wm.read_text()) if wm else {}
@@ -256,6 +265,10 @@ def read_app(runtipi_root: Path, store: str, app_id: str) -> dict | None:
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
            "host_access": host_access(rdoc)}
+    taken = sorted({n for s in services.values() for n in s["docker_networks"] if ours(n)})
+    if taken:   # a recipe must never attach itself to a link or gateway network: refused at install, never isolated
+        out["custom"] = f"its compose attaches to reserved Wizard networks ({', '.join(taken)})"
+        out["host_access"].append(f"attaches to reserved Wizard networks: {', '.join(taken)}")
     ov = override_path(root, store, app_id)
     if ov.is_file():
         text = ov.read_text()
@@ -279,10 +292,10 @@ def read_app(runtipi_root: Path, store: str, app_id: str) -> dict | None:
     return out
 
 
-def read_apps(runtipi_root: Path, store: str, ids, extra=()) -> list[dict]:
+def read_apps(runtipi_root: Path, store: str, ids, extra=(), fresh=()) -> list[dict]:
     out = []
     for app_id in sorted(set(ids) | set(extra)):
-        if ID.fullmatch(app_id) and (a := read_app(runtipi_root, store, app_id)):
+        if ID.fullmatch(app_id) and (a := read_app(runtipi_root, store, app_id, fresh=app_id in fresh)):
             out.append(a)
     return out
 
@@ -634,9 +647,9 @@ def _context(c, rt=None, extra=()):
     return rt, ids | set(extra), grants, ext, STORE
 
 
-def build(c, rt=None, extra=(), on: bool | None = None) -> tuple[dict, str]:
+def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
     rt, ids, grants, ext, store = _context(c, rt, extra)
-    apps = read_apps(c.runtipi_root, store, ids)
+    apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
     from . import slots as _slots
     try:
         chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()
@@ -647,13 +660,17 @@ def build(c, rt=None, extra=(), on: bool | None = None) -> tuple[dict, str]:
     return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi), store
 
 
-def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None) -> dict:
+def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None,
+              fresh=()) -> dict:
     """Make Docker and the overrides match the declarations. Idempotent; safe to run any time.
     apply=False: report only. restart=False: never restart an app (live connect/disconnect only; apps still on
     the shared network are listed under pending_restart). `extra`: app ids about to be installed (their store
     recipe is planned so they come up isolated on their first start)."""
-    p, store = build(c, rt, extra, on=on) if on is not None else build(c, rt, extra)
-    docker = docker_cmd()
+    p, store = build(c, rt, extra, on=on, fresh=fresh) if (on is not None or fresh) else build(c, rt, extra)
+    try:
+        docker = docker_cmd()
+    except (NetworkError, OSError, subprocess.SubprocessError) as e:
+        return {"enabled": p["enabled"], "errors": [f"Docker unavailable: {str(e)[:160]}"], "unavailable": True}
     live = observe(docker, store)
     out = {"enabled": p["enabled"], "gateway": p["gateway"], "created": [], "removed": [], "overrides": [],
            "connected": [], "disconnected": [], "restarted": [], "pending_restart": [], "errors": []}
