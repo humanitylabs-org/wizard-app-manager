@@ -780,11 +780,36 @@ def _bridged(container: dict) -> bool:
     return nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
 
 
-def network_matches(planned: dict, live: dict | None) -> bool:
-    """A reserved name is not identity: match the same ownership label and shape as reconciliation."""
-    return bool(live and live.get("internal") == planned["internal"] and
-                (live.get("labels") or {}).get(LABEL) == planned["kind"] and
+def network_owned_by(planned: dict, live: dict | None) -> bool:
+    """Full ownership identity; a generic management-kind label is not authority."""
+    return bool(live and (live.get("labels") or {}).get(LABEL) == planned["kind"] and
                 all((live.get("labels") or {}).get(k) == v for k, v in planned["labels"].items()))
+
+
+def network_matches(planned: dict, live: dict | None) -> bool:
+    """Match identity and shape consistently in reconciliation, drift and reporting."""
+    return live is not None and network_owned_by(planned, live) and live.get("internal") == planned["internal"]
+
+
+def owned_network(name: str, live: dict) -> bool:
+    """An orphan is ours only when its complete labels identify this canonical name."""
+    labels = live.get("labels") or {}
+    kind = labels.get(LABEL)
+    expected = {LABEL: kind}
+    if kind in ("app", "gateway"):
+        owner = labels.get("org.wizard-os.owner")
+        if not isinstance(owner, str) or not ID.fullmatch(owner) or name != (app_net(owner) if kind == "app" else gw_net(owner)):
+            return False
+        expected["org.wizard-os.owner"] = owner
+    elif kind == "link":
+        consumer, provider = labels.get("org.wizard-os.consumer"), labels.get("org.wizard-os.provider")
+        if (not isinstance(consumer, str) or not ID.fullmatch(consumer) or
+                not isinstance(provider, str) or not ID.fullmatch(provider) or name != link_name(consumer, provider)):
+            return False
+        expected.update({"org.wizard-os.consumer": consumer, "org.wizard-os.provider": provider})
+    elif kind != "core" or name != CORE_NET:
+        return False
+    return network_matches({"kind": kind, "internal": kind != "app", "labels": expected}, live)
 
 
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
@@ -933,8 +958,8 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
         have = live["networks"].get(name)
         if network_matches(n, have):
             continue
-        if have:   # same name, wrong shape (or not ours): replace only if it is ours and empty
-            if have["labels"].get(LABEL) and not have["containers"]:
+        if have:   # only our exact ownership identity may replace an empty network with the wrong shape
+            if network_owned_by(n, have) and not have["containers"]:
                 _run(docker, "network", "rm", name, check=False)
             else:
                 out["errors"].append(f"{name}: a different network with this name exists; not touched")
@@ -1046,7 +1071,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
     for name, n in sorted(live["networks"].items()):
-        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"] and name not in rejected:
+        if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             r = _run(docker, "network", "rm", name, check=False)

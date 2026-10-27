@@ -142,7 +142,8 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
 
 @pytest.mark.parametrize("field", ["owner", "consumer", "provider"])
 @pytest.mark.parametrize("missing", [False, True])
-def test_populated_network_ownership_collision_never_attaches_the_planned_app(tmp_path, monkeypatch, field, missing):
+@pytest.mark.parametrize("populated", [False, True])
+def test_network_ownership_collision_never_attaches_or_deletes(tmp_path, monkeypatch, field, missing, populated):
     grant = {"kind": "app", "from": "a", "to": "b", "reason": "uses", "approved": "install"}
     p = net.plan([app("a", uses=["b"]), app("b")], [grant], set(), approved=[grant])
     label = f"org.wizard-os.{field}"
@@ -152,7 +153,7 @@ def test_populated_network_ownership_collision_never_attaches_the_planned_app(tm
         live["networks"][name]["labels"].pop(label)
     else:
         live["networks"][name]["labels"][label] = "another-app"
-    live["networks"][name]["containers"] = ["foreign-container"]
+    live["networks"][name]["containers"] = ["foreign-container"] if populated else []
     fake = FakeDocker(live)
     monkeypatch.setattr(net, "build", lambda *args, **kwargs: (p, "wizardapps"))
     monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
@@ -161,7 +162,30 @@ def test_populated_network_ownership_collision_never_attaches_the_planned_app(tm
     result = net.reconcile(Cfg(tmp_path))
     assert result["errors"] and any(name in e for e in result["errors"])
     assert not [call for call in fake.calls if call[:2] == ("network", "connect") and name in call]
+    assert not [call for call in fake.calls if call[:2] == ("network", "rm") and name in call]
     assert name in fake.live["networks"]
+
+
+@pytest.mark.parametrize("kind", ["app", "link", "gateway"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_cleanup_preserves_foreign_orphans_with_incomplete_or_wrong_identity(tmp_path, monkeypatch, kind, missing):
+    name = net.link_name("gone", "other") if kind == "link" else net.app_net("gone") if kind == "app" else net.gw_net("gone")
+    labels = {net.LABEL: kind, "org.wizard-os.consumer": "gone", "org.wizard-os.provider": "other"} if kind == "link" else {
+        net.LABEL: kind, "org.wizard-os.owner": "gone"}
+    field = "org.wizard-os.consumer" if kind == "link" else "org.wizard-os.owner"
+    if missing:
+        labels.pop(field)
+    else:
+        labels[field] = "another-stack"
+    live = {"networks": {name: {"labels": labels, "internal": kind != "app", "subnets": [], "containers": ["foreign"]}}, "containers": []}
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (net.plan([], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["removed"] == [] and name in fake.live["networks"]
+    assert not [call for call in fake.calls if call[:2] in (("network", "disconnect"), ("network", "rm"))]
 
 
 @pytest.mark.parametrize("rows", [None, object(), {"info": {}}, [None, {"info": None}, {"info": "x", "app": {"exposed": True}}]])
@@ -504,7 +528,7 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
     for cont in live["containers"]:
         cont["ports"] = [("127.0.0.1", 18000)] if cont["service"] == "stripe-connector" else []
     live["networks"] = {"runtipi_tipi_main_network": {"labels": {}, "internal": False, "subnets": ["172.18.0.0/16"], "containers": []},
-                        "wizard-link-old--gone": {"labels": {net.LABEL: "link"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
+                        "wizard-link-old--gone": {"labels": {net.LABEL: "link", "org.wizard-os.consumer": "old", "org.wizard-os.provider": "gone"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
     fake = FakeDocker(live)
     restarted = []
     # stripe's published port stops answering after it leaves the shared network: only it is restarted
