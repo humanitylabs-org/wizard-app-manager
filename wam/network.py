@@ -196,7 +196,13 @@ def pool(home: Path) -> ipaddress.IPv4Network:
 # ---------------------------------------------------------------- names
 
 def link_name(consumer: str, provider: str) -> str:
-    return f"{LINK_PREFIX}{consumer}--{provider}"
+    """One name per (consumer, provider), never shared by two pairs. App ids may contain `--` themselves
+    (`alpha--beta`→`charlie` vs `alpha`→`beta--charlie`), so the readable form is used only when it can be split one
+    way; otherwise the name is a hash of the pair (which never contains `--`, so it can't equal a readable name)."""
+    if "--" not in consumer and "--" not in provider and not consumer.endswith("-") and not provider.startswith("-"):
+        return f"{LINK_PREFIX}{consumer}--{provider}"
+    import hashlib
+    return f"{LINK_PREFIX}h-{hashlib.sha256(f'{consumer}\0{provider}'.encode()).hexdigest()[:24]}"
 
 
 def app_net(app_id: str) -> str:
@@ -427,8 +433,21 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
     for a in apps:
         for s in a.get("provides") or []:
             providers.setdefault(s, []).append(a["id"])
-    core = sorted({p for s in CORE_SLOTS for p in providers.get(s, [])} | ({LEGACY_BUNDLE} & set(by_id))
-                  | ({"hermes-agent"} & set(by_id)))
+    slot_choice, multi_slots = slot_choice or {}, set(multi_slots or ())
+
+    def active(slot: str) -> list[str]:
+        """The provider(s) the owner has active for a spot: every provider of a multi spot, else the saved choice."""
+        cands = providers.get(slot) or []
+        if len(cands) <= 1 or slot in multi_slots:
+            return list(cands)
+        chosen = slot_choice.get(slot)
+        return [chosen if chosen in cands else sorted(cands)[0]]
+    # The gateway components are the ACTIVE shell / Agent Service / agent only: an installed but inactive replacement
+    # provider is an ordinary app and never joins every app's gateway network.
+    core = {p for s in CORE_SLOTS for p in active(s)} | ({LEGACY_BUNDLE} & set(by_id))
+    if "hermes-agent" in by_id and not (set(providers.get("agent") or []) - {"hermes-agent"} and "hermes-agent" not in core):
+        core.add("hermes-agent")   # the agent app, when no other agent provider is the active one
+    core = sorted(core)
     # A core component published through Runtipi's reverse proxy (state `exposed`) still runs in a bridged container:
     # it keeps the shared network for Traefik and also joins wizard-core and every app's wizard-gw-<id>.
     core_bridge = [c for c in core if by_id[c]["state"] in ("isolated", "exposed")]
@@ -436,8 +455,6 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
                "detail": ("the shell, Agent Service and agent run in containers: each app gets a wizard-gw-<id> network "
                           "with them" if core_bridge else
                           "the gateway runs on the server's network and calls apps on their published 127.0.0.1 port")}
-
-    slot_choice, multi_slots = slot_choice or {}, set(multi_slots or ())
 
     def resolve(to: str) -> tuple[list[str], str]:
         name = to.removeprefix("slot:")
@@ -827,7 +844,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
         return out
     # 1. networks the plan needs (with labels; subnets from our pool, never overlapping any existing network)
     used = [s for n in live["networks"].values() for s in n["subnets"]]
-    the_pool, taken = pool(c.home), set()
+    the_pool, taken, rejected = pool(c.home), set(), set()
     for name, n in sorted(p["networks"].items()):
         have = live["networks"].get(name)
         if have and have["internal"] == n["internal"] and have["labels"].get(LABEL) == n["kind"]:
@@ -837,6 +854,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
                 _run(docker, "network", "rm", name, check=False)
             else:
                 out["errors"].append(f"{name}: a different network with this name exists; not touched")
+                rejected.add(name)
                 continue
         sub = _free_subnet(used, the_pool, taken)
         taken.add(sub)
@@ -847,6 +865,16 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
             args += ["--label", f"{k}={v}"]
         _run(docker, *args, name)
         out["created"].append(name)
+    # A planned name taken by a network we didn't make (or can't replace) is never joined: no override entry, no live
+    # connect, and its members' declared connection stays down until the name is free (the error says which).
+    for name in rejected:
+        p["networks"].pop(name, None)
+        for a in p["apps"]:
+            for want in (a.get("want") or {}).values():
+                want.pop(name, None)
+        for e in p["edges"]:
+            if e.get("network") == name:
+                e["state"] = "collision"
     # 2. overrides: managed block for isolated apps, removed from every other app (and from uninstalled apps)
     planned = {a["id"]: a for a in p["apps"]}
     base = Path(c.runtipi_root) / "user-config" / store
@@ -931,7 +959,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
     for name, n in sorted(live["networks"].items()):
-        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"]:
+        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"] and name not in rejected:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             r = _run(docker, "network", "rm", name, check=False)
@@ -1096,6 +1124,12 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                           and any(m["app"] == a["id"] for m in n["members"])],
             "reached_by": [{"from": e["from"], "reason": e["reason"], "state": e["state"], "network": e.get("network")}
                            for e in in_edges] +
+                          # fresh boxes: the shell, Agent Service and agent share this app's wizard-gw-<id> and can open
+                          # connections to it (the gateway path)
+                          [{"from": core, "reason": "gateway network", "state": "core", "network": gw_net(a["id"])}
+                           for core in p["gateway"]["core"] if gw_net(a["id"]) in p["networks"] and core != a["id"]
+                           and any(m["app"] == core for m in p["networks"][gw_net(a["id"])]["members"])
+                           and not any(e["from"] == core for e in in_edges)] +
                           ([{"from": n["name"].removeprefix(GW_PREFIX), "reason": "gateway network", "state": "gateway",
                              "network": n["name"]}
                             for n in p["networks"].values() if n["kind"] == "gateway" and a["id"] in p["gateway"]["core"]
@@ -1125,14 +1159,15 @@ def describe(rep: dict) -> str:
             "peer": " (two-way: it uses this app over their link)",
             "core": " (Wizard core, over this app's gateway network)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)",
-            "not-approved": " (declared, but its grant is revoked or not approved yet: no network)"}
+            "not-approved": " (declared, but its grant is revoked or not approved yet: no network)",
+            "collision": " (its network name is taken by another network: not connected, see `wam network reconcile`)"}
     for a in rep["apps"]:
         reach = [f"{e['to']}{word.get(e['state'], '')}" for e in a["can_reach"]]
         lines.append(f"{a['id']}  [{a['state']}{'' if a['running'] else ', stopped'}]")
         if a["why"]:
             lines.append(f"  note: {a['why']}")
         lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
-        by = [b["from"] for b in a["reached_by"] if b["state"] in ("link", "gateway")]
+        by = [b["from"] for b in a["reached_by"] if b["state"] in ("link", "gateway", "core")]
         lines.append(f"  reached by: {', '.join(by) or 'no other app'}; agent gateway {a['gateway']}")
         lines.append(f"  internet: {'yes' if a['internet'] else 'no' if a['internet'] is False else 'unknown'}")
         for h in a["host_access"]:

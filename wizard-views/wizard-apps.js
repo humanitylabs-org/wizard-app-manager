@@ -502,6 +502,7 @@ const REACH = {
   host: ' · from the server’s network, on its 127.0.0.1 port',
   'not-installed': ' · not installed',
   'not-approved': ' · grant revoked or not approved: no network',
+  collision: ' · its network name is taken: not connected',
   unmanaged: ' · not isolated',
   shared: ' · shared network',
 };
@@ -538,7 +539,7 @@ export async function renderConnections(el, ctx = {}) {
     const rows = d.apps
       .map((a) => {
         const reach = a.can_reach || [];
-        const by = (a.reached_by || []).filter((e) => e.state === 'link' || e.state === 'gateway').map((e) => e.from);
+        const by = (a.reached_by || []).filter((e) => e.state === 'link' || e.state === 'gateway' || e.state === 'core').map((e) => e.from);
         const drift = (a.drift || []).length;
         const warn = drift || (a.host_access || []).length || a.state === 'exposed';
         const own = reach.filter((e) => e.declared);

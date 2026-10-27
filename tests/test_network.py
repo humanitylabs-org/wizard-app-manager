@@ -864,3 +864,72 @@ def test_a_revoked_grant_takes_the_link_away_and_automatic_grants_follow_their_d
     assert ("c", "twenty-crm") in reach(net.plan(slot, g, set(), approved=g))
     # an App Manager without grants (approved unknown): declarations alone, as before
     assert ("stripe-connector", "twenty-crm") in reach(net.plan(apps, [], set()))
+
+
+def test_only_the_active_core_providers_join_the_gateway_networks():
+    """Codex PRRT_kwDOVCUOXM6wqhWD: an installed but inactive replacement shell / Agent Service / agent is an ordinary
+    app; it never joins every app's wizard-gw-<id>."""
+    apps = [app("wizard-ux", provides=["shell"]), app("other-shell", provides=["shell"]),
+            app("wizard-agent-service", provides=["agent-service"]), app("hermes-agent", provides=["agent"]),
+            app("transcriber")]
+    p = net.plan(apps, [], set(), slot_choice={"shell": "wizard-ux"})
+    assert p["gateway"]["core"] == ["hermes-agent", "wizard-agent-service", "wizard-ux"]
+    gw = {m["app"] for m in p["networks"][net.gw_net("transcriber")]["members"]}
+    assert "other-shell" not in gw and "wizard-ux" in gw
+    assert ("other-shell", "transcriber") not in reach(p)
+    p2 = net.plan(apps, [], set(), slot_choice={"shell": "other-shell"})
+    assert "other-shell" in p2["gateway"]["core"] and "wizard-ux" not in p2["gateway"]["core"]
+    # another agent provider is the active one: hermes-agent is then an ordinary app
+    p3 = net.plan(apps + [app("my-agent", provides=["agent"])], [], set(), slot_choice={"agent": "my-agent"})
+    assert "my-agent" in p3["gateway"]["core"] and "hermes-agent" not in p3["gateway"]["core"]
+
+
+def test_link_names_are_unique_per_pair_even_with_double_hyphen_ids():
+    """Codex PRRT_kwDOVCUOXM6wqhWN: `alpha--beta`->`charlie` and `alpha`->`beta--charlie` must not share a link."""
+    a, b = net.link_name("alpha--beta", "charlie"), net.link_name("alpha", "beta--charlie")
+    assert a != b and net.ours(a) and net.ours(b) and "--" not in a.removeprefix(net.LINK_PREFIX)
+    assert net.link_name("carlos-crm", "twenty-crm") == "wizard-link-carlos-crm--twenty-crm"   # unchanged
+    assert net.link_name("a-", "b") != net.link_name("a", "-b")
+    p = net.plan([app("alpha--beta", uses=["charlie"]), app("charlie"), app("alpha", uses=["beta--charlie"]),
+                  app("beta--charlie")], [], set())
+    assert ("alpha--beta", "beta--charlie") not in reach(p) and ("alpha", "charlie") not in reach(p)
+    assert ("alpha--beta", "charlie") in reach(p) and ("alpha", "beta--charlie") in reach(p)
+
+
+def test_a_planned_name_taken_by_a_foreign_network_is_never_joined(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wqhWV: the collision is reported and nothing is connected to the foreign network, no
+    override references it, and a container already on it is taken off."""
+    c = Cfg(tmp_path)
+    apps = lambda: [app("twenty-crm"), app("stripe-connector", uses=["twenty-crm"])]
+    p0 = net.plan(apps(), [], set())
+    live = live_from(p0, on_shared={"twenty-crm", "stripe-connector"})
+    link = net.link_name("stripe-connector", "twenty-crm")
+    live["networks"] = {"runtipi_tipi_main_network": {"labels": {}, "internal": False, "subnets": ["172.18.0.0/16"], "containers": []},
+                        link: {"labels": {}, "internal": False, "subnets": ["10.9.0.0/24"], "containers": ["intruder"]}}
+    prov = next(x for x in live["containers"] if x["service"] == "twenty-crm")
+    prov["networks"][link] = []
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(apps(), [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
+    monkeypatch.setattr(net, "ports_answer", lambda ports, **k: True)
+    res = net.reconcile(c, restart_fn=lambda a: {"status": "running"})
+    assert any(link in e and "different network" in e for e in res["errors"])
+    assert not any(x[:2] == ("network", "connect") and link in x for x in fake.calls)
+    assert link in fake.live["networks"]                                   # the foreign network is left alone
+    assert link not in next(x for x in fake.live["containers"] if x["service"] == "twenty-crm")["networks"]
+    for app_id in ("twenty-crm", "stripe-connector"):
+        f = net.override_path(c.runtipi_root, "wizardapps", app_id)
+        assert not f.exists() or link not in f.read_text()
+
+
+def test_fresh_report_shows_the_core_reaching_each_app_over_its_gateway_network(monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wqhWg: an isolated app on a fresh box is reached by the shell, Agent Service and agent."""
+    apps = [app("wizard-ux", provides=["shell"]), app("wizard-agent-service", provides=["agent-service"]),
+            app("hermes-agent", provides=["agent"]), app("transcriber")]
+    p = net.plan(apps, [], set())
+    rep = net.report(type("C", (), {"home": Path("/nonexistent")})(), p=p, live={"networks": {}, "containers": []})
+    row = next(a for a in rep["apps"] if a["id"] == "transcriber")
+    assert {b["from"] for b in row["reached_by"] if b["state"] == "core"} == {"wizard-ux", "wizard-agent-service", "hermes-agent"}
+    assert "reached by: hermes-agent, wizard-agent-service, wizard-ux" in net.describe(rep)
