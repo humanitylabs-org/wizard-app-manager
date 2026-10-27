@@ -40,7 +40,7 @@ const data = () => {
   if (state === 'drift') { d.ok = false; d.apps[0].drift = ['Unexpected network: synthetic-extra']; }
   return d;
 };
-const harness = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+const harness = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>html,body{margin:0;height:100%;font:13px system-ui;background:var(--bg);color:var(--ink)}
 .preview{height:28px;box-sizing:border-box;padding:5px 12px;color:var(--ink-2);border-bottom:1px solid var(--line)}
 .win{height:calc(100% - 28px);background:var(--sk-win)}iframe{width:100%;height:100%;border:0;display:block}</style>

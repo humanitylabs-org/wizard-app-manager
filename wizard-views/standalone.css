@@ -91,4 +91,3 @@ body.wux {
 #adminMenu a:hover, #adminMenu a.on { background: var(--wz-accent-soft, #3a3a3a); }
 /* Semantic warning/success/error colours remain legible on a light surface. */
 html[data-color-scheme="light"] .wux { --amber: #946000; --green: #146c43; --red: #b42318; }
-
