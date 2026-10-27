@@ -133,6 +133,7 @@ describe('connection policy: seamless by default, owner in control', () => {
     await store.collectRequests();
     expect((await state()).pending).toEqual([pair('carlos-campaigns', 'resend-connector')]);
     await store.change({ kind: 'app', from: 'carlos-campaigns', to: 'resend-connector' }, false);
+    expect((await state()).denied).toEqual([expect.objectContaining({ reason: 'request', approved: 'owner' })]); // still shown as asked-for
     await request('carlos-campaigns', { connections: ['resend-connector'], again: true });
     await store.collectRequests();
     await store.setSensitive('resend-connector', false);
@@ -166,7 +167,7 @@ describe('connection policy: seamless by default, owner in control', () => {
     await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
     await store.reconcile();
     const [n] = (await state()).notices;
-    await store.markNotices([n?.id]);
+    await store.markNotices([String(n?.id)]);
     expect((await state()).notices[0]?.delivered).toBe(true);
     await expect(store.markNotices(['../x'])).rejects.toThrow();
     await expect(store.setSensitive('not-installed', true)).rejects.toThrow();

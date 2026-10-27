@@ -320,6 +320,9 @@ export class WizardStorage {
         // Explicit owner grants need not be manifest defaults. Revocations are remembered.
         // Approve / Deny of a pending request, Reconnect / Disconnect of a live one: all the owner's decisions, and
         // a Disconnect (a denied row) is sticky: updates and runtime requests never add it again.
+        // Keep where the connection came from (declared, asked for at runtime) so the owner still sees why it exists.
+        const prior = [...pendingOf(file), ...file.grants, ...file.denied].find((g) => sameAppGrant(g, grant));
+        const reason = prior?.reason && ['uses', 'requires', 'request'].includes(prior.reason) ? prior.reason : 'owner';
         file.grants = file.grants.filter((g) => !sameAppGrant(g, grant));
         file.denied = file.denied.filter((g) => !sameAppGrant(g, grant));
         file.pending = pendingOf(file).filter((g) => !sameAppGrant(g, grant));
@@ -327,7 +330,7 @@ export class WizardStorage {
           kind: 'app',
           from: grant.from,
           to: grant.to,
-          reason: 'owner',
+          reason,
           approved: 'owner',
           created_at: Math.floor(Date.now() / 1000),
         });
