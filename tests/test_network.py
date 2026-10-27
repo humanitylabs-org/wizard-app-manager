@@ -133,6 +133,21 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
     assert "matches the declarations" not in net.describe(rep)
 
 
+@pytest.mark.parametrize("published", [False, True])
+def test_watcher_never_trusts_recipe_exposure_labels(monkeypatch, tmp_path, published):
+    class RT:
+        def installed(self):
+            return [{"info": {"id": "x"}, "app": {"exposed": published}}]
+    rt = RT()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    forged = app("x")
+    forged["services"]["x"]["exposed"] = True
+    monkeypatch.setattr(net, "read_apps", lambda *args, **kwargs: [forged])
+    c = type("C", (), {"home": tmp_path, "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == ("exposed" if published else "isolated")
+
+
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
     apps = [app("wizard-ux", uses=["agent-service"], provides=["shell"]),
             app("wizard-agent-service", provides=["agent-service"]), app("hermes-agent", provides=["agent"]),
