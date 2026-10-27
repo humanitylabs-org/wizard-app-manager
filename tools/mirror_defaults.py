@@ -65,16 +65,19 @@ def collect(root, catalog, defaults_path=None, host_only=None):
             commit = rec['install']['commit']
             mirrors.source_ref(rec['repo'], commit)
             pins.add((rec['repo'], commit))
+        elif any(repo == row.get('repo') for repo, sha in pins):
+            pass  # an app the channel releases pin in default_apps; its manifest is still read
         elif any(repo == row.get('repo') for repo, sha in components):
-            # A default that is not an index app (host tooling such as the Troubleshooter) is
-            # pinned by the channel releases' components; copy exactly those commits.
+            # A default that is neither an index app nor a release default app (host tooling
+            # such as the Troubleshooter) is pinned by the channel releases' components; copy
+            # exactly those commits as source only.
             for repo, sha in components:
                 if repo == row['repo']:
                     mirrors.source_ref(repo, sha)
                     pins.add((repo, sha))
                     if host_only is not None:
                         host_only.add((repo, sha))
-        elif not any(repo == row.get('repo') for repo, sha in pins):
+        else:
             if row.get('install') != 'on-demand':
                 raise ValueError(f"no pinned publication for default {row['app']}")
             unpublished.append(row['app'])

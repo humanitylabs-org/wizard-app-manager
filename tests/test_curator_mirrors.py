@@ -156,6 +156,22 @@ def test_collect_copies_release_pinned_host_component_defaults(tmp_path):
     assert unpublished == []
 
 
+def test_unlisted_app_default_pinned_as_a_component_keeps_its_manifest(tmp_path):
+    """wizard-ux is both a release component and a default app: a catalog miss must not make it host-only."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'ux': {'repo': 'org/ux', 'commit': 'd'*40}},
+        'default_apps': {'shell': {'repo': 'org/ux', 'commit': 'd'*40}}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'shell': {'app': 'ux', 'repo': 'org/ux'}}}))
+    host_only = set()
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, [], host_only=host_only)
+    assert pins == [('org/ux', 'd'*40)]
+    assert host_only == set()
+
+
 def test_collect_still_refuses_an_unpinned_default(tmp_path):
     (tmp_path / 'releases').mkdir()
     (tmp_path / 'wam').mkdir()
