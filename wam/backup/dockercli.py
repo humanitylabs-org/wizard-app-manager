@@ -7,6 +7,8 @@ silently select a different daemon. Custom contexts/TLS stay unprivileged.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import shutil
 import subprocess
 import threading
 import time
@@ -43,6 +45,19 @@ def docker(env: dict | None = None) -> list[str]:
             return remember(["docker"])
         except (OSError, subprocess.SubprocessError):
             pass
+
+        # Rootless Docker (the installer's ~/bin/docker + /run/user/<uid>/docker.sock): a systemd unit's PATH and
+        # environment do not carry it, so look for it before trying root's socket.
+        if not env.get("DOCKER_HOST") and not env.get("DOCKER_CONTEXT") and not shutil.which("docker", path=env.get("PATH")):
+            sock = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "docker.sock"
+            binary = Path(env.get("HOME") or Path.home()) / "bin" / "docker"
+            if binary.is_file() and sock.is_socket():
+                argv = [str(binary), "--host", f"unix://{sock}"]
+                try:
+                    run(argv + ["info", "--format", "{{.ID}}"])
+                    return remember(argv)
+                except (OSError, subprocess.SubprocessError):
+                    pass
 
         # A root context or TLS config could point at another machine. Do not
         # escalate remote connections or forward credentials with sudo -E.
