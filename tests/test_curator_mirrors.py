@@ -123,6 +123,49 @@ def test_collect_keeps_channel_and_catalog_exact_pins(tmp_path):
     assert unpublished == ['not-published']
 
 
+def test_collect_skips_slots_a_release_leaves_empty(tmp_path):
+    """Releases from 0.3.60 on carry `"agent-history": null`; custody must not crash on it."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    row = {'repo': 'builder/app', 'commit': 'a'*40}
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({'default_apps': {'slot': row, 'agent-history': None}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'slot': {'app': 'demo', 'repo': 'builder/app'}}}))
+    catalog = [{'repo': 'builder/app', 'id': 'demo', 'install': {'commit': 'a'*40}}]
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, catalog)
+    assert pins == [('builder/app', 'a'*40)]
+    assert unpublished == []
+
+
+def test_collect_copies_release_pinned_host_component_defaults(tmp_path):
+    """The Troubleshooter default is host tooling pinned in release components, not an index app."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'tool': {'repo': 'org/host-tool', 'commit': 'c'*40, 'branch': 'main'}},
+        'default_apps': {}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {
+        'tool': {'app': 'host-tool', 'repo': 'org/host-tool', 'required': False}}}))
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, [])
+    assert pins == [('org/host-tool', 'c'*40)]
+    assert unpublished == []
+
+
+def test_collect_still_refuses_an_unpinned_default(tmp_path):
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'other': {'repo': 'org/other', 'commit': 'c'*40}}, 'default_apps': {}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'tool': {'app': 'host-tool', 'repo': 'org/host-tool'}}}))
+    with pytest.raises(ValueError, match='no pinned publication'):
+        mirror_defaults.collect(tmp_path, [])
+
+
 def test_denied_registry_does_not_mean_missing(monkeypatch):
     calls = []
     def denied(*args, **kwargs):

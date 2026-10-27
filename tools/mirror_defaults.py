@@ -32,14 +32,20 @@ def run(*args, cwd=None, env=None):
 def collect(root, catalog, defaults_path=None):
     """Active immutable releases + the indexed commits of today's recommendations."""
     pins, images, unpublished = set(), set(), []
+    components = set()  # (repo, commit) of channel components, e.g. host-installed Troubleshooter
     for channel in ("stable", "latest"):
         version = (root / "releases" / channel).read_text().strip()
         if not version or '/' in version or '..' in version:
             raise ValueError("invalid channel pointer")
         release = json.loads((root / "releases" / f"{version}.json").read_text())
         for row in release.get("default_apps", {}).values():
+            if row is None:  # a slot the release deliberately leaves empty (e.g. agent-history)
+                continue
             mirrors.source_ref(row["repo"], row["commit"])
             pins.add((row["repo"], row["commit"]))
+        for row in release.get("components", {}).values():
+            if isinstance(row, dict) and row.get("repo") and row.get("commit"):
+                components.add((row["repo"], row["commit"]))
         for row in [*release.get("images", {}).values(), (release.get("hermes") or {}).get("image")]:
             if row:
                 images.add(row['ref'].split('@')[0] + '@' + row['digest'])
@@ -56,6 +62,13 @@ def collect(root, catalog, defaults_path=None):
             commit = rec['install']['commit']
             mirrors.source_ref(rec['repo'], commit)
             pins.add((rec['repo'], commit))
+        elif any(repo == row.get('repo') for repo, sha in components):
+            # A default that is not an index app (host tooling such as the Troubleshooter) is
+            # pinned by the channel releases' components; copy exactly those commits.
+            for repo, sha in components:
+                if repo == row['repo']:
+                    mirrors.source_ref(repo, sha)
+                    pins.add((repo, sha))
         elif not any(repo == row.get('repo') for repo, sha in pins):
             if row.get('install') != 'on-demand':
                 raise ValueError(f"no pinned publication for default {row['app']}")
