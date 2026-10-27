@@ -75,6 +75,29 @@ def guest_cloud_config(public):
             '    content: |\n      {"registry-mirrors": ["https://mirror.gcr.io"]}\n')
 
 
+def guest_install_command(install):
+    """Retry only anonymous-registry throttling, including mirror cache misses."""
+    return '''umask 022
+attempt_log="$(mktemp)"
+trap 'rm -f "$attempt_log"' EXIT
+for attempt in 1 2 3; do
+  set +e
+  (''' + install + ''') 2>&1 | tee "$attempt_log"
+  code=${PIPESTATUS[0]}
+  set -e
+  [ "$code" -ne 0 ] || exit 0
+  # mirror.gcr.io is a cache, not a complete Hub replica. A miss can still
+  # fall through to Hub's anonymous limit. Never retry unrelated failures.
+  if ! grep -Ei '(docker[.]io|registry-1[.]docker[.]io|toomanyrequests).*(429|too many requests|pull rate limit)' "$attempt_log"; then
+    exit "$code"
+  fi
+  [ "$attempt" -lt 3 ] || exit "$code"
+  echo "Anonymous registry throttled; retrying identical install (attempt $((attempt + 1))/3)"
+  sleep "$((attempt * 60))"
+done
+'''
+
+
 def guest_vm(label, ref, image, key):
     vm = root / label
     vm.mkdir()
@@ -121,7 +144,7 @@ def guest_vm(label, ref, image, key):
         url = f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
         install = (f'curl -fsSL {url} | sudo WAM_REF={ref} WIZARD_TAILSCALE_WAIT=1 bash')
         (vm / 'install-command.txt').write_text(install + '\n')
-        guest('install', 'umask 022\n' + install, 3300)
+        guest('install', guest_install_command(install), 3300)
         guest('registry-mirror', '''docker info --format '{{json .RegistryConfig.Mirrors}}' | python3 -c 'import json,sys; mirrors=json.load(sys.stdin); print(mirrors); assert "https://mirror.gcr.io/" in mirrors or "https://mirror.gcr.io" in mirrors'
 ''')
         guest('proxy-diagnostics', '''docker logs --tail 100 runtipi-reverse-proxy 2>&1

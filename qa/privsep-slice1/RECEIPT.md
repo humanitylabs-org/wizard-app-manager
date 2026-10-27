@@ -63,7 +63,17 @@ Evidence directory: `/srv/work/privsep/slice1/20261027T152731Z`.
 - Both clean guests now get the same `mirror.gcr.io` Docker daemon mirror from
   cloud-init **before Docker is installed**; no registry credentials. The runner
   records the configured mirror plus proxy diagnostics, installs the candidate
-  by immutable SHA and retains the existing VM-stop `finally` block.
+  by immutable SHA and retains the existing VM-stop `finally` block. The mirror
+  serves `rabbitmq:4-alpine` from forum (HTTP 200 with OCI-index Accept;
+  `mirror-cache-probe.log`). Since the mirror is a cache rather than a complete
+  replica, both guests also use the same maximum-three-attempt install retry
+  for registry throttling only (60/120-second waits, original final exit code,
+  no retries for permission/API errors). Six command-double cases exercise the
+  retry, permanent throttle, immediate unrelated failure and pipeline exit code.
+- Focused repaired/new regressions: **56 passed**, 19.38 s using
+  `uv run --with pytest --with pyyaml python -m pytest -q
+  tests/test_privsep_slice1_runner.py tests/test_get_sh_apt_locks.py
+  tests/test_update_retry_completion.py tests/test_install_docker.py`.
 
 ## Still required on the admitted forum worker
 
