@@ -86,6 +86,20 @@ describe('connection policy: seamless by default, owner in control', () => {
     expect((await keys('carlos-campaigns')).outgoing['twenty-crm']).toBeTruthy();
   });
 
+  it('a Disconnect by app id is not undone by a request for a slot that app provides', async () => {
+    await install('resend-connector', { name: 'Resend', provides: ['email'] });
+    await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
+    await store.reconcile();
+    await store.change({ kind: 'app', from: 'carlos-campaigns', to: 'resend-connector' }, false);
+    await request('carlos-campaigns', { connections: ['email', 'slot:email'] });
+    await store.collectRequests();
+    await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector', 'slot:email'] });
+    await store.reconcile();
+    const s = await state();
+    expect(s.grants.filter((g) => g.from === 'carlos-campaigns').map((g) => g.to)).toEqual(['twenty-crm']);
+    expect((await keys('carlos-campaigns')).outgoing).not.toHaveProperty('slot:email');
+  });
+
   it('approves a runtime request automatically (the app asks in its own requests folder)', async () => {
     await request('carlos-campaigns', { connections: [{ to: 'resend-connector', why: 'send the campaign' }, 'carlos-campaigns', 'BAD id'] });
     expect(await store.collectRequests()).toBe(true);

@@ -139,9 +139,15 @@ export function applyConnectionPolicy(
     }
   }
   file.pending = keep;
+  // The owner's Disconnect / Deny is about the app it reaches, however it is named: a request by slot can't bring
+  // back a provider the owner disconnected by id (or the other way round).
+  const deniedTo = (from: string) =>
+    new Set(file.denied.filter((d) => appGrant(d) && d.from === from).flatMap((d) => providers(d.to, apps).map((p) => p.manifest.id)));
+  const blocked = (g: Grant) => providers(g.to, apps).some((p) => deniedTo(g.from).has(p.manifest.id));
   const consider = (g: Grant, approved: 'install' | 'request', quiet: boolean) => {
     if (!providers(g.to, apps).some((p) => p.manifest.id !== g.from)) return;
     if ([...file.grants, ...file.denied, ...(file.pending as Grant[])].some((old) => sameAppGrant(old, g))) return;
+    if (blocked(g)) return;
     if (sensitiveTarget(g.to, apps, sensitive)) {
       (file.pending as Grant[]).push({ kind: 'app', from: g.from, to: g.to, reason: g.reason, created_at: now });
       addNotice(file, apps, 'pending', g.from, g.to, now);
