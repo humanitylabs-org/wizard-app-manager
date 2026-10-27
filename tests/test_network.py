@@ -133,11 +133,11 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
     assert "matches the declarations" not in net.describe(rep)
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_watcher_never_trusts_recipe_exposure_labels(monkeypatch, tmp_path, published):
+@pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])
+def test_watcher_never_trusts_recipe_exposure_labels_or_another_stores_same_id(monkeypatch, tmp_path, published_urn):
     class RT:
         def installed(self):
-            return [{"info": {"id": "x"}, "app": {"exposed": published}}]
+            return [{"info": {"id": "x", "urn": published_urn or "x:wizardapps"}, "app": {"exposed": bool(published_urn)}}]
     rt = RT()
     monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
     forged = app("x")
@@ -145,7 +145,7 @@ def test_watcher_never_trusts_recipe_exposure_labels(monkeypatch, tmp_path, publ
     monkeypatch.setattr(net, "read_apps", lambda *args, **kwargs: [forged])
     c = type("C", (), {"home": tmp_path, "runtipi_root": tmp_path})()
     p, _ = net.build(c, on=True)
-    assert p["apps"][0]["state"] == ("exposed" if published else "isolated")
+    assert p["apps"][0]["state"] == ("exposed" if published_urn == "x:wizardapps" else "isolated")
 
 
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):

@@ -833,11 +833,11 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
     # Generated labels may predate the start gate or come from a malicious recipe. Only the App Manager's
     # owner-configured lifecycle state can publish an app; do not let the watcher rejoin it from labels alone.
-    published = {(r.get("info") or {}).get("id") for r in rt.installed()
+    published = {(r.get("info") or {}).get("urn") for r in rt.installed()
                  if (r.get("app") or {}).get("exposed") is True or (r.get("app") or {}).get("exposedLocal") is True}
     for a in apps:
         for service in a["services"].values():
-            service["exposed"] = a["id"] in published and service.get("main", False) and not service.get("network_mode")
+            service["exposed"] = f"{a['id']}:{store}" in published and service.get("main", False) and not service.get("network_mode")
     from . import slots as _slots
     try:
         chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()

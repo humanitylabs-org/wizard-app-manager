@@ -75,7 +75,9 @@ beforeEach(async () => {
     path: generated(urn),
     content: await fs.readFile(generated(urn), 'utf8'),
   }));
-  service = new DockerService(logger, config, files, mock<FilesystemService>(), mock<AppsService>(), repository);
+  const appsService = mock<AppsService>();
+  appsService.getApp.mockResolvedValue({ app: { exposed: false, exposedLocal: false } } as never);
+  service = new DockerService(logger, config, files, mock<FilesystemService>(), appsService, repository);
   running = new Set([claude, agent, connectors]);
   calls = [];
   // No Docker daemon calls: emulate down/up and track real command ordering.
