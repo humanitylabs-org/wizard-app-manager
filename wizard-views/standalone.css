@@ -5,9 +5,7 @@ body {
   height: 100%;
 }
 body.wux {
-  background:
-    radial-gradient(60% 45% at 15% 0%, rgba(143, 99, 255, 0.28), transparent 70%),
-    radial-gradient(50% 40% at 100% 100%, rgba(255, 92, 207, 0.16), transparent 70%), #05030c;
+  background: var(--wz-canvas, #05030c);
   min-height: 100dvh;
   padding: 40px 12px 12px;
   box-sizing: border-box;
@@ -81,7 +79,16 @@ body.wux {
   color: #fff;
 }
 #adminMenu a:last-child {
-  border-top: 1px solid #444;
+  border-top: 1px solid var(--wz-border, #444);
   margin-top: 4px;
   padding-top: 9px;
 }
+/* Shared Appearance v1 roles also cover the frame and its small menu. */
+#adminBtn { color: var(--wz-text-secondary, #9a9a9a); min-height: 32px; }
+#adminBtn:hover, #adminBtn[aria-expanded="true"] { color: var(--wz-text, #d0d0d0); }
+#adminMenu { background: var(--wz-surface-raised, #2a2a2a); border-color: var(--wz-border, #444); }
+#adminMenu a { color: var(--wz-text, #cfcfcf); }
+#adminMenu a:hover, #adminMenu a.on { background: var(--wz-accent-soft, #3a3a3a); }
+/* Semantic warning/success/error colours remain legible on a light surface. */
+html[data-color-scheme="light"] .wux { --amber: #946000; --green: #146c43; --red: #b42318; }
+

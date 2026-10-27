@@ -2,6 +2,9 @@
 // #connections.
 import { renderConnections, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
 
+// Shared facade owns Appearance reception; standalone keeps the CSS dark fallback.
+window.WizardApp?.ready({ name: 'App Manager' });
+
 const $ = (s) => document.querySelector(s);
 const body = $('#body');
 const chips = $('#chips');
