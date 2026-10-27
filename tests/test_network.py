@@ -225,12 +225,13 @@ def test_watcher_preserves_the_owner_published_architecture_specific_main(tmp_pa
 
 
 @pytest.mark.parametrize("internal_port", [None, 0, 80])
+@pytest.mark.parametrize("source_mode", [{}, {"network_mode": None}, {"network_mode": ""}, {"network_mode": False}])
 @pytest.mark.parametrize("exposure", ["exposed", "exposedLocal"])
-def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(tmp_path, monkeypatch, internal_port, exposure):
+def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(tmp_path, monkeypatch, internal_port, source_mode, exposure):
     meta = {"is_main": True}
     if internal_port is not None:
         meta["internal_port"] = internal_port
-    recipe = {"services": {"main": {"image": "a", "x-runtipi": meta}}}
+    recipe = {"services": {"main": {"image": "a", "x-runtipi": meta, **source_mode}}}
     generated = {"services": {"main": {"image": "a", "labels": {"traefik.enable": "true"}, "networks": {net.SHARED: {}}}}}
     write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe, generated=generated)
     rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {exposure: True}}]})()
@@ -238,8 +239,9 @@ def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(t
     c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
     p, _ = net.build(c, on=True)
     planned = p["apps"][0]
-    assert planned["state"] == ("exposed" if internal_port else "isolated")
-    assert net.keeps_shared(planned, "main") is bool(internal_port)
+    routed = bool(internal_port) and not source_mode
+    assert planned["state"] == ("exposed" if routed else "isolated")
+    assert net.keeps_shared(planned, "main") is routed
 
 
 @pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])

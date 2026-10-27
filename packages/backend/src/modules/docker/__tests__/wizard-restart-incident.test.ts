@@ -130,10 +130,13 @@ afterEach(async () => {
 });
 
 describe('owner publication at the real pre-start seam', () => {
-  it.each([false, true])('does not trust secondary labels when publication=%s', async (published) => {
+  it.each([{ published: false, hasMode: false }, { published: true, hasMode: false },
+    { published: false, hasMode: true }, { published: true, hasMode: true }])(
+    'does not trust secondary labels when publication=$published, network_mode present=$hasMode', async ({ published, hasMode }) => {
     const compose = {
       services: {
         main: { image: 'example', 'x-runtipi': { is_main: true, internal_port: 80 },
+          ...(hasMode ? { network_mode: null } : {}),
           labels: { 'traefik.enable': 'true' }, networks: { tipi_main_network: {} } },
         engine: { image: 'example', labels: { 'traefik.enable': 'true' }, networks: { tipi_main_network: {} } },
       }, networks: { tipi_main_network: { external: true, name: 'runtipi_tipi_main_network' } },
@@ -144,7 +147,7 @@ describe('owner publication at the real pre-start seam', () => {
     files.getSourceDockerComposeYaml.mockResolvedValue({ content: compose, path: 'source.yml' } as never);
     await service.prepareApp(connectors);
     const output = yaml.parse(await fs.readFile(generated(connectors), 'utf8'));
-    expect(Boolean(output.services.main.networks?.tipi_main_network)).toBe(published);
+    expect(Boolean(output.services.main.networks?.tipi_main_network)).toBe(published && !hasMode);
     expect(output.services.engine.networks?.tipi_main_network).toBeUndefined();
     expect(repository.getAppByUrn).toHaveBeenCalledWith(connectors);
   });
