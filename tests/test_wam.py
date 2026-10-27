@@ -1102,9 +1102,23 @@ def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(
         (d / ".wizard-commit").write_text(commit + "\n")
         (d / ".wizard-source").write_text(json.dumps({"repo": repo}))
     calls = []
-    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: calls.append(("prepare", ref)) or {"id": ref})
-    monkeypatch.setattr(cli, "app_update", lambda c, a: calls.append(("update", a)) or {"status": "running"})
-    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
+    def prepare(c, ref):
+        calls.append(("prepare", ref))
+        d = tmp_path / "repos" / cli.STORE / "apps" / ref
+        d.mkdir(parents=True)
+        (d / "config.json").write_text('{}')
+        (d / "wizard.md").write_text('---\nversion: 1\n---\n')
+        return {"id": ref}
+    def update(c, app):
+        calls.append(("update", app))
+        d = tmp_path / "apps" / cli.STORE / app
+        (d / ".wizard-commit").write_text(new)
+        (d / "wizard.md").write_text('---\nversion: 1\n---\n')
+        return {"status": "running"}
+    monkeypatch.setattr(cli, "resolve_any", prepare)
+    monkeypatch.setattr(cli, "app_update", update)
+    rt = SimpleNamespace(app=lambda urn: {"app": {"status": "running", "config": {"openPort": False, "exposed": False, "exposedLocal": False}}})
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: rt, runtipi_root=tmp_path))
     assert calls == [("prepare", "files"), ("update", "files")]
     assert out["updated"] == ["files"] and out["failed"] == {}
 

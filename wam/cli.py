@@ -237,6 +237,14 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     from .runtipi import read_env
     if getattr(c, "home", None) and (v := alongside.shared_secret(c.home, var)):
         return v
+    if var.startswith('HERMES_DASHBOARD_BASIC_AUTH_'):
+        # Connection recipes declare this shared dashboard input even without a `uses` edge.
+        # Reuse an existing host login on alongside boxes; never rotate it for an app update.
+        from . import host_dashboard
+        if getattr(c, 'home', None) and alongside.load(c.home):
+            if value := host_dashboard.read_env(host_dashboard.env_path(c.home)).get(var):
+                return value
+        uses = list(dict.fromkeys([*uses, 'hermes-agent']))
     for dep in uses:
         envp = c.runtipi_root / "app-data" / STORE / dep / "app.env"
         if not envp.is_file():   # not installed (or, alongside, filled by the host)
@@ -279,6 +287,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
     compose publishes on 127.0.0.1, so openPort/exposed stay off."""
     form: dict = {"openPort": False, "exposed": False, "exposedLocal": False}
     saved: dict = {}
+    previous: dict = {}
     missing: list[str] = []
     for f in info.get("form_fields") or []:
         var = f.get("env_variable")
@@ -295,13 +304,18 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
         elif "default" in f:
             continue
         elif f.get("required") and f.get("type") == "password":
-            form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
+            secret_file = c.secrets / f"{app_id}.json"
+            previous = json.loads(secret_file.read_text()) if secret_file.is_file() else {}
+            if previous.get(var):
+                form[var] = previous[var]
+            else:
+                form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
             missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
     if saved:
         c.secrets.mkdir(mode=0o700, exist_ok=True)
         p = c.secrets / f"{app_id}.json"
-        p.write_text(json.dumps(saved, indent=2) + "\n")
+        p.write_text(json.dumps({**previous, **saved}, indent=2) + "\n")
         p.chmod(0o600)
         print(f"{app_id}: generated {', '.join(saved)}; saved to {p}", file=sys.stderr)
     return form, missing
@@ -1154,16 +1168,44 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
             source = json.loads((live / ".wizard-source").read_text()).get("repo")
         except (OSError, ValueError):
             continue
-        if commit == row["commit"] or source != row["repo"]:
+        if source != row["repo"]:
+            continue
+        meta = registry.app_meta(c.runtipi_root, STORE, app_id)
+        if commit == row["commit"] and (not row.get("index_version") or
+                                          str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
             continue
         try:
             print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
-            resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            rec = resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            # Updates reuse the old saved form. Reconcile new required inputs using the SAME
+            # shared-secret/default rules as install, without resetting any owner settings.
+            urn = f"{app_id}:{STORE}"
+            before = (rt.app(urn) or {}).get("app") or {}
+            current = before.get("config") or {}
+            recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
+            target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
+            if row.get("index_version") and target_version != row["index_version"]:
+                raise RuntimeError("prepared recipe version does not match the release pin")
+            info = json.loads((recipe / "config.json").read_text())
+            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
+            if missing:
+                raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
+            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
+            if form != current:
+                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
             res = app_update(c, app_id)
             if res.get("error"):
                 raise RuntimeError(res["error"])
+            expected_status = 'running' if before.get('status') == 'running' else 'stopped'
+            if res.get('status') != expected_status:
+                raise RuntimeError("app update did not finish in its previous running/stopped state")
+            # A failed queued update can roll back to running/stopped. That is NOT success.
+            installed_commit = (live / ".wizard-commit").read_text().strip()
+            installed_version = str(registry._front((live / "wizard.md").read_text()).get("version", ""))
+            if installed_commit != row["commit"] or (row.get("index_version") and installed_version != row["index_version"]):
+                raise RuntimeError("installed app does not match the release pin (update may have rolled back)")
             out.append(app_id)
-        except (SystemExit, RuntimeError, RuntipiError, OSError, private.PrivateError) as e:
+        except (SystemExit, RuntimeError, RuntipiError, OSError, ValueError, yaml.YAMLError, private.PrivateError) as e:
             failed[app_id] = f"update to release source failed: {e}"[:200]
     return out
 

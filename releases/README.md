@@ -360,3 +360,22 @@ Promotion JSON SHA256: `b66b41d3fcf982410a70c2ff31efba8589cf11a6be87ea32508a63ac
 Canonical: wizard-os releases/0.3.66.json (wizard-os #263). SHA256: `68605bbc445ec12a38f6350a304e91b17773a3bdb289d10dcebebac2d34ab8b7`.
 Latest continuity: 0.3.64 plus wizard-app-manager #258 on the Latest maintenance branch (#260, `da2f01d`). Other pins unchanged.
 Channel: on latest only.
+
+## 0.3.68 provenance
+
+Canonical: wizard-os releases/0.3.68.json (wizard-os #267). SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+0.3.67 plus Agent Service main `b1f8d2c1` (#191, #195, #196 emailHash, #203 identity marker), Wizard UX main `d53b2b24` (#573 model picker refresh), Claude 0.2.8 (`43f6a412`) and ChatGPT 0.2.6 (`f73b8487`). WAM, Troubleshooter, Hermes and other default apps unchanged.
+Channel: on latest only; stable remains 0.3.65 pending the upgrade tests.
+
+## stable 0.3.68
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after passed 0.3.65 -> 0.3.68 and 0.3.61 -> 0.3.68 upgrade tests with WIZARD_STRICT=1 on disposable guests. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.68.md (wizard-os #270). Rollback: point `stable` back at 0.3.65.
+
+Release JSON SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+Promotion JSON SHA256: `0984d62ca0b54ac0e4dab86e26df9b2dee7d2f93ddd89783f29eb8a3f21d3474`.
+
+## 0.3.70 provenance
+
+Canonical: wizard-os releases/0.3.70.json (wizard-os #270). SHA256: `1488db56ff5f4fa1f83105f18700d5f172b926934d201e933533a84f144699b4`.
+0.3.69 (WAM `08b54f65`, #267) with 0.3.68's Agent Service `b1f8d2c1`, Wizard UX `d53b2b24`, Claude 0.2.8 and ChatGPT 0.2.6.
+Channel: on latest only.
