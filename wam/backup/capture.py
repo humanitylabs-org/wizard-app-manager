@@ -71,12 +71,46 @@ def schedule_on(box: Box) -> bool:
         return False
 
 
+class _WouldNotRestart(Exception):
+    """The app's own images are gone from this box: stopping it for a backup would leave it down."""
+
+
+def _missing_images(box: Box, urn: str) -> list[str]:
+    """Image refs the app's containers were created from that this box no longer has (e.g. pruned by hand).
+    Runtipi recreates containers on start, so a missing one means the app cannot start again."""
+    import subprocess
+    from .dockercli import docker
+    env = box.child_env
+    try:
+        p = subprocess.run([*docker(env), "ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format",
+                            "{{.Image}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []                      # cannot tell: behave as before
+    if p.returncode:
+        return []
+    missing = []
+    for ref in sorted(set(p.stdout.split())):
+        if ref.startswith("sha256:"):
+            continue                   # an image id: the container itself pins it
+        try:
+            q = subprocess.run([*docker(env), "image", "inspect", "--format", "{{.Id}}", ref], capture_output=True,
+                               text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if q.returncode:
+            missing.append(ref)
+    return missing
+
+
 def _app_archive(box: Box, urn: str, info: dict, work: Path, volumes: list[str]) -> tuple[Path, dict]:
     """Stop the app through Runtipi, archive its folders and named volumes as root (appdata.AppData), start it again
     if it was running. Returns (archive path, report)."""
     store, app_id = info["store"], info["id"]
     was_running = info.get("status") == "running"
     if was_running:
+        gone = _missing_images(box, urn)
+        if gone:
+            raise _WouldNotRestart(", ".join(gone))
         box.rt.stop(urn)
         st = box.wait_status(urn, {"stopped"}, timeout=600)
         if st != "stopped":
@@ -110,7 +144,14 @@ def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: lis
             raise ExportError(f"app {app_id}: {e}") from None
     else:
         log(f"app {app_id}: archiving its data")
-        path, rep = _app_archive(box, urn, info, work, vols)
+        try:
+            path, rep = _app_archive(box, urn, info, work, vols)
+        except _WouldNotRestart as e:
+            msg = (f"{app_id}: not backed up this run and left running: its image {e} is missing on this box, so it "
+                   "could not start again after a stop (update or reinstall the app)")
+            log("warning: " + msg)
+            skipped.append(msg)
+            return
     try:
         if plain:
             bw.add_gunzipped(f"apps/{app_id}/data.tar", path)

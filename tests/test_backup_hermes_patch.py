@@ -88,3 +88,36 @@ def test_rootless_docker_found_without_path_or_docker_host(tmp_path):
     finally:
         s.close()
         dockercli._cached.clear()
+
+
+def test_app_with_missing_image_is_not_stopped(monkeypatch, tmp_path):
+    """A backup never stops an app whose image is gone: Runtipi could not start it again (Messenger, Oct 2026)."""
+    import subprocess as sp
+    from wam.backup import capture
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if "ps" in argv:
+            return sp.CompletedProcess(argv, 0, "wizard-messenger:gone\nsynapse@sha256:abc\nsha256:123\n", "")
+        if "inspect" in argv:
+            return sp.CompletedProcess(argv, 1 if argv[-1] == "wizard-messenger:gone" else 0, "", "")
+        return sp.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("wam.backup.dockercli.docker", lambda env=None: ["docker"])
+
+    class Rt:
+        def stop(self, urn):
+            raise AssertionError("must not stop")
+
+    class FakeBox:
+        child_env = {}
+        rt = Rt()
+
+    assert capture._missing_images(FakeBox(), "messenger:wizardapps") == ["wizard-messenger:gone"]
+    skipped = []
+    capture._emit_app_archive(FakeBox(), None, "messenger", "messenger:wizardapps",
+                              {"store": "wizardapps", "id": "messenger", "status": "running"}, [], tmp_path, True, skipped)
+    assert skipped and "wizard-messenger:gone" in skipped[0]
