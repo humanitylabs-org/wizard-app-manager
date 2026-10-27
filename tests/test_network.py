@@ -710,9 +710,41 @@ def test_update_stops_when_its_network_preflight_fails(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="x not updated: its isolated networks could not be prepared"):
         cli.app_update(cli.Config(), "x")
     assert updates == [] and steps == [({"x"}, False), (set(), False)]
-    # Docker unavailable is reported, not blocking (same as install)
-    cli, updates, steps = update_env(tmp_path / "b", monkeypatch, plain, plain, [{"errors": ["Docker unavailable"], "unavailable": True}])
-    assert cli.app_update(cli.Config(), "x")["status"] == "running" and updates == ["x:wizardapps"]
+
+
+def test_update_stops_when_network_preflight_is_unavailable(tmp_path, monkeypatch):
+    """No Docker probe means no prepared networks: never apply the incoming recipe."""
+    import pytest
+    plain = "services:\n  x:\n    image: a\n"
+    cli, updates, steps = update_env(tmp_path, monkeypatch, plain, plain,
+                                     [{"errors": ["Docker unavailable"], "unavailable": True}])
+    with pytest.raises(SystemExit, match="x not updated: its isolated networks could not be prepared"):
+        cli.app_update(cli.Config(), "x")
+    assert updates == [] and steps == [({"x"}, False), (set(), False)]
+
+
+def test_grant_and_revoke_reconcile_live_networks_before_registry(tmp_path, monkeypatch):
+    """Both CLI grant paths apply their link change now, not at next bootstrap."""
+    from wam import cli
+    c = Cfg(tmp_path)
+    events = []
+
+    class RT:
+        def req(self, method, path, body):
+            events.append((method, path, body))
+            return {"ok": True}
+
+    monkeypatch.setattr(cli, "Config", lambda: c)
+    monkeypatch.setattr(c, "runtipi", lambda: RT(), raising=False)
+    monkeypatch.setattr(cli, "network_step", lambda config, rt: events.append("reconcile") or {"changed": ["link"]})
+    monkeypatch.setattr(cli, "write_registry", lambda config: events.append("registry"))
+    for action, approved in (("grant", True), ("revoke", False)):
+        events.clear()
+        assert cli.main(["grants", action, "consumer", "provider"]) == 0
+        assert events == [
+            ("POST", "/apps/consumer:wizardapps/app-grants", {"to": "provider", "approve": approved}),
+            "reconcile", "registry",
+        ]
 
 
 def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):

@@ -1729,7 +1729,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             _network.set_host_access_allowed(c.home, app, True)
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
         pre = network_step(c, rt, restart=False, fresh={app})
-        if _network.enabled(c.home) and (pre or {}).get("errors") and not (pre or {}).get("unavailable"):
+        if _network.enabled(c.home) and (pre or {}).get("errors"):
             network_step(c, rt, restart=False)   # back to the override for the installed recipe
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
