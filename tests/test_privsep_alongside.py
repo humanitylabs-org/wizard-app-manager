@@ -96,6 +96,14 @@ def test_separated_service_runs_at_agent_uid_without_privileged_credentials(tmp_
     assert '/registry:ro' in text
 
 
+def test_builder_bundle_entrypoint_is_still_thin_on_separated_account(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('WIZARD_OS_HOME', str(tmp_path))
+    (tmp_path / 'client.json').write_text('{}')
+    monkeypatch.setattr(cli, 'Config', lambda: (_ for _ in ()).throw(AssertionError('no local manager config')))
+    assert cli.main(['builder-bundle', 'fresh']) == 2
+    assert 'not yet available without server access' in capsys.readouterr().err
+
+
 def test_new_layout_source_paths_and_units_are_protected():
     root = Path(__file__).resolve().parents[1]
     text = (root / 'scripts/prepare-alongside.py').read_text()

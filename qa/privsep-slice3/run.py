@@ -59,7 +59,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 mkdir -p "$HOME/.hermes"
 git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/hermes-agent"
 uv venv --python 3.14 "$HOME/.hermes/venv"
-uv pip install --python "$HOME/.hermes/venv/bin/python" -e "$HOME/hermes-agent[messaging,mcp]"
+# Respect stock Hermes' checked-in uv.lock and its upstream dependency
+# overrides; raw uv pip resolution rejects browser-harness' Pillow upper pin.
+VIRTUAL_ENV="$HOME/.hermes/venv" uv sync --project "$HOME/hermes-agent" --active --frozen --no-dev --extra messaging --extra mcp
 ln -s "$HOME/.hermes/venv/bin/hermes" "$HOME/.local/bin/hermes"
 cat > "$HOME/.hermes/config.yaml" <<'CFG'
 model:

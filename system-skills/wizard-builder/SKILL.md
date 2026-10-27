@@ -21,6 +21,11 @@ Use the smallest artifact that finishes the owner's job. This system skill lives
 - Start with an installed app's shipped skill for ordinary use; reach for the builder when code or packaging must change.
 
 ## Prerequisites
+If `$HOME/.wizard-os/client.json` exists, this is a privilege-separated alongside account: the `wam` on PATH
+and the bundled `wam` are both thin clients. Building, view customization and local staging are not yet available
+without server access in this layout (Slice 4). Report that limit; never try Docker, sudo, a copied full CLI or a
+changed terminal backend to bypass it. Store install/update and named app lifecycle/logs remain available.
+
 Wizard OS installs a complete, matching skill/tooling/templates bundle automatically. In `terminal`, run `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor` before building. This works with the stock local container terminal and the VM's configured SSH terminal: SSH executes on the host and uses its own `$HOME`, not a container-only path. Do not change the owner's terminal backend. Python 3.10+ and PyYAML are installed by Wizard OS (the container uses stock Hermes' Python); Docker with Compose is needed only to run a local app. If doctor fails, report the missing capability and repair with the Wizard installer, not a private checkout or personal skill. Use the configured build worker for sustained builds/tests. Keep the owner's active apps intact.
 
 ## Choose the lightest level

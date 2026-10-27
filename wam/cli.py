@@ -1851,6 +1851,12 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The stock builder bundle also carries a wam entry point. On a separated
+    # account it must remain the same thin transport, not a local CLI escape or
+    # a confusing Docker permission failure. The protected manager has no marker.
+    if (registry.home() / 'client.json').is_file():
+        from .client import main as remote_main
+        return remote_main(argv)
     from .host_policy import NeedsOwnerApproval, EXIT_APPROVAL
     try:
         return _main(argv)
