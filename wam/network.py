@@ -372,7 +372,8 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
             return str(d.get("name")) if isinstance(d, dict) and d.get("name") else f"{app_id}_{store}_{logical}"
         services[name] = {
             "docker_networks": sorted(docker_name(k) for k in nets if k != SHARED),
-            "main": bool(xr.get("is_main")),
+            "main": xr.get("is_main") is True,
+            "internal_port": xr.get("internal_port"),
             "on_shared": SHARED in nets or bool(xr.get("is_main") or xr.get("add_to_main_network")) and not nm,
             "network_mode": nm,
             "networks": {k: v for k, v in nets.items()},
@@ -898,7 +899,8 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
     published = published_urns(rt)
     for a in apps:
         for service in a["services"].values():
-            service["exposed"] = f"{a['id']}:{store}" in published and service.get("main", False) and not service.get("network_mode")
+            service["exposed"] = (f"{a['id']}:{store}" in published and service.get("main", False) and
+                                  bool(service.get("internal_port")) and not service.get("network_mode"))
     from . import slots as _slots
     try:
         chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()

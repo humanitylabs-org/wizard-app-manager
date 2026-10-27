@@ -10,7 +10,7 @@ from wam import network as net
 
 
 def app(app_id, uses=(), provides=(), services=None, **kw):
-    services = services or {app_id: {"main": True, "on_shared": True, "network_mode": "", "exposed": False,
+    services = services or {app_id: {"main": True, "internal_port": 80, "on_shared": True, "network_mode": "", "exposed": False,
                                      "networks": {"tipi_main_network": {"gw_priority": 1}}}}
     return {"id": app_id, "name": app_id, "uses": list(uses), "provides": list(provides), "router": False,
             "services": services, "custom": None, "host_access": [], **kw}
@@ -222,6 +222,24 @@ def test_watcher_preserves_the_owner_published_architecture_specific_main(tmp_pa
         assert not net.keeps_shared(planned, "base")
     assert net.source_services(recipe)[main_service]["command"] == ["override"]
     assert recipe["services"]["base"]["command"] == ["base"]
+
+
+@pytest.mark.parametrize("internal_port", [None, 0, 80])
+@pytest.mark.parametrize("exposure", ["exposed", "exposedLocal"])
+def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(tmp_path, monkeypatch, internal_port, exposure):
+    meta = {"is_main": True}
+    if internal_port is not None:
+        meta["internal_port"] = internal_port
+    recipe = {"services": {"main": {"image": "a", "x-runtipi": meta}}}
+    generated = {"services": {"main": {"image": "a", "labels": {"traefik.enable": "true"}, "networks": {net.SHARED: {}}}}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe, generated=generated)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {exposure: True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    planned = p["apps"][0]
+    assert planned["state"] == ("exposed" if internal_port else "isolated")
+    assert net.keeps_shared(planned, "main") is bool(internal_port)
 
 
 @pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])
