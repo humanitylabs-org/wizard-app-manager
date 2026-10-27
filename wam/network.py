@@ -710,11 +710,14 @@ def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
                 blocked[frozenset((g["from"], p))] = "disconnected"
                 cut_as_provider[p] = cut_as_provider.get(p, 0) + 1
     granted = {(g["from"], p) for g in rows("grants") for p in provs(g["to"])}
+    # The owner's own approval counts in either direction (the network is two-way): a Reconnect made from the
+    # sensitive app's card is stored as sensitive -> peer. Automatic grants of the sensitive app itself do not.
+    by_owner = {(g["from"], p) for g in rows("grants") if g.get("approved") == "owner" for p in provs(g["to"])}
     waiting = {(g["from"], p) for g in rows("pending") for p in provs(g["to"])}
     for s in sorted(sensitive):
         for x in peers:
             pair = frozenset((x, s))
-            if x != s and pair not in blocked and (x, s) not in granted:
+            if x != s and pair not in blocked and (x, s) not in granted and (s, x) not in by_owner:
                 blocked[pair] = "pending" if (x, s) in waiting else "sensitive"
     # Who leaves the mesh: every sensitive app (its reach is per approval), then a greedy cover of the remaining cuts.
     out = set(sensitive)

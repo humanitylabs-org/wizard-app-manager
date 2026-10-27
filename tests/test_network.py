@@ -1349,6 +1349,16 @@ def test_sensitive_apps_keep_their_connections_and_new_ones_wait():
     assert ("stripe-connector", "calendly-connector") in pairs
 
 
+def test_an_owner_reconnect_from_the_sensitive_apps_side_opens_the_pair():
+    base = dict(sensitive=["resend-connector"], grants=[("carlos-crm", "resend-connector", "open")])
+    st = _st(**{**base, "grants": base["grants"] + [("resend-connector", "stripe-connector", "owner")]})
+    pairs = reach(net.plan(carlos(), [], set(), state=st, mode="open"))
+    assert ("stripe-connector", "resend-connector") in pairs and ("resend-connector", "stripe-connector") in pairs
+    # an automatic grant of the sensitive app itself (its own declaration) is not the owner's approval
+    st = _st(**{**base, "grants": base["grants"] + [("resend-connector", "stripe-connector", "install")]})
+    assert ("stripe-connector", "resend-connector") not in reach(net.plan(carlos(), [], set(), state=st, mode="open"))
+
+
 def test_declared_mode_is_unchanged_and_open_grants_never_link_there():
     st = _st(grants=[("calendly-connector", "resend-connector", "open")], sensitive=["resend-connector"], mode="declared")
     p = net.plan(carlos(), [], set(), state=st, mode="declared")
