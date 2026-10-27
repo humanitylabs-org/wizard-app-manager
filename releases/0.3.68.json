@@ -1,0 +1,178 @@
+{
+  "version": "0.3.68",
+  "name": "Wizard OS 0.3.68 \u2014 current Agent Service and Wizard UX, exact AI account matching",
+  "date": "2026-10-27",
+  "about": "0.3.67 (backup plus the current Stable fixes) with the Agent Service and Wizard UX moved to current main. Setup says a phone is connected only after it opens Wizard; Claude and ChatGPT accounts report a one-way email hash, so the Claude app shows the same account once and never merges two different ones; Home names a ChatGPT sign-in 'ChatGPT' instead of 'openai-codex-oauth-1'; the model picker refetches on open and says when the Claude app is not answering instead of hiding Claude silently. Claude 0.2.8 and ChatGPT 0.2.6 carry the new accounts page (design rules v0).",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "da2f01d17feb7be09f3d4ed3827535ba021a9cef",
+      "branch": "maintenance/latest-0.3.58",
+      "note": "Latest App Manager 48795318 plus exactly wizard-app-manager #258 (installer reruns keep connection apps on the current agent address; HTTPS-off owner step; approved Tailscale login waited for; official-installer Hermes -> hermes update), merged as #260 on the Latest maintenance branch. Image inputs unchanged."
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "c1b4c432fd7b162d23d42fb7d3d8fb049bee764e",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; 4b1f0ef plus #10 (MIT license, no behavior change), #12 (one bounded owner-approved repair tool set shared by Claude, ChatGPT and Tinfoil; host-independent paths; no file/command grants without a per-box policy) and #13 (Claude falls back to the agent's second Claude sign-in when the Claude app login hits its usage limit)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "b1f8d2c1442a45da285161f21ad04a5449977eda",
+      "branch": "main",
+      "note": "Official main through #203 (183 commits after 6424db09): #191 phone connected only after it opens Wizard, #195 security deps, #196 provider accounts report emailHash, #203 listing declares it (identity marker), #186 Claude usage percentages/signed-in email/Claude Code mirror flag. The host plugin (wizard-os dashboard) installs from this commit. Open sign-in recovery PRs #199/#200/#201 are not included."
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "d53b2b243b07914882e0a9d4337d12d2f8c3629f",
+      "branch": "main",
+      "note": "Official main head at cut (#593), after 0.3.67's #569: includes #573 (model picker refetches on open when its list is older than 15 s and says when the Claude app is not answering; closes #572), desktop keys (#575-#593), #561-#566."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.571-80c76cf",
+      "digest": "sha256:ff30d81d103c7ca408692fb25b98827d0fb382a8034e2bcbd0daf46b99547e39",
+      "built_from": "wizard-app-manager",
+      "source_commit": "80c76cf9e61df78abe4c09ffa419ad899bbc61a6",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/40171067383",
+      "note": "Official multi-arch main image from 80c76cf, workflow run 40171067383. Attestation reverified; all declared image inputs and workflow are byte-identical through 44fded38. Python backup engine is host-installed WAM source, not an image input."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-d53b2b243b07914882e0a9d4337d12d2f8c3629f",
+      "digest": "sha256:5b661b073d6a726361f85ca644bb0bab1cf4430819dca19118a6b5a27a33cf61",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/40465748639"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-b1f8d2c1442a45da285161f21ad04a5449977eda",
+      "digest": "sha256:59cc167250c9793ba5112ad45256d1f64304a13fb809fb4f39b4694e43fa9a75",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/40464828166"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "d53b2b243b07914882e0a9d4337d12d2f8c3629f",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "b1f8d2c1442a45da285161f21ad04a5449977eda"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.2.6",
+      "commit": "f73b84879d173cd3c99dca7ab7695a31a6b34810",
+      "note": "Any number of ChatGPT subscriptions on the same accounts page as Claude (chatgpt-connection #6; engine ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.6@sha256:72be4ede5a2e0151eea3a9050611352b0b14c044e56c1202a25442f4003552e3, amd64+arm64, wizard-app-store #33+#36 at 81758d58, run 40465361129). 0.2.4 plus design rules v0 page (wizard-app-store #34) and Home names Hermes' default sign-in labels 'ChatGPT', 'ChatGPT 2' (#33). Sign-ins run inside the agent (stock `hermes auth add openai-codex` through the wizard-os plugin broker); an unreachable agent is reported with Retry. Claude is installed by default as its own `claude-subscription` row below."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.2.8",
+      "commit": "43f6a4123d2f781fb82149a51414723e56056b13",
+      "note": "Any number of Claude subscriptions (claude-connection #6; engine ghcr.io/humanitylabs-org/wizard-claude:0.2.8@sha256:7e7956086a2f8810b46666e5948c71ffc2637e1e54566eaffb100fb8acdc406c, amd64+arm64, wizard-app-store #33+#36 at 81758d58, run 40465361122). 0.2.6 plus design rules v0 page (#34); the original Claude Code sign-in and an agent row merge only on the agent's exact emailHash (Agent Service #196/#203), masked-email matching only for older agent services (#33). Added subscriptions sign in inside the agent (stock `hermes auth add anthropic`) through the wizard-os plugin broker. Alongside with host Hermes on a claude-subscription provider: App Manager still binds the agent's own Claude Code login folder at the engine's /claude; tokens are never copied."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard2",
+      "commit": "8a4dd8ac5189d7d9d8af2bb8a2416936668e90df"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7\u2026c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard2",
+      "commit": "0428e7c73a4ac9cb0f7a21d40c7c7a5fda16af55"
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "Latest only. All non-UX component, image and default-app pins, and the locked Hermes block, are exactly 0.3.66. App Manager da2f01d1 contains the backup bundle (44fded38 ancestry) and the installer repairs carried by Stable 0.3.65 (#258/#259, forward-ported as #260). The UX image is the official attested amd64+arm64 main build at 4b9264d3 (#569), carrying Stable #567/#568. Independent source/provenance checks are not full-release runtime acceptance: fresh install, upgrades from 0.3.39/0.3.40/0.3.65, backup/restore/Undo and first chat/phone pairing remain to be run on this exact release. No Stable promotion. Stock Hermes scheduler SQLite handling, exclusive AI-login handover, Tailscale re-enrolment and external-grant limitations remain unchanged."
+}

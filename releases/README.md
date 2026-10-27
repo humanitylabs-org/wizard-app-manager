@@ -360,3 +360,9 @@ Promotion JSON SHA256: `b66b41d3fcf982410a70c2ff31efba8589cf11a6be87ea32508a63ac
 Canonical: wizard-os releases/0.3.66.json (wizard-os #263). SHA256: `68605bbc445ec12a38f6350a304e91b17773a3bdb289d10dcebebac2d34ab8b7`.
 Latest continuity: 0.3.64 plus wizard-app-manager #258 on the Latest maintenance branch (#260, `da2f01d`). Other pins unchanged.
 Channel: on latest only.
+
+## 0.3.68 provenance
+
+Canonical: wizard-os releases/0.3.68.json (wizard-os #267). SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+0.3.67 plus Agent Service main `b1f8d2c1` (#191, #195, #196 emailHash, #203 identity marker), Wizard UX main `d53b2b24` (#573 model picker refresh), Claude 0.2.8 (`43f6a412`) and ChatGPT 0.2.6 (`f73b8487`). WAM, Troubleshooter, Hermes and other default apps unchanged.
+Channel: on latest only; stable remains 0.3.65 pending the upgrade tests.
