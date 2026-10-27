@@ -188,8 +188,8 @@ def test_installer_keeps_manager_digest_and_starts_pin_view_first(pins, tmp_path
     assert '!override' in text and '127.0.0.1:8480:80' in text
     assert 'ports:' not in text.split('  wizard-release-index:')[1]
     log = calls.read_text()
-    assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps runtipi')
-    assert log.index('up -d --force-recreate --no-deps runtipi') < log.index('wam -m wam bootstrap')
+    assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps --wait runtipi')
+    assert log.index('up -d --force-recreate --no-deps --wait runtipi') < log.index('--no-deps runtipi-reverse-proxy') < log.index('wam -m wam bootstrap')
     assert f'WIZARD_RELEASE_PINS={pins}' in (home / '.config/systemd/user/wizard-app-manager-api.service').read_text()
 
 
