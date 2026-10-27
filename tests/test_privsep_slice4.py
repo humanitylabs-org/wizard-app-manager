@@ -203,8 +203,11 @@ def test_missing_historical_curator_image_does_not_skip_source_app_data(monkeypa
             # Exited init/curator and superseded containers are irrelevant to
             # live data services. A query of all containers would be a regression.
             assert 'status=running' in argv and '-a' not in argv
-            return subprocess.CompletedProcess(argv, 0, 'python:3.12-alpine\n', '')
-        return subprocess.CompletedProcess(argv, 0 if argv[-1] == 'python:3.12-alpine' else 1, '', '')
+            return subprocess.CompletedProcess(argv, 0, 'abcdef123456\n', '')
+        if '{{.Config.Image}}' in argv:
+            return subprocess.CompletedProcess(argv, 0, 'python:3.12-alpine@sha256:abc\n', '')
+        assert argv[-1] == 'python:3.12-alpine@sha256:abc'
+        return subprocess.CompletedProcess(argv, 0, '', '')
     monkeypatch.setattr(subprocess, 'run', run)
     monkeypatch.setattr('wam.backup.dockercli.docker', lambda env=None: ['docker'])
     assert capture._missing_images(SimpleNamespace(child_env={}), 'calendar:wizardapps') == []
