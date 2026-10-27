@@ -74,6 +74,15 @@ def _expand(source: str, variables: dict) -> str:
     return source
 
 
+def _pinned_source(app_data, app_id, store, variables):
+    source = (variables or {}).get('APP_SOURCE_DIR')
+    if source is None:
+        return True  # Runtipi derives this from its validated .wizard-commit.
+    expected = app_data.parent.parent / '.wizard-source' / store
+    return (Path(source).resolve().parent == expected.resolve()
+            and bool(re.fullmatch(re.escape(app_id or '') + r'@[0-9a-f]{12}', Path(source).name)))
+
+
 def risks(compose, app_id=None, store='wizardapps', **context):
     try:
         return _risks(compose, app_id, store, **context)
@@ -102,6 +111,9 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
     for key in compose:
         if key not in TOP_KEYS and not str(key).startswith('x-'):
             out.append(f'compose key {key} is not allowlisted')
+    for name, spec in (compose.get('networks') or {}).items():
+        if isinstance(spec, dict) and (spec.get('driver') not in (None, 'bridge') or spec.get('driver_opts')):
+            out.append(f'network {name}: host/custom network driver settings')
     for kind in ('secrets', 'configs'):
         definitions = compose.get(kind) or {}
         if not isinstance(definitions, dict):
@@ -140,6 +152,23 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
         if reservations.get('devices'):
             out.append(f'{name}: deploy device access requires owner approval')
         build = svc.get('build')
+        if build:
+            source = build.get('context', '.') if isinstance(build, dict) else build
+            source = _expand(str(source), values)
+            # A build context is another host read, even without a bind mount.
+            # The builder's staged source and recipe-local contexts are safe;
+            # sending / or ../credentials to the daemon is not.
+            if not re.match(r'^(?:https?://|git://|git@)', source):
+                source_path = (Path(source) if Path(source).is_absolute() else base / source).resolve()
+                pinned = str((build or {}).get('context', '')) == '${APP_SOURCE_DIR}' if isinstance(build, dict) else str(build) == '${APP_SOURCE_DIR}'
+                pinned = pinned and _pinned_source(app_data, app_id, store, variables)
+                if ('$' in source and not pinned) or (not pinned and not any(source_path.is_relative_to(p) for p in (base, app_data, files_root))):
+                    out.append(f'{name}: build context reads host path {source}')
+                if isinstance(build, dict) and build.get('dockerfile'):
+                    file = _expand(str(build['dockerfile']), values)
+                    dockerfile = (Path(file) if Path(file).is_absolute() else source_path / file).resolve()
+                    if '$' in file or not dockerfile.is_relative_to(source_path):
+                        out.append(f'{name}: build Dockerfile reads outside its context')
         if isinstance(build, dict):
             for key in build:
                 if key not in {'context', 'dockerfile', 'dockerfile_inline', 'args', 'target', 'cache_from', 'cache_to',
@@ -179,10 +208,7 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
                 continue  # app-private Compose named volume
             # APP_SOURCE_DIR is manager-created pinned code, mounted read-only only.
             if isinstance(mount, str) and re.fullmatch(r'\$\{APP_SOURCE_DIR\}(?:/[\w./-]+)?:/[^:]+:ro', mount) and not re.search(r'(?:^|/)\.\.(?:/|:|$)', mount):
-                source_dir = (variables or {}).get('APP_SOURCE_DIR')
-                expected = app_data.parent.parent / '.wizard-source' / store
-                if source_dir is None or (Path(source_dir).resolve().parent == expected.resolve()
-                        and re.fullmatch(re.escape(app_id or '') + r'@[0-9a-f]{12}', Path(source_dir).name)):
+                if _pinned_source(app_data, app_id, store, variables):
                     continue
             if original and (app_id, original) in REVIEWED_MOUNTS and expanded == _expand(
                     original, {'ROOT_FOLDER_HOST': str(root), 'APP_DATA_DIR': str(app_data)}):

@@ -32,6 +32,8 @@ def test_recipe_mounting_host_root_needs_owner(tmp_path):
     ({'volumes': ['/var/run/docker.sock:/sock']}, 'runtime socket'),
     ({'build': {'context': '.', 'secrets': ['key']}}, 'build.secrets'),
     ({'build': {'context': '.', 'ssh': ['default']}}, 'build.ssh'),
+    ({'build': {'context': '/'}}, 'build context'),
+    ({'build': {'context': '.', 'dockerfile': '/etc/server.Dockerfile'}}, 'Dockerfile'),
     ({'env_file': '/etc/server.env'}, 'env_file'),
     ({'pid': 'host'}, 'pid'), ({'ipc': 'host'}, 'ipc'),
     ({'userns_mode': 'host'}, 'userns_mode'), ({'network_mode': 'host'}, 'network_mode'),
