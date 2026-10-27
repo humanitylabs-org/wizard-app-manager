@@ -19,3 +19,12 @@ def test_release_decides_which_apps_are_system(monkeypatch):
     slots.merge_into_registry(reg)
     assert {a["id"]: a["system"] for a in reg["apps"]} == {"files": True, "wizard-search": False}
 
+
+
+def test_search_is_the_web_search_default(monkeypatch):
+    monkeypatch.setattr(release_pins, "load", lambda: None)
+    row = slots.load_defaults()["web-search"]
+    assert row["app"] == "wizard-search" and row["required"] is False
+    assert "wizard-search" in slots.to_install({"apps": []})
+    assert "wizard-search" not in slots.to_install({"apps": [{"id": "wizard-search", "provides": ["web-search"]}]})
+    assert slots.system_apps() >= {"wizard-search"}
