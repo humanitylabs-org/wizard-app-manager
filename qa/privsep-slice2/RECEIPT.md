@@ -64,3 +64,13 @@ There are 44 new audit regression cases. They exercise host root, privileged mod
 ## Remaining release gates
 
 No live installation, real tailscaled identity path or disposable-VM acceptance is claimed. The whole release still needs the later service/agent uid separation and coordinator-owned end-to-end fresh/alongside acceptance. The existing Slice 1 VM runner remains staged; this task intentionally ran no VMs. PR stays draft with `do-not-merge`.
+
+## Full suite at ba381c3d (forum heavy job, 27 Oct 2026)
+
+`1 failed, 1495 passed, 21 skipped, 15 subtests passed`. The one failure is the pre-existing
+`tests/test_chats_views.py::test_typescript_public_index_path_has_identical_seal` (also fails on main);
+runner reports `baseline_parity: true`. Evidence: forum `/srv/work/privsep/slice2/20261027T183438Z-installed-ba3de300/results`
+(log sha256 250e7cb1…).
+
+Read-only audit of a real long-lived alongside box (32 installed apps), rerun by the coordinator:
+23 pass, 9 flagged as genuine host access, all 9 grandfathered, 0 blocked.
