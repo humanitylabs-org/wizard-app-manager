@@ -32,8 +32,8 @@ def _front(text: str) -> dict:
 
 
 def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
-    """wizard.md + config.json of an installed Wizard app, from the store copy (falls back to installed copy)."""
-    for d in (runtipi_root / "repos" / store / "apps" / app_id, runtipi_root / "apps" / store / app_id):
+    """Installed wizard.md + config.json; the store copy is only a legacy fallback."""
+    for d in (runtipi_root / "apps" / store / app_id, runtipi_root / "repos" / store / "apps" / app_id):
         wm = d / "wizard.md"
         if wm.is_file():
             w = _front(wm.read_text())
