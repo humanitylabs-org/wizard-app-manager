@@ -605,3 +605,13 @@ def test_update_plans_the_override_from_the_incoming_recipe(tmp_path):
     assert set(a["services"]) == {"renamed"}
     p = net.plan([a], [], set())
     assert set(net.overlay_for(p["apps"][0])["services"]) == {"renamed"}
+
+
+def test_container_network_mode_is_host_access_but_same_compose_service_mode_is_not():
+    bad = {"services": {"x": {"image": "a", "network_mode": "container:runtipi"}}}
+    ok = {"services": {"x": {"image": "a"}, "vpn": {"image": "b", "network_mode": "service:x"}}}
+    assert any("container:runtipi" in r for r in net.host_access(bad))
+    assert net.host_access(ok) == []
+    a = app("x")
+    a["services"]["x"]["network_mode"] = "container:runtipi"
+    assert net.plan([a], [], set())["apps"][0]["state"] == "custom"

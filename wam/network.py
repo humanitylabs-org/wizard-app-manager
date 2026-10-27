@@ -177,8 +177,11 @@ def host_access(compose: dict | str) -> list[str]:
         s = _plain(s)
         if not isinstance(s, dict):
             continue
-        if str(_plain(s.get("network_mode")) or "").lower() == "host":
+        mode = str(_plain(s.get("network_mode")) or "").lower()
+        if mode == "host":
             out.append(f"{name}: network_mode: host (shares the server's network, bypasses app isolation)")
+        elif mode.startswith("container:"):   # another container's namespace (e.g. runtipi's); service: stays allowed
+            out.append(f"{name}: network_mode: {mode} (shares another container's network, bypasses app isolation)")
         if _plain(s.get("privileged")) is True:
             out.append(f"{name}: privileged (full control of the server)")
         for v in _plain(s.get("volumes")) or []:
@@ -310,6 +313,8 @@ def _isolatable(a: dict) -> tuple[str, str]:
         return "custom", a["custom"]
     if any(s.get("network_mode") == "host" for s in svcs.values()):
         return "host-network", "runs on the server's own network (the gateway, or an app the owner allowed)"
+    if any(str(s.get("network_mode") or "").startswith("container:") for s in svcs.values()):
+        return "custom", "shares another container's network (allowed by the owner); not isolated"
     if any(svcs[n].get("exposed") for n in shared):
         return "exposed", "published through Runtipi's reverse proxy, which needs the shared network"
     if not shared:
