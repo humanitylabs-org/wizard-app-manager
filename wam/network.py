@@ -1098,7 +1098,13 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
         by_app.setdefault(r["app"], []).append(r)
     apps = []
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
+    # Actual shared-network membership is bidirectional even without a declaration (isolation off,
+    # an exposed/custom app, or migration drift). Keep these observations separate from planned edges.
+    shared_apps = {a["id"] for a in p["apps"] if any(
+        x["running"] and x["urn"] == f"{a['id']}:{STORE}" and shared_docker in x["networks"]
+        for x in live["containers"])}
     for a in p["apps"]:
+        shared_peers = sorted(shared_apps - {a["id"]}) if a["id"] in shared_apps else []
         out_edges = [e for e in p["edges"] if e["from"] == a["id"]]
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
         problems = []
@@ -1149,7 +1155,9 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                          [{"to": n["name"].removeprefix(GW_PREFIX), "declared": None, "reason": "gateway network",
                            "state": "gateway", "network": n["name"]}
                           for n in p["networks"].values() if n["kind"] == "gateway" and a["id"] in p["gateway"]["core"]
-                          and any(m["app"] == a["id"] for m in n["members"])],
+                          and any(m["app"] == a["id"] for m in n["members"])] +
+                         [{"to": peer, "declared": None, "reason": "live shared network", "state": "shared",
+                           "network": shared_docker} for peer in shared_peers],
             "reached_by": [{"from": e["from"], "reason": e["reason"], "state": e["state"], "network": e.get("network")}
                            for e in in_edges] +
                           # fresh boxes: the shell, Agent Service and agent share this app's wizard-gw-<id> and can open
@@ -1161,7 +1169,9 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                           ([{"from": n["name"].removeprefix(GW_PREFIX), "reason": "gateway network", "state": "gateway",
                              "network": n["name"]}
                             for n in p["networks"].values() if n["kind"] == "gateway" and a["id"] in p["gateway"]["core"]
-                            and any(m["app"] == a["id"] for m in n["members"])]),
+                            and any(m["app"] == a["id"] for m in n["members"])]) +
+                          [{"from": peer, "reason": "live shared network", "state": "shared", "network": shared_docker}
+                           for peer in shared_peers],
             "drift": problems,
         })
     shared_members = sorted(n for n in (live["networks"].get(shared_docker) or {}).get("containers", []))
@@ -1195,7 +1205,7 @@ def describe(rep: dict) -> str:
         if a["why"]:
             lines.append(f"  note: {a['why']}")
         lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
-        by = [b["from"] for b in a["reached_by"] if b["state"] in ("link", "gateway", "core")]
+        by = [b["from"] for b in a["reached_by"] if b["state"] in ("link", "gateway", "core", "shared")]
         lines.append(f"  reached by: {', '.join(by) or 'no other app'}; agent gateway {a['gateway']}")
         lines.append(f"  internet: {'yes' if a['internet'] else 'no' if a['internet'] is False else 'unknown'}")
         for h in a["host_access"]:

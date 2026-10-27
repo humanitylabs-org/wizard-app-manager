@@ -115,6 +115,22 @@ def test_missing_and_external_providers_are_reported_not_linked():
     assert not [n for n in p["networks"].values() if n["kind"] == "link"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_report_includes_live_shared_network_peers_in_both_directions(enabled):
+    """Connections must not hide undeclared reachability when off, exposed, or drifting."""
+    p = net.plan([app("a"), app("b"), app("c"), app("stopped")], [], set(), on=enabled)
+    live = live_from(p, on_shared={"a", "b", "stopped"})
+    next(c for c in live["containers"] if c["urn"] == "stopped:wizardapps")["running"] = False
+    rep = net.report(type("C", (), {})(), p=p, live=live)
+    by = {a["id"]: a for a in rep["apps"]}
+    for a, b in [("a", "b"), ("b", "a")]:
+        assert {e["to"] for e in by[a]["can_reach"] if e["state"] == "shared"} == {b}
+        assert {e["from"] for e in by[a]["reached_by"] if e["state"] == "shared"} == {b}
+    assert not any(e["state"] == "shared" for e in by["c"]["can_reach"])
+    assert not by["stopped"]["can_reach"]
+    assert "reached by: b;" in net.describe(rep)
+
+
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
     apps = [app("wizard-ux", uses=["agent-service"], provides=["shell"]),
             app("wizard-agent-service", provides=["agent-service"]), app("hermes-agent", provides=["agent"]),
