@@ -124,7 +124,7 @@ def guest_vm(label, ref, image, key):
         guest('wizard-denied', 'if sudo -iu wizard sudo -n true; then exit 1; else echo PASS_WIZARD_GENERAL_SUDO_DENIED; fi')
         guest('agent', '''eng="$(docker ps -q --filter label=com.docker.compose.service=hermes-agent-engine)"
 test -n "$eng"; test "$(printf '%s\n' "$eng" | wc -l)" -eq 1
-docker exec -u 1000:1000 "$eng" sh -c 'id; test ! -S /var/run/docker.sock; test ! -S /run/containerd/containerd.sock; if sudo -n true; then exit 1; else echo PASS_AGENT_SUDO_DENIED; fi'
+docker exec -u 1000:1000 "$eng" sh -ec 'id; test ! -S /var/run/docker.sock; test ! -S /run/containerd/containerd.sock; if sudo -n true; then exit 1; else echo PASS_AGENT_SUDO_DENIED; fi'
 docker inspect --format '{{json .Mounts}}' "$eng"
 ''')
         guest('doctor', 'sudo -iu wizard bash -lc \'export PATH="$HOME/.local/bin:$PATH"; wam doctor\'', 300)
