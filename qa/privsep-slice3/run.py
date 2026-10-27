@@ -17,6 +17,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import xml.etree.ElementTree as ET
@@ -62,6 +63,14 @@ git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/herm
 # messaging on restart because it uses PM's distinct selected environment.
 cd "$HOME/hermes-agent"
 source ./activate
+python - <<'PM'
+from pm import sync_venv
+sync_venv(['messaging', 'mcp'], explicit=True)
+PM
+# [all] intentionally excludes messaging. Re-activate the newly selected
+# generation rather than adding its site-packages to a running interpreter.
+source ./activate
+python -c "import aiohttp,mcp; print('stock API/MCP dependencies available')"
 ln -s "$HOME/hermes-agent/.hermes/bin/hermes" "$HOME/.local/bin/hermes"
 cat > "$HOME/.hermes/config.yaml" <<'CFG'
 model:
@@ -258,7 +267,10 @@ def suite():
     run('test-env',['python3','-m','venv',str(root/'test-venv')])
     py=str(root/'test-venv/bin/python')
     run('test-deps',[py,'-m','pip','install','pytest','pyyaml'])
-    run('pytest',[py,'-m','pytest','-q','tests','--basetemp='+str(root/'pytest-tmp'),'--junitxml='+str(root/'pytest.xml')],cwd=source,timeout=2400,required=False)
+    # Linux AF_UNIX socket names are short. The long evidence path makes the
+    # rootless-Docker socket fixture fail before exercising product code.
+    with tempfile.TemporaryDirectory(prefix='p3t-', dir='/srv/work') as basetemp:
+        run('pytest',[py,'-m','pytest','-q','tests','--basetemp='+basetemp,'--junitxml='+str(root/'pytest.xml')],cwd=source,timeout=2400,required=False)
     xml=ET.parse(root/'pytest.xml')
     failures=[]; total=0
     for c in xml.iter('testcase'):

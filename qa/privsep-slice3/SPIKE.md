@@ -28,12 +28,29 @@ The public index currently has no `hello-wizard` listing. The harness uses `wiza
 source package with no `uses` dependencies, the upstream pinned Python Alpine image and no provider accounts.
 A silent app's logs are valid: prove the installed app has a selected container and the log request returns text,
 not fabricated nonempty output. Pin the same stock Hermes commit for both guests. Follow the current PM developer
-workflow (`source ./activate`), which provisions uv-backed locked dependencies and records extras for the canonical
-launcher. Raw editable pip rejects the upstream browser-harness/Pillow conflict; raw external `uv sync --active`
+workflow (`source ./activate`), plus its documented `sync_venv(['messaging', 'mcp'], explicit=True)`
+interface and re-activation. `[all]` intentionally excludes messaging/aiohttp. PM provisions uv-backed locked
+dependencies and records these extras for the canonical launcher. Raw editable pip rejects the upstream browser-harness/Pillow conflict; raw external `uv sync --active`
 initially works but the canonical gateway launcher selects a different PM generation without aiohttp after restart.
 Use stock `hermes gateway install` at the agent uid: an unrelated QA unit is treated as a manual process by
 `wizard link` and may be stopped without restarting. Never edit stock Hermes. Change to the account's home after
 `runuser` before entering its checkout; otherwise uv attempts to read `/root/uv.toml` and fails.
+
+## Smoke lessons and evidence boundary
+
+The pinned App Manager image's Compose 2.40 rejects inherited duplicate `security_opt` values;
+replace the capability/security/group lists with `!override`, not append. Host networking also needs
+loopback STT/app addresses and a healthcheck on the selected Service port, not the image's default.
+The Service image already supports this wiring; no Agent Service repository change is required.
+
+A repaired/rebooted disposable Debian guest at runtime commit `15c62a6b` proved real host denials,
+agent-scoped install/restart/stop/start/update/logs/uninstall of Calendar, refused owner approval,
+same-uid Service execution, reachable stock Hermes upstream, and green system-side doctor.
+This is debugging evidence, not a fresh candidate/main comparison. The staged job is the authoritative
+fresh two-guest proof and runs the full suite. The runner initializes a labelled QA git snapshot of its
+exact archive tree before tests, since tracked-file contracts require `.git`; it does not invent an upstream SHA.
+Pytest uses a short worker-owned temporary root: nesting fixtures under the long evidence path exceeds
+Linux AF_UNIX socket limits in the rootless-Docker fixture. The extra failure was a harness path bug, not waived.
 
 ## Deferrals
 

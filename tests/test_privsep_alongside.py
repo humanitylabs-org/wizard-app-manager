@@ -103,8 +103,11 @@ def test_kvm_acceptance_uses_stock_restartable_gateway_not_a_stub():
     assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus' in setup
     assert 'qa-hermes.service' not in setup
     assert 'source ./activate' in setup and '.hermes/bin/hermes' in setup
+    assert "sync_venv(['messaging', 'mcp'], explicit=True)" in setup
     assert 'uv sync --project' not in setup  # do not fork PM's selected environment
     assert 'v["upstream_reachable"]' in text
+    assert "TemporaryDirectory(prefix='p3t-', dir='/srv/work')" in text
+    assert 'pytest-git-snapshot' in text
 
 
 def test_thin_client_fails_closed_without_local_fallback(monkeypatch, capsys):
