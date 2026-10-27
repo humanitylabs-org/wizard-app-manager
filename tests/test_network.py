@@ -10,7 +10,7 @@ from wam import network as net
 
 
 def app(app_id, uses=(), provides=(), services=None, **kw):
-    services = services or {app_id: {"main": True, "on_shared": True, "network_mode": "", "exposed": False,
+    services = services or {app_id: {"main": True, "internal_port": 80, "on_shared": True, "network_mode": "", "exposed": False,
                                      "networks": {"tipi_main_network": {"gw_priority": 1}}}}
     return {"id": app_id, "name": app_id, "uses": list(uses), "provides": list(provides), "router": False,
             "services": services, "custom": None, "host_access": [], **kw}
@@ -113,6 +113,150 @@ def test_missing_and_external_providers_are_reported_not_linked():
     assert states[("wizard-chatgpt", "hermes-agent")] == "external"
     assert states[("x", "nope")] == "not-installed"
     assert not [n for n in p["networks"].values() if n["kind"] == "link"]
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("collision", ["foreign-label", "wrong-internal", "wrong-owner", "missing-owner"])
+def test_connections_never_reports_colliding_network_identity_as_healthy(running, collision):
+    p = net.plan([app("x")], [], set())
+    live = live_from(p)
+    live["containers"][0]["running"] = running
+    name = net.app_net("x")
+    if collision == "foreign-label":
+        live["networks"][name]["labels"] = {}
+    elif collision == "wrong-internal":
+        live["networks"][name]["internal"] = not p["networks"][name]["internal"]
+    elif collision == "wrong-owner":
+        live["networks"][name]["labels"]["org.wizard-os.owner"] = "another-app"
+    else:
+        live["networks"][name]["labels"].pop("org.wizard-os.owner")
+    rep = net.report(type("C", (), {})(), p=p, live=live)
+    assert rep["live"] and not rep["ok"]
+    assert any("different network" in problem for problem in rep["apps"][0]["drift"])
+    assert not next(row for row in rep["networks"] if row["name"] == name)["matches"]
+    assert "matches the declarations" not in net.describe(rep)
+    assert bool(net.drift(p, live)) is running
+    if running:
+        assert name in net.drift(p, live)[0]["missing"]
+
+
+@pytest.mark.parametrize("field", ["owner", "consumer", "provider"])
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("populated", [False, True])
+def test_network_ownership_collision_never_attaches_or_deletes(tmp_path, monkeypatch, field, missing, populated):
+    grant = {"kind": "app", "from": "a", "to": "b", "reason": "uses", "approved": "install"}
+    p = net.plan([app("a", uses=["b"]), app("b")], [grant], set(), approved=[grant])
+    label = f"org.wizard-os.{field}"
+    name = next(n for n, spec in p["networks"].items() if label in spec["labels"])
+    live = live_from(p)
+    if missing:
+        live["networks"][name]["labels"].pop(label)
+    else:
+        live["networks"][name]["labels"][label] = "another-app"
+    live["networks"][name]["containers"] = ["foreign-container"] if populated else []
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (p, "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["errors"] and any(name in e for e in result["errors"])
+    assert not [call for call in fake.calls if call[:2] == ("network", "connect") and name in call]
+    assert not [call for call in fake.calls if call[:2] == ("network", "rm") and name in call]
+    assert name in fake.live["networks"]
+
+
+@pytest.mark.parametrize("kind", ["app", "link", "gateway"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_cleanup_preserves_foreign_orphans_with_incomplete_or_wrong_identity(tmp_path, monkeypatch, kind, missing):
+    name = net.link_name("gone", "other") if kind == "link" else net.app_net("gone") if kind == "app" else net.gw_net("gone")
+    labels = {net.LABEL: kind, "org.wizard-os.consumer": "gone", "org.wizard-os.provider": "other"} if kind == "link" else {
+        net.LABEL: kind, "org.wizard-os.owner": "gone"}
+    field = "org.wizard-os.consumer" if kind == "link" else "org.wizard-os.owner"
+    if missing:
+        labels.pop(field)
+    else:
+        labels[field] = "another-stack"
+    live = {"networks": {name: {"labels": labels, "internal": kind != "app", "subnets": [], "containers": ["foreign"]}}, "containers": []}
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (net.plan([], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["removed"] == [] and name in fake.live["networks"]
+    assert not [call for call in fake.calls if call[:2] in (("network", "disconnect"), ("network", "rm"))]
+
+
+@pytest.mark.parametrize("rows", [None, object(), {"info": {}}, [None, {"info": None}, {"info": "x", "app": {"exposed": True}}]])
+def test_unreadable_lifecycle_state_never_authorizes_publication(rows):
+    rt = type("RT", (), {"installed": lambda self: rows})()
+    assert net.published_urns(rt) == set()
+
+
+def test_lifecycle_lookup_failure_never_authorizes_publication():
+    def unavailable(self):
+        raise RuntimeError("temporarily offline")
+    assert net.published_urns(type("RT", (), {"installed": unavailable})()) == set()
+
+
+@pytest.mark.parametrize("main_service", ["base", "arch-main"])
+def test_watcher_preserves_the_owner_published_architecture_specific_main(tmp_path, monkeypatch, main_service):
+    from wam import test_catalog
+    monkeypatch.setattr(test_catalog, "host_architecture", lambda: "arm64")
+    recipe = {"services": {"base": {"image": "a", "command": ["base"], "x-runtipi": {"is_main": False}}},
+              "x-runtipi": {"overrides": [
+                  {"architecture": "amd64", "services": {"other-arch": {"image": "a", "x-runtipi": {"is_main": True}}}},
+                  {"architecture": "arm64", "services": {main_service: {"image": "b", "command": ["override"],
+                    "x-runtipi": {"is_main": True, "internal_port": 80}}}}]}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {"exposed": True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == "exposed"
+    planned = p["apps"][0]
+    assert main_service in planned["services"] and "other-arch" not in planned["services"]
+    assert net.keeps_shared(planned, main_service)
+    if main_service != "base":
+        assert not net.keeps_shared(planned, "base")
+    assert net.source_services(recipe)[main_service]["command"] == ["override"]
+    assert recipe["services"]["base"]["command"] == ["base"]
+
+
+@pytest.mark.parametrize("internal_port", [None, 0, 80])
+@pytest.mark.parametrize("source_mode", [{}, {"network_mode": None}, {"network_mode": ""}, {"network_mode": False}])
+@pytest.mark.parametrize("exposure", ["exposed", "exposedLocal"])
+def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(tmp_path, monkeypatch, internal_port, source_mode, exposure):
+    meta = {"is_main": True}
+    if internal_port is not None:
+        meta["internal_port"] = internal_port
+    recipe = {"services": {"main": {"image": "a", "x-runtipi": meta, **source_mode}}}
+    generated = {"services": {"main": {"image": "a", "labels": {"traefik.enable": "true"}, "networks": {net.SHARED: {}}}}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe, generated=generated)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {exposure: True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    planned = p["apps"][0]
+    routed = bool(internal_port) and not source_mode
+    assert planned["state"] == ("exposed" if routed else "isolated")
+    assert net.keeps_shared(planned, "main") is routed
+
+
+@pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])
+def test_watcher_never_trusts_recipe_exposure_labels_or_another_stores_same_id(monkeypatch, tmp_path, published_urn):
+    class RT:
+        def installed(self):
+            return [{"info": {"id": "x", "urn": published_urn or "x:wizardapps"}, "app": {"exposed": bool(published_urn)}}]
+    rt = RT()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    forged = app("x")
+    forged["services"]["x"]["exposed"] = True
+    monkeypatch.setattr(net, "read_apps", lambda *args, **kwargs: [forged])
+    c = type("C", (), {"home": tmp_path, "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == ("exposed" if published_urn == "x:wizardapps" else "isolated")
 
 
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
@@ -329,7 +473,7 @@ def live_from(p, on_shared=(), extra=None):
             nets.update((extra or {}).get((a["id"], s), {}))
             containers.append({"id": "x", "name": f"{a['id']}-{s}", "urn": f"{a['id']}:wizardapps", "service": s,
                                "running": True, "network_mode": "", "networks": nets})
-    return {"networks": {n: {"labels": {net.LABEL: v["kind"]}, "internal": v["internal"], "subnets": [],
+    return {"networks": {n: {"labels": dict(v["labels"]), "internal": v["internal"], "subnets": [],
                              "containers": []} for n, v in p["networks"].items()}, "containers": containers}
 
 
@@ -404,7 +548,7 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
     for cont in live["containers"]:
         cont["ports"] = [("127.0.0.1", 18000)] if cont["service"] == "stripe-connector" else []
     live["networks"] = {"runtipi_tipi_main_network": {"labels": {}, "internal": False, "subnets": ["172.18.0.0/16"], "containers": []},
-                        "wizard-link-old--gone": {"labels": {net.LABEL: "link"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
+                        "wizard-link-old--gone": {"labels": {net.LABEL: "link", "org.wizard-os.consumer": "old", "org.wizard-os.provider": "gone"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
     fake = FakeDocker(live)
     restarted = []
     # stripe's published port stops answering after it leaves the shared network: only it is restarted

@@ -300,6 +300,28 @@ def override_path(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "user-config" / store / app_id / "docker-compose.yml"
 
 
+def source_services(doc: dict) -> dict:
+    """Match ComposeBuilder: active-architecture mappings merge, arrays replace."""
+    import copy
+    services = copy.deepcopy(_plain(doc.get("services")) or {})
+    overrides = (_plain(doc.get("x-runtipi")) or {}).get("overrides") or []
+    if not overrides:
+        return services
+    from .test_catalog import host_architecture
+    architecture = host_architecture()
+    override = next((o for o in overrides if o.get("architecture") == architecture), {})
+
+    def merge(base, incoming):
+        if isinstance(base, dict) and isinstance(incoming, dict):
+            result = copy.deepcopy(base)
+            for key, value in incoming.items():
+                result[key] = merge(result.get(key), value)
+            return result
+        return copy.deepcopy(incoming)
+
+    return merge(services, override.get("services") or {})
+
+
 def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -> dict | None:
     """One installed (or about-to-be-installed) Wizard app as the planner needs it. Prefers the compose Runtipi
     generated (what actually runs), else the recipe from the installed or store copy (before the first install)."""
@@ -320,7 +342,7 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
         return {"id": app_id, "custom": f"compose does not parse ({str(e)[:80]})", "services": {}, "uses": []}
     w = _front(wm.read_text()) if wm else {}
     req = w.get("requires") if isinstance(w.get("requires"), dict) else {}
-    rsvcs = rdoc.get("services") or {}
+    rsvcs = source_services(rdoc)
     multi = len([s for s in rsvcs.values() if s]) > 1
     services = {}
     for name, rs in rsvcs.items():
@@ -350,7 +372,9 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
             return str(d.get("name")) if isinstance(d, dict) and d.get("name") else f"{app_id}_{store}_{logical}"
         services[name] = {
             "docker_networks": sorted(docker_name(k) for k in nets if k != SHARED),
-            "main": bool(xr.get("is_main")),
+            "main": xr.get("is_main") is True,
+            "internal_port": xr.get("internal_port"),
+            "source_network_mode_present": "network_mode" in rs,
             "on_shared": SHARED in nets or bool(xr.get("is_main") or xr.get("add_to_main_network")) and not nm,
             "network_mode": nm,
             "networks": {k: v for k, v in nets.items()},
@@ -758,6 +782,38 @@ def _bridged(container: dict) -> bool:
     return nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
 
 
+def network_owned_by(planned: dict, live: dict | None) -> bool:
+    """Full ownership identity; a generic management-kind label is not authority."""
+    return bool(live and (live.get("labels") or {}).get(LABEL) == planned["kind"] and
+                all((live.get("labels") or {}).get(k) == v for k, v in planned["labels"].items()))
+
+
+def network_matches(planned: dict, live: dict | None) -> bool:
+    """Match identity and shape consistently in reconciliation, drift and reporting."""
+    return live is not None and network_owned_by(planned, live) and live.get("internal") == planned["internal"]
+
+
+def owned_network(name: str, live: dict) -> bool:
+    """An orphan is ours only when its complete labels identify this canonical name."""
+    labels = live.get("labels") or {}
+    kind = labels.get(LABEL)
+    expected = {LABEL: kind}
+    if kind in ("app", "gateway"):
+        owner = labels.get("org.wizard-os.owner")
+        if not isinstance(owner, str) or not ID.fullmatch(owner) or name != (app_net(owner) if kind == "app" else gw_net(owner)):
+            return False
+        expected["org.wizard-os.owner"] = owner
+    elif kind == "link":
+        consumer, provider = labels.get("org.wizard-os.consumer"), labels.get("org.wizard-os.provider")
+        if (not isinstance(consumer, str) or not ID.fullmatch(consumer) or
+                not isinstance(provider, str) or not ID.fullmatch(provider) or name != link_name(consumer, provider)):
+            return False
+        expected.update({"org.wizard-os.consumer": consumer, "org.wizard-os.provider": provider})
+    elif kind != "core" or name != CORE_NET:
+        return False
+    return network_matches({"kind": kind, "internal": kind != "app", "labels": expected}, live)
+
+
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
     """Differences between the plan and running containers: one row per container that is off-plan."""
     rows = []
@@ -767,7 +823,8 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
         for c in live["containers"]:
             if c["urn"] != urn or not c["running"]:
                 continue
-            have = {k for k in c["networks"] if ours(k)}
+            have = {k for k in c["networks"] if ours(k) and
+                    (k not in p["networks"] or k not in live["networks"] or network_matches(p["networks"][k], live["networks"][k]))}
             want = set((a.get("want") or {}).get(c["service"]) or {})
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
@@ -822,9 +879,30 @@ def _context(c, rt=None, extra=()):
     return rt, ids | set(extra), grants, ext, STORE, approved
 
 
+def published_urns(rt) -> set[str]:
+    """Unreadable or malformed lifecycle state authorizes no publication."""
+    try:
+        rows = rt.installed()
+    except Exception:  # noqa: BLE001 - an unavailable owner record is not permission
+        return set()
+    if not isinstance(rows, (list, tuple)):
+        return set()
+    return {r["info"]["urn"] for r in rows if isinstance(r, dict) and isinstance(r.get("info"), dict)
+            and isinstance(r["info"].get("urn"), str) and isinstance(r.get("app"), dict)
+            and (r["app"].get("exposed") is True or r["app"].get("exposedLocal") is True)}
+
+
 def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
     rt, ids, grants, ext, store, approved = _context(c, rt, extra)
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
+    # Generated labels may predate the start gate or come from a malicious recipe. Only the App Manager's
+    # owner-configured lifecycle state can publish an app; do not let the watcher rejoin it from labels alone.
+    published = published_urns(rt)
+    for a in apps:
+        for service in a["services"].values():
+            service["exposed"] = (f"{a['id']}:{store}" in published and service.get("main", False) and
+                                  bool(service.get("internal_port")) and not service.get("source_network_mode_present", False)
+                                  and not service.get("network_mode"))
     from . import slots as _slots
     try:
         chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()
@@ -882,10 +960,10 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     the_pool, taken, rejected = pool(c.home), set(), set()
     for name, n in sorted(p["networks"].items()):
         have = live["networks"].get(name)
-        if have and have["internal"] == n["internal"] and have["labels"].get(LABEL) == n["kind"]:
+        if network_matches(n, have):
             continue
-        if have:   # same name, wrong shape (or not ours): replace only if it is ours and empty
-            if have["labels"].get(LABEL) and not have["containers"]:
+        if have:   # only our exact ownership identity may replace an empty network with the wrong shape
+            if network_owned_by(n, have) and not have["containers"]:
                 _run(docker, "network", "rm", name, check=False)
             else:
                 out["errors"].append(f"{name}: a different network with this name exists; not touched")
@@ -997,7 +1075,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
     for name, n in sorted(live["networks"].items()):
-        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"] and name not in rejected:
+        if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             r = _run(docker, "network", "rm", name, check=False)
@@ -1107,11 +1185,15 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
     for r in rows:
         by_app.setdefault(r["app"], []).append(r)
     apps = []
+    invalid_networks = {name for name, planned in p["networks"].items()
+                        if name in live["networks"] and not network_matches(planned, live["networks"][name])}
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
     for a in p["apps"]:
         out_edges = [e for e in p["edges"] if e["from"] == a["id"]]
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
-        problems = []
+        problems = [f"{name}: a different network with this name exists (wrong ownership or internal flag)"
+                    for name in sorted(invalid_networks)
+                    if any(m["app"] == a["id"] for m in p["networks"][name]["members"])]
         for r in by_app.get(a["id"], []):
             if r["on_shared"] and not r["should_share"] and a["state"] in ("isolated", "exposed"):
                 problems.append(f"{r['service']} is still on the shared network (every app can reach it)")
@@ -1190,9 +1272,11 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
            "gateway": p["gateway"], "apps": apps,
            "networks": [{"name": n, "kind": v["kind"], "internal": v["internal"],
                          "members": sorted({f"{m['app']}/{m['service']}" for m in v["members"]}),
-                         "exists": n in live["networks"]} for n, v in sorted(p["networks"].items())],
+                         "exists": n in live["networks"], "matches": network_matches(v, live["networks"].get(n))}
+                        for n, v in sorted(p["networks"].items())],
            "shared_network": {"name": shared_docker, "containers": shared_members},
-           "ok": live_ok and not any(x["drift"] for x in apps) and all(n in live["networks"] for n in p["networks"])}
+           "ok": live_ok and not invalid_networks and not any(x["drift"] for x in apps)
+                 and all(network_matches(v, live["networks"].get(n)) for n, v in p["networks"].items())}
     if not live_ok:
         res["error"] = f"could not read Docker ({err})"
     return res

@@ -107,6 +107,23 @@ services:
     });
   });
 
+  describe('Owner-only Wizard exposure', () => {
+    it.each([
+      { 'traefik.enable': true, 'traefik.http.routers.sneak.rule': 'Host(`sneak.example`)', keep: 'yes' },
+      ['traefik.enable=true', 'TRAEFIK.http.routers.sneak.rule=Host(`sneak.example`)', 'keep=yes'],
+    ])('drops recipe Traefik control labels but preserves owner publication and ordinary labels', (labels) => {
+      const input = { services: { web: { image: 'nginx', labels, 'x-runtipi': { is_main: true, internal_port: 80 } } }, 'x-runtipi': { schema_version: 2 as const } };
+      const wizardUrn = createAppUrn('nginx', 'wizardapps');
+      const privateCompose = yaml.parse(composeBuilder.getDockerCompose(input, { exposed: false, exposedLocal: false }, wizardUrn, subnet));
+      expect(Object.keys(privateCompose.services.web.labels).some((key) => key.toLowerCase().startsWith('traefik.'))).toBe(false);
+      expect(privateCompose.services.web.labels.keep).toBe('yes');
+      const published = yaml.parse(composeBuilder.getDockerCompose(input, { exposed: true, domain: 'owner.example' }, wizardUrn, subnet));
+      expect(published.services.web.labels['traefik.enable']).toBe(true);
+      expect(published.services.web.labels['traefik.http.routers.sneak.rule']).toBeUndefined();
+      expect(published.services.web.labels['TRAEFIK.http.routers.sneak.rule']).toBeUndefined();
+    });
+  });
+
   describe('Architecture overrides', () => {
     it('should merge architecture-specific overrides', () => {
       const doc = `
