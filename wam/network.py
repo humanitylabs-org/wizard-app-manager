@@ -51,6 +51,15 @@ class NetworkError(RuntimeError):
     pass
 
 
+OURS = re.compile(r"(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core)")
+
+
+def ours(name: str) -> bool:
+    """A network wam manages. Compose project networks of apps whose id starts with `wizard-` look similar
+    (`wizard-claude_wizardapps_wizard-claude_wizardapps_network`) but always contain an underscore."""
+    return bool(OURS.fullmatch(name))
+
+
 # ---------------------------------------------------------------- tag-preserving YAML (overrides use !reset/!override)
 
 class _Tagged:
@@ -230,7 +239,13 @@ def read_app(runtipi_root: Path, store: str, app_id: str) -> dict | None:
         labels = _plain(gs.get("labels")) or {}
         if isinstance(labels, list):
             labels = dict(str(x).split("=", 1) for x in labels if "=" in str(x))
+        top = (gdoc or rdoc).get("networks") or {}
+
+        def docker_name(logical: str) -> str:
+            d = _plain(top.get(logical)) or {}
+            return str(d.get("name")) if isinstance(d, dict) and d.get("name") else f"{app_id}_{store}_{logical}"
         services[name] = {
+            "docker_networks": sorted(docker_name(k) for k in nets if k != SHARED),
             "main": bool(xr.get("is_main")),
             "on_shared": SHARED in nets or bool(xr.get("is_main") or xr.get("add_to_main_network")) and not nm,
             "network_mode": nm,
@@ -366,7 +381,8 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         if not e["provider"]:
             continue
         if not c or not p:
-            e["state"] = "shared" if not on else "unmanaged"
+            consumer = by_id.get(e["from"]) or {}
+            e["state"] = ("shared" if not on else "host" if consumer.get("state") == "host-network" else "unmanaged")
             continue
         if gateway["path"] == "network" and (c["id"] in core or p["id"] in core):
             e["state"], e["network"] = "gateway", (gw_net(p["id"]) if c["id"] in core else gw_net(c["id"]))
@@ -564,7 +580,7 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
         for c in live["containers"]:
             if c["urn"] != urn or not c["running"]:
                 continue
-            have = {k for k in c["networks"] if k.startswith(("wizard-",))}
+            have = {k for k in c["networks"] if ours(k)}
             want = set((a.get("want") or {}).get(c["service"]) or {})
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
@@ -573,10 +589,15 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             bad_alias = [n for n, al in ((a.get("want") or {}).get(c["service"]) or {}).items()
                          if n in c["networks"] and not set(al) <= set(c["networks"][n])]
             row["alias_missing"] = bad_alias
-            needs = bool(row["missing"] or row["extra"] or bad_alias or
+            # the app's own compose networks (its private network, recipe networks) must never be lost
+            nm = str(c.get("network_mode") or "")
+            bridged = nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
+            row["lost"] = sorted(n for n in a["services"].get(c["service"], {}).get("docker_networks") or []
+                                 if n not in c["networks"]) if bridged else []
+            needs = bool(row["missing"] or row["extra"] or bad_alias or row["lost"] or
                          (a["state"] == "isolated" and c["service"] in (a.get("want") or {}) and on_shared))
             if needs:
-                row["recreate"] = a["state"] == "isolated" and (on_shared or app_net(a["id"]) in row["missing"])
+                row["recreate"] = bool(row["lost"]) or (a["state"] == "isolated" and (on_shared or app_net(a["id"]) in row["missing"]))
                 rows.append(row)
     return rows
 
@@ -692,8 +713,8 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
             ok &= connect(row["container"], name, want.get(name))
         if row["should_share"] and not row["on_shared"]:
             ok &= connect(row["container"], shared_docker, [row["service"]])
-        if not ok:
-            recreate.add(row["app"])
+        if not ok or row["lost"]:
+            recreate.add(row["app"])   # a compose network the app needs is gone: Runtipi rebuilds it from the compose
             continue
         for name in row["extra"]:
             disconnect(row["container"], name)
@@ -717,7 +738,7 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
     for name, n in sorted(live["networks"].items()):
-        if n["labels"].get(LABEL) and name not in p["networks"]:
+        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"]:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             r = _run(docker, "network", "rm", name, check=False)
@@ -785,6 +806,8 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                 problems.append(f"{r['service']} is on {n}, which nothing declares")
             for n in r.get("alias_missing") or []:
                 problems.append(f"{r['service']} answers on {n} without its name")
+            for n in r.get("lost") or []:
+                problems.append(f"{r['service']} lost its own network {n}")
         containers = [x for x in live["containers"] if x["urn"] == f"{a['id']}:{STORE}"]
         running = any(x["running"] for x in containers)
         if a["state"] == "isolated":
@@ -806,7 +829,11 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             "id": a["id"], "name": a.get("name") or a["id"], "state": a["state"], "why": a.get("why") or "",
             "running": running, "internet": internet, "gateway": gw, "host_access": a.get("host_access") or [],
             "can_reach": [{"to": e["provider"] or e["to"], "declared": e["to"], "reason": e["reason"], "state": e["state"],
-                           "network": e.get("network")} for e in out_edges],
+                           "network": e.get("network")} for e in out_edges] +
+                         # a link is one Docker network shared by exactly two apps: the provider can open connections
+                         # back to the consumer too (Docker networks are two-way); shown so the view never understates it
+                         [{"to": e["from"], "declared": None, "reason": "two-way link", "state": "peer", "network": e.get("network")}
+                          for e in in_edges if e["state"] == "link"],
             "reached_by": [{"from": e["from"], "reason": e["reason"], "state": e["state"], "network": e.get("network")}
                            for e in in_edges],
             "drift": problems,
@@ -830,6 +857,8 @@ def describe(rep: dict) -> str:
              f"gateway: {rep['gateway']['detail']}",
              f"Live check: {'matches the declarations' if rep['ok'] else 'DRIFT (see below)' if rep['live'] else rep.get('error')}", ""]
     word = {"link": "", "gateway": " (gateway network)", "external": " (outside Runtipi: not reachable from apps)",
+            "host": " (from the server's network, on its published 127.0.0.1 port)",
+            "peer": " (two-way: it uses this app over their link)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)"}
     for a in rep["apps"]:
         reach = [f"{e['to']}{word.get(e['state'], '')}" for e in a["can_reach"]]

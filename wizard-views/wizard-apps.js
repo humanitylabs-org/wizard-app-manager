@@ -499,6 +499,8 @@ const REACH = {
   link: '',
   gateway: ' · through the gateway network',
   external: ' · outside the App Manager: not reachable from apps',
+  host: ' · from the server’s network, on its 127.0.0.1 port',
+  peer: ' · two-way: it uses this app over their link',
   'not-installed': ' · not installed',
   unmanaged: ' · not isolated',
   shared: ' · shared network',
@@ -539,7 +541,8 @@ export async function renderConnections(el, ctx = {}) {
         const by = (a.reached_by || []).filter((e) => e.state === 'link' || e.state === 'gateway').map((e) => e.from);
         const drift = (a.drift || []).length;
         const warn = drift || (a.host_access || []).length || a.state === 'exposed';
-        const sub = reach.length ? `Reaches ${reach.map((e) => e.to).join(', ')}` : 'Reaches no other app';
+        const own = reach.filter((e) => e.state !== 'peer');
+        const sub = own.length ? `Uses ${own.map((e) => e.to).join(', ')}` : 'Uses no other app';
         const detail =
           open === a.id
             ? `<div class="wam-conn-detail">

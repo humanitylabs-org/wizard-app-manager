@@ -272,6 +272,26 @@ def live_from(p, on_shared=(), extra=None):
                              "containers": []} for n, v in p["networks"].items()}, "containers": containers}
 
 
+def test_project_networks_of_wizard_named_apps_are_never_taken_for_ours():
+    """Regression (VM rehearsal): wizard-chatgpt's compose network is wizard-chatgpt_wizardapps_wizard-chatgpt_wizardapps_network;
+    treating every `wizard-*` name as ours disconnected it and the app lost its engine."""
+    assert net.ours("wizard-link-a--b") and net.ours("wizard-app-wizard-chatgpt") and net.ours("wizard-core")
+    assert not net.ours("wizard-chatgpt_wizardapps_wizard-chatgpt_wizardapps_network")
+    a = app("wizard-chatgpt", services={
+        "wizard-chatgpt": {"main": True, "on_shared": True, "network_mode": "", "exposed": False,
+                           "networks": {"tipi_main_network": {}, "wizard-chatgpt_wizardapps_network": {}},
+                           "docker_networks": ["wizard-chatgpt_wizardapps_wizard-chatgpt_wizardapps_network"]}})
+    p = net.plan([a], [], set())
+    proj = "wizard-chatgpt_wizardapps_wizard-chatgpt_wizardapps_network"
+    live = {"networks": {}, "containers": [{"name": "c", "urn": "wizard-chatgpt:wizardapps", "service": "wizard-chatgpt",
+                                            "running": True, "network_mode": proj,
+                                            "networks": {proj: [], "wizard-app-wizard-chatgpt": []}}]}
+    assert net.drift(p, live) == []
+    live["containers"][0]["networks"].pop(proj)
+    rows = net.drift(p, live)
+    assert rows[0]["lost"] == [proj] and rows[0]["recreate"] and rows[0]["extra"] == []
+
+
 def test_drift_finds_shared_network_missing_and_extra_links():
     p = net.plan(carlos(), [], set())
     assert net.drift(p, live_from(p)) == []
@@ -392,3 +412,48 @@ def test_enabled_switch(tmp_path, monkeypatch):
     assert net.enabled(tmp_path)
     monkeypatch.setenv("WIZARD_APP_ISOLATION", "0")
     assert not net.enabled(tmp_path)
+
+
+def gate_env(tmp_path, monkeypatch, compose):
+    from wam import cli
+    root = tmp_path / "runtipi"
+    d = root / "repos" / "wizardapps" / "apps" / "x"
+    d.mkdir(parents=True)
+    (d / "docker-compose.yml").write_text(compose)
+    installs, steps = [], []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": "x"}}
+        def install(self, urn, form): installs.append(urn)
+        def wait_status(self, urn, want, timeout=900): return "running"
+    monkeypatch.setenv("RUNTIPI_ROOT", str(root))
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    monkeypatch.setattr(cli.alongside, "load", lambda h: None)
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: {"id": "x", "repo": "o/x", "uses": []})
+    monkeypatch.setattr(cli, "build_form", lambda *a, **k: ({"port": 1}, []))
+    monkeypatch.setattr(cli, "alongside_role", lambda rec, i: None)
+    monkeypatch.setattr(cli, "trusted_origin_env", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {"apps": [{"id": "x"}]})
+    monkeypatch.setattr(cli, "host_dashboard_consumers", lambda c, ids: {})
+    monkeypatch.setattr(cli, "network_step", lambda c, rt=None, extra=(), restart=True: steps.append((set(extra), restart)) or {})
+    return cli, installs, steps
+
+
+def test_installer_refuses_host_access_unless_the_owner_flags_it(tmp_path, monkeypatch):
+    import pytest
+    cli, installs, steps = gate_env(tmp_path, monkeypatch,
+                                    "services:\n  x:\n    image: a\n    network_mode: host\n    volumes: ['/var/run/docker.sock:/s']\n")
+    with pytest.raises(SystemExit, match="REFUSED: x asks for access that escapes app isolation"):
+        cli.install(cli.Config(), "x")
+    assert installs == [] and steps == []
+    res = cli.install(cli.Config(), "x", allow_host_access=True)
+    assert installs == ["x:wizardapps"] and res["status"] == "running"
+
+
+def test_install_plans_the_networks_before_the_first_start_and_reconciles_after(tmp_path, monkeypatch):
+    cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n")
+    cli.install(cli.Config(), "x")
+    assert steps == [({"x"}, False), (set(), True)] and installs == ["x:wizardapps"]
