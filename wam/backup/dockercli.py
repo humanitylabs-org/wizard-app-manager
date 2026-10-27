@@ -1,8 +1,7 @@
-"""Reach the same local Docker daemon before the owner's group login takes effect.
+"""Reach Docker as the service account, including its existing rootless daemon.
 
-Probe with the backup child environment, never the engine's credentials. Sudo is
-noninteractive and pins a local socket explicitly: sudo's HOME/config must not
-silently select a different daemon. Custom contexts/TLS stay unprivileged.
+Probe with the backup child environment, never the engine's credentials.
+Socket failures stay unprivileged; host preparation and a fresh login fix group access.
 """
 from __future__ import annotations
 
@@ -47,7 +46,7 @@ def docker(env: dict | None = None) -> list[str]:
             pass
 
         # Rootless Docker (the installer's ~/bin/docker + /run/user/<uid>/docker.sock): a systemd unit's PATH and
-        # environment do not carry it, so look for it before trying root's socket.
+        # environment do not carry it, so look for it before returning the original route.
         if not env.get("DOCKER_HOST") and not env.get("DOCKER_CONTEXT") and not shutil.which("docker", path=env.get("PATH")):
             sock = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "docker.sock"
             binary = Path(env.get("HOME") or Path.home()) / "bin" / "docker"
@@ -59,34 +58,11 @@ def docker(env: dict | None = None) -> list[str]:
                 except (OSError, subprocess.SubprocessError):
                     pass
 
-        # A root context or TLS config could point at another machine. Do not
-        # escalate remote connections or forward credentials with sudo -E.
-        if (env.get("DOCKER_CONTEXT", "") not in ("", "default")
-                or any(env.get(k) for k in ("DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_TLS"))):
-            return ["docker"]
-        host = "" if env.get("DOCKER_CONTEXT") else env.get("DOCKER_HOST", "")
-        if not host:
-            try:
-                context = run(["docker", "context", "show"]).stdout
-                if isinstance(context, bytes):
-                    context = context.decode()
-                if context.strip() != "default":
-                    return ["docker"]
-            except (OSError, subprocess.SubprocessError):
-                return ["docker"]
-            host = "unix:///var/run/docker.sock"
-        if host.startswith("unix:///"):
-            argv = ["sudo", "-n", "docker", "--host", host]
-            try:
-                run(argv + ["info", "--format", "{{.ID}}"])
-                return remember(argv)
-            except (OSError, subprocess.SubprocessError):
-                pass
     return ["docker"]  # Preserve the caller's actual error; never prompt.
 
 
 def verb(argv: list[str]) -> str:
-    """The docker subcommand in argv, including the pinned-socket sudo form."""
+    """The docker subcommand in argv, including the pinned rootless socket form."""
     i = argv.index("docker") if "docker" in argv else 0
     i += 1
     if argv[i:i + 1] == ["--host"]:

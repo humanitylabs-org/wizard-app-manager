@@ -31,7 +31,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
         target.chmod(0o755)
 
     tool("id", 'case "${1:-}" in -un) echo sandbox;; *) echo 1000;; esac\n')
-    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; export MOCK_SUDO=1; exec "$@"\n')
+    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; [ "${1:-}" != -n ] || shift; export MOCK_SUDO=1; exec "$@"\n')
     tool("docker", '''printf "docker sudo=%s %s\\n" "${MOCK_SUDO:-0}" "$*" >> "$CALLS"
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
@@ -91,6 +91,11 @@ exec "PYEXE" "$@"
 @pytest.mark.parametrize("docker_access", [True, False])
 def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_access):
     p, home, root, calls, outcome = sandbox(tmp_path, docker_access)
+    if not docker_access:
+        assert p.returncode == 2, p.stdout + p.stderr
+        assert 'administrator to run host preparation' in p.stderr
+        assert 'sudo -n docker' not in calls.read_text()
+        return
     assert p.returncode == 0, p.stdout + p.stderr
     log = calls.read_text().splitlines()
     docker_calls = [line for line in log if line.startswith("docker ")]
@@ -310,7 +315,7 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     target = dl.split(" -o ", 1)[1]
     assert not target.startswith("/tmp/runtipi-setup.sh")
     assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
-    assert any(l.startswith("sudo bash " + target) for l in log)
+    assert any(l.startswith("sudo -n bash " + target) for l in log)
     assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"

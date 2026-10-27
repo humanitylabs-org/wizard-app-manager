@@ -22,7 +22,7 @@
 #
 # What it does:
 #   1. As root: installs Docker, git, gh and python3-yaml, and creates the `wizard` user (docker group,
-#      passwordless sudo) that owns everything. Skipped when run by an existing sudo user.
+#      fixed root helpers, no blanket sudo). The agent is a container without the Docker socket.
 #   2. GitHub login only when asked for with WIZARD_GITHUB=1 (for private, team-only apps). All default apps are
 #      public today, so normally nothing is asked.
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
@@ -199,7 +199,7 @@ fresh_box() {  # fresh_box [user]
   # Runtipi is also started by alongside host preparation. Without an explicit fresh receipt, a verified
   # existing host Hermes wins over that container heuristic (including root reruns for a named owner).
   has_hermes && return 1
-  { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx runtipi
 }
 # Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
 alongside_users() {
@@ -365,6 +365,12 @@ as_user() {
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
     bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+}
+prepare_fresh_user() {  # root only, before removing the historical blanket grant
+  local helper; helper="$(mktemp)"
+  curl -fsSL "$REPO/raw/$REF/scripts/prepare-fresh-user.sh" -o "$helper"
+  bash "$helper" "$WUSER" "$REPO" "$REF" "$SUDOERS_DIR"
+  rm -f "$helper"
 }
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
@@ -972,9 +978,10 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
     useradd -m -s /bin/bash "$WUSER"
     echo "created user $WUSER"
   fi
+  # This remains the service account, not the agent (which runs in hermes-agent
+  # without the Docker socket). A new login below activates Docker membership.
   usermod -aG docker "$WUSER"
-  echo "$WUSER ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_DIR/90-wizard-$WUSER"
-  chmod 0440 "$SUDOERS_DIR/90-wizard-$WUSER"
+  prepare_fresh_user
   # Root's SSH keys also let you in as the wizard user.
   if [ -s /root/.ssh/authorized_keys ] && [ ! -s "/home/$WUSER/.ssh/authorized_keys" ]; then
     install -d -m 700 -o "$WUSER" -g "$WUSER" "/home/$WUSER/.ssh"
@@ -1003,7 +1010,10 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
-command -v git >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq git >/dev/null
+command -v git >/dev/null || {
+  echo 'Git is missing. Ask an administrator to run host preparation before retrying.' >&2
+  exit 2
+}
 if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
   printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
@@ -1415,10 +1425,7 @@ def run(*cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
-try:
-    docker = ["docker"] if subprocess.run(["docker", "info"], capture_output=True).returncode == 0 else ["sudo", "-n", "docker"]
-except OSError:
-    docker = ["docker"]
+docker = ["docker"]
 def digests_of(container):
     image_id = run(*docker, "inspect", "--format", "{{.Image}}", container)
     if not image_id:

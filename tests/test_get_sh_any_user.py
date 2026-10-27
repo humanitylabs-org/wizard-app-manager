@@ -215,7 +215,8 @@ def test_no_hermes_root_still_makes_the_wizard_user_fresh(box):
     assert "useradd -m -s /bin/bash wizard" in box.log.read_text()
     line = box.handoff()
     assert line.startswith("sudo -iu wizard ") and _env_of(line)["WIZARD_MODE"] == "fresh"
-    assert (box.sudoers / "90-wizard-wizard").exists()
+    assert not (box.sudoers / "90-wizard-wizard").exists()
+    assert 'scripts/prepare-fresh-user.sh' in box.log.read_text()
 
 
 @pytest.mark.parametrize("record", ["none", "alongside", "failed"])

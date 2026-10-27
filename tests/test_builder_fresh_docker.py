@@ -1,5 +1,4 @@
-"""Fresh-box doctor must use the installer's already-authorized local Docker route."""
-from pathlib import Path
+"""David's fresh-box audit: runtime Docker access never falls back to sudo."""
 from types import SimpleNamespace
 import subprocess
 import pytest
@@ -20,21 +19,17 @@ def test_fresh_docker_probe_route(tmp_path, monkeypatch, context):
     calls = []
     def run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[0] == 'docker':
+        assert cmd[0] == 'docker'
+        assert kwargs['timeout'] <= 20
+        if context is not None:
             error = 'connection refused' if context == 'other-error' else 'permission denied at unix:///var/run/docker.sock'
             raise subprocess.CalledProcessError(1, cmd, stderr=error)
-        assert cmd[:3] == ['sudo', '-n', 'docker']
-        assert kwargs['timeout'] <= 20
-        if context == 'sudo-denied':
-            raise subprocess.CalledProcessError(1, cmd, stderr='sudo: a password is required')
         return SimpleNamespace(returncode=0, stdout='engine-id\n' if 'ps' in cmd else '[]', stderr='')
     monkeypatch.setattr(bb.subprocess, 'run', run)
     result = bb.runtime_health(SimpleNamespace(runtipi_root=tmp_path))
     assert result[0][1] is (context is None)
     if context is None:
-        assert calls[-1][:6] == ['sudo', '-n', 'docker', 'exec', '-u', '1000:1000']
-        assert len(calls) == 3
-    elif context in ('host', 'context', 'other-error'):
-        assert len(calls) == 1
-    else:
+        assert calls[-1][:4] == ['docker', 'exec', '-u', '1000:1000']
         assert len(calls) == 2
+    else:
+        assert len(calls) == 1

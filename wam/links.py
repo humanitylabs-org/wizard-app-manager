@@ -22,13 +22,10 @@ ADMIN_PORTS = {8480, 8443}   # the App Manager itself: box-only
 
 
 def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-    """Run a tailscale command as this user (works when it is the tailnet operator), else once more with sudo -n
-    (the installer's wizard user has passwordless sudo). Never prompts."""
+    """Host preparation designates the service account as operator. Never elevate."""
     p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    if p.returncode != 0 and os.geteuid() != 0 and shutil.which("sudo"):
-        q = subprocess.run(["sudo", "-n", *args], capture_output=True, text=True, timeout=timeout)
-        if q.returncode == 0 or not p.stdout:
-            return q
+    if p.returncode and 'access denied' in (p.stderr or '').lower():
+        p.stderr += '\nAsk an administrator to set this service account as the Tailscale operator during host preparation.'
     return p
 
 

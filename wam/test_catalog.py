@@ -43,12 +43,11 @@ def resolve(ref):
 
 
 def host_architecture():
-    """The Docker daemon's architecture (amd64/arm64). Never raises: a manager service that can't reach Docker
-    yet (fresh box before docker group membership is active, rootless socket not in its env) falls back to
-    `sudo -n docker`, then to this machine's own CPU, which is the local daemon's architecture."""
+    """The daemon's architecture, or this machine's CPU when Docker is unavailable.
+    Never elevates: service-account group membership is activated at host preparation."""
     import platform
     norm = {'aarch64': 'arm64', 'x86_64': 'amd64'}
-    for argv in (['docker'], ['sudo', '-n', 'docker']):
+    for argv in (['docker'],):
         try:
             r = subprocess.run(argv + ['info', '--format', '{{.Architecture}}'], capture_output=True, text=True,
                                timeout=20, check=True)
