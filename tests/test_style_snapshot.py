@@ -124,11 +124,17 @@ def test_design_rules_skip_vendored_and_find_the_top_frame(tmp_path):
     (web / 'index.html').write_text(html)
     (web / 'styles.css').write_text('@media (min-width: 1px) { #root { max-width: 900px } }\n'
                                     '.card { color: var(--ink); max-width: none; }\n'
-                                    'html.wz-hosted .shell::before { max-width: 10px }\n')
+                                    'html.wz-hosted .shell::before { max-width: 10px }\n'
+                                    '.settings-panel main, .card .wz-app { max-width: 60ch }\n')
     (web / 'vendor').mkdir()
     (web / 'vendor/lib.css').write_text('.wz-app { max-width: 1px; color: rgb(0, 0, 0); }')
     (web / 'vendor/lib.js').write_text('alert(1)')
     (web / 'more.js').write_text('// alert("commented")\nfunction confirm(x) { return x }\nobj.prompt("ok")\n')
     rows = builder.design_rows(app)
     assert [r['rule'] for r in rows] == ['design: the window is the page']
-    assert '#root' in rows[0]['detail'] and '.shell' in rows[0]['detail'] and 'vendor' not in rows[0]['detail']
+    detail = rows[0]['detail']
+    assert '#root' in detail and '.shell' in detail and 'vendor' not in detail and 'settings-panel' not in detail
+    assert '.card .wz-app' not in detail
+    (app / 'src').mkdir()
+    (app / 'src/View.tsx').write_text('export const ask = () => window.confirm("Sure?")\n')
+    assert 'src/View.tsx' in builder.design_rows(app)[-1]['detail']

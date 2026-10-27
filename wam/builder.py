@@ -156,21 +156,26 @@ def _frame_tokens(root):
     return tokens
 
 
+def _simple(compound):
+    return set(re.findall(r'[.#:]?[\w-]+', re.sub(r'::?[\w-]+(\([^)]*\))?$', '', compound)))
+
+
 def design_rows(root):
     """Warnings for app/design rule breaks (wizard-os style/APP-DESIGN-RULES.md). Never errors."""
     root = Path(root)
     frame, capped, colours, dialogs = _frame_tokens(root), [], [], []
-    for p in _own_files(root, {'.css'}):
+    for p in _own_files(root, {'.css', '.scss', '.less'}):
         css = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         for sel, decl in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
             if re.search(r'(?<![\w-])max-width\s*:\s*(?!none\b)', decl):
                 for one in sel.split(','):
-                    last = re.split(r'[\s>+~]+', one.strip())[-1] if one.strip() else ''
-                    if set(re.findall(r'[.#:]?[\w-]+', re.sub(r'::?[\w-]+(\([^)]*\))?$', '', last))) & frame:
+                    parts = [_simple(x) for x in re.split(r'[\s>+~]+', one.strip()) if x]
+                    # Only the frame itself: a frame token reached through root/frame ancestors, never a nested `main`.
+                    if parts and parts[-1] & frame and all(x & (frame | {'html', 'body', ':root'}) for x in parts[:-1]):
                         capped.append(f'{p.relative_to(root)}: {one.strip()}')
             if _COLOUR.search(decl):
                 colours.append(str(p.relative_to(root)))
-    for p in _own_files(root, {'.js', '.mjs', '.html'}):
+    for p in _own_files(root, {'.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.html'}):
         text = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         text = re.sub(r'(?m)^\s*//.*$', '', text)
         if any(not re.search(r'function\s*$', text[max(0, m.start() - 40):m.start()]) for m in _DIALOG.finditer(text)):
