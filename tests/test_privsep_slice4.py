@@ -20,6 +20,12 @@ from wam.backup import box as backup_box, cli as backup_cli, restore
 def api(tmp_path, monkeypatch):
     cfg = SimpleNamespace(home=tmp_path / 'home', runtipi_root=tmp_path / 'rt')
     cfg.home.mkdir()
+    cfg.runtipi = lambda: SimpleNamespace(installed=lambda: [])
+    cfg.local_links = {'apps': []}
+    def local_registry(installed, store, host, root):
+        assert host == '127.0.0.1'  # INTERNAL_IP and gateway projections are not Serve targets
+        return cfg.local_links
+    monkeypatch.setattr(cli.registry, 'build', local_registry)
     monkeypatch.setattr(cli.Handler, 'cfg', cfg, raising=False)
     monkeypatch.setattr(cli.Handler, 'token', 'server-token', raising=False)
     monkeypatch.setattr(cli.Handler, 'agent_token', 'agent-token', raising=False)
@@ -78,8 +84,10 @@ def test_restore_from_repo_host_mount_returns_approval_before_mutation(api, monk
 @pytest.mark.parametrize('action', ['publish', 'unpublish'])
 def test_agent_links_reach_service_operator_not_client(api, monkeypatch, action):
     cfg, req = api
+    cfg.local_links = {'apps': [
+        {'id': 'audit', 'status': 'running', 'view': {'url': 'http://127.0.0.1:18799/'}}]}
     monkeypatch.setattr(cli, 'write_registry', lambda c: {'apps': [
-        {'id': 'audit', 'status': 'running', 'view': {'url': 'http://127.0.0.1:18799/'}}]})
+        {'id': 'audit', 'status': 'running', 'view': {'url': 'http://10.0.2.15:18799/'}}]})
     monkeypatch.setattr(links, 'tailnet', lambda: {'state': 'NeedsLogin', 'host': ''})
     status, body = req('/api/links/' + action, {'app': 'audit'})
     assert status == 200 and body['operator_uid'] == os.getuid() and body['state'] == 'NeedsLogin'

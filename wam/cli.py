@@ -1600,7 +1600,11 @@ class Handler(BaseHTTPRequestHandler):
                 if set(b) != {'app'}:
                     raise ValueError('send installed app id only')
                 app_id = agent_app_id(b.get('app'))
-                result = private_link(c, write_registry(c), app_id, path.endswith('/publish'))
+                # Internal registry URLs use Runtipi's INTERNAL_IP for sibling
+                # containers. Serve must target the actual loopback published port,
+                # independently of cached owner/gateway view projections.
+                local = registry.build(c.runtipi().installed(), STORE, '127.0.0.1', c.runtipi_root)
+                result = private_link(c, local, app_id, path.endswith('/publish'))
                 write_registry(c)
                 return self._json(200, result)
             if path in ('/api/builder/install-local', '/api/builder/update-local', '/api/builder/check'):
