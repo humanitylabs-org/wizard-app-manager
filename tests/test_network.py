@@ -1278,3 +1278,150 @@ def test_the_report_lists_shared_network_peers_both_ways():
     row = {r["id"]: r for r in net.report(C, p=on, live={"networks": {}, "containers": []})["apps"]}
     assert {e["to"] for e in row["pub"]["can_reach"] if e["state"] == "shared-network"} == {"cust"}
     assert not [e for e in row["iso"]["can_reach"] if e["state"] == "shared-network"]
+
+
+# ---------------------------------------------------------------- open mode (the default): everything connected
+# unless the owner disconnects it (docs/APP_NETWORKS.md "Open mode")
+
+def _st(grants=(), denied=(), pending=(), sensitive=(), mode="open"):
+    row = lambda f, t, **k: {"kind": "app", "from": f, "to": t, **k}  # noqa: E731
+    return {"grants": [row(*g[:2], approved=(g[2] if len(g) > 2 else "install")) for g in grants],
+            "denied": [row(*d, approved="owner") for d in denied], "pending": [row(*p) for p in pending],
+            "sensitive": list(sensitive), "notices": [], "mode": mode}
+
+
+def _many(n):
+    return [app(f"app{i:02d}") for i in range(n)]
+
+
+def test_open_mode_puts_every_app_on_one_mesh_and_every_pair_reaches():
+    apps = carlos()
+    p = net.plan(apps, [], set(), state=_st(), mode="open")
+    ids = {a["id"] for a in apps}
+    assert set(p["networks"]) == {net.MESH_NET} | {net.app_net(i) for i in ids}
+    mesh = p["networks"][net.MESH_NET]
+    assert mesh["internal"] and mesh["kind"] == "mesh" and mesh["prefixlen"] == net.MESH_PREFIXLEN
+    assert reach(p) >= {(a, b) for a in ids for b in ids if a != b}
+    # every main service answers by its app id on the mesh; a database that never was on the shared network stays off
+    twenty = next(m for m in mesh["members"] if m["app"] == "twenty-crm")
+    assert twenty == {"app": "twenty-crm", "service": "twenty-crm", "aliases": ["twenty-crm"]}
+    assert not any(m["service"] == "twenty-db" for m in mesh["members"])
+    assert {e["state"] for e in p["edges"] if e["provider"]} == {"mesh"}
+    ov = net.overlay_for(next(a for a in p["apps"] if a["id"] == "carlos-crm"))
+    assert ov["services"]["carlos-crm"][net.MESH_NET] == {"aliases": ["carlos-crm"]}
+    assert ov["networks"][net.MESH_NET] == {"name": net.MESH_NET, "external": True}
+
+
+def test_a_disconnect_cuts_exactly_that_pair_both_ways():
+    apps = carlos()
+    st = _st(denied=[("carlos-crm", "resend-connector")])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    pairs = reach(p)
+    ids = {a["id"] for a in apps}
+    want = {(a, b) for a in ids for b in ids if a != b} - {("carlos-crm", "resend-connector"), ("resend-connector", "carlos-crm")}
+    assert pairs == want
+    assert p["open"]["out"] == {"resend-connector"}    # the app disconnected from leaves the mesh ...
+    links = [n for n, v in p["networks"].items() if v["kind"] == "link"]
+    assert len(links) == len(ids) - 2                  # ... and gets one link to each app it still reaches
+    for n in links:
+        v = p["networks"][n]
+        assert v["internal"] and all(m["aliases"] for m in v["members"])   # both ends answer by their id
+    e = next(e for e in p["edges"] if e["from"] == "carlos-crm" and e["provider"] == "resend-connector")
+    assert e["state"] == "disconnected" and e["network"] is None
+    # slot-named Disconnects cut the app behind the slot
+    p2 = net.plan(carlos(), [], set(), state=_st(denied=[("carlos-campaigns", "slot:email")]), mode="open")
+    assert ("carlos-campaigns", "resend-connector") not in reach(p2) and ("resend-connector", "carlos-campaigns") not in reach(p2)
+
+
+def test_sensitive_apps_keep_their_connections_and_new_ones_wait():
+    apps = carlos()
+    st = _st(grants=[("carlos-crm", "resend-connector", "open"), ("twenty-crm", "resend-connector", "open")],
+             pending=[("stripe-connector", "resend-connector")], sensitive=["resend-connector"])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    pairs = reach(p)
+    assert ("carlos-crm", "resend-connector") in pairs and ("resend-connector", "twenty-crm") in pairs
+    for other in ("stripe-connector", "calendly-connector", "carlos-campaigns", "gohighlevel-connector"):
+        assert (other, "resend-connector") not in pairs and ("resend-connector", other) not in pairs
+    assert p["open"]["blocked"][frozenset(("stripe-connector", "resend-connector"))] == "pending"
+    assert p["open"]["blocked"][frozenset(("calendly-connector", "resend-connector"))] == "sensitive"
+    assert p["open"]["out"] == {"resend-connector"}
+    # the rest still reach each other on the mesh
+    assert ("stripe-connector", "calendly-connector") in pairs
+
+
+def test_declared_mode_is_unchanged_and_open_grants_never_link_there():
+    st = _st(grants=[("calendly-connector", "resend-connector", "open")], sensitive=["resend-connector"], mode="declared")
+    p = net.plan(carlos(), [], set(), state=st, mode="declared")
+    assert net.MESH_NET not in p["networks"]
+    assert ("calendly-connector", "resend-connector") not in reach(p)
+    assert ("calendly-connector", "twenty-crm") in reach(p)
+    assert ("calendly-connector", "stripe-connector") not in reach(p)
+    assert net.connection_mode(None) == "open" and net.connection_mode({"mode": "declared"}) == "declared"
+    assert net.connection_mode({"mode": "nonsense"}) == "open"
+
+
+def test_open_mode_scales_to_sixty_apps_with_a_handful_of_networks():
+    apps = _many(60)
+    st = _st(denied=[("app01", "app02"), ("app03", "app02"), ("app10", "app11")], sensitive=["app40"],
+             grants=[(f"app{i:02d}", "app40", "open") for i in range(40)])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    shared = [n for n, v in p["networks"].items() if v["kind"] != "app"]
+    # per-pair networks would be 60*59/2 = 1770; here: the mesh + one link per (app out of the mesh, app it reaches)
+    assert len(shared) < 1 + 3 * 60
+    assert p["open"]["out"] == {"app02", "app40", "app11"} or p["open"]["out"] == {"app02", "app40", "app10"}
+    pairs = reach(p)
+    ids = [a["id"] for a in apps]
+    cut = {frozenset(("app01", "app02")), frozenset(("app03", "app02")), frozenset(("app10", "app11"))}
+    cut |= {frozenset((f"app{i:02d}", "app40")) for i in range(41, 60)}
+    for a in ids:
+        for b in ids:
+            if a != b:
+                assert ((a, b) in pairs) == (frozenset((a, b)) not in cut), (a, b)
+
+
+def test_the_mesh_is_reserved_and_owned_like_every_wam_network():
+    assert net.ours(net.MESH_NET) and not net.ours("wizard-mesh_wizardapps_network")
+    doc = {"services": {"x": {"image": "a", "networks": ["sneak"]}}, "networks": {"sneak": {"external": True, "name": "wizard-mesh"}}}
+    assert any("reserved Wizard network" in r for r in net.host_access(doc))
+    live = {"labels": {net.LABEL: "mesh"}, "internal": True, "subnets": [], "containers": []}
+    assert net.owned_network(net.MESH_NET, live)
+    assert not net.owned_network(net.MESH_NET, {**live, "internal": False})
+    assert not net.owned_network("wizard-core", live)
+    sub = net._free_subnet(["10.255.0.0/27"], ipaddress.IPv4Network("10.255.0.0/16"), set(), net.MESH_PREFIXLEN)
+    assert sub == "10.255.4.0/22"
+
+
+def test_report_and_describe_say_the_mode_plainly(monkeypatch):
+    from types import SimpleNamespace
+    st = _st(denied=[("carlos-crm", "resend-connector")])
+    p = net.plan(carlos(), [], set(), state=st, mode="open")
+    p["state"] = st
+    live = {"networks": {}, "containers": []}
+    rep = net.report(SimpleNamespace(), p=p, live=live)
+    assert rep["mode"] == "open"
+    crm = next(a for a in rep["apps"] if a["id"] == "carlos-crm")
+    assert crm["open"]["unreachable"] == [{"app": "resend-connector", "why": "disconnected"}]
+    text = net.describe(rep)
+    assert "Open: everything is connected unless you disconnect it" in text
+    assert "can reach: every other app except resend-connector (you disconnected it" in text
+    from wam import connections
+    assert connections.signature({**st, "mode": "open"}) != connections.signature({**st, "mode": "declared"})
+
+
+def test_wam_network_mode_goes_through_the_owner_api(monkeypatch, capsys):
+    from wam import cli
+    calls = []
+
+    class RT:
+        def req(self, method, path, body=None):
+            calls.append((method, path, body))
+            return {"mode": (body or {}).get("mode", "open"), "grants": [], "denied": []}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(net, "reconcile", lambda *a, **k: {"errors": []})
+    monkeypatch.setattr(cli, "write_registry", lambda c: None)
+    monkeypatch.setattr(cli.release_pins, "load", lambda *a, **k: None)
+    assert cli.main(["network", "mode", "declared"]) == 0
+    assert ("POST", "/apps/wizard/connection-mode", {"mode": "declared"}) in calls
+    assert json.loads(capsys.readouterr().out)["mode"] == "declared"
+    with pytest.raises(SystemExit):
+        cli.main(["network", "mode", "everything"])

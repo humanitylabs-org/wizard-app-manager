@@ -153,6 +153,7 @@ describe('connection policy: seamless by default, owner in control', () => {
   });
 
   it('keeps new connections TO a sensitive app pending with a notice; Approve links it', async () => {
+    await store.setMode('declared'); // declared mode: every connection the app doesn't have yet is new
     await store.setSensitive('resend-connector', true);
     await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
     await store.reconcile();
@@ -172,6 +173,7 @@ describe('connection policy: seamless by default, owner in control', () => {
   });
 
   it('a runtime request to a sensitive app waits too; Deny is sticky', async () => {
+    await store.setMode('declared'); // declared mode: every connection the app doesn't have yet is new
     await store.setSensitive('resend-connector', true);
     await request('carlos-campaigns', { connections: ['resend-connector'] });
     await store.collectRequests();
@@ -189,6 +191,7 @@ describe('connection policy: seamless by default, owner in control', () => {
   });
 
   it('a bare-slot runtime request to a sensitive provider stays one pending request with one notice', async () => {
+    await store.setMode('declared');
     await install('notifier', { name: 'Notifier', provides: ['alerts'] });
     await store.setSensitive('notifier', true);
     await request('carlos-campaigns', { connections: ['alerts'] });
@@ -246,5 +249,87 @@ describe('connection policy: seamless by default, owner in control', () => {
     expect(out.services.main.environment).toContain('WIZARD_CONNECTION_REQUESTS=/wizard-requests/connections.json');
     expect(mountAppGrants(out)).toEqual(out);
     expect(() => mountAppGrants({ services: { main: { volumes: ['/etc:/wizard-requests'] } } })).toThrow(/Reserved/);
+  });
+});
+
+describe('open mode (the default): everything connected unless the owner disconnects it', () => {
+  const opens = async (to: string) =>
+    (await state()).grants
+      .filter((g) => g.to === to && g.approved === 'open')
+      .map((g) => g.from)
+      .sort();
+
+  it('is the default and the owner can switch it; anything else is refused', async () => {
+    expect((await state()).mode).toBe('open');
+    expect((await store.setMode('declared')).mode).toBe('declared');
+    expect((await state()).mode).toBe('declared');
+    expect((await store.setMode('open')).mode).toBe('open');
+    await expect(store.setMode('everything' as any)).rejects.toThrow(/Invalid connection mode/);
+    const c = new WizardSharesController({ storage: store } as any);
+    await expect(c.mode({ mode: 'all' })).rejects.toThrow(/open or declared/);
+    expect((await c.mode({ mode: 'declared' })).mode).toBe('declared');
+  });
+
+  it('marking an app sensitive keeps the connections it has: no request waits, no key is minted', async () => {
+    await store.setSensitive('resend-connector', true);
+    const s = await state();
+    expect(await opens('resend-connector')).toEqual(['carlos-campaigns', 'twenty-crm']);
+    expect(s.pending).toEqual([]);
+    expect(s.notices).toEqual([]);
+    expect((await keys('carlos-campaigns')).outgoing['resend-connector']).toBeUndefined();
+    // declaring a connection it already has is not new: an ordinary grant (with its key), never a wait
+    await update('carlos-campaigns', { name: 'Carlos Campaigns', uses: ['twenty-crm', 'resend-connector'] });
+    await store.reconcile();
+    expect((await state()).pending).toEqual([]);
+    expect((await keys('carlos-campaigns')).outgoing['resend-connector']).toBeTruthy();
+  });
+
+  it('a newly installed app waits for the owner before it reaches a sensitive app; Approve / Deny decide', async () => {
+    await store.setSensitive('resend-connector', true);
+    await install('stripe-connector', { name: 'Stripe' });
+    await install('zoom-connector', { name: 'Zoom' });
+    await store.reconcile();
+    await store.reconcile();
+    let s = await state();
+    expect(s.pending.map((g) => `${g.from}>${g.to}:${g.reason}`).sort()).toEqual([
+      'stripe-connector>resend-connector:open',
+      'zoom-connector>resend-connector:open',
+    ]);
+    expect(s.notices.filter((n) => n.kind === 'pending')).toHaveLength(2); // once each
+    await store.change({ kind: 'app', from: 'stripe-connector', to: 'resend-connector' }, true);
+    await store.change({ kind: 'app', from: 'zoom-connector', to: 'resend-connector' }, false);
+    s = await state();
+    expect(s.pending).toEqual([]);
+    expect(s.grants).toContainEqual(expect.objectContaining({ from: 'stripe-connector', to: 'resend-connector', approved: 'owner' }));
+    expect(s.denied).toEqual([pair('zoom-connector', 'resend-connector')]);
+    await store.reconcile();
+    expect((await state()).pending).toEqual([]); // decided: nothing waits again
+  });
+
+  it('turning Sensitive off forgets the kept connections and what was waiting (open mode connects them anyway)', async () => {
+    await store.setSensitive('resend-connector', true);
+    await install('stripe-connector', { name: 'Stripe' });
+    await store.reconcile();
+    expect((await state()).pending).toHaveLength(1);
+    await store.setSensitive('resend-connector', false);
+    const s = await state();
+    expect(s.pending).toEqual([]);
+    expect(await opens('resend-connector')).toEqual([]);
+    expect(s.grants.filter((g) => g.to === 'resend-connector')).toEqual([]);
+  });
+
+  it('switching to declared drops open-mode waits; the kept connections stay recorded but never link there', async () => {
+    await store.setSensitive('resend-connector', true);
+    await install('stripe-connector', { name: 'Stripe' });
+    await store.reconcile();
+    await store.setMode('declared');
+    const s = await state();
+    expect(s.pending).toEqual([]);
+    expect(await opens('resend-connector')).toEqual(['carlos-campaigns', 'twenty-crm']);
+  });
+
+  it('the mode route sits behind the owner sign-in like the others', () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, WizardSharesController)).toEqual([AuthGuard]);
+    expect(Object.getOwnPropertyNames(WizardSharesController.prototype)).toContain('mode');
   });
 });

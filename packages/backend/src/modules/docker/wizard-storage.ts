@@ -14,6 +14,9 @@ import {
   pendingOf,
   sensitiveOf,
   noticesOf,
+  modeOf,
+  keepOpenConnections,
+  type ConnectionMode,
   appGrant,
   providers,
   REQUESTS_DIR,
@@ -391,6 +394,8 @@ export class WizardStorage {
       const file = await this.readGrants();
       if (on && !apps.some((a) => a.manifest.id === id)) throw new Error('App not installed');
       const rest = sensitiveOf(file).filter((x) => x !== id);
+      // Open mode: the apps connected to it now stay connected; only new connections wait for the owner.
+      if (on && !sensitiveOf(file).includes(id)) keepOpenConnections(file, apps, id);
       file.sensitive = on ? [...rest, id] : rest;
       await this.writeGrants(file);
       // Turning it off approves what was waiting for it, like any other new connection.
@@ -398,8 +403,21 @@ export class WizardStorage {
       return this.connectionState(file);
     });
   }
+  /** Owner only (AuthGuard'ed API / `wam network mode`): open (everything connected unless disconnected) or declared. */
+  async setMode(mode: ConnectionMode) {
+    if (mode !== 'open' && mode !== 'declared') throw new Error('Invalid connection mode');
+    return this.serial(async () => {
+      const apps = await this.apps();
+      const file = await this.readGrants();
+      file.mode = mode;
+      await this.writeGrants(file);
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+      return this.connectionState(file);
+    });
+  }
   connectionState(file: Grants) {
     return {
+      mode: modeOf(file),
       grants: file.grants.filter(appGrant),
       denied: file.denied.filter(appGrant),
       pending: pendingOf(file),

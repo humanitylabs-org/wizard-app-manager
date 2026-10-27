@@ -508,6 +508,8 @@ const REACH = {
   'not-approved': ' · grant revoked or not approved: no network',
   pending: ' · waiting for your OK',
   disconnected: ' · disconnected by you',
+  mesh: '',
+  sensitive: ' · sensitive: not connected by you',
   collision: ' · its network name is taken: not connected',
   unmanaged: ' · not isolated',
   shared: ' · shared network',
@@ -525,6 +527,18 @@ const STATUS_WORDS = {
   disconnected: ['Disconnected by you', 'bad'],
   pending: ['Waiting for your OK', 'warn'],
   'not-approved': ['Not approved', 'warn'],
+  sensitive: ['Not connected: sensitive', 'warn'],
+};
+// The owner's two connection modes (App Manager → Connections, `wam network mode`). Open is the default.
+const MODES = {
+  open: [
+    'Open',
+    'Open: everything is connected unless you disconnect it. Apps you mark sensitive keep the connections they have; new ones wait for your OK.',
+  ],
+  declared: [
+    'Declared',
+    'Declared: each app reaches only the apps it declares or you connected. New declared connections are added for you; disconnect any you don’t want.',
+  ],
 };
 const ORIGIN_WORDS = { declared: 'the app declares it', requested: 'the app asked for it while running', owner: 'you connected it' };
 const ACTIONS = {
@@ -532,6 +546,7 @@ const ACTIONS = {
   reconnect: ['Reconnect', true],
   approve: ['Approve', true],
   deny: ['Deny', false],
+  connect: ['Connect', true],
 };
 
 // Owner decisions from the App Manager win over the (possibly older) report snapshot.
@@ -550,7 +565,7 @@ function mergeOwnerState(d, st) {
   const rows = [
     ...(st.pending || []).map((g) => [g, 'pending']),
     ...(st.denied || []).map((g) => [g, 'disconnected']),
-    ...(st.grants || []).filter((g) => g.approved !== 'install').map((g) => [g, 'connected']),
+    ...(st.grants || []).filter((g) => g.approved !== 'install' && g.approved !== 'open').map((g) => [g, 'connected']),
   ];
   for (const [g, status] of rows)
     if (names[g.from] && !controls.some((r) => key(r) === key(g))) {
@@ -561,6 +576,7 @@ function mergeOwnerState(d, st) {
   const sensitive = Array.isArray(st.sensitive) ? st.sensitive : [];
   return {
     ...d,
+    mode: st.mode === 'declared' || st.mode === 'open' ? st.mode : d.mode,
     controls,
     sensitive,
     owner_state: true,
@@ -609,14 +625,29 @@ export async function renderConnections(el, ctx = {}) {
             ? act(r, 'reconnect')
             : r.status === 'connected'
               ? act(r, 'disconnect')
-              : act(r, 'reconnect');
+              : r.status === 'sensitive'
+                ? act(r, 'connect')
+                : act(r, 'reconnect');
       return `<div class="wam-conn-ctl">
         <span class="st-tx"><b>${esc(who)}</b><small><span class="wam-tag ${tone}">${esc(word)}</span> ${esc(ORIGIN_WORDS[r.origin] || '')}</small></span>
         <span class="wam-conn-acts">${btns}</span></div>`;
     };
+    const mode = d.mode === 'open' ? 'open' : 'declared';
+    const openMode = d.enabled && mode === 'open';
     const head = d.enabled
-      ? `Each app reaches only the apps it is connected to. New connections are added for you; disconnect any you don’t want. ${d.gateway?.detail ? `The agent gateway: ${d.gateway.detail}.` : ''}`
+      ? `${MODES[mode][1]} ${d.gateway?.detail ? `The agent gateway: ${d.gateway.detail}.` : ''}`
       : 'App isolation is off: every app can reach every other app.';
+    const modeHtml =
+      d.enabled && d.owner_state
+        ? `<div class="wam-conn-ctl wam-conn-mode"><span class="st-tx"><b>Mode</b><small>${esc(MODES[mode][0])}</small></span><span class="wam-conn-acts" role="group" aria-label="Connection mode">${Object.entries(
+            MODES,
+          )
+            .map(
+              ([k, [label]]) =>
+                `<button class="wam-btn${k === mode ? ' primary' : ''}" data-wam-mode="${k}" aria-pressed="${k === mode}"${!canAct || busy || k === mode ? ' disabled' : ''}>${busy === `mode:${k}` ? '…' : label}</button>`,
+            )
+            .join('')}</span></div>`
+        : '';
     const check = d.live
       ? d.ok
         ? `<span class="wam-tag good">Matches the declarations</span>`
@@ -651,9 +682,17 @@ export async function renderConnections(el, ctx = {}) {
         const peers = reach.filter((e) => e.state === 'peer').map((e) => e.to);
         const shared = reach.filter((e) => e.state === 'shared-network').map((e) => e.to);
         const live = out.filter((r) => r.status === 'connected');
+        // Open mode: the apps this one can't reach (and that can't reach it: a Disconnect cuts the pair both ways).
+        const cut = openMode && a.open ? a.open.unreachable || [] : [];
         const sub = [
-          live.length ? `Reaches ${live.map(target).join(', ')}` : 'Reaches no other app',
-          by.filter((x) => names[x]).length
+          openMode && a.open
+            ? cut.length
+              ? `Reaches every app except ${cut.map((r) => nm(r.app)).join(', ')}`
+              : 'Reaches every app'
+            : live.length
+              ? `Reaches ${live.map(target).join(', ')}`
+              : 'Reaches no other app',
+          !(openMode && a.open) && by.filter((x) => names[x]).length
             ? `reached by ${by
                 .filter((x) => names[x])
                 .map(nm)
@@ -665,10 +704,36 @@ export async function renderConnections(el, ctx = {}) {
         const sens = a.sensitive
           ? `<button class="wam-btn primary" data-wam-sens="${esc(a.id)}" aria-pressed="true"${!canAct || busy ? ' disabled' : ''}>${busy === `sens:${a.id}` ? '…' : 'Sensitive: on'}</button>`
           : `<button class="wam-btn" data-wam-sens="${esc(a.id)}" aria-pressed="false"${!canAct || busy ? ' disabled' : ''}>${busy === `sens:${a.id}` ? '…' : 'Mark sensitive'}</button>`;
+        // Open mode: every cut pair with its control (Reconnect a Disconnect, Approve a request to a sensitive app, or
+        // Connect one the owner never decided), and Disconnect from any app it still reaches.
+        const cutRow = (r) => {
+          const row =
+            controls.find((x) => x.from === a.id && ((x.providers || []).includes(r.app) || x.to === r.app) && x.status !== 'connected') ||
+            controls.find((x) => x.from === r.app && ((x.providers || []).includes(a.id) || x.to === a.id) && x.status !== 'connected') ||
+            ((d.sensitive || []).includes(r.app) ? { from: a.id, to: r.app, providers: [r.app] } : { from: r.app, to: a.id, providers: [a.id] });
+          return ctl({ ...row, status: row.status || r.why, origin: row.origin || '' }, nm(r.app));
+        };
+        const others = d.apps.filter((x) => x.id !== a.id && x.open && !cut.some((r) => r.app === x.id));
+        const openHtml =
+          openMode && a.open
+            ? `<h5>Can’t reach (both ways)</h5>
+          ${cut.length ? cut.map(cutRow).join('') : '<p>None: it reaches every app.</p>'}
+          ${
+            others.length
+              ? `<div class="wam-conn-ctl"><span class="st-tx"><b>Disconnect from</b><small>Cuts both directions; updates and requests never add it back.</small></span><span class="wam-conn-acts"><select class="wam-select" data-wam-pick="${esc(a.id)}" aria-label="App to disconnect from"${!canAct || busy ? ' disabled' : ''}>${others
+                  .map((x) => `<option value="${esc(x.id)}">${esc(x.name || x.id)}</option>`)
+                  .join(
+                    '',
+                  )}</select><button class="wam-btn" data-wam-cut="${esc(a.id)}"${!canAct || busy ? ' disabled' : ''}>${busy === `cut:${a.id}` ? '…' : 'Disconnect'}</button></span></div>`
+              : ''
+          }
+          <p class="wam-conn-why">${a.open.mesh ? 'On the shared app mesh.' : `Out of the mesh: ${a.open.links.length} direct links.`}</p>`
+            : '';
         const detail =
           open === a.id
             ? `<div class="wam-conn-detail">
-          <h5>${esc(a.name || a.id)} reaches</h5>
+          ${openHtml}
+          <h5>${esc(a.name || a.id)} ${openMode && a.open ? 'declares' : 'reaches'}</h5>
           ${out.length ? out.map((r) => ctl(r, target(r))).join('') : '<p>No other app.</p>'}
           <h5>Reached by</h5>
           ${inc.length ? inc.map((r) => ctl(r, nm(r.from))).join('') : '<p>No other app.</p>'}
@@ -700,6 +765,7 @@ export async function renderConnections(el, ctx = {}) {
     const readOnly = canAct ? '' : note('Read-only here: changing connections needs the App Manager owner sign-in (or `wam grants` on the server).');
     el.innerHTML = `<div class="st-group wam-conn"><h4>Connections</h4>
       <p class="st-note wam-note">${esc(head)} ${check} <span class="wam-conn-at">Checked ${esc(ago(d.checked_at))}</span></p>
+      ${modeHtml}
       <p class="wam-conn-msg" role="status" aria-live="polite">${esc(msg)}</p>
       ${pendingHtml}${noticesHtml}${readOnly}
       ${rows || note('No apps installed')}</div>`;
@@ -759,11 +825,38 @@ export async function renderConnections(el, ctx = {}) {
       const kind = a.dataset.wamAct;
       const [, approve] = ACTIONS[kind] || [];
       if (approve === undefined) return;
-      const words = { disconnect: 'Disconnected', reconnect: 'Reconnected', approve: 'Approved', deny: 'Denied' };
+      const words = { disconnect: 'Disconnected', reconnect: 'Reconnected', approve: 'Approved', deny: 'Denied', connect: 'Connected' };
       void run(
         `${kind}:${from}:${to}`,
         () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve }),
         `${words[kind]}. The network follows within seconds.`,
+      );
+      return;
+    }
+    const m = e.target.closest('[data-wam-mode]');
+    if (m) {
+      e.stopPropagation();
+      if (m.disabled) return;
+      const mode = m.dataset.wamMode;
+      void run(
+        `mode:${mode}`,
+        () => post(`${c.api}/apps/wizard/connection-mode`, { mode }),
+        mode === 'open' ? 'Open: everything is connected unless you disconnect it.' : 'Declared: only declared and approved connections.',
+      );
+      return;
+    }
+    const cutBtn = e.target.closest('[data-wam-cut]');
+    if (cutBtn) {
+      e.stopPropagation();
+      if (cutBtn.disabled) return;
+      const from = cutBtn.dataset.wamCut;
+      const pick = el.querySelector(`[data-wam-pick="${CSS.escape(from)}"]`);
+      const to = pick?.value;
+      if (!to) return;
+      void run(
+        `cut:${from}`,
+        () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve: false }),
+        'Disconnected both ways. The network follows within seconds.',
       );
       return;
     }

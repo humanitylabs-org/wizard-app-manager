@@ -27,12 +27,14 @@ _retry = {"at": 0.0, "delay": 0.0}   # a reconcile that failed is retried with b
 
 
 def signature(state: dict | None) -> str:
-    """What the networks depend on: grants, the owner's Disconnects, pending requests, sensitive apps (not notices)."""
+    """What the networks depend on: grants, the owner's Disconnects, pending requests, sensitive apps and the
+    connection mode (not notices)."""
     if state is None:
         return ""
     keep = {k: sorted(json.dumps({x: g.get(x) for x in ("kind", "from", "to", "approved")}, sort_keys=True)
                       for g in state.get(k) or [] if isinstance(g, dict)) for k in ("grants", "denied", "pending")}
     keep["sensitive"] = sorted(state.get("sensitive") or [])
+    keep["mode"] = "declared" if state.get("mode") == "declared" else "open"
     return hashlib.sha256(json.dumps(keep, sort_keys=True).encode()).hexdigest()
 
 

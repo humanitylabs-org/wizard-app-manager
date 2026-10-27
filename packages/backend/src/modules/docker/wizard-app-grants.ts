@@ -48,6 +48,22 @@ export const pendingOf = (file: Grants): Grant[] => (Array.isArray(file.pending)
 export const sensitiveOf = (file: Grants): string[] =>
   Array.isArray(file.sensitive) ? (file.sensitive as unknown[]).filter((x): x is string => typeof x === 'string' && ID.test(x)) : [];
 export const noticesOf = (file: Grants): Notice[] => (Array.isArray(file.notices) ? (file.notices as Notice[]) : []);
+/** The owner's connection mode. Open (the default): every app reaches every app except the pairs the owner disconnected
+ * and unapproved connections to sensitive apps (wam/network.py open_topology). Declared: only declared / approved ones. */
+export type ConnectionMode = 'open' | 'declared';
+export const modeOf = (file: Grants): ConnectionMode => (file.mode === 'declared' ? 'declared' : 'open');
+/** Open mode: marking an app sensitive keeps the connections it has (every installed app reaches it). Each becomes an
+ * `approved: open` grant, which only keeps that pair open: it never links in declared mode and carries no key. */
+export function keepOpenConnections(file: Grants, apps: App[], sensitive: string, now = Math.floor(Date.now() / 1000)) {
+  if (modeOf(file) !== 'open') return;
+  const rows = [...file.grants, ...file.denied, ...pendingOf(file)];
+  for (const a of apps) {
+    const from = a.manifest.id;
+    if (from === sensitive || !a.urn.endsWith(':wizardapps')) continue;
+    if (rows.some((g) => appGrant(g) && g.from === from && providers(g.to, apps).some((p) => p.manifest.id === sensitive))) continue;
+    file.grants.push({ kind: 'app', from, to: sensitive, reason: 'open', approved: 'open', created_at: now });
+  }
+}
 const nameOf = (id: string, apps: App[]) => {
   const a = apps.find((x) => x.manifest.id === id);
   return (a?.manifest as { name?: string } | undefined)?.name || id;
@@ -115,17 +131,22 @@ export function applyConnectionPolicy(
   // sensitive it is approved like any other new connection.
   const asked = new Set([...requests].flatMap(([from, tos]) => tos.map((to) => `${from}\0${requestTarget(to, ids)}`)));
   const keep: Grant[] = [];
+  const open = modeOf(file) === 'open';
+  // Open-mode grants keep a sensitive app's existing connections; once it isn't sensitive they mean nothing.
+  file.grants = file.grants.filter((g) => !(appGrant(g) && g.approved === 'open' && !sensitiveTarget(g.to, apps, sensitive)));
   for (const g of file.pending as Grant[]) {
     const k = `${g.from}\0${g.to}`;
     if (
       !ids.has(g.from) ||
       !providers(g.to, apps).length ||
-      !(declared.has(k) || asked.has(k)) ||
+      !(declared.has(k) || asked.has(k) || (open && g.reason === 'open')) ||
       file.denied.some((d) => sameAppGrant(d, g)) ||
       file.grants.some((x) => sameAppGrant(x, g))
     )
       continue;
     if (sensitiveTarget(g.to, apps, sensitive)) keep.push(g);
+    else if (g.reason === 'open')
+      continue; // open mode connects it anyway: nothing to approve
     else {
       file.grants.push({
         kind: 'app',
@@ -144,11 +165,23 @@ export function applyConnectionPolicy(
   const deniedTo = (from: string) =>
     new Set(file.denied.filter((d) => appGrant(d) && d.from === from).flatMap((d) => providers(d.to, apps).map((p) => p.manifest.id)));
   const blocked = (g: Grant) => providers(g.to, apps).some((p) => deniedTo(g.from).has(p.manifest.id));
+  // Open mode: a connection the app already has (an `approved: open` grant kept when its provider was marked sensitive)
+  // is not new, so declaring or asking for it never waits; it gets an ordinary grant (and its key) instead.
+  const alreadyOpen = (g: Grant) =>
+    open &&
+    file.grants.some(
+      (x) =>
+        appGrant(x) &&
+        x.approved === 'open' &&
+        x.from === g.from &&
+        providers(x.to, apps).some((p) => providers(g.to, apps).some((q) => q.manifest.id === p.manifest.id)),
+    );
   const consider = (g: Grant, approved: 'install' | 'request', quiet: boolean) => {
     if (!providers(g.to, apps).some((p) => p.manifest.id !== g.from)) return;
-    if ([...file.grants, ...file.denied, ...(file.pending as Grant[])].some((old) => sameAppGrant(old, g))) return;
+    if ([...file.grants.filter((x) => x.approved !== 'open'), ...file.denied, ...(file.pending as Grant[])].some((old) => sameAppGrant(old, g)))
+      return;
     if (blocked(g)) return;
-    if (sensitiveTarget(g.to, apps, sensitive)) {
+    if (sensitiveTarget(g.to, apps, sensitive) && !alreadyOpen(g)) {
       (file.pending as Grant[]).push({ kind: 'app', from: g.from, to: g.to, reason: g.reason, created_at: now });
       addNotice(file, apps, 'pending', g.from, g.to, now);
       return;
@@ -164,6 +197,20 @@ export function applyConnectionPolicy(
       consider(g, 'request', false);
     }
   }
+  // Open mode: a newly installed app would reach every app, so its connection to each sensitive app is new and waits
+  // for the owner, unless a decision about that pair already exists.
+  if (open)
+    for (const a of apps) {
+      const from = a.manifest.id;
+      if (seededBefore.has(from)) continue;
+      for (const s of sensitive) {
+        if (s === from || !ids.has(s)) continue;
+        const rows = [...file.grants, ...file.denied, ...(file.pending as Grant[])];
+        if (rows.some((g) => appGrant(g) && g.from === from && providers(g.to, apps).some((p) => p.manifest.id === s))) continue;
+        (file.pending as Grant[]).push({ kind: 'app', from, to: s, reason: 'open', created_at: now });
+        addNotice(file, apps, 'pending', from, s, now);
+      }
+    }
 }
 /** Prefer an explicit advertised ingress; otherwise the main service's shared
  * network alias and internal port. Never use a public/owner URL from apps.json.
@@ -366,7 +413,8 @@ export async function reconcileAppGrants(
     const oldHashes = [...(previous.managed?.[id] ?? []), ...(adoptedHashes[id] ?? [])];
     d.doc.incoming = d.doc.incoming.filter((i) => !oldHashes.includes(i.sha256));
   }
-  for (const g of file.grants.filter(appGrant)) {
+  // Open-mode grants only keep a network path open; they mint no app-to-app key.
+  for (const g of file.grants.filter((x) => appGrant(x) && x.approved !== 'open')) {
     const consumer = docs.get(g.from);
     const dests = providers(g.to, apps).filter((p) => p.manifest.id !== g.from);
     if (!consumer || !dests.length) continue;

@@ -33,6 +33,11 @@ export class WizardSharesController {
     if (typeof body?.sensitive !== 'boolean') throw new BadRequestException('sensitive must be boolean');
     return this.docker.storage.setSensitive(id.split(':')[0]!, body.sensitive);
   }
+  @Post('wizard/connection-mode')
+  async mode(@Body() body: { mode: string }) {
+    if (body?.mode !== 'open' && body?.mode !== 'declared') throw new BadRequestException('mode must be open or declared');
+    return this.docker.storage.setMode(body.mode);
+  }
   @Post('wizard/connection-notices')
   async notices(@Body() body: { delivered: string[] }) {
     if (!Array.isArray(body?.delivered)) throw new BadRequestException('delivered must be a list of notice ids');
