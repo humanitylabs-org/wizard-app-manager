@@ -107,8 +107,11 @@ def main():
         run(['groupadd', '--system', 'wizard-files']); files_group = grp.getgrnam('wizard-files')
     run(['usermod', '-aG', 'wizard-files', name])
     run(['usermod', '-aG', 'wizard-files', 'wizard-system'])
-    files = BASE / 'runtipi/media'; files.mkdir(exist_ok=True)
-    os.chown(files, suid, files_group.gr_gid); os.chmod(files, 0o2770)
+    files = BASE / 'runtipi/media'
+    existed = files.exists(); files.mkdir(exist_ok=True)
+    if not existed:
+        os.chown(files, suid, files_group.gr_gid)
+    os.chmod(files, 0o2770)  # preserve an already-running Files app's owner uid
     # Files initializes its root as gid 1000, so a named group ACL, inherited
     # by new folders, preserves the real owner's access across that startup.
     run(['apt-get', '-o', 'DPkg::Lock::Timeout=600', 'install', '-y', '-qq', 'acl'])

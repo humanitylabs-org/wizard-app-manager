@@ -83,21 +83,13 @@ PY
 hermes --version
 git -C "$HOME/hermes-agent" rev-parse HEAD
 AGENT
-cat > /etc/systemd/system/qa-hermes.service <<'UNIT'
-[Unit]
-Description=Stock Hermes QA gateway (no inference)
-[Service]
-User=hermes
-Environment=HOME=/home/hermes
-Environment=HERMES_HOME=/home/hermes/.hermes
-Environment=PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/hermes/.local/bin/hermes gateway run
-Restart=on-failure
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload
-systemctl enable --now qa-hermes.service
+uid=$(id -u hermes)
+# The stock user service is the one `wizard link` can restart at the same uid.
+# An unrelated QA system unit is killed as a manual gateway and not restarted.
+runuser -u hermes -- env HOME=/home/hermes HERMES_HOME=/home/hermes/.hermes \
+  PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus \
+  bash -c 'cd "$HOME"; hermes gateway install </dev/null'
 for n in $(seq 1 90); do curl -fsS http://127.0.0.1:8642/health && break; sleep 2; done
 curl -fsS http://127.0.0.1:8642/health
 id hermes
@@ -226,7 +218,8 @@ test -n "$cid"
 docker inspect "$cid" --format '{{json .Config.User}} {{json .HostConfig.CapDrop}} {{json .HostConfig.SecurityOpt}}'
 docker exec "$cid" id
 docker exec "$cid" node -e 'if (process.getuid()!==Number(process.argv[1])) process.exit(1)' "$(id -u hermes)"
-curl -fsS http://127.0.0.1:8923/wizard/health
+curl -fsS http://127.0.0.1:8642/health
+curl -fsS http://127.0.0.1:8923/wizard/health | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v["status"]=="ok" and v["upstream_reachable"],v'
 ''',120,True)
         else:
             guest('baseline-groups','id hermes; id -nG hermes | tr " " "\\n" | grep -Fx docker',60,True)
