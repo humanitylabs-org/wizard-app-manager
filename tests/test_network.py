@@ -488,6 +488,7 @@ def gate_env(tmp_path, monkeypatch, compose):
         def install(self, urn, form): installs.append(urn)
         def wait_status(self, urn, want, timeout=900): return "running"
     monkeypatch.setenv("RUNTIPI_ROOT", str(root))
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
     monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
     monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
@@ -809,3 +810,25 @@ def test_wam_serve_page_offers_only_the_views_its_api_backs(monkeypatch):
         srv.server_close()
     js = (Path(__file__).resolve().parent.parent / "wizard-views" / "standalone.js").read_text()
     assert "document.body.dataset.only" in js and "const view = only ||" in js
+
+
+def test_a_revoked_grant_takes_the_link_away_and_automatic_grants_follow_their_declaration():
+    """`wam grants revoke` must remove the network path even though `uses:` still names the provider (Codex
+    PRRT_kwDOVCUOXM6wnNPB), and an update that drops a declaration drops its link although the App Manager's automatic
+    grant for it stays in wizard-grants.json (seen live: UI update of stripe-connector)."""
+    auto = lambda frm, to: {"kind": "app", "from": frm, "to": to, "reason": "uses", "approved": "install"}
+    apps = [app("twenty-crm"), app("resend-connector"), app("stripe-connector", uses=["twenty-crm"])]
+    ok = [auto("stripe-connector", "twenty-crm")]
+    assert ("stripe-connector", "twenty-crm") in reach(net.plan(apps, ok, set(), approved=ok))
+    p = net.plan(apps, [], set(), approved=[])            # revoked (moved to denied): declared, but no network
+    assert ("stripe-connector", "twenty-crm") not in reach(p)
+    assert [e["state"] for e in p["edges"] if e["from"] == "stripe-connector"] == ["not-approved"]
+    stale = ok + [auto("stripe-connector", "resend-connector")]   # uses: resend-connector was dropped by an update
+    assert ("stripe-connector", "resend-connector") not in reach(net.plan(apps, stale, set(), approved=stale))
+    owner = stale + [{"kind": "app", "from": "stripe-connector", "to": "resend-connector", "approved": "owner"}]
+    assert ("stripe-connector", "resend-connector") in reach(net.plan(apps, owner, set(), approved=owner))
+    slot = [app("twenty-crm", provides=["crm"]), app("c", uses=["crm"])]
+    g = [auto("c", "slot:crm")]
+    assert ("c", "twenty-crm") in reach(net.plan(slot, g, set(), approved=g))
+    # an App Manager without grants (approved unknown): declarations alone, as before
+    assert ("stripe-connector", "twenty-crm") in reach(net.plan(apps, [], set()))

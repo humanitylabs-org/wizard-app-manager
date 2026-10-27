@@ -12,6 +12,16 @@ from wam import network
 
 @pytest.fixture(autouse=True)
 def _no_real_host_dashboard(tmp_path, monkeypatch):
+    # Never write the real box's Wizard home or Runtipi folder: a test that builds Config() without its own
+    # WIZARD_OS_HOME gets a throwaway one (app networks write app-manager.json and a lock there), and the App
+    # Manager's network policy is only ever written under the test's temp folders.
+    import os
+    from pathlib import Path
+    if "WIZARD_OS_HOME" not in os.environ:
+        monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "_wizard_os_home"))
+    base, real_policy = Path(tmp_path).parents[1], network.policy_path
+    monkeypatch.setattr(network, "policy_path", lambda root: real_policy(root) if base in Path(root).resolve().parents
+                        else tmp_path / "_runtipi_root" / "user-config" / network.POLICY_FILE)
     # Unit installs must not query live registries. Mirror tests inject their own
     # probe and real-git fixture, rather than changing a live Docker daemon.
     monkeypatch.setattr(mirrors, "image_available", lambda image: True)

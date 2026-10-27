@@ -406,11 +406,19 @@ def _isolatable(a: dict) -> tuple[str, str]:
     return "isolated", ""
 
 
+def _gname(to: str) -> str:
+    return str(to).removeprefix("slot:")
+
+
 def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: bool = True,
-         slot_choice: dict | None = None, multi_slots=None) -> dict:
+         slot_choice: dict | None = None, multi_slots=None, approved: list | None = None) -> dict:
     """Desired topology. `apps`: read_app() records; `grants`: apps.json grants; `external_slots`: slots filled from
     outside Runtipi (alongside: the host's Hermes), by slot name and by the app id that normally fills it.
-    Returns {apps, networks, edges, gateway}."""
+    `approved`: the App Manager's approved grants when known (wizard-grants.json). Then a `uses` / `requires`
+    declaration links only while its grant is approved: the App Manager approves it at install, and the owner's
+    revoke (`wam grants revoke`) takes the network away too. A grant the App Manager approved automatically for a
+    declaration (approved: install) never links on its own, so dropping the declaration in an update drops the link;
+    an owner's grant (approved: owner) does. Returns {apps, networks, edges, gateway}."""
     by_id = {a["id"]: a for a in apps}
     external_slots = set(external_slots or ())
     for a in apps:
@@ -444,8 +452,16 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         return [], "external" if name in external_slots else "not-installed"
 
     edges, seen = [], set()
+    ok_grants = None if approved is None else {
+        (str(g.get("from")), _gname(g.get("to"))) for g in approved
+        if isinstance(g, dict) and g.get("kind", "app") == "app" and isinstance(g.get("to"), str)}
 
     def add(frm: str, to: str, reason: str) -> None:
+        if ok_grants is not None and reason in ("uses", "requires") and (frm, _gname(to)) not in ok_grants:
+            if (frm, to) not in seen:
+                seen.add((frm, to))
+                edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": "not-approved"})
+            return
         targets, state = resolve(to)
         if not targets:
             if (frm, to) not in seen:
@@ -464,7 +480,8 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         if a.get("router"):
             add(a["id"], "slot:connection-router", "requires")
     for g in grants or []:
-        if isinstance(g, dict) and g.get("kind", "app") == "app" and g.get("from") in by_id and isinstance(g.get("to"), str):
+        if (isinstance(g, dict) and g.get("kind", "app") == "app" and g.get("from") in by_id and isinstance(g.get("to"), str)
+                and g.get("approved") != "install"):   # automatic grants follow their declaration (see above)
             add(g["from"], g["to"], "grant")
 
     nets: dict[str, dict] = {}
@@ -724,22 +741,37 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
 
 # ---------------------------------------------------------------- the whole loop
 
+def approved_grants(c, rt) -> list | None:
+    """The App Manager's approved grants (wizard-grants.json, else its API), or None when neither can be read."""
+    from . import registry
+    got = registry.read_grants_file(Path(c.runtipi_root) / "state" / "wizard-grants.json")
+    if got is not None:
+        return got
+    try:
+        got = rt.req("GET", "/apps/wizard/grants")
+        return got if isinstance(got, list) else None
+    except Exception:  # noqa: BLE001 - an older App Manager: declarations alone
+        return None
+
+
 def _context(c, rt=None, extra=()):
     """(installed ids, grants, external slots, mode) for the planner, from the App Manager and wam's own files."""
     from . import alongside
     from .cli import STORE, installed_ids, read_grants
     rt = rt or c.runtipi()
     ids = installed_ids(rt)
-    grants = read_grants(c, rt)
+    approved = grants = approved_grants(c, rt)
+    if grants is None:
+        grants = read_grants(c, rt)
     from . import slots
     ext = set(alongside.external_slots(c.home))
     defaults = slots.load_defaults()
     ext |= {(defaults.get(s_) or {}).get("app") for s_ in list(ext)} - {None}
-    return rt, ids | set(extra), grants, ext, STORE
+    return rt, ids | set(extra), grants, ext, STORE, approved
 
 
 def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
-    rt, ids, grants, ext, store = _context(c, rt, extra)
+    rt, ids, grants, ext, store, approved = _context(c, rt, extra)
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
     from . import slots as _slots
     try:
@@ -748,7 +780,8 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
     except (OSError, ValueError):
         chosen = {}
     multi = {k for k, v in _slots.load_defaults().items() if (v or {}).get("multi")}
-    return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi), store
+    return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
+                approved=approved), store
 
 
 def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None,
@@ -1091,7 +1124,8 @@ def describe(rep: dict) -> str:
             "host": " (from the server's network, on its published 127.0.0.1 port)",
             "peer": " (two-way: it uses this app over their link)",
             "core": " (Wizard core, over this app's gateway network)",
-            "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)"}
+            "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)",
+            "not-approved": " (declared, but its grant is revoked or not approved yet: no network)"}
     for a in rep["apps"]:
         reach = [f"{e['to']}{word.get(e['state'], '')}" for e in a["can_reach"]]
         lines.append(f"{a['id']}  [{a['state']}{'' if a['running'] else ', stopped'}]")

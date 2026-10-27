@@ -26,6 +26,12 @@ they never overlap an existing network. Set `network_pool` in `~/.wizard-os/app-
 - `requires.models` / `requires.services`, which connect the app to the Connection Router;
 - an approved app grant (`wizard-grants.json`, kind `app`). Share grants carry no network.
 
+A `uses` / `requires` declaration links only while its grant is approved. The App Manager approves it automatically
+when the app is installed (`approved: install`), and the owner's `wam grants revoke` takes the network away even though
+the declaration is still there. An automatic grant never links on its own: when an update drops the declaration, the
+link goes. An owner's grant (`wam grants grant`) links by itself. On an App Manager without grants, declarations alone
+decide. `wam connections` shows a declared but revoked connection as "grant revoked or not approved: no network".
+
 Anything else has no shared network: the name doesn't resolve and the address isn't routed.
 
 ## The gateway path

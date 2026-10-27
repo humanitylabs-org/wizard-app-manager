@@ -501,6 +501,7 @@ const REACH = {
   external: ' · outside the App Manager: not reachable from apps',
   host: ' · from the server’s network, on its 127.0.0.1 port',
   'not-installed': ' · not installed',
+  'not-approved': ' · grant revoked or not approved: no network',
   unmanaged: ' · not isolated',
   shared: ' · shared network',
 };
@@ -529,11 +530,11 @@ export async function renderConnections(el, ctx = {}) {
     const head = d.enabled
       ? `Each app reaches only the apps it declares. ${d.gateway?.detail ? `The agent gateway: ${d.gateway.detail}.` : ''}`
       : 'App isolation is off: every app can reach every other app.';
-    const check = !d.live
-      ? `<span class="wam-tag warn">Live check unavailable</span>`
-      : d.ok
+    const check = d.live
+      ? d.ok
         ? `<span class="wam-tag good">Matches the declarations</span>`
-        : `<span class="wam-tag bad">Drift found</span>`;
+        : `<span class="wam-tag bad">Drift found</span>`
+      : `<span class="wam-tag warn">Live check unavailable</span>`;
     const rows = d.apps
       .map((a) => {
         const reach = a.can_reach || [];
