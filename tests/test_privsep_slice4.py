@@ -213,6 +213,33 @@ def test_missing_historical_curator_image_does_not_skip_source_app_data(monkeypa
     assert capture._missing_images(SimpleNamespace(child_env={}), 'calendar:wizardapps') == []
 
 
+def test_restore_policy_verifies_managed_topology_against_box_runtime(tmp_path, monkeypatch):
+    from wam import network
+    runtime = object()
+    box = backup_box.Box(home=tmp_path, runtipi_root=tmp_path / 'rt', rt=runtime)
+    assert box.runtipi() is runtime
+    expected = {'services': {'audit': ['wizard-app-audit']},
+                'networks': {'wizard-app-audit': {'name': 'wizard-app-audit', 'external': True}}}
+    def build(c, **kw):
+        assert c.runtipi() is runtime  # no trust in a marker carried by the backup
+        return {'apps': [{'id': 'audit'}]}, 'wizardapps'
+    monkeypatch.setattr(network, 'build', build)
+    monkeypatch.setattr(network, 'overlay_for', lambda a: expected)
+    text = '''services:
+  audit: {networks: [wizard-app-audit], volumes: ["/:/host"]}
+networks:
+  wizard-app-audit: {name: wizard-app-audit, external: true}
+x-wizard-networks:
+  services: [audit]
+  networks: [wizard-app-audit]
+'''
+    doc = host_policy.normalized_override(box, 'audit', 'wizardapps', text)
+    assert not doc.get('networks')
+    with pytest.raises(host_policy.NeedsOwnerApproval) as exc:
+        host_policy.require(box.home, 'audit', [network.dump_yaml(doc)])
+    assert any('mount' in row for row in exc.value.payload['risks'])
+
+
 def test_thin_client_hermes_update_check_is_local(monkeypatch):
     calls = []
     monkeypatch.setattr(client.subprocess, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))

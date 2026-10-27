@@ -138,6 +138,12 @@ class Box:
             self._rt = rt
         return self._rt
 
+    def runtipi(self) -> Runtipi:
+        """Config-compatible adapter for independently verifying managed topology.
+        Restore policy must derive exemptions from this box's live grants, never
+        trust a carried x-wizard-networks marker or skip the allowlist."""
+        return self.rt
+
     @property
     def runner(self) -> "HermesRunner":
         if self._runner is None:
