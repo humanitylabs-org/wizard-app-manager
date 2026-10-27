@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import stat
+import subprocess
 import threading
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -193,6 +194,20 @@ def test_separated_backup_never_executes_agent_writable_hermes(tmp_path, monkeyp
         box.runner.host_binary()
     assert {'agent-token', 'privsep.json', 'client.json'} <= backup_box.PER_MACHINE
     assert 'build-work' in backup_box.NEVER_CAPTURE
+
+
+def test_missing_historical_curator_image_does_not_skip_source_app_data(monkeypatch):
+    from wam.backup import capture
+    def run(argv, **kw):
+        if 'ps' in argv:
+            # Exited init/curator and superseded containers are irrelevant to
+            # live data services. A query of all containers would be a regression.
+            assert 'status=running' in argv and '-a' not in argv
+            return subprocess.CompletedProcess(argv, 0, 'python:3.12-alpine\n', '')
+        return subprocess.CompletedProcess(argv, 0 if argv[-1] == 'python:3.12-alpine' else 1, '', '')
+    monkeypatch.setattr(subprocess, 'run', run)
+    monkeypatch.setattr('wam.backup.dockercli.docker', lambda env=None: ['docker'])
+    assert capture._missing_images(SimpleNamespace(child_env={}), 'calendar:wizardapps') == []
 
 
 def test_thin_client_hermes_update_check_is_local(monkeypatch):
