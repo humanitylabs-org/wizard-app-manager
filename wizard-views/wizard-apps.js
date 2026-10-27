@@ -546,16 +546,17 @@ function mergeOwnerState(d, st) {
     return { ...r, status: pend.has(k) ? 'pending' : den.has(k) ? 'disconnected' : ok.has(k) ? 'connected' : r.status };
   });
   const names = Object.fromEntries(d.apps.map((a) => [a.id, a.name || a.id]));
-  for (const g of st.pending || [])
-    if (!controls.some((r) => key(r) === key(g))) {
+  // Connections the (possibly older) report doesn't know yet: a runtime request approved since, a decision just made.
+  const rows = [
+    ...(st.pending || []).map((g) => [g, 'pending']),
+    ...(st.denied || []).map((g) => [g, 'disconnected']),
+    ...(st.grants || []).filter((g) => g.approved !== 'install').map((g) => [g, 'connected']),
+  ];
+  for (const [g, status] of rows)
+    if (names[g.from] && !controls.some((r) => key(r) === key(g))) {
       const to = String(g.to).replace(/^slot:/, '');
-      controls.push({
-        from: g.from,
-        to: g.to,
-        providers: names[to] ? [to] : [],
-        status: 'pending',
-        origin: g.reason === 'request' ? 'requested' : 'declared',
-      });
+      const origin = g.reason === 'request' ? 'requested' : ['uses', 'requires'].includes(g.reason) ? 'declared' : 'owner';
+      controls.push({ from: g.from, to: g.to, providers: names[to] ? [to] : [], status, origin });
     }
   const sensitive = Array.isArray(st.sensitive) ? st.sensitive : [];
   return {

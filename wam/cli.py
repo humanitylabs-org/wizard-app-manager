@@ -543,8 +543,8 @@ def start_connections_watch(c: Config) -> None:
         res = network_step(c, restart=False) or {}
         if res.get("errors"):
             print(f"app networks: {'; '.join(res['errors'])[:400]}", file=sys.stderr, flush=True)
-        # Docker unavailable, or the reconcile raised (network_step then returns only errors): retry next poll
-        return not (res.get("unavailable") or "enabled" not in res)
+        # Docker unavailable, the reconcile raised, or a Docker operation failed: the watcher retries (with backoff)
+        return not (res.get("unavailable") or "enabled" not in res or res.get("errors"))
     connections.start(c, apply, lambda: write_registry(c))
 
 

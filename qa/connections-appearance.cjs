@@ -39,7 +39,9 @@ const normal = () => ({ schema: 1, enabled: true, live: true, ok: true, checked_
 // The App Manager's owner API (scenario `owner`: signed in). Every other scenario answers 401 like an unsigned page.
 let owner;
 const freshOwner = () => ({
-  grants: [{ kind: 'app', from: 'studio', to: 'files', approved: 'install' }, { kind: 'app', from: 'calendar', to: 'studio', approved: 'request', reason: 'request' }],
+  grants: [{ kind: 'app', from: 'studio', to: 'files', approved: 'install' }, { kind: 'app', from: 'calendar', to: 'studio', approved: 'request', reason: 'request' },
+    // approved after the report snapshot was written: the view must still offer Disconnect for it
+    { kind: 'app', from: 'mailer', to: 'files', approved: 'request', reason: 'request' }],
   denied: [], sensitive: ['mailer'],
   pending: [{ kind: 'app', from: 'studio', to: 'mailer', reason: 'uses' }],
   notices: [{ id: 'a1b2c3d4e5f6', at: Date.now() / 1000 - 120, kind: 'pending', text: 'Studio wants to connect to Mailer, which you marked sensitive.' },
@@ -160,6 +162,8 @@ const server = http.createServer((req, res) => {
             await frame.waitForSelector('[data-wam-sens="studio"][aria-pressed="true"]:not([disabled])');
             assert.deepEqual(posts.at(-1), { path: '/api/apps/studio:wizardapps/sensitive', body: { sensitive: true } });
             assert.match(await frame.locator('[data-wam-conn="studio"]').innerText(), /Sensitive/);
+            await frame.locator('[data-wam-conn="mailer"]').click();
+            await frame.waitForSelector('.wam-conn-detail [data-wam-act="disconnect"][data-from="mailer"][data-to="files"]');
           }
           const expected = { owner: 'Matches the declarations', normal: 'Matches the declarations', drift: 'Drift found', unavailable: 'Live check unavailable', empty: 'No apps installed' }[scenario];
           assert.match(await frame.locator('.wam-conn').innerText(), new RegExp(expected));

@@ -206,18 +206,39 @@ def test_the_loopback_page_cannot_change_connections_without_the_owner():
     assert "connections-change" not in js
 
 
-def test_a_failed_reconcile_is_retried_on_the_next_poll(monkeypatch):
+def test_a_failed_reconcile_is_retried_with_backoff(monkeypatch):
     st = {"grants": [], "denied": [g("a", "b", "owner", "owner")], "pending": [], "sensitive": [], "notices": []}
     monkeypatch.setattr(net, "connection_state", lambda c, rt: st)
+    monkeypatch.setattr(conn, "_retry", {"at": 0.0, "delay": 0.0})
     C = type("C", (), {"home": Path("/nonexistent")})()
     calls = []
-    results = iter([False, True])
-    last = conn.step(C, None, "", lambda: calls.append(1) or next(results), lambda: None)
-    assert last == "" and calls == [1]          # Docker was unavailable: not recorded as handled
-    last = conn.step(C, None, last, lambda: calls.append(1) or next(results), lambda: None)
-    assert last and calls == [1, 1]             # retried and applied
-    conn.step(C, None, last, lambda: calls.append(1), lambda: None)
-    assert calls == [1, 1]                      # unchanged afterwards: no more work
+    results = iter([False, False, True])
+    run = lambda: calls.append(1) or next(results)   # noqa: E731
+    last = conn.step(C, None, "", run, lambda: None, now=100)
+    assert last == "" and calls == [1]          # a Docker operation failed: not recorded as handled
+    last = conn.step(C, None, last, run, lambda: None, now=101)
+    assert calls == [1]                         # waits for the retry time (3 s)
+    last = conn.step(C, None, last, run, lambda: None, now=103)
+    assert last == "" and calls == [1, 1]       # retried, failed again: next retry in 6 s
+    last = conn.step(C, None, last, run, lambda: None, now=106)
+    assert calls == [1, 1]
+    last = conn.step(C, None, last, run, lambda: None, now=109)
+    assert last and calls == [1, 1, 1]          # applied
+    conn.step(C, None, last, run, lambda: None, now=110)
+    assert calls == [1, 1, 1]                   # unchanged afterwards: no more work
+
+
+def test_a_reconcile_with_docker_errors_counts_as_failed(monkeypatch):
+    from wam import cli
+    got = {}
+    monkeypatch.setenv("WAM_CONNECTIONS_WATCH", "1")
+    monkeypatch.setenv("WAM_NETWORK_WATCH", "1")
+    monkeypatch.setattr(conn, "start", lambda c, apply, reg: got.setdefault("apply", apply))
+    cli.start_connections_watch(object())
+    for res, ok in (({"enabled": True, "errors": []}, True), ({"enabled": True, "errors": ["x: disconnect failed"]}, False),
+                    ({"errors": ["raised"]}, False), ({"enabled": True, "unavailable": True, "errors": []}, False)):
+        monkeypatch.setattr(cli, "network_step", lambda c, **k: res)
+        assert got["apply"]() is ok
 
 
 def test_the_owners_chosen_notifications_app_is_used(tmp_path):

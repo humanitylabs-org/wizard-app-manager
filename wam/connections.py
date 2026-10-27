@@ -23,6 +23,7 @@ NOTICE_MAX_AGE = 24 * 3600   # older undelivered notices (e.g. Notifications ins
 RETRY_AFTER = 300            # a failing Notifications app is tried again after 5 minutes, not on every poll
 _failed_at = 0.0
 _sent: set[str] = set()      # sent but not yet acknowledged by the App Manager: never sent twice
+_retry = {"at": 0.0, "delay": 0.0}   # a reconcile that failed is retried with backoff (POLL doubling up to 5 min)
 
 
 def signature(state: dict | None) -> str:
@@ -127,23 +128,29 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
     return sent
 
 
-def step(c, rt, last: str, apply_fn, registry_fn) -> str:
-    """One poll: reconcile when the connections changed, then deliver notices. Returns the new signature."""
+def step(c, rt, last: str, apply_fn, registry_fn, now: float | None = None) -> str:
+    """One poll: reconcile when the connections changed, then deliver notices. Returns the signature handled."""
     from . import network
+    now = time.time() if now is None else now
     state = network.connection_state(c, rt)
     sig = signature(state)
-    applied = True
-    if state is not None and sig != last:
+    handled = last
+    if state is not None and sig != last and now >= _retry["at"]:
         # The first poll applies too: a decision recorded while wam serve was stopped (the App Manager API keeps
         # running) must not wait for the next app start or the 10-minute idle reconcile. Reconcile is idempotent.
-        # apply_fn() returns False when the reconcile could not run (Docker unavailable): the next poll retries.
-        applied = apply_fn() is not False
+        # apply_fn() returns False when the reconcile failed (Docker unavailable, a Docker operation failed): the
+        # change stays unhandled and is retried soon, backing off from POLL to 5 minutes while it keeps failing.
+        if apply_fn() is False:
+            _retry["delay"] = min(max(_retry["delay"] * 2, POLL), 300.0)
+            _retry["at"] = now + _retry["delay"]
+        else:
+            _retry["at"], _retry["delay"], handled = 0.0, 0.0, sig
         try:
             registry_fn()
         except Exception as e:  # noqa: BLE001
             print(f"connections: registry not refreshed ({str(e)[:160]})", file=sys.stderr, flush=True)
     deliver(c, rt, state)
-    return sig if state is not None and applied else last
+    return handled
 
 
 def start(c, apply_fn, registry_fn, stop: threading.Event | None = None) -> None:
