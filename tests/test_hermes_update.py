@@ -24,6 +24,10 @@ def test_updates_status_has_hermes_without_a_pin(tmp_path):
 def box(tmp_path, monkeypatch):
     # Import inside the fixture: the integration test above also fails on main.
     from wam import hermes_update as hu
+    # Transaction/rollback fixtures use synthetic commits. Policy refusal and
+    # seven-day approval are covered independently in test_hermes_lock.py.
+    monkeypatch.setattr(hu.hermes_lock, 'check_pin', lambda pin: pin)
+    monkeypatch.setattr(hu.hermes_lock, 'authorize', lambda: 'fixture')
     h, hh = tmp_path / 'wizard', tmp_path / 'hermes'
     h.mkdir(); hh.mkdir()
     monkeypatch.setenv('HOME', str(tmp_path))
@@ -104,6 +108,25 @@ def test_status_states(box):
     (b['h'] / 'alongside.json').unlink()
     assert hu.status(b['h'])['state'] == 'container'
     assert hu.update(b['h'])['state'] == 'container'
+
+
+def test_official_installer_layout_routes_to_hermes_update(box):
+    """Heidi's box: stock root Hermes from the official install.sh has no venv/ (a .hermes/bin launcher over
+    managed environments, install stamp updateMechanism=self). `wam updates` must point at the supported
+    `hermes update`, not say "update this Hermes by hand (not a git checkout with a venv)"."""
+    b = box
+    (b['repo'] / 'venv' / 'bin' / 'python').unlink()
+    launcher = b['repo'] / '.hermes' / 'bin' / 'hermes'
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\n')
+    st = b['hu'].status(b['h'])
+    assert st['state'] == 'self_updating' and st['command'] == 'hermes update' and st['install_type'] == 'official'
+    assert 'hermes update' in st['reason'] and 'by hand' not in st['reason']
+    assert b['hu'].update(b['h'])['state'] == 'self_updating'
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]   # never touched
+    launcher.unlink()
+    (b['repo'] / 'install-stamp.json').write_text('{"updateMechanism": "self"}')
+    assert b['hu'].status(b['h'])['state'] == 'self_updating'
 
 
 def test_manual_installs_are_never_touched(box):

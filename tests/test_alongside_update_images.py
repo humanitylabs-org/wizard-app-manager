@@ -91,7 +91,21 @@ def test_app_update_reconciles_stale_override_before_queue(box, app):
 
 def test_bootstrap_source_upgrade_does_not_keep_old_override(box, monkeypatch):
     c, doc, _, calls = box
-    monkeypatch.setattr(cli, "resolve_any", lambda *a: {})
+    from test_installed_default_release_pins import package
+    def prepare(_, app):
+        row = next(r for r in doc['default_apps'].values() if r['app'] == app)
+        package(c.runtipi_root, app, row['commit'], row['index_version'], store=True)
+        return {}
+    old_update = c.runtipi().update
+    def update(urn, perform_backup=True):
+        old_update(urn, perform_backup)
+        app = urn.split(':')[0]
+        shutil.copytree(c.runtipi_root / 'repos' / cli.STORE / 'apps' / app,
+                        c.runtipi_root / 'apps' / cli.STORE / app, dirs_exist_ok=True)
+    monkeypatch.setattr(cli, "resolve_any", prepare)
+    monkeypatch.setattr(c.runtipi(), 'update', update)
+    monkeypatch.setattr(c.runtipi(), 'app', lambda urn: {'app': {'status': 'running', 'config': {
+        'openPort': False, 'exposed': False, 'exposedLocal': False}}})
     failed = {}
     assert cli.release_updates(c, c.runtipi(), failed) == list(APPS)[::-1]
     assert failed == {}

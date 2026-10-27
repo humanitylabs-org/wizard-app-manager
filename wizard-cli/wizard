@@ -1415,6 +1415,183 @@ def human(cmd: str, out: dict) -> str:
     return out.get("text") or json.dumps(out["result"], indent=2)
 
 
+# Diagnostics intentionally project closed enums and version/digest identities only.
+# Never add raw command output, paths, names, URLs, environment or exception messages.
+def _audit_json(path):
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            return {}
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, UnicodeError):
+        return {}
+
+
+def _audit_identity(value, kind="version"):
+    patterns = {"version": r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,40})?",
+                "commit": r"[a-f0-9]{40}", "digest": r"sha256:[a-f0-9]{64}"}
+    return value if isinstance(value, str) and re.fullmatch(patterns[kind], value) else None
+
+
+def _audit_run(argv):
+    import subprocess
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=8,
+                           env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(Path.home()),
+                                "LC_ALL": "C", "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "")})
+        return p.stdout[:262144] if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+
+
+def cmd_report(ns):
+    import platform
+    home = Path(os.environ.get("WIZARD_OS_HOME", str(Path.home() / ".wizard-os")))
+    release = _audit_json(home / "release.json")
+    pins = _audit_json(home / "release-pins.json")
+    policy = _audit_json(home / "updates.json")
+    observed = []
+    checks = release.get("checks")
+    checks = checks if isinstance(checks, list) else []
+    for row in checks[:128]:
+        if not isinstance(row, dict):
+            continue
+        # Preserve identity pairs without trusting human-readable check names.
+        for kind in ("commit", "digest"):
+            expected = _audit_identity(row.get("expected"), kind)
+            actual = _audit_identity(row.get("observed"), kind)
+            if expected or actual:
+                observed.append({"kind": kind, "expected": expected, "observed": actual,
+                                 "ok": row.get("ok") is True})
+    components = pins.get("components") if isinstance(pins.get("components"), dict) else {}
+    images = pins.get("images") if isinstance(pins.get("images"), dict) else {}
+    known = ("wizard-app-manager", "wizard-agent-service", "wizard-ux", "wizard-troubleshooter")
+    expected = {}
+    for key in known:
+        component = components.get(key) if isinstance(components.get(key), dict) else {}
+        image = images.get(key) if isinstance(images.get(key), dict) else {}
+        expected[key] = {"commit": _audit_identity(component.get("commit"), "commit"),
+                         "digest": _audit_identity(image.get("digest"), "digest")}
+    units = ("wizard-app-manager-api.service", "wizard-troubleshooter.service", "wizard-guardian.timer")
+    services = {}
+    errors = {}
+    classes = {"timeout": r"\b(?:timeout|timed out)\b", "connection_refused": r"connection refused",
+               "permission_denied": r"permission denied", "out_of_memory": r"\b(?:oom|out of memory)\b",
+               "error": r"\b(?:error|failed|exception)\b"}
+    for unit in units:
+        raw = _audit_run(["systemctl", "--user", "show", unit, "--property=ActiveState", "--value"])
+        state = (raw or "").strip()
+        services[unit] = state if state in ("active", "inactive", "failed", "activating", "deactivating") else "unavailable"
+        raw = _audit_run(["journalctl", "--user", "-u", unit, "--since=-24h", "-n", "100", "--no-pager", "-o", "cat"])
+        errors[unit] = {"available": raw is not None, "classes":
+                        {k: min(100, len(re.findall(pattern, raw or "", re.I))) for k, pattern in classes.items()}}
+    os_release = {}
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            k, sep, v = line.partition("=")
+            if k in ("ID", "VERSION_ID") and sep:
+                os_release[k] = v.strip('"')
+    except OSError:
+        pass
+    distro = os_release.get("ID")
+    version = os_release.get("VERSION_ID")
+    return {"schema": "wizard-report-v1", "cli_version": _audit_identity(VERSION),
+            "python_version": platform.python_version(),
+            "os": {"id": distro if distro in ("ubuntu", "debian", "fedora", "arch", "alpine") else "other",
+                   "version": version if isinstance(version, str) and re.fullmatch(r"[0-9.]{1,12}", version) else None},
+            "release": {"version": _audit_identity(release.get("release")),
+                        "status": release.get("status") if release.get("status") in ("pinned", "drift", "mismatch", "install-failed", "unpinned") else "unavailable",
+                        "mismatches": sum(isinstance(c, dict) and c.get("ok") is False for c in checks),
+                        "identities": observed},
+            "expected_pins": expected, "services": services, "recent_errors": errors,
+            "updates": {"mode": policy.get("mode") if policy.get("mode") in ("ask", "auto") else "ask",
+                        "channel": policy.get("channel") if policy.get("channel") in ("stable", "latest") else "stable"},
+            "privacy": "allowlisted-identities-and-enums-only; no raw logs or content; not uploaded"}
+
+
+def cmd_contact(ns):
+    import ipaddress
+    import shlex
+    from urllib.parse import urlsplit
+    registry = Path(ns.registry or os.environ.get("WIZARD_APPS_JSON") or
+                    str(Path(os.environ.get("WIZARD_OS_HOME", str(Path.home() / ".wizard-os"))) / "apps.json"))
+    data = _audit_json(registry)
+    slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
+    slot = slots.get("shell")
+    shell_id = slot.get("default") if isinstance(slot, dict) else slot
+    apps = data.get("apps") if isinstance(data.get("apps"), list) else []
+    shells = [a for a in apps if isinstance(a, dict) and
+              (a.get("id") == shell_id or (not shell_id and "shell" in (a.get("provides") or [])))]
+    if len(shells) != 1:
+        raise Fail("contact_unavailable", "No unique installed shell; inspect wam slots and rerun the installer.")
+    view = shells[0].get("view") if isinstance(shells[0].get("view"), dict) else {}
+    local = view.get("local") or view.get("url")
+    try:
+        if not isinstance(local, str):
+            raise ValueError()
+        u = urlsplit(local or "")
+        if u.scheme != "http" or u.hostname not in ("127.0.0.1", "::1") or u.username or u.password or u.query or u.fragment:
+            raise ValueError()
+        port = u.port
+        if not port or not 1 <= port <= 65535 or not re.fullmatch(r"/[A-Za-z0-9_./-]*", u.path):
+            raise ValueError()
+    except ValueError:
+        raise Fail("contact_unavailable", "Shell has no valid loopback view.local address.")
+    # Do not follow redirects off the trusted loopback origin.
+    import urllib.request
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(local, timeout=min(ns.timeout, 8)) as response:
+            if response.status != 200 or b"wizard" not in response.read(262144).lower():
+                raise ValueError()
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise Fail("contact_unavailable", "The installed Wizard shell did not answer its loopback probe.")
+    except (OSError, ValueError):
+        raise Fail("contact_unavailable", "The installed Wizard shell did not answer its loopback probe.")
+    # view.local already fronts the shell and its Agent Service proxy. HTML alone
+    # is not readiness: 0.3.32 pins a service without Setup, despite shipping its UI.
+    setup_failure = "The shell answered, but its same-origin Setup API did not; run wizard doctor and update to a release with Setup support (0.3.33 or later)."
+    try:
+        with opener.open(f"http://{u.netloc}/wizard/v1/setup", timeout=min(ns.timeout, 8)) as response:
+            setup = json.loads(response.read(262144))
+            if response.status != 200 or not isinstance(setup, dict) or type(setup.get("first_run")) is not bool:
+                raise ValueError()
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise Fail("contact_setup_unavailable", setup_failure) from None
+    except (OSError, ValueError):
+        raise Fail("contact_setup_unavailable", setup_failure) from None
+    fields = os.environ.get("SSH_CONNECTION", "").split()
+    host = getattr(ns, "ssh_host", None)
+    ssh_port = getattr(ns, "ssh_port", None)
+    if len(fields) == 4:
+        try:
+            ipaddress.ip_address(fields[2])
+            host = host or fields[2]
+            ssh_port = ssh_port or int(fields[3])
+        except ValueError:
+            pass
+    if not host:
+        raise Fail("contact_ssh_required", "Reconnect by SSH, or run wizard contact --ssh-host HOST using the host you connected to. sudo may remove SSH_CONNECTION.")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]{0,252}", host):
+        raise Fail("usage", "Invalid SSH host (address or DNS name only).")
+    ssh_port = ssh_port or 22
+    if not 1 <= ssh_port <= 65535:
+        raise Fail("usage", "SSH port must be between 1 and 65535.")
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", user):
+        raise Fail("contact_ssh_required", "Cannot determine the SSH login user.")
+    remote = "[::1]" if u.hostname == "::1" else "127.0.0.1"
+    argv = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-p", str(ssh_port), "-L",
+            f"127.0.0.1:18795:{remote}:{port}", "-l", user, host]
+    return {"ok": True, "command": shlex.join(argv), "url": "http://127.0.0.1:18795" + (u.path or "/"), "setup_api": 200,
+            "instructions": "On your computer run the SSH command and keep it open; then open the URL there. Use the host/port you connected with if NAT or port mapping differs (--ssh-host/--ssh-port). Keep normal SSH host-key verification. Then open Setup to add phone access."}
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):  # argparse errors become the deterministic `usage` failure
         raise Fail("usage", f"{message} (try: {self.prog} --help)")
@@ -1434,7 +1611,11 @@ def build_parser() -> Parser:
     common.add_argument("--timeout", type=float, default=S, help="seconds per HTTP request (default 120; env WIZARD_TIMEOUT)")
     p = Parser(prog="wizard", description="Use any installed Wizard app's MCP tools.", parents=[common])
     p.add_argument("--version", action="version", version=f"wizard {VERSION} ({MARKER})")
-    sub = p.add_subparsers(dest="cmd", metavar="{apps,tools,call,link,unlink,doctor}", parser_class=Parser)
+    sub = p.add_subparsers(dest="cmd", metavar="{apps,tools,call,link,unlink,doctor,report,contact}", parser_class=Parser)
+    sub.add_parser("report", help="no-secrets offline JSON diagnostics (redirect stdout to save)", parents=[common])
+    contact = sub.add_parser("contact", help="reach the installed shell through owner SSH before Tailscale", parents=[common])
+    contact.add_argument("--ssh-host", help="host used to SSH to this box (override NAT discovery)")
+    contact.add_argument("--ssh-port", type=int, help="SSH port used from your computer")
     apps = sub.add_parser("apps", help="installed apps", parents=[common])
     apps_sub = apps.add_subparsers(dest="apps_cmd", metavar="{list}", parser_class=Parser)
     apps_sub.add_parser("list", help="list installed apps from the registry", parents=[common])
@@ -1482,7 +1663,14 @@ def main(argv: list[str] | None = None) -> int:
     p = build_parser()
     try:
         ns = options(p.parse_args(argv))
-        if ns.cmd == "apps" and getattr(ns, "apps_cmd", None) == "list":
+        if ns.cmd == "report":
+            print(json.dumps(cmd_report(ns)))
+            return 0
+        elif ns.cmd == "contact":
+            out = cmd_contact(ns)
+            print(json.dumps(out) if want_json else "\n".join((out["instructions"], out["command"], out["url"])))
+            return 0
+        elif ns.cmd == "apps" and getattr(ns, "apps_cmd", None) == "list":
             out, kind = cmd_apps_list(ns), "apps"
         elif ns.cmd == "tools":
             out, kind = cmd_tools(ns), "tools"

@@ -208,6 +208,7 @@ class Bridge:
         rows = self.rt.installed()
         host, network = self.app_network()
         reg = registry.build(rows, cli.STORE, host, self.cfg.runtipi_root, network)
+        reg['grants'] = cli.read_grants(self.cfg, self.rt)
         ext = alongside.external_slots(self.cfg.home)
         if ext:
             reg["external"] = ext

@@ -1,0 +1,16 @@
+{
+  "version": "0.3.68",
+  "latest_since": "2026-10-27T07:17:37Z",
+  "promoted_at": "2026-10-27T07:57:59Z",
+  "upgrade_test": {
+    "from": "0.3.65",
+    "to": "0.3.68",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.68.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Recommended fixes from live installs (26 Oct 2026): Stable's Agent Service was 183 commits behind main. 0.3.68 brings Agent Service main b1f8d2c1 (#191 phone connected only after it opens Wizard, #195 security deps, #196/#203 provider-account emailHash + identity marker), Wizard UX main d53b2b24 (#573: model picker refetches on open and names a silent Claude app, closes #572), Claude 0.2.8 (exact same-account merge via emailHash, masked fallback only for older agent services) and ChatGPT 0.2.6 (Home shows ChatGPT, not openai-codex-oauth-1). Upgrade tests on disposable KVM guests with official-installer root Hermes v0.22.5 and the public os.sh, WIZARD_STRICT=1: 0.3.65 -> 0.3.68 (with a tailnet IP change; both apps recreated on the new address) and 0.3.61 -> 0.3.68 (~4 min): pinned 0.3.68, 0 failed checks, Hermes config/.env/SOUL hashes unchanged, wizard/wam doctor 0 FAIL, both connection apps reach the agent dashboard, identity marker served, /wizard/ai-usage lists ChatGPT and Claude.",
+    "notes": "Base is 0.3.67 (backup line), so Stable gains 0.3.67's backup bundle and voice/connection-router defaults; WAM da2f01d1 unchanged from 0.3.67. Not checked: backup/restore/Undo (Archimedes Thales, wizard-os #251), real Tailscale/HTTPS/Serve (headscale), real provider sign-ins, physical phone. Latest moves to 0.3.70 = 0.3.69 (WAM #267) + these pins."
+  }
+}

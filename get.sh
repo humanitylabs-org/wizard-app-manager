@@ -315,17 +315,53 @@ fwd_env() {
   printf '%s\n' WAM_IMAGE="${WAM_IMAGE:-}" WAM_DIR="${WAM_DIR:-}" WAM_REF="${WAM_REF:-}" \
     WIZARD_RELEASE="${WIZARD_RELEASE:-}" WIZARD_RELEASE_BASE="${WIZARD_RELEASE_BASE:-}" WIZARD_STRICT="${WIZARD_STRICT:-}" \
     WIZARD_CHANNEL="${WIZARD_CHANNEL:-}" \
+    WIZARD_HERMES_PROMOTION="${WIZARD_HERMES_PROMOTION:-}" \
     WAM_REPO="$REPO" WIZARD_UX_IMAGE="${WIZARD_UX_IMAGE:-}" WIZARD_AGENT_SERVICE_IMAGE="${WIZARD_AGENT_SERVICE_IMAGE:-}" \
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
     WIZARD_DETACHED="${WIZARD_DETACHED:-}" WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-}" \
     WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}"
 }
+# Cloud-init can race logind's D-Bus startup. Retry, but never hide exhaustion.
+enable_linger() {
+  local user="$1" attempt rc=1
+  for attempt in 1 2 3 4; do
+    if loginctl enable-linger "$user"; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [ "$attempt" -lt 4 ]; then
+      printf 'Waiting for logind before enabling linger for %s (attempt %s/4)\n' "$user" "$attempt" >&2
+      sleep "$((attempt * 2))"
+    fi
+  done
+  # logind can stay unresponsive for minutes after fresh-server apt upgrades.
+  # user@UID pulls in user-runtime-dir@UID and the user's sockets.target (including
+  # dbus.socket on supported Ubuntu/Debian hosts); keep the later bus-socket wait.
+  # Only root may bypass logind. Restrict this fallback to ordinary account names:
+  # logind C-escapes unusual names in its linger filename rather than using them raw.
+  local uid; uid="$(id -u "$user" 2>/dev/null)" || uid=""
+  if [ -n "$uid" ] && [ "$(id -u)" -eq 0 ] && [[ "$user" =~ ^[a-zA-Z0-9_-]+\$?$ ]] \
+     && install -d -m 0755 /var/lib/systemd/linger && touch "/var/lib/systemd/linger/$user"; then
+    # mkdir/touch do not use logind's SELinux label-aware helpers. Restore policy
+    # labels when available, and never claim success if that or manager start fails.
+    if command -v restorecon >/dev/null 2>&1; then
+      restorecon /var/lib/systemd/linger "/var/lib/systemd/linger/$user" || return "$rc"
+    fi
+    if systemctl start "user@$uid.service"; then
+      printf 'logind did not answer; enabled linger for %s directly\n' "$user" >&2
+      return 0
+    fi
+  fi
+  printf 'Could not enable linger for %s after 4 attempts\n' "$user" >&2
+  return "$rc"
+}
 # as_user <user> <mode> [HERMES_HOME]: run this installer again as <user> (a user session bus, no root left over).
 as_user() {
   local u="$1" m="$2" uid; uid="$(id -u "$u")"
   local -a env; mapfile -t env < <(fwd_env)
-  loginctl enable-linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
+  enable_linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
@@ -334,8 +370,11 @@ as_user() {
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
+  # Fresh Ubuntu boots may still be applying automatic security updates. Let
+  # apt wait for dpkg instead of failing the whole install on its frontend lock.
+  say "Waiting for Ubuntu's automatic updates to finish, if needed (up to 10 minutes)"
+  apt-get -o DPkg::Lock::Timeout=600 update -qq
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
   if ! command -v docker >/dev/null || [ "$(docker version --format '{{.Server.Version}}' 2>/dev/null | cut -d. -f1)" -lt 28 ] 2>/dev/null; then
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
@@ -421,7 +460,7 @@ if mode == "end":
                 pick = re.sub(r"(?i)([?&](?:token|key|sig|signature|access_token|auth)=)[^&\s]+", r"\1***", pick)
             st["failure_reason"] = pick[-1000:] if pick else None
         except OSError: pass
-    st["approval_url"] = None
+    st["approval_url"] = st["owner_url"] = None
     if rc == 3 and st.get("admin_command") and st.get("admin_message"):
         st["state"], st["message"] = "needs_admin", st["admin_message"]
         save(st); sys.exit(0)
@@ -451,6 +490,11 @@ def handle(line):
         m = url.search(s)
         st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
         st["message"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-step:"):
+        # An owner action that is not a sign-in (e.g. turn on HTTPS certificates); the runner keeps waiting.
+        m = url.search(s)
+        st["state"], st["owner_url"] = "needs_owner", m.group(0) if m else None
+        st["message"] = s.split(":", 1)[1].replace(m.group(0) if m else "\0", "").strip()
     elif s.startswith("[wizard-os] owner-approval:"):
         m = re.search(r"https?://\S+", s)
         st["state"], st["approval_url"] = "needs_owner", m.group(0) if m else None
@@ -463,7 +507,7 @@ def handle(line):
         st["notice"] = s.split(":", 1)[1].strip()
     elif s.startswith("[wizard-os] owner-action-done"):
         st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
-        st["approval_url"], st["notice"] = None, None
+        st["approval_url"], st["notice"], st["owner_url"] = None, None, None
     elif s.startswith("[wizard-os] wizard-url:"):
         m = url.search(s)
         st["wizard_url"] = m.group(0) if m else None
@@ -527,6 +571,9 @@ if state in ("running", "needs_owner"):
     elif st.get("tailscale_login_url"):
         print("Owner action: Open this link to connect your Wizard to your Tailscale:")
         print(st["tailscale_login_url"])
+    elif st.get("owner_url"):
+        print(f"Owner action: {st.get('message') or 'Open this link:'}")
+        print(st["owner_url"])
     elif state == "needs_owner" and st.get("message"):
         print(f"Owner action: {st['message']}")
 elif state == "done":
@@ -911,7 +958,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       as_user "$ALONG_USER" alongside "$ALONG_HOME"
     fi
     # Root owns this Hermes: Wizard OS runs as root too. Its user units need root's user manager (linger).
-    loginctl enable-linger root >/dev/null 2>&1 || true
+    enable_linger root >/dev/null 2>&1 || true
     for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S /run/user/0/bus ] && break; sleep 1; done
     export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
     [ -z "$ALONG_HOME" ] || export HERMES_HOME="$ALONG_HOME"
@@ -934,7 +981,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
     install -d -m 700 -o "$WUSER" -g "$WUSER" "/home/$WUSER/.ssh"
     install -m 600 -o "$WUSER" -g "$WUSER" /root/.ssh/authorized_keys "/home/$WUSER/.ssh/authorized_keys"
   fi
-  loginctl enable-linger "$WUSER"
+  enable_linger "$WUSER"
   WUID="$(id -u "$WUSER")"
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$WUID/bus" ] && break; sleep 1; done
 
@@ -957,7 +1004,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
-command -v git >/dev/null || sudo apt-get install -y -qq git >/dev/null
+command -v git >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq git >/dev/null
 if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
   printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
@@ -1065,8 +1112,9 @@ print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2
     case "$REL" in *[!0-9A-Za-z.+-]*|.*) echo "WIZARD_RELEASE '$REL' is not a version" >&2; exit 2 ;; esac
     PINS="$HOME/.wizard-os/release-pins.json"
     fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
+    fetch_release hermes-lock.json "$PINS.lock" || { echo "Could not read the shared Hermes lock; nothing installed" >&2; exit 1; }
     # Only validated values leave Python (40-hex commit, sha256 digests, plain image names), shell-quoted.
-    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" <<'PY'
+    PIN_ENV="$(python3 - "$PINS.tmp" "$REL" "$PINS.lock" <<'PY'
 import json, re, shlex, sys
 path, want = sys.argv[1], sys.argv[2]
 try:
@@ -1075,6 +1123,14 @@ except ValueError as e:
     sys.exit(f"release {want}: not JSON ({e})")
 if str(rel.get("version")) != want:
     sys.exit(f"release file says version {rel.get('version')!r}, expected {want!r}")
+lock = json.load(open(sys.argv[3]))
+if lock.get('schema') != 1 or lock.get('automatic_updates') != 'paused':
+    sys.exit('invalid shared Hermes lock')
+if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
+    sys.exit('release Hermes differs from the shared exact lock')
+agent = (rel.get('default_apps') or {}).get('agent') or {}
+if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
+    sys.exit('release agent recipe differs from the shared exact Hermes lock')
 def image(name):
     im = (rel.get("images") or {}).get(name) or {}
     ref, dig = str(im.get("ref", "")), str(im.get("digest", ""))
@@ -1277,6 +1333,36 @@ if links and str(links[0].get("url", "")).startswith("https://"):
     print(f"[wizard-os] wizard-url: {links[0]['url']}")
 PY
 }
+hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
+  # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
+  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
+}
+hermes_api_watchdog_job() {  # $1 = hermes binary, $2 = Hermes API origin. Evergreen safety net for every pinned release:
+  # an install.sh from before the retrying restart tried once, and Hermes >=0.22 refuses while the installing agent's
+  # chat turn is live, leaving the API down. Until the API answers: restart when Hermes allows it (15 s steps, 30 min),
+  # then interrupt deliberately. Never restarts a Hermes whose API already answers.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "up() { curl -fsS -m 5 -o /dev/null '$2/health'; }; for _ in \$(seq 1 $tries); do up && exit 0; $hh '$1' gateway restart && { sleep $every; up && exit 0; }; echo \"\$(date -u +%FT%TZ) Hermes API not answering yet; restart retried in ${every}s\"; sleep $every; done; up || $hh '$1' gateway restart --yes"
+}
+api_watchdog() {  # alongside, run by an agent: make sure the Hermes API comes up after the deferred restart
+  [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
+  local origin delay="${WIZARD_WATCHDOG_DELAY:-75}" log="$HOME/.wizard-os/hermes-restart.log" job
+  case "$delay" in ''|*[!0-9]*) delay=75 ;; esac
+  # The origin wam alongside recorded for the host Hermes (agent.origin); stock loopback port otherwise.
+  origin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["agent"]["origin"])' \
+    "$HOME/.wizard-os/alongside.json" 2>/dev/null || true)"
+  case "$origin" in http://127.0.0.1:*|http://localhost:*) ;; *) origin=http://127.0.0.1:8642 ;; esac
+  job="$(hermes_api_watchdog_job "$real" "$origin")"
+  local -a run=(systemd-run --user); [ "$(id -u)" -eq 0 ] && run=(systemd-run)
+  if ! { command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-api-watchdog-$(date +%s)" \
+      --on-active="${delay}s" --setenv=HOME="$HOME" --setenv=PATH="$PATH" /bin/bash -c "exec >>'$log' 2>&1; $job" >/dev/null 2>&1; }; then
+    setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
+  fi
+}
 deferred_restart() {  # after an older install.sh under an agent: schedule the restart it asked for, detached
   [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] || return 0
   rm -f "$HOME/.wizard-os/agent-safe.active"
@@ -1285,7 +1371,7 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
   rm -f "$HOME/.wizard-os/hermes-restart.pending"
   local delay="${WIZARD_RESTART_DELAY:-20}" log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
-  job="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$real' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  job="$(hermes_restart_job "$real"); sleep 20; '$HOME/.local/bin/wizard' doctor"
   # Detached install: restart only once its runner has written the final status and exited (bounded to 30 min).
   local runner="${WIZARD_INSTALL_RUNNER_PID:-}"
   case "$runner" in ''|*[!0-9]*) ;; *) job="for _ in \$(seq 1 900); do [ -d /proc/$runner ] || break; sleep 2; done; $job" ;; esac
@@ -1305,6 +1391,7 @@ if [ -z "$PINS" ]; then
   rm -f "$HOME/.wizard-os/agent-safe.active"
   [ "$rc" -ne 0 ] || report_wizard_url
   [ "$rc" -ne 0 ] || deferred_restart
+  [ "$rc" -ne 0 ] || api_watchdog
   exit "$rc"
 fi
 
@@ -1417,6 +1504,6 @@ sys.exit(1 if core_bad else (3 if drift and strict == "1" else 0))
 PY
 rm -f "$HOME/.wizard-os/agent-safe.active"
 [ "$rc" -ne 0 ] || report_wizard_url
-if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; fi
+if [ "$rc" -eq 0 ] && [ "$vrc" -eq 0 ]; then deferred_restart; api_watchdog; fi
 [ "$rc" -eq 0 ] || exit "$rc"
 exit "$vrc"

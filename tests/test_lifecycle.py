@@ -164,6 +164,17 @@ def assert_clean(value):
     assert "_view_upstream" not in text and "_skill_src" not in text
 
 
+def test_lifecycle_refresh_preserves_main_grants_in_both_copies(bridge):
+    b = bridge
+    approved = [{"appId": "hello-wizard", "provider": "fixture", "scope": "read"}]
+    b.cfg.home.mkdir(parents=True, exist_ok=True)
+    (b.cfg.home / "apps.json").write_text(json.dumps({"grants": approved}))
+    reg, _ = b.refresh()
+    assert reg["grants"] == approved
+    for root in [b.cfg.home, b.cfg.runtipi_root / "app-data" / "wizard-os"]:
+        assert json.loads((root / "apps.json").read_text())["grants"] == approved
+
+
 def test_complete_lifecycle_and_projection(bridge):
     b = bridge
     for i, action in enumerate(["install", "stop", "start", "restart", "update", "uninstall"]):

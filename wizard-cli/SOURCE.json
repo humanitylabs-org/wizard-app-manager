@@ -6,7 +6,7 @@
     "install_wizard_cli.sh": "tools/install_wizard_cli.sh"
   },
   "sha256": {
-    "wizard": "88a69a2dbd274c1ef474dc885d2a37c2ad17d372e75c7828526c010cdf90d030",
+    "wizard": "c2ca48c0bbe57dbd24f8a735a143886589ece93cbd34ca35f739946846a87f94",
     "install_wizard_cli.sh": "b8eb2b2f63f9196b215d238b09b94bc27b307c8d95414e21354242aa48679827"
   },
   "upstream_sha256": {

@@ -130,19 +130,28 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
 
 
-def read_grants(c: Config, rt: Runtipi) -> list:
-    """Canonical share grants. The App Manager backend owns <dataDir>/state/wizard-grants.json and writes it
-    root-only (0600) from its container, so the unprivileged CLI asks the backend when it cannot read the file."""
-    grants_file = c.runtipi_root / 'state' / 'wizard-grants.json'
+def read_grants(c: Config, rt) -> list:
+    """Approved app grants for the registry. The App Manager writes state/wizard-grants.json 0600 as root, and
+    since automatic grants (#211) it exists on every fresh box, so the host CLI user usually cannot open it
+    (0.3.42 fresh install: PermissionError aborted `wam apps` and `wam bootstrap`). Read the file when we can,
+    else ask the App Manager API (the same source `wam grants list` uses), else keep the grants already
+    mirrored in apps.json rather than fail the registry write."""
+    grants = registry.read_grants_file(c.runtipi_root / 'state' / 'wizard-grants.json')
+    if grants is not None:
+        return grants
     try:
-        return json.loads(grants_file.read_text()).get('grants', [])
-    except FileNotFoundError:
+        got = rt.req("GET", "/apps/wizard/grants")
+        if isinstance(got, list):
+            return got
+    except Exception:
+        pass
+    if not getattr(c, "home", None):
         return []
-    except PermissionError:
-        rows = rt.req("GET", "/apps/wizard/grants")
-        if not isinstance(rows, list):
-            raise RuntipiError(f"GET /apps/wizard/grants returned {type(rows).__name__}, not a grant list")
-        return rows
+    try:
+        cur = json.loads((c.home / "apps.json").read_text())
+        return cur.get("grants", []) if isinstance(cur.get("grants"), list) else []
+    except (OSError, ValueError):
+        return []
 
 
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
@@ -223,6 +232,14 @@ def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     from .runtipi import read_env
     if getattr(c, "home", None) and (v := alongside.shared_secret(c.home, var)):
         return v
+    if var.startswith('HERMES_DASHBOARD_BASIC_AUTH_'):
+        # Connection recipes declare this shared dashboard input even without a `uses` edge.
+        # Reuse an existing host login on alongside boxes; never rotate it for an app update.
+        from . import host_dashboard
+        if getattr(c, 'home', None) and alongside.load(c.home):
+            if value := host_dashboard.read_env(host_dashboard.env_path(c.home)).get(var):
+                return value
+        uses = list(dict.fromkeys([*uses, 'hermes-agent']))
     for dep in uses:
         envp = c.runtipi_root / "app-data" / STORE / dep / "app.env"
         if not envp.is_file():   # not installed (or, alongside, filled by the host)
@@ -265,6 +282,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
     compose publishes on 127.0.0.1, so openPort/exposed stay off."""
     form: dict = {"openPort": False, "exposed": False, "exposedLocal": False}
     saved: dict = {}
+    previous: dict = {}
     missing: list[str] = []
     for f in info.get("form_fields") or []:
         var = f.get("env_variable")
@@ -281,13 +299,18 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
         elif "default" in f:
             continue
         elif f.get("required") and f.get("type") == "password":
-            form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
+            secret_file = c.secrets / f"{app_id}.json"
+            previous = json.loads(secret_file.read_text()) if secret_file.is_file() else {}
+            if previous.get(var):
+                form[var] = previous[var]
+            else:
+                form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
             missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
     if saved:
         c.secrets.mkdir(mode=0o700, exist_ok=True)
         p = c.secrets / f"{app_id}.json"
-        p.write_text(json.dumps(saved, indent=2) + "\n")
+        p.write_text(json.dumps({**previous, **saved}, indent=2) + "\n")
         p.chmod(0o600)
         print(f"{app_id}: generated {', '.join(saved)}; saved to {p}", file=sys.stderr)
     return form, missing
@@ -841,17 +864,43 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         dash = host_dashboard_cmd(c, rt)
         if dash.get("state") != "skipped":
             out["host_dashboard"] = {k: v for k, v in dash.items() if k != "changed_apps"}
-        order += [a for a in dash.get("changed_apps") or [] if a not in order]
         reg_apps = registry_apps(c)
         login = claude_login_cmd(c, {a: (reg_apps.get(a) or {}).get("provides") or [] for a in installed_ids(rt)})
         if login.get("apps"):
             out["claude_login"] = login
-        order += [a for a in login.get("changed_apps") or [] if a not in order]
+        # Connection apps (ChatGPT, Claude) whose dashboard address/login this run changed, or whose running
+        # containers still carry an old one (a tailnet move): recreate them now. Runtipi reads app.env only when it
+        # creates a container, so without this they keep the old address until someone restarts them by hand.
+        # Only when the dashboard is up: recreating against a dashboard that failed to (re)start would trade a
+        # still-usable app for one pointing at nothing. The error is reported and the next run retries.
+        dash_changed = dash.get("changed_apps") or [] if dash.get("state") == "ready" else []
+        changed = [a for a in [*dash_changed, *(login.get("changed_apps") or [])] if a not in apps]
+        if changed:
+            out["recreated"] = recreate_apps(c, rt, list(dict.fromkeys(changed)))
+            order += [a for a, r in out["recreated"].items() if r.startswith("error") and a not in order]
         if order:
             out["next"] = " && ".join(f"wam app update {a}" for a in order) + "  (applies the alongside settings)"
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    return out
+
+
+def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
+    """Restart (Runtipi regenerates app.env and force-recreates the containers) each RUNNING app; a stopped app
+    picks the settings up on its next start. app id -> recreated | not running (...) | error: ..."""
+    out = {}
+    for app_id in ids:
+        urn = f"{app_id}:{STORE}"
+        try:
+            status = ((rt.app(urn) or {}).get("app") or {}).get("status")
+            if status != "running":
+                out[app_id] = f"not running ({status or 'not installed'}); applies on its next start"
+                continue
+            res = app_lifecycle(c, "restart", urn)
+            out[app_id] = f"error: {res['error']}" if res.get("error") else "recreated"
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - reported per app; never fails the alongside run
+            out[app_id] = f"error: {str(e)[:160] or type(e).__name__}"
     return out
 
 
@@ -989,6 +1038,20 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
 BOOTSTRAP_RETRY_DELAY = 10
 
 
+def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True) -> dict:
+    """`wam install <app>` with the same single retry bootstrap gives defaults: a `compose up` whose image pull
+    was cancelled mid-way makes the App Manager remove the app, and a second attempt on the same box succeeds
+    (seen live 0.3.6 and on the 0.3.40 retained launch box). A second failure is raised unchanged."""
+    try:
+        return install(c, app_id, given, wait=wait)
+    except SystemExit as e:
+        if "install failed" not in str(e):
+            raise
+        time.sleep(BOOTSTRAP_RETRY_DELAY)
+        print(f"retrying {app_id} once", file=sys.stderr)
+        return install(c, app_id, given, wait=wait)
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -1032,21 +1095,55 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id
+        if app_id == 'hermes-agent':
+            from .hermes_lock import authorize
+            try:
+                authorize()
+            except (ValueError, OSError):
+                continue  # independent Hermes pause; unrelated release defaults still update
         try:
             commit = (live / ".wizard-commit").read_text().strip()
             source = json.loads((live / ".wizard-source").read_text()).get("repo")
         except (OSError, ValueError):
             continue
-        if commit == row["commit"] or source != row["repo"]:
+        if source != row["repo"]:
+            continue
+        meta = registry.app_meta(c.runtipi_root, STORE, app_id)
+        if commit == row["commit"] and (not row.get("index_version") or
+                                          str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
             continue
         try:
             print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
-            resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            rec = resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            # Updates reuse the old saved form. Reconcile new required inputs using the SAME
+            # shared-secret/default rules as install, without resetting any owner settings.
+            urn = f"{app_id}:{STORE}"
+            before = (rt.app(urn) or {}).get("app") or {}
+            current = before.get("config") or {}
+            recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
+            target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
+            if row.get("index_version") and target_version != row["index_version"]:
+                raise RuntimeError("prepared recipe version does not match the release pin")
+            info = json.loads((recipe / "config.json").read_text())
+            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
+            if missing:
+                raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
+            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
+            if form != current:
+                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
             res = app_update(c, app_id)
             if res.get("error"):
                 raise RuntimeError(res["error"])
+            expected_status = 'running' if before.get('status') == 'running' else 'stopped'
+            if res.get('status') != expected_status:
+                raise RuntimeError("app update did not finish in its previous running/stopped state")
+            # A failed queued update can roll back to running/stopped. That is NOT success.
+            installed_commit = (live / ".wizard-commit").read_text().strip()
+            installed_version = str(registry._front((live / "wizard.md").read_text()).get("version", ""))
+            if installed_commit != row["commit"] or (row.get("index_version") and installed_version != row["index_version"]):
+                raise RuntimeError("installed app does not match the release pin (update may have rolled back)")
             out.append(app_id)
-        except (SystemExit, RuntimeError, RuntipiError, OSError, private.PrivateError) as e:
+        except (SystemExit, RuntimeError, RuntipiError, OSError, ValueError, yaml.YAMLError, private.PrivateError) as e:
             failed[app_id] = f"update to release source failed: {e}"[:200]
     return out
 
@@ -1234,6 +1331,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
                 return self._json(503, {"error": "server_resources_unavailable"})
+        grant_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/proposed-grants", u.path)
+        if grant_match:
+            if not self._authorized(): return
+            try:
+                return self._json(200, c.runtipi().req("GET", f"/apps/{grant_match[1]}:wizardapps/proposed-grants"))
+            except RuntipiError:
+                return self._json(503, {"error": "grants_unavailable"})
         if u.path == "/api/apps":
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
@@ -1457,6 +1561,12 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    if app_id.split(':', 1)[0] == 'hermes-agent':
+        from .hermes_lock import authorize
+        try:
+            authorize()
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from None
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     before = ((rt.app(urn) or {}).get("app") or {})
@@ -1485,6 +1595,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
 
 
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
+    if args[:2] == ['app', 'update']:
+        targets = [arg for arg in args[2:] if not arg.startswith('-')]
+        if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
+            from .hermes_lock import authorize
+            authorize()  # flag-first and bulk passthrough must not bypass the pause
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
@@ -1498,6 +1613,24 @@ def main(argv: list[str] | None = None) -> int:
         from .backup.cli import main as backup_main
         return backup_main(argv[1:])
     # Builder lives in its own module; lifecycle/global registry remains separate.
+    if argv and argv[0] == "grants":
+        gp = argparse.ArgumentParser(prog="wam grants")
+        gs = gp.add_subparsers(dest="action", required=True)
+        gs.add_parser("list")
+        proposed = gs.add_parser("proposed"); proposed.add_argument("app")
+        for action in ("grant", "revoke"):
+            p = gs.add_parser(action); p.add_argument("app"); p.add_argument("to")
+        ga = gp.parse_args(argv[1:])
+        if any(not re.fullmatch(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}", value) for value in (getattr(ga, "app", "valid"), getattr(ga, "to", "valid"))):
+            gp.error("invalid app or slot id")
+        c = Config(); rt = c.runtipi()
+        if ga.action == "list": result = rt.req("GET", "/apps/wizard/grants")
+        elif ga.action == "proposed": result = rt.req("GET", f"/apps/{ga.app}:wizardapps/proposed-grants")
+        else:
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action == "grant"})
+            write_registry(c)
+        print(json.dumps(result, indent=2))
+        return 0
     if argv and argv[0] == "hermes":
         from .hermes_update import main as hermes_main
         return hermes_main(argv[1:])
@@ -1579,7 +1712,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
+            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
         elif args.cmd == "uninstall":
             print(json.dumps(uninstall(c, args.id, force=args.force), indent=2))
         elif args.cmd == "slots":

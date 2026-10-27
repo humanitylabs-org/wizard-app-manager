@@ -122,12 +122,87 @@ def kit_rows(root):
     return rows
 
 
+_VENDORED_DIRS = {'.git', 'node_modules', 'vendor', 'third_party', 'dist', 'build'}
+_KIT_NAMES = {'wizard-ui.css', 'wizard-tokens.css', 'wizard-sheet.js', 'boot.js', 'theme-client.js'}
+_FRAME = {'.wz-app', '.wz-scroll', 'html', 'body', ':root', 'main', '#app', '.app'}
+_COLOUR = re.compile(r'#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\s*\(')
+_DIALOG = re.compile(r'(?<![\w.$])(?:window\.)?(alert|confirm|prompt)\s*\(')
+_RULES_URL = 'https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md'
+
+
+def _own_files(root, suffixes):
+    """The app's own view files: vendored dirs, kit copies and untouched template files are not the app's."""
+    template = REPO / 'templates' / 'hello-wizard' / 'web'
+    for p in sorted(root.rglob('*')):
+        if p.suffix not in suffixes or not p.is_file() or p.is_symlink() or p.name in _KIT_NAMES:
+            continue
+        if any(part in _VENDORED_DIRS for part in p.relative_to(root).parts) or p.name.endswith('.min.js'):
+            continue
+        same = template / p.name
+        if p.name != 'index.html' and same.is_file() and same.read_bytes() == p.read_bytes():
+            continue
+        yield p
+
+
+def _frame_tokens(root):
+    tokens = set(_FRAME)
+    html = root / 'web' / 'index.html'
+    if html.is_file():
+        m = re.search(r'<body[^>]*>\s*<\w+([^>]*)>', html.read_text(errors='replace'), re.I)
+        if m:
+            for c in re.findall(r'class\s*=\s*["\']([^"\']*)', m.group(1)):
+                tokens |= {'.' + x for x in c.split()}
+            tokens |= {'#' + i for i in re.findall(r'\bid\s*=\s*["\']([^"\']+)', m.group(1))}
+    return tokens
+
+
+def _simple(compound):
+    return set(re.findall(r'[.#:]?[\w-]+', re.sub(r'::?[\w-]+(\([^)]*\))?$', '', compound)))
+
+
+def design_rows(root):
+    """Warnings for app/design rule breaks (wizard-os style/APP-DESIGN-RULES.md). Never errors."""
+    root = Path(root)
+    frame, capped, colours, dialogs = _frame_tokens(root), [], [], []
+    for p in _own_files(root, {'.css', '.scss', '.less'}):
+        css = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
+        for sel, decl in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
+            if re.search(r'(?<![\w-])max-width\s*:\s*(?!none\b)', decl):
+                for one in sel.split(','):
+                    parts = [_simple(x) for x in re.split(r'[\s>+~]+', one.strip()) if x]
+                    # Only the frame itself: a frame token reached through root/frame ancestors, never a nested `main`.
+                    if parts and parts[-1] & frame and all(x & (frame | {'html', 'body', ':root'}) for x in parts[:-1]):
+                        capped.append(f'{p.relative_to(root)}: {one.strip()}')
+            if _COLOUR.search(decl):
+                colours.append(str(p.relative_to(root)))
+    for p in _own_files(root, {'.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.html'}):
+        text = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
+        text = re.sub(r'(?m)^\s*//.*$', '', text)
+        if any(not re.search(r'function\s*$', text[max(0, m.start() - 40):m.start()]) for m in _DIALOG.finditer(text)):
+            dialogs.append(str(p.relative_to(root)))
+    rows = []
+    if capped:
+        rows.append({'rule': 'design: the window is the page', 'ok': False, 'severity': 'warning',
+                     'detail': 'max-width on the app frame (' + '; '.join(capped[:5]) + '). Fill the window; use '
+                               '.wz-grid for more columns and .wz-prose only for long text. See ' + _RULES_URL})
+    if colours:
+        rows.append({'rule': 'design: colours come from the kit', 'ok': False, 'severity': 'warning',
+                     'detail': 'hex/rgb/hsl colour literals in ' + ', '.join(sorted(set(colours))[:5])
+                               + '. Use the kit variables (var(--ink), var(--accent)...) so every skin applies. See ' + _RULES_URL})
+    if dialogs:
+        rows.append({'rule': 'design: one pop-up, the sheet', 'ok': False, 'severity': 'warning',
+                     'detail': 'window.alert/confirm/prompt in ' + ', '.join(dialogs[:5]) + '. Use <dialog class="wz-sheet"> '
+                               'with WzSheet.open (wizard-sheet.js), or .wz-status for messages. See ' + _RULES_URL})
+    return rows
+
+
 def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
     rows = [{'rule': n, 'ok': ok, 'severity': 'error', 'detail': d} for n, ok, d in approved]
     rows += system_functions.check(root)
     rows += kit_rows(root)
+    rows += design_rows(root)
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)
@@ -142,7 +217,7 @@ def validate_style_snapshot(template):
     """Fail closed on edits to the generated canonical style distribution assets."""
     lock = json.loads((template / 'appearance-provenance.json').read_text())
     mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
-               'style/boot.js': 'web/boot.js'}
+               'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js'}
     if (lock.get('schema') != 3 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
             or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
             or set(lock.get('files', {})) != set(mapping)):

@@ -28,7 +28,8 @@ import shutil
 import socket
 import tempfile
 import time
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
 from .appdata import AppDataError
@@ -126,6 +127,7 @@ def _du(path: Path) -> int:
 
 
 @managed_operation
+@datafs.with_access
 def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, passphrase: str | None = None,
            include_files: bool = True, key_file: str | None = None, scrypt_n: int = crypto.SCRYPT_N,
            plain_stream=None) -> dict:
