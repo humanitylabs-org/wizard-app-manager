@@ -379,3 +379,9 @@ Promotion JSON SHA256: `0984d62ca0b54ac0e4dab86e26df9b2dee7d2f93ddd89783f29eb8a3
 Canonical: wizard-os releases/0.3.70.json (wizard-os #270). SHA256: `1488db56ff5f4fa1f83105f18700d5f172b926934d201e933533a84f144699b4`.
 0.3.69 (WAM `08b54f65`, #267) with 0.3.68's Agent Service `b1f8d2c1`, Wizard UX `d53b2b24`, Claude 0.2.8 and ChatGPT 0.2.6.
 Channel: on latest only.
+
+## 0.3.71 provenance
+
+Canonical: wizard-os releases/0.3.71.json (wizard-os #287). SHA256: `7f854dbbe2cb15129615f3a2fd3ed1632a46d749219013f890a093fe0812a850`.
+0.3.70 with Notifications 2.29.0-wizard10 (`oscarhenrycollins/notifications` `cdce9f18`, #277); compose images unchanged from 2.29.0-wizard2. Everything else exactly 0.3.70.
+Channel: on latest only.
