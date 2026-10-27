@@ -1,5 +1,12 @@
 # Install Wizard OS alongside your existing Hermes
 
+New named-user alongside installs use a separate `wizard-system` account for Runtipi, the App Manager and
+Tailscale operator. Your Hermes account gets only the files-root group and an agent-scoped `wam` token, not
+Docker or sudo. Use `wam apps|search|install|update|uninstall|start|stop|restart|logs|doctor`; do not bypass a
+refusal with Docker or sudo. `wizard link` and `hermes update` stay at your own uid. Backup, links and builder
+commands report “not yet available without server access” until their scoped APIs land. Existing layouts are
+unchanged; full-host repair instructions are for the administrator, not an elevation route for the agent.
+
 You are the owner's agent. Follow these steps in order. Keep every message to the owner short. Put each command and each link on its own line.
 
 1. Run this read-only check. It changes nothing:

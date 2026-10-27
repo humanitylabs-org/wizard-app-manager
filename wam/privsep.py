@@ -23,6 +23,7 @@ def service_override(st, wizard_home):
   wizard-agent-service:{image_lines(st, 'wizard-agent-service')}
     user: "{uid}:{gid}"
     cap_drop: [ALL]
+    group_add: ["{int(st.get('files_gid', gid))}"]
     security_opt: [no-new-privileges:true]
     network_mode: host
     networks: !reset []

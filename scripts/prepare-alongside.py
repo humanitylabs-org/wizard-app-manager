@@ -109,6 +109,7 @@ def main():
     write(state / 'privsep.json', json.dumps({'schema': 1, 'agent_uid': agent.pw_uid, 'hermes_home': hh}), 0o600, suid, sgid)
     snapshot = {'mode': 'alongside', 'agent': {'external': True, 'id': 'host-hermes', 'name': 'host Hermes',
         'hermes_home': hh, 'origin': 'http://127.0.0.1:8642', 'uid': agent.pw_uid, 'gid': agent.pw_gid},
+        'files_gid': files_group.gr_gid,
         'shell': {'port': 8788, 'share_history': False, 'share_sessions': False},
         'service': {'port': 8923, 'active': True}, 'images': {}}
     if not (state / 'alongside.json').exists():

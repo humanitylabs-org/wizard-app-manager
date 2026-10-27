@@ -101,7 +101,8 @@ def normalize(c, app_id, store, doc):
     # Derive the Claude share from current alongside state and host configuration,
     # never the untrusted folder in x-wizard-claude-login itself.
     mark = doc.get(claude_login.MARK)
-    if st and isinstance(mark, dict) and claude_login.is_consumer(app_id, []):
+    from .privsep import enabled
+    if st and not enabled(home) and isinstance(mark, dict) and claude_login.is_consumer(app_id, []):
         try:
             agent = st['agent']
             hh = Path(agent['hermes_home'])

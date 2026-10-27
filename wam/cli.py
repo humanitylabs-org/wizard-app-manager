@@ -672,7 +672,7 @@ LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stoppe
 
 
 def agent_app_id(value):
-    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,40}', value):
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,40}', value):
         raise ValueError('use a public store app id, not a path, URN or repository')
     return value
 
