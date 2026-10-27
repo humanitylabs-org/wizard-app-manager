@@ -41,7 +41,7 @@ describe('app networks at every start (UI installs/updates included)', () => {
 
   it('keeps the shared network for the reverse proxy, for hand-set networks, other stores and isolation off', async () => {
     const traefik = generated({}, { labels: { 'traefik.enable': true } });
-    expect(await enforceAppNetworks('x:wizardapps', traefik, root, true)).toBe(traefik);
+    expect(await enforceAppNetworks('x:wizardapps', traefik, root, ['x'])).toBe(traefik);
     expect(yaml.parse(await enforceAppNetworks('x:wizardapps', traefik, root)).services.x.networks).toBeUndefined();
     expect(await enforceAppNetworks('x:migrated', generated(), root)).toBe(generated());
     await override('x', 'services:\n  x:\n    networks: [tipi_main_network]\n');
@@ -49,6 +49,14 @@ describe('app networks at every start (UI installs/updates included)', () => {
     await fs.rm(path.join(root, 'user-config', 'wizardapps'), { recursive: true });
     await policy({ schema: 1, enabled: false, allow_host_access: [] });
     expect(await enforceAppNetworks('x:wizardapps', generated(), root)).toBe(generated());
+  });
+
+  it('never treats a stale forged secondary-service label as owner publication', async () => {
+    const doc = yaml.parse(generated({}, { labels: { 'traefik.enable': true } }));
+    doc.services.engine = { image: 'a', networks: { tipi_main_network: {} }, labels: { 'traefik.enable': true } };
+    const out = yaml.parse(await enforceAppNetworks('x:wizardapps', yaml.stringify(doc), root, ['x']));
+    expect(out.services.x.networks.tipi_main_network).toBeDefined();
+    expect(out.services.engine.networks).toBeUndefined();
   });
 
   it('keeps a multi-service app on its own network', async () => {

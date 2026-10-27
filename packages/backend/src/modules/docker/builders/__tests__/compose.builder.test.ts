@@ -112,7 +112,7 @@ services:
       { 'traefik.enable': true, 'traefik.http.routers.sneak.rule': 'Host(`sneak.example`)', keep: 'yes' },
       ['traefik.enable=true', 'TRAEFIK.http.routers.sneak.rule=Host(`sneak.example`)', 'keep=yes'],
     ])('drops recipe Traefik control labels but preserves owner publication and ordinary labels', (labels) => {
-      const input = { services: { web: { image: 'nginx', labels, 'x-runtipi': { is_main: true, internal_port: 80 } } } };
+      const input = { services: { web: { image: 'nginx', labels, 'x-runtipi': { is_main: true, internal_port: 80 } } }, 'x-runtipi': { schema_version: 2 as const } };
       const wizardUrn = createAppUrn('nginx', 'wizardapps');
       const privateCompose = yaml.parse(composeBuilder.getDockerCompose(input, { exposed: false, exposedLocal: false }, wizardUrn, subnet));
       expect(Object.keys(privateCompose.services.web.labels).some((key) => key.toLowerCase().startsWith('traefik.'))).toBe(false);

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
+import { servicesForArchitecture } from './builders/compose.builder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -111,8 +112,16 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
       // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
       const { app } = await this.appsService.getApp(appUrn);
-      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir,
-        app?.exposed === true || app?.exposedLocal === true);
+      let publishedServices: string[] = [];
+      if (appUrn.endsWith(':wizardapps') && (app?.exposed === true || app?.exposedLocal === true)) {
+        const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn);
+        if (!source.content) throw new Error(`Missing source Compose for published ${appUrn}`);
+        const services = servicesForArchitecture(source.content, this.config.get('architecture'));
+        publishedServices = Object.entries(services)
+          .filter(([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined)
+          .map(([name]) => name);
+      }
+      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices);
       if (enforced !== generated.content) {
         await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
