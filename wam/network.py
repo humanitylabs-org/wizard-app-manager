@@ -783,7 +783,8 @@ def _bridged(container: dict) -> bool:
 def network_matches(planned: dict, live: dict | None) -> bool:
     """A reserved name is not identity: match the same ownership label and shape as reconciliation."""
     return bool(live and live.get("internal") == planned["internal"] and
-                (live.get("labels") or {}).get(LABEL) == planned["kind"])
+                (live.get("labels") or {}).get(LABEL) == planned["kind"] and
+                all((live.get("labels") or {}).get(k) == v for k, v in planned["labels"].items()))
 
 
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:

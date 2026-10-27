@@ -116,7 +116,7 @@ def test_missing_and_external_providers_are_reported_not_linked():
 
 
 @pytest.mark.parametrize("running", [False, True])
-@pytest.mark.parametrize("collision", ["foreign-label", "wrong-internal"])
+@pytest.mark.parametrize("collision", ["foreign-label", "wrong-internal", "wrong-owner", "missing-owner"])
 def test_connections_never_reports_colliding_network_identity_as_healthy(running, collision):
     p = net.plan([app("x")], [], set())
     live = live_from(p)
@@ -124,8 +124,12 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
     name = net.app_net("x")
     if collision == "foreign-label":
         live["networks"][name]["labels"] = {}
-    else:
+    elif collision == "wrong-internal":
         live["networks"][name]["internal"] = not p["networks"][name]["internal"]
+    elif collision == "wrong-owner":
+        live["networks"][name]["labels"]["org.wizard-os.owner"] = "another-app"
+    else:
+        live["networks"][name]["labels"].pop("org.wizard-os.owner")
     rep = net.report(type("C", (), {})(), p=p, live=live)
     assert rep["live"] and not rep["ok"]
     assert any("different network" in problem for problem in rep["apps"][0]["drift"])
@@ -134,6 +138,30 @@ def test_connections_never_reports_colliding_network_identity_as_healthy(running
     assert bool(net.drift(p, live)) is running
     if running:
         assert name in net.drift(p, live)[0]["missing"]
+
+
+@pytest.mark.parametrize("field", ["owner", "consumer", "provider"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_populated_network_ownership_collision_never_attaches_the_planned_app(tmp_path, monkeypatch, field, missing):
+    grant = {"kind": "app", "from": "a", "to": "b", "reason": "uses", "approved": "install"}
+    p = net.plan([app("a", uses=["b"]), app("b")], [grant], set(), approved=[grant])
+    label = f"org.wizard-os.{field}"
+    name = next(n for n, spec in p["networks"].items() if label in spec["labels"])
+    live = live_from(p)
+    if missing:
+        live["networks"][name]["labels"].pop(label)
+    else:
+        live["networks"][name]["labels"][label] = "another-app"
+    live["networks"][name]["containers"] = ["foreign-container"]
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (p, "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["errors"] and any(name in e for e in result["errors"])
+    assert not [call for call in fake.calls if call[:2] == ("network", "connect") and name in call]
+    assert name in fake.live["networks"]
 
 
 @pytest.mark.parametrize("rows", [None, object(), {"info": {}}, [None, {"info": None}, {"info": "x", "app": {"exposed": True}}]])
@@ -401,7 +429,7 @@ def live_from(p, on_shared=(), extra=None):
             nets.update((extra or {}).get((a["id"], s), {}))
             containers.append({"id": "x", "name": f"{a['id']}-{s}", "urn": f"{a['id']}:wizardapps", "service": s,
                                "running": True, "network_mode": "", "networks": nets})
-    return {"networks": {n: {"labels": {net.LABEL: v["kind"]}, "internal": v["internal"], "subnets": [],
+    return {"networks": {n: {"labels": dict(v["labels"]), "internal": v["internal"], "subnets": [],
                              "containers": []} for n, v in p["networks"].items()}, "containers": containers}
 
 
