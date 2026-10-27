@@ -7,7 +7,18 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import * as yaml from 'yaml';
-import { appProposals, sameAppGrant, reconcileAppGrants } from './wizard-app-grants';
+import {
+  appProposals,
+  sameAppGrant,
+  reconcileAppGrants,
+  pendingOf,
+  sensitiveOf,
+  noticesOf,
+  appGrant,
+  providers,
+  REQUESTS_DIR,
+  REQUESTS_FILE,
+} from './wizard-app-grants';
 
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
@@ -308,16 +319,42 @@ export class WizardStorage {
         const consumer = apps.find((a) => a.manifest.id === grant.from);
         if (!consumer) throw new Error('Consumer not installed');
         // Explicit owner grants need not be manifest defaults. Revocations are remembered.
+        // Approve / Deny of a pending request, Reconnect / Disconnect of a live one: all the owner's decisions, and
+        // a Disconnect (a denied row) is sticky: updates and runtime requests never add it again.
+        // Keep where the connection came from (declared, asked for at runtime) so the owner still sees why it exists.
+        const prior = [...pendingOf(file), ...file.grants, ...file.denied].find((g) => sameAppGrant(g, grant));
+        const reason = prior?.reason && ['uses', 'requires', 'request'].includes(prior.reason) ? prior.reason : 'owner';
         file.grants = file.grants.filter((g) => !sameAppGrant(g, grant));
         file.denied = file.denied.filter((g) => !sameAppGrant(g, grant));
+        file.pending = pendingOf(file).filter((g) => !sameAppGrant(g, grant));
         (approve ? file.grants : file.denied).push({
           kind: 'app',
           from: grant.from,
           to: grant.to,
-          reason: 'owner',
+          reason,
           approved: 'owner',
           created_at: Math.floor(Date.now() / 1000),
         });
+        if (!approve) {
+          // A Disconnect / Deny is about the app reached: the same consumer's grants or requests that name it another
+          // way (its id, a slot it fills) are disconnected too, each kept as its own sticky row.
+          const cut = new Set(providers(grant.to, apps).map((p) => p.manifest.id));
+          const alias = (g: Grant) =>
+            appGrant(g) && g.from === grant.from && !sameAppGrant(g, grant) && providers(g.to, apps).some((p) => cut.has(p.manifest.id));
+          const also = [...file.grants.filter(alias), ...pendingOf(file).filter(alias)];
+          file.grants = file.grants.filter((g) => !alias(g));
+          file.pending = pendingOf(file).filter((g) => !alias(g));
+          for (const g of also)
+            if (!file.denied.some((d) => sameAppGrant(d, g)))
+              file.denied.push({
+                kind: 'app',
+                from: g.from,
+                to: g.to,
+                reason: g.reason ?? 'owner',
+                approved: 'owner',
+                created_at: Math.floor(Date.now() / 1000),
+              });
+        }
         file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== grant.from);
         await this.writeGrants(file);
         await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
@@ -345,6 +382,60 @@ export class WizardStorage {
       await this.writeGrants(file);
       return consumer.urn;
     });
+  }
+  /** Owner only (AuthGuard'ed API / wam): new connections TO a sensitive app wait for the owner's approval. */
+  async setSensitive(id: string, on: boolean) {
+    if (!ID.test(id) || typeof on !== 'boolean') throw new Error('Invalid sensitive change');
+    return this.serial(async () => {
+      const apps = await this.apps();
+      const file = await this.readGrants();
+      if (on && !apps.some((a) => a.manifest.id === id)) throw new Error('App not installed');
+      const rest = sensitiveOf(file).filter((x) => x !== id);
+      file.sensitive = on ? [...rest, id] : rest;
+      await this.writeGrants(file);
+      // Turning it off approves what was waiting for it, like any other new connection.
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+      return this.connectionState(file);
+    });
+  }
+  connectionState(file: Grants) {
+    return {
+      grants: file.grants.filter(appGrant),
+      denied: file.denied.filter(appGrant),
+      pending: pendingOf(file),
+      sensitive: sensitiveOf(file),
+      notices: noticesOf(file),
+      updated_at: file.updated_at,
+    };
+  }
+  async connections() {
+    return this.connectionState(await this.readGrants());
+  }
+  /** wam marks the notices it delivered to the owner's Notifications app. */
+  async markNotices(ids: string[]) {
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string' || !/^[a-f0-9]{12}$/.test(x))) throw new Error('Invalid notice ids');
+    return this.serial(async () => {
+      const file = await this.readGrants();
+      file.notices = noticesOf(file).map((n) => (ids.includes(n.id) ? { ...n, delivered: true } : n));
+      await this.writeGrants(file);
+      return this.connectionState(file);
+    });
+  }
+  /** Runtime requests: cheap check of every app's requests file; reconcile only when one changed. */
+  private requestStamps = new Map<string, string>();
+  async collectRequests(): Promise<boolean> {
+    const root = path.join(this.dirs.appDataDir, 'wizardapps');
+    const ids = await fs.readdir(root).catch(() => [] as string[]);
+    const seen = new Map<string, string>();
+    for (const id of ids.filter((x) => ID.test(x))) {
+      const st = await fs.lstat(path.join(root, id, REQUESTS_DIR, REQUESTS_FILE)).catch(() => null);
+      seen.set(id, st ? `${st.mtimeMs}:${st.size}:${st.ino}` : '');
+    }
+    const changed = [...seen].some(([id, stamp]) => (this.requestStamps.get(id) ?? '') !== stamp);
+    if (!changed) return false;
+    await this.reconcile();
+    this.requestStamps = seen; // only after the reconcile succeeded: a failed one is retried on the next check
+    return true;
   }
   async remove(id: string) {
     return this.serial(async () => {

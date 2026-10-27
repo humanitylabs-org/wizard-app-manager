@@ -445,8 +445,52 @@ def _gname(to: str) -> str:
     return str(to).removeprefix("slot:")
 
 
+def _controls(apps, by_id, state, ok_grants, grant_target, resolve) -> list[dict]:
+    """One row per connection the owner can act on: {from, to (the grant's target), providers, status, origin}.
+    status: connected | disconnected (the owner's sticky Disconnect or Deny) | pending (waits for the owner: its provider
+    is sensitive) | not-approved (an App Manager without connection state). origin: declared (wizard.md uses/requires),
+    requested (the app asked at runtime) or owner (the owner connected it)."""
+    def app_rows(key):
+        return [g for g in ((state or {}).get(key) or []) if isinstance(g, dict) and g.get("kind", "app") == "app"
+                and g.get("from") in by_id and isinstance(g.get("to"), str)]
+    granted = {(g["from"], g["to"]): g for g in app_rows("grants")}
+    denied = {(g["from"], g["to"]): g for g in app_rows("denied")}
+    pending = {(g["from"], g["to"]): g for g in app_rows("pending")}
+    rows: dict[tuple, dict] = {}
+
+    def row(frm: str, to: str, origin: str) -> None:
+        rows.setdefault((frm, to), {"from": frm, "to": to, "origin": origin})
+    for a in apps:
+        for u in a.get("uses") or []:
+            row(a["id"], grant_target(u), "declared")
+        if a.get("router"):
+            row(a["id"], "slot:connection-router", "declared")
+    for k, g in [*granted.items(), *denied.items(), *pending.items()]:
+        if g.get("approved") == "install" and k not in rows and k not in denied:
+            continue   # an automatic grant whose declaration an update dropped: no connection
+        row(k[0], k[1], "requested" if g.get("reason") == "request" else
+            "declared" if g.get("reason") in ("uses", "requires") else "owner")
+    out = []
+    for (frm, to), r in rows.items():
+        if (frm, to) in pending:
+            status = "pending"
+        elif (frm, to) in denied:
+            status = "disconnected"
+        elif state is not None and (frm, to) in granted:
+            status = "connected"
+        elif state is None and (ok_grants is None or (frm, to) in ok_grants):
+            status = "connected"
+        else:
+            status = "not-approved"
+        provs, _ = resolve(to)
+        out.append({**r, "providers": [x for x in provs if x != frm], "status": status,
+                    "at": ((pending.get((frm, to)) or denied.get((frm, to)) or granted.get((frm, to)) or {}).get("created_at"))})
+    return sorted(out, key=lambda r: (r["from"], r["to"]))
+
+
 def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: bool = True,
-         slot_choice: dict | None = None, multi_slots=None, approved: list | None = None) -> dict:
+         slot_choice: dict | None = None, multi_slots=None, approved: list | None = None,
+         state: dict | None = None) -> dict:
     """Desired topology. `apps`: read_app() records; `grants`: apps.json grants; `external_slots`: slots filled from
     outside Runtipi (alongside: the host's Hermes), by slot name and by the app id that normally fills it.
     `approved`: the App Manager's approved grants when known (wizard-grants.json). Then a `uses` / `requires`
@@ -508,11 +552,15 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         same name are different grants."""
         return to if to.startswith("slot:") or to in by_id else f"slot:{to}"
 
+    held = {(str(g.get("from")), g.get("to")): k for k in ("pending", "denied")
+            for g in ((state or {}).get(k) or []) if isinstance(g, dict) and g.get("kind", "app") == "app"}
+
     def add(frm: str, to: str, reason: str) -> None:
         if ok_grants is not None and reason in ("uses", "requires") and (frm, grant_target(to)) not in ok_grants:
             if (frm, to) not in seen:
                 seen.add((frm, to))
-                edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": "not-approved"})
+                why = {"pending": "pending", "denied": "disconnected"}.get(held.get((frm, grant_target(to))), "not-approved")
+                edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": why})
             return
         targets, state = resolve(to)
         if not targets:
@@ -535,6 +583,10 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         if (isinstance(g, dict) and g.get("kind", "app") == "app" and g.get("from") in by_id and isinstance(g.get("to"), str)
                 and g.get("approved") != "install"):   # automatic grants follow their declaration (see above)
             add(g["from"], g["to"], "grant")
+    # The owner's control panel (the Connections view, `wam connections`): every connection an app has, had or asks
+    # for, by grant (consumer, grant target), with its status. A declared or requested connection is approved by the App
+    # Manager automatically unless the owner disconnected it (sticky) or its provider is sensitive (pending).
+    controls = _controls(apps, by_id, state, ok_grants, grant_target, resolve)
 
     nets: dict[str, dict] = {}
 
@@ -597,7 +649,7 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             if m["service"] in a.get("want", {}):
                 cur = a["want"][m["service"]].setdefault(n["name"], [])
                 a["want"][m["service"]][n["name"]] = sorted(set(cur) | set(m["aliases"]))
-    return {"apps": apps, "networks": nets, "edges": edges, "gateway": gateway, "enabled": on}
+    return {"apps": apps, "networks": nets, "edges": edges, "gateway": gateway, "enabled": on, "controls": controls}
 
 
 def keeps_shared(a: dict, service: str) -> bool:
@@ -863,20 +915,48 @@ def approved_grants(c, rt) -> list | None:
         return None
 
 
+def _state_from(doc: dict) -> dict:
+    lst = lambda k: [g for g in (doc.get(k) or []) if isinstance(g, dict)] if isinstance(doc.get(k), list) else []  # noqa: E731
+    return {"grants": lst("grants"), "denied": lst("denied"), "pending": lst("pending"),
+            "sensitive": sorted({x for x in (doc.get("sensitive") or []) if isinstance(x, str) and ID.fullmatch(x)})
+            if isinstance(doc.get("sensitive"), list) else [],
+            "notices": lst("notices")[-50:], "updated_at": doc.get("updated_at")}
+
+
+def connection_state(c, rt) -> dict | None:
+    """The App Manager's connection state: approved grants, the owner's Disconnects (denied), requests waiting for
+    the owner (pending), sensitive apps and recent notices. wizard-grants.json when readable, else its owner API
+    (GET /apps/wizard/connections); None on an App Manager that has neither."""
+    try:
+        doc = json.loads((Path(c.runtipi_root) / "state" / "wizard-grants.json").read_text())
+        if isinstance(doc, dict) and isinstance(doc.get("grants"), list) and isinstance(doc.get("denied"), list):
+            return _state_from(doc)
+    except (OSError, ValueError):
+        pass
+    try:
+        got = (rt or c.runtipi()).req("GET", "/apps/wizard/connections")
+        if isinstance(got, dict) and isinstance(got.get("grants"), list):
+            return _state_from(got)
+    except Exception:  # noqa: BLE001 - an older App Manager
+        pass
+    return None
+
+
 def _context(c, rt=None, extra=()):
     """(installed ids, grants, external slots, mode) for the planner, from the App Manager and wam's own files."""
     from . import alongside
     from .cli import STORE, installed_ids, read_grants
     rt = rt or c.runtipi()
     ids = installed_ids(rt)
-    approved = grants = approved_grants(c, rt)
+    state = connection_state(c, rt)
+    approved = grants = state["grants"] if state is not None else approved_grants(c, rt)
     if grants is None:
         grants = read_grants(c, rt)
     from . import slots
     ext = set(alongside.external_slots(c.home))
     defaults = slots.load_defaults()
     ext |= {(defaults.get(s_) or {}).get("app") for s_ in list(ext)} - {None}
-    return rt, ids | set(extra), grants, ext, STORE, approved
+    return rt, ids | set(extra), grants, ext, STORE, approved, state
 
 
 def published_urns(rt) -> set[str]:
@@ -893,7 +973,9 @@ def published_urns(rt) -> set[str]:
 
 
 def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
-    rt, ids, grants, ext, store, approved = _context(c, rt, extra)
+    ctx = _context(c, rt, extra)
+    rt, ids, grants, ext, store, approved = ctx[:6]
+    state = ctx[6] if len(ctx) > 6 else None
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
     # Generated labels may predate the start gate or come from a malicious recipe. Only the App Manager's
     # owner-configured lifecycle state can publish an app; do not let the watcher rejoin it from labels alone.
@@ -910,8 +992,10 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
     except (OSError, ValueError):
         chosen = {}
     multi = {k for k, v in _slots.load_defaults().items() if (v or {}).get("multi")}
-    return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
-                approved=approved), store
+    p = plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
+             approved=approved, state=state)
+    p["state"] = state
+    return p, store
 
 
 def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None,
@@ -1277,6 +1361,18 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
            "shared_network": {"name": shared_docker, "containers": shared_members},
            "ok": live_ok and not invalid_networks and not any(x["drift"] for x in apps)
                  and all(network_matches(v, live["networks"].get(n)) for n, v in p["networks"].items())}
+    # The owner's controls: Disconnect / Reconnect, Approve / Deny, Sensitive, and the recent notices.
+    state = p.get("state")
+    sensitive = set((state or {}).get("sensitive") or [])
+    names = {a["id"]: a["name"] for a in apps}
+    for row in apps:
+        row["sensitive"] = row["id"] in sensitive
+    res["owner_state"] = state is not None
+    res["controls"] = [{**r, "label": f"{names.get(r['from'], r['from'])} → "
+                                      f"{', '.join(names.get(x, x) for x in r['providers']) or r['to'].removeprefix('slot:')}"}
+                       for r in p.get("controls") or []]
+    res["sensitive"] = sorted(sensitive)
+    res["notices"] = list(reversed((state or {}).get("notices") or []))[:20]
     if not live_ok:
         res["error"] = f"could not read Docker ({err})"
     return res
@@ -1293,6 +1389,8 @@ def describe(rep: dict) -> str:
             "core": " (Wizard core, over this app's gateway network)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)",
             "not-approved": " (declared, but its grant is revoked or not approved yet: no network)",
+            "pending": " (waiting for your approval: it is sensitive; no network)",
+            "disconnected": " (you disconnected it: no network until you reconnect)",
             "collision": " (its network name is taken by another network: not connected, see `wam network reconcile`)",
             "shared-network": " (shared network: not declared, but reachable)"}
     for a in rep["apps"]:
@@ -1309,4 +1407,14 @@ def describe(rep: dict) -> str:
             lines.append(f"  HOST ACCESS: {h}")
         for d in a["drift"]:
             lines.append(f"  DRIFT: {d}")
+        if a.get("sensitive"):
+            lines.append("  sensitive: new connections to it wait for your approval")
+    waiting = [r for r in rep.get("controls") or [] if r["status"] == "pending"]
+    if waiting:
+        lines += ["", "Waiting for your approval (wam grants approve|deny <app> <to>):"]
+        lines += [f"  {r['from']} -> {r['to']}" for r in waiting]
+    off = [r for r in rep.get("controls") or [] if r["status"] == "disconnected"]
+    if off:
+        lines += ["", "Disconnected by you (wam grants grant <app> <to> reconnects):"]
+        lines += [f"  {r['from']} -> {r['to']}" for r in off]
     return "\n".join(lines)

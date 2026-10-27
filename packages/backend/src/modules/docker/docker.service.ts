@@ -17,14 +17,29 @@ import { AppsRepository } from '../apps/apps.repository';
 @Injectable()
 export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
   private grantsTimer?: NodeJS.Timeout;
+  private requestsTimer?: NodeJS.Timeout;
   onApplicationBootstrap() {
     const run = () => this.storage.reconcile().catch((e) => this.logger.error('App grants reconcile failed', e));
     void run();
     this.grantsTimer = setInterval(() => void run(), 5 * 60 * 1000);
     this.grantsTimer.unref?.();
+    // Connection requests apps leave at runtime (/wizard-requests/connections.json): picked up within seconds.
+    let busy = false;
+    this.requestsTimer = setInterval(() => {
+      if (busy) return;
+      busy = true;
+      this.storage
+        .collectRequests()
+        .catch((e) => this.logger.error('Connection requests check failed', e))
+        .finally(() => {
+          busy = false;
+        });
+    }, 5000);
+    this.requestsTimer.unref?.();
   }
   onModuleDestroy() {
     if (this.grantsTimer) clearInterval(this.grantsTimer);
+    if (this.requestsTimer) clearInterval(this.requestsTimer);
   }
   constructor(
     private readonly logger: LoggerService,
@@ -111,14 +126,18 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
       // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
-      const app = await Promise.resolve().then(() => this.appsRepository.getAppByUrn(appUrn)).catch(() => undefined);
+      const app = await Promise.resolve()
+        .then(() => this.appsRepository.getAppByUrn(appUrn))
+        .catch(() => undefined);
       let publishedServices: string[] = [];
       if (appUrn.endsWith(':wizardapps') && (app?.exposed === true || app?.exposedLocal === true)) {
         const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn);
         if (!source.content) throw new Error(`Missing source Compose for published ${appUrn}`);
         const services = servicesForArchitecture(source.content, this.config.get('architecture'));
         publishedServices = Object.entries(services)
-          .filter(([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined)
+          .filter(
+            ([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined,
+          )
           .map(([name]) => name);
       }
       const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices);

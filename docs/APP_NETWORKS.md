@@ -34,6 +34,42 @@ decide. `wam connections` shows a declared but revoked connection as "grant revo
 
 Anything else has no shared network: the name doesn't resolve and the address isn't routed.
 
+## Who decides: seamless by default, the owner in control
+
+The App Manager (`packages/backend/src/modules/docker/wizard-app-grants.ts`, `applyConnectionPolicy`) decides new
+connections; the owner can overrule any of them. Nothing asks the owner except connections to an app they marked sensitive.
+
+- **Install:** an app's declared connections are approved (`approved: install`), quietly.
+- **Update:** a connection an update declares is added automatically too, and the owner gets a quiet notice
+  ("Carlos Campaigns now connects to Resend"). When an update drops a declaration its automatic grant goes, so declaring
+  it again later is new (and noticed) again.
+- **Runtime request:** an app asks for a connection by writing `{"connections": ["<app id or slot:name>", ...]}` to
+  `/wizard-requests/connections.json` (env `WIZARD_CONNECTION_REQUESTS`). That folder is the app's own
+  (`app-data/<store>/<id>/wizard-requests`, mounted only into that app), so the App Manager knows who asked. It checks the
+  folder every 5 seconds (no symlinks, 16 KB, at most 32 entries) and approves the request the same way
+  (`approved: request`, links without a declaration) with a notice. An app can only ask: it can't grant, revoke or mark
+  anything.
+- **Disconnect (sticky):** the owner's Disconnect is a `denied` row. No update, reinstall or runtime request adds it back.
+  Reconnect makes it an owner grant (`approved: owner`).
+- **Sensitive:** new connections TO an app the owner marked sensitive are never approved automatically. They wait in
+  `pending`, and the owner gets a notification; Approve makes an owner grant, Deny a sticky `denied` row. Marking an app
+  sensitive keeps its existing connections; turning it off approves what was waiting.
+
+State lives in `wizard-grants.json` beside the grants: `pending`, `sensitive` and the last 50 `notices`. The owner acts in
+the Connections view or with `wam grants approve|deny|grant|revoke <app> <to>`, `wam grants sensitive <app> on|off` and
+`wam grants pending`. These go to the App Manager's owner-authenticated API (`POST /api/apps/<id>:wizardapps/app-grants`,
+`POST /api/apps/<id>:wizardapps/sensitive`, `GET /api/apps/wizard/connections`; the controller is behind the App
+Manager's `AuthGuard`, the same sign-in as install/start/stop). wam's loopback page (127.0.0.1:7790/views/) has no
+write route without the CLI's token, so there the view is read-only.
+
+`wam serve` polls the connection state every 3 seconds. When grants, Disconnects, pending requests or sensitive apps
+change, it reconciles the networks live (no restarts) and refreshes the registry, so a Disconnect removes the link
+within seconds. It delivers new notices through the installed Notifications app's `notify` tool (the provider of the
+`notifications` slot; quiet ones at low priority, a pending approval at high priority, older than a day not sent) and
+marks them delivered. Notifications can't carry Approve / Deny buttons that are safe without the owner's sign-in, so the
+notification points to App Manager → Connections, where the request waits with Approve / Deny. Without a Notifications
+app, notices are shown only in the Connections view ("Recent connection changes").
+
 ## The gateway path
 
 - **Alongside boxes:** the shell and Agent Service run on the host network. They reach apps on their published
@@ -104,6 +140,7 @@ unless the owner allows it, and stops before the update when its networks can't 
 
 ## Commands
 
+- `wam grants pending|sensitive|approve|deny|grant|revoke`: the owner's connection decisions (see above).
 - `wam connections [--json]`: what each app can reach and who reaches it, how the gateway reaches it, internet access,
   host access, and the live check of Docker membership against the declarations. It exits 1 on drift. `wam doctor`
   reports the same check.

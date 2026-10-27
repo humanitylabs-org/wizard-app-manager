@@ -411,3 +411,82 @@
   color: var(--ink-3);
   white-space: nowrap;
 }
+/* Connections as the owner's control panel: Disconnect / Reconnect, Approve / Deny, Sensitive. Tokens only; the
+   action buttons sit at the row's end (thumb side) and keep a 44px target; on a narrow window they wrap below. */
+.wam-conn h5 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+}
+.wam-conn-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.wam-conn-ctl .st-tx {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.wam-conn-ctl .st-tx small {
+  color: var(--ink-3);
+  white-space: normal;
+}
+.wam-conn-ctl .wam-tag {
+  margin-left: 0;
+  margin-right: 4px;
+}
+.wam-conn-acts {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.wam .wam-conn-acts .wam-btn {
+  min-height: 44px;
+  min-width: 96px;
+}
+.wam-conn-pending {
+  margin: 8px 14px 12px;
+  padding: 4px 12px 8px;
+  border: 1px solid var(--amber);
+  border-radius: 14px;
+}
+.wam-conn-pending h5 {
+  color: var(--amber);
+}
+.wam-conn-notices {
+  margin: 4px 14px 10px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.wam-conn-notices summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--ink);
+}
+.wam-conn-notices p {
+  margin: 4px 0;
+}
+.wam-conn-msg {
+  margin: 0 14px;
+  min-height: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wam-conn-msg:empty {
+  display: none;
+}
+.wam-conn .wam-conn-row .wam-tag + .wam-tag {
+  margin-left: 6px;
+}
