@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, index, private, registry, slots, release_pins, host_policy
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -356,6 +356,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         try:
             print(f"installing dependency {dep}", file=sys.stderr)
             install(c, dep, None, wait, _seen)
+        except host_policy.NeedsOwnerApproval:
+            raise
         except (index.IndexError_, SystemExit, RuntimeError, RuntipiError) as e:
             print(f"note: dependency {dep} not installed ({e}); {app_id} may need it", file=sys.stderr)
     urn = f"{app_id}:{STORE}"
@@ -367,12 +369,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    from . import host_policy, network as _network
-    host_policy.require_app(c, app_id)
-    host = host_access_risks(c, app_id)
+    from . import network as _network
     # Deprecated allow_host_access is intentionally ignored: only a recipe-bound
     # entry written by the owner route / administrator command can approve.
-    _network.set_host_access_allowed(c.home, app_id, bool(host))
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     role = alongside_role(rec, app_id)
     if role in ("service", "shell") and alongside.LEGACY_BUNDLE in have and not _split:
@@ -411,7 +410,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
     # Check again after WAM-owned alongside/login overrides have been generated.
-    host_policy.require_app(c, app_id)
+    approval_sha = host_policy.require_app(c, app_id, given=form)
+    _network.set_host_access_allowed(c.home, app_id,
+        host_policy._read(c.home).get('approvals', {}).get(app_id) == approval_sha)
     # The app's networks exist and its override is written before its first start, so it never joins the shared
     # network; the apps it connects to join their new link live.
     net_pre = network_step(c, rt, extra={app_id}, restart=False)
@@ -470,7 +471,6 @@ def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
     """Host networking, networks the app does not own, privileged mode or the container runtime socket in the app's
     recipe. where="any": the store copy the App Manager just fetched, else the installed copy; "store" / "installed":
     only that copy. wam's own alongside overrides are not recipes and never count."""
-    from . import host_policy
     store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml"
     installed = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
     for comp in {"any": (store_copy, installed), "store": (store_copy,), "installed": (installed,)}[where]:
@@ -1298,6 +1298,11 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
+    from . import owner
+    if (c.home / 'owner-login').is_file():
+        state = owner.health(c.home)
+        out.append(('owner login', state['ok'], 'owner login is unchanged' if state['ok'] else
+                    'owner login changed; an administrator must review the owner pin before approvals work'))
     from . import builder_bundle
     if fix:
         try:
@@ -1509,7 +1514,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         c, path = self.cfg, urlparse(self.path).path
-        from . import owner, host_policy
+        from . import owner
         try:
             if path in owner.PATHS:
                 why = owner.check(self, post=True)
@@ -1732,7 +1737,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
-    from . import host_policy, network as _network
+    from . import network as _network
     host_policy.require_app(c, app, store, where='store')
     if store == STORE:
         _network.set_host_access_allowed(c.home, app, bool(host_access_risks(c, app, 'store')))
@@ -1791,7 +1796,6 @@ def main(argv: list[str] | None = None) -> int:
 def _main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == 'approve':
-        from . import host_policy
         p = argparse.ArgumentParser(prog='wam approve')
         p.add_argument('app'); p.add_argument('sha256')
         args = p.parse_args(argv[1:])
@@ -1930,14 +1934,12 @@ def _main(argv: list[str] | None = None) -> int:
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
                 if args.action == 'allow':
-                    from . import host_policy
                     # Local human CLI remains available, but only for this recipe.
                     try:
                         host_policy.require_app(c, args.app)
                     except host_policy.NeedsOwnerApproval:
                         raise  # print the exact wam approve command, never self-approve
                 else:
-                    from . import host_policy
                     with host_policy.LOCK:
                         state = host_policy._read(c.home)
                         state.get('approvals', {}).pop(args.app, None)
@@ -2022,6 +2024,8 @@ def _main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import owner, store_install
+            owner.pin_login(c.home, store_install.owner_login())
             from . import recommended
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
@@ -2038,7 +2042,7 @@ def _main(argv: list[str] | None = None) -> int:
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
-    except __import__("wam.host_policy", fromlist=["NeedsOwnerApproval"]).NeedsOwnerApproval:
+    except host_policy.NeedsOwnerApproval:
         raise
     except (index.IndexError_, RuntipiError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)

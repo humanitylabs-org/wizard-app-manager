@@ -74,7 +74,14 @@ def _expand(source: str, variables: dict) -> str:
     return source
 
 
-def risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *,
+def risks(compose, app_id=None, store='wizardapps', **context):
+    try:
+        return _risks(compose, app_id, store, **context)
+    except (TypeError, ValueError, AttributeError, RecursionError, yaml.YAMLError) as exc:
+        return [f'compose shape is not allowlisted ({type(exc).__name__})']
+
+
+def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *,
           app_data: Path | None = None, files_root: Path | None = None,
           root: Path | None = None, base: Path | None = None, variables: dict | None = None) -> list[str]:
     from . import network
@@ -129,6 +136,9 @@ def risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *,
         opts = svc.get('security_opt') or []
         if not isinstance(opts, list) or any(x not in SAFE_SECURITY for x in opts):
             out.append(f'{name}: security_opt {opts}')
+        reservations = ((svc.get('deploy') or {}).get('resources') or {}).get('reservations') or {}
+        if reservations.get('devices'):
+            out.append(f'{name}: deploy device access requires owner approval')
         build = svc.get('build')
         if isinstance(build, dict):
             for key in build:
@@ -168,9 +178,14 @@ def risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *,
             if not bind:
                 continue  # app-private Compose named volume
             # APP_SOURCE_DIR is manager-created pinned code, mounted read-only only.
-            if isinstance(mount, str) and re.fullmatch(r'\$\{APP_SOURCE_DIR\}(?:/[\w./-]+)?:/[^:]+:ro', mount) and '..' not in mount.split('/'):
-                continue
-            if original and (app_id, original) in REVIEWED_MOUNTS:
+            if isinstance(mount, str) and re.fullmatch(r'\$\{APP_SOURCE_DIR\}(?:/[\w./-]+)?:/[^:]+:ro', mount) and not re.search(r'(?:^|/)\.\.(?:/|:|$)', mount):
+                source_dir = (variables or {}).get('APP_SOURCE_DIR')
+                expected = app_data.parent.parent / '.wizard-source' / store
+                if source_dir is None or (Path(source_dir).resolve().parent == expected.resolve()
+                        and re.fullmatch(re.escape(app_id or '') + r'@[0-9a-f]{12}', Path(source_dir).name)):
+                    continue
+            if original and (app_id, original) in REVIEWED_MOUNTS and expanded == _expand(
+                    original, {'ROOT_FOLDER_HOST': str(root), 'APP_DATA_DIR': str(app_data)}):
                 continue
             try:
                 path = Path(source)
@@ -221,7 +236,22 @@ class NeedsOwnerApproval(RuntimeError):
 def require(home: Path, app_id: str, texts: list[str], *, paths=(), **context) -> str:
     if not ID.fullmatch(app_id):
         raise ValueError('invalid app id')
-    sha = digest(texts)
+    variables = context.get('variables') or {}
+    # Bind runtime interpolation to consent too. An env-file/form edit cannot
+    # reuse approval of a recipe whose mount now resolves to a different source.
+    path_variables = {}
+    for text in texts:
+        try:
+            from .network import load_yaml
+            doc = _plain(load_yaml(text)) or {}
+            for svc in (doc.get('services') or {}).values():
+                sensitive = json.dumps({k: svc.get(k) for k in ('volumes', 'env_file', 'build', 'secrets', 'configs')})
+                for key in re.findall(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', sensitive):
+                    if key in variables:
+                        path_variables[key] = variables[key]
+        except (TypeError, AttributeError, ValueError, RecursionError, yaml.YAMLError):
+            pass  # the actual shape validator refuses malformed input below
+    sha = digest(texts + ([json.dumps(path_variables, sort_keys=True)] if path_variables else []))
     found = list(dict.fromkeys(r for text in texts for r in risks(text, app_id, **context)))
     with LOCK:
         state = _read(home)
@@ -258,17 +288,23 @@ def approve(home: Path, app_id: str, sha: str) -> dict:
     return {'app': app_id, 'sha256': sha, 'approved': True}
 
 
-def context(c, app_id, store='wizardapps'):
+def context(c, app_id, store='wizardapps', given=None, filesystem=None):
     from .runtipi import read_env
-    root = Path(c.runtipi_root)
+    path_type = filesystem.Path if filesystem else Path
+    root = path_type(c.runtipi_root)
     env = read_env(root / '.env') if (root / '.env').is_file() else {}
     host = Path(env.get('ROOT_FOLDER_HOST') or root)
     # Runtipi supports a separate appDataPath. Read its manager-owned settings.
     settings_path = root / 'state' / 'settings.json'
     settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
-    data = Path(settings.get('appDataPath') or host) / 'app-data' / store / app_id
+    data = path_type(settings.get('appDataPath') or env.get('RUNTIPI_APP_DATA_PATH') or host) / 'app-data' / store / app_id
+    values = dict(env)
+    for p in (data / 'app.env', root / 'user-config' / store / app_id / 'app.env'):
+        if p.is_file():
+            values.update(read_env(p))
+    values.update(given or {})
     return {'root': host, 'app_data': data, 'files_root': host / 'media',
-            'base': host / 'apps' / store / app_id, 'store': store}
+            'base': host / 'apps' / store / app_id, 'store': store, 'variables': values}
 
 
 def normalized_override(c, app_id, store, text):
@@ -293,7 +329,7 @@ def normalized_override(c, app_id, store, text):
     return doc
 
 
-def require_app(c, app_id, store='wizardapps', where='any', filesystem=None):
+def require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):
     path_type = filesystem.Path if filesystem else Path
     root = path_type(c.runtipi_root)
     candidates = [root / 'repos' / store / 'apps' / app_id / 'docker-compose.yml',
@@ -311,5 +347,5 @@ def require_app(c, app_id, store='wizardapps', where='any', filesystem=None):
         doc = normalized_override(c, app_id, store, override.read_text())
         paths.append(override)
         texts = [recipe.read_text()] + ([dump_yaml(doc)] if doc else [])
-        return require(c.home, app_id, texts, paths=paths, **context(c, app_id, store))
-    return require(c.home, app_id, [recipe.read_text()], paths=paths, **context(c, app_id, store))
+        return require(c.home, app_id, texts, paths=paths, **context(c, app_id, store, given, filesystem))
+    return require(c.home, app_id, [recipe.read_text()], paths=paths, **context(c, app_id, store, given, filesystem))

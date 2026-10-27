@@ -175,6 +175,9 @@ def test_other_store_is_not_reconfigured(box, monkeypatch):
     c, _, _, _ = box
     before = override_path(c, APPS[0]).read_bytes()
     monkeypatch.setattr(c.runtipi(), "update", lambda *a, **kw: None)
+    recipe = c.runtipi_root / "repos/otherstore/apps" / APPS[0] / "docker-compose.yml"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text("services: {unit: {image: example/unit-test}}\n")
     cli.app_update(c, APPS[0] + ":otherstore")
     assert override_path(c, APPS[0]).read_bytes() == before
 

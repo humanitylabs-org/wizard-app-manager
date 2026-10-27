@@ -235,7 +235,7 @@ def test_http_selection_and_auth_fail_closed(c,monkeypatch):
         assert post({**BODY,'commit':'b'*40})[0]==400
         assert post(BODY,{'Origin':'https://evil.test'})[0]==403
         assert post(BODY,{'Tailscale-User-Login':'guest@test'})[0]==403
-        monkeypatch.setattr(si,'peer_uid',lambda port:1000)
+        monkeypatch.setattr(si,'peer_uid',lambda port, *args:1000)
         assert post(BODY)[0]==403
     finally:
         server.shutdown();server.server_close();thread.join()

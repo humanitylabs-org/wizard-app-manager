@@ -637,7 +637,7 @@ def _check_restore_recipe(box, rec, stage, rewrite=()):
         if doc:
             texts.append(dump_yaml(doc))
     if texts:
-        host_policy.require(box.home, app_id, texts, **host_policy.context(box, app_id, store))
+        host_policy.require(box.home, app_id, texts, **host_policy.context(box, app_id, store, filesystem=datafs))
 
 
 def _install_app(box: Box, r: _Restore, rec: dict) -> str:

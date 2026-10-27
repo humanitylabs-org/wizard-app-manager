@@ -197,6 +197,78 @@ def test_agent_api_cannot_use_owner_verbs(tmp_path, monkeypatch, path):
         server.shutdown(); server.server_close()
 
 
+def test_builder_output_checked_before_compose_up(tmp_path, monkeypatch):
+    from wam import builder
+    source = builder.new_app('audit-app', tmp_path / 'source', 'Audit builder admission')
+    dump = builder.yaml.safe_dump
+    def compromised_output(doc, *a, **kw):
+        if 'services' in doc and 'audit-app' in doc['services']:
+            doc['services']['audit-app']['privileged'] = True
+        return dump(doc, *a, **kw)
+    monkeypatch.setattr(builder.yaml, 'safe_dump', compromised_output)
+    calls = []
+    real_run = builder.subprocess.run
+    def no_docker(argv, **kw):
+        if argv[0] == 'docker':
+            calls.append(argv)
+            pytest.fail('unsafe builder output reached Docker')
+        return real_run(argv, **kw)
+    monkeypatch.setattr(builder.subprocess, 'run', no_docker)
+    with pytest.raises(policy.NeedsOwnerApproval):
+        builder.install_local(source, os_home=tmp_path / 'home', run=True, stage_only=True)
+    assert calls == []
+
+
+def test_api_returns_409_shape_for_risky_recipe(tmp_path, monkeypatch):
+    c, installs, steps = gate_env(tmp_path, monkeypatch, compose(volumes=['/:/host']))
+    monkeypatch.setattr(cli.Handler, 'cfg', c.Config(), raising=False)
+    monkeypatch.setattr(cli.Handler, 'token', 'agent-test-token', raising=False)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), cli.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        conn = HTTPConnection('127.0.0.1', server.server_port)
+        conn.request('POST', '/api/install', json.dumps({'app': 'x', 'allow_host_access': True}),
+                     {'Authorization': 'Bearer agent-test-token', 'Content-Type': 'application/json'})
+        result = conn.getresponse(); body = json.loads(result.read()); conn.close()
+        assert result.status == 409
+        assert body['error'] == 'needs_owner_approval' and body['app'] == 'x'
+        assert body['risks'] and body['approve_url'].startswith(policy.PREFIX)
+        assert installs == steps == []
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_changed_mount_variable_needs_fresh_approval(tmp_path):
+    text = compose(volumes=['${HOST_DATA:-/etc}:/host'])
+    with pytest.raises(policy.NeedsOwnerApproval) as exc:
+        policy.require(tmp_path, 'audit', [text], variables={'HOST_DATA': '/etc'})
+    policy.approve(tmp_path, 'audit', exc.value.payload['approve_url'].split('/')[-1])
+    with pytest.raises(policy.NeedsOwnerApproval):
+        policy.require(tmp_path, 'audit', [text], variables={'HOST_DATA': '/'})
+
+
+def test_forged_network_marker_does_not_exempt_foreign_network(tmp_path):
+    text = """services:
+  audit: {networks: [foreign]}
+networks:
+  foreign: {name: wizard-core, external: true}
+x-wizard-networks:
+  services: [audit]
+  networks: [foreign]
+"""
+    c = SimpleNamespace(home=tmp_path, runtipi_root=tmp_path / 'rt')
+    doc = policy.normalized_override(c, 'audit', 'wizardapps', text)
+    assert policy.risks(doc, 'audit')
+
+
+def test_async_store_refusal_preserves_409_payload(monkeypatch):
+    exc = policy.NeedsOwnerApproval('audit', 'a' * 64, ['host root'])
+    monkeypatch.setitem(store_install._jobs, 'audit', {'state': 'needs_owner_approval', **exc.payload})
+    code, body = store_install.status('audit')
+    assert code == 409 and body['error'] == 'needs_owner_approval'
+    assert body['approve_url'] == exc.payload['approve_url']
+
+
 def test_store_audit_all_default_recipes_pass():
     root = Path(__file__).resolve().parents[1] / 'qa/privsep-slice2'
     rows = json.loads((root / 'sources.json').read_text())

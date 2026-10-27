@@ -341,7 +341,7 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
             shutil.rmtree(scratch)
     if run:
         from .host_policy import require
-        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[rec['compose']],
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[Path(rec['compose'])],
                 base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
@@ -391,7 +391,7 @@ def update_local(root, os_home=None, *, run=False):
             shutil.rmtree(scratch)
     if run:
         from .host_policy import require
-        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[rec['compose']],
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[Path(rec['compose'])],
                 base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout

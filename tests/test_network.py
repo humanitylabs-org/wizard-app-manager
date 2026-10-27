@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from wam import network as net
+from wam import network as net, host_policy
 
 
 def app(app_id, uses=(), provides=(), services=None, **kw):
@@ -657,10 +657,9 @@ def test_installer_refuses_host_access_unless_the_owner_flags_it(tmp_path, monke
     import pytest
     cli, installs, steps = gate_env(tmp_path, monkeypatch,
                                     "services:\n  x:\n    image: a\n    network_mode: host\n    volumes: ['/var/run/docker.sock:/s']\n")
-    with pytest.raises(__import__("wam.host_policy", fromlist=["NeedsOwnerApproval"]).NeedsOwnerApproval, match="needs_owner_approval"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.install(cli.Config(), "x")
     assert installs == [] and steps == []
-    from wam import host_policy
     sha = host_policy._read(cli.Config().home)["pending"]["x"]["sha256"]
     host_policy.approve(cli.Config().home, "x", sha)
     res = cli.install(cli.Config(), "x", allow_host_access=True)
@@ -798,7 +797,7 @@ def test_installer_refuses_an_external_network_recipe(tmp_path, monkeypatch):
     cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n    networks: [sneak]\n"
                                     "networks:\n  sneak:\n    external: true\n    name: runtipi_tipi_main_network\n")
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
-    with pytest.raises(__import__("wam.host_policy", fromlist=["NeedsOwnerApproval"]).NeedsOwnerApproval, match="needs_owner_approval"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.install(cli.Config(), "x")
     assert installs == [] and steps == []
 
@@ -809,7 +808,6 @@ def test_allow_host_access_is_recorded_for_the_app_managers_start_gate(tmp_path,
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("WIZARD_OS_HOME", str(home))
-    from wam import host_policy
     with pytest.raises(host_policy.NeedsOwnerApproval) as e:
         cli.install(cli.Config(), "x", allow_host_access=True)
     host_policy.approve(home, "x", e.value.payload["approve_url"].split("/")[-1])
@@ -905,10 +903,9 @@ def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):
     plain = "services:\n  x:\n    image: a\n"
     sneaky = plain + "    networks: [sneak]\nnetworks:\n  sneak:\n    external: true\n    name: wizard-link-a--b\n"
     cli, updates, steps = update_env(tmp_path, monkeypatch, plain, sneaky)
-    with pytest.raises(__import__("wam.host_policy", fromlist=["NeedsOwnerApproval"]).NeedsOwnerApproval, match="needs_owner_approval"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.app_update(cli.Config(), "x")
     assert updates == [] and steps == []
-    from wam import host_policy
     sha = host_policy._read(cli.Config().home)["pending"]["x"]["sha256"]
     host_policy.approve(cli.Config().home, "x", sha)
     assert cli.app_update(cli.Config(), "x", allow_host_access=True)["status"] == "running"
@@ -1188,7 +1185,6 @@ def test_network_deny_stops_a_running_app_that_still_has_the_access(tmp_path, mo
     assert calls == [("stop", "x"), "reconcile"] and net.host_access_allowed(home) == set()
     calls.clear()
     assert cli.main(["network", "allow", "x"]) == 23
-    from wam import host_policy
     host_policy.approve(home, "x", host_policy._read(home)["pending"]["x"]["sha256"])
     assert cli.main(["network", "allow", "x"]) == 0 and calls == ["reconcile"]   # allowing never stops anything
 

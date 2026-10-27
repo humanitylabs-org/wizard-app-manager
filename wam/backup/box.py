@@ -720,7 +720,7 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
         if not is_dir and root_runtime_digest_path(box, rel, 'wizard-os'):
             return True
         top = rel.split("/", 1)[0]
-        return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
+        return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json", "approval-registry.json"}) \
             or rel.endswith(".lock")
 
     from .agents import keep_in_place

@@ -146,7 +146,9 @@ def _links(c) -> None:
 
 def status(app_id: str) -> tuple[int, dict]:
     job = _jobs.get(app_id)
-    return (200, job) if job else (404, {"error": "no install for that app"})
+    if job:
+        return (409 if job.get('error') == 'needs_owner_approval' else 200), job
+    return 404, {"error": "no install for that app"}
 
 
 PORT = 7791

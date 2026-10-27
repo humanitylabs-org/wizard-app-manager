@@ -24,11 +24,36 @@ def check(handler, *, post=False) -> str | None:
         return 'owner login changed; an administrator must review the owner pin'
     if not owner or (handler.headers.get('Tailscale-User-Login') or '').lower() != owner.lower():
         return 'owner only'
+    pin_login(handler.cfg.home, owner)
     if post:
         lp = Path(handler.cfg.home) / 'links.json'
         host = (json.loads(lp.read_text()) if lp.is_file() else {}).get('host')
         return si.check_request(handler.headers, owner, si.served_origins(host) if host else set())
     return None
+
+
+def pin_login(home, login):
+    """Initial pairing/host-prep pin. Never overwrite a pin on identity drift."""
+    if not login:
+        return
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    import os
+    try:
+        fd = os.open(home / 'owner-login', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, 'w') as f:
+        f.write(login.strip().lower() + '\n')
+
+
+def health(home):
+    from . import store_install
+    pin = Path(home) / 'owner-login'
+    if not pin.is_file():
+        return {'state': 'not_pinned'}
+    same = bool(pin.read_text().strip()) and pin.read_text().strip().lower() == store_install.owner_login().lower()
+    return {'state': 'ok' if same else 'owner_login_changed', 'ok': same}
 
 
 def execute(c, path: str, body: dict):
