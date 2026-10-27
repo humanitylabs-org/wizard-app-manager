@@ -41,7 +41,8 @@ describe('app networks at every start (UI installs/updates included)', () => {
 
   it('keeps the shared network for the reverse proxy, for hand-set networks, other stores and isolation off', async () => {
     const traefik = generated({}, { labels: { 'traefik.enable': true } });
-    expect(await enforceAppNetworks('x:wizardapps', traefik, root)).toBe(traefik);
+    expect(await enforceAppNetworks('x:wizardapps', traefik, root, true)).toBe(traefik);
+    expect(yaml.parse(await enforceAppNetworks('x:wizardapps', traefik, root)).services.x.networks).toBeUndefined();
     expect(await enforceAppNetworks('x:migrated', generated(), root)).toBe(generated());
     await override('x', 'services:\n  x:\n    networks: [tipi_main_network]\n');
     expect(await enforceAppNetworks('x:wizardapps', generated(), root)).toBe(generated());

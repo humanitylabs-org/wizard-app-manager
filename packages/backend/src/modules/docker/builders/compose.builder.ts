@@ -97,6 +97,10 @@ export class DockerComposeBuilder {
     serviceCopy.networks = normalizeNetworks(serviceCopy.networks);
     serviceCopy.ports = normalizePorts(serviceCopy.ports);
     serviceCopy.labels = normalizeLabels(serviceCopy.labels);
+    if (appStoreId === 'wizardapps') {
+      // Routing and exposure are owner settings, never recipe-supplied control labels.
+      serviceCopy.labels = Object.fromEntries(Object.entries(serviceCopy.labels).filter(([key]) => !key.toLowerCase().startsWith('traefik.')));
+    }
 
     const xruntipiParams = service['x-runtipi'] || ({} as XRuntipiServiceParams);
 

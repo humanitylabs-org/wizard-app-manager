@@ -115,6 +115,24 @@ def test_missing_and_external_providers_are_reported_not_linked():
     assert not [n for n in p["networks"].values() if n["kind"] == "link"]
 
 
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("collision", ["foreign-label", "wrong-internal"])
+def test_connections_never_reports_colliding_network_identity_as_healthy(running, collision):
+    p = net.plan([app("x")], [], set())
+    live = live_from(p)
+    live["containers"][0]["running"] = running
+    name = net.app_net("x")
+    if collision == "foreign-label":
+        live["networks"][name]["labels"] = {}
+    else:
+        live["networks"][name]["internal"] = not p["networks"][name]["internal"]
+    rep = net.report(type("C", (), {})(), p=p, live=live)
+    assert rep["live"] and not rep["ok"]
+    assert any("different network" in problem for problem in rep["apps"][0]["drift"])
+    assert not next(row for row in rep["networks"] if row["name"] == name)["matches"]
+    assert "matches the declarations" not in net.describe(rep)
+
+
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
     apps = [app("wizard-ux", uses=["agent-service"], provides=["shell"]),
             app("wizard-agent-service", provides=["agent-service"]), app("hermes-agent", provides=["agent"]),

@@ -758,6 +758,12 @@ def _bridged(container: dict) -> bool:
     return nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
 
 
+def network_matches(planned: dict, live: dict | None) -> bool:
+    """A reserved name is not identity: match the same ownership label and shape as reconciliation."""
+    return bool(live and live.get("internal") == planned["internal"] and
+                (live.get("labels") or {}).get(LABEL) == planned["kind"])
+
+
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
     """Differences between the plan and running containers: one row per container that is off-plan."""
     rows = []
@@ -882,7 +888,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     the_pool, taken, rejected = pool(c.home), set(), set()
     for name, n in sorted(p["networks"].items()):
         have = live["networks"].get(name)
-        if have and have["internal"] == n["internal"] and have["labels"].get(LABEL) == n["kind"]:
+        if network_matches(n, have):
             continue
         if have:   # same name, wrong shape (or not ours): replace only if it is ours and empty
             if have["labels"].get(LABEL) and not have["containers"]:
@@ -1107,11 +1113,15 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
     for r in rows:
         by_app.setdefault(r["app"], []).append(r)
     apps = []
+    invalid_networks = {name for name, planned in p["networks"].items()
+                        if name in live["networks"] and not network_matches(planned, live["networks"][name])}
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
     for a in p["apps"]:
         out_edges = [e for e in p["edges"] if e["from"] == a["id"]]
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
-        problems = []
+        problems = [f"{name}: a different network with this name exists (wrong ownership or internal flag)"
+                    for name in sorted(invalid_networks)
+                    if any(m["app"] == a["id"] for m in p["networks"][name]["members"])]
         for r in by_app.get(a["id"], []):
             if r["on_shared"] and not r["should_share"] and a["state"] in ("isolated", "exposed"):
                 problems.append(f"{r['service']} is still on the shared network (every app can reach it)")
@@ -1190,9 +1200,11 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
            "gateway": p["gateway"], "apps": apps,
            "networks": [{"name": n, "kind": v["kind"], "internal": v["internal"],
                          "members": sorted({f"{m['app']}/{m['service']}" for m in v["members"]}),
-                         "exists": n in live["networks"]} for n, v in sorted(p["networks"].items())],
+                         "exists": n in live["networks"], "matches": network_matches(v, live["networks"].get(n))}
+                        for n, v in sorted(p["networks"].items())],
            "shared_network": {"name": shared_docker, "containers": shared_members},
-           "ok": live_ok and not any(x["drift"] for x in apps) and all(n in live["networks"] for n in p["networks"])}
+           "ok": live_ok and not invalid_networks and not any(x["drift"] for x in apps)
+                 and all(network_matches(v, live["networks"].get(n)) for n, v in p["networks"].items())}
     if not live_ok:
         res["error"] = f"could not read Docker ({err})"
     return res

@@ -110,7 +110,9 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
       // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
-      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir);
+      const { app } = await this.appsService.getApp(appUrn);
+      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir,
+        app?.exposed === true || app?.exposedLocal === true);
       if (enforced !== generated.content) {
         await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
