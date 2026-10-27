@@ -31,7 +31,8 @@ Wizard additions:
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
-  wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token)
+  wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token);
+                                the App Manager views at /views/ (Connections: /views/#connections)
   wam backup export|verify|import|undo|activate|key|schedule|run|status
                                 one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
@@ -433,7 +434,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {}),
-            "networks": _net_brief(net_post or net_pre)}
+            "networks": _net_brief({k: (net_pre or {}).get(k, []) + (net_post or {}).get(k, [])
+                                    for k in ("created", "removed", "restarted", "pending_restart", "errors")})}
 
 
 def host_access_risks(c: Config, app_id: str) -> list[str]:
@@ -1339,6 +1341,25 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return {}
 
+    VIEW_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+
+    def _view_file(self, name: str) -> None:
+        """The App Manager views (wizard-views/: My Apps, Store, Resources, Connections) on the loopback API, e.g.
+        http://127.0.0.1:7790/views/#connections. Only the flat, known file types in that folder are served."""
+        root = Path(__file__).resolve().parent.parent / "wizard-views"
+        f = root / name
+        if "/" in name or name.startswith(".") or f.suffix not in self.VIEW_TYPES or not f.is_file():
+            return self._json(404, {"error": "not found"})
+        b = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", self.VIEW_TYPES[f.suffix])
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'")
+        self.end_headers()
+        self.wfile.write(b)
+
     def do_GET(self):  # noqa: N802
         c, u = self.cfg, urlparse(self.path)
         if u.path == "/healthz":
@@ -1375,8 +1396,13 @@ class Handler(BaseHTTPRequestHandler):
             from . import updates
             return self._json(200, updates.status())
         if u.path == "/api/connections":
+            # Read-only, live: declared connections vs Docker's actual networks (the Connections view's data).
             from . import network
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
             return self._json(200, network.report(c))
+        if u.path == "/views" or u.path.startswith("/views/"):
+            return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})

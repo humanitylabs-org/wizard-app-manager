@@ -72,9 +72,10 @@ Reconcile runs automatically:
 - `wam network reconcile [--dry-run] [--no-restart]`
 - `wam network off` rolls back. It removes every override block, puts the apps back on the shared network (live) and
   deletes the wam networks. `wam network on` redoes it. `WIZARD_APP_ISOLATION=0` also turns it off.
-- `GET /api/connections` on the loopback wam API. apps.json carries the same report as `connections`, and that is
-  what the Connections view (`#connections` on the standalone App Manager page; `renderConnections` in
-  `wizard-views/wizard-apps.js`) reads.
+- `GET /api/connections` on the loopback wam API (`wam serve`, 127.0.0.1:7790) is the live report; apps.json carries
+  the same report as `connections` (a snapshot from the last registry write). The Connections view
+  (`renderConnections` in `wizard-views/wizard-apps.js`, `#connections` on the App Manager page that `wam serve` also
+  serves at http://127.0.0.1:7790/views/#connections) reads the live report and falls back to the snapshot.
 
 ## Limits
 

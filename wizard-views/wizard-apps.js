@@ -8,7 +8,7 @@
 //   renderConnections(el, ctx) a Settings group: what each app can reach (its declared connections), how the agent
 //                            gateway reaches it, internet access, and the live check of Docker's networks
 //
-// ctx (all optional): api ('/api', Runtipi), wizard ('/wizard/v1'), index ('/wizard/v1/index', or
+// ctx (all optional): api ('/api', Runtipi), wizard ('/wizard/v1'), connections ('/api/connections', wam), index ('/wizard/v1/index', or
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
@@ -573,11 +573,18 @@ export async function renderConnections(el, ctx = {}) {
     paint(el._wamConn);
   });
   if (el._wamConn) paint(el._wamConn);
+  // Live first (wam's loopback API: /api/connections checks Docker now), else the registry snapshot in apps.json.
   try {
-    const reg = await req(`${c.wizard}/wizard-apps`);
-    el._wamConn = reg.connections || { error: 'this App Manager does not report connections yet' };
-  } catch (err) {
-    el._wamConn = { error: err.message };
+    const live = await req(ctx.connections || '/api/connections');
+    if (!Array.isArray(live.apps)) throw new Error('no live data');
+    el._wamConn = live;
+  } catch {
+    try {
+      const reg = await req(`${c.wizard}/wizard-apps`);
+      el._wamConn = reg.connections || { error: 'this App Manager does not report connections yet' };
+    } catch (err) {
+      el._wamConn = { error: err.message };
+    }
   }
   paint(el._wamConn);
 }

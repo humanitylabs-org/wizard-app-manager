@@ -457,3 +457,36 @@ def test_install_plans_the_networks_before_the_first_start_and_reconciles_after(
     cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n")
     cli.install(cli.Config(), "x")
     assert steps == [({"x"}, False), (set(), True)] and installs == ["x:wizardapps"]
+
+
+def test_wam_serve_shows_the_views_and_the_live_report(monkeypatch):
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from wam import cli
+    monkeypatch.setattr(net, "report", lambda c, rt=None: {"schema": 1, "apps": [], "ok": True})
+    cli.Handler.cfg, cli.Handler.token = object(), "t"
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    monkeypatch.setattr(urllib.request, "urlopen", opener.open)
+    try:
+        with urllib.request.urlopen(base + "/views/") as r:
+            assert r.headers["Content-Type"].startswith("text/html") and b"Connections" in r.read()
+        with urllib.request.urlopen(base + "/views/wizard-apps.js") as r:
+            assert b"export async function renderConnections" in r.read()
+        with urllib.request.urlopen(base + "/api/connections") as r:
+            assert json.loads(r.read())["ok"] is True
+        for bad in ("/views/..%2fwam%2fcli.py", "/views/README.md", "/views/.x.js"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(base + bad)
+            assert e.value.code == 404
+        req = urllib.request.Request(base + "/api/connections", headers={"Sec-Fetch-Site": "cross-site"})
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req)
+        assert e.value.code == 403
+    finally:
+        srv.shutdown()
+        srv.server_close()
