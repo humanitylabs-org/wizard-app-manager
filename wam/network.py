@@ -108,31 +108,81 @@ def _plain(v):
 
 # ---------------------------------------------------------------- settings
 
+def _cfg(home: Path) -> dict:
+    try:
+        cfg = json.loads((home / "app-manager.json").read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_cfg(home: Path, cfg: dict) -> None:
+    p = home / "app-manager.json"
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    tmp.replace(p)
+
+
 def enabled(home: Path) -> bool:
     """On unless switched off: WIZARD_APP_ISOLATION=0, or app-manager.json `app_isolation: false` (`wam network off`)."""
     env = os.environ.get("WIZARD_APP_ISOLATION")
     if env is not None and env.strip() != "":
         return env.strip().lower() not in ("0", "false", "off", "no")
-    try:
-        cfg = json.loads((home / "app-manager.json").read_text())
-    except (OSError, ValueError):
-        cfg = {}
-    return cfg.get("app_isolation") is not False
+    return _cfg(home).get("app_isolation") is not False
 
 
 def set_enabled(home: Path, on: bool) -> None:
-    p = home / "app-manager.json"
-    try:
-        cfg = json.loads(p.read_text())
-    except (OSError, ValueError):
-        cfg = {}
+    cfg = _cfg(home)
     if on:
         cfg.pop("app_isolation", None)
     else:
         cfg["app_isolation"] = False
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    _save_cfg(home, cfg)
+
+
+def host_access_allowed(home: Path) -> set[str]:
+    """Apps the owner allowed to escape isolation (`wam install <id> --allow-host-access`, `wam network allow <id>`)."""
+    got = _cfg(home).get("host_access_allowed") or []
+    return {str(x) for x in got if isinstance(x, str) and ID.fullmatch(x)}
+
+
+def set_host_access_allowed(home: Path, app_id: str, on: bool) -> None:
+    if not ID.fullmatch(app_id):
+        raise NetworkError(f"not an app id: {app_id}")
+    cfg = _cfg(home)
+    have = host_access_allowed(home)
+    have = have | {app_id} if on else have - {app_id}
+    if have:
+        cfg["host_access_allowed"] = sorted(have)
+    else:
+        cfg.pop("host_access_allowed", None)
+    _save_cfg(home, cfg)
+
+
+# The App Manager (Runtipi fork, packages/backend/src/modules/docker/wizard-networks.ts) reads this before every
+# `compose up` of a Wizard app, whoever asked for it (wam, the App Store views, Runtipi's own UI): with isolation on it
+# never puts an app's unexposed services on the shared network and refuses networks the app does not own, unless
+# the owner allowed that app. Missing file = isolation on, nothing allowed (fail closed).
+POLICY_FILE = "wizard-app-networks.json"
+
+
+def policy_path(runtipi_root: Path) -> Path:
+    return Path(runtipi_root) / "user-config" / POLICY_FILE
+
+
+def write_policy(c, on: bool) -> bool:
+    """Mirror wam's switch and the owner's host-access allowances where the App Manager enforces them."""
+    p = policy_path(c.runtipi_root)
+    body = json.dumps({"schema": 1, "enabled": bool(on), "allow_host_access": sorted(host_access_allowed(c.home))},
+                      indent=2) + "\n"
+    if p.is_file() and p.read_text() == body:
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".wam-tmp")
+    tmp.write_text(body)
+    os.chmod(tmp, 0o644)
     tmp.replace(p)
+    return True
 
 
 def pool(home: Path) -> ipaddress.IPv4Network:
@@ -159,20 +209,33 @@ def gw_net(app_id: str) -> str:
 
 # ---------------------------------------------------------------- host access (installer gate)
 
-def host_access(compose: dict | str) -> list[str]:
-    """What in a recipe escapes every network: host networking, privileged mode, the container runtime socket."""
-    if isinstance(compose, str):
-        try:
-            compose = load_yaml(compose) or {}
-        except yaml.YAMLError as e:
-            return [f"compose does not parse ({str(e)[:80]})"]
+def network_escapes(compose: dict, app_id: str | None = None, store: str = "wizardapps") -> list[str]:
+    """Networks in a recipe that are not the app's own: a pre-existing (`external`) network, a fixed Docker `name`
+    outside the app's compose project (another app's network, `runtipi_tipi_main_network`, a reserved Wizard network),
+    a non-bridge driver, or a service on Docker's default bridge or in another container's namespace. Any of them
+    would let the app reach apps it never declared, so it is refused unless the owner allows host access.
+    Same rule as the App Manager's start-time gate (packages/backend/src/modules/docker/wizard-networks.ts)."""
     out = []
+    own = f"{app_id}_{store}_" if app_id else None
     top = (compose.get("networks") or {}) if isinstance(compose, dict) else {}
     for key, d in (top.items() if isinstance(top, dict) else []):
+        if str(key) == SHARED:   # Runtipi's own entry: the builder rewrites it, and wam strips it from isolated apps
+            continue
         d = _plain(d) or {}
-        name = str(d.get("name") or "") if isinstance(d, dict) else ""
+        d = d if isinstance(d, dict) else {}
+        ext = _plain(d.get("external"))
+        name = str(_plain(d.get("name")) or (ext.get("name") if isinstance(ext, dict) else "") or "")
+        driver = str(_plain(d.get("driver")) or "")
         if ours(name) or ours(str(key)):
             out.append(f"network {key}: attaches to the reserved Wizard network {name or key} (reaches other apps)")
+        elif ext:
+            out.append(f"network {key}: attaches to the existing network {name or key}, which this app does not own "
+                       "(reaches other apps)")
+        elif name and not (own and name.startswith(own)):
+            out.append(f"network {key}: uses the fixed Docker name {name}, outside this app (another app or Runtipi "
+                       "can share it)")
+        if driver and driver != "bridge":
+            out.append(f"network {key}: driver {driver} (not an app-private bridge)")
     for name, s in ((compose.get("services") or {}) if isinstance(compose, dict) else {}).items():
         s = _plain(s)
         if not isinstance(s, dict):
@@ -182,6 +245,24 @@ def host_access(compose: dict | str) -> list[str]:
             out.append(f"{name}: network_mode: host (shares the server's network, bypasses app isolation)")
         elif mode.startswith("container:"):   # another container's namespace (e.g. runtipi's); service: stays allowed
             out.append(f"{name}: network_mode: {mode} (shares another container's network, bypasses app isolation)")
+        elif mode == "bridge" or mode == "default":
+            out.append(f"{name}: network_mode: {mode} (Docker's default bridge, shared with other containers)")
+    return out
+
+
+def host_access(compose: dict | str, app_id: str | None = None, store: str = "wizardapps") -> list[str]:
+    """What in a recipe escapes app isolation: host networking, networks the app does not own, privileged mode,
+    the container runtime socket."""
+    if isinstance(compose, str):
+        try:
+            compose = load_yaml(compose) or {}
+        except yaml.YAMLError as e:
+            return [f"compose does not parse ({str(e)[:80]})"]
+    out = network_escapes(compose, app_id, store)
+    for name, s in ((compose.get("services") or {}) if isinstance(compose, dict) else {}).items():
+        s = _plain(s)
+        if not isinstance(s, dict):
+            continue
         if _plain(s.get("privileged")) is True:
             out.append(f"{name}: privileged (full control of the server)")
         for v in _plain(s.get("volumes")) or []:
@@ -267,11 +348,14 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
     uses = [str(u) for u in (w.get("uses") or []) if isinstance(u, str)]
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
-           "host_access": host_access(rdoc)}
+           "host_access": host_access(rdoc, app_id, store)}
     taken = sorted({n for s in services.values() for n in s["docker_networks"] if ours(n)})
     if taken:   # a recipe must never attach itself to a link or gateway network: refused at install, never isolated
         out["custom"] = f"its compose attaches to reserved Wizard networks ({', '.join(taken)})"
         out["host_access"].append(f"attaches to reserved Wizard networks: {', '.join(taken)}")
+    escapes = [e for e in network_escapes(rdoc, app_id, store) if "network_mode: host " not in e]
+    if escapes and not out["custom"]:   # networks it does not own: refused at install/start, never reported isolated
+        out["custom"] = "its compose attaches to networks outside the app: " + "; ".join(escapes)[:300]
     ov = override_path(root, store, app_id)
     if ov.is_file():
         text = ov.read_text()
@@ -337,7 +421,9 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             providers.setdefault(s, []).append(a["id"])
     core = sorted({p for s in CORE_SLOTS for p in providers.get(s, [])} | ({LEGACY_BUNDLE} & set(by_id))
                   | ({"hermes-agent"} & set(by_id)))
-    core_bridge = [c for c in core if by_id[c]["state"] == "isolated"]
+    # A core component published through Runtipi's reverse proxy (state `exposed`) still runs in a bridged container:
+    # it keeps the shared network for Traefik and also joins wizard-core and every app's wizard-gw-<id>.
+    core_bridge = [c for c in core if by_id[c]["state"] in ("isolated", "exposed")]
     gateway = {"core": core, "path": "network" if core_bridge else "loopback",
                "detail": ("the shell, Agent Service and agent run in containers: each app gets a wizard-gw-<id> network "
                           "with them" if core_bridge else
@@ -423,7 +509,7 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         mp = main_of(p)
         member(name, "link", p, [mp] if mp else [], True, consumer=c["id"], provider=p["id"])
     if gateway["path"] == "network":
-        cores = [iso[c] for c in core_bridge]
+        cores = [part[c] for c in core_bridge]
         for c in cores:
             member(CORE_NET, "core", c, svc_members(c), True)
         for a in part.values():
@@ -670,15 +756,38 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
     """Make Docker and the overrides match the declarations. Idempotent; safe to run any time.
     apply=False: report only. restart=False: never restart an app (live connect/disconnect only; apps still on
     the shared network are listed under pending_restart). `extra`: app ids about to be installed (their store
-    recipe is planned so they come up isolated on their first start)."""
+    recipe is planned so they come up isolated on their first start). Runs one at a time per box (the CLI, the
+    `wam serve` watcher and the installer can all call it)."""
+    if not apply:
+        return _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh)
+    import fcntl
+    c.home.mkdir(parents=True, exist_ok=True)
+    with open(c.home / "networks.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     p, store = build(c, rt, extra, on=on, fresh=fresh) if (on is not None or fresh) else build(c, rt, extra)
+    policy_error = None
+    if apply:
+        try:   # first: the App Manager enforces the same switch at every start, whoever starts the app
+            write_policy(c, p["enabled"])
+        except OSError as e:
+            policy_error = f"{policy_path(c.runtipi_root)}: not written ({str(e)[:120]})"
     try:
         docker = docker_cmd()
     except (NetworkError, OSError, subprocess.SubprocessError) as e:
-        return {"enabled": p["enabled"], "errors": [f"Docker unavailable: {str(e)[:160]}"], "unavailable": True}
+        return {"enabled": p["enabled"], "errors": [f"Docker unavailable: {str(e)[:160]}"] + ([policy_error] if policy_error else []),
+                "unavailable": True}
     live = observe(docker, store)
     out = {"enabled": p["enabled"], "gateway": p["gateway"], "created": [], "removed": [], "overrides": [],
            "connected": [], "disconnected": [], "restarted": [], "pending_restart": [], "errors": []}
+    if policy_error:
+        out["errors"].append(policy_error)
     if not apply:
         out["drift"] = drift(p, live, store)
         out["plan"] = summary(p)
@@ -803,6 +912,62 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
     return out
 
 
+def started_apps(docker: list[str], store: str = "wizardapps"):
+    """Yield the id of every Wizard app whose container starts, as Docker reports it (blocks; ends with Docker)."""
+    fmt = '{{index .Actor.Attributes "runtipi.appurn"}}'
+    p = subprocess.Popen(docker + ["events", "--filter", "type=container", "--filter", "event=start",
+                                   "--filter", "label=runtipi.appurn", "--format", fmt],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        for line in p.stdout or []:
+            app_id, _, st = line.strip().partition(":")
+            if st == store and ID.fullmatch(app_id):
+                yield app_id
+    finally:
+        p.kill()
+
+
+def watch(step, docker_fn=None, debounce: float = 3.0, idle: float = 600.0, stop=None, events=None) -> None:
+    """`wam serve`: every start of a Wizard app, whoever caused it (the App Store views, Runtipi's own UI, a restart,
+    an update, a reboot), is followed by a reconcile, so its declared links and gateway network appear and stale ones
+    go. The App Manager already started it without the shared network (its start-time policy); this adds what the
+    declarations allow. Between events it reconciles every `idle` seconds without restarting anything (grants approved
+    in the UI). `step(restart: bool)` runs one reconcile; `events` (tests) replaces Docker's event stream."""
+    import queue
+    import threading
+    q: queue.Queue = queue.Queue()
+
+    def reader():
+        while not (stop and stop.is_set()):
+            try:
+                for app_id in (events if events is not None else started_apps((docker_fn or docker_cmd)())):
+                    q.put(app_id)
+                if events is not None:
+                    return
+            except Exception:  # noqa: BLE001 - Docker restarting: try again
+                pass
+            time.sleep(10)
+
+    threading.Thread(target=reader, name="wam-network-events", daemon=True).start()
+    while not (stop and stop.is_set()):
+        try:
+            first = q.get(timeout=idle)
+        except queue.Empty:
+            step(False)
+            continue
+        if first is None:
+            return
+        deadline = time.time() + debounce   # one reconcile for a burst (an app's services start one by one)
+        while time.time() < deadline:
+            try:
+                if q.get(timeout=max(0.05, deadline - time.time())) is None:
+                    step(True)
+                    return
+            except queue.Empty:
+                break
+        step(True)
+
+
 def _save(home: Path, res: dict) -> None:
     try:
         keep = {k: res.get(k) for k in ("enabled", "created", "removed", "overrides", "restarted", "pending_restart", "errors")}
@@ -870,7 +1035,7 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                 n in live["networks"] and not live["networks"][n]["internal"] for x in containers for n in x["networks"])
         if a["state"] == "host-network":
             gw = "is on the server's network"
-        elif p["gateway"]["path"] == "network" and a["state"] == "isolated" and a["id"] not in p["gateway"]["core"]:
+        elif p["gateway"]["path"] == "network" and a["state"] in ("isolated", "exposed") and a["id"] not in p["gateway"]["core"]:
             gw = f"through {gw_net(a['id'])}"
         elif a["state"] == "isolated" or a["state"] == "shared":
             gw = "on its published 127.0.0.1 port" if p["gateway"]["path"] == "loopback" else "over the shared network"

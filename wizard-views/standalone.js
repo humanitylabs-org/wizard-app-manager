@@ -10,9 +10,14 @@ const input = $('#search');
 const btn = $('#adminBtn');
 const menu = $('#adminMenu');
 let store = null;
+// Served by `wam serve` (127.0.0.1:7790/views/): only the Connections data is there, so only that view is offered.
+const only = document.body.dataset.only || '';
+if (only) {
+  for (const a of menu.querySelectorAll('a')) if (a.getAttribute('href') !== `#${only}`) a.remove();
+}
 
 function show() {
-  const view = (location.hash || '#apps').slice(1);
+  const view = only || (location.hash || '#apps').slice(1);
   const inStore = view === 'store';
   form.hidden = !inStore;
   chips.hidden = !inStore;

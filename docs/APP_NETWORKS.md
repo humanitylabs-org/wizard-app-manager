@@ -35,8 +35,12 @@ Anything else has no shared network: the name doesn't resolve and the address is
 - **Fresh boxes:** the shell, Agent Service and agent run in containers. They join every app's `wizard-gw-<id>`, so
   the gateway keeps its internal addresses. Apps still don't share a network with each other.
 
-A recipe that attaches itself to a reserved `wizard-link-*`/`wizard-gw-*`/`wizard-core` network is refused the same way
-and never isolated. If isolation is on and an app's networks can't be prepared (for example the address pool is full),
+A recipe that attaches networks the app does not own is refused the same way and never isolated: a reserved
+`wizard-link-*`/`wizard-gw-*`/`wizard-core` network, any `external` network (for example a logical network whose
+`name:` is `runtipi_tipi_main_network` or another app's compose network), a fixed Docker `name:` outside the app's own
+compose project (`<id>_wizardapps_*`), a non-bridge driver, and `network_mode: host|bridge|container:<x>`. The owner
+can allow one app explicitly (`wam install <id> --allow-host-access`, `wam app update <id> --allow-host-access` or
+`wam network allow <id>`; `wam network deny <id>` takes it back). If isolation is on and an app's networks can't be prepared (for example the address pool is full),
 `wam install` stops before the first start rather than start it on the shared network. `wam app update` writes the
 override for the incoming recipe before Runtipi applies it, and `wam grants grant|revoke` reconciles at once.
 
@@ -46,6 +50,23 @@ Docker/containerd/podman socket. Apps installed that way, and apps with hand-wri
 override, stay as they are. An app exposed through Runtipi's reverse proxy keeps the shared network, because Traefik
 reaches it there, so every app can still reach it. It also gets its declared links. The Connections view flags all of
 these.
+
+## Every start, whoever starts the app
+
+wam is not the only way an app starts. The App Store views and Runtipi's own UI install, update and restart apps
+through the App Manager API directly. So the App Manager itself (the Runtipi fork,
+`packages/backend/src/modules/docker/wizard-networks.ts`) applies the policy before every `compose up` of a Wizard app:
+
+- with isolation on it never puts a service on the shared network, unless the service is published through the reverse
+  proxy or the owner set its networks by hand in user-config. A new app therefore starts with only its own networks;
+- it refuses a compose that attaches networks the app does not own (the rule above) unless the owner allowed that app;
+- it drops entries in wam's managed override block for services the new recipe no longer has, so an update that
+  renames a service still starts.
+
+wam mirrors its switch and the owner's allowances to `user-config/wizard-app-networks.json`. A missing or unreadable
+file means isolation on and nothing allowed. `wam serve` watches Docker for Wizard app starts and reconciles after each
+one, so an app installed or updated from the UI gets its declared links and gateway network within seconds (and loses
+links it no longer declares). Between starts it reconciles every 10 minutes without restarting anything.
 
 ## How it is applied
 
@@ -69,7 +90,11 @@ Reconcile runs automatically:
   reconciles again;
 - after `wam uninstall`, which removes its links and override block;
 - after `wam app update`;
-- in `wam bootstrap`, which every installer run executes, so existing boxes convert on upgrade.
+- in `wam bootstrap`, which every installer run executes, so existing boxes convert on upgrade;
+- in `wam serve` after every Wizard app start (installs and updates from the UI included), see above.
+
+`wam app update` refuses an update that brings in host access or foreign networks the installed version didn't have,
+unless the owner allows it, and stops before the update when its networks can't be prepared (isolation on).
 
 ## Commands
 
@@ -82,7 +107,9 @@ Reconcile runs automatically:
 - `GET /api/connections` on the loopback wam API (`wam serve`, 127.0.0.1:7790) is the live report; apps.json carries
   the same report as `connections` (a snapshot from the last registry write). The Connections view
   (`renderConnections` in `wizard-views/wizard-apps.js`, `#connections` on the App Manager page that `wam serve` also
-  serves at http://127.0.0.1:7790/views/#connections) reads the live report and falls back to the snapshot.
+  serves at http://127.0.0.1:7790/views/) reads the live report and falls back to the snapshot. That loopback page
+offers only Connections: My Apps, the App Store and Resources need Runtipi's API and the Wizard front, which live on the
+shell's origin.
 
 ## Limits
 

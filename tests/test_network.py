@@ -615,3 +615,197 @@ def test_container_network_mode_is_host_access_but_same_compose_service_mode_is_
     a = app("x")
     a["services"]["x"]["network_mode"] = "container:runtipi"
     assert net.plan([a], [], set())["apps"][0]["state"] == "custom"
+
+
+# ---------------------------------------------------------------- review round 4: UI paths, foreign networks, updates
+
+def test_external_and_foreign_named_networks_are_escapes_and_never_isolated(tmp_path):
+    """A logical network with external: true / a fixed name pointing at the shared network or another app's network
+    is an isolation escape: refused at install and never reported as isolated (Codex PRRT_kwDOVCUOXM6wnh8N)."""
+    cases = [{"external": True, "name": "runtipi_tipi_main_network"},
+             {"external": True, "name": "twenty-crm_wizardapps_twenty-crm_wizardapps_network"},
+             {"external": {"name": "runtipi_tipi_main_network"}},
+             {"name": "shared-by-two-apps"},
+             {"driver": "macvlan"}]
+    for i, n in enumerate(cases):
+        doc = {"services": {"x": {"image": "a", "networks": ["sneak"], "x-runtipi": {"is_main": True}}},
+               "networks": {"sneak": n}}
+        assert net.network_escapes(doc, "x"), n
+        assert net.host_access(doc, "x"), n
+        root = tmp_path / f"r{i}"
+        d = root / "apps" / "wizardapps" / "x"
+        d.mkdir(parents=True)
+        (d / "docker-compose.yml").write_text(yaml.safe_dump(doc))
+        a = net.read_app(root, "wizardapps", "x")
+        assert a["custom"] and net.plan([a], [], set())["apps"][0]["state"] == "custom", n
+    own = {"services": {"x": {"image": "a", "networks": ["lane"]}, "y": {"image": "b", "network_mode": "service:x"}},
+           "networks": {"lane": {"internal": True}, "named": {"name": "x_wizardapps_named"},
+                        "tipi_main_network": {"external": True, "name": "runtipi_tipi_main_network"}}}
+    assert net.network_escapes(own, "x") == []
+    assert net.network_escapes({"services": {"x": {"network_mode": "bridge"}}}, "x")
+
+
+def test_installer_refuses_an_external_network_recipe(tmp_path, monkeypatch):
+    import pytest
+    cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n    networks: [sneak]\n"
+                                    "networks:\n  sneak:\n    external: true\n    name: runtipi_tipi_main_network\n")
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
+    with pytest.raises(SystemExit, match="REFUSED: x asks for access that escapes app isolation"):
+        cli.install(cli.Config(), "x")
+    assert installs == [] and steps == []
+
+
+def test_allow_host_access_is_recorded_for_the_app_managers_start_gate(tmp_path, monkeypatch):
+    cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n    networks: [sneak]\n"
+                                    "networks:\n  sneak:\n    external: true\n    name: somewhere\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    cli.install(cli.Config(), "x", allow_host_access=True)
+    assert installs == ["x:wizardapps"] and net.host_access_allowed(home) == {"x"}
+    c = type("C", (), {"home": home, "runtipi_root": tmp_path / "runtipi"})()
+    assert net.write_policy(c, True) is True and net.write_policy(c, True) is False
+    pol = json.loads(net.policy_path(c.runtipi_root).read_text())
+    assert pol == {"schema": 1, "enabled": True, "allow_host_access": ["x"]}
+    net.set_host_access_allowed(home, "x", False)
+    net.write_policy(c, False)
+    assert json.loads(net.policy_path(c.runtipi_root).read_text()) == {"schema": 1, "enabled": False, "allow_host_access": []}
+
+
+def update_env(tmp_path, monkeypatch, installed, incoming, step_results=()):
+    from wam import cli
+    root = tmp_path / "runtipi"
+    for where, text in (("apps/wizardapps/x", installed), ("repos/wizardapps/apps/x", incoming)):
+        d = root / where
+        d.mkdir(parents=True)
+        (d / "docker-compose.yml").write_text(text)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("RUNTIPI_ROOT", str(root))
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    updates, steps, results = [], [], list(step_results)
+
+    class RT:
+        def app(self, urn): return {"app": {"status": "running", "version": "1"}}
+        def update(self, urn, perform_backup=True): updates.append(urn)
+        def wait_status(self, urn, want, timeout=900): return "running"
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli.alongside, "load", lambda h: None)
+
+    def step(c, rt=None, extra=(), restart=True, fresh=()):
+        steps.append((set(fresh), restart))
+        return results.pop(0) if results else {}
+    monkeypatch.setattr(cli, "network_step", step)
+    return cli, updates, steps
+
+
+def test_update_stops_when_its_network_preflight_fails(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wnh8J: with isolation on, an update whose networks can't be prepared never runs."""
+    import pytest
+    plain = "services:\n  x:\n    image: a\n"
+    cli, updates, steps = update_env(tmp_path, monkeypatch, plain, plain,
+                                     [{"errors": ["wizard-app-x: a different network with this name exists; not touched"]}])
+    with pytest.raises(SystemExit, match="x not updated: its isolated networks could not be prepared"):
+        cli.app_update(cli.Config(), "x")
+    assert updates == [] and steps == [({"x"}, False), (set(), False)]
+    # Docker unavailable is reported, not blocking (same as install)
+    cli, updates, steps = update_env(tmp_path / "b", monkeypatch, plain, plain, [{"errors": ["Docker unavailable"], "unavailable": True}])
+    assert cli.app_update(cli.Config(), "x")["status"] == "running" and updates == ["x:wizardapps"]
+
+
+def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wnYag: an app approved at install must not gain host access or foreign networks by
+    being updated; the owner can allow it explicitly."""
+    import pytest
+    plain = "services:\n  x:\n    image: a\n"
+    sneaky = plain + "    networks: [sneak]\nnetworks:\n  sneak:\n    external: true\n    name: wizard-link-a--b\n"
+    cli, updates, steps = update_env(tmp_path, monkeypatch, plain, sneaky)
+    with pytest.raises(SystemExit, match="REFUSED: the update of x asks for access"):
+        cli.app_update(cli.Config(), "x")
+    assert updates == [] and steps == []
+    assert cli.app_update(cli.Config(), "x", allow_host_access=True)["status"] == "running"
+    assert updates == ["x:wizardapps"] and net.host_access_allowed(tmp_path / "home") == {"x"}
+    # an unchanged risk the installed recipe already had is not asked again
+    cli, updates, steps = update_env(tmp_path / "c", monkeypatch, sneaky, sneaky)
+    assert cli.app_update(cli.Config(), "x")["status"] == "running"
+
+
+def test_exposed_core_components_stay_on_the_gateway_networks():
+    """Codex PRRT_kwDOVCUOXM6wnYak: a shell / Agent Service published through Runtipi keeps the shared network AND
+    joins wizard-core and every app's wizard-gw-<id>; the plan never falls back to loopback because of it."""
+    ux = app("wizard-ux", uses=["agent-service"], provides=["shell"])
+    ux["services"]["wizard-ux"]["exposed"] = True
+    svc = app("wizard-agent-service", uses=["hermes-agent"], provides=["agent-service"])
+    svc["services"]["wizard-agent-service"]["exposed"] = True
+    p = net.plan([ux, svc, app("hermes-agent", provides=["agent"]), app("transcriber")], [], set())
+    assert p["gateway"]["path"] == "network"
+    gw = p["networks"][net.gw_net("transcriber")]
+    assert {m["app"] for m in gw["members"]} == {"transcriber", "wizard-ux", "wizard-agent-service", "hermes-agent"}
+    assert {m["app"] for m in p["networks"][net.CORE_NET]["members"]} == {"wizard-ux", "wizard-agent-service", "hermes-agent"}
+    ov = net.overlay_for(next(a for a in p["apps"] if a["id"] == "wizard-ux"))
+    assert {"tipi_main_network", net.CORE_NET, net.gw_net("transcriber")} <= set(ov["services"]["wizard-ux"])
+    # every core exposed: still the network path
+    allx = [app(i, provides=[s]) for i, s in (("wizard-ux", "shell"), ("wizard-agent-service", "agent-service"))]
+    for a in allx:
+        a["services"][a["id"]]["exposed"] = True
+    p2 = net.plan(allx + [app("transcriber")], [], set())
+    assert p2["gateway"]["path"] == "network" and net.gw_net("transcriber") in p2["networks"]
+
+
+def test_serve_watcher_reconciles_after_every_wizard_app_start():
+    """Codex PRRT_kwDOVCUOXM6wnh7z / wnh8A: installs and updates from the App Store views or Runtipi's UI start the
+    app through the App Manager API; wam serve reconciles after each start (a burst of starts is one reconcile), and
+    reconciles without restarts when idle."""
+    import threading
+    calls = []
+    done = threading.Event()
+
+    def step(restart):
+        calls.append(restart)
+        if len(calls) >= 2:
+            done.set()
+    net.watch(step, events=iter(["twenty-crm", "twenty-crm", None]), debounce=0.2, idle=5)
+    assert calls == [True]
+    stop = threading.Event()
+    t = threading.Thread(target=net.watch, args=(step,), kwargs={"events": iter([]), "idle": 0.1, "stop": stop}, daemon=True)
+    t.start()
+    assert done.wait(5)
+    stop.set()
+    assert calls[1] is False
+
+
+def test_reconcile_writes_the_app_managers_policy_first(tmp_path, monkeypatch):
+    c = Cfg(tmp_path)
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(), **k: (net.plan(carlos(), [], set(), on=False), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: (_ for _ in ()).throw(net.NetworkError("no docker")))
+    res = net.reconcile(c)
+    assert res["unavailable"] and json.loads(net.policy_path(c.runtipi_root).read_text())["enabled"] is False
+    assert net.reconcile(c, apply=False)["unavailable"]
+
+
+def test_wam_serve_page_offers_only_the_views_its_api_backs(monkeypatch):
+    """Codex PRRT_kwDOVCUOXM6wnh8R: 7790 has /api/connections only, so its page is the Connections view alone."""
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from wam import cli
+    monkeypatch.setattr(net, "report", lambda c, rt=None: {"schema": 1, "apps": [], "ok": True})
+    cli.Handler.cfg, cli.Handler.token = object(), "t"
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{srv.server_address[1]}/views/") as r:
+            assert b'data-only="connections"' in r.read()
+        for gone in ("/api/apps/installed", "/wizard/v1/index/apps"):
+            try:
+                opener.open(f"http://127.0.0.1:{srv.server_address[1]}{gone}")
+                raise AssertionError(gone)
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    js = (Path(__file__).resolve().parent.parent / "wizard-views" / "standalone.js").read_text()
+    assert "document.body.dataset.only" in js and "const view = only ||" in js

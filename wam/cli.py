@@ -12,7 +12,8 @@ Wizard additions:
   wam search [query]            search the index (apps.aiwizards.com)
   wam install <app>             install by id (plus the apps it `uses`), passwords generated + saved 0600
         [--set KEY=VALUE ...]   install-form values
-        [--allow-host-access]   install an app that asks for host networking, privileged mode or the Docker socket
+        [--allow-host-access]   install an app that asks for host networking, networks it does not own,
+                                privileged mode or the Docker socket (also: wam app update <id> --allow-host-access)
   wam uninstall <id>            remove (backups are kept unless you delete them)
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
@@ -24,6 +25,7 @@ Wizard additions:
                                 access, and a live check of Docker's networks against the declarations
   wam network reconcile [--dry-run] [--json]   make the app networks match the declarations (idempotent)
   wam network off|on            rollback / redo app isolation (off: every app back on Runtipi's shared network)
+  wam network allow|deny <app>  let one app keep host access / networks it does not own (the owner's call), or stop
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
@@ -32,7 +34,7 @@ Wizard additions:
                                 --share-history lets the shell read the Hermes home (titles, archive; exposes credentials)
                                 --share-sessions shares only state.db read-only (helper status, titles, archive; no credentials)
   wam serve                     HTTP API on 127.0.0.1:7790 (changes need the token in ~/.wizard-os/api-token);
-                                the App Manager views at /views/ (Connections: /views/#connections)
+                                the Connections view at /views/ (the other App Manager views run on the shell)
   wam backup export|verify|import|undo|activate|key|schedule|run|status
                                 one encrypted file that backs up, restores or moves this Wizard (docs/BACKUP.md)
 """
@@ -366,12 +368,15 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
     host = host_access_risks(c, app_id)
-    if host and not allow_host_access:
+    from . import network as _network
+    if host and not allow_host_access and app_id not in _network.host_access_allowed(c.home):
         raise SystemExit(f"REFUSED: {app_id} asks for access that escapes app isolation:\n  - " + "\n  - ".join(host) +
                          f"\nIt could reach every app and the server itself. Install it only if you trust it completely:\n"
                          f"  wam install {app_id} --allow-host-access")
     if host:
         print(f"WARNING: {app_id} is installed WITH HOST ACCESS (owner flag): " + "; ".join(host), file=sys.stderr)
+        # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
+        _network.set_host_access_allowed(c.home, app_id, True)
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     role = alongside_role(rec, app_id)
     if role in ("service", "shell") and alongside.LEGACY_BUNDLE in have and not _split:
@@ -463,14 +468,16 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                                     for k in ("created", "removed", "restarted", "pending_restart", "errors")})}
 
 
-def host_access_risks(c: Config, app_id: str) -> list[str]:
-    """Host networking, privileged mode or the container runtime socket in the app's recipe (the store copy the App
-    Manager just fetched, else the installed copy). wam's own alongside overrides are not recipes and never count."""
+def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
+    """Host networking, networks the app does not own, privileged mode or the container runtime socket in the app's
+    recipe. where="any": the store copy the App Manager just fetched, else the installed copy; "store" / "installed":
+    only that copy. wam's own alongside overrides are not recipes and never count."""
     from . import network
-    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
-                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+    store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml"
+    installed = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
+    for comp in {"any": (store_copy, installed), "store": (store_copy,), "installed": (installed,)}[where]:
         try:
-            return network.host_access(comp.read_text())
+            return network.host_access(comp.read_text(), app_id, STORE)
         except OSError:
             continue
     return []
@@ -486,6 +493,28 @@ def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool =
     except Exception as e:  # noqa: BLE001
         print(f"note: app networks not reconciled ({str(e)[:200]}); run `wam network reconcile`", file=sys.stderr)
         return {"errors": [str(e)[:200]]}
+
+
+def start_network_watch(c: Config) -> None:
+    """`wam serve`: reconcile the app networks after every Wizard app start, whatever started it (the App Store
+    views and Runtipi's own UI install and update through the App Manager API directly, not through wam)."""
+    if os.environ.get("WAM_NETWORK_WATCH", "1").strip().lower() in ("0", "false", "off", "no"):
+        return
+    import threading
+    from . import network
+
+    def step(restart: bool) -> None:
+        res = network_step(c, restart=restart) or {}
+        if any(res.get(k) for k in ("created", "removed", "overrides", "connected", "disconnected", "restarted")):
+            try:
+                write_registry(c)
+            except Exception as e:  # noqa: BLE001
+                print(f"note: registry not refreshed after a network change ({str(e)[:160]})", file=sys.stderr)
+        if res.get("errors"):
+            print(f"app networks: {'; '.join(res['errors'])[:400]}", file=sys.stderr, flush=True)
+
+    threading.Thread(target=network.watch, args=(step,), name="wam-network-watch", daemon=True).start()
+    print("app networks: reconciling after every Wizard app start", flush=True)
 
 
 def _net_brief(res: dict | None) -> dict:
@@ -1404,6 +1433,11 @@ class Handler(BaseHTTPRequestHandler):
         if "/" in name or name.startswith(".") or f.suffix not in self.VIEW_TYPES or not f.is_file():
             return self._json(404, {"error": "not found"})
         b = f.read_bytes()
+        if name == "index.html":
+            # This loopback API has only the Connections data (/api/connections). My Apps, the App Store and
+            # Resources call Runtipi's /api and the Wizard front's /wizard/v1, which live on the shell/App Manager
+            # origin, so the page served here is the Connections view alone (standalone.js reads data-only).
+            b = b.replace(b'<body class="wux">', b'<body class="wux" data-only="connections">', 1)
         self.send_response(200)
         self.send_header("Content-Type", self.VIEW_TYPES[f.suffix])
         self.send_header("Content-Length", str(len(b)))
@@ -1661,7 +1695,7 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
@@ -1682,8 +1716,24 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
     if store == STORE:
+        # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
+        # that the installed recipe didn't have, unless the owner allowed this app.
+        from . import network as _network
+        new = [r for r in host_access_risks(c, app, "store") if r not in set(host_access_risks(c, app, "installed"))]
+        if new and not allow_host_access and app not in _network.host_access_allowed(c.home):
+            raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
+                             "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
+                             f"  wam app update {app} --allow-host-access")
+        if new:
+            print(f"WARNING: {app} is updated WITH HOST ACCESS (owner flag): " + "; ".join(new), file=sys.stderr)
+            _network.set_host_access_allowed(c.home, app, True)
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
-        network_step(c, rt, restart=False, fresh={app})
+        pre = network_step(c, rt, restart=False, fresh={app})
+        if _network.enabled(c.home) and (pre or {}).get("errors") and not (pre or {}).get("unavailable"):
+            network_step(c, rt, restart=False)   # back to the override for the installed recipe
+            raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
+                             f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
+                             f"turn isolation off with `wam network off`")
     rt.update(urn, perform_backup=backup)
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
@@ -1763,7 +1813,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
-        res = app_update(Config(), argv[2], backup="--no-backup" not in argv)
+        res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
@@ -1777,7 +1827,8 @@ def main(argv: list[str] | None = None) -> int:
     cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
     cn.add_argument("--json", action="store_true")
     nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on")
-    nw.add_argument("action", choices=("reconcile", "status", "off", "on"))
+    nw.add_argument("action", choices=("reconcile", "status", "off", "on", "allow", "deny"))
+    nw.add_argument("app", nargs="?", help="allow|deny: the app whose host access / foreign networks the owner allows")
     nw.add_argument("--dry-run", action="store_true"); nw.add_argument("--json", action="store_true")
     nw.add_argument("--no-restart", action="store_true", help="never restart an app (report it instead)")
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
@@ -1843,6 +1894,15 @@ def main(argv: list[str] | None = None) -> int:
                 rep = network.report(c)
                 print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
                 return 0 if rep.get("ok") else 1
+            if args.action in ("allow", "deny"):
+                if not args.app:
+                    raise SystemExit(f"usage: wam network {args.action} <app>")
+                network.set_host_access_allowed(c.home, args.app, args.action == "allow")
+                res = network.reconcile(c, restart=not args.no_restart,
+                                        restart_fn=lambda a: app_lifecycle(c, "restart", a))
+                print(json.dumps({"app": args.app, "host_access_allowed": args.action == "allow",
+                                  "networks": _net_brief(res)}, indent=2))
+                return 1 if res.get("errors") else 0
             mode = None if args.action == "reconcile" else args.action == "on"
             if mode is not None and not args.dry_run:
                 network.set_enabled(c.home, mode)   # a dry run previews the mode without saving it
@@ -1921,6 +1981,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
+            start_network_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
