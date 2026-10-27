@@ -500,7 +500,6 @@ const REACH = {
   gateway: ' · through the gateway network',
   external: ' · outside the App Manager: not reachable from apps',
   host: ' · from the server’s network, on its 127.0.0.1 port',
-  peer: ' · two-way: it uses this app over their link',
   'not-installed': ' · not installed',
   unmanaged: ' · not isolated',
   shared: ' · shared network',
@@ -542,11 +541,13 @@ export async function renderConnections(el, ctx = {}) {
         const drift = (a.drift || []).length;
         const warn = drift || (a.host_access || []).length || a.state === 'exposed';
         const own = reach.filter((e) => e.state !== 'peer');
+        const peers = reach.filter((e) => e.state === 'peer').map((e) => e.to);
         const sub = own.length ? `Uses ${own.map((e) => e.to).join(', ')}` : 'Uses no other app';
         const detail =
           open === a.id
             ? `<div class="wam-conn-detail">
-          <p><b>Can reach</b> ${reach.length ? reach.map((e) => `${esc(e.to)}${esc(REACH[e.state] ?? '')}`).join('; ') : 'no other app'}</p>
+          <p><b>Uses</b> ${own.length ? own.map((e) => `${esc(e.to)}${esc(REACH[e.state] ?? '')}`).join('; ') : 'no other app'}</p>
+          ${peers.length ? `<p><b>Two-way links</b> ${esc(peers.join(', '))} <span class="wam-conn-why">(they use this app; a link is one network shared by both)</span></p>` : ''}
           <p><b>Reached by</b> ${by.length ? esc(by.join(', ')) : 'no other app'}</p>
           <p><b>Agent gateway</b> ${esc(a.gateway)}</p>
           <p><b>Internet</b> ${a.internet === true ? 'yes' : a.internet === false ? 'no' : 'unknown'}</p>
