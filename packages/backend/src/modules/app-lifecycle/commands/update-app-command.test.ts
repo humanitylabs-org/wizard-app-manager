@@ -455,3 +455,18 @@ test('retains the recovery snapshot when the current app folder cannot be remove
   expect(filesystem.copyDirectory).not.toHaveBeenCalledWith('/tmp/runtipi-update-abc/previous-app', '/data/apps/test');
   expect(filesystem.removeDirectory).not.toHaveBeenCalled();
 });
+
+test('opens app-data permissions after up so folders a new version adds are writable', async () => {
+  const { command, dockerService, appFilesManager } = createCommand({ wasRunningBeforeUpdate: true });
+  const order: string[] = [];
+  dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+    order.push(`compose:${cmd.split(' ')[0]}`);
+    return { success: true, stdout: '', stderr: '' };
+  });
+  appFilesManager.setAppDataDirPermissions.mockImplementation(async () => {
+    order.push('chmod');
+  });
+
+  expect((await command.execute(appUrn, {})).success).toBe(true);
+  expect(order.lastIndexOf('chmod')).toBeGreaterThan(order.lastIndexOf('compose:up'));
+});
