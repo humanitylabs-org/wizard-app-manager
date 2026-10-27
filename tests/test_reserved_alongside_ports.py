@@ -16,7 +16,7 @@ class Installed(Exception):
     (18996, {18996}, 18997, 18998, 18999),
     (8794, set(), 8796, 8797, 8794),
 ])
-def test_dependency_install_reserves_pending_alongside_ports(tmp_path, monkeypatch, default, taken, shell, service, expected):
+def test_dependency_install_reserves_pending_alongside_ports(tmp_path, monkeypatch, default, taken, shell, service, expected, safe_recipes):
     c = cli.Config()
     c.home = tmp_path
     al = {'shell': {'port': shell}, 'service': {'port': service, 'active': False}}

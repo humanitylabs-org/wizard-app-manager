@@ -10,6 +10,18 @@ from wam import mirrors
 from wam import network
 
 
+@pytest.fixture
+def safe_recipes(tmp_path, monkeypatch):
+    """Lifecycle unit fakes still need real recipes now that missing recipes fail closed."""
+    root = tmp_path / 'rt'
+    monkeypatch.setenv('RUNTIPI_ROOT', str(root))
+    for app in ('x', 'files', 'notifications', 'wizard-ux', 'wizard-agent-service'):
+        p = root / 'repos/wizardapps/apps' / app / 'docker-compose.yml'
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('services: {' + app + ': {image: example/unit-test}}\n')
+    return root
+
+
 @pytest.fixture(autouse=True)
 def _no_real_host_dashboard(tmp_path, monkeypatch):
     # Never write the real box's Wizard home or Runtipi folder: a test that builds Config() without its own

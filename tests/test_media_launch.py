@@ -32,7 +32,7 @@ def test_adoption_prepares_new_install_at_actual_media_root(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize('role', ['service', 'shell'])
-def test_initial_install_prepares_upload_storage_before_container_start(tmp_path, monkeypatch, role):
+def test_initial_install_prepares_upload_storage_before_container_start(tmp_path, monkeypatch, role, safe_recipes):
     events = []
     st = {'agent': {'uid': 1001, 'gid': 1001}, 'shell': {'port': 8796}, 'service': {'port': 8797}, 'images': {}}
     app = 'wizard-agent-service' if role == 'service' else 'wizard-ux'

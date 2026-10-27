@@ -35,35 +35,9 @@ def front_matter(text: str) -> dict:
 
 
 def compose_risks(text: str) -> list[str]:
-    """Host-level access a public, unreviewed app must never ask for (rule 12)."""
-    try:
-        doc = yaml.safe_load(text) or {}
-    except Exception as e:  # noqa: BLE001
-        return [f"compose does not parse: {e}"]
-    risks = []
-    for name, s in ((doc.get("services") or {}) if isinstance(doc, dict) else {}).items():
-        if not isinstance(s, dict):
-            continue
-        if s.get("privileged"):
-            risks.append(f"{name}: privileged")
-        for k in ("network_mode", "pid", "ipc", "userns_mode", "uts"):
-            if str(s.get(k, "")).lower() == "host":
-                risks.append(f"{name}: {k}: host")
-        for c in s.get("cap_add") or []:
-            if str(c).upper().removeprefix("CAP_") in BAD_CAPS:
-                risks.append(f"{name}: cap_add {c}")
-        if s.get("devices"):
-            risks.append(f"{name}: host devices")
-        for o in s.get("security_opt") or []:
-            if "unconfined" in str(o).lower():
-                risks.append(f"{name}: security_opt {o}")
-        for v in s.get("volumes") or []:
-            src = v.split(":")[0] if isinstance(v, str) else str((v or {}).get("source", ""))
-            if any(x in src for x in ("docker.sock", "containerd.sock", "podman.sock")):
-                risks.append(f"{name}: mounts the container runtime socket")
-            elif src == "/" or HOST_PATH.match(src):
-                risks.append(f"{name}: mounts host path {src}")
-    return risks
+    """Compatibility wrapper for the one app-admission allowlist."""
+    from .host_policy import risks
+    return risks(text)
 
 
 def known_dependencies() -> set[str]:

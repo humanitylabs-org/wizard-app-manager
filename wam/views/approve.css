@@ -1,0 +1,11 @@
+:root { color-scheme: dark; --wz-base:#151519; --wz-text:#eeeef2; --wz-muted:#adadb9; --wz-accent:#beb0ff; --wz-line:#45454f; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--wz-base); color:var(--wz-text); font:17px/1.6 system-ui,sans-serif; }
+main { max-width:42rem; margin:3rem auto; padding:1.3rem; }
+h1 { font-size:1.7rem; line-height:1.25; }
+li { overflow-wrap:anywhere; margin:.6rem 0; }
+code { display:block; overflow-wrap:anywhere; font-size:.8rem; padding:.8rem 0; }
+details { color:var(--wz-muted); }
+button { font:inherit; color:var(--wz-base); background:var(--wz-accent); border:1px solid var(--wz-line); border-radius:var(--wz-radius,8px); padding:.8rem 1.2rem; cursor:pointer; }
+button:disabled { opacity:.6; cursor:default; }
+button:focus-visible, summary:focus-visible { outline:3px solid var(--wz-accent); outline-offset:4px; }

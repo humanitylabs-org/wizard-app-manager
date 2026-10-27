@@ -467,6 +467,8 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
     m = r.journal["manifest"]
     try:
         p = plan(box, m, stage=r.root / "stage")
+        for rec in m.get("apps", []):
+            _check_restore_recipe(box, rec, r.root / "stage" / "apps" / rec["id"], _path_rewrite(box, m))
     except BaseException:
         discard(r)
         raise
@@ -488,6 +490,9 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
         r.journal["error"] = str(e)[:500]
         r.save()
         _write_json(box.home / "restores" / "last.json", {"stamp": r.stamp})
+        from ..host_policy import NeedsOwnerApproval
+        if isinstance(e, NeedsOwnerApproval):
+            raise
         raise RestoreError(f"the restore stopped part way: {e}. The previous Wizard is kept in "
                            f"{r.root / 'before'}; run `wam backup undo` to put it back") from e
     receipt = r.journal["receipt"]
@@ -596,6 +601,45 @@ def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS, rewrite=(), *,
         raise RestoreError(str(e)) from None
 
 
+def _check_restore_recipe(box, rec, stage, rewrite=()):
+    """Read executable bundle overrides before changing the box or invoking Runtipi.
+    The archive's member guard already rejects paths/links that escape these roots."""
+    from .. import host_policy
+    import tarfile
+    app_id = rec['id']
+    store = rec.get('store') or rec['urn'].split(':', 1)[1]
+    recipe_text, override_text = None, None
+    for parent in (stage / 'package', box.runtipi_root / 'repos' / store / 'apps' / app_id):
+        recipe = parent / 'docker-compose.yml'
+        if recipe.is_file():
+            recipe_text = recipe.read_text()
+            break
+    archive = stage / 'data.tar.gz'
+    if archive.is_file():
+        with datafs.open(archive, 'rb') as f, tarfile.open(fileobj=f, mode='r|gz') as tar:
+            for member in tar:
+                name = member.name.removeprefix('./')
+                if name in {'user-config/docker-compose.yml', 'user-config/docker-compose.yaml',
+                            'app/docker-compose.yml', 'app/docker-compose.yaml'} and member.isfile():
+                    if member.size > 1 << 20:
+                        raise RestoreError('compose override too large to check')
+                    text = tar.extractfile(member).read().decode()
+                    if name.startswith('user-config/'):
+                        for old, new in rewrite:
+                            text = text.replace(old, new)
+                        override_text = text
+                    elif not recipe_text:
+                        recipe_text = text
+    from ..network import dump_yaml
+    texts = [recipe_text] if recipe_text else []
+    if override_text:
+        doc = host_policy.normalized_override(box, app_id, store, override_text)
+        if doc:
+            texts.append(dump_yaml(doc))
+    if texts:
+        host_policy.require(box.home, app_id, texts, **host_policy.context(box, app_id, store))
+
+
 def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     """Install a bundled app that this box doesn't have, from the bundled package at the same version."""
     urn, app_id, store = rec["urn"], rec["id"], rec["store"]
@@ -621,6 +665,8 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
         # the bundle's user-config/ goes in first: Runtipi's install starts the app with its compose override (an
         # extra agent's home mount, say); without it the first start creates folders at the package's defaults
         _put_back(box, urn, arch, ("user-config",), _path_rewrite(box, r.journal["manifest"]))
+    from ..host_policy import require_app
+    require_app(box, app_id, store, filesystem=datafs)
     box.rt.install(urn, meta.get("form") or {})
     r.step(kind="app_installed", urn=urn, **info)
     st = box.wait_status(urn, {"running", "stopped"}, timeout=1800)
@@ -819,6 +865,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         want_running = a.get("status") == "running"
         st = box.app_status(a["urn"])
         if want_running and st != "running":
+            from ..host_policy import require_app
+            require_app(box, a["id"], a["store"], where="installed", filesystem=datafs)
             try:
                 box.rt.start(a["urn"])
             except RuntipiError as e:

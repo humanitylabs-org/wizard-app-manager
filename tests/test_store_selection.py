@@ -217,7 +217,7 @@ def test_http_selection_and_auth_fail_closed(c,monkeypatch):
     from urllib.error import HTTPError
     (c.home/'links.json').write_text(json.dumps({'host':'box.ts.net'}))
     monkeypatch.setattr(cli.alongside,'load',lambda home:{})
-    monkeypatch.setattr(si,'peer_uid',lambda port:0)
+    monkeypatch.setattr(si,'peer_uid',lambda port, *args:0)
     monkeypatch.setattr(si,'owner_login',lambda:'owner@test')
     monkeypatch.setattr(si,'served_origins',lambda host:{'https://box.ts.net:8444'})
     monkeypatch.setattr(ss,'execute',lambda *args:pytest.fail('invalid requests must never execute'))

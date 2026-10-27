@@ -143,7 +143,7 @@ def test_store_recommendations_preserve_owner_and_origin_checks(tmp_path, monkey
     c = cfg(tmp_path)
     (tmp_path / 'links.json').write_text('{"host":"box.example"}')
     indexed(monkeypatch)
-    monkeypatch.setattr(store_install, 'peer_uid', lambda p: 0)
+    monkeypatch.setattr(store_install, 'peer_uid', lambda p, *args: 0)
     monkeypatch.setattr(store_install, 'owner_login', lambda: 'owner@example.com')
     monkeypatch.setattr(store_install, 'served_origins', lambda h: {'https://box.example'})
     monkeypatch.setattr(cli.StoreHandler, 'cfg', c, raising=False)

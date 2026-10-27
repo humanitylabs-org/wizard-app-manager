@@ -141,7 +141,7 @@ def test_only_existing_settings_owner_listener_can_choose_default(tmp_path, monk
     _, tipi, home, _, _ = admitted(tmp_path, monkeypatch)
     monkeypatch.setattr(cli.StoreHandler, 'cfg', SimpleNamespace(home=home, runtipi_root=tipi), raising=False)
     (home / 'links.json').write_text('{"host":"box.test"}')
-    monkeypatch.setattr(store_install, 'peer_uid', lambda p: 0)
+    monkeypatch.setattr(store_install, 'peer_uid', lambda p, *args: 0)
     monkeypatch.setattr(store_install, 'owner_login', lambda: 'owner@example.test')
     monkeypatch.setattr(store_install, 'served_origins', lambda h: {'https://box.test'})
     server = ThreadingHTTPServer(('127.0.0.1', 0), cli.StoreHandler)

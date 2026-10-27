@@ -340,6 +340,9 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
+        from .host_policy import require
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[rec['compose']],
+                base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
         rec['state'] = 'started_health_unverified'
@@ -387,6 +390,9 @@ def update_local(root, os_home=None, *, run=False):
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
+        from .host_policy import require
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[rec['compose']],
+                base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
     return {**rec, 'update': 'updated'}

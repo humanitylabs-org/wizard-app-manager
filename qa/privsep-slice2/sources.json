@@ -1,0 +1,146 @@
+[
+  {
+    "key": "store-browser",
+    "app": "browser",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/browser/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "store-defleur-video",
+    "app": "defleur-video",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/defleur-video/docker-compose.yml",
+    "default": false
+  },
+  {
+    "key": "store-files",
+    "app": "files",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/files/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "store-hermes-agent",
+    "app": "hermes-agent",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/hermes-agent/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "store-hermes-frontend-3",
+    "app": "hermes-frontend-3",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/hermes-frontend-3/docker-compose.yml",
+    "default": false
+  },
+  {
+    "key": "store-secret-drop",
+    "app": "secret-drop",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/secret-drop/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "store-transcriber",
+    "app": "transcriber",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/transcriber/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "store-wizard-ai-accounts",
+    "app": "wizard-ai-accounts",
+    "repo": "humanitylabs-org/wizard-app-store",
+    "commit": "9a6c5553f8c26d3be3a52012c73c39fdf37c996c",
+    "path": "apps/wizard-ai-accounts/docker-compose.yml",
+    "default": false
+  },
+  {
+    "key": "default-wizard-ux",
+    "app": "wizard-ux",
+    "repo": "humanitylabs-org/wizard-ux",
+    "commit": "3781ae1cd55ae5a7fa05d52dfe131c96886d8c6b",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-agent-service",
+    "app": "wizard-agent-service",
+    "repo": "humanitylabs-org/wizard-agent-service",
+    "commit": "73c4138aab38534ac5e7df4f5d3a55631bcc9740",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-chatgpt",
+    "app": "wizard-chatgpt",
+    "repo": "oscarhenrycollins/chatgpt-connection",
+    "commit": "cdc92a755fe0d54bf3bc3c89a1fbf1368b8c5074",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-claude",
+    "app": "wizard-claude",
+    "repo": "oscarhenrycollins/claude-connection",
+    "commit": "caa507980866e259db34771142e5f1dfa69d4f2d",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-troubleshooter",
+    "app": "wizard-troubleshooter",
+    "repo": "humanitylabs-org/wizard-troubleshooter",
+    "commit": "48a99e6ae5f5a39f5a9c260ed6e50299122ba53b",
+    "path": null,
+    "default": true
+  },
+  {
+    "key": "default-wizard-connection-router",
+    "app": "wizard-connection-router",
+    "repo": "humanitylabs-org/wizard-connection-router",
+    "commit": "ec8ca140494b302a9d4e651417162b89f1d9e282",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-voice-service",
+    "app": "wizard-voice-service",
+    "repo": "humanitylabs-org/wizard-voice-service",
+    "commit": "14d990e5bc64b69604a7308641be4f1f0cf40c7f",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-cloudflare",
+    "app": "wizard-cloudflare",
+    "repo": "oscarhenrycollins/wizard-cloudflare",
+    "commit": "63ee34aa1c4d1a86e88dfdd52212a361d3ccc188",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-wizard-connectors",
+    "app": "wizard-connectors",
+    "repo": "humanitylabs-org/wizard-connectors",
+    "commit": "8808e72b7a3375cef0f47a19a736dfd8b95afe39",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  },
+  {
+    "key": "default-notifications",
+    "app": "notifications",
+    "repo": "oscarhenrycollins/notifications",
+    "commit": "cdce9f18d10f74e1714ee2284a1c55497b49eef1",
+    "path": "runtipi/docker-compose.yml",
+    "default": true
+  }
+]

@@ -69,7 +69,7 @@ def _serve_store(monkeypatch, cfg):
     import http.client, json as _j
     from http.server import ThreadingHTTPServer
     from wam import cli
-    monkeypatch.setattr(si, "peer_uid", lambda p: 0)
+    monkeypatch.setattr(si, "peer_uid", lambda p, *args: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "o@x")
     monkeypatch.setattr(si, "served_origins", lambda h: {"https://b"})
     monkeypatch.setattr(si, "check_request", lambda *a: None)

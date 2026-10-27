@@ -70,6 +70,17 @@ def box(tmp_path, monkeypatch):
         (live / "docker-compose.yml").write_text(yaml.safe_dump({"services": {app: {"image": "example/catalog:old"}}}))
     monkeypatch.setenv("WIZARD_RELEASE_PINS", str(pins))
     monkeypatch.setattr(cli, "installed_ids", lambda *a: set(APPS))
+    # These release-selection tests include the legacy alongside host mounts.
+    # Simulate a human reviewing EACH refused recipe; never bypass the gate.
+    from wam import host_policy
+    real_update = cli.app_update
+    def owner_update(*args, **kwargs):
+        try:
+            return real_update(*args, **kwargs)
+        except host_policy.NeedsOwnerApproval as exc:
+            host_policy.approve(c.home, exc.payload['app'], exc.payload['approve_url'].split('/')[-1])
+            return real_update(*args, **kwargs)
+    monkeypatch.setattr(cli, 'app_update', owner_update)
     return c, doc, pins, calls
 
 

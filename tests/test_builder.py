@@ -277,7 +277,7 @@ def test_manifest_reference_through_symlinked_folder_is_refused(tmp_path):
 def test_production_install_is_never_rerouted_to_the_builder():
     import inspect
     from wam import cli
-    src = inspect.getsource(cli.main)
+    src = inspect.getsource(cli._main)
     # Only the builder's own verbs route to it; `wam install <x>` always means a production install,
     # whatever folders happen to exist in the current directory.
     assert '{"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}' in src
