@@ -22,6 +22,22 @@ import time
 import traceback
 import xml.etree.ElementTree as ET
 
+# Main's root->owner handoff requires a visible Tailscale operator before the
+# ordinary installer can reach its private-access setup. On a clean, unsigned-in
+# daemon `tailscale set --operator=hermes` leaves OperatorUser=None (NeedsLogin).
+# Use the documented box-only option for main, not an approval bypass or a fake
+# baseline. Keep candidate Tailscale provisioning and the kernel denial intact.
+INSTALL_PRIVATE_ACCESS = {'baseline': 'none', 'candidate': 'tailscale'}
+INSTALL_INPUT_DIFFERENCE = (
+    'Baseline uses documented WIZARD_PRIVATE_ACCESS=none: main named_host_ready '
+    'requires OperatorUser=hermes, but a clean unauthenticated daemon reports '
+    'OperatorUser=None / BackendState=NeedsLogin after host preparation. Candidate '
+    'keeps WIZARD_PRIVATE_ACCESS=tailscale to exercise real operator provisioning '
+    'and agent mutation denial. All other bootstrap inputs are identical apart '
+    'from the source SHA. Authenticated private links are not tested in either VM.'
+)
+
+
 root, source = (Path(v).resolve() for v in sys.argv[1:3])
 baseline, candidate = sys.argv[3:5]
 smoke = '--smoke' in sys.argv[5:]
@@ -32,6 +48,8 @@ root.mkdir(mode=0o700, parents=True)
 private = root / 'private'; private.mkdir(mode=0o700)
 receipt = {'started': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'baseline': baseline,
            'candidate': candidate, 'smoke': smoke, 'steps': [], 'vms': [], 'failures': [],
+           'install_private_access': INSTALL_PRIVATE_ACCESS,
+           'install_input_difference': INSTALL_INPUT_DIFFERENCE,
            'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 # Reuse the proven Slice 1 registry mirror, install retry, SSH/QEMU boot and
 # finally-stop skeleton. Only its function definitions are loaded, never its main.
@@ -175,6 +193,16 @@ AGENT
 '''
 
 
+def guest_bootstrap_command(ref, label):
+    """Same owner/Hermes/bootstrap inputs, with the recorded private-access choice."""
+    private_access = INSTALL_PRIVATE_ACCESS[label]
+    url = f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
+    return (f'curl -fsSL {url} -o /root/get.sh && '
+            f'WAM_REF={ref} WIZARD_MODE=alongside WIZARD_HERMES_USER=hermes '
+            f'HERMES_HOME=/home/hermes/.hermes WIZARD_PRIVATE_ACCESS={private_access} '
+            'WIZARD_TAILSCALE_WAIT=1 bash /root/get.sh')
+
+
 def guest_vm(label, ref, image, key):
     vm = root / label; vm.mkdir()
     run(label + '-overlay', ['qemu-img','create','-f','qcow2','-F','qcow2','-b',str(image),str(vm/'disk.qcow2'),'56G'])
@@ -208,8 +236,7 @@ def guest_vm(label, ref, image, key):
             'git -C "$HOME/hermes-agent" fetch --depth 1 origin ' + receipt['hermes_commit'] + '; '
             'git -C "$HOME/hermes-agent" checkout --detach FETCH_HEAD')
         if guest('stock-hermes',setup,1500,True): return
-        url=f'https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/{ref}/get.sh'
-        install=f'curl -fsSL {url} -o /root/get.sh; WAM_REF={ref} WIZARD_MODE=alongside WIZARD_HERMES_USER=hermes HERMES_HOME=/home/hermes/.hermes WIZARD_TAILSCALE_WAIT=1 bash /root/get.sh'
+        install=guest_bootstrap_command(ref, label)
         code=guest('install',guest_install_command(install),3300,True)
         guest('mirror',"docker info --format '{{json .RegistryConfig.Mirrors}}' | python3 -c 'import json,sys; assert any(\"mirror.gcr.io\" in v for v in json.load(sys.stdin))'",60,True)
         manager='wizard-system' if label=='candidate' else 'hermes'
