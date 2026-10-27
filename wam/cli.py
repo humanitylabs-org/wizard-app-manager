@@ -398,13 +398,18 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     # The app's networks exist and its override is written before its first start, so it never joins the shared
     # network; the apps it connects to join their new link live.
     net_pre = network_step(c, rt, extra={app_id}, restart=False)
-    rt.install(urn, form)
+    try:
+        rt.install(urn, form)
+    except BaseException:
+        network_step(c, rt)   # the install didn't happen: drop the networks/override planned for it
+        raise
     if role == "service" and alongside.load(c.home):
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
     # A failed install (e.g. an image that can't be pulled) deletes the app record, so "missing" means failed:
     # stop waiting then instead of polling for the full timeout.
     status = rt.wait_status(urn, {"running", "stopped", "missing"}) if wait else "installing"
     if status == "missing":
+        network_step(c, rt)   # the App Manager removed it: drop its planned networks, links and override block
         reason = install_failure_reason(urn)
         raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
                          " (the App Manager removed it; see `docker logs runtipi`)")

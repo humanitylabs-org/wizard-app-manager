@@ -698,7 +698,12 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
         args = ["network", "connect"]
         for al in aliases or []:
             args += ["--alias", al]
-        r = _run(docker, *args, name, container, check=False)
+        # The app's own bridge must stay its default route once the shared network is gone (internal link and
+        # gateway networks have no way out); Docker >= 28 takes the priority on connect, older Docker ignores it.
+        prio = ["--gw-priority", "1"] if name.startswith(APP_PREFIX) or name == shared_docker else []
+        r = _run(docker, *args, *prio, name, container, check=False)
+        if r.returncode and prio and "gw-priority" in (r.stderr or ""):
+            r = _run(docker, *args, name, container, check=False)
         if r.returncode and "already exists" not in (r.stderr or ""):
             out["errors"].append(f"connect {container} to {name}: {(r.stderr or '').strip()[:160]}")
             return False
@@ -843,7 +848,13 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                          # a link is one Docker network shared by exactly two apps: the provider can open connections
                          # back to the consumer too (Docker networks are two-way); shown so the view never understates it
                          [{"to": e["from"], "declared": None, "reason": "two-way link", "state": "peer", "network": e.get("network")}
-                          for e in in_edges if e["state"] == "link"],
+                          for e in in_edges if e["state"] == "link"] +
+                         # fresh boxes: an app shares its wizard-gw-<id> with the shell, Agent Service and agent, so it
+                         # can open connections to them too (the gateway path, not another app)
+                         [{"to": core, "declared": None, "reason": "gateway network", "state": "core", "network": gw_net(a["id"])}
+                          for core in p["gateway"]["core"] if gw_net(a["id"]) in p["networks"] and core != a["id"]
+                          and any(m["app"] == core for m in p["networks"][gw_net(a["id"])]["members"])
+                          and not any(e["provider"] == core for e in out_edges)],
             "reached_by": [{"from": e["from"], "reason": e["reason"], "state": e["state"], "network": e.get("network")}
                            for e in in_edges],
             "drift": problems,
@@ -869,6 +880,7 @@ def describe(rep: dict) -> str:
     word = {"link": "", "gateway": " (gateway network)", "external": " (outside Runtipi: not reachable from apps)",
             "host": " (from the server's network, on its published 127.0.0.1 port)",
             "peer": " (two-way: it uses this app over their link)",
+            "core": " (Wizard core, over this app's gateway network)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)"}
     for a in rep["apps"]:
         reach = [f"{e['to']}{word.get(e['state'], '')}" for e in a["can_reach"]]

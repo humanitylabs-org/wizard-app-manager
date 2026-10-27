@@ -85,4 +85,6 @@ Reconcile runs automatically:
   running as a host process. Layer 2 (per-grant keys) covers them.
 - Ports that the host binds on all interfaces stay reachable from containers, as before.
 - Links are two-way (see above). One-way enforcement would need per-link firewall rules.
+- On fresh boxes each app can also reach the shell, Agent Service and agent over its `wizard-gw-<id>`, as it could on
+  the shared network. The view lists them as "Wizard core". Other apps stay out of reach.
 - Apps from other Runtipi stores stay on the shared network and can't reach isolated Wizard apps.

@@ -106,6 +106,47 @@ def test_missing_and_external_providers_are_reported_not_linked():
     assert not [n for n in p["networks"].values() if n["kind"] == "link"]
 
 
+def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
+    apps = [app("wizard-ux", uses=["agent-service"], provides=["shell"]),
+            app("wizard-agent-service", provides=["agent-service"]), app("hermes-agent", provides=["agent"]),
+            app("files"), app("defleur-video", uses=["files"])]
+    p = net.plan(apps, [], set())
+    rep = net.report(type("C", (), {})(), p=p, live={"networks": {}, "containers": []})
+    files = next(a for a in rep["apps"] if a["id"] == "files")
+    assert {e["to"] for e in files["can_reach"] if e["state"] == "core"} == {"wizard-ux", "wizard-agent-service", "hermes-agent"}
+    assert any(e["to"] == "defleur-video" and e["state"] == "peer" for e in files["can_reach"])
+
+
+def test_failed_install_cleans_up_its_planned_networks(tmp_path, monkeypatch):
+    import pytest
+    cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n")
+    monkeypatch.setattr(cli, "install_failure_reason", lambda urn: "pull access denied")
+
+    class RT:
+        def app(self, urn): return {"info": {"id": "x"}}
+        def install(self, urn, form): installs.append(urn)
+        def wait_status(self, urn, want, timeout=900): return "missing"
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    with pytest.raises(SystemExit, match="install failed"):
+        cli.install(cli.Config(), "x")
+    assert steps == [({"x"}, False), (set(), True)]
+
+
+def test_live_migration_keeps_the_app_bridge_as_default_route(tmp_path, monkeypatch):
+    c = Cfg(tmp_path)
+    p0 = net.plan([app("solo")], [], set())
+    live = live_from(p0, on_shared={"solo"})
+    live["networks"] = {}
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda c_, rt=None, extra=(): (net.plan([app("solo")], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda d, store="wizardapps": json.loads(json.dumps(fake.live)))
+    net.reconcile(c)
+    conn = [x for x in fake.calls if x[:2] == ("network", "connect")]
+    assert conn and all("--gw-priority" in x for x in conn if x[-2] == "wizard-app-solo")
+
+
 def test_alongside_gateway_is_loopback_and_host_network_apps_are_left_alone():
     ux = app("wizard-ux", uses=["agent-service"], provides=["shell"])
     ux["services"]["wizard-ux"]["network_mode"] = "host"
