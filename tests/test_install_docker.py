@@ -247,6 +247,9 @@ def test_a_python3_without_yaml_first_on_path_is_skipped(tmp_path):
     assert f'exec "{system}" -m wam' in (home / ".local/bin/wam").read_text()
     unit = (home / ".config/systemd/user/wizard-app-manager-api.service").read_text()
     assert f"ExecStart={system} -m wam serve" in unit
+    for name in ("wizard-app-lifecycle.service", "wizard-app-lifecycle-containers.service"):
+        lifecycle = (home / ".config/systemd/user" / name).read_text()
+        assert f"ExecStart={system} -m wam.lifecycle serve" in lifecycle
     assert (home / ".local/bin/wizard").read_text().splitlines()[0] == f"#!{system}"
 
 

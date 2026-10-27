@@ -134,7 +134,7 @@ After=network-online.target
 [Service]
 Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
 WorkingDirectory=$HERE
-ExecStart=/usr/bin/env python3 -m wam.lifecycle serve --bind 127.0.0.1 --port 7791
+ExecStart=$PY -m wam.lifecycle serve --bind 127.0.0.1 --port 7791
 Restart=on-failure
 
 [Install]
@@ -151,7 +151,7 @@ After=network-online.target wizard-app-lifecycle.service
 [Service]
 Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
 WorkingDirectory=$HERE
-ExecStart=/usr/bin/env python3 -m wam.lifecycle serve --container --port 7791
+ExecStart=$PY -m wam.lifecycle serve --container --port 7791
 Restart=on-failure
 RestartSec=5
 

@@ -296,6 +296,38 @@ def _config(f):
     return yaml.safe_load((f.hermes / "config.yaml").read_text())
 
 
+@pytest.mark.parametrize("order", [
+    ["hermes-agent", "wizard-agent-service"],
+    ["wizard-agent-service", "hermes-agent"],
+])
+def test_prepared_bootstrap_skips_legacy_linker_and_connects(fresh, monkeypatch, order):
+    from wam import agent_link, builder_bundle, cli
+    f = fresh
+    f.rt.apps = []
+    fresh_agent.prepare(f.c)
+    monkeypatch.setattr(cli, "ensure_store", lambda *a: None)
+    monkeypatch.setattr(cli, "trusted_origin_env", lambda *a: {})
+    monkeypatch.setattr(builder_bundle, "fresh", lambda *a: None)
+    monkeypatch.setattr(f.rt, "app", lambda urn: {"info": {"port": 0}}, raising=False)
+    monkeypatch.setattr(f.rt, "install", lambda urn, form: f.rt.apps.append(urn.split(":")[0]), raising=False)
+    monkeypatch.setattr(cli, "write_registry", lambda *a: {"apps": [{"id": a} for a in f.rt.apps]})
+    # Reproduce the actual legacy overlay rewrite, without launching real Docker.
+    source = Path(agent_link.skills_mount(f.c)["source"])
+    source.mkdir(parents=True)
+    legacy_calls = []
+    def legacy(c, store):
+        legacy_calls.append(True)
+        agent_link.add_skills_mount(c, store)
+    monkeypatch.setattr(agent_link, "link", legacy)
+    for app in order:
+        result = cli.install(f.c, app, _record={"id": app, "repo": "fixture", "uses": []})
+        assert result["status"] == "running"
+    assert legacy_calls == []
+    assert fresh_agent.main(f.c, "connect")["ok"]
+    assert (f.hermes / "plugins/wizard-os/plugin.yaml").is_file()
+    assert fresh_agent.CONTAINER_OS_HOME + "/skills" in _config(f)["skills"]["external_dirs"]
+
+
 # ---------------------------------------------------------------- fresh mode: overlays
 
 def test_prepare_and_install_overlays(fresh):

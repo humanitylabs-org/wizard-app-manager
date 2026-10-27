@@ -400,9 +400,10 @@ class Bridge:
             return {}
         form = self._install_form(app_id, info, body, uses)
         state = alongside.load(self.cfg.home)
-        if state and alongside.is_bridge_app(app_id):
-            alongside.write_shell_override(self.cfg.runtipi_root, cli.STORE, app_id, self.cfg.home)
-            form["port"] = int(state["shell"]["port"])
+        role = cli.alongside_role((meta or {}).get("w") or {}, app_id)
+        if state and role:
+            alongside.write_shell_override(self.cfg.runtipi_root, cli.STORE, app_id, self.cfg.home, role)
+            form["port"] = alongside.service_port(state) if role == "service" else int(state["shell"]["port"])
         elif not state:
             # Fresh mode: the Service gets the gateway token and the bridge route, the container Hermes the shared
             # skills, on their first start. No-op unless `wam fresh-agent prepare` ran.

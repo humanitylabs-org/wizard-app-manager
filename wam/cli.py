@@ -419,8 +419,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         except Exception as e:  # noqa: BLE001 - never fail the install for it
             print(f"note: host dashboard not set up ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if app_id in ("hermes-agent", "wizard-agent-service") and status == "running" and not alongside.load(c.home) \
+            and not fresh_agent.load(c.home) \
             and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
-        try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
+        try:   # Legacy fresh boxes only; prepared fresh mode uses fresh-agent connect and owns the overlay.
             from .agent_link import link as agent_link
             agent_link(c, STORE)
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it

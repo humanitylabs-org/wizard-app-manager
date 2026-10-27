@@ -164,6 +164,36 @@ def assert_clean(value):
     assert "_view_upstream" not in text and "_skill_src" not in text
 
 
+@pytest.mark.parametrize("app,role,port", [
+    ("wizard-agent-service", "service", 18797),
+    ("wizard-ux", "shell", 18796),
+    ("wizard-shell", "bundle", 18796),
+])
+def test_alongside_lifecycle_install_uses_the_cli_role_and_port(bridge, monkeypatch, tmp_path, app, role, port):
+    b = bridge
+    hh = tmp_path / "synthetic-hermes"
+    hh.mkdir()
+    (hh / "config.yaml").write_text("platforms: {api_server: {extra: {port: 8650}}}\n")
+    monkeypatch.setattr(alongside, "hermes_binary", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(alongside, "api_up", lambda *a, **k: False)
+    monkeypatch.setattr(alongside, "docker_rootless", lambda: False)
+    state = alongside.enable(b.cfg.home, hh, 18796)
+    state["service"] = {"port": 18797}
+    alongside.save(b.cfg.home, state)
+    monkeypatch.setattr(registry, "app_meta", lambda *a: {"w": {"uses": []}})
+    monkeypatch.setattr(b.rt, "app", lambda urn: {"info": {"port": 8787, "form_fields": []}})
+    form = b._form(f"{app}:wizardapps", "install", {}, [])
+    assert form["port"] == port
+    path = b.cfg.runtipi_root / "user-config/wizardapps" / app / "docker-compose.yml"
+    text = path.read_text()
+    spec = yaml.safe_load(text.replace("!reset", ""))["services"][app]
+    if role == "service":
+        assert spec["environment"]["WIZARD_PORT"] == "18797"
+    elif role == "shell":
+        assert spec["environment"]["WIZARD_AGENT_SERVICE_ORIGIN"] == "http://127.0.0.1:18797"
+        assert "volumes" not in spec
+
+
 def test_lifecycle_refresh_preserves_main_grants_in_both_copies(bridge):
     b = bridge
     approved = [{"appId": "hello-wizard", "provider": "fixture", "scope": "read"}]
