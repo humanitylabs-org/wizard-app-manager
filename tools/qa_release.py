@@ -42,10 +42,13 @@ def main():
     ap.add_argument("--ux", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     a = ap.parse_args()
+    # Exercise the same private-service environment as the durable worker. Docker
+    # must not inherit owner-only source modes into its unprivileged runtime.
+    os.umask(0o077)
     a.out.mkdir(parents=True, exist_ok=True)
     records = []
     name = "wam-release-qa-" + str(os.getpid())
-    live = {"url": None}
+    live: dict[str, str | None] = {"url": None}
     images = set()
     def record(test, **data):
         records.append({"test": test, "pass": True, **data})
@@ -69,14 +72,28 @@ def main():
             R.init(home, name="QA release", channel="main", source=str(bare), timer=False, systemctl=False,
                    resolver="none", test_cmd="node --test tests/my-release.test.mjs")
             src = R.ctx(home).src
+            recreations = 0
+            def capture_container(label):
+                for action in ("inspect", "logs"):
+                    result = subprocess.run(["docker", action, name], capture_output=True, text=True)
+                    (a.out / f"container-{label}-{action}.log").write_text(result.stdout + result.stderr)
             def runner(argv, **kw):
+                nonlocal recreations
                 if argv[:2] == ["docker", "compose"]:
+                    recreations += 1
+                    capture_container(f"{recreations:02d}-before")
                     image = next(x.split("image:", 1)[1].strip() for x in ov.read_text().splitlines() if "image:" in x)
                     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-                    result = subprocess.run(["docker", "run", "--rm", "-d", "--name", name,
+                    # Retain a failed process until its logs have been captured.
+                    result = subprocess.run(["docker", "run", "-d", "--name", name,
                         "-p", "127.0.0.1::8788", "-e", "WIZARD_AGENT_SERVICE_ORIGIN=http://127.0.0.1:9", image], capture_output=True, text=True)
+                    live["url"] = None
+                    capture_container(f"{recreations:02d}-started")
                     if result.returncode == 0:
-                        live["url"] = "http://" + cmd(["docker", "port", name, "8788/tcp"])
+                        port = subprocess.run(["docker", "port", name, "8788/tcp"], capture_output=True, text=True)
+                        if port.returncode or not port.stdout.strip():
+                            return subprocess.CompletedProcess(argv, 1, result.stdout, port.stderr or "container has no listening port")
+                        live["url"] = "http://" + port.stdout.strip()
                     return result
                 if argv[:2] == ["docker", "build"]:
                     images.add(argv[argv.index("-t") + 1])
@@ -95,6 +112,7 @@ def main():
                 (a.out / (action + "-last.json")).write_text(json.dumps(got, indent=2) + "\n")
                 return got
             def get(path):
+                assert live["url"], "the fixture has no running shell"
                 with urlopen(live["url"] + "/wizard-os-home/" + path, timeout=5) as r:
                     return r.read().decode()
             proposed = commit(src, "web/release-test-proposed.txt", "proposed\n", "Proposed owner change")
@@ -142,6 +160,26 @@ def main():
             assert cmd(["docker", "inspect", name, "--format", "{{.Id}}"]).strip() == cid
             assert get("release-test-mine.txt") == "owner\n"
             record("conflicting upstream fix keeps exact last working build", build=before["source_revision"], container=cid)
+            # A real Docker build that starts but never listens must roll back to
+            # the previous image, not merely restore a YAML file or fake a probe.
+            old_override = ov.read_text()
+            broken = commit(src, "packaging/entrypoint.sh",
+                "#!/bin/sh\nprintf 'intentional unhealthy release fixture\\n' >&2\nexec sleep 120\n",
+                "Fixture: deliberately unhealthy shell")
+            git(src, "push", "-q", "origin", "HEAD")
+            with patch.object(P, "owner_confirm"):
+                P.register(c, "mine", sha=broken)
+            got = run("rebuild")
+            assert got["state"] == "rolled_back", got
+            assert ov.read_text() == old_override
+            assert R._read_json(c.p.built) == before
+            assert R.serving(R.ctx(home, probe=probe), before["build"]), "rollback image did not become healthy"
+            assert json.loads(get("my-release.json"))["source_revision"] == before["source_revision"]
+            assert cmd(["docker", "inspect", name, "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}']) == before["source_revision"]
+            assert get("release-test-mine.txt") == "owner\n"
+            assert any("intentional unhealthy release fixture" in p.read_text() for p in a.out.glob("container-*-before-logs.log"))
+            record("deliberately unhealthy real build rolls back and serves exact last working build",
+                   broken=broken, restored=before["source_revision"])
             (a.out / "result.json").write_text(json.dumps({"pass": True, "assertions": len(records)}, indent=2) + "\n")
             print(json.dumps({"pass": True, "evidence": str(a.out / "release-e2e.json")}))
     finally:
