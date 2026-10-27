@@ -22,9 +22,9 @@ def service_override(st, wizard_home):
     return f'''services:
   wizard-agent-service:{image_lines(st, 'wizard-agent-service')}
     user: "{uid}:{gid}"
-    cap_drop: [ALL]
-    group_add: ["{int(st.get('files_gid', gid))}"]
-    security_opt: [no-new-privileges:true]
+    cap_drop: !override [ALL]
+    group_add: !override ["{int(st.get('files_gid', gid))}"]
+    security_opt: !override [no-new-privileges:true]
     network_mode: host
     networks: !reset []
     ports: !reset []
@@ -43,10 +43,10 @@ def service_override(st, wizard_home):
       WIZARD_PRIVSEP_LINK: /state/link.json
     volumes: !override
       - {state}:/state
-      - {hh}:/hermes:ro
+      - {hh}:/hermes
       - {BASE}/runtipi/app-data/wizard-os:/registry:ro
       - {checkout}/scripts/agent-service-start.mjs:/privsep/agent-service-start.mjs:ro
-      - {BASE}/files:/media
+      - {BASE}/runtipi/media:/media
 '''
 
 

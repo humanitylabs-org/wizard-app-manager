@@ -101,8 +101,12 @@ def main():
         run(['groupadd', '--system', 'wizard-files']); files_group = grp.getgrnam('wizard-files')
     run(['usermod', '-aG', 'wizard-files', name])
     run(['usermod', '-aG', 'wizard-files', 'wizard-system'])
-    files = BASE / 'files'; files.mkdir(exist_ok=True)
+    files = BASE / 'runtipi/media'; files.mkdir(exist_ok=True)
     os.chown(files, suid, files_group.gr_gid); os.chmod(files, 0o2770)
+    # Files initializes its root as gid 1000, so a named group ACL, inherited
+    # by new folders, preserves the real owner's access across that startup.
+    run(['apt-get', '-o', 'DPkg::Lock::Timeout=600', 'install', '-y', '-qq', 'acl'])
+    run(['setfacl', '-m', 'g:wizard-files:rwx,d:g:wizard-files:rwx,d:m:rwx', files])
     service_state = Path('/var/lib/wizard-agent') / str(agent.pw_uid)
     service_state.mkdir(parents=True, exist_ok=True)
     os.chown(service_state, agent.pw_uid, agent.pw_gid); os.chmod(service_state, 0o700)

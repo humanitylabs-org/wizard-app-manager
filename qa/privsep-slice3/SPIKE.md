@@ -17,6 +17,21 @@
 - wizard-os `REPAIR_KIT.md`: Docker inspection/restarts and wam commands are server-administrator instructions, not an escape hatch for the unprivileged account. Keep full repair on the administrator side; use named client actions for app lifecycle/logs.
 - Kernel plugin lives in Agent Service, reads app/skill projections; it must not receive a server/owner token. It is outside this repo and does not call a privileged wam executor.
 
+Files uses Runtipi's actual `runtipi/media` owner-files root (not a disconnected second folder).
+A named `wizard-files` group ACL plus default ACL preserves shared access even when the Files app
+initializes the directory as gid 1000. The same-UID Agent Service keeps the usual writable Hermes
+mount for its UI state; that cannot grant privilege because neither wizard-system nor root loads it.
+
+## QA package choice and stock Hermes bootstrap
+
+The public index currently has no `hello-wizard` listing. The harness uses `wizard-calendar`, a tiny public
+source package with no `uses` dependencies, the upstream pinned Python Alpine image and no provider accounts.
+A silent app's logs are valid: prove the installed app has a selected container and the log request returns text,
+not fabricated nonempty output. Pin the same stock Hermes commit for both guests. Install with its checked-in
+`uv.lock` (`uv sync --active --frozen --extra messaging --extra mcp`) so upstream `[tool.uv]` overrides are honored;
+raw `uv pip install -e` rejects the upstream browser-harness/Pillow pin conflict. Never edit stock Hermes to fix it.
+Always `cd` to the account's home after `runuser`: otherwise uv attempts to read `/root/uv.toml` and fails.
+
 ## Deferrals
 
 Slice 4: backup/restore, link publication, builder/view staging; Slice 5: developer/server-access grants; Slice 6: all existing-box migration, operator reassignment, rollback. Root-owned helper/timer migration beyond manager/Runtipi, Mac agent-SSH, box census, rootless Docker and fresh-layout changes are not part of this alongside skeleton. No live box writes. No real model or tailnet credentials in QA; unauthenticated Tailscale means published private links remain unproven.
