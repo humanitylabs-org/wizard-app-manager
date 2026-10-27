@@ -248,6 +248,22 @@ x-wizard-networks:
     assert any('mount' in row for row in exc.value.payload['risks'])
 
 
+def test_service_umask_does_not_make_image_code_unreadable(source, tmp_path):
+    home = tmp_path / 'system-home'; home.mkdir(mode=0o700)
+    old = os.umask(0o077)
+    try:
+        rec = builder.install_local(source, os_home=home, stage_only=True)
+        (source / 'README.md').write_text('updated source\n')
+        rec = builder.update_local(source, os_home=home)
+    finally:
+        os.umask(old)
+    snapshot = Path(rec['source'])
+    assert stat.S_IMODE((snapshot / 'app/server.py').stat().st_mode) == 0o644
+    assert stat.S_IMODE((snapshot / 'app').stat().st_mode) == 0o755
+    assert stat.S_IMODE(snapshot.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
 def test_thin_client_hermes_update_check_is_local(monkeypatch):
     calls = []
     monkeypatch.setattr(client.subprocess, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
