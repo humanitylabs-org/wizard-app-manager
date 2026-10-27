@@ -468,3 +468,16 @@ def test_export_marks_an_app_with_a_missing_image_as_holding_no_data(world, monk
     assert not any(n.startswith("apps/notes-app/data.tar") for n in c)
     assert any(n.startswith("apps/files-app/data.tar") for n in c)
     assert "missing" not in restore.DATA_KINDS
+
+
+def test_restore_never_presents_a_data_less_app_as_restored(world, monkeypatch):
+    monkeypatch.setattr(capture, "_missing_images",
+                        lambda box, urn: ["notes:gone"] if urn.startswith("notes-app:") else [])
+    out, _ = _export(world)
+    m = json.loads(_contents(out, world["key"])["manifest.json"])
+    here = restore.plan(world["old"].box(), m)          # the app is installed here: its copy is left alone
+    assert "notes-app" not in here["replace"] and "notes-app" in here["leave"]
+    assert any("notes-app: the backup has no data for it; this box's copy is left" in w for w in here["warnings"])
+    fresh = restore.plan(world["new"].box(), m)         # not installed: installed empty, and the plan says so
+    assert "notes-app" in fresh["install"]
+    assert any("notes-app: the backup has no data for it; it is installed empty" in w for w in fresh["warnings"])

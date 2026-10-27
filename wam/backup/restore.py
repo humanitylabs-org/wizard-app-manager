@@ -292,6 +292,14 @@ def plan(box: Box, m: dict, probe: bool = True, stage: Path | None = None) -> di
                 out["kept_here"].append({"slot": s, "here": dest, "bundle": a["id"]})
                 out["warnings"].append(f"keeping this box's {dest} for {s} instead of the backup's {a['id']}")
                 kept.add(s)
+        if a.get("data") == "missing":
+            # the backup holds no data for this app (its image was missing when it was made, capture.py): keep this
+            # box's copy untouched, or install it empty and say so; never present it as restored
+            if a["urn"] in here:
+                out["warnings"].append(f"{a['id']}: the backup has no data for it; this box's copy is left as it is")
+                continue
+            out["warnings"].append(f"{a['id']}: the backup has no data for it; it is installed empty "
+                                   f"({a.get('data_missing') or 'its image was missing when the backup was made'})")
         if not provided or not provided <= kept:
             want[a["urn"]] = a
     for urn, a in sorted(want.items()):
