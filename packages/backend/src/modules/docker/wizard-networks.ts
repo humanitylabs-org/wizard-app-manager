@@ -98,12 +98,27 @@ export function handSet(override: string | null): Set<string> | 'all' {
 }
 
 /** The generated compose as it may start. Throws when it attaches networks the app does not own (not allowed). */
+/** Host access in a compose: privileged mode, the container runtime socket. Same rule as wam/network.py host_access()
+ * (the generated compose's own app-data binds are not host access, so this is narrower than the index checker). */
+export function hostRisks(doc: Doc): string[] {
+  const out: string[] = [];
+  for (const [name, s] of Object.entries(doc.services ?? {})) {
+    if (!s || typeof s !== 'object') continue;
+    if (s.privileged === true || String(s.privileged).toLowerCase() === 'true') out.push(`${name}: privileged`);
+    for (const v of Array.isArray(s.volumes) ? s.volumes : []) {
+      const src = typeof v === 'string' ? v.split(':')[0] : String(v?.source ?? '');
+      if (/docker\.sock|containerd\.sock|podman\.sock/.test(src ?? '')) out.push(`${name}: mounts the container runtime socket ${src}`);
+    }
+  }
+  return out;
+}
+
 export function isolate(doc: Doc, app: string, policy: NetworkPolicy, override: string | null, store = WIZARD_STORE): boolean {
   if (!policy.enabled || policy.allow.includes(app)) return false; // off, or the owner's call for this app
-  const escapes = networkEscapes(doc, app, store);
+  const escapes = [...networkEscapes(doc, app, store), ...hostRisks(doc)];
   if (escapes.length)
     throw new Error(
-      `${app} refused: it attaches networks it does not own, which would reach other apps (${escapes.join('; ')}). ` +
+      `${app} refused: it asks for host access or networks it does not own, which would reach other apps (${escapes.join('; ')}). ` +
         `If you trust it completely: wam network allow ${app}`,
     );
   const hand = handSet(override);

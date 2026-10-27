@@ -69,7 +69,7 @@ describe('app networks at every start (UI installs/updates included)', () => {
     ];
     for (const n of sneaky) {
       const g = generated(n, { networks: { tipi_main_network: {}, sneak: {} } });
-      await expect(enforceAppNetworks('x:wizardapps', g, root)).rejects.toThrow(/x refused: it attaches networks it does not own/);
+      await expect(enforceAppNetworks('x:wizardapps', g, root)).rejects.toThrow(/x refused: it asks for host access or networks it does not own/);
     }
     for (const mode of ['host', 'bridge', 'container:runtipi'])
       expect(networkEscapes({ services: { x: { network_mode: mode } } }, 'x')).toHaveLength(1);
@@ -79,6 +79,20 @@ describe('app networks at every start (UI installs/updates included)', () => {
     await policy({ schema: 1, enabled: true, allow_host_access: ['x'] });
     const g = generated(sneaky[0], { networks: { tipi_main_network: {}, sneak: {} } });
     expect(await enforceAppNetworks('x:wizardapps', g, root)).toBe(g);
+  });
+
+  it('refuses privileged mode and a mounted runtime socket at every start unless allowed (wam network deny)', async () => {
+    for (const svc of [
+      { privileged: true },
+      { volumes: ['/var/run/docker.sock:/var/run/docker.sock'] },
+      { volumes: [{ type: 'bind', source: '/run/containerd/containerd.sock', target: '/s' }] },
+    ])
+      await expect(enforceAppNetworks('x:wizardapps', generated({}, svc), root)).rejects.toThrow(/x refused/);
+    const ok = generated({}, { volumes: ['/root/runtipi/app-data/wizardapps/x/data:/data'] });
+    await expect(enforceAppNetworks('x:wizardapps', ok, root)).resolves.toBeTypeOf('string');
+    await policy({ schema: 1, enabled: true, allow_host_access: ['x'] });
+    const priv = generated({}, { privileged: true });
+    expect(await enforceAppNetworks('x:wizardapps', priv, root)).toBe(priv);
   });
 
   it("drops wam's managed entries for services an update renamed, keeping everything else", async () => {

@@ -1044,3 +1044,21 @@ def test_a_service_that_must_be_on_the_shared_network_is_put_back():
     p = net.plan([ex], [], set())
     rows = net.drift(p, live_from(p))
     assert rows and rows[0]["should_share"] and not rows[0]["on_shared"]
+
+
+def test_app_and_slot_grants_of_the_same_name_stay_distinct():
+    """Codex PRRT_kwDOVCUOXM6wrlDf: an approved grant to the app `crm` must not authorize the revoked `slot:crm`
+    declaration (and the other way round); targets are named as the App Manager names them."""
+    owner = lambda frm, to: {"kind": "app", "from": frm, "to": to, "reason": "uses", "approved": "install"}
+    apps = [app("crm"), app("twenty-crm", provides=["crm"]), app("c", uses=["crm", "slot:crm"])]
+    only_app = [owner("c", "crm")]
+    pairs = reach(net.plan(apps, only_app, set(), approved=only_app))
+    assert ("c", "crm") in pairs and ("c", "twenty-crm") not in pairs
+    only_slot = [owner("c", "slot:crm")]
+    pairs = reach(net.plan(apps, only_slot, set(), approved=only_slot))
+    assert ("c", "twenty-crm") in pairs and ("c", "crm") not in pairs
+    # `uses: crm` with no app named crm installed is a slot declaration, granted as slot:crm
+    apps2 = [app("twenty-crm", provides=["crm"]), app("d", uses=["crm"])]
+    g = [owner("d", "slot:crm")]
+    assert ("d", "twenty-crm") in reach(net.plan(apps2, g, set(), approved=g))
+    assert ("d", "twenty-crm") not in reach(net.plan(apps2, [owner("d", "crm")], set(), approved=[owner("d", "crm")]))

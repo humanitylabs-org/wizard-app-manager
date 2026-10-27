@@ -471,11 +471,17 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
 
     edges, seen = [], set()
     ok_grants = None if approved is None else {
-        (str(g.get("from")), _gname(g.get("to"))) for g in approved
+        (str(g.get("from")), g.get("to")) for g in approved
         if isinstance(g, dict) and g.get("kind", "app") == "app" and isinstance(g.get("to"), str)}
 
+    def grant_target(to: str) -> str:
+        """The grant a declaration needs, named exactly as the App Manager names it (wizard-app-grants.ts targets()):
+        an installed app id stays an app grant, anything else is a slot grant. An app grant and a slot grant of the
+        same name are different grants."""
+        return to if to.startswith("slot:") or to in by_id else f"slot:{to}"
+
     def add(frm: str, to: str, reason: str) -> None:
-        if ok_grants is not None and reason in ("uses", "requires") and (frm, _gname(to)) not in ok_grants:
+        if ok_grants is not None and reason in ("uses", "requires") and (frm, grant_target(to)) not in ok_grants:
             if (frm, to) not in seen:
                 seen.add((frm, to))
                 edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": "not-approved"})
