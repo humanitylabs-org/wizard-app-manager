@@ -2,8 +2,8 @@
 // documents; it changes nothing in James's code, only what his launcher and Settings sheet show:
 //   - swipe-up launcher: his "Wizard apps" group becomes My Apps (his other groups stay); "Get apps" turns the same
 //     sheet into the App Store, with one chip row above his search bar, and the search bar searches the index
-//   - Settings sheet: a Resources group
-import { renderCard, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
+//   - Settings sheet: a Resources group and a Connections group (what each app can reach)
+import { renderCard, renderConnections, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
 
 const $ = (s) => document.querySelector(s);
 const body = $('#launcherBody');
@@ -149,6 +149,10 @@ if (settings) {
     if (wiz) wiz.after(host);
     else settings.append(host);
     renderResources(host, {});
+    const conn = document.createElement('div');
+    conn.className = 'wam-conns';
+    host.after(conn);
+    renderConnections(conn, {});
   };
   new MutationObserver(add).observe(settings, { childList: true });
   add();

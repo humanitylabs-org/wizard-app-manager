@@ -12,6 +12,7 @@ Wizard additions:
   wam search [query]            search the index (apps.aiwizards.com)
   wam install <app>             install by id (plus the apps it `uses`), passwords generated + saved 0600
         [--set KEY=VALUE ...]   install-form values
+        [--allow-host-access]   install an app that asks for host networking, privileged mode or the Docker socket
   wam uninstall <id>            remove (backups are kept unless you delete them)
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
@@ -19,6 +20,10 @@ Wizard additions:
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
   wam doctor [--fix]            check the whole chain
+  wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
+                                access, and a live check of Docker's networks against the declarations
+  wam network reconcile [--dry-run] [--json]   make the app networks match the declarations (idempotent)
+  wam network off|on            rollback / redo app isolation (off: every app back on Runtipi's shared network)
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
@@ -159,6 +164,11 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
     from . import links
     links.apply_to_registry(reg, c.home)   # published apps open at their private-network address, not loopback
+    try:   # the Connections view: declared connections + a live check of Docker's networks (wam/network.py)
+        from . import network
+        reg["connections"] = network.report(c, rt)
+    except Exception as e:  # noqa: BLE001 - never fail the registry for it
+        reg["connections"] = {"schema": 1, "error": str(e)[:200]}
     registry.write(reg, c.home)
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
@@ -299,7 +309,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 # ---------------------------------------------------------------- commands
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
-            _split: bool = False, _record: dict | None = None) -> dict:
+            _split: bool = False, _record: dict | None = None, allow_host_access: bool = False) -> dict:
     release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
@@ -340,6 +350,13 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
+    host = host_access_risks(c, app_id)
+    if host and not allow_host_access:
+        raise SystemExit(f"REFUSED: {app_id} asks for access that escapes app isolation:\n  - " + "\n  - ".join(host) +
+                         f"\nIt could reach every app and the server itself. Install it only if you trust it completely:\n"
+                         f"  wam install {app_id} --allow-host-access")
+    if host:
+        print(f"WARNING: {app_id} is installed WITH HOST ACCESS (owner flag): " + "; ".join(host), file=sys.stderr)
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     role = alongside_role(rec, app_id)
     if role in ("service", "shell") and alongside.LEGACY_BUNDLE in have and not _split:
@@ -377,6 +394,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             print(f"note: Claude login not linked ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
+    # The app's networks exist and its override is written before its first start, so it never joins the shared
+    # network; the apps it connects to join their new link live.
+    net_pre = network_step(c, rt, extra={app_id}, restart=False)
     rt.install(urn, form)
     if role == "service" and alongside.load(c.home):
         alongside.set_service_active(c.home, True)   # the agent's gateway now lives on the Agent Service
@@ -387,6 +407,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         reason = install_failure_reason(urn)
         raise SystemExit(f"{app_id}: install failed" + (f": {reason}" if reason else "") +
                          " (the App Manager removed it; see `docker logs runtipi`)")
+    net_post = network_step(c, rt)
     reg = write_registry(c, rt)
     if status == "running" and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
         try:   # e.g. ChatGPT: its sign-in runs through the agent's dashboard, which alongside lives on the host
@@ -411,7 +432,39 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     entry = next((a for a in reg["apps"] if a["id"] == app_id), {})
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
-            "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {})}
+            "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {}),
+            "networks": _net_brief(net_post or net_pre)}
+
+
+def host_access_risks(c: Config, app_id: str) -> list[str]:
+    """Host networking, privileged mode or the container runtime socket in the app's recipe (the store copy the App
+    Manager just fetched, else the installed copy). wam's own alongside overrides are not recipes and never count."""
+    from . import network
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            return network.host_access(comp.read_text())
+        except OSError:
+            continue
+    return []
+
+
+def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True) -> dict | None:
+    """Reconcile the app networks after a lifecycle change. Never fails the change itself: a problem is reported
+    (and `wam network reconcile` / `wam doctor` repeat it)."""
+    from . import network
+    try:
+        return network.reconcile(c, rt, extra=extra, restart=restart,
+                                 restart_fn=lambda a: app_lifecycle(c, "restart", a))
+    except Exception as e:  # noqa: BLE001
+        print(f"note: app networks not reconciled ({str(e)[:200]}); run `wam network reconcile`", file=sys.stderr)
+        return {"errors": [str(e)[:200]]}
+
+
+def _net_brief(res: dict | None) -> dict:
+    if not res:
+        return {}
+    return {k: res[k] for k in ("created", "removed", "restarted", "pending_restart", "errors") if res.get(k)}
 
 
 def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
@@ -1009,25 +1062,28 @@ def uninstall(c: Config, app_id: str, force: bool = False) -> dict:
     if app_id in installed_ids(rt):
         rt.uninstall(urn)
         rt.wait_status(urn, {"missing"}, timeout=300)
+    net = network_step(c, rt)   # its links go away; its override block is removed so a reinstall starts clean
     reg = write_registry(c, rt)
-    return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]]}
+    return {"id": app_id, "removed": True, "installed": [a["id"] for a in reg["apps"]], "networks": _net_brief(net)}
 
 
 BOOTSTRAP_RETRY_DELAY = 10
 
 
-def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True) -> dict:
+def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True,
+                       allow_host_access: bool = False) -> dict:
     """`wam install <app>` with the same single retry bootstrap gives defaults: a `compose up` whose image pull
     was cancelled mid-way makes the App Manager remove the app, and a second attempt on the same box succeeds
     (seen live 0.3.6 and on the 0.3.40 retained launch box). A second failure is raised unchanged."""
+    kw = {"allow_host_access": True} if allow_host_access else {}
     try:
-        return install(c, app_id, given, wait=wait)
+        return install(c, app_id, given, wait=wait, **kw)
     except SystemExit as e:
         if "install failed" not in str(e):
             raise
         time.sleep(BOOTSTRAP_RETRY_DELAY)
         print(f"retrying {app_id} once", file=sys.stderr)
-        return install(c, app_id, given, wait=wait)
+        return install(c, app_id, given, wait=wait, **kw)
 
 
 def bootstrap(c: Config) -> dict:
@@ -1052,8 +1108,9 @@ def bootstrap(c: Config) -> dict:
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
     updated = release_updates(c, rt, failed)
+    net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
-    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg)}
+    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
 def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
@@ -1231,6 +1288,20 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     if regp.is_file():
         for col in registry.collisions(json.loads(regp.read_text())):
             out.append(("slot collision", False, col))
+    try:
+        from . import network
+        rep = network.report(c)
+        if not rep["apps"]:
+            return out   # nothing installed: nothing to check
+        bad = [f"{a['id']}: {d}" for a in rep["apps"] for d in a["drift"]]
+        missing = [n["name"] for n in rep["networks"] if not n["exists"]]
+        out.append(("app networks match the declared connections" if rep["enabled"] else
+                    "app isolation is off (`wam network on`)", rep["enabled"] and rep["ok"],
+                    "; ".join(bad + [f"missing network {m}" for m in missing])[:400] or
+                    f"{len(rep['networks'])} networks; run `wam connections`" if rep["enabled"] else
+                    "every app can reach every other app"))
+    except Exception as e:  # noqa: BLE001
+        out.append(("app networks readable", False, str(e)[:200]))
     return out
 
 
@@ -1303,6 +1374,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
+        if u.path == "/api/connections":
+            from . import network
+            return self._json(200, network.report(c))
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -1541,6 +1615,8 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
            "from_version": before.get("version"), "restarted": restarted}
     if status != "running" and was_running:
         out["error"] = "the app did not come back; see `docker logs runtipi`"
+    if store == STORE:   # the update may change what it declares (uses:) or its services
+        out["networks"] = _net_brief(network_step(c, rt))
     return out
 
 
@@ -1610,6 +1686,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
     i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
+    i.add_argument("--allow-host-access", action="store_true",
+                   help="the owner accepts an app with host networking, privileged mode or the Docker socket")
+    cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
+    cn.add_argument("--json", action="store_true")
+    nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on")
+    nw.add_argument("action", choices=("reconcile", "status", "off", "on"))
+    nw.add_argument("--dry-run", action="store_true"); nw.add_argument("--json", action="store_true")
+    nw.add_argument("--no-restart", action="store_true", help="never restart an app (report it instead)")
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
@@ -1660,7 +1744,27 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait), indent=2))
+            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait,
+                                                allow_host_access=args.allow_host_access), indent=2))
+        elif args.cmd == "connections":
+            from . import network
+            rep = network.report(c)
+            print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
+            return 0 if rep.get("ok") else 1
+        elif args.cmd == "network":
+            from . import network
+            if args.action == "status":
+                rep = network.report(c)
+                print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
+                return 0 if rep.get("ok") else 1
+            if args.action in ("off", "on"):
+                network.set_enabled(c.home, args.action == "on")
+            res = network.reconcile(c, apply=not args.dry_run, restart=not args.no_restart,
+                                    restart_fn=lambda a: app_lifecycle(c, "restart", a))
+            if not args.dry_run:
+                write_registry(c)
+            print(json.dumps(res, indent=2))
+            return 1 if res.get("errors") else 0
         elif args.cmd == "uninstall":
             print(json.dumps(uninstall(c, args.id, force=args.force), indent=2))
         elif args.cmd == "slots":

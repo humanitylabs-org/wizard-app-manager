@@ -1,5 +1,6 @@
-// Standalone page: the three views full screen (no tabs); switch with the Admin menu or #apps / #store / #resources.
-import { renderMyApps, renderResources, renderStore } from './wizard-apps.js';
+// Standalone page: the views full screen (no tabs); switch with the Admin menu or #apps / #store / #resources /
+// #connections.
+import { renderConnections, renderMyApps, renderResources, renderStore } from './wizard-apps.js';
 
 const $ = (s) => document.querySelector(s);
 const body = $('#body');
@@ -15,7 +16,7 @@ function show() {
   const inStore = view === 'store';
   form.hidden = !inStore;
   chips.hidden = !inStore;
-  body.classList.toggle('top', view === 'resources');
+  body.classList.toggle('top', view === 'resources' || view === 'connections');
   body.replaceChildren();
   store = null;
   input.value = '';
@@ -24,6 +25,7 @@ function show() {
   body.append(host);
   if (inStore) store = renderStore(host, { chipsEl: chips });
   else if (view === 'resources') renderResources(host, {});
+  else if (view === 'connections') renderConnections(host, {});
   else renderMyApps(host, { onGetApps: () => location.assign('#store') });
 }
 

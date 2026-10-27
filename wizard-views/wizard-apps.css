@@ -334,3 +334,62 @@
 .wam-meter.hot em {
   color: var(--amber);
 }
+
+/* Connections (Settings group): one row per app, tap for what it reaches; colours are Wizard UX tokens only */
+.wam-conn .wam-conn-row {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.wam-conn .wam-conn-row.warn .st-tx b {
+  color: var(--amber);
+}
+.wam-tag {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.wam-tag.good {
+  color: var(--green);
+  border-color: var(--green);
+}
+.wam-tag.warn {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+.wam-tag.bad {
+  color: var(--red);
+  border-color: var(--red);
+}
+.wam-conn-detail {
+  padding: 4px 14px 10px 14px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.wam-conn-detail p {
+  margin: 4px 0;
+}
+.wam-conn-detail b {
+  color: var(--ink);
+  font-weight: 600;
+  margin-right: 6px;
+}
+.wam-conn-why {
+  color: var(--ink-3);
+}
+.wam-conn-bad {
+  color: var(--red);
+}
+.wam-conn-at {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
