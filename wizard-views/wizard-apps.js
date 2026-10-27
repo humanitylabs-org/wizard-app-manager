@@ -539,13 +539,14 @@ export async function renderConnections(el, ctx = {}) {
     const rows = d.apps
       .map((a) => {
         const reach = a.can_reach || [];
-        const by = (a.reached_by || []).filter((e) => e.state === 'link' || e.state === 'gateway' || e.state === 'core').map((e) => e.from);
+        const by = (a.reached_by || []).filter((e) => ['link', 'gateway', 'core', 'shared-network'].includes(e.state)).map((e) => e.from);
         const drift = (a.drift || []).length;
         const warn = drift || (a.host_access || []).length || a.state === 'exposed';
         const own = reach.filter((e) => e.declared);
         const core = reach.filter((e) => e.state === 'core').map((e) => e.to);
         const served = reach.filter((e) => !e.declared && e.state === 'gateway').map((e) => e.to);
         const peers = reach.filter((e) => e.state === 'peer').map((e) => e.to);
+        const shared = reach.filter((e) => e.state === 'shared-network').map((e) => e.to);
         const sub = own.length ? `Uses ${own.map((e) => e.to).join(', ')}` : 'Uses no other app';
         const detail =
           open === a.id
@@ -553,6 +554,7 @@ export async function renderConnections(el, ctx = {}) {
           <p><b>Uses</b> ${own.length ? own.map((e) => `${esc(e.to)}${esc(REACH[e.state] ?? '')}`).join('; ') : 'no other app'}</p>
           ${served.length ? `<p><b>Gateway to</b> ${esc(served.join(', '))} <span class="wam-conn-why">(their gateway networks)</span></p>` : ''}
           ${core.length ? `<p><b>Wizard core</b> ${esc(core.join(', '))} <span class="wam-conn-why">(shares its gateway network, so it can reach them too)</span></p>` : ''}
+          ${shared.length ? `<p class="wam-conn-bad"><b>Shared network</b> ${esc(shared.join(', '))} <span class="wam-conn-why">(not declared, but they share Runtipi's network, so each can reach the other)</span></p>` : ''}
           ${peers.length ? `<p><b>Two-way links</b> ${esc(peers.join(', '))} <span class="wam-conn-why">(they use this app; a link is one network shared by both)</span></p>` : ''}
           <p><b>Reached by</b> ${by.length ? esc(by.join(', ')) : 'no other app'}</p>
           <p><b>Agent gateway</b> ${esc(a.gateway)}</p>

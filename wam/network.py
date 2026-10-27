@@ -329,7 +329,11 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
         gs = _plain(((gdoc or {}).get("services") or {}).get(name)) or {}
         nm = str(_plain(rs.get("network_mode")) or _plain(gs.get("network_mode")) or "")
         if gdoc is not None and gs:
-            nets = _service_nets(gs)
+            # Only networks the installed recipe defines (plus Runtipi's own): a generated compose can be stale, e.g.
+            # written for an update the App Manager then refused, and must never carry a foreign network into the
+            # override (seen live: a refused `sneak` attachment reappeared as `sneak: null` and broke the app).
+            own = {str(k) for k in (rdoc.get("networks") or {})} | {f"{app_id}_{store}_network", SHARED}
+            nets = {k: v for k, v in _service_nets(gs).items() if k in own}
         else:   # what Runtipi's compose builder will generate (compose.builder.ts buildService)
             nets = {} if nm else _service_nets(rs)
             if not nm and multi:
@@ -577,8 +581,8 @@ def keeps_shared(a: dict, service: str) -> bool:
     (Traefik reaches it there), or any shared service of an app wam leaves as it is (custom, host access, isolation
     off). Every other service of an isolated or exposed app is taken off it, service by service."""
     svc = (a.get("services") or {}).get(service) or {}
-    if not svc.get("on_shared"):
-        return False
+    if not svc.get("on_shared") or svc.get("network_mode"):
+        return False   # host / container / service network modes join no network at all
     if a.get("state") == "isolated":
         return False
     if a.get("state") == "exposed":
@@ -748,6 +752,12 @@ def _free_subnet(used: list[str], pool_net: ipaddress.IPv4Network, taken: set) -
     raise NetworkError(f"no free /{PREFIXLEN} left in {pool_net} for app networks (set network_pool in app-manager.json)")
 
 
+def _bridged(container: dict) -> bool:
+    """A container that can join networks (not host / none / another container's or service's namespace)."""
+    nm = str(container.get("network_mode") or "")
+    return nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
+
+
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
     """Differences between the plan and running containers: one row per container that is off-plan."""
     rows = []
@@ -762,7 +772,7 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
                    "extra": sorted(have - want), "on_shared": on_shared,
-                   "should_share": keeps_shared(a, c["service"])}
+                   "should_share": keeps_shared(a, c["service"]) and _bridged(c)}
             bad_alias = [n for n, al in ((a.get("want") or {}).get(c["service"]) or {}).items()
                          if n in c["networks"] and not set(al) <= set(c["networks"][n])]
             row["alias_missing"] = bad_alias
@@ -1164,6 +1174,17 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                             and any(m["app"] == a["id"] for m in n["members"])]),
             "drift": problems,
         })
+    # Apps that keep Runtipi's shared network (isolation off, a published service, custom / host-access apps) can
+    # all open connections to each other there, declared or not: list those peers both ways, so the report never
+    # understates what an app can actually reach.
+    sharing = sorted(a["id"] for a in p["apps"] if any(keeps_shared(a, s) for s in (a.get("services") or {})))
+    for row in apps:
+        if row["id"] in sharing:
+            peers = [x for x in sharing if x != row["id"]]
+            row["can_reach"] += [{"to": x, "declared": None, "reason": "shared network", "state": "shared-network",
+                                  "network": shared_docker} for x in peers]
+            row["reached_by"] += [{"from": x, "reason": "shared network", "state": "shared-network",
+                                   "network": shared_docker} for x in peers]
     shared_members = sorted(n for n in (live["networks"].get(shared_docker) or {}).get("containers", []))
     res = {"schema": 1, "enabled": p["enabled"], "checked_at": int(time.time()), "live": live_ok,
            "gateway": p["gateway"], "apps": apps,
@@ -1188,14 +1209,16 @@ def describe(rep: dict) -> str:
             "core": " (Wizard core, over this app's gateway network)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)",
             "not-approved": " (declared, but its grant is revoked or not approved yet: no network)",
-            "collision": " (its network name is taken by another network: not connected, see `wam network reconcile`)"}
+            "collision": " (its network name is taken by another network: not connected, see `wam network reconcile`)",
+            "shared-network": " (shared network: not declared, but reachable)"}
     for a in rep["apps"]:
         reach = [f"{e['to']}{word.get(e['state'], '')}" for e in a["can_reach"]]
         lines.append(f"{a['id']}  [{a['state']}{'' if a['running'] else ', stopped'}]")
         if a["why"]:
             lines.append(f"  note: {a['why']}")
         lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
-        by = [b["from"] for b in a["reached_by"] if b["state"] in ("link", "gateway", "core")]
+        by = [b["from"] + (" (shared network)" if b["state"] == "shared-network" else "")
+              for b in a["reached_by"] if b["state"] in ("link", "gateway", "core", "shared-network")]
         lines.append(f"  reached by: {', '.join(by) or 'no other app'}; agent gateway {a['gateway']}")
         lines.append(f"  internet: {'yes' if a['internet'] else 'no' if a['internet'] is False else 'unknown'}")
         for h in a["host_access"]:

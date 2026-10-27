@@ -1062,3 +1062,75 @@ def test_app_and_slot_grants_of_the_same_name_stay_distinct():
     g = [owner("d", "slot:crm")]
     assert ("d", "twenty-crm") in reach(net.plan(apps2, g, set(), approved=g))
     assert ("d", "twenty-crm") not in reach(net.plan(apps2, [owner("d", "crm")], set(), approved=[owner("d", "crm")]))
+
+
+def test_a_stale_generated_compose_never_carries_a_foreign_network_into_the_override(tmp_path):
+    """Seen in the VM: the App Manager refused an update whose recipe attached `sneak` (external), the update rolled
+    back to the clean recipe, but docker-compose.generated.yml still held the refused version. wam must plan from the
+    installed recipe's networks only, or the override names `sneak` and Compose rejects every later start."""
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"},
+              {"services": {"x": {"image": "a", "x-runtipi": {"is_main": True}}}},
+              generated={"services": {"x": {"networks": {"sneak": None, "tipi_main_network": {"gw_priority": 1}}}},
+                         "networks": {"sneak": {"external": True, "name": "runtipi_tipi_main_network"},
+                                      "tipi_main_network": {"external": True, "name": "runtipi_tipi_main_network"}}})
+    a = net.read_app(tmp_path, "wizardapps", "x")
+    assert a["custom"] is None and set(a["services"]["x"]["networks"]) == {"tipi_main_network"}
+    ov = net.overlay_for(net.plan([a], [], set())["apps"][0])
+    assert "sneak" not in ov["services"]["x"] and set(ov["services"]["x"]) == {"wizard-app-x"}
+
+
+def test_host_network_apps_are_never_asked_to_rejoin_the_shared_network():
+    """Seen in the VM after the should_share repair: alongside's shell / Agent Service run with network_mode: host
+    (from their user-config override) while the generated compose still lists the shared network. They must produce
+    no drift row; otherwise `docker network connect` fails, reconcile restarts them, and the serve watcher reconciles
+    again after every restart (a restart loop)."""
+    ux = app("wizard-ux", provides=["shell"])
+    ux["services"]["wizard-ux"]["network_mode"] = "host"
+    p = net.plan([ux, app("transcriber")], [], set())
+    assert next(a for a in p["apps"] if a["id"] == "wizard-ux")["state"] == "host-network"
+    live = live_from(p, on_shared={"transcriber"})
+    for cont in live["containers"]:
+        if cont["service"] == "wizard-ux":
+            cont["network_mode"], cont["networks"] = "host", {"host": []}
+    assert not [r for r in net.drift(p, live) if r["app"] == "wizard-ux"]
+
+
+def test_the_serve_watcher_never_restarts_the_same_app_twice_in_a_row(monkeypatch):
+    """A reconcile that can't converge must not turn the watcher (reconcile after every start) into a restart loop."""
+    from wam import cli
+    restarts, steps = [], []
+    monkeypatch.delenv("WAM_NETWORK_WATCH", raising=False)
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, a: restarts.append(a) or {"status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c: None)
+
+    def step(c, rt=None, extra=(), restart=True, fresh=(), restart_fn=None):
+        steps.append(restart)
+        res = restart_fn("wizard-ux")
+        return {"restarted": ["wizard-ux"]} if not res.get("error") else {"errors": [res["error"]]}
+    monkeypatch.setattr(cli, "network_step", step)
+    captured = {}
+    monkeypatch.setattr(net, "watch", lambda fn, **k: captured.setdefault("fn", fn))
+    import threading
+    monkeypatch.setattr(threading, "Thread", lambda target, args=(), **k: type("T", (), {"start": lambda self: target(*args)})())
+    cli.start_network_watch(object())
+    for _ in range(3):
+        captured["fn"](True)
+    assert restarts == ["wizard-ux"] and steps == [True, True, True]
+
+
+def test_the_report_lists_shared_network_peers_both_ways():
+    """Codex PRRT_kwDOVCUOXM6wr7M1: apps still on Runtipi's shared network (isolation off, a published service,
+    custom apps) can reach each other undeclared; `wam connections` and the view must say so."""
+    C = type("C", (), {"home": Path("/nonexistent")})()
+    off = net.plan([app("a"), app("b"), app("c", uses=["a"])], [], set(), on=False)
+    rep = net.report(C, p=off, live={"networks": {}, "containers": []})
+    row = {r["id"]: r for r in rep["apps"]}
+    assert {e["to"] for e in row["b"]["can_reach"] if e["state"] == "shared-network"} == {"a", "c"}
+    assert {e["from"] for e in row["b"]["reached_by"] if e["state"] == "shared-network"} == {"a", "c"}
+    assert "a (shared network: not declared, but reachable)" in net.describe(rep)
+    ex = app("pub")
+    ex["services"]["pub"]["exposed"] = True
+    on = net.plan([ex, app("cust", custom="hand-set networks"), app("iso")], [], set())
+    row = {r["id"]: r for r in net.report(C, p=on, live={"networks": {}, "containers": []})["apps"]}
+    assert {e["to"] for e in row["pub"]["can_reach"] if e["state"] == "shared-network"} == {"cust"}
+    assert not [e for e in row["iso"]["can_reach"] if e["state"] == "shared-network"]

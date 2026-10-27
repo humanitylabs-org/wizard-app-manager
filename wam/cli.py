@@ -483,16 +483,20 @@ def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
     return []
 
 
-def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True, fresh=()) -> dict | None:
+def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True, fresh=(),
+                 restart_fn=None) -> dict | None:
     """Reconcile the app networks after a lifecycle change. Never fails the change itself: a problem is reported
     (and `wam network reconcile` / `wam doctor` repeat it)."""
     from . import network
     try:
         return network.reconcile(c, rt, extra=extra, restart=restart, fresh=fresh,
-                                 restart_fn=lambda a: app_lifecycle(c, "restart", a))
+                                 restart_fn=restart_fn or (lambda a: app_lifecycle(c, "restart", a)))
     except Exception as e:  # noqa: BLE001
         print(f"note: app networks not reconciled ({str(e)[:200]}); run `wam network reconcile`", file=sys.stderr)
         return {"errors": [str(e)[:200]]}
+
+
+WATCH_RESTART_GAP = 600
 
 
 def start_network_watch(c: Config) -> None:
@@ -502,9 +506,18 @@ def start_network_watch(c: Config) -> None:
         return
     import threading
     from . import network
+    last: dict[str, float] = {}
+
+    def restart_once(app_id: str) -> dict:
+        # The watcher reconciles after every start, and a restart is a start: never restart the same app again
+        # within 10 minutes, so a reconcile that can't converge can never become a restart loop.
+        if time.time() - last.get(app_id, 0) < WATCH_RESTART_GAP:
+            return {"error": f"not restarted again within {WATCH_RESTART_GAP}s (run `wam network reconcile`)"}
+        last[app_id] = time.time()
+        return app_lifecycle(c, "restart", app_id)
 
     def step(restart: bool) -> None:
-        res = network_step(c, restart=restart) or {}
+        res = network_step(c, restart=restart, restart_fn=restart_once) or {}
         if any(res.get(k) for k in ("created", "removed", "overrides", "connected", "disconnected", "restarted")):
             try:
                 write_registry(c)
