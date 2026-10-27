@@ -57,6 +57,8 @@ def test_guest_boot_and_teardown_are_reused_and_no_stock_hermes_edit():
     assert 'qa/privsep-slice1/run.py' in text
     assert 'proc.kill(); proc.wait(timeout=15)' in text
     assert 'mirror.gcr.io' in text and 'finally:' in text
+    assert 'not yet available without server access' not in text
+    assert "grep -q 'usage:'" in text
     assert 'source ./activate' in text and 'sync_venv' in text
     assert "guest_vm('baseline'" not in text
     guest = (RUNNER.parent / 'guest.py').read_text()

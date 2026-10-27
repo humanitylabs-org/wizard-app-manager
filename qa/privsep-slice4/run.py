@@ -188,7 +188,7 @@ print('PASS agent token cannot approve even with forged owner headers')
 PY
 for cmd in backup links builder; do
  if wam "$cmd" >"$HOME/deferred.txt" 2>&1; then exit 1; fi
- grep -q 'not yet available without server access' "$HOME/deferred.txt"
+ grep -q 'usage:' "$HOME/deferred.txt"
 done
 AGENT
 '''
