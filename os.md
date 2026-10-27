@@ -3,9 +3,24 @@
 New named-user alongside installs use a separate `wizard-system` account for Runtipi, the App Manager and
 Tailscale operator. Your Hermes account gets only the files-root group and an agent-scoped `wam` token, not
 Docker or sudo. Use `wam apps|search|install|update|uninstall|start|stop|restart|logs|doctor`; do not bypass a
-refusal with Docker or sudo. `wizard link` and `hermes update` stay at your own uid. Backup, links and builder
-commands report “not yet available without server access” until their scoped APIs land. Existing layouts are
-unchanged; full-host repair instructions are for the administrator, not an elevation route for the agent.
+refusal with Docker or sudo. The thin client also supports:
+
+- `wam backup run`, `wam backup snapshots`, `wam backup import --from-repo <snapshot|latest> --yes`,
+  and `wam backup undo`: the box's administrator-configured repository only. A backup FILE import remains
+  owner-only. On the separated layout these back up system apps/data and shared files, not the linked host
+  Hermes home; use stock `hermes backup` at the agent uid for that home. Never execute it as wizard-system.
+- `wam links publish <installed-app>` / `wam links unpublish <installed-app>`: the service account is the
+  Tailscale operator. If sign-in is needed, ask the owner; never run Tailscale or sudo as the agent.
+- `wam builder check <source>`, `wam builder install-local <source> --stage-only --run --port 18799`,
+  `wam builder update-local <source> --run`: source belongs to the agent. The client uploads regular file
+  bytes (25 MiB total, 4096 files, 10 MiB per file; no symlinks), and the service builds its protected copy.
+  This runs an isolated loopback candidate, not a store/production registration. Never run Docker yourself.
+  A host-access approval link is for the owner; do not rewrite the recipe to bypass the check.
+
+`wizard link` hands the Agent Service the loopback wam URL and agent token at the agent uid.
+`wam hermes update` runs stock Hermes locally; `--check` (or `--dry-run`) reports stock version/update status
+without installing or restarting. Neither requires server privileges. Existing layouts are unchanged;
+full-host repair instructions are for the administrator, not an elevation route for the agent.
 
 You are the owner's agent. Follow these steps in order. Keep every message to the owner short. Put each command and each link on its own line.
 

@@ -1485,13 +1485,18 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _body(self) -> dict:
+        from .agent_actions import BODY_LIMIT
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 65536:
-            return {}
+        limit = BODY_LIMIT if urlparse(self.path).path.startswith('/api/builder/') else 65536
+        if n < 0 or n > limit:
+            raise ValueError('request body exceeds limit')
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
+            body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
-            return {}
+            raise ValueError('invalid JSON body') from None
+        if not isinstance(body, dict):
+            raise ValueError('JSON object required')
+        return body
 
     VIEW_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
@@ -1586,6 +1591,21 @@ class Handler(BaseHTTPRequestHandler):
                 if why:
                     return self._json(403, {'error': why})
                 return self._json(200, owner.execute(c, path, self._body()))
+            if path in ('/api/backup/run', '/api/backup/snapshots', '/api/backup/restore', '/api/backup/undo'):
+                from .agent_actions import backup
+                return self._json(200, backup(c, path.rsplit('/', 1)[-1], self._body()))
+            if path in ('/api/links/publish', '/api/links/unpublish'):
+                from .agent_actions import private_link
+                b = self._body()
+                if set(b) != {'app'}:
+                    raise ValueError('send installed app id only')
+                app_id = agent_app_id(b.get('app'))
+                result = private_link(c, write_registry(c), app_id, path.endswith('/publish'))
+                write_registry(c)
+                return self._json(200, result)
+            if path in ('/api/builder/install-local', '/api/builder/update-local', '/api/builder/check'):
+                from .agent_actions import build
+                return self._json(200, build(c, path.rsplit('/', 1)[-1], self._body()))
             if path in ('/api/app/start', '/api/app/stop', '/api/app/restart', '/api/app/update'):
                 body = self._body()
                 app_id = agent_app_id(body.get('app')) if self._agent_request() else str(body.get('app', ''))
@@ -1605,7 +1625,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, write_registry(c))
         except host_policy.NeedsOwnerApproval as exc:
             return self._json(409, exc.payload)
-        except (RuntipiError, SystemExit, RuntimeError, index.IndexError_, ValueError) as e:
+        except (RuntipiError, SystemExit, RuntimeError, index.IndexError_, ValueError, OSError, subprocess.SubprocessError) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
 

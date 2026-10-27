@@ -50,8 +50,8 @@ PER_MACHINE = {"api-token", "mcp-token", "runtipi-operator.json", "agent-runtime
                # which Wizard release/pins were installed here (a restore must not replace them with another box's)
                "builder", "bin", "release.json", "release-pins.json", "install-outcome.json",
                # the agent's ssh key for a terminal on this box (Wizard for Mac), authorised only here
-               "agent-ssh", "approval-registry.json", "owner-login"}
-REGENERATED = {"apps.json", "skills", "system-skills", "cache", "dev", "staged-apps"}
+               "agent-ssh", "approval-registry.json", "owner-login", "privsep.json", "agent-token", "client.json"}
+REGENERATED = {"apps.json", "skills", "system-skills", "cache", "dev", "staged-apps", "build-work"}
 ENGINE = {"restores", "backup-work", "backup-status.json", "backup.lock", "agents"}
 NEVER_CAPTURE = PER_MACHINE | REGENERATED | ENGINE
 
@@ -276,7 +276,11 @@ class Box:
         out: list[Agent] = []
         st = alongside.load(self.home)
         if st and (st.get("agent") or {}).get("hermes_home"):
-            out.append(Agent(MAIN_AGENT, True, Path(st["agent"]["hermes_home"]), "host"))
+            from .. import privsep
+            # Running a linked host's launcher would execute agent-writable code
+            # with Docker privileges. Its home is backed up at the agent uid, not here.
+            if not privsep.enabled(self.home):
+                out.append(Agent(MAIN_AGENT, True, Path(st["agent"]["hermes_home"]), "host"))
         else:
             urn = f"{MAIN_APP}:{STORE}"
             if installed is None or urn in installed:
@@ -522,6 +526,9 @@ class HermesRunner:
 
     # ---- host agent
     def host_binary(self) -> str:
+        from .. import privsep
+        if privsep.enabled(self.box.home):
+            raise HermesError('host Hermes belongs to the agent uid; never executed by wizard-system')
         b = self.box.env.get("WIZARD_HERMES_BIN") or shutil.which("hermes", path=self.box.env.get("PATH")) \
             or alongside.hermes_binary()
         if not b:

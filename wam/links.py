@@ -178,12 +178,17 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
             api_port: int = 7790) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     ts = tailnet()
-    rows = shell_first(pages(reg), shell_ids or set())
+    try:
+        unpublished = json.loads((home / 'links.json').read_text()).get('unpublished', [])
+    except (OSError, ValueError):
+        unpublished = []
+    rows = shell_first([r for r in pages(reg) if r['id'] not in unpublished], shell_ids or set())
     gw = gateway_paths(home)
-    result: dict = {"provider": "tailscale", "state": ts["state"], "host": ts["host"], "links": [], "errors": {}}
+    result: dict = {"provider": "tailscale", "state": ts["state"], "host": ts["host"], "links": [], "errors": {},
+                    "unpublished": unpublished}
     if ts["state"] != "Running" or not ts["host"]:
         result["note"] = ("Tailscale isn't connected yet, so nothing is on your private network. "
-                          "Run `sudo tailscale up`, open the sign-in link with YOUR Tailscale account, then `wam links`.")
+                          "Ask the owner to connect Tailscale, then retry `wam links publish APP`.")
     else:
         sids = shell_ids or set()
         shell_port = next((r["port"] for r in rows if r["id"] in sids), None)

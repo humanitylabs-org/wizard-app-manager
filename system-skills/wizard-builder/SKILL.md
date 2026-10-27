@@ -22,9 +22,19 @@ Use the smallest artifact that finishes the owner's job. This system skill lives
 
 ## Prerequisites
 If `$HOME/.wizard-os/client.json` exists, this is a privilege-separated alongside account: the `wam` on PATH
-and the bundled `wam` are both thin clients. Building, view customization and local staging are not yet available
-without server access in this layout (Slice 4). Report that limit; never try Docker, sudo, a copied full CLI or a
-changed terminal backend to bypass it. Store install/update and named app lifecycle/logs remain available.
+and the bundled `wam` are both thin clients. Use `wam builder check <source>`,
+`wam builder install-local <source> --stage-only --run --port 18799`, then
+`wam builder update-local <source> --run`. Source must belong to the agent: no symlinks or secrets,
+25 MiB total / 4096 regular files / 10 MiB per file. The service copies uploaded bytes to a private,
+service-owned directory, checks recipes through host_policy, and builds only that copy. The receipt is an
+isolated loopback candidate, not a production installation or a complete shared-resource browser preview.
+Do not use the Docker/builder-bundle commands below in this layout, or run a copied full CLI to bypass a refusal.
+Source scaffolding, packaging and view customization remain separate capabilities: do not claim they ran
+through this transport. Store install/update and named lifecycle/logs are available. For installed app links,
+use `wam links publish <app>` / `wam links unpublish <app>`; Tailscale runs only at the service uid.
+Backups use `wam backup run|snapshots|undo` and `wam backup import --from-repo <snapshot> --yes`;
+FILE import is owner-only. If an approval is required, send the owner the link; never use Docker or sudo.
+The remaining local tooling instructions apply only to the older full-access layout.
 
 Wizard OS installs a complete, matching skill/tooling/templates bundle automatically. In `terminal`, run `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor` before building. This works with the stock local container terminal and the VM's configured SSH terminal: SSH executes on the host and uses its own `$HOME`, not a container-only path. Do not change the owner's terminal backend. Python 3.10+ and PyYAML are installed by Wizard OS (the container uses stock Hermes' Python); Docker with Compose is needed only to run a local app. If doctor fails, report the missing capability and repair with the Wizard installer, not a private checkout or personal skill. Use the configured build worker for sustained builds/tests. Keep the owner's active apps intact.
 

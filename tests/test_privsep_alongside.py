@@ -115,7 +115,11 @@ def test_thin_client_fails_closed_without_local_fallback(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, 'run', fail)
     for verb in ('backup', 'links', 'builder', 'approve', 'grants', 'network', 'serve', 'bootstrap'):
         assert client.main([verb]) == 2
-        assert 'not yet available without server access' in capsys.readouterr().err
+        error = capsys.readouterr().err
+        if verb in ('backup', 'links', 'builder'):
+            assert 'usage:' in error and 'not yet available' not in error
+        else:
+            assert 'not yet available without server access' in error
 
 
 def test_client_will_not_send_token_to_remote_origin(tmp_path, monkeypatch):

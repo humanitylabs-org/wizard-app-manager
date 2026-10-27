@@ -1,5 +1,16 @@
 # Build an app (candidate)
 
+**Separated layout:** when `~/.wizard-os/client.json` exists, use only the thin client:
+`wam builder check <source>`, `wam builder install-local <source> --stage-only --run --port 18799`,
+`wam builder update-local <source> --run`. The source is yours; the service snapshots and builds protected
+bytes, never your writable directory. No symlinks; 25 MiB total, 4096 files, 10 MiB/file. A host-access refusal
+needs owner approval. Never follow the Docker or local builder-bundle commands below in this layout; do not
+change terminal backend or copy a full CLI to bypass this boundary. Scaffolding/packaging, staged lifecycle
+and view-customization verbs below are not provided by the separated transport; report that precisely.
+The result is a loopback candidate, not a production registration or complete Wizard browser preview.
+
+**Older full-access layout only:**
+
 Source in `~/.wizard-os/dev/<id>/`; data in isolated app-data; owner files in media. `wizard.md` points at API docs, MCP, shipped skill, runtime and view source without requiring an upstream restructure. The reference template uses stdlib Python/SQLite and vanilla web source with a dependency-free validation build.
 
 Run through `terminal`: `wam new <id> --request '<sentence>'`, adapt source, `wam check <source>` and `wam check <source> --proposal`, then `wam install-local <source> --stage-only --run`. All IDs, paths, runtime ports and source metadata must match. Build context is repository root, Dockerfile `app/Dockerfile`. After edits refresh the portable inline Runtipi payload with `wam package-inline <source>`; this uses the installed bundle's Python and assets, without a checkout or Python module setup.
