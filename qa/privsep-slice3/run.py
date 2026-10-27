@@ -245,7 +245,16 @@ def doctor_rows(label):
 
 
 def suite():
-    env=os.environ.copy(); env['PYTEST_ADDOPTS']=''
+    # A git archive has the exact candidate tree but no .git. Tests intentionally
+    # exercise tracked-file/repository contracts, so give that tree a labelled QA
+    # snapshot (not a claimed upstream commit or a network checkout).
+    if not (source / '.git').exists():
+        run('pytest-git-init', ['git', 'init'], cwd=source)
+        run('pytest-git-add', ['git', 'add', '.'], cwd=source)
+        run('pytest-git-snapshot', ['git', '-c', 'user.name=Privsep QA', '-c',
+            'user.email=privsep-qa@example.invalid', '-c', 'commit.gpgsign=false',
+            'commit', '-qm', 'QA source export of ' + candidate], cwd=source)
+    os.environ['PYTEST_ADDOPTS']=''
     run('test-env',['python3','-m','venv',str(root/'test-venv')])
     py=str(root/'test-venv/bin/python')
     run('test-deps',[py,'-m','pip','install','pytest','pyyaml'])
