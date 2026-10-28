@@ -12,7 +12,7 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
-import { cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
+import { cutGroups, cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
 const STORE = 'wizardapps';
@@ -700,7 +700,8 @@ export async function renderConnections(el, ctx = {}) {
           unenforced.push(
             `${nm(a.id)} and ${nm(r.app)} are cut off, but both are published through Runtipi’s reverse proxy and still share its network, so they can still reach each other. Unpublish one to enforce it.`,
           );
-    const odd = d.apps.filter((a) => !['isolated', 'host-network'].includes(a.state) || (a.host_access || []).length);
+    const coreIds = new Set(d.gateway?.core || []);
+    const odd = d.apps.filter((a) => !coreIds.has(a.id) && (a.state !== 'isolated' || (a.host_access || []).length));
     const meshCount = d.apps.filter((a) => a.open?.mesh).length;
     const linked = d.apps.filter((a) => a.open && !a.open.mesh);
     const notices = (d.notices || []).slice(0, 8);
@@ -887,19 +888,26 @@ export async function renderConnections(el, ctx = {}) {
           <button type="button" class="wam-btn primary" data-cm-connect="${esc(b)}"${dis(`connect:${b}`)}>Connect</button></div>`;
     });
     const can = cuttable(m, a.id);
+    const groups = cutGroups(m, a.id);
     const pick = picking
       ? `<div class="wam-cm-pick"><p>${esc(`Tap the app ${a.name} should stop talking to. It works both ways.`)}</p><div class="wam-cm-chips">${can
           .map(
             (x) =>
               `<button type="button" class="wam-cm-chip" data-cm-cut="${esc(x.id)}"${dis(`cut:${x.id}`)}>${cmGlyph(x)}<span>${esc(x.name)}</span></button>`,
           )
-          .join('')}</div></div>`
+          .join('')}${groups
+          .map(
+            (g, i) =>
+              `<button type="button" class="wam-cm-chip" data-cm-cutgroup="${i}"${dis(`cutgroup:${i}`)}>${cmGlyph({ id: g.providers[0], name: nm(g.providers[0]) })}<span>${esc(`${nm(g.from)} → ${g.names}`)}</span></button>`,
+          )
+          .join('')}</div>${groups.length ? '<p>A connection to several apps that do the same job is cut as one.</p>' : ''}</div>`
       : '';
+
     set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(a)}</span><h2 id="wamCmTitle">${esc(a.name)}</h2></div>
       <p class="wam-cm-says">${esc(talksSentence(a))}</p>
       ${cutRows.join('')}${askRows.join('')}
       ${
-        can.length
+        can.length || groups.length
           ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Cut off from…</button></div>${pick}`
           : ''
       }
@@ -1022,6 +1030,19 @@ export async function renderConnections(el, ctx = {}) {
         },
         doneWords('cut', nameOf(sheetId), nameOf(to)),
         { close: true, undo: { rows, a: sheetId, b: to } },
+      );
+    }
+    if (b.matches('[data-cm-cutgroup]')) {
+      const g = cutGroups(el._wamModel, sheetId)[Number(b.dataset.cmCutgroup)];
+      if (!g) return;
+      const rows = [{ from: g.from, to: g.to }];
+      return void run(
+        `cutgroup:${b.dataset.cmCutgroup}`,
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, false);
+        },
+        doneWords('cut', nameOf(g.from), g.names),
+        { close: true, undo: { rows, a: g.from, b: g.providers[0] } },
       );
     }
     if (b.matches('[data-cm-reconnect]')) {

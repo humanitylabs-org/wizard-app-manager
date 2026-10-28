@@ -49,11 +49,25 @@ export function mapModel(d) {
   // Strict mode: the connections that exist are drawn; one the owner cut stays on the map as a cut pair, so it can
   // be reconnected from either app.
   const declaredCut = new Map();
+  const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
+  const groups = []; // connections to a slot several apps provide: cut as one
+  if (mode === 'declared')
+    for (const r of controls)
+      if (r.status === 'connected' && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
+        groups.push({
+          from: r.from,
+          to: r.to,
+          providers: r.providers.filter((x) => ids.has(x)),
+          names: list(r.providers.filter((x) => ids.has(x)).map(nm)),
+        });
   if (mode === 'declared') {
     for (const r of controls)
       for (const p of (r.providers || []).length ? r.providers : [slotName(r.to)]) {
         if (!ids.has(r.from) || !ids.has(p) || p === r.from) continue;
-        if (r.status === 'connected') links.set(pairKey(r.from, p), [r.from, p].sort());
+        if (r.status === 'connected') {
+          links.set(pairKey(r.from, p), [r.from, p].sort());
+          if ((r.providers || []).length <= 1) single.add(pairKey(r.from, p));
+        }
         if (r.status === 'disconnected') {
           cuts.set(pairKey(r.from, p), [r.from, p].sort());
           for (const [x, y] of [
@@ -131,6 +145,8 @@ export function mapModel(d) {
     cuts: [...cuts.values()],
     waits: [...waits.values()],
     links: [...links.values()],
+    single: [...single],
+    groups,
     pending,
     lead,
   };
@@ -176,11 +192,18 @@ export function cuttable(model, id) {
     return model.apps.filter((a) => a.inOpen && !no.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
   }
   if (model.mode === 'declared') {
-    const peers = new Set(model.links.filter((p) => p.includes(id)).flat());
+    // a peer reached only through a slot several apps provide is cut with that whole connection (cutGroups)
+    const own = new Set(model.single || []);
+    const peers = new Set(model.links.filter((p) => p.includes(id) && own.has(pairKey(p[0], p[1]))).flat());
     peers.delete(id);
     return model.apps.filter((a) => peers.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
   }
   return [];
+}
+
+/** Strict mode: connections of this app to a slot several apps provide, each cut as one ("Cloudflare and S3"). */
+export function cutGroups(model, id) {
+  return model.mode === 'declared' ? (model.groups || []).filter((g) => g.from === id || g.providers.includes(id)) : [];
 }
 
 /** What the toast says after a change, in plain words. */

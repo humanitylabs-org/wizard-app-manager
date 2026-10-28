@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cutRows, cuttable, doneWords, reconnectRows, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
+import { cutGroups, cutRows, cuttable, doneWords, reconnectRows, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
   id,
@@ -198,4 +198,25 @@ test('Reconnect undoes every Disconnect between the pair, so no half-cut pair is
     { from: 'wizard-cloudflare', to: 'backup' },
   ]);
   assert.deepEqual(reconnectRows([], 'cinequeue', 'wizard-shopping'), [{ from: 'cinequeue', to: 'wizard-shopping' }]);
+});
+
+test('Strict mode: a connection to a slot several apps provide is cut as one, never one provider alone', () => {
+  const d = report([app('backup', 'Backup'), app('wizard-cloudflare', 'Cloudflare'), app('s3', 'S3'), app('files', 'Files')], {
+    mode: 'declared',
+    controls: [
+      { from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare', 's3'], status: 'connected' },
+      { from: 'backup', to: 'files', providers: ['files'], status: 'connected' },
+    ],
+  });
+  for (const a of d.apps) a.open = null;
+  const m = mapModel(d);
+  assert.deepEqual(
+    cuttable(m, 'backup').map((a) => a.id),
+    ['files'],
+  );
+  assert.deepEqual(cuttable(m, 'wizard-cloudflare'), []);
+  const [g] = cutGroups(m, 'backup');
+  assert.equal(g.to, 'slot:backup-storage');
+  assert.equal(g.names, 'Cloudflare and S3');
+  assert.equal(cutGroups(m, 's3').length, 1);
 });
