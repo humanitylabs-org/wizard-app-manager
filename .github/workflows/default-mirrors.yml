@@ -10,9 +10,30 @@ concurrency:
   group: default-app-custody
   cancel-in-progress: false
 jobs:
+  preflight:
+    # Branch verification is read-only; custody writes remain canonical-main-only.
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/forum-runner-')
+    runs-on: [self-hosted, Linux, X64, forum, wizard-app-manager]
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify Linux mirror tooling without copying or publishing content
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/python
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+        run: |
+          uv venv --python 3.11 --seed "$RUNNER_TEMP/mirror-preflight"
+          uv pip install --python "$RUNNER_TEMP/mirror-preflight/bin/python" PyYAML pytest
+          python3 tools/install_crane.py "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/crane" version
+          "$RUNNER_TEMP/mirror-preflight/bin/python" -m pytest -q tests/test_default_mirror_workflow.py
   mirror:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, wizard-app-manager]
+    runs-on: [self-hosted, Linux, X64, forum, wizard-app-manager]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
