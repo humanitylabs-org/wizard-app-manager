@@ -829,6 +829,11 @@
   font-weight: 750;
   color: var(--ink-3);
 }
+/* The agent's list shows every item (it is the whole answer to "what can it use"), not a scrolling picker. */
+.wam-cm-uses .wam-cm-chips {
+  max-height: none;
+  overflow: visible;
+}
 .wam-cm-sheet .wam-cm-uses .wam-cm-chip {
   min-height: 36px;
   cursor: default;
