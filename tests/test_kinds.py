@@ -12,27 +12,44 @@ def k(core=False, **w):
 
 def test_the_rule_on_the_kinds_of_apps_a_box_has():
     assert k(type="external", category="system", view={"path": "/"}) == "connector"     # a bank / AI / Cloudflare link
-    assert k(type="service", category="system") == "connector"                          # transcriber, notifications
-    assert k(type="service", category="app") == "connector"                             # no screen: a background service
+    assert k(type="service", category="system") == "agent-app"                          # transcriber, notifications, browser
+    assert k(type="service", category="app") == "agent-app"                             # no screen: a tool for the agent
     assert k(type="service", category="system", view={"path": "/"}) == "connector"      # a screen only to set it up
     assert k(type="service", category="app", view={"path": "/"}) == "app"               # Movies, Search
     assert k(type="view", category="system", view={"path": "/"}) == "app"               # Files
     assert k(type="agent") == "agent"
-    assert k(core=True, type="service", category="system") == "system"                  # Agent Service
-    assert k(core=True, type="view", category="interface", view={"path": "/"}) == "system"   # the active shell
+    # Wizard's own core is grouped by the same rule (it carries the "comes with Wizard" badge instead of a group)
+    assert k(core=True, type="service", category="system") == "connector"               # Agent Service: links agent and apps
+    assert k(core=True, type="view", category="interface", view={"path": "/"}) == "app"  # the active shell
     assert k(type="view", category="interface", view={"path": "/"}) == "app"            # an inactive spare shell
-    assert kinds.kind_of(None) == "app" and kinds.kind_of(None, core=True) == "system"   # an app with no wizard.md
+    assert kinds.kind_of(None) == "app" and kinds.kind_of(None, core=True) == "app"     # an app with no wizard.md
+    assert "system" not in kinds.KINDS
 
 
 def test_kind_in_wizard_md_overrides_the_rule_and_bad_values_are_ignored():
     assert k(type="external", kind="app", view={"path": "/"}) == "app"
     assert k(type="service", view={"path": "/"}, kind="Connector") == "connector"
+    assert k(type="service", view={"path": "/"}, kind="agent-app") == "agent-app"
+    assert k(type="service", kind="app") == "app"                                       # a tool that says it is an app
     assert k(core=True, kind="agent") == "agent"
-    # System is the core only: it can't be cut off, so no other app can put itself there, and the core stays System
+    # System is not a group any more: `kind: system` is ignored like any other bad value
     assert k(type="service", view={"path": "/"}, kind="system") == "app"
-    assert k(core=True, type="view", kind="app") == "system"
     assert "kind" not in kinds.fields({"type": "service", "kind": "gadget"})
+    assert "kind" not in kinds.fields({"type": "service", "kind": "system"})
     assert k(type="service", view={"path": "/"}, kind="gadget") == "app"
+
+
+def test_the_owners_box_level_kinds_win_and_bad_entries_are_ignored(tmp_path):
+    assert kinds.box_kinds(None) == {} and kinds.box_kinds(tmp_path) == {}
+    (tmp_path / "app-kinds.json").write_text("{not json")
+    assert kinds.box_kinds(tmp_path) == {}
+    (tmp_path / "app-kinds.json").write_text(json.dumps({"kinds": {
+        "defleur-video": "agent-app", "money": "connector", "Bad Id": "app", "x": "system", "y": 3}}))
+    box = kinds.box_kinds(tmp_path)
+    assert box == {"defleur-video": "agent-app", "money": "connector"}
+    # it wins over wizard.md and over the rule
+    assert kinds.kind_of(kinds.fields({"type": "service", "view": {"path": "/"}, "kind": "app"}), box=box["defleur-video"]) == "agent-app"
+    assert kinds.kind_of(kinds.fields({"type": "view"}), box=box.get("cinequeue")) == "app"
 
 
 def test_read_app_keeps_the_fields_and_the_report_says_each_kind(tmp_path):
@@ -49,6 +66,18 @@ def test_read_app_keeps_the_fields_and_the_report_says_each_kind(tmp_path):
     rep = net.report(SimpleNamespace(), p=p, live={"networks": {}, "containers": []})
     assert {a["id"]: a["kind"] for a in rep["apps"]} == {"wizard-monarch": "connector", "cinequeue": "app"}
     assert rep["agents"] == []
+    assert not any(a.get("builtin") for a in rep["apps"])
+    # the owner's box-level choice (app-kinds.json in the Wizard home) wins over wizard.md
+    home = tmp_path / "wizard-os"
+    home.mkdir()
+    (home / "app-kinds.json").write_text(json.dumps({"kinds": {"cinequeue": "agent-app"}}))
+    rep = net.report(SimpleNamespace(home=home), p=p, live={"networks": {}, "containers": []})
+    assert {a["id"]: a["kind"] for a in rep["apps"]} == {"wizard-monarch": "connector", "cinequeue": "agent-app"}
+    # Wizard's own core carries the "comes with Wizard" badge in whatever group the rule gives it
+    p["gateway"]["core"] = ["wizard-monarch"]
+    rep = net.report(SimpleNamespace(), p=p, live={"networks": {}, "containers": []})
+    assert {a["id"]: (a["kind"], a.get("builtin", False)) for a in rep["apps"]} == {
+        "wizard-monarch": ("connector", True), "cinequeue": ("app", False)}
 
 
 def test_agents_the_box_knows_about(tmp_path):

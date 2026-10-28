@@ -42,7 +42,7 @@ SHARED_DOCKER = "runtipi_tipi_main_network"  # and its Docker name (RUNTIPI_DOCK
 APP_PREFIX, LINK_PREFIX, GW_PREFIX, CORE_NET = "wizard-app-", "wizard-link-", "wizard-gw-", "wizard-core"
 MESH_NET = "wizard-mesh"                       # open mode: every app that may reach every other app (docs/APP_NETWORKS.md)
 MESH_PREFIXLEN = 22                            # room for ~1000 app services on the one mesh network
-MODES = ("open", "declared")                   # open: everything connected unless the owner disconnects it (default)
+MODES = ("open", "declared")                   # declared (default): apps reach only what they are connected to
 LABEL = "org.wizard-os.network"              # kind: app | link | gateway | core
 MARK = "x-wizard-networks"                   # top-level key in the override: what wam set (so it can be removed)
 HEADER = "# App networks: the block marked x-wizard-networks is written by wam (`wam network reconcile`).\n"
@@ -1044,8 +1044,9 @@ def _state_from(doc: dict) -> dict:
             "sensitive": sorted({x for x in (doc.get("sensitive") or []) if isinstance(x, str) and ID.fullmatch(x)})
             if isinstance(doc.get("sensitive"), list) else [],
             "notices": lst("notices")[-50:], "updated_at": doc.get("updated_at"),
-            # The owner's connection mode (App Manager → Connections, `wam network mode`): open unless they chose declared.
-            "mode": "declared" if doc.get("mode") == "declared" else "open"}
+            # The owner's connection mode (App Manager → Connections, `wam network mode`): declared (apps stay apart
+            # unless connected) unless they chose open. Same default as the App Manager's modeOf.
+            "mode": "open" if doc.get("mode") == "open" else "declared"}
 
 
 def connection_state(c, rt) -> dict | None:
@@ -1068,9 +1069,9 @@ def connection_state(c, rt) -> dict | None:
 
 
 def connection_mode(state: dict | None) -> str:
-    """Open (the default) or declared: the owner's choice, kept by the App Manager with the other connection decisions.
-    An App Manager without connection state has no Disconnect or Sensitive, so open there means every app connects."""
-    return "declared" if (state or {}).get("mode") == "declared" else "open"
+    """Declared (the default: apps can't talk to each other unless connected) or open: the owner's choice, kept by the
+    App Manager with the other connection decisions. An App Manager without connection state has no mode: declared."""
+    return "open" if (state or {}).get("mode") == "open" else "declared"
 
 
 def _context(c, rt=None, extra=()):
@@ -1403,6 +1404,7 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
     invalid_networks = {name for name, planned in p["networks"].items()
                         if name in live["networks"] and not network_matches(planned, live["networks"][name])}
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
+    box_kinds = kinds.box_kinds(getattr(c, "home", None))   # the owner's own groups (app-kinds.json)
     for a in p["apps"]:
         out_edges = [e for e in p["edges"] if e["from"] == a["id"]]
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
@@ -1439,8 +1441,10 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             gw = "on its published 127.0.0.1 port"
         apps.append({
             "id": a["id"], "name": a.get("name") or a["id"], "state": a["state"], "why": a.get("why") or "",
-            # the group the Connections map shows it in (wam/kinds.py): agent | app | connector | system
-            "kind": kinds.kind_of(a.get("wizard"), a["id"] in p["gateway"]["core"]),
+            # the group the Connections map shows it in (wam/kinds.py): agent | app | agent-app | connector; Wizard's
+            # own core carries the "comes with Wizard" badge (builtin) wherever the rule puts it
+            "kind": kinds.kind_of(a.get("wizard"), a["id"] in p["gateway"]["core"], box_kinds.get(a["id"])),
+            **({"builtin": True} if a["id"] in p["gateway"]["core"] else {}),
             **({"privacy": "private"} if (a.get("wizard") or {}).get("private") else {}),
             "running": running, "internet": internet, "gateway": gw, "host_access": a.get("host_access") or [],
             "can_reach": [{"to": e["provider"] or e["to"], "declared": e["to"], "reason": e["reason"], "state": e["state"],
@@ -1527,7 +1531,7 @@ def describe(rep: dict) -> str:
     """`wam connections`: one block per app, plain words."""
     open_mode = rep.get("mode") == "open"
     mode = ("Open: everything is connected unless you disconnect it" if open_mode else
-            "Declared: each app reaches only the apps it declares or you connected")
+            "Declared: apps can't talk to each other unless connected (declared, or connected by you)")
     lines = [f"App isolation: {'on' if rep['enabled'] else 'OFF (every app can reach every app)'}"
              f"{f' ({mode})' if rep['enabled'] else ''}; gateway: {rep['gateway']['detail']}",
              f"Live check: {'matches the declarations' if rep['ok'] else 'DRIFT (see below)' if rep['live'] else rep.get('error')}", ""]

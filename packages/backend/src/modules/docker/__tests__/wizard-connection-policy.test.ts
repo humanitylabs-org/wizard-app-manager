@@ -6,7 +6,7 @@ import { beforeEach, afterEach, describe, it, expect } from 'vitest';
 import * as yaml from 'yaml';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { WizardStorage } from '../wizard-storage';
-import { mountAppGrants } from '../wizard-app-grants';
+import { modeOf, mountAppGrants } from '../wizard-app-grants';
 import { WizardSharesController } from '../wizard-shares.controller';
 import { BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '../../auth/auth.guard';
@@ -253,14 +253,19 @@ describe('connection policy: seamless by default, owner in control', () => {
   });
 });
 
-describe('open mode (the default): everything connected unless the owner disconnects it', () => {
+describe('open mode (the owner choice): everything connected unless the owner disconnects it', () => {
+  beforeEach(async () => {
+    await store.setMode('open');
+  });
   const opens = async (to: string) =>
     (await state()).grants
       .filter((g) => g.to === to && g.approved === 'open')
       .map((g) => g.from)
       .sort();
 
-  it('is the default and the owner can switch it; anything else is refused', async () => {
+  it('declared is the default (no mode recorded) and the owner can switch it; anything else is refused', async () => {
+    expect(modeOf({} as any)).toBe('declared');
+    expect(modeOf({ mode: 'open' } as any)).toBe('open');
     expect((await state()).mode).toBe('open');
     expect((await store.setMode('declared')).mode).toBe('declared');
     expect((await state()).mode).toBe('declared');

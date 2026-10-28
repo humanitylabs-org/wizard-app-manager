@@ -34,7 +34,7 @@ def signature(state: dict | None) -> str:
     keep = {k: sorted(json.dumps({x: g.get(x) for x in ("kind", "from", "to", "approved")}, sort_keys=True)
                       for g in state.get(k) or [] if isinstance(g, dict)) for k in ("grants", "denied", "pending")}
     keep["sensitive"] = sorted(state.get("sensitive") or [])
-    keep["mode"] = "declared" if state.get("mode") == "declared" else "open"
+    keep["mode"] = "open" if state.get("mode") == "open" else "declared"   # network.connection_mode
     return hashlib.sha256(json.dumps(keep, sort_keys=True).encode()).hexdigest()
 
 

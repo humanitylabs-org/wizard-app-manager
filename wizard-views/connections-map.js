@@ -2,9 +2,11 @@
 // No DOM here, so tests can check every sentence the owner reads (tests/connections-map.test.mjs).
 //
 // The report (wam/network.py, merged with the owner's decisions by mergeOwnerState) says, per app, what it can reach.
-// The map turns that into: one cluster of apps that all talk to each other (Open mode), and only the exceptions drawn:
-// a pair the owner cut off, a request waiting for his OK, an app set to "Ask me first" (sensitive). Strict mode
-// (declared) draws the connections that exist instead. Words like mesh, grant, drift or declared stay in Details.
+// Declared mode (the default): apps can't talk to each other unless connected, so the map draws only the connections
+// that exist, each a line the owner can tap to disconnect; everything else sits apart. Open mode (the owner's choice):
+// one cluster of apps that all talk to each other, with only the exceptions drawn (a pair the owner cut off, a request
+// waiting for his OK, an app set to "Ask me first"). Agents use every app by default; they reach apps through Wizard,
+// never through the app networks. Words like mesh, grant, drift or declared stay in Details.
 
 const slotName = (to) => String(to ?? '').replace(/^slot:/, '');
 
@@ -20,26 +22,37 @@ export function list(names) {
  * the report's `kind`); the words here are all the owner reads about it.
  */
 export const BANDS = [
-  { key: 'agent', title: 'Agents', blurb: 'Your agents. They do things for you with your apps and connectors.' },
-  { key: 'app', title: 'Apps', blurb: 'Things you open and use. Each has its own screen.' },
-  { key: 'connector', title: 'Connectors', blurb: 'Background services your apps and agent use. Nothing to open day to day.' },
-  { key: 'system', title: 'System', blurb: 'Wizard itself. It runs everything and links your agent to your apps.' },
+  { key: 'agent', title: 'Agents', blurb: 'Who does the work for you.' },
+  { key: 'app', title: 'Apps', blurb: 'Things you use.' },
+  { key: 'agent-app', title: 'Agent apps', blurb: 'Tools mainly for your agent. You can watch what it does with them.' },
+  { key: 'connector', title: 'Connectors', blurb: 'Links to outside services and your accounts.' },
 ];
 const KIND = new Set(BANDS.map((b) => b.key));
+// An older report says `system` for Wizard's own core: it sits with the apps then, still with its badge.
 const kindOf = (a, fallback = 'app') => (KIND.has(a?.kind) ? a.kind : fallback);
 
-/** Which group an item is in, for its sheet: { where: "In Connectors", blurb: "Background services …" }. */
+/** The small badge on Wizard's own pieces (the shell, the Agent Service), in whatever group they sit. */
+export const BUILTIN = 'Comes with Wizard';
+
+/** Which group an item is in, for its sheet: { where: "In Connectors", blurb: "Links to outside services …" }. */
 export function bandOf(kind) {
   const b = BANDS.find((x) => x.key === kind) || BANDS[1];
   return { key: b.key, where: `In ${b.title}`, blurb: b.blurb };
 }
 
-/** What an agent can use, in words that are true today: every app and connector, unless its app lists leave some out. */
+/** What an agent can use, in words that are true today: everything, unless its app lists leave some out. */
 export const canUse = (agent) => {
   const l = agent?.limit;
-  if (!l) return 'every app and connector';
-  return l.can ? `${l.can} of your ${l.of} apps and connectors` : 'none of your apps or connectors';
+  if (!l) return 'everything';
+  return l.can ? `${l.can} of your ${l.of} apps` : 'none of your apps';
 };
+
+/** The Agents group's line: "Your agent can use everything." (agents use every app unless their lists say less). */
+export function agentsLine(agents) {
+  const a = (agents || []).filter(Boolean);
+  if (a.length <= 1) return `Your agent can use ${canUse(a[0])}.`;
+  return a.every((x) => !x.limit) ? 'Your agents can use everything.' : 'Each agent can use what it says below.';
+}
 
 const pairKey = (a, b) => (a < b ? `${a}\0${b}` : `${b}\0${a}`);
 const provides = (r, id) => (r.providers || []).includes(id) || slotName(r.to) === id;
@@ -82,6 +95,7 @@ export function mapModel(d) {
   // Strict mode: the connections that exist are drawn; one the owner cut stays on the map as a cut pair, so it can
   // be reconnected from either app.
   const declaredCut = new Map();
+  const linkRows = new Map(); // Strict mode: the decision rows behind each connected pair (for the line's sheet)
   const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
   const groups = []; // connections to a slot several apps provide: cut as one
   if (mode === 'declared')
@@ -100,6 +114,7 @@ export function mapModel(d) {
         if (!ids.has(r.from) || !ids.has(p) || p === r.from) continue;
         if (r.status === 'connected') {
           links.set(pairKey(r.from, p), [r.from, p].sort());
+          linkRows.set(pairKey(r.from, p), [...(linkRows.get(pairKey(r.from, p)) || []), r]);
           if ((r.providers || []).length <= 1) single.add(pairKey(r.from, p));
         }
         if (r.status === 'disconnected') {
@@ -122,6 +137,7 @@ export function mapModel(d) {
     const ask = un.filter((r) => r.why !== 'disconnected').map((r) => r.app);
     if (mode === 'open') for (const b of cut) if (ids.has(b)) cuts.set(pairKey(a.id, b), [a.id, b].sort());
     let talksTo;
+    let alone = false;
     if (mode === 'off') talksTo = 'every app';
     else if (mode === 'open') {
       const no = un.map((r) => r.app).filter((x) => x !== a.id);
@@ -134,6 +150,7 @@ export function mapModel(d) {
       for (const x of viaShared) shared.add(pairKey(a.id, x));
       const words = [...peers, ...viaShared].map(nm);
       talksTo = words.length ? list(words) : 'no other app';
+      alone = !words.length;
     }
     const waiting = pending.some((r) => r.from === a.id || r.toIds.includes(a.id));
     const warn = (a.drift || []).length > 0 || (a.host_access || []).length > 0 || !['isolated', undefined].includes(a.state);
@@ -153,12 +170,29 @@ export function mapModel(d) {
       warn,
       inOpen,
       enforce,
-      // System is Wizard's own core only (it can't be cut off); an app on the networks is never shown there
-      kind: kindOf(a) === 'system' ? 'app' : kindOf(a),
+      kind: kindOf(a),
+      // Strict mode: connected to no other app (it sits apart on the map)
+      alone: mode === 'declared' && alone,
       state: a.state,
       why: a.why || '',
     };
   });
+  // Strict mode: the groups of apps joined by lines (connected components), so the map can keep each group together
+  const comp = {};
+  if (mode === 'declared') {
+    const up = {};
+    const find = (x) => (up[x] && up[x] !== x ? (up[x] = find(up[x])) : x);
+    for (const [x, y] of links.values()) up[find(x)] = find(y);
+    const roots = [...new Set([...links.values()].flat().map(find))];
+    const nameOfRoot = (r) =>
+      [...links.values()]
+        .flat()
+        .filter((x) => find(x) === r)
+        .map(nm)
+        .sort()[0];
+    roots.sort((x, y) => nameOfRoot(x).localeCompare(nameOfRoot(y)));
+    for (const x of new Set([...links.values()].flat())) comp[x] = roots.indexOf(find(x));
+  }
   const nCuts = cuts.size;
   const nWait = [...held.values()].filter((w) => w === 'pending').length;
   const nAsk = held.size - nWait;
@@ -174,21 +208,35 @@ export function mapModel(d) {
         ? except.length
           ? `All your apps can talk to each other, except ${list(except)}. Tap an app to change it.`
           : 'All your apps can talk to each other. Tap one to cut it off from another.'
-        : shared.size
-          ? 'Strict mode: each app talks only to the apps it asks for, except apps published through Runtipi, which can still reach each other (see Details). Tap one to see or change them.'
-          : 'Strict mode: each app talks only to the apps it asks for. Tap one to see or change them.';
+        : 'Apps can’t talk to each other unless connected.';
+  // Strict mode's second line: what the lines are and what a tap does (and what can't be kept apart)
+  const nLinks = links.size;
+  const hint =
+    mode !== 'declared'
+      ? ''
+      : [
+          nLinks
+            ? `${nLinks === 1 ? 'One connection' : `${nLinks} connections`}: tap a line to disconnect it, or an app to connect it.`
+            : 'Nothing is connected. Tap an app to connect it to another.',
+          shared.size ? 'Apps published through Runtipi can still reach each other (see Details).' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
   const core = all.filter((a) => coreIds.has(a.id));
   // The agents: the ones the box knows that are not apps (the host's agent, the Agent Service's agents registry), and
   // an agent that is part of the core (a fresh box's agent app). None known: one "Your agent", as before.
-  const coreItems = core.map((a) => ({ id: a.id, name: a.name || a.id, kind: kindOf(a, 'system') }));
-  // What an agent may use (the Agent Service's lists, enforced by the gateway), against the apps and connectors here.
-  const usable = out.filter((a) => a.kind === 'app' || a.kind === 'connector');
+  // Wizard's own core sits in the group its wizard.md gives it, with the "comes with Wizard" badge; it can't be cut off.
+  const coreItems = core.map((a) => ({ id: a.id, name: a.name || a.id, kind: kindOf(a), builtin: true }));
+  // What an agent may use (the Agent Service's lists, enforced by the gateway), against the apps here.
+  const usable = out.filter((a) => a.kind !== 'agent');
   const limitOf = (list) => {
     if (!Array.isArray(list)) return null;
     const ok = new Set(list);
     const can = usable.filter((a) => ok.has(a.id)).length;
     return can >= usable.length ? null : { can, of: usable.length };
   };
+  // the ids it may use when its lists leave some out (its sheet marks the rest), else null: everything
+  const allowOf = (list) => (limitOf(list) ? [...list] : null);
   // The main agent without its own lists uses every installed app except private ones (Agent Service #58).
   const privateIds = new Set(all.filter((a) => a.privacy === 'private').map((a) => a.id));
   const mainApps = Array.isArray(d?.main_agent_apps)
@@ -205,6 +253,7 @@ export function mapModel(d) {
       private: !!a.private,
       // the main agent's lists live in .main-agent.json (main_agent_apps), never in a registry entry
       limit: limitOf(a.main ? mainApps : a.apps),
+      allow: allowOf(a.main ? mainApps : a.apps),
     })),
     // a core agent app (a fresh box's agent) unless a registry entry already shows it; it is the main agent
     // unless the box names another one
@@ -217,19 +266,24 @@ export function mapModel(d) {
         main: !known.some((k) => k.main),
         private: false,
         limit: limitOf(mainApps),
+        allow: allowOf(mainApps),
       })),
   ];
-  if (!agents.length) agents.push({ id: '', name: 'Your agent', real: '', main: true, private: false, limit: limitOf(mainApps) });
+  if (!agents.length)
+    agents.push({ id: '', name: 'Your agent', real: '', main: true, private: false, limit: limitOf(mainApps), allow: allowOf(mainApps) });
   return {
     mode,
     apps: out,
     agents,
     backing: [...backing],
-    system: coreItems.filter((a) => a.kind !== 'agent'),
+    builtin: coreItems.filter((a) => a.kind !== 'agent'),
     agent: { ids: core.map((a) => a.id), detail: d?.gateway?.detail || '' },
     cuts: [...cuts.values()],
     waits: [...waits.values()],
     links: [...links.values()],
+    linkRows: Object.fromEntries([...linkRows].map(([k, v]) => [k, v])),
+    comp,
+    hint,
     single: [...single],
     groups,
     pending,
@@ -238,20 +292,59 @@ export function mapModel(d) {
 }
 
 /**
- * The map's groups top to bottom, each with its items: [{ key, title, blurb, agents, apps, system }]. An empty group
- * is left out. `agents` are agent nodes, `apps` the app nodes (cut, waiting, ask first), `system` plain nodes.
+ * The map's groups top to bottom, each with its items: [{ key, title, blurb, agents, apps, builtin }]. An empty group
+ * is left out. `agents` are agent nodes (the group's line says what they can use), `apps` the app nodes (connected,
+ * cut, waiting, ask first), `builtin` Wizard's own pieces in that group (badge, no connection controls).
  */
 export function bands(model) {
   return BANDS.map((b) => ({
     ...b,
+    blurb: b.key === 'agent' ? agentsLine(model.agents) : b.blurb,
     agents: b.key === 'agent' ? model.agents : [],
     apps: model.apps.filter((a) => a.kind === b.key),
-    system: (model.system || []).filter((s) => s.kind === b.key),
-  })).filter((b) => b.agents.length + b.apps.length + b.system.length);
+    builtin: (model.builtin || []).filter((s) => s.kind === b.key),
+  })).filter((b) => b.agents.length + b.apps.length + b.builtin.length);
 }
 
-/** The sentence at the top of an app's sheet: "Movies can talk to: everything except Shopping". */
-export const talksSentence = (app) => `${app.name} can talk to: ${app.talksTo}`;
+/** The sentence at the top of an app's sheet: "Money can talk to: SimpleFIN", "Movies can’t talk to any other app". */
+export const talksSentence = (app) => (app.alone ? `${app.name} can’t talk to any other app.` : `${app.name} can talk to: ${app.talksTo}`);
+
+/** Strict mode: the items an app can be connected to (Connect to…): every other item on the app networks that it
+ * isn't connected to or cut off from (a cut comes back with Reconnect), by name. */
+export function connectable(model, id) {
+  const me = model.apps.find((a) => a.id === id);
+  if (model.mode !== 'declared' || !me?.enforce) return [];
+  const linked = new Set(model.links.filter((p) => p.includes(id)).flat());
+  const no = new Set([id, ...linked, ...me.cut]);
+  return model.apps.filter((a) => a.enforce && !no.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
+}
+
+/** Strict mode: one line of the map in words, for its sheet: who connected the pair and what Disconnect does. */
+export function linkInfo(model, a, b) {
+  const rows = (model.linkRows || {})[pairKey(a, b)] || [];
+  const nm = (id) => model.apps.find((x) => x.id === id)?.name || slotName(id);
+  const why = rows.map((r) => {
+    const to = (r.providers || []).length > 1 ? list(r.providers.map(nm)) : nm((r.providers || [])[0] || slotName(r.to));
+    return r.origin === 'owner'
+      ? 'You connected them.'
+      : r.origin === 'requested'
+        ? `${nm(r.from)} asked to talk to ${to}, and it was allowed.`
+        : `${nm(r.from)} says it needs ${to} to work.`;
+  });
+  // connections to a slot several apps provide: Disconnect denies each as one (it takes the other providers too)
+  const groups = rows.filter((r) => (r.providers || []).length > 1);
+  const needs = rows.filter((r) => r.origin !== 'owner').map((r) => nm(r.from));
+  return {
+    a,
+    b,
+    title: `${nm(a)} and ${nm(b)} are connected`,
+    why: [...new Set(why)],
+    groups,
+    // what Disconnect denies: every connected row between the two, whichever app declared it (each slot row once)
+    rows: rows.map((r) => ({ from: r.from, to: r.to })),
+    warn: needs.length ? `${list([...new Set(needs)])} may stop working properly without it.` : '',
+  };
+}
 
 /**
  * The owner's decision row behind a pair (who asked whom), so Reconnect / Allow / Don't allow go to the same row the
@@ -313,7 +406,9 @@ export function doneWords(kind, aName, bName) {
     deny: `${aName} can’t talk to ${bName}.`,
     'ask-on': `${aName} now asks you first before a new app talks to it.`,
     'ask-off': `${aName} no longer asks you first.`,
-    strict: 'Strict mode is on: apps only reach what they ask for.',
-    open: 'Strict mode is off: all your apps can talk to each other.',
+    connect: `${aName} and ${bName} are connected now.`,
+    disconnect: `${aName} and ${bName} aren’t connected now.`,
+    strict: 'Apps can’t talk to each other now unless connected.',
+    open: 'All your apps can talk to each other now.',
   }[kind];
 }
