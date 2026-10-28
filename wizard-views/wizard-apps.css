@@ -402,6 +402,18 @@
   min-height: 44px;
 }
 
+/* Buttons in the map and its sheet: kit tokens, like the Home map's action buttons (accent tint + hairline ring). */
+.wam .wam-cm .wam-btn,
+.wam.wam-cm-sheet .wam-btn {
+  background: var(--cm-chip);
+  border-color: var(--cm-chip-line);
+}
+.wam .wam-cm .wam-btn.primary,
+.wam.wam-cm-sheet .wam-btn.primary {
+  background: color-mix(in srgb, var(--cm-accent) 24%, transparent);
+  border-color: color-mix(in srgb, var(--cm-accent) 55%, transparent);
+}
+
 /* A request waiting for the owner: one plain card, Allow on the thumb side. */
 .wam-cm-asks {
   width: min(100%, 520px);
