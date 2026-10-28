@@ -64,3 +64,12 @@ gateway-projected registry URLs. Focused regression tests cover these cases.
 The staged job's `job.json`, source archive identity, JUnit, stdout logs and final
 `evidence/receipt.json` are the authoritative provenance/results. No deployment,
 merge, signed-in tailnet publication, or full-suite pass is claimed here.
+
+## Clean-VM acceptance at c113a91f (forum KVM, 28 Oct 2026): PASS
+
+Evidence: forum `/srv/work/privsep/slice4/20261028T000818Z-staging/evidence` (receipt.json). As unprivileged `hermes`
+through the agent-scoped client: backup, restore from own repository, undo (apps back to prior running state);
+link publish/unpublish reached the `wizard-system` operator path (state NeedsLogin: no tailnet in guest, private URL
+unproven); build from a hermes-owned source and update to 0.2.0 healthy, build directory not agent-writable;
+symlink and `/:/host` sources refused; `hermes update --check` up to date; final sudo/Docker/socket/Tailscale denials
+pass; doctor passed. Full pytest 1604, only the pre-existing `test_chats_views` seal failure. VM stopped.
