@@ -946,7 +946,8 @@ export async function renderConnections(el, ctx = {}) {
           if (!items.length) return '';
           return `<div class="wam-cm-uses" role="group" aria-label="${esc(b.title)}"><h5>${esc(b.title)}</h5><div class="wam-cm-chips">${items
             .map((x) => {
-              const no = g.allow && !g.allow.includes(x.id);
+              // Wizard's own pieces are how the agent reaches everything: never listed as out of its reach
+              const no = !x.builtin && g.allow && !g.allow.includes(x.id);
               return `<span class="wam-cm-chip${no ? ' is-off' : ''}" data-cm-agent-use="${esc(x.id)}">${cmGlyph(x)}<span>${esc(x.name)}</span></span>`;
             })
             .join('')}</div></div>`;
