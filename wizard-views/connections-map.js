@@ -65,6 +65,7 @@ export function mapModel(d) {
       }
   }
   for (const r of pending) for (const p of r.toIds) if (ids.has(r.from) && ids.has(p)) waits.set(pairKey(r.from, p), [r.from, p].sort());
+  const shared = new Set(); // Strict mode: pairs that still meet on Runtipi's shared network
   const held = new Map(); // Open mode: pairs a sensitive app holds back (waiting for the owner, or not connected yet)
   const out = apps.map((a) => {
     const un = mode === 'open' && a.open ? a.open.unreachable || [] : [];
@@ -78,7 +79,12 @@ export function mapModel(d) {
       talksTo = a.open ? (no.length ? `everything except ${list(no.map(nm))}` : 'every app') : 'every app, through the server';
     } else {
       const peers = [...links.values()].filter((p) => p.includes(a.id)).map((p) => (p[0] === a.id ? p[1] : p[0]));
-      talksTo = peers.length ? list(peers.map(nm)) : 'no other app';
+      // Apps that keep Runtipi's shared network (published through its reverse proxy) still reach each other there,
+      // undeclared: wam reports them as `shared-network`, and the map says so instead of overstating isolation.
+      const viaShared = (a.can_reach || []).filter((e) => e.state === 'shared-network' && e.to !== a.id && !peers.includes(e.to)).map((e) => e.to);
+      for (const x of viaShared) shared.add(pairKey(a.id, x));
+      const words = [...peers, ...viaShared].map(nm);
+      talksTo = words.length ? list(words) : 'no other app';
     }
     const waiting = pending.some((r) => r.from === a.id || r.toIds.includes(a.id));
     const warn = (a.drift || []).length > 0 || (a.host_access || []).length > 0 || !['isolated', undefined].includes(a.state);
@@ -114,7 +120,9 @@ export function mapModel(d) {
         ? except.length
           ? `All your apps can talk to each other, except ${list(except)}. Tap an app to change it.`
           : 'All your apps can talk to each other. Tap one to cut it off from another.'
-        : 'Strict mode: each app talks only to the apps it asks for. Tap one to see or change them.';
+        : shared.size
+          ? 'Strict mode: each app talks only to the apps it asks for, except apps published through Runtipi, which can still reach each other (see Details). Tap one to see or change them.'
+          : 'Strict mode: each app talks only to the apps it asks for. Tap one to see or change them.';
   const core = all.filter((a) => coreIds.has(a.id));
   return {
     mode,
@@ -138,6 +146,16 @@ export const talksSentence = (app) => `${app.name} can talk to: ${app.talksTo}`;
 export function pairRow(controls, a, b, status) {
   const rows = (controls || []).filter((r) => !status || r.status === status);
   return rows.find((r) => r.from === a && provides(r, b)) || rows.find((r) => r.from === b && provides(r, a)) || { from: a, to: b, providers: [b] };
+}
+
+/**
+ * The decisions a cut writes. Open mode: one Disconnect for the pair (it cuts both ways). Strict mode: a denial of
+ * every connected row between the two, whichever app declared it, since each row links on its own.
+ */
+export function cutRows(mode, controls, a, b) {
+  if (mode !== 'declared') return [{ from: a, to: b }];
+  const rows = (controls || []).filter((r) => r.status === 'connected' && ((r.from === a && provides(r, b)) || (r.from === b && provides(r, a))));
+  return rows.length ? rows.map((r) => ({ from: r.from, to: r.to })) : [{ from: a, to: b }];
 }
 
 /** The apps an app can be cut off from (it still talks to them), by name. */

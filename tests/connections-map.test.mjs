@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cuttable, doneWords, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
+import { cutRows, cuttable, doneWords, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
   id,
@@ -167,4 +167,22 @@ test('The top line counts pairs a sensitive app holds back, not only cuts', () =
     both.lead,
     'All your apps can talk to each other, except one pair you cut off and one new pair you haven’t approved yet. Tap an app to change it.',
   );
+});
+
+test('A Strict-mode cut denies the connection that exists, whichever app declared it', () => {
+  const controls = [{ from: 'wizard-cloudflare', to: 'backup', providers: ['backup'], status: 'connected' }];
+  assert.deepEqual(cutRows('declared', controls, 'backup', 'wizard-cloudflare'), [{ from: 'wizard-cloudflare', to: 'backup' }]);
+  const both = [...controls, { from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare'], status: 'connected' }];
+  assert.equal(cutRows('declared', both, 'backup', 'wizard-cloudflare').length, 2);
+  assert.deepEqual(cutRows('open', controls, 'backup', 'wizard-cloudflare'), [{ from: 'backup', to: 'wizard-cloudflare' }]);
+});
+
+test('Strict mode says what apps on Runtipi’s shared network still reach', () => {
+  const d = report([app('files', 'Files', [], { state: 'exposed' }), app('photos', 'Photos', [], { state: 'exposed' })], { mode: 'declared' });
+  for (const a of d.apps) a.open = null;
+  d.apps[0].can_reach = [{ to: 'photos', state: 'shared-network', declared: false }];
+  d.apps[1].can_reach = [{ to: 'files', state: 'shared-network', declared: false }];
+  const m = mapModel(d);
+  assert.equal(talksSentence(m.apps[0]), 'Files can talk to: Photos');
+  assert.match(m.lead, /except apps published through Runtipi, which can still reach each other/);
 });

@@ -12,7 +12,7 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
-import { cuttable, doneWords, list, mapModel, pairRow, talksSentence } from './connections-map.js';
+import { cutRows, cuttable, doneWords, list, mapModel, pairRow, talksSentence } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
 const STORE = 'wizardapps';
@@ -1014,10 +1014,15 @@ export async function renderConnections(el, ctx = {}) {
     }
     if (b.matches('[data-cm-cut]')) {
       const to = b.dataset.cmCut;
-      return void run(`cut:${to}`, () => grant(sheetId, to, false), doneWords('cut', nameOf(sheetId), nameOf(to)), {
-        close: true,
-        undo: { from: sheetId, to },
-      });
+      const rows = cutRows(el._wamModel?.mode, d.controls, sheetId, to);
+      return void run(
+        `cut:${to}`,
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, false);
+        },
+        doneWords('cut', nameOf(sheetId), nameOf(to)),
+        { close: true, undo: { rows, a: sheetId, b: to } },
+      );
     }
     if (b.matches('[data-cm-reconnect]')) {
       const other = b.dataset.cmReconnect;
@@ -1040,8 +1045,14 @@ export async function renderConnections(el, ctx = {}) {
       });
     }
     if (b.matches('[data-cm-undo]') && toast?.undo) {
-      const { from, to } = toast.undo;
-      return void run('undo', () => grant(from, to, true), doneWords('reconnect', nameOf(from), nameOf(to)));
+      const { rows, a, b } = toast.undo;
+      return void run(
+        'undo',
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, true);
+        },
+        doneWords('reconnect', nameOf(a), nameOf(b)),
+      );
     }
     if (b.matches('[data-cm-askfirst]')) {
       const id = b.dataset.cmAskfirst;
