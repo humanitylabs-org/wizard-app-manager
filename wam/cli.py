@@ -1203,12 +1203,13 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
     e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
     Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
@@ -1217,6 +1218,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
     out = []
     for row in (doc.get("default_apps") or {}).values():
         if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        if only is not None and row.get("app") not in only:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id
@@ -1983,6 +1986,8 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
+    up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
     au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
                                              "(default) / --ask, --hold / --unhold <id>")
     aug = au.add_mutually_exclusive_group()
@@ -1993,6 +1998,11 @@ def main(argv: list[str] | None = None) -> int:
     aug.add_argument("--ensure-timer", action="store_true")
     au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
     args = ap.parse_args(argv)
+    if args.cmd == "updates" and args.quick_apply:
+        from . import quick_update
+        res = quick_update.run(args.quick_apply, auto=args.quick_auto)
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("done") or res.get("fallback") else 1
     if args.cmd == "app-updates":
         from . import app_updates as au_
         res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
