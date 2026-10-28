@@ -80,6 +80,34 @@ def test_verify_catches_every_way_an_update_fails():
     assert _verify({"status": "running", "version": 22}, ep=None)[0] is None
 
 
+def test_verify_ignores_an_endpoint_that_did_not_answer_before_the_update_either():
+    # morning-report on a fresh 0.3.73 box: /healthz answers 403 "Unknown host." from loopback before and after
+    # the update; requiring it rolled back every working update of that app.
+    before = {**BEFORE, "endpoint_ok": False}
+    problem = au.verify(None, None, "money:wizardapps", "money", {"status": "running", "version": 22}, before,
+                        sleep=lambda s: None, containers=lambda urn: ["running", "running"],
+                        probe=lambda u, m, t: False, endpoint=lambda c, rt, a: ("http://127.0.0.1:1/healthz", False),
+                        probe_seconds=0)
+    assert problem is None
+    # containers still decide
+    assert "restarting" in au.verify(None, None, "money:wizardapps", "money", {"status": "running", "version": 22},
+                                     before, sleep=lambda s: None, containers=lambda urn: ["running", "restarting"],
+                                     probe=lambda u, m, t: False, endpoint=lambda c, rt, a: None, probe_seconds=0)
+    # an endpoint that answered before must answer after
+    assert "health check fails" in au.verify(
+        None, None, "money:wizardapps", "money", {"status": "running", "version": 22}, {**BEFORE, "endpoint_ok": True},
+        sleep=lambda s: None, containers=lambda urn: ["running", "running"], probe=lambda u, m, t: False,
+        endpoint=lambda c, rt, a: ("http://127.0.0.1:1/healthz", False), probe_seconds=0)
+
+
+def test_baseline_probes_only_running_apps_with_an_endpoint():
+    ep = lambda c, rt, a: ("http://127.0.0.1:1/healthz", False)  # noqa: E731
+    assert au.baseline(None, None, "money", "running", endpoint=ep, probe=lambda u, m, t: False) is False
+    assert au.baseline(None, None, "money", "running", endpoint=ep, probe=lambda u, m, t: True) is True
+    assert au.baseline(None, None, "money", "stopped", endpoint=ep, probe=lambda u, m, t: True) is None
+    assert au.baseline(None, None, "money", "running", endpoint=lambda c, rt, a: None, probe=lambda u, m, t: True) is None
+
+
 class FakeRt:
     def __init__(self, backups):
         self.backups, self.restored, self.started = backups, [], []

@@ -12,7 +12,8 @@ reached new installs only; existing boxes (including the publisher's own) kept t
    settings first, the same owner gate for new host access, networks reconciled.
 3. **Verify.** The app is back in the state it was in (running or stopped), its version moved, no container restarts
    and no fewer containers run than before (after a 20 s settle), and its declared `health` URL or MCP endpoint
-   answers within 90 s.
+   answers within 90 s. That last check applies only when the endpoint answered just before the update: an app whose
+   endpoint refuses the loopback probe anyway (e.g. a host check answering 403) is judged by its containers.
 4. **Roll back** anything that fails from the backup the update just made. If the update never applied (Runtipi kept
    the old version), nothing is restored. A failed version is skipped for 7 days or until a newer version ships.
 5. **Tell the owner** in one Notifications line: what was updated, what was kept back and why.
