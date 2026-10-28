@@ -49,7 +49,8 @@ async function req(url, opts = {}) {
   if (!r.ok) throw new Error(body.message || body.error || `HTTP ${r.status}`);
   return body;
 }
-const post = (url, data, method = 'POST') => req(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) });
+const post = (url, data, method = 'POST', headers = {}) =>
+  req(url, { method, headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) });
 
 // ---- data --------------------------------------------------------------------------------------------------------
 const cache = { apps: null, at: 0, index: null, indexAt: 0 };
@@ -590,6 +591,7 @@ export async function renderConnections(el, ctx = {}) {
   el.classList.add('wam');
   let open = '';
   let canAct = false;
+  let readOnlyWhy = '';
   let busy = '';
   let msg = '';
   const ago = (t) => {
@@ -786,7 +788,13 @@ export async function renderConnections(el, ctx = {}) {
         </button>${detail}`;
       })
       .join('');
-    const readOnly = canAct ? '' : note('Read-only here: changing connections needs the App Manager owner sign-in (or `wam grants` on the server).');
+    const readOnly = canAct
+      ? ''
+      : note(
+          readOnlyWhy
+            ? `Read-only here: ${readOnlyWhy}.`
+            : 'Read-only here: changing connections needs the App Manager owner sign-in (or `wam grants` on the server).',
+        );
     el.innerHTML = `<div class="st-group wam-conn"><h4>Connections</h4>
       <p class="st-note wam-note">${esc(head)} ${check} <span class="wam-conn-at">Checked ${esc(ago(d.checked_at))}</span></p>
       ${modeHtml}
@@ -798,10 +806,14 @@ export async function renderConnections(el, ctx = {}) {
     try {
       const st = await req(`${c.api}/apps/wizard/connections`);
       if (!Array.isArray(st.grants)) throw new Error('no state');
-      canAct = true;
+      // The owner listener answers reads from anywhere, but refuses changes from the box itself (its apps reach it
+      // with the owner's identity too); it says so up front instead of after a tap.
+      canAct = st.owner_writes !== false;
+      readOnlyWhy = st.owner_writes === false ? st.owner_writes_why || '' : '';
       return st;
     } catch {
       canAct = false;
+      readOnlyWhy = '';
       return null;
     }
   };
@@ -852,7 +864,7 @@ export async function renderConnections(el, ctx = {}) {
       const words = { disconnect: 'Disconnected', reconnect: 'Reconnected', approve: 'Approved', deny: 'Denied', connect: 'Connected' };
       void run(
         `${kind}:${from}:${to}`,
-        () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve }),
+        () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve }, 'POST', c.headers),
         `${words[kind]}. The network follows within seconds.`,
       );
       return;
@@ -864,7 +876,7 @@ export async function renderConnections(el, ctx = {}) {
       const mode = m.dataset.wamMode;
       void run(
         `mode:${mode}`,
-        () => post(`${c.api}/apps/wizard/connection-mode`, { mode }),
+        () => post(`${c.api}/apps/wizard/connection-mode`, { mode }, 'POST', c.headers),
         mode === 'open' ? 'Open: everything is connected unless you disconnect it.' : 'Declared: only declared and approved connections.',
       );
       return;
@@ -879,7 +891,7 @@ export async function renderConnections(el, ctx = {}) {
       if (!to) return;
       void run(
         `cut:${from}`,
-        () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve: false }),
+        () => post(`${c.api}/apps/${encodeURIComponent(from)}:${STORE}/app-grants`, { to, approve: false }, 'POST', c.headers),
         'Disconnected both ways. The network follows within seconds.',
       );
       return;
@@ -892,7 +904,7 @@ export async function renderConnections(el, ctx = {}) {
       const on = s.getAttribute('aria-pressed') !== 'true';
       void run(
         `sens:${id}`,
-        () => post(`${c.api}/apps/${encodeURIComponent(id)}:${STORE}/sensitive`, { sensitive: on }),
+        () => post(`${c.api}/apps/${encodeURIComponent(id)}:${STORE}/sensitive`, { sensitive: on }, 'POST', c.headers),
         on ? 'Marked sensitive: new connections to it will wait for your OK.' : 'No longer sensitive.',
       );
       return;

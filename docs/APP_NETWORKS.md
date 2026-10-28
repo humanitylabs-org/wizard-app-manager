@@ -162,6 +162,16 @@ unless the owner allows it, and stops before the update when its networks can't 
 offers only Connections: My Apps, the App Store and Resources need Runtipi's API and the Wizard front, which live on the
 shell's origin.
 
+The same view with its owner controls opens from Wizard on the owner's phone or computer at
+`https://<box>:<shell port>/wizard-os-home/store-install/_connections/` (tailnet only). `wam serve`'s owner listener
+(:7791, behind the shell's Tailscale Serve mount, `wam/connections_view.py`) serves the page, the live report and the
+owner's decisions, and makes a change through the App Manager's owner API, exactly as `wam grants` does. Reads need
+the owner's Tailscale login. A change also needs another tailnet device: Serve labels connections from the box's own
+address with the owner's login, and every app container reaches Serve from there, so from the box itself the page is
+read-only and says why (use `wam grants` there). Only the Connections decisions are reachable on that path (Disconnect /
+Reconnect, Approve / Deny, Sensitive, Open / Declared), never installs, removals or other Runtipi calls. To give it a
+launcher tile, add it to the owner's `launcher.json` `links` (Agent Service).
+
 ## Open mode (the default)
 
 The owner's mode is kept with the other connection decisions in the App Manager's `wizard-grants.json` (`mode`, missing
