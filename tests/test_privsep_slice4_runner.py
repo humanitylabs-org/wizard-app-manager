@@ -72,3 +72,111 @@ def test_guest_boot_and_teardown_are_reused_and_no_stock_hermes_edit():
     prep = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
                 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'prep')
     subprocess.run(['bash', '-n'], input=prep, text=True, check=True)
+
+
+@pytest.mark.parametrize('failure', ['nonzero', 'exception'])
+@pytest.mark.parametrize('failed_phase', ['links', 'restore', 'build'])
+def test_slice4_phase_failure_does_not_hide_later_phases(tmp_path, failure, failed_phase):
+    import hashlib
+    import traceback
+
+    tree = ast.parse(RUNNER.read_text())
+    names = {'require_step', 'run_independent_phases'}
+    scope = {'root': tmp_path, 'receipt': receipt(), 'save': lambda: None,
+             'hashlib': hashlib, 'traceback': traceback}
+    scope['receipt']['steps'] = []
+    exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)
+                                 and n.name in names], type_ignores=[]), str(RUNNER), 'exec'), scope)
+    seen = []
+
+    def phase(name, timeout=1800, required=True):
+        assert not required  # the independent collector owns failure accounting
+        seen.append(name)
+        if name == failed_phase and failure == 'exception':
+            raise RuntimeError('injected transport failure')
+        code = 1 if name == failed_phase else 0
+        scope['receipt']['steps'].append({'name': 'candidate-slice4-' + name, 'exit': code})
+        return code
+
+    def owned():
+        seen.append('system-owned-build')
+        scope['receipt']['steps'].append({'name': 'candidate-slice4-system-owned-build', 'exit': 0})
+        return 0
+
+    def service():
+        seen.append('service-uid')
+        scope['receipt']['steps'].append({'name': 'candidate-service-uid', 'exit': 0})
+        return 0
+
+    def guest(name, command, timeout):
+        seen.append(name.removeprefix('slice4-'))
+        scope['receipt']['steps'].append({'name': 'candidate-' + name, 'exit': 0})
+        return 0
+
+    scope.update(agent_phase=phase, system_owned_build=owned, service_uid=service, guest=guest)
+    # Exercise the actual list wired into guest_vm, not a parallel test-only list.
+    assignment = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                      and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'outcomes'
+                      and isinstance(n.value, ast.Call))
+    exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(RUNNER), 'exec'), scope)
+    assert seen == ['backup', 'app-mutate', 'restore', 'app-restored', 'undo', 'app-undone',
+                    'links', 'build', 'system-owned-build', 'hermes', 'denials', 'service-uid']
+    failed_name = 'candidate-slice4-' + failed_phase
+    assert scope['receipt']['failures'] == [failed_name]
+    assert scope['outcomes'][failed_name] == 1
+    assert all(code == 0 for name, code in scope['outcomes'].items() if name != failed_name)
+    finalize, _ = helper()
+    finalize(scope['receipt'])
+    assert not scope['receipt']['passed']
+
+
+def test_slice4_deadline_interrupt_still_tears_down_instead_of_continuing(tmp_path):
+    tree = ast.parse(RUNNER.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run_independent_phases')
+    scope = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(RUNNER), 'exec'), scope)
+    seen = []
+
+    def deadline():
+        raise InterruptedError('deadline')
+
+    with pytest.raises(InterruptedError):
+        scope['run_independent_phases']([('deadline', deadline), ('later', lambda: seen.append(True))])
+    assert not seen
+
+
+@pytest.mark.parametrize('scenario', ['ready', 'timeout', 'unrelated_error'])
+def test_link_readiness_wait_is_bounded_and_only_retries_admission(scenario):
+    import json
+    from types import SimpleNamespace
+
+    tree = ast.parse((RUNNER.parent / 'guest.py').read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'wait_private_link')
+    clock = [0]
+    calls = []
+    rows = []
+    result = {'operator_uid': 991, 'state': 'NeedsLogin', 'published': False}
+
+    def wam(*argv, code):
+        assert code == (0, 1)
+        calls.append(argv)
+        ready = scenario == 'ready' and len(calls) == 2
+        error = ('operator permission denied' if scenario == 'unrelated_error'
+                 else 'installed running app with a loopback page required')
+        rows.append({'exit': 0 if ready else 1, 'stderr': json.dumps({'error': error})})
+        return result if ready else ''
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    scope = {'wam': wam, 'results': rows, 'json': json,
+             'time': SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'guest.py', 'exec'), scope)
+    if scenario == 'ready':
+        assert scope['wait_private_link']('publish', 2) == result
+        assert len(calls) == 2 and clock[0] == 1
+    else:
+        with pytest.raises(AssertionError):
+            scope['wait_private_link']('publish', 2)
+        assert len(calls) == (1 if scenario == 'unrelated_error' else 3)
+        assert clock[0] <= 2

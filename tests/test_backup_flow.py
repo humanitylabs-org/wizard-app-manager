@@ -245,7 +245,9 @@ def check_imported(new, rec):
     # a replaced app keeps this box's user-config (wiring), from the Runtipi snapshot
     assert (rt / "user-config/wizardapps/files-app/app.env").read_text() == "WIZARD_TRUSTED_ORIGINS=http://new-box\n"
     assert (rt / "app-data/wizardapps/whoami/data/x").read_text() == "whoami data"   # left alone
-    assert rec["apps"]["notes-app"] == "running" and rec["apps"]["files-app"] == "stopped"
+    # Files was already running on this box; the snapshot's stopped choice must
+    # not leave a previously available app down after replacing its data.
+    assert rec["apps"]["notes-app"] == "running" and rec["apps"]["files-app"] == "running"
     # files
     assert (rt / "media/Documents/plan.txt").read_text() == "the owner's plan"
     assert not (rt / "media/existing.txt").exists()

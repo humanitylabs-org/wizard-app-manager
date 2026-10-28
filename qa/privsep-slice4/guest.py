@@ -15,13 +15,36 @@ source = home / 'slice4-source' / 'slice4-app'
 results = []
 
 
-def wam(*argv, code=0):
+def wam(*argv, code: int | tuple[int, ...] = 0):
     p = subprocess.run(['wam', *argv], capture_output=True, text=True, timeout=1800)
     row = {'argv': list(argv), 'exit': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
     results.append(row)
     print(json.dumps(row), flush=True)
-    assert p.returncode == code, row
+    assert p.returncode in ((code,) if isinstance(code, int) else code), row
     return json.loads(p.stdout) if p.stdout.strip().startswith(('{', '[')) else p.stdout
+
+
+def wait_private_link(verb, deadline):
+    """Retry only the exact running+loopback admission, never tailnet/errors.
+
+    Runtipi's asynchronous health transition used to outlive successful Undo.
+    Keep a bounded readiness guard without weakening the publication assertion.
+    """
+    attempts = 0
+    while True:
+        got = wam('links', verb, 'wizard-calendar', code=(0, 1))
+        attempts += 1
+        row = results[-1]
+        if row['exit'] == 0:
+            print(json.dumps({'link_readiness': 'running app with loopback page',
+                              'verb': verb, 'attempts': attempts}), flush=True)
+            return got
+        error = json.loads(row['stderr']).get('error')
+        assert error == 'installed running app with a loopback page required', row
+        print(json.dumps({'link_readiness_wait': error, 'verb': verb}), flush=True)
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, 'running+loopback page did not become ready within 90 seconds'
+        time.sleep(min(1, remaining))
 
 
 def health(updated=False):
@@ -64,8 +87,9 @@ elif phase == 'undo':
     assert Path('/var/lib/wizard-os/runtipi/media/slice4-files.txt').read_text() == 'before-restore\n'
     print(json.dumps({'undo': 'passed'}))
 elif phase == 'links':
+    deadline = time.monotonic() + 90
     for verb in ('publish', 'unpublish'):
-        got = wam('links', verb, 'wizard-calendar')
+        got = wait_private_link(verb, deadline)
         assert got['operator_uid'] == int(sys.argv[2]) and got['operator_uid'] != os.getuid()
         assert got['state'] != 'Running' and not got['published']
         print(json.dumps({'tailnet_dependent': True, 'operator_path': 'wizard-system', 'result': got}))

@@ -62,7 +62,9 @@ def test_move_system_slots_and_undo(world, source, destination, src, dst):
     assert json.loads((new.runtipi / "apps/wizardapps" / dst / "config.json").read_text())["id"] == dst
     if "wizard-ux" in destination:
         assert (new.runtipi / "app-data/wizardapps/wizard-ux/data/state.db").read_text() == "new-wizard-ux"
-    assert new.rt.apps[dst + ":wizardapps"]["status"] == "stopped"
+    # Mapping replaces data, not the destination's availability: it ran before
+    # restore and must be running again once restore returns.
+    assert new.rt.apps[dst + ":wizardapps"]["status"] == "running"
     assert not any(c[0] == "install" and c[1].split(":")[0] in source for c in new.rt.calls)
     assert sum(u.split(":")[0] in ("wizard-shell", "wizard-agent-service") for u in new.rt.apps) == 1
     _, journal = restore.last_restore(new.box())

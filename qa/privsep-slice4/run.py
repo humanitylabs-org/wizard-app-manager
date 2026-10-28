@@ -66,6 +66,24 @@ def require_step(name, code):
     save()
 
 
+def run_independent_phases(actions):
+    """A failed command or phase exception must not hide unrelated proofs."""
+    outcomes = {}
+    for name, action in actions:
+        try:
+            outcomes[name] = action()
+        except InterruptedError:
+            raise  # the job deadline still owns bounded VM teardown
+        except Exception:
+            path = root / (name + '-exception.log')
+            path.write_text(traceback.format_exc())
+            receipt['steps'].append({'name': name, 'exit': 1, 'log': path.name,
+                                     'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+            outcomes[name] = 1
+        require_step(name, outcomes[name])
+    return outcomes
+
+
 HERMES_SETUP = r'''useradd -m -s /bin/bash hermes
 loginctl enable-linger hermes
 uid=$(id -u hermes)
@@ -367,33 +385,46 @@ printf 'snapshot\n' > "$sys/runtipi/app-data/wizardapps/wizard-calendar/data/sli
             guest('slice4-prepare', prep, 600, True)
             guest('slice4-script', "cat > /home/hermes/slice4-guest.py <<'SLICE4_SCRIPT'\n" + guest_script +
                 '\nSLICE4_SCRIPT\nchown hermes:hermes /home/hermes/slice4-guest.py\n', 60, True)
-            def agent_phase(phase, timeout=1800):
-                guest('slice4-' + phase, 'system_uid=$(id -u wizard-system); runuser -u hermes -- '
+            def agent_phase(phase, timeout=1800, required=True):
+                return guest('slice4-' + phase, 'system_uid=$(id -u wizard-system); runuser -u hermes -- '
                     'env PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin '
-                    'bash -c \'cd "$HOME"; python3 /home/hermes/slice4-guest.py ' + phase + ' "$1"\' bash "$system_uid"', timeout, True)
-            agent_phase('backup')
-            guest('slice4-app-mutate', "printf 'before-restore\\n' > /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker", 60, True)
-            agent_phase('restore')
-            guest('slice4-app-restored', "test \"$(cat /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker)\" = snapshot", 60, True)
-            agent_phase('undo')
-            guest('slice4-app-undone', "test \"$(cat /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker)\" = before-restore", 60, True)
-            agent_phase('links', 180)
-            receipt['tailnet_link_status'] = 'operator request exercised without tailnet credentials; actual private URL unproven'
-            agent_phase('build')
-            guest('slice4-system-owned-build', "test \"$(stat -c %U /var/lib/wizard-os/.wizard-os/build-work)\" = wizard-system; "
-                "test \"$(stat -c %a /var/lib/wizard-os/.wizard-os/build-work)\" = 700; "
-                "test \"$(stat -c %U /var/lib/wizard-os/.wizard-os/staged-apps/slice4-app)\" = wizard-system", 60, True)
-            agent_phase('hermes', 180)
-            agent_phase('denials', 180)
-            save()
-            guest('service-uid',r'''cid=$(docker ps -q --filter label=com.docker.compose.service=wizard-agent-service)
+                    'bash -c \'cd "$HOME"; python3 /home/hermes/slice4-guest.py ' + phase + ' "$1"\' bash "$system_uid"', timeout, required)
+            def system_owned_build():
+                return guest('slice4-system-owned-build', "test \"$(stat -c %U /var/lib/wizard-os/.wizard-os/build-work)\" = wizard-system; "
+                    "test \"$(stat -c %a /var/lib/wizard-os/.wizard-os/build-work)\" = 700; "
+                    "test \"$(stat -c %U /var/lib/wizard-os/.wizard-os/staged-apps/slice4-app)\" = wizard-system", 60)
+
+            def service_uid():
+                return guest('service-uid',r'''cid=$(docker ps -q --filter label=com.docker.compose.service=wizard-agent-service)
 test -n "$cid"
 docker inspect "$cid" --format '{{json .Config.User}} {{json .HostConfig.CapDrop}} {{json .HostConfig.SecurityOpt}}'
 docker exec "$cid" id
 docker exec "$cid" node -e 'if (process.getuid()!==Number(process.argv[1])) process.exit(1)' "$(id -u hermes)"
 curl -fsS http://127.0.0.1:8642/health
 curl -fsS http://127.0.0.1:8923/wizard/health | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v["status"]=="ok" and v["upstream_reachable"],v'
-''',120,True)
+''',120)
+            outcomes = run_independent_phases([
+                ('candidate-slice4-backup', lambda: agent_phase('backup', 1800, False)),
+                ('candidate-slice4-app-mutate', lambda: guest('slice4-app-mutate',
+                    "printf 'before-restore\\n' > /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker", 60)),
+                ('candidate-slice4-restore', lambda: agent_phase('restore', 1800, False)),
+                ('candidate-slice4-app-restored', lambda: guest('slice4-app-restored',
+                    "test \"$(cat /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker)\" = snapshot", 60)),
+                ('candidate-slice4-undo', lambda: agent_phase('undo', 1800, False)),
+                ('candidate-slice4-app-undone', lambda: guest('slice4-app-undone',
+                    "test \"$(cat /var/lib/wizard-os/runtipi/app-data/wizardapps/wizard-calendar/data/slice4-marker)\" = before-restore", 60)),
+                ('candidate-slice4-links', lambda: agent_phase('links', 180, False)),
+                ('candidate-slice4-build', lambda: agent_phase('build', 1800, False)),
+                ('candidate-slice4-system-owned-build', system_owned_build),
+                ('candidate-slice4-hermes', lambda: agent_phase('hermes', 180, False)),
+                ('candidate-slice4-denials', lambda: agent_phase('denials', 180, False)),
+                ('candidate-service-uid', service_uid),
+            ])
+            receipt['independent_phases'] = outcomes
+            receipt['tailnet_link_status'] = (
+                'operator request exercised without tailnet credentials; actual private URL unproven'
+                if outcomes['candidate-slice4-links'] == 0 else 'link phase failed; see phase log')
+            save()
         else:
             guest('baseline-groups','id hermes; id -nG hermes | tr " " "\\n" | grep -Fx docker',60,True)
     finally:
@@ -447,7 +478,7 @@ def suite():
 
 
 def interrupt(signum, frame):
-    raise RuntimeError('runner interrupted: '+str(signum))
+    raise InterruptedError('runner interrupted: '+str(signum))
 
 
 signal.signal(signal.SIGTERM,interrupt)

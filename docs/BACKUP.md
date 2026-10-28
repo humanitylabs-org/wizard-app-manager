@@ -151,11 +151,15 @@ refused.
    swap the Wizard home items and files in. Keep this box's own machine identity (tokens, tailnet name).
 6. **One active copy**: every agent's messaging off (tokens kept) and cron paused; scheduled backups off. The manifest's
    `active` record is kept so **Make this my active Wizard** (`wam backup activate`) restores exactly that.
-7. **Start and check**: regenerate `apps.json` and skills, republish private links on this box's tailnet, start apps
-   and agents, health-check. Write `restores/<stamp>/receipt.json`.
+7. **Start and check**: return existing apps (including mapped system-slot providers) to this box's pre-restore
+   running/stopped state; use the snapshot's choice for newly installed ordinary apps. Wait up to 600 seconds per
+   app for Runtipi's healthy `running` state (300 seconds for `stopped`), then regenerate `apps.json` and skills.
+   A start failure or health timeout fails the operation and retains its undo copies, rather than reporting success
+   while an app is still starting. Write `restores/<stamp>/receipt.json`.
 
 **Undo** (`wam backup undo`): stop, move the restored data aside, move `before/` back, uninstall the apps the restore
-installed, start, and compare the digest with the one taken before the restore.
+installed, and compare the digest while apps are stopped (before startup can rewrite data). Return the apps to
+those same pre-restore running/stopped states with the bounded health wait, then regenerate the registry.
 
 The old machine is never changed by export: it stays the rollback copy. The new one runs nothing on its own until
 the owner switches over.
@@ -352,8 +356,10 @@ Choices the contract left open, as built in `wam/backup/`:
   `wizard-import-hermes`).
 - **Travels in `wizard-os/`**: `secrets/` (per-app passwords, `backup-key.json`, `backup-target.json`) and
   `backup.json`. Entries of `secrets/` and `app-tokens/` for apps the backup doesn't carry stay on the box.
-- **Apps** stopped at export stay stopped after import; apps the backup doesn't carry are left alone. An app this
-  box already has gets the bundle's `app-data/` and package but keeps **this box's** `user-config/` (wam writes the
+- **Apps** already installed here keep this box's pre-restore running/stopped state; newly installed ordinary
+  apps use the snapshot's state (so a new app stopped at export stays stopped). Apps the backup doesn't carry
+  are left alone. An app this box already has gets the bundle's `app-data/` but keeps **this box's** installed
+  package and `user-config/` (wam writes the
   box's wiring there: alongside overrides, trusted origins, ports); it is left in place when app data is put back. An app the restore installs gets the bundle's `user-config/`. Runtipi's uninstall keeps
   `user-config/<store>/<id>`, so undo removes the one the restore brought.
 - **App archives**: safe relative names under `app-data/`, `app/`, `user-config/` and `volumes/<name>/`; files,

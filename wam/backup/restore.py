@@ -531,7 +531,7 @@ def _start_agent(box: Box, a: Agent) -> None:
     if a.runtime == "host":
         box.runner.gateway(a, "start")
     else:
-        box.rt.start(a.urn)
+        _return_app_state(box, a.urn, "running")
 
 
 DATA_KINDS = ("archive", "runtipi-backup")     # "runtipi-backup": bundles made before appdata.py
@@ -539,6 +539,33 @@ DATA_KINDS = ("archive", "runtipi-backup")     # "runtipi-backup": bundles made 
 
 # An app Runtipi reports in any of these states has containers up (it says "starting" until health checks pass).
 LIVE = ("running", "starting", "updating")
+
+
+def _return_app_state(box: Box, urn: str | None, desired: str | None) -> str:
+    """Runtipi start is asynchronous; running means its health checks passed.
+
+    Never acknowledge restore/Undo success with an app still starting (or with
+    a failed start hidden in notes). Leave recovery copies intact on timeout.
+    """
+    if not urn:
+        raise RestoreError("app has no runtime URN; cannot restore its running state")
+    if desired in LIVE:
+        desired = "running"
+    if desired not in ("running", "stopped"):
+        return box.app_status(urn)
+    st = box.app_status(urn)
+    if st != desired:
+        if desired == "running" and st not in LIVE:
+            from ..host_policy import require_app
+            app_id, store = urn.split(":", 1)
+            require_app(box, app_id, store, where="installed", filesystem=datafs)
+            box.rt.start(urn)
+        elif desired == "stopped" and st in LIVE:
+            box.rt.stop(urn)
+        st = box.wait_status(urn, {desired}, timeout=600 if desired == "running" else 300)
+    if st != desired:
+        raise RestoreError(f"{urn} did not return to {desired} (status {st})")
+    return st
 
 
 def _stop_app(box: Box, urn: str) -> str:
@@ -851,6 +878,25 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     # 7) start and check -----------------------------------------------------
     _one_agent_service(_here_apps(box, box.installed(), [*here_apps, *apps]))
     notes = []
+    health = {}
+    for a in [*apps, *[dest for _, dest in mappings]]:
+        if a["urn"] in late_refused:
+            continue
+        # Existing apps keep THIS box's pre-restore running/stopped choice, not
+        # the snapshot's older choice. New installs use the captured state.
+        desired = (installed.get(a["urn"]) or a).get("status")
+        if desired == "stopped" and a.get("data") == "agent" and a["urn"] not in installed:
+            desired = "running"  # new imported agents start with messaging/jobs paused
+        health[a["id"]] = _return_app_state(box, a["urn"], desired)
+    for k, a in targets.items():
+        try:
+            if a.runtime != "host" and (installed.get(a.urn or "") or {}).get("status") == "stopped":
+                _return_app_state(box, a.urn, "stopped")
+            else:
+                _start_agent(box, a)
+        except (RuntipiError, HermesError) as e:
+            notes.append(f"agent {k}: start failed: {e}")
+    # Publish registry/skills only after asynchronous starts have become healthy.
     if box.after_restore is not None:
         try:
             box.after_restore(box)
@@ -858,32 +904,6 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             notes.append(f"regenerating apps.json/skills failed: {e}")
     else:
         notes += _regenerate(box)
-    health = {dest["id"]: box.app_status(dest["urn"]) for _, dest in mappings}
-    for a in apps:
-        if a["urn"] in late_refused:
-            continue
-        want_running = a.get("status") == "running"
-        st = box.app_status(a["urn"])
-        if want_running and st != "running":
-            from ..host_policy import require_app
-            require_app(box, a["id"], a["store"], where="installed", filesystem=datafs)
-            try:
-                box.rt.start(a["urn"])
-            except RuntipiError as e:
-                notes.append(f"{a['id']}: start failed: {e}")
-            st = box.wait_status(a["urn"], {"running"}, timeout=600)
-        elif a.get("status") == "stopped" and st == "running" and a.get("data") != "agent":
-            try:   # the owner had it stopped at export: keep it that way
-                box.rt.stop(a["urn"])
-            except RuntipiError as e:
-                notes.append(f"{a['id']}: stop failed: {e}")
-            st = box.wait_status(a["urn"], {"stopped"}, timeout=300)
-        health[a["id"]] = st
-    for k, a in targets.items():
-        try:
-            _start_agent(box, a)
-        except (RuntipiError, HermesError) as e:
-            notes.append(f"agent {k}: start failed: {e}")
     datafs.rmtree(stage, ignore_errors=True)
     datafs.rmtree(r.froot / "stage", ignore_errors=True)
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
@@ -1215,11 +1235,7 @@ def _undo(box: Box) -> dict:
     # start what ran before
     was = j.get("installed_before") or {}
     for urn, info in was.items():
-        if info.get("status") == "running" and box.app_status(urn) != "running":
-            try:
-                box.rt.start(urn)
-            except RuntipiError as e:
-                notes.append(f"{urn}: start failed: {e}")
+        _return_app_state(box, urn, info.get("status"))
     for k in j.get("stopped_agents") or []:
         a = targets.get(k)
         if a and a.runtime == "host":

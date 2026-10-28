@@ -3,14 +3,21 @@
 Run on the dedicated Linux/KVM worker, never an owner box:
 
 ```sh
-python3 source/qa/privsep-slice4/run.py --root "$PWD" --source "$PWD/source"
+STAGING="$PWD"
+BASELINE_SHA=67141228f6f73516ab68ece1c4c72bf3f67aebe0
+CANDIDATE_SHA=$(python3 -c 'import json; print(json.load(open("source-export.json"))["head_sha"])')
+python3 "$STAGING/source/qa/privsep-slice4/run.py" \
+  "$STAGING/evidence" "$STAGING/source" "$BASELINE_SHA" "$CANDIDATE_SHA"
 ```
 
-The root must be an immutable staging directory under `/srv/work/privsep/slice4/`.
+The staging directory must be under `/srv/work/privsep/slice4/`. Export the exact
+candidate tree into `source/` and write its full `head_sha` in the sibling
+`source-export.json`. The evidence directory must not exist yet (one use only).
+The runner takes four **positional** arguments, not `--root`/`--source` flags.
 `--smoke` skips the full suite and is **not** a full acceptance result.
 The normal run executes the full suite with JUnit and accepts exactly the known
 `tests.test_chats_views::test_typescript_public_index_path_has_identical_seal`
-failure; every other failure/error blocks acceptance. It then boots a clean
+failure; every other failure/error blocks acceptance. It boots a clean
 candidate guest using the Slice 1 base/mirror/finally-stop machinery and installs
 unchanged stock Hermes as a user with no Docker/sudo groups. It retains the
 accepted main baseline status from Slice 3 rather than running main again.
@@ -21,9 +28,14 @@ accepted main baseline status from Slice 3 rather than running main again.
   service identity, and real Docker/sudo/socket/Tailscale refusals.
 - Agent-only thin-client backup run/list, own-repository restore, and undo.
   Read back both shared-file and installed-app-data canaries after restore/undo.
-- Agent publish/unpublish requests reach `wizard-system` and Tailscale. Without
-  guest tailnet login, record the actual state and no published link; this is
-  not proof of a signed-in tailnet's publication behavior.
+- Agent publish/unpublish requests reach `wizard-system` and Tailscale. Only the
+  exact running+loopback admission error may be retried, for at most 90 seconds
+  across both operations, with every wait recorded. Without guest tailnet login,
+  record the actual state and no published link; this is not proof of a signed-in
+  tailnet's publication behavior.
+- Links, build, build ownership, Hermes, privilege denials and service UID are
+  collected independently: even a command exception cannot hide later phases.
+  Their individual exits/logs remain mandatory for the overall pass.
 - Build and update an agent-owned tiny source package and fetch real loopback
   health before and after the source change. Check service ownership/modes and
   the agent's inability to modify the staged source/Compose/build directory.
