@@ -128,6 +128,9 @@ _FRAME = {'.wz-app', '.wz-scroll', 'html', 'body', ':root', 'main', '#app', '.ap
 _COLOUR = re.compile(r'#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\s*\(')
 _DIALOG = re.compile(r'(?<![\w.$])(?:window\.)?(alert|confirm|prompt)\s*\(')
 _RULES_URL = 'https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md'
+# Shell features that reach outside the app's window (Chats, navigation). Newer Wizards add them, so an app
+# that calls one unguarded breaks on every older Wizard. Guarded = feature-detected before use.
+_SHELL_CALL = re.compile(r'WizardApp\.(nav|chat)\.(\w+)\s*\(')
 
 
 def _own_files(root, suffixes):
@@ -163,7 +166,7 @@ def _simple(compound):
 def design_rows(root):
     """Warnings for app/design rule breaks (wizard-os style/APP-DESIGN-RULES.md). Never errors."""
     root = Path(root)
-    frame, capped, colours, dialogs = _frame_tokens(root), [], [], []
+    frame, capped, colours, dialogs, unguarded = _frame_tokens(root), [], [], [], []
     for p in _own_files(root, {'.css', '.scss', '.less'}):
         css = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         for sel, decl in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
@@ -180,6 +183,10 @@ def design_rows(root):
         text = re.sub(r'(?m)^\s*//.*$', '', text)
         if any(not re.search(r'function\s*$', text[max(0, m.start() - 40):m.start()]) for m in _DIALOG.finditer(text)):
             dialogs.append(str(p.relative_to(root)))
+        for m in _SHELL_CALL.finditer(text):
+            fn = m.group(2)
+            if not re.search(r'(\?\.\s*' + fn + r'\b)|(typeof\s+[\w.?]*\b' + fn + r'\b)|([\'"]' + fn + r'[\'"]\s+in\b)', text):
+                unguarded.append(f'{p.relative_to(root)}: WizardApp.{m.group(1)}.{fn}')
     rows = []
     if capped:
         rows.append({'rule': 'design: the window is the page', 'ok': False, 'severity': 'warning',
@@ -193,6 +200,11 @@ def design_rows(root):
         rows.append({'rule': 'design: one pop-up, the sheet', 'ok': False, 'severity': 'warning',
                      'detail': 'window.alert/confirm/prompt in ' + ', '.join(dialogs[:5]) + '. Use <dialog class="wz-sheet"> '
                                'with WzSheet.open (wizard-sheet.js), or .wz-status for messages. See ' + _RULES_URL})
+    if unguarded:
+        rows.append({'rule': 'compatibility: works on every Wizard', 'ok': False, 'severity': 'warning',
+                     'detail': 'unguarded shell call (' + '; '.join(sorted(set(unguarded))[:5]) + '). Older Wizards lack '
+                               'newer shell features, so check first (typeof WizardApp?.nav?.<fn> === \'function\') and '
+                               'hide the control when it is missing; one store release then runs on every Wizard.'})
     return rows
 
 
