@@ -29,6 +29,13 @@ export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
 const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const isId = (value: unknown): value is string => typeof value === 'string' && ID.test(value);
 const VOLUME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+/** wam#289: recipes published before rule 15 keep their data in a Docker volume with a fixed name of their own
+ * (`wizard-smart-home-config`). An installed app keeps that exact volume (no copy, no move, backups already read
+ * `name:`); prepare() only accepts a plain local volume that already exists and belongs to this app. */
+export const ownVolumeName = (appId: string, name: unknown): name is string =>
+  typeof name === 'string' && VOLUME.test(name) && [appId, `wizard-${appId}`].some((p) => name === p || name.startsWith(`${p}-`));
+const ownFixed = (appId: string, opts: any): boolean =>
+  !!opts && typeof opts === 'object' && Object.keys(opts).join() === 'name' && opts.name !== LEGACY_CLAUDE && ownVolumeName(appId, opts.name);
 export type Share = { id: string; path: string };
 export type Mount = { app: string; share: string; path: string };
 export type Manifest = {
@@ -77,7 +84,7 @@ export function validateStorage(m: Manifest, compose: Compose, legacy = false) {
   for (const [name, opts] of Object.entries(compose.volumes ?? {})) {
     if (!VOLUME.test(name) || name === '.' || name === '..') throw new Error('Unsafe volume id');
     if (opts != null && (typeof opts !== 'object' || Array.isArray(opts))) throw new Error('Invalid volume options');
-    const legacyName = legacy && opts?.name === LEGACY_CLAUDE;
+    const legacyName = legacy && (opts?.name === LEGACY_CLAUDE || ownFixed(m.id, opts));
     if ((opts?.external && !legacyName) || opts?.driver || opts?.driver_opts || (opts && 'name' in opts && !legacyName))
       throw new Error(`Volume ${name}: fixed name/external/custom driver is not portable; use shares`);
   }
@@ -96,6 +103,11 @@ export function rewriteVolumes(input: Compose, appId: string): Compose {
     // alias branch below keeps that declaration verbatim (prepare() verifies it).
     const legacyConsumer = opts?.name === LEGACY_CLAUDE && !claude && appId !== 'hermes-agent';
     if ((opts?.external && !legacyConsumer) || opts?.driver || opts?.driver_opts) throw new Error(`Nonportable volume ${name}`);
+    // wam#289: an installed pre-rule-15 recipe's own fixed-name volume stays verbatim (prepare() checks ownership).
+    if (ownFixed(appId, opts)) {
+      aliases[name] = opts;
+      continue;
+    }
     if (opts && 'name' in opts && opts.name !== LEGACY_CLAUDE) throw new Error(`Fixed volume name ${name}`);
     // Agent Service generated consumers predate mounts declarations. Preserve
     // their exact mounts; prepare() verifies this name is a provider-folder alias
@@ -491,6 +503,26 @@ export class WizardStorage {
     );
   }
 
+  /** wam#289: true when an installed app's own fixed-name volume exists and may be reused: a plain local volume that
+   * no other installed app has a closer claim to or created. False when it does not exist (the caller then gives the
+   * app ordinary app-data storage instead). Throws on anything else, before anything starts. */
+  private async keptVolume(app: App, apps: App[], name: string): Promise<boolean> {
+    const id = app.manifest.id;
+    const claimant = apps
+      .map((a) => a.manifest.id)
+      .filter((other) => ownVolumeName(other, name))
+      .sort((a, b) => b.length - a.length)[0];
+    if (claimant !== id) throw new Error(`Fixed volume name ${name} belongs to ${claimant}`);
+    const names = (await this.run('docker', ['volume', 'ls', '--format', '{{.Name}}'])).stdout.split(/\r?\n/);
+    if (!names.includes(name)) return false;
+    const info = JSON.parse((await this.run('docker', ['volume', 'inspect', name, '--format', '{{json .}}'])).stdout);
+    if (info.Driver !== 'local' || (info.Options && Object.keys(info.Options).length))
+      throw new Error(`Fixed volume ${name} is not a plain local volume`);
+    const project = info.Labels?.['com.docker.compose.project'];
+    if (project && project !== app.urn.replace(':', '_')) throw new Error(`Fixed volume ${name} was created by ${project}, not ${app.urn}`);
+    return true;
+  }
+
   /** Copy with the daemon, not the manager's uid. Stage+rename and a durable intent
    * make failure/retry safe; an existing unmarked nonempty destination is never overwritten.
    * Never removes the source volume. Refuse a hot copy while any container is running on it.
@@ -589,6 +621,23 @@ rm -f ".$1.wizard-copy-ready"`;
       }
       // apps() returns installed recipes only; candidates still fail rule 15.
       validateStorage(app.manifest, app.compose, true);
+      // wam#289: an own fixed-name volume that exists is kept verbatim; a missing one (new install, or removed by a
+      // reset's `down --volumes`) becomes ordinary app-data storage, so no fixed-name volume is ever created.
+      // Once the app has app-data storage for that volume it keeps it, even if something recreates the old name.
+      const fresh = new Set<string>();
+      for (const [key, opts] of Object.entries(app.compose.volumes ?? {})) {
+        if (!ownFixed(app.manifest.id, opts)) continue;
+        const moved = await fs.lstat(path.join(app.data, 'volumes', key)).then(
+          () => true,
+          (e) => {
+            if (e.code !== 'ENOENT') throw e;
+            return false;
+          },
+        );
+        if (moved || !(await this.keptVolume(app, apps, opts.name))) fresh.add(key);
+      }
+      const portable = (c: Compose): Compose =>
+        fresh.size ? { ...c, volumes: Object.fromEntries(Object.entries(c.volumes ?? {}).map(([k, v]) => [k, fresh.has(k) ? {} : v])) } : c;
       if (
         !['wizard-claude', 'hermes-agent'].includes(app.manifest.id) &&
         Object.values(app.compose.volumes ?? {}).some((v) => v?.name === LEGACY_CLAUDE)
@@ -601,8 +650,8 @@ rm -f ".$1.wizard-copy-ready"`;
       let doc: Compose = yaml.parse(generated);
       // Builder metadata persists the original names; a restarted/revoked consumer is
       // always reconstructed from its source, never from previously injected mounts.
-      const plans = rewriteVolumes(app.compose, app.manifest.id)['x-wizard-volumes'];
-      if (!doc['x-wizard-volumes']) doc = rewriteVolumes(doc, app.manifest.id);
+      const plans = rewriteVolumes(portable(app.compose), app.manifest.id)['x-wizard-volumes'];
+      if (!doc['x-wizard-volumes'] || fresh.size) doc = rewriteVolumes(portable(doc), app.manifest.id);
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
       const file = await this.readGrants();
