@@ -360,3 +360,32 @@ def test_a_box_running_another_core_image_is_left_to_the_installer(box):
     (h / "alongside.json").write_text(json.dumps({"mode": "alongside", "shell": {"port": 8796}, "images": pins}))
     p = quick_update.plan(h, "0.9.2", rel.as_uri())
     assert p["quick"] is False and "wizard-agent-service runs another image" in p["reason"]
+
+
+def test_a_failing_rollback_phase_does_not_skip_the_others(box, monkeypatch):
+    """Codex: the index refresh failing during recovery must still put the apps, shell and Store adapter back."""
+    monkeypatch.setenv("WIZARD_QUICK_FALLBACK", "0")
+    h, rel = box
+    ops = FakeOps(h, fail="verify_shell")
+    real = ops.refresh_index
+
+    def flaky(pins, image):
+        if ops.failed:                         # the rollback's refresh fails (Docker briefly away)
+            ops.steps.append(("refresh_index-failed",))
+            raise RuntimeError("docker unavailable")
+        return real(pins, image)
+    ops.refresh_index = flaky
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops, auto=False)
+    assert res["done"] is False and res["rolled_back"] is False
+    back = ops.steps[ops.steps.index(("rollback-mark",)) + 1:]
+    assert ("refresh_index-failed",) in back
+    assert ("update_apps", "0.9.1") in back and ("verify_shell", "wizard-ux", D("1")) in back
+    assert back[-1] == ("store_data", "0.9.1")
+    assert "rollback incomplete (release index)" in (h / "install.log").read_text()
+
+
+def test_the_installer_handover_fails_when_the_download_fails(monkeypatch, tmp_path):
+    """Codex: `curl … | bash -s start` without pipefail exits 0 when curl fails."""
+    monkeypatch.setattr(updates, "INSTALLER", "http://127.0.0.1:9/nothing-here.sh")
+    ops = quick_update.Ops(tmp_path, log=lambda *_: None)
+    assert ops.start_installer("0.9.2", auto=False) is False

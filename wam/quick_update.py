@@ -391,7 +391,8 @@ class Ops:
     def start_installer(self, version: str, auto: bool) -> bool:
         from .updates import INSTALLER
         env = ("WIZARD_HERMES_PROMOTION= " if auto else "") + f"WIZARD_RELEASE={version} "
-        r = subprocess.run(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True,
+        # pipefail: a failed download must not look like a started installer (`false | bash -s start` exits 0).
+        r = subprocess.run(["bash", "-c", f"set -o pipefail; curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True,
                            text=True, timeout=600)
         for line in (r.stdout + r.stderr).splitlines():
             self.log(line)
@@ -551,19 +552,25 @@ def _rollback(h: Path, ops, snapshot: dict, log, dirs: dict | None = None) -> bo
             ok = False
             log(f"rollback: could not restore {f}: {e}")
     old = _read(h / "release-pins.json") or {}
-    try:
-        from . import release_pins
-        ops.refresh_index(h / "release-pins.json",
-                          release_pins.image_ref((old.get("images") or {})["wizard-app-manager"]))
-        ops.update_apps(list(QUICK_APPS))
-        for app in QUICK_APPS:
-            want = ((old.get("images") or {}).get(app) or {}).get("digest")
-            if want:
-                ops.ensure_image(app, want)
-                ops.verify_shell(app, want)
-        ops.store_data()               # the Store adapter back on the old shell's commit
-        log(f"rolled back to {old.get('version')}")
-    except (Exception, SystemExit) as e:   # noqa: BLE001
-        ok = False
-        log(f"rollback incomplete: {type(e).__name__}: {e}"[:300])
+    images = old.get("images") or {}
+
+    def phase(what: str, fn) -> None:
+        # Each phase is independent: one failing (e.g. Docker briefly away) must not skip putting back the rest.
+        nonlocal ok
+        try:
+            fn()
+        except (Exception, SystemExit) as e:   # noqa: BLE001
+            ok = False
+            log(f"rollback incomplete ({what}): {type(e).__name__}: {e}"[:300])
+
+    from . import release_pins
+    phase("release index", lambda: ops.refresh_index(h / "release-pins.json",
+                                                     release_pins.image_ref(images["wizard-app-manager"])))
+    phase("apps", lambda: ops.update_apps(list(QUICK_APPS)))
+    for app in QUICK_APPS:
+        want = (images.get(app) or {}).get("digest")
+        if want:
+            phase(app, lambda app=app, want=want: (ops.ensure_image(app, want), ops.verify_shell(app, want)))
+    phase("store data", ops.store_data)        # the Store adapter back on the old shell's commit
+    log(f"rolled back to {old.get('version')}" if ok else f"rollback to {old.get('version')} incomplete")
     return ok
