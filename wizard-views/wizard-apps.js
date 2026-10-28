@@ -868,12 +868,17 @@ export async function renderConnections(el, ctx = {}) {
     }
     const a = m.apps.find((x) => x.id === sheetId);
     if (!a) return sheetClose(dlg);
-    const cutRows = a.cut.map(
+    const cutList = a.cut.map(
       (
         b,
       ) => `<div class="wam-cm-srow">${cmGlyph({ id: b, name: nm(b) })}<span class="wam-cm-tx"><b>${esc(nm(b))}</b><small>Cut off by you</small></span>
         <button type="button" class="wam-btn primary" data-cm-reconnect="${esc(b)}"${dis(`reconnect:${b}`)}>Reconnect</button></div>`,
     );
+    // Strict mode: a cut connection to a slot several apps provide comes back as one
+    for (const [gi, g] of cutGroups(m, a.id, true).entries())
+      cutList.push(`<div class="wam-cm-srow">${cmGlyph({ id: g.providers[0], name: nm(g.providers[0]) })}<span class="wam-cm-tx"><b>${esc(`${nm(g.from)} → ${g.names}`)}</b><small>Cut off by you, as one connection</small></span>
+        <button type="button" class="wam-btn primary" data-cm-regroup="${gi}"${dis(`regroup:${gi}`)}>Reconnect</button></div>`);
+
     const askRows = a.ask.map((b) => {
       const waiting = (d.controls || []).find(
         (r) =>
@@ -905,7 +910,7 @@ export async function renderConnections(el, ctx = {}) {
 
     set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(a)}</span><h2 id="wamCmTitle">${esc(a.name)}</h2></div>
       <p class="wam-cm-says">${esc(talksSentence(a))}</p>
-      ${cutRows.join('')}${askRows.join('')}
+      ${cutList.join('')}${askRows.join('')}
       ${
         can.length || groups.length
           ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Cut off from…</button></div>${pick}`
@@ -914,11 +919,13 @@ export async function renderConnections(el, ctx = {}) {
       ${
         m.mode === 'off'
           ? ''
-          : `<div class="wam-cm-row"><span class="wam-cm-tx"><b>Ask me first</b><small>${esc(
-              a.sensitive
-                ? `On: a new app that wants to talk to ${a.name} waits for your OK. Apps it already talks to stay connected.`
-                : `Off: new apps can talk to ${a.name} right away. Turn on to approve each one first.`,
-            )}</small></span>${sw(a.sensitive, `data-cm-askfirst="${esc(a.id)}"`, `ask-first:${a.id}`, 'Ask me first')}</div>`
+          : !a.enforce && !a.sensitive
+            ? `<p class="wam-cm-sh-note">${esc(`Ask me first isn’t available for ${a.name}: it runs outside the app networks, so its connections can’t be held back.`)}</p>`
+            : `<div class="wam-cm-row"><span class="wam-cm-tx"><b>Ask me first</b><small>${esc(
+                a.sensitive
+                  ? `On: a new app that wants to talk to ${a.name} waits for your OK. Apps it already talks to stay connected.`
+                  : `Off: new apps can talk to ${a.name} right away. Turn on to approve each one first.`,
+              )}</small></span>${sw(a.sensitive, `data-cm-askfirst="${esc(a.id)}"`, `ask-first:${a.id}`, 'Ask me first')}</div>`
       }
       ${roOnly()}`);
   };
@@ -1045,6 +1052,13 @@ export async function renderConnections(el, ctx = {}) {
         { close: true, undo: { rows, a: g.from, b: g.providers[0] } },
       );
     }
+    if (b.matches('[data-cm-regroup]')) {
+      const g = cutGroups(el._wamModel, sheetId, true)[Number(b.dataset.cmRegroup)];
+      if (!g) return;
+      return void run(`regroup:${b.dataset.cmRegroup}`, () => grant(g.from, g.to, true), doneWords('reconnect', nameOf(g.from), g.names), {
+        close: true,
+      });
+    }
     if (b.matches('[data-cm-reconnect]')) {
       const other = b.dataset.cmReconnect;
       const rows = reconnectRows(d.controls, sheetId, other);
@@ -1072,13 +1086,16 @@ export async function renderConnections(el, ctx = {}) {
       });
     }
     if (b.matches('[data-cm-undo]') && toast?.undo) {
-      const { rows, a, b } = toast.undo;
+      // Every Disconnect now recorded between the pair, read fresh: the App Manager may have recorded more rows than
+      // the one the cut asked for (a slot the same app also fills).
+      const { a, b: other } = toast.undo;
+      const rows = reconnectRows(el._wamConn?.controls, a, other);
       return void run(
         'undo',
         async () => {
           for (const r of rows) await grant(r.from, r.to, true);
         },
-        doneWords('reconnect', nameOf(a), nameOf(b)),
+        doneWords('reconnect', nameOf(a), nameOf(other)),
       );
     }
     if (b.matches('[data-cm-askfirst]')) {

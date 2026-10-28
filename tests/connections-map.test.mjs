@@ -220,3 +220,30 @@ test('Strict mode: a connection to a slot several apps provide is cut as one, ne
   assert.equal(g.names, 'Cloudflare and S3');
   assert.equal(cutGroups(m, 's3').length, 1);
 });
+
+test('Strict mode: a slot connection that was cut comes back as one, not per provider', () => {
+  const d = report([app('backup', 'Backup'), app('wizard-cloudflare', 'Cloudflare'), app('s3', 'S3')], {
+    mode: 'declared',
+    controls: [{ from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare', 's3'], status: 'disconnected' }],
+  });
+  for (const a of d.apps) a.open = null;
+  const m = mapModel(d);
+  assert.deepEqual(m.apps[0].cut, []);
+  const [g] = cutGroups(m, 'backup', true);
+  assert.equal(g.names, 'Cloudflare and S3');
+  assert.equal(cutGroups(m, 'backup').length, 0);
+});
+
+test('Ask me first is offered only where the app networks can hold a connection back', () => {
+  const m = mapModel(
+    report([app('files', 'Files', [], { state: 'exposed' }), { id: 'hostapp', name: 'Host App', state: 'host-network', open: null }, app('a', 'A')]),
+  );
+  assert.deepEqual(
+    m.apps.map((a) => [a.id, a.enforce]),
+    [
+      ['files', true],
+      ['hostapp', false],
+      ['a', true],
+    ],
+  );
+});

@@ -53,10 +53,11 @@ export function mapModel(d) {
   const groups = []; // connections to a slot several apps provide: cut as one
   if (mode === 'declared')
     for (const r of controls)
-      if (r.status === 'connected' && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
+      if (['connected', 'disconnected'].includes(r.status) && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
         groups.push({
           from: r.from,
           to: r.to,
+          cut: r.status === 'disconnected',
           providers: r.providers.filter((x) => ids.has(x)),
           names: list(r.providers.filter((x) => ids.has(x)).map(nm)),
         });
@@ -70,6 +71,7 @@ export function mapModel(d) {
         }
         if (r.status === 'disconnected') {
           cuts.set(pairKey(r.from, p), [r.from, p].sort());
+          if ((r.providers || []).filter((x) => ids.has(x)).length > 1) continue; // a slot cut as one: cutGroups
           for (const [x, y] of [
             [r.from, p],
             [p, r.from],
@@ -105,6 +107,8 @@ export function mapModel(d) {
     for (const r of un) if (r.why !== 'disconnected' && ids.has(r.app)) held.set(pairKey(a.id, r.app), r.why);
     // In Open mode only apps on the app networks (isolated or published) can be cut off: the others aren't enforced.
     const inOpen = mode === 'open' && !!a.open;
+    // Only apps on the app networks (isolated, or published through Runtipi) can be held back for the owner's OK.
+    const enforce = ['isolated', 'exposed'].includes(a.state);
     return {
       id: a.id,
       name: a.name || a.id,
@@ -115,6 +119,7 @@ export function mapModel(d) {
       talksTo,
       warn,
       inOpen,
+      enforce,
       state: a.state,
       why: a.why || '',
     };
@@ -202,8 +207,8 @@ export function cuttable(model, id) {
 }
 
 /** Strict mode: connections of this app to a slot several apps provide, each cut as one ("Cloudflare and S3"). */
-export function cutGroups(model, id) {
-  return model.mode === 'declared' ? (model.groups || []).filter((g) => g.from === id || g.providers.includes(id)) : [];
+export function cutGroups(model, id, cut = false) {
+  return model.mode === 'declared' ? (model.groups || []).filter((g) => !!g.cut === cut && (g.from === id || g.providers.includes(id))) : [];
 }
 
 /** What the toast says after a change, in plain words. */
