@@ -62,7 +62,7 @@ def app_lifecycle(verb, app):
     assert verb in ('start', 'stop', 'restart'), verb
     result = json.loads(agent('wam', 'app', verb, app))
     expected = 'stopped' if verb == 'stop' else 'running'
-    assert result.get('app') == app and result.get('status') == expected and not result.get('error'), result
+    assert result.get('id') == app and result.get('status') == expected and not result.get('error'), result
     return result
 
 

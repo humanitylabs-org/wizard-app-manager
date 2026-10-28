@@ -106,7 +106,7 @@ def test_select_candidates_puts_calendar_first_and_keeps_fallbacks(guest):
 @pytest.mark.parametrize('verb,status', [('stop', 'stopped'), ('start', 'running'), ('restart', 'running')])
 def test_app_lifecycle_never_dispatches_to_runtipi_global_controls(guest, monkeypatch, verb, status):
     calls = []
-    result = {'app': 'wizard-calendar', 'status': status}
+    result = {'id': 'wizard-calendar', 'urn': 'wizard-calendar:wizardapps', 'action': verb, 'status': status}
     def agent(*args):
         calls.append(args)
         return json.dumps(result)
@@ -117,9 +117,9 @@ def test_app_lifecycle_never_dispatches_to_runtipi_global_controls(guest, monkey
 
 @pytest.mark.parametrize('result', [
     {},
-    {'app': 'wizard-calendar', 'status': 'stopped'},
-    {'app': 'other-app', 'status': 'running'},
-    {'app': 'wizard-calendar', 'status': 'running', 'error': 'start failed'},
+    {'id': 'wizard-calendar', 'status': 'stopped'},
+    {'id': 'other-app', 'status': 'running'},
+    {'id': 'wizard-calendar', 'status': 'running', 'error': 'start failed'},
 ])
 def test_successful_process_without_expected_app_state_is_not_lifecycle_success(guest, monkeypatch, result):
     monkeypatch.setattr(guest, 'agent', lambda *args: json.dumps(result))

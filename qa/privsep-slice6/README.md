@@ -18,6 +18,25 @@ executes argument/manifest validation and compiles the generated real VM functio
 it creates neither a VM nor an evidence directory. The staged `job.json` uses the
 first form, without `--smoke` or `--preflight`, so it runs the full pytest gate.
 
+## Host-mount setup debug proof
+
+A clean pinned-main debug guest confirmed `wizard-calendar` is the real Compose
+service, its existing override is hermes-owned mode 0644, user config is enabled,
+and the tagged network YAML survives the additive volume merge. Bare
+`wam stop/start wizard-calendar` exited zero but left the Calendar container ID
+and mounts unchanged: those commands address Runtipi, not the app.
+
+The corrected helper uses `wam app stop/start`, validates the real response's
+`id` and `status`, and leaves `host_canary()` unchanged. On the same disposable
+clean-main fixture, scoped stop removed the running container; scoped start
+created a different container with `/srv/slice6-host` mounted at `/preexisting`,
+`RW: false`, and the exact canary readable. Evidence on Forum:
+`/srv/work/privsep/slice6/20261028T041300Z-mount-fix-debug/candidate-legacy-resume-042626Z.log`
+and `resume-receipt.json` (`passed: true`, `stopped: true`). This fixture was
+resumed after correcting the helper's response-field assertion; reboot startup
+also needed main's `wam network reconcile` plus app start before the measured
+mount-change sequence. No migration or full rehearsal was run for this debug.
+
 ## What the durable job does
 
 - Reuses the Slice 4 Debian 12 cloud boot, KVM, stock unmodified Hermes, registry
