@@ -46,16 +46,29 @@ export function mapModel(d) {
       const to = (r.providers || []).length ? r.providers : [slotName(r.to)];
       return { from: r.from, to: r.to, toIds: to, fromName: nm(r.from), toName: list(to.map(nm)) };
     });
+  // Strict mode: the connections that exist are drawn; one the owner cut stays on the map as a cut pair, so it can
+  // be reconnected from either app.
+  const declaredCut = new Map();
   if (mode === 'declared') {
     for (const r of controls)
-      if (r.status === 'connected')
-        for (const p of (r.providers || []).length ? r.providers : [slotName(r.to)])
-          if (ids.has(r.from) && ids.has(p) && p !== r.from) links.set(pairKey(r.from, p), [r.from, p].sort());
+      for (const p of (r.providers || []).length ? r.providers : [slotName(r.to)]) {
+        if (!ids.has(r.from) || !ids.has(p) || p === r.from) continue;
+        if (r.status === 'connected') links.set(pairKey(r.from, p), [r.from, p].sort());
+        if (r.status === 'disconnected') {
+          cuts.set(pairKey(r.from, p), [r.from, p].sort());
+          for (const [x, y] of [
+            [r.from, p],
+            [p, r.from],
+          ])
+            declaredCut.set(x, [...(declaredCut.get(x) || []), y]);
+        }
+      }
   }
   for (const r of pending) for (const p of r.toIds) if (ids.has(r.from) && ids.has(p)) waits.set(pairKey(r.from, p), [r.from, p].sort());
+  const held = new Map(); // Open mode: pairs a sensitive app holds back (waiting for the owner, or not connected yet)
   const out = apps.map((a) => {
     const un = mode === 'open' && a.open ? a.open.unreachable || [] : [];
-    const cut = un.filter((r) => r.why === 'disconnected').map((r) => r.app);
+    const cut = mode === 'declared' ? [...new Set(declaredCut.get(a.id) || [])] : un.filter((r) => r.why === 'disconnected').map((r) => r.app);
     const ask = un.filter((r) => r.why !== 'disconnected').map((r) => r.app);
     if (mode === 'open') for (const b of cut) if (ids.has(b)) cuts.set(pairKey(a.id, b), [a.id, b].sort());
     let talksTo;
@@ -69,15 +82,37 @@ export function mapModel(d) {
     }
     const waiting = pending.some((r) => r.from === a.id || r.toIds.includes(a.id));
     const warn = (a.drift || []).length > 0 || (a.host_access || []).length > 0 || !['isolated', undefined].includes(a.state);
-    return { id: a.id, name: a.name || a.id, sensitive: sensitive.has(a.id), waiting, cut, ask, talksTo, warn, state: a.state, why: a.why || '' };
+    for (const r of un) if (r.why !== 'disconnected' && ids.has(r.app)) held.set(pairKey(a.id, r.app), r.why);
+    // In Open mode only apps on the app networks (isolated or published) can be cut off: the others aren't enforced.
+    const inOpen = mode === 'open' && !!a.open;
+    return {
+      id: a.id,
+      name: a.name || a.id,
+      sensitive: sensitive.has(a.id),
+      waiting,
+      cut,
+      ask,
+      talksTo,
+      warn,
+      inOpen,
+      state: a.state,
+      why: a.why || '',
+    };
   });
   const nCuts = cuts.size;
+  const nWait = [...held.values()].filter((w) => w === 'pending').length;
+  const nAsk = held.size - nWait;
+  const except = [
+    nCuts ? `${nCuts === 1 ? 'one pair' : `${nCuts} pairs`} you cut off` : '',
+    nWait ? `${nWait === 1 ? 'one' : nWait} waiting for your OK` : '',
+    nAsk ? `${nAsk === 1 ? 'one new pair' : `${nAsk} new pairs`} you haven’t approved yet` : '',
+  ].filter(Boolean);
   const lead =
     mode === 'off'
       ? 'All your apps can talk to each other. Keeping apps apart is turned off on this Wizard.'
       : mode === 'open'
-        ? nCuts
-          ? `All your apps can talk to each other, except ${nCuts === 1 ? 'one pair' : `${nCuts} pairs`} you cut off. Tap an app to change it.`
+        ? except.length
+          ? `All your apps can talk to each other, except ${list(except)}. Tap an app to change it.`
           : 'All your apps can talk to each other. Tap one to cut it off from another.'
         : 'Strict mode: each app talks only to the apps it asks for. Tap one to see or change them.';
   const core = all.filter((a) => coreIds.has(a.id));
@@ -110,8 +145,9 @@ export function cuttable(model, id) {
   const me = model.apps.find((a) => a.id === id);
   if (!me) return [];
   if (model.mode === 'open') {
+    if (!me.inOpen) return [];
     const no = new Set([id, ...me.cut, ...me.ask]);
-    return model.apps.filter((a) => !no.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
+    return model.apps.filter((a) => a.inOpen && !no.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
   }
   if (model.mode === 'declared') {
     const peers = new Set(model.links.filter((p) => p.includes(id)).flat());

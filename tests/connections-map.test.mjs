@@ -119,3 +119,52 @@ test('Jargon stays out of the words on the map', () => {
   const words = [m.lead, ...m.apps.map(talksSentence)].join(' ');
   assert.doesNotMatch(words, /mesh|grant|drift|declared|network/i);
 });
+
+test('Cut off from… offers only apps whose connections Open mode can enforce', () => {
+  // an app on the server's own network (not the shell or agent) has no Open-mode topology: a cut would not hold
+  const m = mapModel(
+    report([app('cinequeue', 'Movies'), app('files', 'Files'), { id: 'hostapp', name: 'Host App', state: 'host-network', open: null }]),
+  );
+  assert.deepEqual(
+    cuttable(m, 'cinequeue').map((a) => a.id),
+    ['files'],
+  );
+  assert.deepEqual(cuttable(m, 'hostapp'), []);
+});
+
+test('Strict mode keeps a pair the owner cut on the map, so it can be reconnected', () => {
+  const d = report([app('backup', 'Backup'), app('wizard-cloudflare', 'Cloudflare')], {
+    mode: 'declared',
+    controls: [{ from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare'], status: 'disconnected' }],
+  });
+  for (const a of d.apps) a.open = null;
+  const m = mapModel(d);
+  assert.deepEqual(m.cuts, [['backup', 'wizard-cloudflare']]);
+  assert.deepEqual(m.apps[0].cut, ['wizard-cloudflare']);
+  assert.deepEqual(m.apps[1].cut, ['backup']);
+  assert.equal(talksSentence(m.apps[0]), 'Backup can talk to: no other app');
+  assert.deepEqual(pairRow(d.controls, 'wizard-cloudflare', 'backup', 'disconnected'), d.controls[0]);
+});
+
+test('The top line counts pairs a sensitive app holds back, not only cuts', () => {
+  const waiting = mapModel(
+    report([app('zoom', 'Zoom', [{ app: 'resend', why: 'pending' }]), app('resend', 'Resend', [{ app: 'zoom', why: 'pending' }])], {
+      sensitive: ['resend'],
+    }),
+  );
+  assert.equal(waiting.lead, 'All your apps can talk to each other, except one waiting for your OK. Tap an app to change it.');
+  const both = mapModel(
+    report([
+      app('zoom', 'Zoom', [
+        { app: 'resend', why: 'sensitive' },
+        { app: 'files', why: 'disconnected' },
+      ]),
+      app('resend', 'Resend', [{ app: 'zoom', why: 'sensitive' }]),
+      app('files', 'Files', [{ app: 'zoom', why: 'disconnected' }]),
+    ]),
+  );
+  assert.equal(
+    both.lead,
+    'All your apps can talk to each other, except one pair you cut off and one new pair you haven’t approved yet. Tap an app to change it.',
+  );
+});
