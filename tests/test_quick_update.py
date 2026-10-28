@@ -250,3 +250,20 @@ def test_runner_leaves_the_process_environment_as_it_found_it(box, monkeypatch):
     assert quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)["done"] is True
     assert seen == [str(h / "release-pins.json")]          # release_updates reads the target pins
     assert "WIZARD_RELEASE_PINS" not in os.environ
+
+
+def test_a_rolled_back_app_update_fails_fast_instead_of_waiting_for_the_read_back(tmp_path, monkeypatch):
+    """Runtipi answers a failed image pull by keeping the old container (status running, no error); the quick path
+    must notice the digest did not move right away (live rig: the read-back otherwise waited 5 minutes)."""
+    from wam import cli
+    ops = quick_update.Ops(tmp_path, lambda m: None)
+    ops._c = object()
+    monkeypatch.setattr(cli, "app_update", lambda c, app: {"id": app, "status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {})
+    monkeypatch.setattr(quick_update.time, "sleep", lambda s: None)
+    monkeypatch.setattr(quick_update.Ops, "digests", lambda self, app: [D("1")])
+    with pytest.raises(quick_update.QuickError, match="did not switch"):
+        ops.ensure_image("wizard-ux", D("9"))
+    seq = iter([[D("1")], [D("1")], [D("9")]])
+    monkeypatch.setattr(quick_update.Ops, "digests", lambda self, app: next(seq))
+    ops.ensure_image("wizard-ux", D("9"))      # switched after the update: fine

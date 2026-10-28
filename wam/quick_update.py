@@ -293,9 +293,14 @@ class Ops:
         from . import cli
         c = self.config()
         res = cli.app_update(c, app)
+        cli.write_registry(c)
         if res.get("error"):
             raise QuickError(f"{app}: {res['error']}")
-        cli.write_registry(c)
+        for _ in range(10):                  # Runtipi rolls a failed pull back to the old container: say so now
+            if digest in self.digests(app):
+                return
+            time.sleep(3)
+        raise QuickError(f"{app} did not switch to {digest[:19]}… (image pull or start failed; Runtipi kept the old one)")
 
     def readback(self, pins_path: Path) -> dict:
         """get.sh's own read-back (from this checkout's get.sh), so release.json is written exactly like a full run."""

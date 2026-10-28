@@ -20,7 +20,7 @@ owner presses Update. This module adds only the things an owner needs on top of 
 
 Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`). The one exception is a release that
 moves ONLY the Wizard UX shell's pins on an alongside box that read back cleanly: wam/quick_update.py swaps that one
-image in place with the installer's own steps and read-back (about a minute instead of 10-20), rolls back on any
+image in place with the installer's own steps and read-back (about 2 minutes instead of 10-20), rolls back on any
 failure and then runs the full installer anyway. `status()["quick"]` says which one Update will do.
 
 An unpinned box (no release in release.json: a developer checkout, WAM_REF, or a box from before releases) is
@@ -395,7 +395,7 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "interrupted": run == "interrupted",
             "failed": failed, "failure_reason": reason if failed else None,
             "retry_target": retry, "superseded": superseded,
-            # Update swaps only the shell image (about a minute), or this run is doing that now.
+            # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": _quick_now(home, installer, run) if run == "running" else
                      bool(newer and not failed and retry is None and _quick(home, want, base)),
             "hermes": hermes_update.status(home, base)}
