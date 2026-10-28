@@ -75,6 +75,17 @@ class _WouldNotRestart(Exception):
     """The app's own images are gone from this box: stopping it for a backup would leave it down."""
 
 
+def _lookup_ref(ref: str) -> str:
+    """The form `docker image inspect` resolves: repo:tag@sha256:… becomes repo@sha256:… (a digest-pulled image
+    has no tag, only its digest reference)."""
+    if "@" not in ref:
+        return ref
+    name, digest = ref.split("@", 1)
+    head, _, last = name.rpartition("/")
+    last = last.split(":", 1)[0]
+    return f"{head}/{last}@{digest}" if head else f"{last}@{digest}"
+
+
 def _missing_images(box: Box, urn: str) -> list[str]:
     """Image refs the app's containers were created from that this box no longer has (e.g. pruned by hand).
     Runtipi recreates containers on start, so a missing one means the app cannot start again."""
@@ -83,18 +94,28 @@ def _missing_images(box: Box, urn: str) -> list[str]:
     env = box.child_env
     try:
         p = subprocess.run([*docker(env), "ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format",
-                            "{{.Image}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+                            "{{.ID}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return []                      # cannot tell: behave as before
-    if p.returncode:
+    if p.returncode or not p.stdout.split():
+        return []
+    # `docker ps` prints the image without its digest (repo:tag), and an image pulled as repo:tag@sha256:… carries
+    # no tag, so inspecting the ps column reports every digest-pinned app as missing (#291). Ask each container for
+    # the exact reference it was created from instead: that is what Runtipi recreates it from.
+    try:
+        c = subprocess.run([*docker(env), "container", "inspect", "--format", "{{.Config.Image}}", *p.stdout.split()],
+                           capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if c.returncode:
         return []
     missing = []
-    for ref in sorted(set(p.stdout.split())):
+    for ref in sorted(set(c.stdout.split())):
         if ref.startswith("sha256:"):
             continue                   # an image id: the container itself pins it
         try:
-            q = subprocess.run([*docker(env), "image", "inspect", "--format", "{{.Id}}", ref], capture_output=True,
-                               text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+            q = subprocess.run([*docker(env), "image", "inspect", "--format", "{{.Id}}", _lookup_ref(ref)],
+                               capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             continue
         if q.returncode:
