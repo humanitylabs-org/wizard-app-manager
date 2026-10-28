@@ -570,10 +570,6 @@
   flex-wrap: wrap;
   gap: 14px 22px;
 }
-.wam-cm-band[data-cm-band="system"] {
-  --cm-d: 40px;
-  opacity: 0.92;
-}
 .wam-cm-band .wam-cm-top .wam-cm-node:not(.is-agent) {
   width: var(--cm-node);
 }
@@ -759,7 +755,92 @@
   to { stroke-dashoffset: -9; }
 }
 .wam-cm-w.is-link {
-  stroke: var(--cm-wire);
+  stroke: var(--cm-accent);
+  stroke-opacity: 0.6;
+  stroke-width: 1.8;
+}
+/* Strict mode: a line is tappable (it opens Disconnect). The groups let taps through to it; the nodes still take theirs. */
+.wam-cm-map[data-mode="declared"] :is(.wam-cm-cluster, .wam-cm-band, .wam-cm-nodes, .wam-cm-bh) {
+  pointer-events: none;
+}
+.wam-cm-map[data-mode="declared"] .wam-cm-node {
+  pointer-events: auto;
+}
+.wam-cm-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 22;
+  stroke-linecap: round;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.wam-cm-hit:hover {
+  stroke: color-mix(in srgb, var(--cm-accent) 18%, transparent);
+}
+/* Strict mode: an app connected to nothing sits apart, inside its own dashed fence. */
+.wam-cm-node.is-alone .wam-cm-disc::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--cm-chip-line);
+  pointer-events: none;
+}
+.wam-cm-node.is-alone .wam-cm-disc {
+  opacity: 0.86;
+}
+/* Comes with Wizard: a small sparkle on the disc and a quiet line under the name. */
+.wam-cm-badge.is-wiz {
+  left: -3px;
+  right: auto;
+  color: var(--wz-base, Canvas);
+  background: var(--cm-accent);
+}
+.wam-cm-badge.is-wiz svg {
+  fill: currentColor;
+  stroke: none;
+}
+.wam-cm-role.is-builtin {
+  color: var(--cm-accent);
+  white-space: normal;
+  line-height: 12px;
+}
+.wam-cm-lead small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.wam-cm-pair {
+  display: inline-flex;
+}
+.wam-cm-pair .wam-cm-ic {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.wam-cm-pair .wam-cm-ic + .wam-cm-ic {
+  margin-left: -8px;
+}
+.wam-cm-uses h5 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--ink-3);
+}
+/* The agent's list shows every item (it is the whole answer to "what can it use"), not a scrolling picker. */
+.wam-cm-uses .wam-cm-chips {
+  max-height: none;
+  overflow: visible;
+}
+.wam-cm-sheet .wam-cm-uses .wam-cm-chip {
+  min-height: 36px;
+  cursor: default;
+}
+.wam-cm-chip.is-off {
+  opacity: 0.45;
+  text-decoration: line-through;
 }
 .wam-cm-x circle {
   fill: var(--cm-bad);

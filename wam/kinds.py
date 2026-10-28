@@ -1,16 +1,19 @@
-"""Which group each item on the Connections map sits in: Agents, Apps, Connectors or System.
+"""Which group each item on the Connections map sits in: Agents, Apps, Agent apps or Connectors.
 
 The group comes from the fields a wizard.md already has, by one rule (docs/APP_NETWORKS.md, "Groups on the map"):
 
-1. `kind:` in wizard.md (agent | app | connector), when an app wants to say it itself. Optional.
-2. `type: agent` (or `category: agent`): an agent.
-3. The active shell and Agent Service (the gateway core, network.plan): system. Only the core is System: those items
-   can't be cut off, so `kind: system` on any other app is ignored.
+1. The owner's box-level choice (`app-kinds.json` in the Wizard home, see `box_kinds`). Optional, owner-editable.
+2. `kind:` in wizard.md (agent | app | agent-app | connector), when an app wants to say it itself. Optional.
+3. `type: agent` (or `category: agent`): an agent.
 4. `type: external` (it connects the box to an outside service: a bank, Cloudflare, an AI provider): a connector.
 5. `type: view`: an app (a screen is the whole point).
-6. No `view:` at all: a connector (a background service only apps and the agent call).
+6. No `view:` at all: an agent app (a tool mainly for the agent; the owner watches what it does), except Wizard's own
+   core (the Agent Service), which links the agent to the apps: a connector.
 7. `category: system` with a view (its screen only sets it up, e.g. a music source's sign-in): a connector.
 8. Anything else: an app.
+
+System is not a group. Wizard's own core (the active shell and Agent Service, network.plan's gateway core) sits in the
+group the rule gives it and carries a "comes with Wizard" badge (`builtin`); it can't be cut off.
 
 No app id is listed anywhere: a new app lands in the right group from its own wizard.md.
 """
@@ -20,8 +23,10 @@ import json
 import re
 from pathlib import Path
 
-KINDS = ("agent", "app", "connector", "system")
+KINDS = ("agent", "app", "agent-app", "connector")
+BOX_KINDS = "app-kinds.json"   # the owner's own choices, in the Wizard home: {"kinds": {"<app id>": "<kind>"}}
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,30}")
+_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 
 
 def fields(w: dict | None) -> dict:
@@ -34,19 +39,18 @@ def fields(w: dict | None) -> dict:
             **({"private": True} if str(w.get("privacy", "")).strip().lower() == "private" else {})}
 
 
-def kind_of(meta: dict | None, core: bool = False) -> str:
-    """The group of one app (see the module docstring). System is the gateway core only: those items can't be cut
-    off, so no other app can put itself there (`kind: system` elsewhere is ignored). The core is System unless it is
-    the agent. Without wizard.md fields: system for the core, else app."""
+def kind_of(meta: dict | None, core: bool = False, box: str | None = None) -> str:
+    """The group of one app (see the module docstring). `box`: the owner's box-level choice for it (box_kinds), which
+    wins over wizard.md. `core`: Wizard's own core (shell, Agent Service): grouped by the same rule, except that a core
+    item without a screen links the agent to the apps (a connector). Without wizard.md fields: app."""
+    if box in KINDS:
+        return box
     m = meta if isinstance(meta, dict) else {}
     own = m.get("kind") if m.get("kind") in KINDS else None
-    agent = own == "agent" or (own is None and (m.get("type") == "agent" or m.get("category") == "agent"))
-    if core:
-        return "agent" if agent else "system"
-    if agent:
-        return "agent"
-    if own in ("app", "connector"):
+    if own:
         return own
+    if m.get("type") == "agent" or m.get("category") == "agent":
+        return "agent"
     if not m:
         return "app"
     if m.get("type") == "external":
@@ -54,10 +58,21 @@ def kind_of(meta: dict | None, core: bool = False) -> str:
     if m.get("type") == "view":
         return "app"
     if not m.get("view"):
-        return "connector"
+        return "connector" if core else "agent-app"
     if m.get("category") == "system":
         return "connector"
     return "app"
+
+
+def box_kinds(home: Path | str | None) -> dict[str, str]:
+    """The owner's box-level groups: `<Wizard home>/app-kinds.json`, `{"kinds": {"<app id>": "agent-app", ...}}`.
+    For an app whose wizard.md the owner can't change (someone else's repo). Bad ids and values are ignored; a missing
+    or unreadable file is no choices."""
+    doc = _read(Path(home) / BOX_KINDS) if home else None
+    got = doc.get("kinds") if isinstance(doc, dict) else None
+    if not isinstance(got, dict):
+        return {}
+    return {k: v for k, v in got.items() if isinstance(k, str) and _ID.fullmatch(k) and v in KINDS}
 
 
 def agents_dir(home: Path | None, runtipi_root: Path | None, store: str = "wizardapps") -> Path | None:

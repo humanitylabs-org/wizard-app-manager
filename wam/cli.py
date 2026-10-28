@@ -20,6 +20,8 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
+  wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
+                                checked and rolled back on failure)
   wam doctor [--fix]            check the whole chain
   wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
                                 access, and a live check of Docker's networks against the declarations
@@ -57,7 +59,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, index, private, registry, slots, release_pins, update_backups
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -87,6 +89,7 @@ class Config:
             self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
+        self.update_backups = update_backups.settings(cfg)   # retention of the backups updates make
         self.secrets = self.home / "secrets"
         self.token_file = self.home / "api-token"
 
@@ -1516,6 +1519,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
+        if u.path == "/api/app-updates":
+            from . import app_updates
+            return self._json(200, app_updates.status(c))
         if u.path == "/api/connections":
             # Read-only, live: declared connections vs Docker's actual networks (the Connections view's data).
             from . import network
@@ -1546,6 +1552,14 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) == {"channel"}:
                     return self._json(200, updates.set_channel(str(body.get("channel", ""))))
                 return self._json(200, updates.set_mode(str(body.get("mode", ""))))
+            if path == "/api/app-updates":        # {"mode": "auto"|"ask"}, {"hold"|"unhold": id} or {"action": "apply"}
+                from . import app_updates
+                body = self._body()
+                if body.get("action") == "apply":
+                    return self._json(200, app_updates.start_detached())
+                if body.get("hold") or body.get("unhold"):
+                    return self._json(200, app_updates.hold(str(body.get("hold") or body.get("unhold")), bool(body.get("hold"))))
+                return self._json(200, app_updates.set_mode(str(body.get("mode", ""))))
             if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
                 from . import updates
                 return self._json(200, updates.apply(force=self._body().get("force") is True))
@@ -1813,6 +1827,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
+    started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
@@ -1833,6 +1848,17 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         out["error"] = "the app did not come back; see `docker logs runtipi`"
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
+    if backup and status in ("running", "stopped") and not out.get("error"):
+        # Bounded retention: keep the copy this update just made, remove this app's older ones past the minimum age.
+        # Only through Runtipi's backup API, only for this urn, and never a reason to fail the update.
+        pruned = update_backups.prune_app(rt, urn, started_ms, getattr(c, "update_backups", None),
+                                          home=getattr(c, "home", None))
+        if pruned["deleted"]:
+            out["backups_pruned"] = pruned["deleted"]
+        if pruned["errors"]:
+            out["backup_prune_warning"] = "; ".join(pruned["errors"])[:300]
+            print(f"WARNING: {app_id} updated, but its old backups were not all removed: "
+                  f"{out['backup_prune_warning']}", file=sys.stderr)
     return out
 
 
@@ -1962,12 +1988,30 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
     up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
+    au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
+                                             "(default) / --ask, --hold / --unhold <id>")
+    aug = au.add_mutually_exclusive_group()
+    aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
+    aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
+    aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
+    aug.add_argument("--ensure-timer", action="store_true")
+    au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
     args = ap.parse_args(argv)
     if args.cmd == "updates" and args.quick_apply:
         from . import quick_update
         res = quick_update.run(args.quick_apply, auto=args.quick_auto)
         print(json.dumps(res, indent=2))
         return 0 if res.get("done") or res.get("fallback") else 1
+    if args.cmd == "app-updates":
+        from . import app_updates as au_
+        res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
+               else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
+               else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto
+               else au_.apply(only=args.apply or None, dry_run=args.dry_run) if args.apply is not None
+               else au_.status())
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") or res.get("failed") else 0
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:

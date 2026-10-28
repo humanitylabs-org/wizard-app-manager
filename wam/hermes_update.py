@@ -23,7 +23,7 @@ import time
 import urllib.request
 import uuid
 
-from . import alongside, updates, hermes_lock
+from . import alongside, updates, hermes_lock, update_backups
 
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -396,6 +396,24 @@ def update(home: Path | None = None, base: str | None = None, *, dry_run: bool =
         return {'state': 'refused', 'reason': f'Cannot lock or record the Hermes update: {exc}'}
 
 
+def _prune_backups(h: Path, out: dict) -> None:
+    """After a verified update: keep this update's snapshot (and the newest), remove wam's own Hermes snapshots
+    older than the retention age. Best effort; a failure is only a note on the receipt."""
+    try:
+        cfg_file = h / 'app-manager.json'
+        cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
+    except (OSError, ValueError):
+        cfg = {}
+    try:
+        pruned = update_backups.prune_hermes(h / 'backups', update_backups.settings(cfg), protect=out.get('backup'))
+    except Exception as exc:  # noqa: BLE001 - never fail a verified update over cleanup
+        pruned = {'deleted': [], 'errors': [str(exc)]}
+    if pruned['deleted']:
+        out['backups_pruned'] = pruned['deleted']
+    for err in pruned['errors']:
+        out['notes'].append(f'Old Hermes backup not removed: {err}'[:300])
+
+
 def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_timeout: float) -> dict:
     st = status(h, base)
     previous = st.get('receipt') or {}
@@ -504,6 +522,7 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         if _git(repo, 'rev-parse', 'HEAD') != st['target_commit']:
             raise RuntimeError('Hermes checkout moved during the update.')
         _clear_drain(hh, out['run_id'])
+        _prune_backups(h, out)
         return save('updated', 'Hermes is running at the release pin; /health verified.')
     except Exception as exc:
         error = str(exc)

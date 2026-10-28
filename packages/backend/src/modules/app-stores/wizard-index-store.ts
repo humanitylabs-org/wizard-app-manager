@@ -173,6 +173,15 @@ export class WizardIndexStore extends AppStoreFilesManager {
     return (await this.filesystem.isFile(f)) ? ((await this.filesystem.readTextFile(f)) ?? '').trim() : null;
   }
 
+  /** True when the prepared recipe at `commit` is a source/build package whose app-data source copy is missing. */
+  private async sourceMissing(appName: string, commit: string) {
+    const wizardText = await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, 'wizard.md'));
+    const pkg = String(((frontMatter(wizardText ?? '').runtime ?? {}) as { package?: unknown }).package ?? '');
+    if (pkg !== 'source' && pkg !== 'build') return false;
+    const { appDataDir } = this.configuration.get('directories');
+    return !(await this.filesystem.isDirectory(sourceDir(appDataDir, this.storeConfig.slug, appName, commit)));
+  }
+
   /** Make sure repos/<slug>/apps/<id> holds the commit the index lists now. Fetches only this app. */
   public async ensureApp(appName: string, fresh = false) {
     const running = this.inflight.get(appName);
@@ -200,7 +209,9 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const rec = await this.lookup(appName, fresh);
     if (!rec || !SHA.test(rec.install?.commit ?? '')) return;
     const have = await this.localCommit(appName);
-    if (have === rec.install.commit) return;
+    // Same commit is done, unless its pinned source copy (source/build packaging) is gone: then the compose's
+    // ${APP_SOURCE_DIR} would be empty and every update fails with "invalid spec: :/app:ro".
+    if (have === rec.install.commit && !(await this.sourceMissing(appName, have))) return;
 
     const { dataDir } = this.configuration.get('directories');
     const src = path.join(dataDir, 'repos', `.${this.storeConfig.slug}-src`, `${appName}@${rec.install.commit.slice(0, 12)}`);

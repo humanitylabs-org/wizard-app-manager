@@ -48,10 +48,11 @@ export const pendingOf = (file: Grants): Grant[] => (Array.isArray(file.pending)
 export const sensitiveOf = (file: Grants): string[] =>
   Array.isArray(file.sensitive) ? (file.sensitive as unknown[]).filter((x): x is string => typeof x === 'string' && ID.test(x)) : [];
 export const noticesOf = (file: Grants): Notice[] => (Array.isArray(file.notices) ? (file.notices as Notice[]) : []);
-/** The owner's connection mode. Open (the default): every app reaches every app except the pairs the owner disconnected
- * and unapproved connections to sensitive apps (wam/network.py open_topology). Declared: only declared / approved ones. */
+/** The owner's connection mode. Declared (the default): apps can't talk to each other unless connected, i.e. only
+ * declared / approved connections link. Open: every app reaches every app except the pairs the owner disconnected and
+ * unapproved connections to sensitive apps (wam/network.py open_topology). Same default as wam's connection_mode. */
 export type ConnectionMode = 'open' | 'declared';
-export const modeOf = (file: Grants): ConnectionMode => (file.mode === 'declared' ? 'declared' : 'open');
+export const modeOf = (file: Grants): ConnectionMode => (file.mode === 'open' ? 'open' : 'declared');
 /** Open mode: marking an app sensitive keeps the connections it has (every installed app reaches it). Each becomes an
  * `approved: open` grant, which only keeps that pair open: it never links in declared mode and carries no key. */
 export function keepOpenConnections(file: Grants, apps: App[], sensitive: string, now = Math.floor(Date.now() / 1000)) {
