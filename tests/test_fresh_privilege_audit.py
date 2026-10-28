@@ -26,13 +26,33 @@ def test_fresh_install_has_no_passwordless_sudo():
     assert 'bash "$work/prepare.sh" "$owner"' in prep  # sets Tailscale operator as root
 
 
-def test_wam_modules_never_call_sudo():
+def test_wam_modules_only_call_sudo_for_the_fixed_server_access_helper():
+    # Slice 5 adds the spec's one named root operation, not a generic sudo escape.
+    # Allow only the exact argv expression inside developer.helper; a second sudo
+    # site, other command, variable argv or extra argument still fails this audit.
     offending = []
+    allowed = []
     for path in (ROOT / 'wam').rglob('*.py'):
         tree = ast.parse(path.read_text())
+        approved = None
+        if path == ROOT / 'wam/developer.py':
+            fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'helper')
+            calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and
+                     isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and
+                     n.func.value.id == 'subprocess' and n.func.attr == 'run']
+            assert len(calls) == 1
+            argv = calls[0].args[0]
+            assert ast.dump(argv, include_attributes=False) == ast.dump(ast.parse("['sudo', '-n', HELPER, action]", mode='eval').body, include_attributes=False)
+            approved = argv.elts[0]
+            from wam import developer
+            assert developer.HELPER == '/usr/local/libexec/wizard-os/server-access'
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and (node.value == 'sudo' or 'sudo -n' in node.value):
-                offending.append(f'{path.relative_to(ROOT)}:{node.lineno}')
+                if node is approved:
+                    allowed.append(path)
+                else:
+                    offending.append(f'{path.relative_to(ROOT)}:{node.lineno}')
+    assert allowed == [ROOT / 'wam/developer.py']
     assert not offending, offending
 
 
