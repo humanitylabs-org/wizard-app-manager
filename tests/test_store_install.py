@@ -3,7 +3,7 @@ import threading
 from wam import store_install as si
 
 ORIG = {"https://box.tail1.ts.net:8796"}
-GOOD = {"Tailscale-User-Login": "Owner@x.com", "Origin": "https://box.tail1.ts.net:8796",
+GOOD = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "Owner@x.com", "Origin": "https://box.tail1.ts.net:8796",
         "X-Wizard-Store": "1", "Content-Type": "application/json"}
 
 
@@ -13,6 +13,42 @@ def test_request_checks():
     assert "owner" in si.check_request({**GOOD, "Tailscale-User-Login": "guest@x.com"}, "owner@x.com", ORIG)
     assert si.check_request({**GOOD, "Origin": "https://evil.example"}, "owner@x.com", ORIG) == "wrong origin"
     assert si.check_request({k: v for k, v in GOOD.items() if k != "X-Wizard-Store"}, "owner@x.com", ORIG) == "bad request"
+
+
+def test_changes_from_the_box_itself_are_refused():
+    """Serve gives a connection from the node's own address the owner's login, and every app container reaches
+    Serve from that address: a POST from there carries every header a phone sends, and must not act as the owner."""
+    box = {"100.64.0.1"}   # this node's tailnet address (conftest)
+    assert si.check_request(GOOD, "owner@x.com", ORIG, box) is None                     # the owner's phone
+    for xff in ("100.64.0.1", "100.64.0.9, 100.64.0.1", "127.0.0.1", "::1", ""):
+        assert si.check_request({**GOOD, "X-Forwarded-For": xff}, "owner@x.com", ORIG, box) == si.FROM_BOX, xff
+    assert si.check_request({k: v for k, v in GOOD.items() if k != "X-Forwarded-For"}, "owner@x.com", ORIG,
+                            box) == si.FROM_BOX
+    # the address comes from Tailscale itself (the conftest stub) when not given
+    assert si.check_request({**GOOD, "X-Forwarded-For": "fd7a:115c:a1e0::1"}, "owner@x.com", ORIG) == si.FROM_BOX
+
+
+def test_listener_refuses_a_post_from_the_box_over_http(monkeypatch, tmp_path):
+    import http.client, json as _j
+    from http.server import ThreadingHTTPServer
+    from wam import cli
+    monkeypatch.setattr(si, "peer_uid", lambda p: 0)            # it did come through tailscaled
+    monkeypatch.setattr(si, "owner_login", lambda: "owner@x.com")
+    monkeypatch.setattr(si, "served_origins", lambda h: ORIG)
+    monkeypatch.setattr(si, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not install")))
+    (tmp_path / "links.json").write_text(_j.dumps({"host": "box.tail1.ts.net"}))
+    class C: index = "x"; home = tmp_path
+    monkeypatch.setattr(cli.StoreHandler, "cfg", C(), raising=False)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.StoreHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        body = _j.dumps({"source": "standard", "repo": "org/app", "commit": "a" * 40, "operation": "install"})
+        h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        h.request("POST", "/app", body, {**GOOD, "X-Forwarded-For": "100.64.0.1", "Content-Length": str(len(body))})
+        r = h.getresponse()
+        assert r.status == 403 and "this Wizard itself" in _j.loads(r.read())["error"]
+    finally:
+        srv.shutdown()
 
 
 def test_only_listed_apps_and_one_job_per_app(monkeypatch):

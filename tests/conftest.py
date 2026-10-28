@@ -8,6 +8,7 @@ import pytest
 from wam import host_dashboard as hd
 from wam import mirrors
 from wam import network
+from wam import store_install
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +26,8 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
     # Unit installs must not query live registries. Mirror tests inject their own
     # probe and real-git fixture, rather than changing a live Docker daemon.
     monkeypatch.setattr(mirrors, "image_available", lambda image: True)
+    # The owner listener asks Tailscale for this node's own addresses; tests are a box at 100.64.0.1.
+    monkeypatch.setattr(store_install, "own_ips", lambda: {"100.64.0.1", "fd7a:115c:a1e0::1"}, raising=False)
     # App networks: never create, connect or remove a real Docker network from a unit test (tests that need
     # Docker state inject a fake through network.docker_cmd/_run/observe).
     def _no_docker():

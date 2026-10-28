@@ -148,7 +148,7 @@ def test_only_existing_settings_owner_listener_can_choose_default(tmp_path, monk
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
     def request(body=None, **extra):
         conn = http.client.HTTPConnection('127.0.0.1', server.server_port)
-        headers = {'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
                    'X-Wizard-Store': '1', 'Content-Type': 'application/json', **extra}
         conn.request('POST' if body else 'GET', '/_slots/chats', json.dumps(body) if body else None, headers)
         res = conn.getresponse(); result = res.status, json.loads(res.read()); conn.close(); return result
