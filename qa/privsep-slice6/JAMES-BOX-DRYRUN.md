@@ -117,6 +117,11 @@ application files. The privacy seal applies equally to inactive app data.
   builder's generated discovery links and host interpreter binding move too;
   its relative `current` link and hashed release contents stay intact. Application and private-agent payloads
   are not searched for path strings; doing that would violate the privacy seal.
+  The Service's verified projection of the **new** private-agent directory at an
+  old **container destination** remains for opaque registry compatibility; it is
+  not an old host source. The checker uses the same exact-fragment provenance
+  validator as admission and still refuses any changed source or extra stale
+  setting. Running-container bind sources are checked independently after recover.
 - **Existing network overlays need their bridges:** the three stopped apps in
   the failed disposable run were Browser, Claude and ChatGPT. Runtipi's real logs
   name missing external `wizard-app-*` networks, not login or image failures.

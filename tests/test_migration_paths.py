@@ -116,6 +116,25 @@ def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_
     assert managed_overrides.normalize(c,'wizard-agent-service','wizardapps',doc) is not None
 
 
+def test_old_service_container_alias_is_not_old_host_access_and_cannot_hide_a_changed_source(tmp_path,monkeypatch):
+    from wam import alongside,privsep
+    base=tmp_path/'system';rt=base/'runtipi';state=base/'.wizard-os';state.mkdir(parents=True);rt.mkdir()
+    monkeypatch.setattr(privsep,'BASE',base)
+    st={'mode':'alongside','agent':{'uid':1000,'gid':1000,'hermes_home':'/home/legacy/.hermes','origin':'http://127.0.0.1:8642'},
+        'migration':{'legacy_home':'/home/legacy'},'migration_metadata_only':True}
+    alongside.save(state,st);(state/'privsep.json').write_text('{}')
+    text=privsep.service_override(st,state)
+    override=put(rt/'user-config/wizardapps/wizard-agent-service/docker-compose.yml',text)
+    old='/home/legacy/.wizard-os'
+    assert str(state)+'/agents:'+old+'/agents' in text
+    p.assert_clean(rt,state,[old])
+    bad=text.replace(str(state)+'/agents',old+'/agents',1)
+    override.write_text(bad)
+    with pytest.raises(ValueError,match='Legacy management paths'):p.assert_clean(rt,state,[old])
+    override.write_text(text.replace('WIZARD_HOST:','STALE_METADATA: '+old+'/apps.json\n      WIZARD_HOST:'))
+    with pytest.raises(ValueError,match='Legacy management paths'):p.assert_clean(rt,state,[old])
+
+
 def test_renderer_omits_unset_nullable_db_fields_but_preserves_false_and_zero():
     calls=[]
     form={'domain':None,'maxBackups':0,'exposed':False,'PASSWORD':'unchanged'}
