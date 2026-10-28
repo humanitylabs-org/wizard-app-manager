@@ -111,7 +111,9 @@ application files. The privacy seal applies equally to inactive app data.
   Migration now rewrites the finite management metadata (including recipe/source
   descriptors, rendered Compose, registry and approval records), then asks
   Runtipi's normal renderer to refresh every installed app's environment from its
-  full saved form (relocating only path-valued references) before recovery. The
+  full saved form (relocating only path-valued references) before recovery.
+  Unset database fields are omitted rather than posted as invalid JSON null;
+  explicit false/zero values and configured ports/auth settings are preserved. The
   builder's generated discovery links and host interpreter binding move too;
   its relative `current` link and hashed release contents stay intact. Application and private-agent payloads
   are not searched for path strings; doing that would violate the privacy seal.

@@ -116,6 +116,18 @@ def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_
     assert managed_overrides.normalize(c,'wizard-agent-service','wizardapps',doc) is not None
 
 
+def test_renderer_omits_unset_nullable_db_fields_but_preserves_false_and_zero():
+    calls=[]
+    form={'domain':None,'maxBackups':0,'exposed':False,'PASSWORD':'unchanged'}
+    record={'config':form,'domain':None,'localSubdomain':None,'maxBackups':None,
+            'port':8080,'enableAuth':False}
+    rt=SimpleNamespace(installed=lambda:[{'info':{'urn':'demo:wizardapps'}}],
+        app=lambda urn:{'app':record},req=lambda *a,**kw:calls.append(a))
+    p.regenerate(rt)
+    assert calls[0][2]=={'maxBackups':0,'exposed':False,'PASSWORD':'unchanged','port':8080,'enableAuth':False}
+    assert 'domain' in form and form['domain'] is None
+
+
 def test_saved_service_environment_never_replaces_the_root_or_agent_execution_environment(tmp_path):
     import ast
     script=Path(__file__).parents[1]/'scripts/prepare-alongside.py'

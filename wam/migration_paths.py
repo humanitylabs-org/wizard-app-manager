@@ -113,7 +113,12 @@ def regenerate(rt, old=(), new=()):
         form = dict(app.get('config') or {})
         for key in ('exposed', 'exposedLocal', 'openPort', 'port', 'domain',
                     'localSubdomain', 'isVisibleOnGuestDashboard', 'enableAuth', 'maxBackups'):
-            if key in app and key not in form:
+            # DB records use null for unset optional settings, but the normal
+            # update-config DTO accepts absence, not JSON null. Omission writes
+            # those same columns back as null; retain false/zero explicitly.
+            if key in form and form[key] is None:
+                del form[key]
+            if key not in form and app.get(key) is not None:
                 form[key] = app[key]
         rt.req('PATCH', f'/app-lifecycle/{urn}/update-config', relocate(form), timeout=120)
         refreshed.append(urn)
