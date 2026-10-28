@@ -279,6 +279,7 @@ def test_prepare_uses_protected_source_and_opaque_main_agent_handoff(migration,m
     state=migration.snapshot/'state'; state.mkdir(parents=True)
     (state/'linked.json').write_bytes(b'opaque existing link record')
     commands=[]; realrun=m.run
+    monkeypatch.setattr(migration,'remove_stale_base',lambda path:None)
     def run(a,**kw):
         if a[0]=='cp': return realrun(a,**kw)
         commands.append(a)

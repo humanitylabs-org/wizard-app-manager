@@ -87,6 +87,8 @@ def load_skeleton(source):
         guest('doctor','cat /root/slice6-doctor.json',60,True)
 '''
     definition=definition[:start]+body+definition[finish:]
+    definition=definition.replace('        if required: require_step(label+\'-\'+name,rc)',
+        "        if rc and required:\n            run(label+'-'+name+'-runtime-log',ssh+['docker logs --tail 500 runtipi 2>&1'],timeout=90,required=False)\n        if required: require_step(label+'-'+name,rc)")
     definition=definition.replace('privsep4-','privsep6-')
     # Debian's user bus is an explicit setup workaround, not a product fix and
     # not a change to the main baseline installer or stock Hermes.
