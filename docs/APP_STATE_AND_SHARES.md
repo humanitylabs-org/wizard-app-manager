@@ -28,7 +28,8 @@ Source contract: `humanitylabs-org/wizard-os`, branch `spec/app-owned-logins`
   installed app has a longer id claiming the name. When the volume does not
   exist (a new install, or a reset's `down --volumes` removed it) the app gets
   ordinary app-data storage (`${APP_DATA_DIR}/volumes/<key>`), so no fixed-name
-  volume is ever created; if Docker cannot list volumes the start is refused.
+  volume is ever created; once that folder exists the app keeps it even if the
+  old name reappears; if Docker cannot list volumes the start is refused.
   Install candidates still fail rule 15. `wam backup` already archives these volumes
   (it reads `name:`). Stop, start, restart and the backup's stop work as before.
 - Pre-start looks for Compose's `<app>_<store>_<volume>` (the same project name

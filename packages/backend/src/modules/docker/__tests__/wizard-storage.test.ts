@@ -481,6 +481,16 @@ describe('installed pre-rule-15 recipes with their own fixed-name volume (wam#28
     expect((await fs.stat(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config'))).isDirectory()).toBe(true);
     expect(run.mock.calls.some(([, args]) => ['create', 'run'].includes(args[1] ?? '') || args[0] === 'run')).toBe(false);
   });
+  it('keeps app-data storage once the app has it, even if the old name is recreated later', async () => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    await fs.mkdir(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config'), { recursive: true });
+    await fs.writeFile(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config/configuration.yaml'), 'kept');
+    volume({ Name: 'wizard-smart-home-config', Driver: 'local', Options: null, Labels: null });
+    const result = yaml.parse(await store.prepare(urn, build(smartHome, urn)));
+    expect(result.volumes).toBeUndefined();
+    expect(result.services['smart-home'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/ha');
+    expect(await fs.readFile(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config/configuration.yaml'), 'utf8')).toBe('kept');
+  });
   it('refuses to start rather than switch storage when Docker cannot list volumes', async () => {
     const urn = await install({ id: 'smart-home' }, smartHome);
     run.mockRejectedValue(new Error('Cannot connect to the Docker daemon'));

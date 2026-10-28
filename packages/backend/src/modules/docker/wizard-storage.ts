@@ -623,9 +623,19 @@ rm -f ".$1.wizard-copy-ready"`;
       validateStorage(app.manifest, app.compose, true);
       // wam#289: an own fixed-name volume that exists is kept verbatim; a missing one (new install, or removed by a
       // reset's `down --volumes`) becomes ordinary app-data storage, so no fixed-name volume is ever created.
+      // Once the app has app-data storage for that volume it keeps it, even if something recreates the old name.
       const fresh = new Set<string>();
-      for (const [key, opts] of Object.entries(app.compose.volumes ?? {}))
-        if (ownFixed(app.manifest.id, opts) && !(await this.keptVolume(app, apps, opts.name))) fresh.add(key);
+      for (const [key, opts] of Object.entries(app.compose.volumes ?? {})) {
+        if (!ownFixed(app.manifest.id, opts)) continue;
+        const moved = await fs.lstat(path.join(app.data, 'volumes', key)).then(
+          () => true,
+          (e) => {
+            if (e.code !== 'ENOENT') throw e;
+            return false;
+          },
+        );
+        if (moved || !(await this.keptVolume(app, apps, opts.name))) fresh.add(key);
+      }
       const portable = (c: Compose): Compose =>
         fresh.size ? { ...c, volumes: Object.fromEntries(Object.entries(c.volumes ?? {}).map(([k, v]) => [k, fresh.has(k) ? {} : v])) } : c;
       if (
