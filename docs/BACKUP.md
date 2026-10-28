@@ -151,8 +151,9 @@ refused.
    swap the Wizard home items and files in. Keep this box's own machine identity (tokens, tailnet name).
 6. **One active copy**: every agent's messaging off (tokens kept) and cron paused; scheduled backups off. The manifest's
    `active` record is kept so **Make this my active Wizard** (`wam backup activate`) restores exactly that.
-7. **Start and check**: return existing apps (including mapped system-slot providers) to this box's pre-restore
-   running/stopped state; use the snapshot's choice for newly installed ordinary apps. Wait up to 600 seconds per
+7. **Start and check**: return existing apps to this box's pre-restore running/stopped state; cross-layout mapped
+   Agent Service providers retain their separate activation fence. Use the snapshot's choice for newly installed
+   ordinary apps. Wait up to 600 seconds per
    app for Runtipi's healthy `running` state (300 seconds for `stopped`), then regenerate `apps.json` and skills.
    A start failure or health timeout fails the operation and retains its undo copies, rather than reporting success
    while an app is still starting. Write `restores/<stamp>/receipt.json`.

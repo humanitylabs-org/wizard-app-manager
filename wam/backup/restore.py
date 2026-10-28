@@ -878,8 +878,10 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     # 7) start and check -----------------------------------------------------
     _one_agent_service(_here_apps(box, box.installed(), [*here_apps, *apps]))
     notes = []
-    health = {}
-    for a in [*apps, *[dest for _, dest in mappings]]:
+    # Cross-layout mapped Agent Service providers retain their activation fence:
+    # restoring a second scheduler must not start it before --old-is-off.
+    health = {dest["id"]: box.app_status(dest["urn"]) for _, dest in mappings}
+    for a in apps:
         if a["urn"] in late_refused:
             continue
         # Existing apps keep THIS box's pre-restore running/stopped choice, not
