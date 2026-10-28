@@ -1366,8 +1366,11 @@ def test_declared_mode_is_unchanged_and_open_grants_never_link_there():
     assert ("calendly-connector", "resend-connector") not in reach(p)
     assert ("calendly-connector", "twenty-crm") in reach(p)
     assert ("calendly-connector", "stripe-connector") not in reach(p)
-    assert net.connection_mode(None) == "open" and net.connection_mode({"mode": "declared"}) == "declared"
-    assert net.connection_mode({"mode": "nonsense"}) == "open"
+    # declared is the default (no mode recorded, or an App Manager without connection state); open is the owner's choice
+    assert net.connection_mode(None) == "declared" and net.connection_mode({}) == "declared"
+    assert net.connection_mode({"mode": "open"}) == "open" and net.connection_mode({"mode": "declared"}) == "declared"
+    assert net._state_from({"grants": [], "denied": []})["mode"] == "declared"
+    assert net.connection_mode({"mode": "nonsense"}) == "declared"
 
 
 def test_open_mode_scales_to_sixty_apps_with_a_handful_of_networks():

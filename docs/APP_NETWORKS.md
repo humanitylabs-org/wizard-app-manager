@@ -1,14 +1,25 @@
-# App networks: open by default, the owner in control
+# App networks: apps kept apart by default, the owner in control
 
 Stock Runtipi puts every app's main service on one shared Docker network (`runtipi_tipi_main_network`), so any app
 can open a connection to any other app. With isolation on, the App Manager replaces that with networks it manages, in
 one of two modes the owner picks (App Manager → Connections, or `wam network mode open|declared`):
 
-- **Open (the default):** everything is connected unless you disconnect it. Every app reaches every other app, except a
-  pair the owner disconnected (cut both ways) and new connections to an app the owner marked sensitive, which wait for
-  approval. See [Open mode](#open-mode-the-default).
-- **Declared:** each app reaches only the apps it declares (`uses`, `requires`) or the owner connected: one network per
-  declared connection. The rest of this page up to "Open mode" describes it.
+- **Declared (the default):** apps can't talk to each other unless connected. Each app reaches only the apps it
+  declares (`uses`, `requires`) or the owner connected: one network per connection. The rest of this page up to
+  "Open mode" describes it. A box with no mode recorded is in declared mode (wam `connection_mode`, the App Manager's
+  `modeOf`).
+- **Open (the owner's choice):** everything is connected unless you disconnect it. Every app reaches every other app,
+  except a pair the owner disconnected (cut both ways) and new connections to an app the owner marked sensitive, which
+  wait for approval. See [Open mode](#open-mode-the-owners-choice).
+
+Agents are the other way round: an agent can use every app by default. It reaches apps through the Wizard gateway,
+never through the app networks, so keeping apps apart never cuts it off (the Agent Service's app lists are what narrow
+it).
+
+**Before switching a box from open to declared,** check that every app-to-app call it relies on is declared or granted:
+an app that calls another without a `uses:` loses it. Look for other apps' hostnames in each app's compose, env and code
+(`http://<app id>:<port>`), and sample live traffic on the app networks; then add `uses:` to the app's wizard.md, or
+record an owner grant (`wam grants grant <app> <to>`), before `wam network mode declared`.
 
 Docker enforces both; no app holds a secret for another app. Code: `wam/network.py`.
 
@@ -172,10 +183,10 @@ read-only and says why (use `wam grants` there). Only the Connections decisions 
 Reconnect, Approve / Deny, Sensitive, Open / Declared), never installs, removals or other Runtipi calls. To give it a
 launcher tile, add it to the owner's `launcher.json` `links` (Agent Service).
 
-## Open mode (the default)
+## Open mode (the owner's choice)
 
 The owner's mode is kept with the other connection decisions in the App Manager's `wizard-grants.json` (`mode`, missing
-= open) and changed only through its owner-authenticated API (`POST /api/apps/wizard/connection-mode`, the Connections
+= declared) and changed only through its owner-authenticated API (`POST /api/apps/wizard/connection-mode`, the Connections
 view's Open / Declared switch, `wam network mode open|declared`). `wam serve` reconciles live within seconds of a switch.
 
 ### Who reaches whom
@@ -223,42 +234,61 @@ the app leaving the mesh joins its new links first, then leaves the mesh, so oth
 app, "can reach: every other app except ..." with the reason (you disconnected it, waiting for your approval, sensitive
 and not connected) and whether it is on the mesh or on how many links. The live check compares Docker with this plan the
 same way as in declared mode. The Connections view draws this as one picture (`renderConnections`, model in `wizard-views/connections-map.js`):
-the agents on top, wired into one "All connected" cluster that holds the Apps and the Connectors, with the Wizard core
-(System) below; each group has a plain title and one line saying what it is (see "Groups on the map" below). Only the
-exceptions are drawn (a red broken line
-for a Disconnect, an amber pulse for a request waiting for the owner, a lock on an app that asks first). Tapping an app
-opens a sheet that says what it can talk to ("Movies can talk to: everything except Shopping") with Cut off from…,
-Reconnect and Ask me first (= sensitive); a waiting request is a card with Allow / Don't allow. The mode switch ("Strict
-mode: apps only reach what they ask for" = declared), the live check, the gateway and what can't be enforced sit under
-Details.
+the agents on top ("Your agent can use everything"), wired into one frame that holds the Apps, the Agent apps and the
+Connectors; each group has a plain title and one line saying what it is (see "Groups on the map" below).
+
+- **Declared (the default):** the top line is "Apps can't talk to each other unless connected." Only the real
+  connections are drawn, one line per connected pair (Money — SimpleFIN); tapping a line opens a sheet that says who
+  connected them ("Money says it needs SimpleFIN to work", "You connected them") with Disconnect. Connected apps sit
+  side by side; an app connected to nothing sits apart inside a dashed fence. An app's sheet lists its connections with
+  Disconnect, Reconnect for one the owner cut, and Connect to… (an owner grant to any other item on the app networks).
+- **Open:** the frame is "All connected" and only the exceptions are drawn (a red broken line for a Disconnect, an
+  amber pulse for a request waiting for the owner, a lock on an app that asks first). An app's sheet says what it can
+  talk to ("Movies can talk to: everything except Shopping") with Cut off from… and Reconnect.
+
+In both, Ask me first (= sensitive) is on each app's sheet, and a waiting request is a card with Allow / Don't allow.
+The mode switch ("Keep apps apart" = declared), the live check, the gateway and what can't be enforced sit under
+Details. An agent's sheet lists what it can use, group by group (one row per item, `data-cm-agent-use`), where
+per-agent choices will go.
 
 ### Groups on the map
 
-Every item on the map sits in one group, and its sheet says which ("In Connectors"). The group comes from the
-app's own `wizard.md`, by one rule in `wam/kinds.py`; no app id is listed anywhere. `wam connections --json` reports
-it per app as `kind`.
+Every item on the map sits in one of four groups, and its sheet says which ("In Connectors"). The group comes from the
+app's own `wizard.md`, by one rule in `wam/kinds.py`; no app id is listed anywhere in code. `wam connections --json`
+reports it per app as `kind`.
 
 | Group | What the owner reads | Rule, first match wins |
 |---|---|---|
-| (override) | | `kind: agent \| app \| connector` in `wizard.md` |
-| Agents | Your agents. They do things for you with your apps and connectors. | `type: agent` or `category: agent` |
-| System | Wizard itself. It runs everything and links your agent to your apps. | the active shell and Agent Service (the gateway core) only, whatever `kind:` says |
-| Connectors | Background services your apps and agent use. Nothing to open day to day. | `type: external`; or no `view:`; or `category: system` with a view (a screen that only sets it up) |
-| Apps | Things you open and use. Each has its own screen. | `type: view`, and everything else |
+| (owner) | | the box's `app-kinds.json` (below) |
+| (app) | | `kind: agent \| app \| agent-app \| connector` in `wizard.md` |
+| Agents | Who does the work for you. Your agent can use everything. | `type: agent` or `category: agent` |
+| Connectors | Links to outside services and your accounts. | `type: external`; or only a setup screen (`category: system` with a view); or Wizard's own core without a screen (the Agent Service, which links the agent to the apps) |
+| Apps | Things you use. | `type: view` |
+| Agent apps | Tools mainly for your agent. You can watch what it does with them. | no `view:` (no screen of its own) |
+| Apps | Things you use. | everything else |
 
-`kind:` is optional and read only here: the checker ignores it, and an app without it is grouped by the rule. Use it
-only when the rule gets an app wrong. Bad values are ignored. System is never chosen: its items can't be cut off, so an
-app on the app networks can't put itself there.
+System is not a group. Wizard's own core (the active shell and Agent Service) sits in the group the rule gives it and
+carries a small "Comes with Wizard" badge (report `builtin: true`); its items can't be cut off, and their sheet says
+so. `kind:` is optional and read only here: the checker ignores it, and an app without it is grouped by the rule. Use it
+only when the rule gets an app wrong. Bad values (including the old `system`) are ignored.
+
+**The owner's own choice** for an app whose wizard.md he can't change (someone else's repo) goes in
+`app-kinds.json` in the Wizard home (`~/.wizard-os/app-kinds.json` on most boxes); it wins over wizard.md:
+
+```json
+{"kinds": {"defleur-video": "agent-app"}}
+```
+
+Edit it by hand; the next report (`wam connections`, the view's next refresh) uses it. Unknown ids and values are
+ignored. It changes only where the item is drawn, never what it can reach.
 
 Agents that are not apps are listed too (report `agents`): the host's own agent on an alongside box (`alongside.json`)
 and the Agent Service's agents registry (`agents/<id>/agent.json` in the Agent Service's app data, wizard-os
 `spec/AGENTS.md`). The main agent shows as "Your agent"; none known shows one "Your agent". An agent that runs as an
 installed app (`runtime.app_id`) is shown once, as the agent. An agent's line says what it can use, from the app lists
 the gateway enforces (`permissions.wizard_apps` + `agent_apps`; the main agent's in `.main-agent.json`, report
-`main_agent_apps`; without them, every installed app except `privacy: private` ones): "every app and connector" or
-"2 of your 30 apps and connectors". Connectors are on the app
-networks like apps: they can be cut off, asked first, and are in the "All connected" cluster. System items (the core)
-can't be cut off; their sheet says so.
+`main_agent_apps`; without them, every installed app except `privacy: private` ones): "everything" or "2 of your 30
+apps". Connectors and agent apps are on the app networks like apps: they can be connected, cut off and asked first.
 
 Switching to declared leaves the decisions as they are (Disconnects stay, open grants are kept but never link, open-mode
 waits are dropped); switching back to open restores the mesh. `wam network off` still turns isolation off entirely.

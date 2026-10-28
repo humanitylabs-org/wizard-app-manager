@@ -12,7 +12,23 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
-import { bandOf, bands, canUse, cutGroups, cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
+import {
+  BANDS,
+  BUILTIN,
+  bandOf,
+  bands,
+  canUse,
+  connectable,
+  cutGroups,
+  cutRows,
+  cuttable,
+  doneWords,
+  linkInfo,
+  list,
+  mapModel,
+  reconnectRows,
+  talksSentence,
+} from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
 const STORE = 'wizardapps';
@@ -571,6 +587,9 @@ const cmGlyph = (a) => {
 };
 const LOCK =
   '<span class="wam-cm-badge" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg></span>';
+// Comes with Wizard: a small sparkle badge on the disc of Wizard's own pieces (the shell, the Agent Service).
+const WIZ =
+  '<span class="wam-cm-badge is-wiz" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.1 6.4 6.4 2.1-6.4 2.1L12 20.5l-2.1-6.4L3.5 12l6.4-2.1z"/></svg></span>';
 const sheetOpen = (dlg) => {
   if (window.WzSheet?.open) return window.WzSheet.open(dlg);
   dlg.classList.add('wam-cm-own');
@@ -594,8 +613,8 @@ export async function renderConnections(el, ctx = {}) {
   let toast = null; // { text, undo: {from, to} } after a change
   let toastTimer = 0;
   let details = false;
-  let sheetId = ''; // the app whose sheet is open ('@agent:<i>' for an agent, '@sys:<id>' for part of Wizard)
-  let picking = false;
+  let sheetId = ''; // the app whose sheet is open ('@agent:<i>' an agent, '@sys:<id>' part of Wizard, '@link:<a>|<b>' a line)
+  let picking = false; // the sheet's chooser is open: Cut off from… (Open mode) or Connect to… (Strict mode)
   let drawn = '';
   let dlg = null;
   const ago = (t) => {
@@ -620,9 +639,18 @@ export async function renderConnections(el, ctx = {}) {
             : 'Read-only here: changes need the App Manager owner sign-in (or `wam grants` on the server).',
         )}</p>`;
 
-  // Exceptions first and side by side (so a cut pair's broken line stays short), then everyone else by name.
-  const order = (m, apps = m.apps) => {
+  // Open mode: the exceptions first and side by side (so a cut pair's broken line stays short), then the rest by name.
+  // Strict mode: the apps joined by lines sit next to the group they connect to (at the end of the top group, at the
+  // start of the others), each set of connected apps together and in the same order in every group, so lines stay
+  // short; the ones on their own sit apart.
+  const order = (m, apps = m.apps, pos = 'mid') => {
     const byName = [...apps].sort((x, y) => x.name.localeCompare(y.name));
+    if (m.mode === 'declared') {
+      const comp = m.comp || {};
+      const linked = byName.filter((a) => a.id in comp).sort((x, y) => comp[x.id] - comp[y.id] || x.name.localeCompare(y.name));
+      const apart = byName.filter((a) => !(a.id in comp));
+      return pos === 'top' ? [...apart, ...linked] : [...linked, ...apart];
+    }
     const out = [];
     const put = (id) => {
       const a = apps.find((x) => x.id === id);
@@ -637,15 +665,17 @@ export async function renderConnections(el, ctx = {}) {
     return out;
   };
 
-  const node = (a, _nm) => {
+  const node = (a, _nm, mode) => {
+    // Strict mode draws only connections: a cut there is a connection that isn't, said in the app's sheet
+    const cutShown = mode !== 'declared' && a.cut.length;
     const role = a.waiting
       ? ['Waiting', 'warn']
-      : a.cut.length
+      : cutShown
         ? [a.cut.length === 1 ? 'Cut off' : `Cut off ×${a.cut.length}`, 'bad']
         : a.sensitive
           ? ['Asks you first', '']
           : null;
-    const cls = `${a.waiting ? ' is-wait' : ''}${a.cut.length ? ' is-cut' : ''}${a.sensitive ? ' is-ask' : ''}`;
+    const cls = `${a.waiting ? ' is-wait' : ''}${cutShown ? ' is-cut' : ''}${a.sensitive ? ' is-ask' : ''}${a.alone ? ' is-alone' : ''}`;
     return `<button type="button" class="wam-cm-node${cls}" data-cm-app="${esc(a.id)}" aria-haspopup="dialog" aria-label="${esc(
       `${a.name} can talk to ${a.talksTo}${a.sensitive ? '. Asks you first' : ''}${a.waiting ? '. Waiting for you' : ''}`,
     )}">
@@ -678,42 +708,42 @@ export async function renderConnections(el, ctx = {}) {
           })
           .join('')}</div>`
       : '';
-    const tag = m.mode === 'declared' ? 'Strict mode' : 'All connected';
-    // Groups top to bottom (connections-map.js bands): the agents, wired into one cluster holding the apps and the
-    // connectors (they all talk to each other), then Wizard itself. Each group says in one line what it is.
+    const tag = m.mode === 'declared' ? 'Kept apart unless connected' : 'All connected';
+    // Groups top to bottom (connections-map.js bands): the agents (they can use everything), wired into one frame
+    // holding the apps, agent apps and connectors. Strict mode draws a line for each connection between them; Open
+    // mode means they all talk to each other. Each group says in one line what it is. Wizard's own pieces sit in their
+    // group with a "Comes with Wizard" badge.
     const agentNode = (g, i) =>
       `<button type="button" class="wam-cm-node is-agent" data-cm-agent="${i}" aria-haspopup="dialog" aria-label="${esc(`${g.name} can use ${canUse(g)}`)}">
         <span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span>
         <span class="wam-cm-label"><span class="wam-cm-name">${esc(g.name)}</span><span class="wam-cm-role">${esc(`Can use: ${canUse(g)}`)}</span></span></button>`;
     const sysNode = (s) =>
-      `<button type="button" class="wam-cm-node is-sys" data-cm-sys="${esc(s.id)}" aria-haspopup="dialog" aria-label="${esc(`${s.name}, part of Wizard itself`)}">
-        <span class="wam-cm-disc">${cmGlyph(s)}</span><span class="wam-cm-label"><span class="wam-cm-name">${esc(s.name)}</span></span></button>`;
+      `<button type="button" class="wam-cm-node is-sys" data-cm-sys="${esc(s.id)}" aria-haspopup="dialog" aria-label="${esc(`${s.name}. ${BUILTIN}`)}">
+        <span class="wam-cm-disc">${cmGlyph(s)}${WIZ}</span><span class="wam-cm-label"><span class="wam-cm-name">${esc(s.name)}</span><span class="wam-cm-role is-builtin">${esc(BUILTIN)}</span></span></button>`;
     const head = (b) => `<header class="wam-cm-bh"><h3>${esc(b.title)}</h3><p>${esc(b.blurb)}</p></header>`;
     const groups = bands(m);
-    const band = (b) => {
+    const band = (b, i, all) => {
+      const pos = i === 0 && all.length > 1 ? 'top' : 'mid';
+      const ordered = order(m, b.apps, pos).map((a) => node(a, nm, m.mode));
+      // Wizard's own pieces are never connected: they sit with the apps on their own
       const nodes = [
         ...b.agents.map((g) => agentNode(g, m.agents.indexOf(g))),
-        ...order(m, b.apps).map((a) => node(a, nm)),
-        ...b.system.map(sysNode),
+        ...(pos === 'top' ? [...b.builtin.map(sysNode), ...ordered] : [...ordered, ...b.builtin.map(sysNode)]),
       ];
-      const wide = b.key === 'agent' || b.key === 'system' ? ' wam-cm-top' : ' wam-cm-grid';
+      const wide = b.key === 'agent' ? ' wam-cm-top' : ' wam-cm-grid';
       return `<section class="wam-cm-band" data-cm-band="${b.key}" aria-label="${esc(b.title)}">${head(b)}<div class="wam-cm-nodes${wide}">${nodes.join('')}</div></section>`;
     };
-    const inCluster = groups.filter((b) => b.key === 'app' || b.key === 'connector');
-    // Shown whenever there is something to group: on a box with only Wizard itself, the Agents and System bands.
+    const inCluster = groups.filter((b) => b.key !== 'agent');
+    // Shown whenever there is something to group: on a box with only Wizard itself, the agent and Wizard's own pieces.
     const map =
-      m.apps.length || m.system.length
+      m.apps.length || m.builtin.length
         ? `<div class="wam-cm-map" data-mode="${m.mode}">
-          <svg class="wam-cm-lines" aria-hidden="true"></svg>
+          <svg class="wam-cm-lines"></svg>
           ${groups
             .filter((b) => b.key === 'agent')
-            .map(band)
+            .map((b) => band(b, 0, []))
             .join('')}
           ${inCluster.length ? `<div class="wam-cm-cluster"><span class="wam-cm-tag" data-cm-tag>${esc(tag)}</span>${inCluster.map(band).join('')}</div>` : ''}
-          ${groups
-            .filter((b) => b.key === 'system')
-            .map(band)
-            .join('')}
         </div>`
         : note('No apps installed');
     // Details: the words an expert wants (mode, the live Docker check, the gateway, what can't be enforced).
@@ -737,15 +767,16 @@ export async function renderConnections(el, ctx = {}) {
     const detailsHtml = `<div class="wam-cm-details"${details ? '' : ' hidden'}>
         ${
           d.enabled && d.owner_state
-            ? `<div class="wam-cm-row"><span class="wam-cm-tx"><b>Strict mode: apps only reach what they ask for</b><small>${
+            ? `<div class="wam-cm-row"><span class="wam-cm-tx"><b>Keep apps apart</b><small>${
                 m.mode === 'declared'
-                  ? 'On: each app reaches only the apps it declares (or that you connected). Turn off to let all your apps talk to each other.'
+                  ? 'On (the default): apps can’t talk to each other unless connected, either because an app says it needs another or because you connected them. Turn off to let all your apps talk to each other.'
                   : 'Off: every app can talk to every other app unless you cut it off.'
-              }</small></span>${sw(m.mode === 'declared', `data-cm-strict="${m.mode === 'declared' ? 'open' : 'declared'}"`, 'mode', 'Strict mode')}</div>`
+              }</small></span>${sw(m.mode === 'declared', `data-cm-strict="${m.mode === 'declared' ? 'open' : 'declared'}"`, 'mode', 'Keep apps apart')}</div>`
             : ''
         }
         <p>${check} <span class="wam-cm-at">Checked ${esc(ago(d.checked_at))}</span></p>
-        <p><b>Groups</b> come from each app’s wizard.md: a <code>kind:</code> line if it has one, else an agent is <code>type: agent</code>, System is the shell and Agent Service, a connector is <code>type: external</code> or has no screen (or only a setup screen, <code>category: system</code>), and the rest are apps.</p>
+        <p><b>Groups</b> come from each app’s wizard.md: your own choice in <code>app-kinds.json</code> first, then a <code>kind:</code> line if it has one; else an agent is <code>type: agent</code>, a connector is <code>type: external</code> (or only has a setup screen, <code>category: system</code>), an agent app has no screen of its own, and the rest are apps. The shell and Agent Service come with Wizard: they can’t be cut off.</p>
+        <p><b>Your agent</b> uses apps through Wizard itself, not the app networks: keeping apps apart never cuts it off.</p>
         ${d.gateway?.detail ? `<p><b>Your agent</b> reaches apps through the Wizard gateway: ${esc(d.gateway.detail)}.</p>` : ''}
         ${m.mode === 'open' ? `<p><b>Mode</b> Open: ${meshCount} apps share one app network (the mesh)${linked.length ? `; ${linked.map((a) => nm(a.id)).join(', ')} use${linked.length === 1 ? 's' : ''} direct links instead` : ''}.</p>` : m.mode === 'declared' ? '<p><b>Mode</b> Declared: one network per connection an app declares or you approve.</p>' : '<p><b>Mode</b> Isolation is off: apps share Runtipi’s network.</p>'}
         ${odd.map((a) => `<p class="wam-cm-warn"><b>${esc(a.name || a.id)}</b> ${esc(a.why || STATE_WORDS[a.state] || a.state || '')}${(a.host_access || []).length ? ` Host access: ${esc(a.host_access.join(', '))}.` : ''}</p>`).join('')}
@@ -759,7 +790,7 @@ export async function renderConnections(el, ctx = {}) {
         }</div>`
       : '<div class="wam-cm-toast" role="status" aria-live="polite" hidden></div>';
     const html = `<div class="wam-cm">
-        <p class="wam-cm-lead">${esc(m.lead)}</p>
+        <p class="wam-cm-lead">${esc(m.lead)}${m.hint ? `<small>${esc(m.hint)}</small>` : ''}</p>
         ${roOnly()}${asks}${map}
         <button type="button" class="wam-cm-more" data-cm-details aria-expanded="${details}">Details<i class="wam-cm-chev${details ? ' is-up' : ''}" aria-hidden="true"></i></button>
         ${detailsHtml}${toastHtml}
@@ -802,7 +833,7 @@ export async function renderConnections(el, ctx = {}) {
       const t = at(tag);
       specs.push(['flow', `M${f(a.x)} ${f(a.b + 4)} L${f(t.x)} ${f(t.t - 2)}`]);
     }
-    const pair = (kind, [p, q]) => {
+    const pair = (kind, [p, q], key = kind === 'link' ? `${p}|${q}` : '') => {
       const A = disc(p);
       const B = disc(q);
       if (!A || !B) return;
@@ -815,20 +846,30 @@ export async function renderConnections(el, ctx = {}) {
       const s = { x: a.x + ux * (a.r + 4), y: a.y + uy * (a.r + 4) };
       const e = { x: b.x - ux * (b.r + 4), y: b.y - uy * (b.r + 4) };
       // side by side: a straight wire between the discs; further apart: a gentle arc that bows away from the labels
-      const bow = Math.abs(dy) < 4 && L < 3.2 * a.r + 80 ? 0 : Math.min(60, L * 0.22);
+      // (Strict mode's connection lines bow less, so many of them stay readable)
+      const bow = Math.abs(dy) < 4 && L < 3.2 * a.r + 80 ? 0 : kind === 'link' ? Math.min(28, L * 0.1) : Math.min(60, L * 0.22);
       const cx = (s.x + e.x) / 2 + uy * bow;
       const cy = (s.y + e.y) / 2 - Math.abs(ux) * bow;
-      specs.push([kind, `M${f(s.x)} ${f(s.y)} Q${f(cx)} ${f(cy)} ${f(e.x)} ${f(e.y)}`]);
+      specs.push([kind, `M${f(s.x)} ${f(s.y)} Q${f(cx)} ${f(cy)} ${f(e.x)} ${f(e.y)}`, key]);
     };
-    for (const p of m.cuts) pair('cut', p);
+    // Strict mode draws only what is connected (a line per connection, tappable); Open mode only the exceptions
+    if (m.mode !== 'declared') for (const p of m.cuts) pair('cut', p);
     for (const p of m.waits) pair('wait', p);
     for (const p of m.links) pair('link', p);
     const key = JSON.stringify(specs);
     if (key === drawn && svg.firstChild) return;
     drawn = key;
     svg.replaceChildren();
-    for (const [kind, d] of specs) {
+    for (const [kind, d, key] of specs) {
       const base = sv('path', { d, class: `wam-cm-w is-${kind}` }, svg);
+      if (key) {
+        // a wide invisible path over the line takes the tap: it opens the line's sheet (Disconnect)
+        const [p, q] = key.split('|');
+        const hit = sv('path', { d, class: 'wam-cm-hit', 'data-cm-link': key }, svg);
+        const t = document.createElementNS(SVG, 'title');
+        t.textContent = `${nameOf(p)} and ${nameOf(q)} are connected`;
+        hit.appendChild(t);
+      }
       const L = base.getTotalLength?.() || 0;
       if (!L) continue;
       if (kind === 'flow') {
@@ -896,18 +937,48 @@ export async function renderConnections(el, ctx = {}) {
         g.real && g.real !== g.name
           ? `<p class="wam-cm-sh-note">${esc(`${g.name} is ${g.real}${g.main ? ', running on this server' : ''}.`)}</p>`
           : '';
+      // What it can use, group by group: one row per item (data-cm-agent-use), where per-agent choices will go.
+      const uses = BANDS.filter((b) => b.key !== 'agent')
+        .map((b) => {
+          const items = [...m.apps.filter((a) => a.kind === b.key), ...(m.builtin || []).filter((s) => s.kind === b.key)].sort((x, y) =>
+            x.name.localeCompare(y.name),
+          );
+          if (!items.length) return '';
+          return `<div class="wam-cm-uses" role="group" aria-label="${esc(b.title)}"><h5>${esc(b.title)}</h5><div class="wam-cm-chips">${items
+            .map((x) => {
+              const no = g.allow && !g.allow.includes(x.id);
+              return `<span class="wam-cm-chip${no ? ' is-off' : ''}" data-cm-agent-use="${esc(x.id)}">${cmGlyph(x)}<span>${esc(x.name)}</span></span>`;
+            })
+            .join('')}</div></div>`;
+        })
+        .join('');
       set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span><h2 id="wamCmTitle">${esc(g.name)}</h2></div>
         ${where('agent')}
         <p class="wam-cm-says">${esc(`Can use: ${canUse(g)}`)}</p>${who}
-        <p class="wam-cm-sh-note">It reaches them through Wizard itself, not through the app networks, so cutting apps off from each other never cuts off your agent.</p>`);
+        ${uses}
+        <p class="wam-cm-sh-note">It uses them through Wizard itself, not through the app networks, so keeping apps apart never cuts off your agent.</p>`);
       return;
     }
     if (sheetId.startsWith('@sys:')) {
-      const s = (m.system || []).find((x) => x.id === sheetId.slice(5));
+      const s = (m.builtin || []).find((x) => x.id === sheetId.slice(5));
       if (!s) return sheetClose(dlg);
-      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(s)}</span><h2 id="wamCmTitle">${esc(s.name)}</h2></div>
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(s)}${WIZ}</span><h2 id="wamCmTitle">${esc(s.name)}</h2></div>
         ${where(s.kind)}
-        <p class="wam-cm-sh-note">Your agent reaches your apps through Wizard itself, so cutting apps off from each other never touches it.</p>`);
+        <p class="wam-cm-says">${esc(`${BUILTIN}.`)}</p>
+        <p class="wam-cm-sh-note">It is part of Wizard itself: your agent uses your apps through it, so it can’t be cut off, and keeping apps apart never touches it.</p>`);
+      return;
+    }
+    if (sheetId.startsWith('@link:')) {
+      const [p, q] = sheetId.slice(6).split('|');
+      if (!m.links.some(([x, y]) => x === p && y === q)) return sheetClose(dlg);
+      const info = linkInfo(m, p, q);
+      const key = `disconnect:${p}|${q}`;
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-pair">${cmGlyph({ id: p, name: nm(p) })}${cmGlyph({ id: q, name: nm(q) })}</span><h2 id="wamCmTitle">${esc(info.title)}</h2></div>
+        ${info.why.map((w) => `<p class="wam-cm-says">${esc(w)}</p>`).join('')}
+        ${info.group ? `<p class="wam-cm-sh-note">${esc(`This connection goes to ${list((info.group.providers || []).map(nm))} together, so it is disconnected as one.`)}</p>` : ''}
+        ${info.warn ? `<p class="wam-cm-sh-note">${esc(info.warn)}</p>` : ''}
+        <div class="wam-cm-sh-acts"><button type="button" class="wam-btn" data-cm-disconnect="${esc(`${p}|${q}`)}"${dis(key)}>Disconnect</button></div>
+        ${roOnly()}`);
       return;
     }
     const a = m.apps.find((x) => x.id === sheetId);
@@ -936,30 +1007,61 @@ export async function renderConnections(el, ctx = {}) {
         : `<div class="wam-cm-srow">${cmGlyph({ id: b, name: nm(b) })}<span class="wam-cm-tx"><b>${esc(nm(b))}</b><small>Not connected yet: ${esc(a.sensitive ? a.name : nm(b))} asks you first</small></span>
           <button type="button" class="wam-btn primary" data-cm-connect="${esc(b)}"${dis(`connect:${b}`)}>Connect</button></div>`;
     });
-    const can = cuttable(m, a.id);
+    const strict = m.mode === 'declared';
+    // Strict mode: each connection it has, with Disconnect; a connection to several apps doing one job is one row
     const groups = cutGroups(m, a.id);
-    const pick = picking
-      ? `<div class="wam-cm-pick"><p>${esc(`Tap the app ${a.name} should stop talking to. It works both ways.`)}</p><div class="wam-cm-chips">${can
-          .map(
-            (x) =>
-              `<button type="button" class="wam-cm-chip" data-cm-cut="${esc(x.id)}"${dis(`cut:${x.id}`)}>${cmGlyph(x)}<span>${esc(x.name)}</span></button>`,
-          )
-          .join('')}${groups
-          .map(
-            (g, i) =>
-              `<button type="button" class="wam-cm-chip" data-cm-cutgroup="${i}"${dis(`cutgroup:${i}`)}>${cmGlyph({ id: g.providers[0], name: nm(g.providers[0]) })}<span>${esc(`${nm(g.from)} → ${g.names}`)}</span></button>`,
-          )
-          .join('')}</div>${groups.length ? '<p>A connection to several apps that do the same job is cut as one.</p>' : ''}</div>`
-      : '';
+    const linkRowsHtml = strict
+      ? [
+          ...cuttable(m, a.id).map((x) => {
+            const pairId = [a.id, x.id].sort().join('|');
+            const info = linkInfo(m, ...pairId.split('|'));
+            return `<div class="wam-cm-srow">${cmGlyph(x)}<span class="wam-cm-tx"><b>${esc(x.name)}</b><small>${esc(`Connected. ${info.why.join(' ')}`)}</small></span>
+              <button type="button" class="wam-btn" data-cm-disconnect="${esc(pairId)}"${dis(`disconnect:${pairId}`)}>Disconnect</button></div>`;
+          }),
+          ...groups.map(
+            (
+              g,
+              i,
+            ) => `<div class="wam-cm-srow">${cmGlyph({ id: g.providers[0], name: nm(g.providers[0]) })}<span class="wam-cm-tx"><b>${esc(`${nm(g.from)} → ${g.names}`)}</b><small>Connected, as one connection</small></span>
+              <button type="button" class="wam-btn" data-cm-cutgroup="${i}"${dis(`cutgroup:${i}`)}>Disconnect</button></div>`,
+          ),
+        ]
+      : [];
+    const can = strict ? connectable(m, a.id) : cuttable(m, a.id);
+    const pick =
+      picking && strict
+        ? `<div class="wam-cm-pick"><p>${esc(`Tap what ${a.name} should be able to talk to. It works both ways.`)}</p><div class="wam-cm-chips">${can
+            .map(
+              (x) =>
+                `<button type="button" class="wam-cm-chip" data-cm-join="${esc(x.id)}"${dis(`join:${x.id}`)}>${cmGlyph(x)}<span>${esc(x.name)}</span></button>`,
+            )
+            .join('')}</div></div>`
+        : picking
+          ? `<div class="wam-cm-pick"><p>${esc(`Tap the app ${a.name} should stop talking to. It works both ways.`)}</p><div class="wam-cm-chips">${can
+              .map(
+                (x) =>
+                  `<button type="button" class="wam-cm-chip" data-cm-cut="${esc(x.id)}"${dis(`cut:${x.id}`)}>${cmGlyph(x)}<span>${esc(x.name)}</span></button>`,
+              )
+              .join('')}${groups
+              .map(
+                (g, i) =>
+                  `<button type="button" class="wam-cm-chip" data-cm-cutgroup="${i}"${dis(`cutgroup:${i}`)}>${cmGlyph({ id: g.providers[0], name: nm(g.providers[0]) })}<span>${esc(`${nm(g.from)} → ${g.names}`)}</span></button>`,
+              )
+              .join('')}</div>${groups.length ? '<p>A connection to several apps that do the same job is cut as one.</p>' : ''}</div>`
+          : '';
 
     set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(a)}</span><h2 id="wamCmTitle">${esc(a.name)}</h2></div>
       ${where(a.kind)}
       <p class="wam-cm-says">${esc(talksSentence(a))}</p>
-      ${cutList.join('')}${askRows.join('')}
+      ${linkRowsHtml.join('')}${cutList.join('')}${askRows.join('')}
       ${
-        can.length || groups.length
-          ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Cut off from…</button></div>${pick}`
-          : ''
+        strict
+          ? can.length && a.enforce
+            ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Connect to…</button></div>${pick}`
+            : ''
+          : can.length || groups.length
+            ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Cut off from…</button></div>${pick}`
+            : ''
       }
       ${
         m.mode === 'off'
@@ -969,7 +1071,9 @@ export async function renderConnections(el, ctx = {}) {
             : `<div class="wam-cm-row"><span class="wam-cm-tx"><b>Ask me first</b><small>${esc(
                 a.sensitive
                   ? `On: a new app that wants to talk to ${a.name} waits for your OK. Apps it already talks to stay connected.`
-                  : `Off: new apps can talk to ${a.name} right away. Turn on to approve each one first.`,
+                  : strict
+                    ? `Off: an app that says it needs ${a.name} is connected to it right away. Turn on to approve each one first.`
+                    : `Off: new apps can talk to ${a.name} right away. Turn on to approve each one first.`,
               )}</small></span>${sw(a.sensitive, `data-cm-askfirst="${esc(a.id)}"`, `ask-first:${a.id}`, 'Ask me first')}</div>`
       }
       ${roOnly()}`);
@@ -1064,6 +1168,8 @@ export async function renderConnections(el, ctx = {}) {
     if (agentNode) return openSheet(`@agent:${agentNode.dataset.cmAgent}`);
     const sysNode = t('[data-cm-sys]');
     if (sysNode) return openSheet(`@sys:${sysNode.dataset.cmSys}`);
+    const line = t('[data-cm-link]');
+    if (line) return openSheet(`@link:${line.getAttribute('data-cm-link')}`);
     if (t('[data-cm-details]')) {
       details = !details;
       el._wamHtml = '';
@@ -1086,6 +1192,26 @@ export async function renderConnections(el, ctx = {}) {
         doneWords('cut', nameOf(sheetId), nameOf(to)),
         { close: true, undo: { rows, a: sheetId, b: to } },
       );
+    }
+    if (b.matches('[data-cm-disconnect]')) {
+      // Strict mode: a line's Disconnect denies every connection between the pair, whichever app declared it; a
+      // connection to a slot several apps provide is denied as one
+      const [p, q] = b.dataset.cmDisconnect.split('|');
+      const info = linkInfo(el._wamModel, p, q);
+      const rows = info.group ? [{ from: info.group.from, to: info.group.to }] : cutRows('declared', d.controls, p, q);
+      return void run(
+        `disconnect:${p}|${q}`,
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, false);
+        },
+        doneWords('disconnect', nameOf(p), nameOf(q)),
+        { close: true, undo: { rows, a: p, b: q } },
+      );
+    }
+    if (b.matches('[data-cm-join]')) {
+      // Strict mode: Connect to… records the owner's own connection (it links both ways)
+      const to = b.dataset.cmJoin;
+      return void run(`join:${to}`, () => grant(sheetId, to, true), doneWords('connect', nameOf(sheetId), nameOf(to)), { close: true });
     }
     if (b.matches('[data-cm-cutgroup]')) {
       const g = cutGroups(el._wamModel, sheetId)[Number(b.dataset.cmCutgroup)];

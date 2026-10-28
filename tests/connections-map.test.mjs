@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  BUILTIN,
+  agentsLine,
   bandOf,
   bands,
   canUse,
+  connectable,
   cutGroups,
   cutRows,
   cuttable,
   doneWords,
   reconnectRows,
+  linkInfo,
   list,
   mapModel,
   pairRow,
@@ -99,8 +103,18 @@ test('Strict mode draws the connections that exist and says who each app talks t
   assert.equal(m.mode, 'declared');
   assert.deepEqual(m.links, [['backup', 'wizard-cloudflare']]);
   assert.equal(talksSentence(m.apps[0]), 'Backup can talk to: Cloudflare');
-  assert.equal(talksSentence(m.apps[2]), 'Files can talk to: no other app');
-  assert.match(m.lead, /^Strict mode: each app talks only to the apps it asks for/);
+  assert.equal(talksSentence(m.apps[2]), 'Files can’t talk to any other app.');
+  assert.equal(m.lead, 'Apps can’t talk to each other unless connected.');
+  assert.equal(m.hint, 'One connection: tap a line to disconnect it, or an app to connect it.');
+  // connected apps are drawn with their line; the rest sit apart
+  assert.deepEqual(
+    m.apps.map((a) => [a.id, a.alone]),
+    [
+      ['backup', false],
+      ['wizard-cloudflare', false],
+      ['files', true],
+    ],
+  );
   assert.deepEqual(
     cuttable(m, 'backup').map((a) => a.id),
     ['wizard-cloudflare'],
@@ -155,8 +169,12 @@ test('Strict mode keeps a pair the owner cut on the map, so it can be reconnecte
   assert.deepEqual(m.cuts, [['backup', 'wizard-cloudflare']]);
   assert.deepEqual(m.apps[0].cut, ['wizard-cloudflare']);
   assert.deepEqual(m.apps[1].cut, ['backup']);
-  assert.equal(talksSentence(m.apps[0]), 'Backup can talk to: no other app');
+  assert.equal(talksSentence(m.apps[0]), 'Backup can’t talk to any other app.');
   assert.deepEqual(pairRow(d.controls, 'wizard-cloudflare', 'backup', 'disconnected'), d.controls[0]);
+  // a cut isn't a line in Strict mode (only connections are), and Connect to… leaves it to Reconnect
+  assert.deepEqual(m.links, []);
+  assert.deepEqual(connectable(m, 'backup'), []);
+  assert.equal(m.hint, 'Nothing is connected. Tap an app to connect it to another.');
 });
 
 test('The top line counts pairs a sensitive app holds back, not only cuts', () => {
@@ -197,7 +215,8 @@ test('Strict mode says what apps on Runtipi’s shared network still reach', () 
   d.apps[1].can_reach = [{ to: 'files', state: 'shared-network', declared: false }];
   const m = mapModel(d);
   assert.equal(talksSentence(m.apps[0]), 'Files can talk to: Photos');
-  assert.match(m.lead, /except apps published through Runtipi, which can still reach each other/);
+  assert.equal(m.lead, 'Apps can’t talk to each other unless connected.');
+  assert.match(m.hint, /Apps published through Runtipi can still reach each other \(see Details\)/);
 });
 
 test('Reconnect undoes every Disconnect between the pair, so no half-cut pair is left', () => {
@@ -261,17 +280,18 @@ test('Ask me first is offered only where the app networks can hold a connection 
   );
 });
 
-test('Groups: the agents on top, then apps, connectors and Wizard itself, each from the report kind', () => {
+test('Four groups: Agents, Apps, Agent apps and Connectors, each from the report kind; Wizard’s own pieces carry a badge', () => {
   const d = report(
     [
       app('cinequeue', 'Movies', [], { kind: 'app' }),
       app('wizard-monarch', 'Monarch', [], { kind: 'connector' }),
-      app('transcriber', 'Transcriber', [], { kind: 'connector' }),
+      app('transcriber', 'Transcriber', [], { kind: 'agent-app' }),
       app('old', 'Old App'), // an older App Manager without kinds: an app
     ],
     { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] },
   );
-  d.apps.find((a) => a.id === 'wizard-ux').kind = 'system';
+  d.apps.find((a) => a.id === 'wizard-ux').kind = 'app';
+  d.apps.find((a) => a.id === 'wizard-agent-service').kind = 'connector';
   const m = mapModel(d);
   const g = bands(m);
   assert.deepEqual(
@@ -279,34 +299,106 @@ test('Groups: the agents on top, then apps, connectors and Wizard itself, each f
     [
       ['agent', 'Agents'],
       ['app', 'Apps'],
+      ['agent-app', 'Agent apps'],
       ['connector', 'Connectors'],
-      ['system', 'System'],
     ],
   );
   assert.deepEqual(
     g[0].agents.map((a) => [a.name, a.real, a.main]),
     [['Your agent', 'host Hermes', true]],
   );
+  assert.equal(g[0].blurb, 'Your agent can use everything.');
   assert.deepEqual(
     g[1].apps.map((a) => a.id),
     ['cinequeue', 'old'],
   );
   assert.deepEqual(
-    g[2].apps.map((a) => a.id),
-    ['wizard-monarch', 'transcriber'],
+    g[1].builtin.map((a) => [a.id, a.builtin]),
+    [['wizard-ux', true]],
   );
-  // the core without a kind is System too
   assert.deepEqual(
-    g[3].system.map((a) => a.id),
-    ['wizard-ux', 'wizard-agent-service'],
+    g[2].apps.map((a) => a.id),
+    ['transcriber'],
   );
-  assert.equal(g[2].blurb, 'Background services your apps and agent use. Nothing to open day to day.');
+  assert.deepEqual(
+    g[3].apps.map((a) => a.id),
+    ['wizard-monarch'],
+  );
+  assert.deepEqual(
+    g[3].builtin.map((a) => a.id),
+    ['wizard-agent-service'],
+  );
+  assert.equal(BUILTIN, 'Comes with Wizard');
+  assert.equal(g[2].blurb, 'Tools mainly for your agent. You can watch what it does with them.');
+  assert.equal(g[3].blurb, 'Links to outside services and your accounts.');
+  // System is not a group any more
+  assert.ok(!g.some((b) => b.key === 'system'));
   // every group says in one line what it is, and each sheet says which group
   for (const b of g) assert.ok(b.blurb.length > 10 && b.blurb.length < 90, b.key);
+  assert.deepEqual(bandOf('agent-app').where, 'In Agent apps');
   assert.deepEqual(bandOf('connector').where, 'In Connectors');
   assert.deepEqual(bandOf('nonsense').where, 'In Apps');
-  // a connector is still on the map like any app: it can be cut off from an app
+  // a connector or an agent app is on the app networks like any app: it can be cut off; Wizard's own pieces can't
   assert.ok(cuttable(m, 'wizard-monarch').some((a) => a.id === 'cinequeue'));
+  assert.ok(cuttable(m, 'transcriber').some((a) => a.id === 'cinequeue'));
+  assert.ok(!cuttable(m, 'cinequeue').some((a) => a.id === 'wizard-ux'));
+});
+
+test('Strict mode is the default: only real connections are lines, each with its own words and Disconnect', () => {
+  const d = report(
+    [
+      app('money', 'Money'),
+      app('wizard-simplefin', 'SimpleFIN', [], { kind: 'connector' }),
+      app('wizard-music', 'Music'),
+      app('wizard-youtube-music', 'YouTube Music', [], { kind: 'connector' }),
+      app('cinequeue', 'Movies'),
+      { id: 'hostapp', name: 'Host App', state: 'host-network', open: null },
+    ],
+    {
+      mode: undefined,
+      controls: [
+        { from: 'money', to: 'wizard-simplefin', providers: ['wizard-simplefin'], status: 'connected', origin: 'declared' },
+        { from: 'wizard-music', to: 'wizard-youtube-music', providers: ['wizard-youtube-music'], status: 'connected', origin: 'owner' },
+      ],
+    },
+  );
+  for (const a of d.apps) a.open = null;
+  const m = mapModel(d);
+  assert.equal(m.mode, 'declared');
+  assert.deepEqual(m.links, [
+    ['money', 'wizard-simplefin'],
+    ['wizard-music', 'wizard-youtube-music'],
+  ]);
+  assert.equal(m.hint, '2 connections: tap a line to disconnect it, or an app to connect it.');
+  const money = linkInfo(m, 'money', 'wizard-simplefin');
+  assert.equal(money.title, 'Money and SimpleFIN are connected');
+  assert.deepEqual(money.why, ['Money says it needs SimpleFIN to work.']);
+  assert.equal(money.warn, 'Money may stop working properly without it.');
+  assert.equal(money.group, null);
+  const music = linkInfo(m, 'wizard-music', 'wizard-youtube-music');
+  assert.deepEqual(music.why, ['You connected them.']);
+  assert.equal(music.warn, '');
+  // Disconnect denies the row that links them
+  assert.deepEqual(cutRows('declared', d.controls, 'wizard-simplefin', 'money'), [{ from: 'money', to: 'wizard-simplefin' }]);
+  // Connect to… offers every other item it isn't connected to, never one outside the app networks
+  assert.deepEqual(
+    connectable(m, 'money').map((a) => a.id),
+    ['cinequeue', 'wizard-music', 'wizard-youtube-music'],
+  );
+  assert.deepEqual(connectable(m, 'hostapp'), []);
+  assert.equal(m.apps.find((a) => a.id === 'cinequeue').alone, true);
+  assert.equal(talksSentence(m.apps.find((a) => a.id === 'money')), 'Money can talk to: SimpleFIN');
+  assert.equal(doneWords('disconnect', 'Money', 'SimpleFIN'), 'Money and SimpleFIN aren’t connected now.');
+  assert.equal(doneWords('connect', 'Music', 'YouTube Music'), 'Music and YouTube Music are connected now.');
+  // a line to a slot several apps provide is disconnected as one
+  const g = report([app('backup', 'Backup'), app('wizard-cloudflare', 'Cloudflare'), app('s3', 'S3')], {
+    mode: 'declared',
+    controls: [{ from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare', 's3'], status: 'connected', origin: 'declared' }],
+  });
+  const gm = mapModel(g);
+  const info = linkInfo(gm, 'backup', 's3');
+  assert.equal(info.group.to, 'slot:backup-storage');
+  assert.deepEqual(info.why, ['Backup says it needs Cloudflare and S3 to work.']);
 });
 
 test('Agents: one "Your agent" when the box names none; what an agent can use is said truthfully', () => {
@@ -316,7 +408,9 @@ test('Agents: one "Your agent" when the box names none; what an agent can use is
     ['Your agent'],
   );
   assert.equal(bands(m)[0].key, 'agent');
-  assert.equal(canUse(m.agents[0]), 'every app and connector');
+  assert.equal(canUse(m.agents[0]), 'everything');
+  assert.equal(agentsLine(m.agents), 'Your agent can use everything.');
+  assert.equal(m.agents[0].allow, null);
   const apps = [app('cinequeue', 'Movies'), app('files', 'Files'), app('wizard-monarch', 'Monarch', [], { kind: 'connector' })];
   const two = mapModel(
     report(apps, {
@@ -330,14 +424,17 @@ test('Agents: one "Your agent" when the box names none; what an agent can use is
   assert.deepEqual(
     two.agents.map((a) => [a.name, canUse(a)]),
     [
-      ['Your agent', 'every app and connector'],
-      ['Private', '1 of your 3 apps and connectors'],
-      ['Sealed', 'none of your apps or connectors'],
+      ['Your agent', 'everything'],
+      ['Private', '1 of your 3 apps'],
+      ['Sealed', 'none of your apps'],
     ],
   );
+  assert.equal(agentsLine(two.agents), 'Each agent can use what it says below.');
+  assert.deepEqual(two.agents[1].allow, ['files']);
   // the main agent's own lists (.main-agent.json) when its entry carries none; without lists, private apps are left out
   const listed = mapModel(report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }], main_agent_apps: ['files'] }));
-  assert.equal(canUse(listed.agents[0]), '1 of your 3 apps and connectors');
+  assert.equal(canUse(listed.agents[0]), '1 of your 3 apps');
+  assert.equal(agentsLine(listed.agents), 'Your agent can use 1 of your 3 apps.');
   // and only there: a registry entry's own permissions never speak for the main agent
   const reg = mapModel(
     report(apps, {
@@ -345,10 +442,10 @@ test('Agents: one "Your agent" when the box names none; what an agent can use is
       main_agent_apps: ['cinequeue', 'files', 'wizard-monarch'],
     }),
   );
-  assert.equal(canUse(reg.agents[0]), 'every app and connector');
+  assert.equal(canUse(reg.agents[0]), 'everything');
   const priv = report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] });
   priv.apps[0].privacy = 'private';
-  assert.equal(canUse(mapModel(priv).agents[0]), '2 of your 3 apps and connectors');
+  assert.equal(canUse(mapModel(priv).agents[0]), '2 of your 3 apps');
 });
 
 test('An agent that runs as an installed app is shown once, as the agent', () => {
@@ -361,7 +458,7 @@ test('An agent that runs as an installed app is shown once, as the agent', () =>
     ['private'],
   );
   assert.deepEqual(g[0].apps, []);
-  assert.equal(canUse(g[0].agents[0]), 'every app and connector');
+  assert.equal(canUse(g[0].agents[0]), 'everything');
   // and out of every connection control
   const m = mapModel(d);
   assert.deepEqual(
@@ -371,16 +468,20 @@ test('An agent that runs as an installed app is shown once, as the agent', () =>
   assert.deepEqual(cuttable(m, 'cinequeue'), []);
 });
 
-test('A box with only Wizard itself still has its Agents and System groups', () => {
+test('A box with only Wizard itself still shows its agent and Wizard’s own pieces', () => {
   const m = mapModel(report([]));
   assert.deepEqual(m.apps, []);
   assert.deepEqual(
     bands(m).map((b) => b.key),
-    ['agent', 'system'],
+    ['agent', 'app'],
+  );
+  assert.deepEqual(
+    bands(m)[1].builtin.map((s) => s.id),
+    ['wizard-ux', 'wizard-agent-service'],
   );
 });
 
-test('Groups: an agent app in the core is an agent, not System', () => {
+test('Groups: an agent in the core is an agent, not one of Wizard’s badged pieces', () => {
   const d = report([app('cinequeue', 'Movies')], { gateway: { core: ['wizard-ux', 'wizard-agent-service', 'hermes-agent'] } });
   d.apps.push({ id: 'hermes-agent', name: 'Hermes', state: 'isolated', open: null, kind: 'agent' });
   const m = mapModel(d);
@@ -389,18 +490,19 @@ test('Groups: an agent app in the core is an agent, not System', () => {
     [['hermes-agent', 'Your agent']],
   );
   assert.deepEqual(
-    m.system.map((a) => a.id),
+    m.builtin.map((a) => a.id),
     ['wizard-ux', 'wizard-agent-service'],
   );
 });
 
-test('Only Wizard itself is System: an app that calls itself system stays an app, with its controls', () => {
+test('Only Wizard itself carries the badge: an app that calls itself system stays an app, with its controls', () => {
   const m = mapModel(report([app('cinequeue', 'Movies'), app('spare-shell', 'Spare Shell', [], { kind: 'system' })]));
   assert.equal(m.apps.find((a) => a.id === 'spare-shell').kind, 'app');
+  assert.ok(!m.apps.some((a) => a.builtin));
   assert.deepEqual(
     bands(m)
-      .find((b) => b.key === 'system')
-      .system.map((s) => s.id),
+      .find((b) => b.key === 'app')
+      .builtin.map((s) => s.id),
     ['wizard-ux', 'wizard-agent-service'],
   );
   assert.ok(cuttable(m, 'cinequeue').some((a) => a.id === 'spare-shell'));
