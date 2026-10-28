@@ -1588,6 +1588,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         if why:
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
+        if app_id == "_connections" or app_id.startswith("_connections/"):   # the Connections view (connections_view.py)
+            return self._connections(method, urlparse(self.path).path)
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
         if app_id.startswith('_views/'):
@@ -1620,6 +1622,49 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _connections(self, method: str, path: str) -> None:
+        """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
+        (and, for a POST, check_request: another device, the shell's origin, JSON with X-Wizard-Store)."""
+        from . import connections_view as cv, network, store_install as si
+        sub = path.lstrip("/").removeprefix(cv.PREFIX)
+        if not sub:   # relative asset and API URLs need the trailing slash; Serve strips its mount, so stay relative
+            self.send_response(308)
+            self.send_header("Location", f"{cv.PREFIX}/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        sub = sub.lstrip("/")
+        try:
+            if method == "GET":
+                if sub == "api/connections":
+                    return self._json(200, network.report(self.cfg))
+                if sub == "api/apps/wizard/connections":
+                    why = si.FROM_BOX if si.from_box(self.headers, si.own_ips()) else None
+                    return self._json(200, cv.state(self.cfg.runtipi(), why))
+                got = cv.asset(sub or "index.html")
+                if not got:
+                    return self._json(404, {"error": "not found"})
+                b, ctype = got
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(b)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", cv.CSP)
+                self.end_headers()
+                self.wfile.write(b)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            return self._json(200, cv.change(self.cfg.runtipi(), sub, self.rfile.read(size)))
+        except LookupError:
+            return self._json(404, {"error": "not found"})
+        except ValueError as e:
+            return self._json(400, {"error": str(e)[:200]})
+        except RuntipiError as e:
+            return self._json(502, {"error": f"The App Manager couldn't make this change: {str(e)[:240]}"})
 
     def _chats_default(self, method: str) -> None:
         from . import chats_views
