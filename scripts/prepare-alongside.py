@@ -99,6 +99,9 @@ def main():
     env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(BASE),
            'WIZARD_PRIVATE_ACCESS': os.environ.get('WIZARD_PRIVATE_ACCESS', 'tailscale')}
     run(['bash', tree / 'scripts/prepare-named-user.sh', 'wizard-system'], env=env)
+    # Fixed root helper is installed only in this owner-approved host phase.
+    run(['/usr/bin/python3', '-I', tree / 'scripts/install-server-access.py',
+         tree / 'scripts/root-helpers/server-access', name, state], env=env)
     # The system account uses system units, not a lingering login manager.
     run(['loginctl', 'disable-linger', 'wizard-system'])
     try:

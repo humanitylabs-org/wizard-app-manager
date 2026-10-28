@@ -1340,7 +1340,8 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     if privsep.enabled(c.home):
         return privsep.doctor(c)
-    out = host_policy.grandfathered_health(c.home)
+    from . import developer
+    out = host_policy.grandfathered_health(c.home) + developer.health(c.home)
     from . import owner
     if (c.home / 'owner-login').is_file():
         state = owner.health(c.home)
@@ -1565,6 +1566,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/slots":
             p = c.home / "apps.json"
             return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
+        if u.path in ('/api/developer', '/api/status'):
+            if not self._authorized(): return
+            from . import developer
+            return self._json(200, developer.status(c.home))
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
@@ -1577,7 +1582,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/views" or u.path.startswith("/views/"):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
-            return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+            return self._json(200, [{"check": n, "ok": ok, "detail": d,
+                                     "severity": "red" if not ok and n.startswith('Agent has full server access until ') else ("warning" if not ok else "ok")} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
@@ -1898,6 +1904,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == 'developer':
+        from . import developer
+        return developer.main(argv[1:], Config().home)
+    if argv == ['status']:
+        from . import developer
+        print(json.dumps(developer.status(Config().home), indent=2))
+        return 0
     if argv and argv[0] == 'approve':
         p = argparse.ArgumentParser(prog='wam approve')
         p.add_argument('app'); p.add_argument('sha256')

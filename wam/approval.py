@@ -16,6 +16,9 @@ def respond(handler, method, tail):
         handler.end_headers()
         handler.wfile.write(data)
         return
+    if tail == 'developer':
+        from . import developer_approval
+        return developer_approval.respond(handler, method)
     try:
         app, sha = tail.split('/')
         row = host_policy.pending(handler.cfg.home, app, sha)

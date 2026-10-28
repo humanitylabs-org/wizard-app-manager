@@ -50,6 +50,7 @@ PER_MACHINE = {"api-token", "mcp-token", "runtipi-operator.json", "agent-runtime
                # which Wizard release/pins were installed here (a restore must not replace them with another box's)
                "builder", "bin", "release.json", "release-pins.json", "install-outcome.json",
                # the agent's ssh key for a terminal on this box (Wizard for Mac), authorised only here
+               "developer.json", "developer.lock", "developer.tmp",
                "agent-ssh", "approval-registry.json", "owner-login", "privsep.json", "agent-token", "client.json"}
 REGENERATED = {"apps.json", "skills", "system-skills", "cache", "dev", "staged-apps", "build-work"}
 ENGINE = {"restores", "backup-work", "backup-status.json", "backup.lock", "agents"}

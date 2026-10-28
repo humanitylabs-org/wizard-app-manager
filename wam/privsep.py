@@ -63,7 +63,8 @@ def doctor(c):
     """Never inspect Hermes config/key/history at the manager uid."""
     from . import alongside, cli, index
     st = alongside.load(c.home)
-    out = []
+    from . import developer
+    out = developer.health(c.home)
     try:
         rt = c.runtipi()
         rt.installed()

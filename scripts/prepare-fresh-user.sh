@@ -54,4 +54,7 @@ if [ -e "$legacy" ] || [ -L "$legacy" ]; then
     exit 2
   fi
 fi
+curl -fsSL "$repo/raw/$ref/scripts/root-helpers/server-access" -o "$work/server-access"
+curl -fsSL "$repo/raw/$ref/scripts/install-server-access.py" -o "$work/install-server-access.py"
+/usr/bin/python3 -I "$work/install-server-access.py" "$work/server-access" --fresh "$(getent passwd "$owner" | cut -d: -f6)/.wizard-os"
 printf 'Fresh host prepared: fixed os-patch helper; no blanket sudo grant; Tailscale operator set during host preparation.\n'

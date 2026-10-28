@@ -142,13 +142,13 @@ def main(argv=None):
         except (OSError, ValueError, URLError) as exc:
             print('wam client: ' + str(exc), file=sys.stderr)
             return 1
-    supported = {'apps', 'installed', 'search', 'install', 'uninstall', 'update', 'start', 'stop', 'restart', 'logs', 'doctor'}
+    supported = {'apps', 'installed', 'search', 'install', 'uninstall', 'update', 'start', 'stop', 'restart', 'logs', 'doctor', 'status'}
     if argv and argv[0] not in supported and argv[0] not in ('-h', '--help'):
         print(f'wam {argv[0]}: not yet available without server access; ask the owner, not sudo or Docker.', file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(prog='wam', description=__doc__)
     sub = p.add_subparsers(dest='cmd', required=True)
-    for name in ('apps', 'installed', 'doctor'):
+    for name in ('apps', 'installed', 'doctor', 'status'):
         sub.add_parser(name).add_argument('--json', action='store_true')
     s = sub.add_parser('search'); s.add_argument('query', nargs='?', default=''); s.add_argument('--json', action='store_true')
     for name in ('install', 'uninstall', 'update', 'start', 'stop', 'restart', 'logs'):
@@ -163,6 +163,8 @@ def main(argv=None):
             result = request('GET', '/api/apps')
         elif args.cmd == 'search':
             result = request('GET', '/api/search?' + urlencode({'q': args.query}))
+        elif args.cmd == 'status':
+            result = request('GET', '/api/status')
         elif args.cmd == 'doctor':
             result = request('GET', '/api/doctor')
         elif args.cmd == 'logs':

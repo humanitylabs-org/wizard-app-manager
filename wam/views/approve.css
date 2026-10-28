@@ -9,3 +9,7 @@ details { color:var(--wz-muted); }
 button { font:inherit; color:var(--wz-base); background:var(--wz-accent); border:1px solid var(--wz-line); border-radius:var(--wz-radius,8px); padding:.8rem 1.2rem; cursor:pointer; }
 button:disabled { opacity:.6; cursor:default; }
 button:focus-visible, summary:focus-visible { outline:3px solid var(--wz-accent); outline-offset:4px; }
+form { margin:1.2rem 0; }
+label { display:block; margin:.8rem 0; }
+input:not([type=hidden]) { display:block; width:100%; font:inherit; padding:.6rem; color:var(--wz-text); background:var(--wz-base); border:1px solid var(--wz-line); border-radius:var(--wz-radius,8px); }
+@media (prefers-color-scheme:light) { :root { color-scheme:light; --wz-base:#faf9fd; --wz-text:#191820; --wz-muted:#55505f; --wz-accent:#5941a9; --wz-line:#cbc7d4; } }

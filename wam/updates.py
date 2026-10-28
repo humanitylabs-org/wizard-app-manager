@@ -384,7 +384,10 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     if run == "failed":
         reason = (installer.get("failure_reason") or installer.get("message")
                   or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
-    return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
+    from . import developer
+    dev = developer.read(_home(home))
+    return {"developer": dev, "automatic_updates_paused": dev['enabled'],
+            "mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
             "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
@@ -424,7 +427,8 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = _systemctl(systemctl)
-    if m == "auto":
+    from . import developer
+    if m == "auto" and not developer.read(_home(home))['enabled']:
         ud.mkdir(parents=True, exist_ok=True)
         for p, text in files.items():
             p.write_text(text)
@@ -457,13 +461,16 @@ def set_channel(new: str, home: Path | None = None) -> dict:
 
 
 def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False,
-          target: str | None = None) -> dict:
+          target: str | None = None, restore_release: bool = False) -> dict:
     """Start the update now: the installer's own detached, agent-safe rerun. Progress: `os.sh | bash -s status`.
 
     The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
     narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
+    from . import developer
+    if developer.read(_home(home))['enabled']:
+        return {'started': False, 'skipped': 'developer-mode', 'error': 'Developer builds pause release updates; use wam developer apply or wam developer off'}
     st = status(home, base, fresh=True)
     retry = st["retry_target"]
     if target:
@@ -480,10 +487,12 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     if st["unpinned"] and not force:
         return {**st, "started": False,
                 "error": "this box is unpinned (updated by hand); `wam updates --apply --force` moves it to stable"}
-    if not st["update_available"] and not (st["unpinned"] and force):
+    if not st["update_available"] and not (st["unpinned"] and force) and not restore_release:
         return {**st, "started": False}
     pin = st["latest"] if st["latest"] and VERSION.fullmatch(st["latest"]) else None
     env = f"WIZARD_RELEASE={pin} " if pin else ""
+    if restore_release:
+        env = 'WAM_REF= WAM_IMAGE= WIZARD_RELEASE_PINS= WAM_REPO=https://github.com/humanitylabs-org/wizard-app-manager ' + env
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
     r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
@@ -563,6 +572,9 @@ def _auto_retry_clear(home: Path | None) -> None:
 def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
     """The nightly timer: apply only in Automatic, only a stable release (whatever the channel), never on an unpinned
     box, and not while the agent is working (skipped; the next nightly window tries again)."""
+    from . import developer
+    if developer.read(_home(home))['enabled']:
+        return {'started': False, 'skipped': 'developer-mode'}
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)

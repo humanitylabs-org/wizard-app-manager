@@ -59,6 +59,16 @@ def health(home):
 def execute(c, path: str, body: dict):
     """Finite owner actions, shared by bearer API and owner Store listener."""
     from . import cli, host_policy, network, updates
+    if path in ('/api/developer', '/api/developer/server-access', '/api/developer/apply'):
+        from . import developer
+        if path.endswith('/server-access'): return developer.access(c.home, body)
+        if path.endswith('/apply'):
+            if body: raise ValueError('no apply fields accepted')
+            return developer.apply_source(c.home)
+        result = developer.configure(c.home, body)
+        if not body['enabled']:
+            result['restore_release'] = developer.apply_source(c.home)
+        return result
     if path == '/api/updates':
         if set(body) == {'channel'}:
             return updates.set_channel(str(body['channel']))
@@ -111,4 +121,4 @@ def execute(c, path: str, body: dict):
     raise ValueError('unknown owner action')
 
 
-PATHS = {'/api/grants', '/api/network', '/api/updates', '/api/updates/apply', '/api/backup/import'}
+PATHS = {'/api/developer', '/api/developer/server-access', '/api/developer/apply', '/api/grants', '/api/network', '/api/updates', '/api/updates/apply', '/api/backup/import'}
