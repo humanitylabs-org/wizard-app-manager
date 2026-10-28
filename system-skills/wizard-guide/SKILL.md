@@ -58,7 +58,7 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 
 ## Changing or fixing Wizard itself
 
-If it is an app the owner built or owns, or their My skin, just make the change with `wizard-builder`. Changes to an owner's own app server or stored data do not require Wizard developer mode. The levels below apply only to Wizard's own parts.
+If it is an app the owner built with you, or their own independently maintained copy of one, just make the change with `wizard-builder`. Changes to such an owner's own app server or stored data do not require Wizard developer mode. Apps installed from the Store or shipped with Wizard are Wizard's parts and follow the levels below. `skin.css` and `skin.js` changes always follow My skin and Tweaks below, including activation and installed-API checks.
 
 Wizard has three levels of change. Before you start, tell the owner which one their request needs, in one line.
 

@@ -41,8 +41,11 @@ def test_problem_report_keeps_two_try_stop_consent_and_public_fallback():
 
 def test_owned_app_changes_do_not_require_wizard_developer_mode():
     text = GUIDE.read_text()
-    assert "Changes to an owner's own app server or stored data do not require Wizard developer mode" in text
-    assert text.index('If it is an app the owner built or owns') < text.index('Wizard has three levels')
+    assert "owner's own app server or stored data do not require Wizard developer mode" in text
+    assert text.index('If it is an app the owner built with you') < text.index('Wizard has three levels')
+    scope = text.split('## Changing or fixing Wizard itself', 1)[1].split('Wizard has three levels', 1)[0]
+    assert "Apps installed from the Store or shipped with Wizard are Wizard's parts and follow the levels below" in scope
+    assert '`skin.css` and `skin.js` changes always follow My skin and Tweaks below, including activation and installed-API checks' in scope
 
 
 def test_idea_and_code_contributions_require_privacy_and_public_consent():
