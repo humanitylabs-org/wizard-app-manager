@@ -19,7 +19,8 @@ def test_the_rule_on_the_kinds_of_apps_a_box_has():
     assert k(type="view", category="system", view={"path": "/"}) == "app"               # Files
     assert k(type="agent") == "agent"
     assert k(core=True, type="service", category="system") == "system"                  # Agent Service
-    assert k(type="view", category="interface", view={"path": "/"}) == "system"         # a shell
+    assert k(core=True, type="view", category="interface", view={"path": "/"}) == "system"   # the active shell
+    assert k(type="view", category="interface", view={"path": "/"}) == "app"            # an inactive spare shell
     assert kinds.kind_of(None) == "app" and kinds.kind_of(None, core=True) == "system"   # an app with no wizard.md
 
 
@@ -27,6 +28,9 @@ def test_kind_in_wizard_md_overrides_the_rule_and_bad_values_are_ignored():
     assert k(type="external", kind="app", view={"path": "/"}) == "app"
     assert k(type="service", view={"path": "/"}, kind="Connector") == "connector"
     assert k(core=True, kind="agent") == "agent"
+    # System is the core only: it can't be cut off, so no other app can put itself there, and the core stays System
+    assert k(type="service", view={"path": "/"}, kind="system") == "app"
+    assert k(core=True, type="view", kind="app") == "system"
     assert "kind" not in kinds.fields({"type": "service", "kind": "gadget"})
     assert k(type="service", view={"path": "/"}, kind="gadget") == "app"
 

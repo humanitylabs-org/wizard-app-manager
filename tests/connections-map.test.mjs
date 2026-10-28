@@ -354,6 +354,13 @@ test('An agent that runs as an installed app is shown once, as the agent', () =>
   );
   assert.deepEqual(g[0].apps, []);
   assert.equal(canUse(g[0].agents[0]), 'every app and connector');
+  // and out of every connection control
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.apps.map((a) => a.id),
+    ['cinequeue'],
+  );
+  assert.deepEqual(cuttable(m, 'cinequeue'), []);
 });
 
 test('A box with only Wizard itself still has its Agents and System groups', () => {
@@ -377,4 +384,16 @@ test('Groups: an agent app in the core is an agent, not System', () => {
     m.system.map((a) => a.id),
     ['wizard-ux', 'wizard-agent-service'],
   );
+});
+
+test('Only Wizard itself is System: an app that calls itself system stays an app, with its controls', () => {
+  const m = mapModel(report([app('cinequeue', 'Movies'), app('spare-shell', 'Spare Shell', [], { kind: 'system' })]));
+  assert.equal(m.apps.find((a) => a.id === 'spare-shell').kind, 'app');
+  assert.deepEqual(
+    bands(m)
+      .find((b) => b.key === 'system')
+      .system.map((s) => s.id),
+    ['wizard-ux', 'wizard-agent-service'],
+  );
+  assert.ok(cuttable(m, 'cinequeue').some((a) => a.id === 'spare-shell'));
 });

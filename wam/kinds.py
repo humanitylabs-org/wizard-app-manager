@@ -2,9 +2,10 @@
 
 The group comes from the fields a wizard.md already has, by one rule (docs/APP_NETWORKS.md, "Groups on the map"):
 
-1. `kind:` in wizard.md (agent | app | connector | system), when an app wants to say it itself. Optional.
+1. `kind:` in wizard.md (agent | app | connector), when an app wants to say it itself. Optional.
 2. `type: agent` (or `category: agent`): an agent.
-3. The active shell, Agent Service and agent (the gateway core, network.plan): system. `category: interface` too.
+3. The active shell and Agent Service (the gateway core, network.plan): system. Only the core is System: those items
+   can't be cut off, so `kind: system` on any other app is ignored.
 4. `type: external` (it connects the box to an outside service: a bank, Cloudflare, an AI provider): a connector.
 5. `type: view`: an app (a screen is the whole point).
 6. No `view:` at all: a connector (a background service only apps and the agent call).
@@ -34,14 +35,18 @@ def fields(w: dict | None) -> dict:
 
 
 def kind_of(meta: dict | None, core: bool = False) -> str:
-    """The group of one app (see the module docstring). Without wizard.md fields: system for the core, else app."""
+    """The group of one app (see the module docstring). System is the gateway core only: those items can't be cut
+    off, so no other app can put itself there (`kind: system` elsewhere is ignored). The core is System unless it is
+    the agent. Without wizard.md fields: system for the core, else app."""
     m = meta if isinstance(meta, dict) else {}
-    if m.get("kind") in KINDS:
-        return m["kind"]
-    if m.get("type") == "agent" or m.get("category") == "agent":
+    own = m.get("kind") if m.get("kind") in KINDS else None
+    agent = own == "agent" or (own is None and (m.get("type") == "agent" or m.get("category") == "agent"))
+    if core:
+        return "agent" if agent else "system"
+    if agent:
         return "agent"
-    if core or m.get("category") == "interface":
-        return "system"
+    if own in ("app", "connector"):
+        return own
     if not m:
         return "app"
     if m.get("type") == "external":

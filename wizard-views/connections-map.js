@@ -61,7 +61,12 @@ export function mapModel(d) {
   const nm = (id) => names[id] || slotName(id);
   const controls = Array.isArray(d?.controls) ? d.controls : [];
   const sensitive = new Set(d?.sensitive || all.filter((a) => a.sensitive).map((a) => a.id));
-  const apps = all.filter((a) => !coreIds.has(a.id));
+  // An agent that runs as an installed app (`agent-<id>`, its registry entry's `app`) is shown once, as the agent:
+  // its app copy is left off the map and out of every connection control.
+  const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
+  const allIds = new Set(all.map((a) => a.id));
+  const backing = new Set(known.map((a) => a.app).filter((x) => x && allIds.has(x) && !coreIds.has(x)));
+  const apps = all.filter((a) => !coreIds.has(a.id) && !backing.has(a.id));
   const ids = new Set(apps.map((a) => a.id));
   const cuts = new Map();
   const waits = new Map();
@@ -146,7 +151,8 @@ export function mapModel(d) {
       warn,
       inOpen,
       enforce,
-      kind: kindOf(a),
+      // System is Wizard's own core only (it can't be cut off); an app on the networks is never shown there
+      kind: kindOf(a) === 'system' ? 'app' : kindOf(a),
       state: a.state,
       why: a.why || '',
     };
@@ -173,11 +179,8 @@ export function mapModel(d) {
   // The agents: the ones the box knows that are not apps (the host's agent, the Agent Service's agents registry), and
   // an agent that is part of the core (a fresh box's agent app). None known: one "Your agent", as before.
   const coreItems = core.map((a) => ({ id: a.id, name: a.name || a.id, kind: kindOf(a, 'system') }));
-  const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
-  // An agent that runs as an installed app (`agent-<id>`) is shown once, as the agent: its app copy leaves the bands.
-  const backing = new Set(known.map((a) => a.app).filter((x) => x && ids.has(x)));
   // What an agent may use (the Agent Service's lists, enforced by the gateway), against the apps and connectors here.
-  const usable = out.filter((a) => (a.kind === 'app' || a.kind === 'connector') && !backing.has(a.id));
+  const usable = out.filter((a) => a.kind === 'app' || a.kind === 'connector');
   const limitOf = (list) => {
     if (!Array.isArray(list)) return null;
     const ok = new Set(list);
@@ -237,7 +240,7 @@ export function bands(model) {
   return BANDS.map((b) => ({
     ...b,
     agents: b.key === 'agent' ? model.agents : [],
-    apps: model.apps.filter((a) => a.kind === b.key && !(model.backing || []).includes(a.id)),
+    apps: model.apps.filter((a) => a.kind === b.key),
     system: (model.system || []).filter((s) => s.kind === b.key),
   })).filter((b) => b.agents.length + b.apps.length + b.system.length);
 }
