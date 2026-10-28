@@ -165,6 +165,7 @@ def test_relocate_never_remaps_container_data_owners(migration,monkeypatch):
 
 def test_full_snapshot_rollback_restores_data_tokens_units_and_groups_after_interruption(migration,monkeypatch,tmp_path):
     migration.doc['done']=list(m.STEPS); migration.doc['root_paths']=[]
+    migration.doc['running_apps']=['files:wizardapps']
     migration.doc['state']='migrated'
     root=migration.snapshot
     for directory in ('runtipi/app-data/wizardapps/calendar/data','state','user-units','hermes-plugins'):
@@ -180,10 +181,12 @@ def test_full_snapshot_rollback_restores_data_tokens_units_and_groups_after_inte
     def run(argv,**kw):
         if argv[0]=='cp': return original_run(argv,**kw)
         commands.append(argv)
-        return SimpleNamespace(stdout='{}' if argv[:3]==['tailscale','serve','status'] else '',returncode=0)
+        return SimpleNamespace(stdout='{}' if argv[:3]==['tailscale','serve','status'] else
+                               'running\n' if '--format' in argv else '',returncode=0)
     monkeypatch.setattr(m,'run',run)
     monkeypatch.setattr(m,'HELPER',str(tmp_path/'no-helper'))
-    monkeypatch.setattr(migration,'user',lambda *a,**kw:SimpleNamespace(returncode=3,stdout=''))
+    user_commands=[]
+    monkeypatch.setattr(migration,'user',lambda *a,**kw:user_commands.append(a) or SimpleNamespace(returncode=3,stdout=''))
     realcopy=m.copy; interrupted=[False]
     def copy(source,target):
         if source==root/'state' and not interrupted[0]:
@@ -202,7 +205,25 @@ def test_full_snapshot_rollback_restores_data_tokens_units_and_groups_after_inte
     assert (Path(migration.doc['hermes_home'])/'config.yaml').read_bytes()==b'original config'
     assert ['tailscale','set','--operator=hermes'] in commands
     assert any(c[0]=='usermod' and 'docker' in c[2] for c in commands)
+    assert (str(migration.old/'.local/bin/wam'),'app','start','files:wizardapps') in user_commands
+    assert any(c[1:]==('network','reconcile','--no-restart') for c in user_commands)
+    assert not any(c[1:]==('start','files:wizardapps') for c in user_commands)
     count=len(commands); migration.rollback(); assert len(commands)==count
+
+
+def test_base_containers_are_recreated_only_when_their_binds_point_at_old_root(migration,monkeypatch):
+    calls=[]
+    def run(argv,**kw):
+        calls.append(argv)
+        if argv[:3]==['docker','ps','-aq']:return SimpleNamespace(stdout='old-db\nnew-queue\n')
+        if argv[:2]==['docker','inspect']:
+            source=migration.old/'runtipi/data/postgres' if argv[-1]=='old-db' else m.BASE/'runtipi/data/queue'
+            return SimpleNamespace(stdout=json.dumps([{'Type':'bind','Source':str(source)}]))
+        return SimpleNamespace(stdout='')
+    monkeypatch.setattr(m,'run',run)
+    migration.remove_stale_base(migration.old/'runtipi')
+    assert [c for c in calls if c[:2]==['docker','rm']]==[['docker','rm','-f','old-db']]
+    assert calls[0][-1]=='label=com.docker.compose.project=runtipi'
 
 
 def test_doctor_marks_success_only_after_all_rows_and_links(migration,monkeypatch):
@@ -290,6 +311,7 @@ def test_start_requires_successful_lifecycle_and_preserved_links(migration,monke
     calls=[]
     monkeypatch.setattr(migration,'system',lambda code:calls.append(code))
     monkeypatch.setattr(migration,'check_links',lambda:calls.append('links'))
+    monkeypatch.setattr(m,'run',lambda *a,**kw:SimpleNamespace(stdout=''))
     migration.start()
     assert 'regenerate' in calls[0]
     assert 'assert not r["failed"]' in calls[1] and calls[-1]=='links'

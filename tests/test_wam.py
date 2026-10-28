@@ -1084,6 +1084,28 @@ def test_recover_starts_an_app_with_a_stopped_container_and_reports_failures(tmp
     assert res["failed"] == {"wizard-agent-service": "boom"}
 
 
+def test_recover_recreates_external_networks_before_any_start(tmp_path, monkeypatch):
+    from wam import network
+    c, started, _ = _recover_env(tmp_path, monkeypatch, [('browser:wizardapps', 'stopped')], {})
+    order=[]
+    def topology(*a, **kw):
+        assert kw == {'restart': False}
+        assert not started
+        order.append('network')
+        return {'created': ['wizard-app-browser'], 'errors': []}
+    monkeypatch.setattr(network, 'reconcile', topology)
+    cli.recover(c, ['browser:wizardapps'])
+    assert order == ['network'] and started == [('start', 'browser:wizardapps')]
+
+
+def test_recover_missing_network_failure_never_starts_app(tmp_path, monkeypatch):
+    from wam import network
+    c, started, _ = _recover_env(tmp_path, monkeypatch, [('browser:wizardapps', 'stopped')], {})
+    monkeypatch.setattr(network, 'reconcile', lambda *a, **kw: {'errors': ['bridge unavailable']})
+    result = cli.recover(c, ['browser:wizardapps'])
+    assert not started and 'network preparation failed' in result['failed']['browser']
+
+
 def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(monkeypatch, tmp_path):
     """Live 0.3.12 -> 0.3.14 upgrade on demo: Files stayed on 0.3.12's commit (its `.wizard-selection` locks it), so
     the read-back failed `default app source files`. Bootstrap must move release defaults installed from the

@@ -71,6 +71,19 @@ def test_regeneration_uses_runtipi_and_preserves_full_saved_form():
     assert 'enableAuth' not in form
 
 
+def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_path, monkeypatch):
+    from wam import alongside, managed_overrides, privsep, network
+    root=tmp_path/'runtipi'; home=tmp_path/'state'; home.mkdir(); root.mkdir()
+    st={'agent':{'uid':1000,'gid':1000,'hermes_home':'/home/legacy/.hermes','origin':'http://127.0.0.1:8642'},
+        'shell':{'port':8080},'migration':{'legacy_home':'/home/legacy'},'migration_metadata_only':True}
+    alongside.save(home,st); (home/'privsep.json').write_text('{}')
+    c=SimpleNamespace(home=home,runtipi_root=root,migration_metadata_only=True)
+    doc=network.load_yaml(privsep.service_override(st,home))
+    assert managed_overrides.normalize(c,'wizard-agent-service','wizardapps',doc) is None
+    doc['services']['wizard-agent-service']['privileged']=True
+    assert managed_overrides.normalize(c,'wizard-agent-service','wizardapps',doc) is not None
+
+
 def test_metadata_symlink_escape_is_refused(tmp_path):
     rt=tmp_path/'runtipi'; home=tmp_path/'state';rt.mkdir();home.mkdir()
     outside=put(tmp_path/'outside','/old/runtipi')

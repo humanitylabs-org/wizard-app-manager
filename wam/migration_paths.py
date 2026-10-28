@@ -5,6 +5,7 @@ and corrupt documents containing an old path. Source pins here mean the manager'
 Compose and .wizard-source descriptors, not files in the pinned source checkout.
 """
 from pathlib import Path
+import json
 import re
 
 
@@ -40,6 +41,13 @@ def rewrite(rt, state, old, new):
             continue
         text = p.read_text()
         relocated = replace(text, old, new)
+        if p == state / 'approval-registry.json':
+            # Pending reviews bind hashes of pre-relocation files. They are not
+            # approvals and must not be silently retargeted to different bytes.
+            registry = json.loads(relocated)
+            if registry.get('pending'):
+                registry['pending'] = {}
+                relocated = json.dumps(registry, indent=2) + '\n'
         if relocated != text:
             p.write_text(relocated)
             changed.append(str(p.relative_to(rt.parent)))

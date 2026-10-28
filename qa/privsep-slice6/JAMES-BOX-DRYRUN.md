@@ -105,6 +105,27 @@ application files. The privacy seal applies equally to inactive app data.
 - **Existing Claude grants and privileged local apps:** migrated mounts retain
   their prior owner-approved access, not a new blanket exception. Their exact
   policy/approval results need the sealed disposable rehearsal and an owner review.
+- **Relocation is more than Compose:** saved per-app `app.env` contains derived
+  `ROOT_FOLDER_HOST`, `APP_DATA_DIR` and `APP_SOURCE_DIR` values. Leaving those
+  unchanged made admission evaluate the old paths even after copying the files.
+  Migration now rewrites the finite management metadata (including recipe/source
+  descriptors, rendered Compose, registry and approval records), then asks
+  Runtipi's normal renderer to refresh every installed app's environment from its
+  unchanged saved form before recovery. Application and private-agent payloads
+  are not searched for path strings; doing that would violate the privacy seal.
+- **Existing network overlays need their bridges:** the three stopped apps in
+  the failed disposable run were Browser, Claude and ChatGPT. Runtipi's real logs
+  name missing external `wizard-app-*` networks, not login or image failures.
+  Recovery now reconciles the normal topology before starting any stopped app.
+- **Approvals must move before restart:** the original installed risk snapshot
+  is sealed before definitions change, and existing approval risks are translated
+  to the corresponding protected paths rather than re-enrolling from rewritten
+  recipes. The Agent Service override is regenerated from protected wiring;
+  Hermes itself and its login/cache paths stay at the selected agent's UID.
+- **Failed-cutover rollback is a separate check:** the rehearsal injects an
+  exception immediately before recovery, rolls back, and verifies original app
+  containers and canaries before attempting the real migration. Rollback uses
+  `wam app start`, not top-level `wam start` (which controls Runtipi itself).
 - **Live authenticated links:** this inventory did not log in to Tailscale, publish
   a route, read node credentials or fetch private app pages. Real published-link
   resolution remains an owner-controlled final check.

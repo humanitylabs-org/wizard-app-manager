@@ -295,7 +295,26 @@ class Migration:
         # Never re-enroll from the rewritten definitions. The approval registry
         # was translated together with the original management metadata above.
 
+    def remove_stale_base(self, source_root):
+        """Recreate only Runtipi's base containers with relocated bind sources.
+
+        install.sh intentionally uses --no-recreate for DB/queue. A stopped
+        legacy container would otherwise keep writing the old directory after
+        migration, even though its replacement .env points at the new root.
+        Mount metadata is sufficient; never inspect environment or DB contents.
+        """
+        ids = run(['docker','ps','-aq','--filter','label=com.docker.compose.project=runtipi'],
+                  capture_output=True).stdout.split()
+        source_root = Path(source_root)
+        for cid in ids:
+            mounts = json.loads(run(['docker','inspect','--format','{{json .Mounts}}',cid],
+                                    capture_output=True).stdout)
+            if any(m.get('Type') == 'bind' and Path(m.get('Source', '')).is_relative_to(source_root)
+                   for m in mounts):
+                run(['docker','rm','-f',cid])
+
     def prepare(self):
+        self.remove_stale_base(self.old/'runtipi')
         if not (CONTROL/'agent-handoff-ready').exists():
             remove(self.old/'.wizard-os')
             (self.old/'.wizard-os').mkdir(mode=0o700)
@@ -375,6 +394,18 @@ print(json.dumps(out))
         self.system('from wam.cli import Config; from wam.migration_paths import regenerate; '
                     'regenerate(Config().runtipi())')
         self.system('from wam.cli import Config,recover; c=Config(); r=recover(c, running='+repr(self.doc['running_apps'])+'); print(r); assert not r["failed"],r')
+        from .migration_paths import assert_clean
+        old_roots = [self.old/'runtipi', self.old/'.wizard-os', self.old/'wizard-app-manager']
+        assert_clean(BASE/'runtipi', BASE/'.wizard-os', old_roots)
+        ids = []
+        for label in ('runtipi.appurn','com.docker.compose.project=runtipi'):
+            ids += run(['docker','ps','-q','--filter','label='+label],capture_output=True).stdout.split()
+        for cid in sorted(set(ids)):
+            mounts = json.loads(run(['docker','inspect','--format','{{json .Mounts}}',cid],
+                                    capture_output=True).stdout)
+            if any(m.get('Type') == 'bind' and any(Path(m.get('Source','')).is_relative_to(old)
+                   for old in old_roots) for m in mounts):
+                raise ValueError('Recovered container retains a legacy management bind: ' + cid)
         # Recreate old running apps through WAM, not docker start (which would
         # retain old bind sources). Runtipi base was recreated by host preparation.
         for unit, flags in self.doc['units'].items():
@@ -481,6 +512,7 @@ print(json.dumps(out))
             ids += run(['docker','ps','-q','--filter','label='+label],capture_output=True).stdout.split()
         ids = sorted(set(ids))
         if ids: run(['docker','stop','--time','60',*ids])
+        self.remove_stale_base(BASE/'runtipi')
         if Path(HELPER).exists(): run([HELPER,'revoke'])
         self.doc['rollback_current'] = 'restore original data and user units'; self.save()
         for name, target in {'runtipi': self.old/'runtipi', 'state': self.old/'.wizard-os',
@@ -501,7 +533,7 @@ print(json.dumps(out))
         # Recreate from original Compose metadata at the restored location. cp
         # restored app/database data including ownership; do not inspect it.
         self.doc['rollback_current'] = 'restart legacy layout'; self.save()
-        self.user('docker','compose','-p','runtipi','-f','docker-compose.yml','-f','user-config/tipi-compose.yml','up','-d', cwd=self.old/'runtipi')
+        self.user('docker','compose','-p','runtipi','-f','docker-compose.yml','-f','user-config/tipi-compose.yml','up','-d','--wait','--wait-timeout','180', cwd=self.old/'runtipi')
         for unit, flags in self.doc['units'].items():
             if flags['enabled']: self.user('systemctl','--user','enable',unit)
             if flags['active']: self.user('systemctl','--user','start',unit)
