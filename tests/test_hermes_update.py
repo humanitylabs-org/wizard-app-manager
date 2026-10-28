@@ -187,6 +187,29 @@ def test_update_with_online_backup_and_receipt(box):
     assert json.loads((b['repo'] / 'install-stamp.json').read_text())['baseVersion'] == '0.0.2'
 
 
+def test_successful_update_expires_only_old_wam_snapshots(box):
+    b = box; hu = b['hu']
+    backups = b['h'] / 'backups'; backups.mkdir()
+    old = backups / 'hermes-20200101T000000Z-0123abcd'; old.mkdir()
+    keep = backups / 'unrelated-folder'; keep.mkdir()
+    out = hu.update(b['h'], wait_quiet=0, health_timeout=0)
+    assert out['state'] == 'updated' and out['backups_pruned'] == [old.name]
+    assert not old.exists() and keep.is_dir() and Path(out['backup']).is_dir()
+
+
+def test_failed_update_keeps_every_snapshot(box, monkeypatch):
+    b = box; hu = b['hu']
+    backups = b['h'] / 'backups'; backups.mkdir()
+    old = backups / 'hermes-20200101T000000Z-0123abcd'; old.mkdir()
+    def fail_once(*args, calls=[]):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('fake restart failed')
+    monkeypatch.setattr(hu, 'restart', fail_once)
+    assert hu.update(b['h'], wait_quiet=0, health_timeout=0)['state'] == 'rolled_back'
+    assert old.is_dir()
+
+
 def test_busy_deadline_does_not_mutate_install(box):
     b = box; b['queue']['active'] = 1
     out = b['hu'].update(b['h'], wait_quiet=0)

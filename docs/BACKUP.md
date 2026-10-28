@@ -306,6 +306,13 @@ keeps boxes apart by restic host).
 - *A second copy*: `restic copy` into another repository (another provider or the owner's disk) is the planned way to
   keep two targets; not built yet.
 
+## Update backups
+
+`wam app update` asks Runtipi for a copy of the app (in `runtipi/backups/<store>/<app>/`) before updating it; after a
+successful update that made one, wam keeps that newest copy and deletes the same app's copies older than 12 hours
+through Runtipi's backup API, and a failed update or a failed clean-up deletes nothing. Change the defaults with
+`"update_backups": {"keep": 1, "app_max_age_hours": 12, "hermes_max_age_days": 30}` in `~/.wizard-os/app-manager.json`.
+
 ## CLI
 
 ```
