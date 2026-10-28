@@ -187,8 +187,10 @@ def test_full_snapshot_rollback_restores_data_tokens_units_and_groups_after_inte
     monkeypatch.setattr(m,'HELPER',str(tmp_path/'no-helper'))
     user_commands=[]
     monkeypatch.setattr(migration,'user',lambda *a,**kw:user_commands.append(a) or SimpleNamespace(returncode=3,stdout=''))
-    realcopy=m.copy; interrupted=[False]
+    realcopy=m.copy; interrupted=[False]; removed=[]
+    monkeypatch.setattr(migration,'remove_stale_base',lambda path:removed.append(path))
     def copy(source,target):
+        assert removed[-2:]==[m.BASE/'runtipi',migration.old/'runtipi']
         if source==root/'state' and not interrupted[0]:
             interrupted[0]=True
             raise InterruptedError('interrupted after first restored tree')

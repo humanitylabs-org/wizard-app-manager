@@ -15,6 +15,19 @@ def guest():
     return mod
 
 
+def test_guest_agent_uses_its_own_bus_not_the_root_ssh_environment(guest, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(guest.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=1234))
+    monkeypatch.setenv('DBUS_SESSION_BUS_ADDRESS','unix:path=/run/user/0/bus')
+    calls=[]
+    monkeypatch.setattr(guest,'run',lambda argv,**kw:calls.append(argv) or 'active\n')
+    assert guest.agent('systemctl','--user','is-active','wizard-app-manager-api.service')=='active\n'
+    argv=calls[0]
+    assert argv[:6]==['runuser','-u','hermes','--','env','-i']
+    assert 'XDG_RUNTIME_DIR=/run/user/1234' in argv
+    assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1234/bus' in argv
+
+
 def test_guest_selects_three_observed_apps_without_assuming_quest(guest):
     catalog = [{'id': name} for name in ('wizard-calendar', 'wizard-notes', 'wizard-shopping', 'unrelated')]
     assert guest.select_apps(catalog) == ['wizard-calendar', 'wizard-shopping', 'wizard-notes']

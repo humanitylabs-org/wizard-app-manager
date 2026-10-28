@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import sys
@@ -49,7 +50,12 @@ def run(argv, *, expected=0, **kwargs):
 
 
 def agent(*args, **kwargs):
-    return run(['runuser','-u','hermes','--','env','HOME=/home/hermes',
+    uid = pwd.getpwnam('hermes').pw_uid
+    # A root SSH session can export its own DBus address. Never reuse it after
+    # runuser: the rollback check must query the selected user's actual manager.
+    return run(['runuser','-u','hermes','--','env','-i','HOME=/home/hermes',
+                f'XDG_RUNTIME_DIR=/run/user/{uid}',
+                f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus',
                 'PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin',*args],**kwargs)
 
 

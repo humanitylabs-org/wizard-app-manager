@@ -513,6 +513,9 @@ print(json.dumps(out))
         ids = sorted(set(ids))
         if ids: run(['docker','stop','--time','60',*ids])
         self.remove_stale_base(BASE/'runtipi')
+        # An early failure can leave legacy base containers alive. Restoring
+        # snapshots underneath a running database is never safe.
+        self.remove_stale_base(self.old/'runtipi')
         if Path(HELPER).exists(): run([HELPER,'revoke'])
         self.doc['rollback_current'] = 'restore original data and user units'; self.save()
         for name, target in {'runtipi': self.old/'runtipi', 'state': self.old/'.wizard-os',
