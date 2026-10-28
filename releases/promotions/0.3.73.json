@@ -1,0 +1,16 @@
+{
+  "version": "0.3.73",
+  "latest_since": "2026-10-28T10:39:21Z",
+  "promoted_at": "2026-10-28T11:16:52Z",
+  "upgrade_test": {
+    "from": "0.3.72",
+    "to": "0.3.73",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.73.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-requested feature (Miguel, 28 Oct 2026: build it out for everyone): automatic app updates (wizard-app-manager #305 + #307), App Manager source 08b54f65 -> 68ed4a26, image unchanged. Installed upgrade 0.3.72 -> 0.3.73 on a disposable KVM guest (root official Hermes v0.22.5, headscale, public os.sh fa9271d0, WIZARD_STRICT=1, release base = WAM mirror PR head, byte-identical): 0.3.73 pinned, 27 checks 0 failed, wizard/wam doctor 0 FAIL, Hermes config/.env/SOUL unchanged, app containers untouched; wizard-app-updates.timer enabled+active, wam app-updates auto with release apps skipped as system; the timer's own service updated morning-report with backup and verify.",
+    "notes": "Classified feature: new default-on nightly app updates on every box (Automatic, separate from the Wizard OS mode; wam app-updates --ask / --hold). No other ride-alongs vs stable 0.3.72. #307 (health check required only if it answered before the update) was found by this upgrade test and is included. #305's backend source-copy fix needs a new App Manager image and is not included; such apps fail their update, are undone and reported. Not checked: real Serve/HTTPS, phone notification delivery, forced rollback on the guest (live on Oscar's box in #305), fresh 0.3.73 install."
+  }
+}

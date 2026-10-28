@@ -402,3 +402,8 @@ Fast-tracked under DECISIONS #93 as a **feature** (owner-requested pins fix wiza
 Canonical: wizard-os releases/0.3.73.json (wizard-os #297). SHA256: `f97ab231e748cbf8d9ff228fa088988c4af3b244b087c1fea2c6e9388ef8ebfb`.
 0.3.72 plus automatic app updates (wizard-app-manager #305): App Manager source `08b54f65` → `68ed4a26` (branch `maintenance/app-updates-0.3.73`: the Python/host part of #305 plus the #307 health-check fix found by the upgrade test; image inputs unchanged, so the App Manager image stays `v4.10.2-wizard.571-80c76cf`). Everything else exactly 0.3.72.
 Channel: on latest only.
+
+## stable 0.3.73
+
+Canonical: wizard-os #298 (promotion), cut in wizard-os #297. `releases/stable` → 0.3.73 (sha256 `c0f775ab23ceac6e25254b5da85be2fe5d3d3f4cc9d917d8290c257b3a7cb59a`); `promotions/0.3.73.json` sha256 `92b8e595820cab33d8f830d9b289cb59bcae3d579d4a97e430135a93f5b8b08e`.
+Fast-tracked under DECISIONS #93 as a **feature** (automatic app updates, default on: wizard-app-manager #305 + #307; App Manager source 68ed4a26, image unchanged; no other ride-alongs vs 0.3.72). Installed upgrade 0.3.72 → 0.3.73 passed: wizard-os docs/acceptance/promote-0.3.73.md.
