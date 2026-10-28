@@ -109,10 +109,14 @@ def host_canary():
 
 def wait_service():
     import urllib.request
+    st=json.loads((BASE/'.wizard-os/alongside.json').read_text())
+    port=int((st.get('service') or {}).get('port') or 8923)
+    assert 1 <= port <= 65535, port
+    origin=f'http://127.0.0.1:{port}'
     end=time.monotonic()+180
     while time.monotonic()<end:
         try:
-            value=json.load(urllib.request.urlopen('http://127.0.0.1:8923/wizard/health',timeout=10))
+            value=json.load(urllib.request.urlopen(origin+'/wizard/health',timeout=10))
             if value.get('status')=='ok' and value.get('upstream_reachable'): break
         except Exception: pass
         time.sleep(2)

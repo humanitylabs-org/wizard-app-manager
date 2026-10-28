@@ -28,6 +28,23 @@ def test_guest_agent_uses_its_own_bus_not_the_root_ssh_environment(guest, monkey
     assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1234/bus' in argv
 
 
+@pytest.mark.parametrize('port',[8797,29997])
+def test_service_health_uses_the_preserved_management_port_not_a_fresh_install_default(guest,tmp_path,monkeypatch,port):
+    import io
+    import urllib.request
+    monkeypatch.setattr(guest,'BASE',tmp_path)
+    state=tmp_path/'.wizard-os';state.mkdir()
+    (state/'alongside.json').write_text(json.dumps({'service':{'port':port}}))
+    urls=[]
+    def opened(url,**kw):
+        urls.append(url)
+        return io.StringIO('{"status":"ok","upstream_reachable":true}')
+    monkeypatch.setattr(urllib.request,'urlopen',opened)
+    monkeypatch.setattr(guest,'run',lambda argv:'cid\n' if argv[:2]==['docker','ps'] else '1000\n')
+    guest.wait_service()
+    assert urls==[f'http://127.0.0.1:{port}/wizard/health']
+
+
 @pytest.mark.parametrize('before,after,ok', [('',{},True),('hermes',{'OperatorUser':'hermes'},True),
     ('hermes',{},False),('',{'OperatorUser':'wizard-system'},False)])
 def test_rollback_compares_exact_original_operator_even_when_it_was_unset(guest,tmp_path,monkeypatch,before,after,ok):
