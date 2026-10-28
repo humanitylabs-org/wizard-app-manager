@@ -142,8 +142,14 @@ export function applyConnectionPolicy(
     appGrant(x) && x.from === from && providers(x.to, apps).some((q) => q.manifest.id === to);
   // Open mode: a connection the app already has (an `approved: open` grant kept when its provider was marked sensitive)
   // is not new, so declaring or asking for it never waits; it gets an ordinary grant (and its key) instead.
+  // The owner's own approval of the pair in the other direction opens it too (networks are two-way).
   const alreadyOpen = (g: Grant) =>
-    open && providers(g.to, apps).some((p) => file.grants.some((x) => x.approved === 'open' && reaches(g.from, p.manifest.id)(x)));
+    open &&
+    providers(g.to, apps).some((p) =>
+      file.grants.some(
+        (x) => (x.approved === 'open' && reaches(g.from, p.manifest.id)(x)) || (x.approved === 'owner' && reaches(p.manifest.id, g.from)(x)),
+      ),
+    );
   // Open mode: networks are two-way, so a sensitive app's own new connection to an app that may not reach it yet is a
   // new connection TO the sensitive app as well: it waits for the owner (Approve stores an owner grant, which opens it).
   const outboundFromSensitive = (g: Grant) =>

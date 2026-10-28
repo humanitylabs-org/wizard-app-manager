@@ -352,6 +352,12 @@ describe('open mode (the default): everything connected unless the owner disconn
       'Resend, which you marked sensitive, wants to connect to Calendly. Approve or deny it in App Manager → Connections.',
     );
     expect(s.grants.filter((g) => g.from === 'resend-connector' && g.to === 'calendly-connector')).toEqual([]);
+    // Approving one direction opens the two-way pair: the other direction's wait is retired, not left to be denied
+    await store.change({ kind: 'app', from: 'resend-connector', to: 'calendly-connector' }, true);
+    await store.reconcile();
+    s = await state();
+    expect(s.pending).toEqual([]);
+    expect(s.denied).toEqual([]);
   });
 
   it('the mode route sits behind the owner sign-in like the others', () => {
