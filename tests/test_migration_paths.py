@@ -129,7 +129,7 @@ def test_saved_service_environment_never_replaces_the_root_or_agent_execution_en
     env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/root'};writes=[]
     scope={'BASE':tmp_path,'state':state,'tree':script.parent.parent,'env':env.copy(),
         'sys':SimpleNamespace(path=[]),'suid':1001,'sgid':1001,
-        'snapshot':{'agent':{'uid':1000,'gid':1000,'hermes_home':'/home/hermes/.hermes'}},
+        'snapshot':{'agent':{'uid':1000,'gid':1000,'hermes_home':'/home/hermes/.hermes','origin':'http://127.0.0.1:8642'}},
         'write':lambda *args:writes.append(args)}
     exec(compile(ast.Module(body=block.body,type_ignores=[]),str(script),'exec'),scope)
     assert scope['env']==env
