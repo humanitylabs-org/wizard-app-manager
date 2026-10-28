@@ -18,7 +18,10 @@ owner presses Update. This module adds only the things an owner needs on top of 
   nothing runs by itself, the shell shows "Update available") or "auto" (a nightly systemd user timer applies a
   new stable). An explicit choice is always kept; the installer never writes updates.json.
 
-Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`), never a second update path.
+Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`). The one exception is a release that
+moves ONLY the Wizard UX shell's pins on an alongside box that read back cleanly: wam/quick_update.py swaps that one
+image in place with the installer's own steps and read-back (about a minute instead of 10-20), rolls back on any
+failure and then runs the full installer anyway. `status()["quick"]` says which one Update will do.
 
 An unpinned box (no release in release.json: a developer checkout, WAM_REF, or a box from before releases) is
 "updated by hand": it never reports an update and refuses to apply one unless explicitly forced, so neither the
@@ -392,7 +395,22 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "interrupted": run == "interrupted",
             "failed": failed, "failure_reason": reason if failed else None,
             "retry_target": retry, "superseded": superseded,
+            # Update swaps only the shell image (about a minute), or this run is doing that now.
+            "quick": _quick_now(home, installer, run) if run == "running" else
+                     bool(newer and not failed and retry is None and _quick(home, want, base)),
             "hermes": hermes_update.status(home, base)}
+
+
+def _quick(home: Path | None, want: str | None, base: str | None) -> bool:
+    from . import quick_update
+    try:
+        return quick_update.plan(home, want, base)["quick"]
+    except Exception:   # noqa: BLE001 - the check only decides the wording and the path; the installer is the default
+        return False
+
+
+def _quick_now(home: Path | None, installer: dict, run: str | None) -> bool:
+    return run == "running" and installer.get("quick") is True
 
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
@@ -483,6 +501,8 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     if not st["update_available"] and not (st["unpinned"] and force):
         return {**st, "started": False}
     pin = st["latest"] if st["latest"] and VERSION.fullmatch(st["latest"]) else None
+    if pin and not st["unpinned"] and retry is None and _quick(home, pin, base):
+        return {**st, **_start_quick(home, pin, base, runner, auto=bool(target))}
     env = f"WIZARD_RELEASE={pin} " if pin else ""
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
@@ -492,6 +512,28 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     if ok and not target:
         _auto_retry_clear(home)        # a manual Update re-arms Automatic's single retry
     return {**st, "started": ok, **({} if ok else {"error": (r.stderr or r.stdout or "").strip()[-300:]})}
+
+
+def _start_quick(home: Path | None, pin: str, base: str | None, runner, auto: bool) -> dict:
+    """Start `wam updates --quick-apply <pin>` detached (its own user unit, like the installer's runner): it holds the
+    install lock and writes install-status.json itself, so the shell's "installing" view works unchanged."""
+    import shlex
+    wam = str(Path.home() / ".local/bin/wam")
+    args = [wam, "updates", "--quick-apply", pin] + (["--quick-auto"] if auto else [])
+    env = {k: v for k, v in (("WIZARD_OS_HOME", str(home) if home else os.environ.get("WIZARD_OS_HOME")),
+                              ("WIZARD_RELEASE_BASE", base or os.environ.get("WIZARD_RELEASE_BASE")),
+                              ("PATH", os.environ.get("PATH"))) if v}
+    sets = " ".join(f"--setenv={k}={shlex.quote(v)}" for k, v in env.items())
+    cmd = " ".join(shlex.quote(a) for a in args)
+    envs = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    script = (f"systemd-run --user --quiet --collect --unit wizard-os-quick-update-$(date +%s) {sets} {cmd} "
+              f"|| ({envs} setsid nohup {cmd} </dev/null >/dev/null 2>&1 &)")
+    r = runner(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        return {"started": False, "quick": True, "error": (r.stderr or r.stdout or "").strip()[-300:]}
+    if not auto:
+        _auto_retry_clear(home)
+    return {"started": True, "quick": True}
 
 
 def busy(service: str | None, timeout: float = 5) -> bool | None:

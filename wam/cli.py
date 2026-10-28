@@ -1957,7 +1957,14 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
+    up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.cmd == "updates" and args.quick_apply:
+        from . import quick_update
+        res = quick_update.run(args.quick_apply, auto=args.quick_auto)
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("done") or res.get("fallback") else 1
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:

@@ -1,0 +1,252 @@
+"""Quick update (wam/quick_update.py): a release that moves only the Wizard UX shell is swapped in place."""
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from wam import quick_update, updates
+
+WAM = "a" * 40
+D = lambda c: "sha256:" + c * 64   # noqa: E731
+
+
+def _rel(version, ux="1", ux_commit="b", agent="2", wam_commit=WAM, files_commit="d"):
+    return {
+        "version": version, "name": f"Wizard OS {version}", "date": "2026-10-28", "about": "words", "notes": "words",
+        "install": {"command": "curl -fsSL aiwizards.com/os.sh | bash"},
+        "components": {"wizard-app-manager": {"repo": "humanitylabs-org/wizard-app-manager", "commit": wam_commit},
+                       "wizard-ux": {"repo": "humanitylabs-org/wizard-ux", "commit": ux_commit * 40},
+                       "wizard-agent-service": {"repo": "humanitylabs-org/wizard-agent-service", "commit": "c" * 40}},
+        "images": {"wizard-app-manager": {"ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v1", "digest": D("e")},
+                   "wizard-ux": {"ref": f"ghcr.io/humanitylabs-org/wizard-ux:sha-{ux_commit * 40}", "digest": D(ux)},
+                   "wizard-agent-service": {"ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-x", "digest": D(agent)}},
+        "default_apps": {
+            "shell": {"app": "wizard-ux", "repo": "humanitylabs-org/wizard-ux", "index_version": "0.3.0",
+                      "commit": ux_commit * 40, "note": "n"},
+            "agent-service": {"app": "wizard-agent-service", "repo": "humanitylabs-org/wizard-agent-service",
+                              "commit": "c" * 40},
+            "files": {"app": "files", "repo": "oscarhenrycollins/files", "commit": files_commit * 40}},
+    }
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    updates._latest.clear(); quick_update._docs.clear()
+    yield
+    updates._latest.clear(); quick_update._docs.clear()
+
+
+@pytest.fixture
+def box(tmp_path, monkeypatch):
+    """An alongside box on 0.9.1 (clean read-back), a mirror with 0.9.2 = 0.9.1 + a new Wizard UX image."""
+    rel = tmp_path / "rel"; rel.mkdir()
+    old, new = _rel("0.9.1"), _rel("0.9.2", ux="9", ux_commit="f")
+    for d in (old, new):
+        (rel / f"{d['version']}.json").write_text(json.dumps(d, indent=2) + "\n")
+    (rel / "stable").write_text("0.9.2\n")
+    h = tmp_path / "wos"; h.mkdir()
+    (h / "release.json").write_text(json.dumps({"release": "0.9.1", "mode": "alongside", "status": "pinned",
+                                                "install_rc": 0, "checks": []}))
+    (h / "release-pins.json").write_bytes((rel / "0.9.1.json").read_bytes())
+    (h / "alongside.json").write_text(json.dumps({"mode": "alongside", "shell": {"port": 8796}}))
+    monkeypatch.setattr(quick_update, "checkout_state", lambda: (WAM, True))
+    monkeypatch.delenv("WIZARD_RELEASE_BASE", raising=False)
+    return h, rel
+
+
+def test_only_shell_pins_are_a_quick_change():
+    a = _rel("0.9.1")
+    assert quick_update.changes(a, _rel("0.9.2", ux="9", ux_commit="f")) == ["wizard-ux"]
+    assert quick_update.changes(a, {**copy.deepcopy(a), "version": "0.9.2", "about": "x"}) == []   # words only
+    assert quick_update.changes(a, _rel("0.9.2", agent="7")) is None          # Agent Service: installer only
+    assert quick_update.changes(a, _rel("0.9.2", wam_commit="0" * 40)) is None  # App Manager
+    assert quick_update.changes(a, _rel("0.9.2", files_commit="7")) is None   # any other default app
+    b = _rel("0.9.2", ux="9", ux_commit="f"); b["hermes"] = {"tag": "v1"}
+    assert quick_update.changes(a, b) is None                                 # a new top-level pin
+    b = _rel("0.9.2", ux="9", ux_commit="f"); b["default_apps"]["shell"]["alongside"] = "x"
+    assert quick_update.changes(a, b) is None                                 # the slot's install flags
+    b = _rel("0.9.2", ux="9", ux_commit="f"); b["images"]["wizard-ux"]["ref"] = "ghcr.io/evil/wizard-ux:sha-f"
+    assert quick_update.changes(a, b) is None                                 # another image repository
+    b = _rel("0.9.2", ux="9", ux_commit="f"); b["default_apps"]["shell"]["repo"] = "evil/wizard-ux"
+    assert quick_update.changes(a, b) is None
+
+
+def test_status_offers_the_quick_path_only_when_every_condition_holds(box, monkeypatch):
+    h, rel = box
+    st = updates.status(h, rel.as_uri())
+    assert st["update_available"] is True and st["quick"] is True
+    assert quick_update.plan(h, "0.9.2", rel.as_uri())["apps"] == ["wizard-ux"]
+
+    def reason(**kw):
+        quick_update._docs.clear(); updates._latest.clear()
+        return quick_update.plan(h, "0.9.2", rel.as_uri(), **kw)
+
+    assert reason(checkout=lambda: (WAM, False))["quick"] is False            # hand-edited checkout
+    assert reason(checkout=lambda: ("0" * 40, True))["quick"] is False        # not the release's App Manager
+    receipt = json.loads((h / "release.json").read_text())
+    for bad in ({"status": "drift"}, {"status": "mismatch"}, {"mode": "fresh"}):
+        (h / "release.json").write_text(json.dumps({**receipt, **bad}))
+        assert reason()["quick"] is False, bad
+    (h / "release.json").write_text(json.dumps(receipt))
+    (h / "release-pins.json").write_text(json.dumps({**_rel("0.9.1"), "about": "local edit"}))
+    assert "differ from the published" in reason()["reason"]
+    (h / "release-pins.json").write_bytes((rel / "0.9.1.json").read_bytes())
+    (rel / "0.9.2.json").write_text(json.dumps(_rel("0.9.2", ux="9", agent="7")))
+    assert "more than the Wizard UX shell" in reason()["reason"]
+    updates._latest.clear(); quick_update._docs.clear()
+    assert updates.status(h, rel.as_uri())["quick"] is False
+
+
+def test_apply_starts_the_quick_runner_instead_of_the_installer(box):
+    h, rel = box
+    calls = []
+    res = updates.apply(h, rel.as_uri(), lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert res["started"] is True and res["quick"] is True and len(calls) == 1
+    script = calls[0][-1]
+    assert "updates --quick-apply 0.9.2" in script and "os.sh" not in script and "systemd-run --user" in script
+
+
+def test_apply_uses_the_installer_when_the_release_moves_more(box):
+    h, rel = box
+    (rel / "0.9.2.json").write_text(json.dumps(_rel("0.9.2", ux="9", agent="7")))
+    calls = []
+    res = updates.apply(h, rel.as_uri(), lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert res["started"] is True and not res.get("quick")
+    assert "aiwizards.com/os.sh | WIZARD_RELEASE=0.9.2 bash -s start" in calls[0][-1]
+
+
+class FakeOps:
+    """Records the steps; `fail` names the step that raises."""
+
+    def __init__(self, h, fail=None):
+        self.h, self.fail, self.steps, self.installer, self.failed = h, fail, [], [], False
+        self.files_list = [h / "release.json", h / "release-pins.json", h / "alongside.json", h / "override.yml"]
+        (h / "override.yml").write_text("image: 0.9.1\n")
+
+    def files(self):
+        return self.files_list
+
+    def _step(self, name, *a):
+        self.steps.append((name, *a))
+        if self.fail == name and not self.failed:
+            self.failed = True
+            self.steps.append(("rollback-mark",))
+            raise quick_update.QuickError(f"{name} broke")
+
+    def refresh_index(self, pins, image):
+        self._step("refresh_index", json.loads(pins.read_text())["version"], image)
+
+    def update_apps(self, apps):
+        v = json.loads((self.h / "release-pins.json").read_text())["version"]
+        (self.h / "override.yml").write_text(f"image: {v}\n")       # app_update rewrites it from the pins
+        self._step("update_apps", v)
+
+    def ensure_image(self, app, digest):
+        self._step("ensure_image", app, digest)
+
+    def readback(self, pins):
+        d = json.loads(pins.read_text())
+        (self.h / "release.json").write_text(json.dumps({"release": d["version"], "mode": "alongside",
+                                                         "status": "pinned", "install_rc": 0, "checks": []}))
+        self._step("readback", d["version"])
+        return {"status": "pinned"}
+
+    def verify_shell(self, app, digest):
+        self._step("verify_shell", app, digest)
+
+    def start_installer(self, version, auto):
+        self.installer.append((version, auto))
+        return True
+
+
+def test_runner_swaps_the_shell_and_records_the_release_like_the_installer(box):
+    h, rel = box
+    ops = FakeOps(h)
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
+    assert res["done"] is True and ops.installer == []
+    names = [s[0] for s in ops.steps]
+    assert names == ["refresh_index", "update_apps", "ensure_image", "readback", "verify_shell"]
+    assert ops.steps[0][1] == "0.9.2" and ops.steps[0][2] == "ghcr.io/humanitylabs-org/wizard-app-manager@" + D("e")
+    assert ops.steps[2] == ("ensure_image", "wizard-ux", D("9"))
+    assert (h / "release-pins.json").read_bytes() == (rel / "0.9.2.json").read_bytes()   # the published bytes
+    assert updates.installed(h) == "0.9.2"
+    st = json.loads((h / "install-status.json").read_text())
+    assert st["state"] == "done" and st["quick"] is True and st["exit_code"] == 0
+    updates._latest.clear()
+    after = updates.status(h, rel.as_uri())
+    assert after["update_available"] is False and after["installing"] is False
+    assert "[quick] quick update to 0.9.2 done" in (h / "install.log").read_text()
+
+
+def test_a_failed_check_rolls_back_then_hands_over_to_the_installer(box):
+    h, rel = box
+    before = {f: f.read_bytes() for f in (h / "release.json", h / "release-pins.json", h / "alongside.json")}
+    ops = FakeOps(h, fail="verify_shell")
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops, auto=True)
+    assert res["done"] is False and res["rolled_back"] is True and res["fallback"] is True
+    assert ops.installer == [("0.9.2", True)]                 # the full update still brings the box to 0.9.2
+    for f, data in before.items():
+        assert f.read_bytes() == data, f                      # every file back as it was
+    assert (h / "override.yml").read_text() == "image: 0.9.1\n"
+    # the rollback re-pointed the index and the shell at the installed release's pins
+    back = ops.steps[ops.steps.index(("rollback-mark",)) + 1:]
+    assert ("refresh_index", "0.9.1", "ghcr.io/humanitylabs-org/wizard-app-manager@" + D("e")) in back
+    assert ("update_apps", "0.9.1") in back and ("verify_shell", "wizard-ux", D("1")) in back
+    assert updates.installed(h) == "0.9.1"
+    assert "rolled back to 0.9.1" in (h / "install.log").read_text()
+
+
+def test_without_fallback_a_failure_is_reported_and_the_old_release_stays(box, monkeypatch):
+    h, rel = box
+    monkeypatch.setenv(quick_update.FALLBACK_ENV, "0")
+    ops = FakeOps(h, fail="readback")
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
+    assert res["done"] is False and res["fallback"] is False and ops.installer == []
+    st = json.loads((h / "install-status.json").read_text())
+    assert st["state"] == "failed" and "readback broke" in st["failure_reason"]
+    assert updates.installed(h) == "0.9.1"
+    assert (h / "release-pins.json").read_bytes() == (rel / "0.9.1.json").read_bytes()
+
+
+def test_runner_refuses_while_an_install_holds_the_lock(box):
+    import fcntl, os
+    h, rel = box
+    fd = os.open(h / "install.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        ops = FakeOps(h)
+        res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
+        assert res["started"] is False and ops.steps == []
+    finally:
+        os.close(fd)
+
+
+def test_runner_rechecks_and_never_swaps_a_release_that_moves_more(box):
+    h, rel = box
+    (rel / "0.9.2.json").write_text(json.dumps(_rel("0.9.2", ux="9", wam_commit="0" * 40)))
+    ops = FakeOps(h)
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
+    assert ops.steps == [] and ops.installer == [("0.9.2", False)] and res["fallback"] is True
+    assert (h / "release-pins.json").read_bytes() == (rel / "0.9.1.json").read_bytes()
+
+
+def test_readback_is_get_sh_s_own_program():
+    prog = quick_update.readback_program(Path(quick_update.wam_dir()) / "get.sh")
+    compile(prog, "readback", "exec")
+    assert "pins_path, wam_dir, mode, out_path, strict, install_rc = sys.argv[1:7]" in prog
+    assert prog.rstrip().endswith("sys.exit(1 if core_bad else (3 if drift and strict == \"1\" else 0))")
+
+
+def test_runner_leaves_the_process_environment_as_it_found_it(box, monkeypatch):
+    import os
+    h, rel = box
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    seen = []
+    ops = FakeOps(h)
+    real = ops.update_apps
+    ops.update_apps = lambda apps: seen.append(os.environ.get("WIZARD_RELEASE_PINS")) or real(apps)
+    assert quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)["done"] is True
+    assert seen == [str(h / "release-pins.json")]          # release_updates reads the target pins
+    assert "WIZARD_RELEASE_PINS" not in os.environ
