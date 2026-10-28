@@ -21,7 +21,9 @@ def select_apps(catalog):
     # Calendar is the proven data/host-mount fixture; the other lightweight apps
     # may vary with the public catalog. Fail before installing if coverage lacks.
     preferred = ('wizard-calendar', 'wizard-shopping', 'wizard-notes',
-                 'wizard-reference', 'wizard-stories', 'wizard-wisdom', 'wizard-profiles')
+                 'wizard-reference', 'wizard-stories', 'wizard-wisdom', 'wizard-profiles',
+                 # Public-index ids observed on a clean guest (28 Oct 2026).
+                 'profiles', 'wisdom', 'stories', 'notes', 'reference')
     apps = [app for app in preferred if app in available][:3]
     assert 'wizard-calendar' in apps and len(apps) == 3, sorted(available)
     return apps

@@ -75,3 +75,8 @@ def test_live_host_mount_and_canary_are_required(guest, monkeypatch, read_only, 
     if read_only and content == 'grandfathered host access\n': guest.host_canary()
     else:
         with pytest.raises(AssertionError): guest.host_canary()
+
+
+def test_select_apps_uses_unprefixed_public_index_ids(guest):
+    catalog = [{'id': name} for name in ('wizard-calendar', 'profiles', 'wisdom', 'transcriber')]
+    assert guest.select_apps(catalog) == ['wizard-calendar', 'profiles', 'wisdom']
