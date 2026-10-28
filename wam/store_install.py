@@ -65,9 +65,10 @@ def from_box(headers, ips: set[str]) -> bool:
     Serve sets X-Forwarded-For to the connecting tailnet address (it replaces whatever the client sent) and sets
     Tailscale-User-Login for this node's own address to the node's user: the owner. Every program on the box,
     including every app container (rootless Docker connects out from the host), therefore arrives as the owner,
-    from the node's own address. Only the owner's other devices have another address."""
+    from the node's own address. Only the owner's other devices have another address. Fails closed: without this
+    node's addresses (Tailscale didn't answer) nothing can be told apart, so every request counts as the box's."""
     hop = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
-    return not hop or hop in LOOPBACK or hop in ips
+    return not ips or not hop or hop in LOOPBACK or hop in ips
 
 
 def check_request(headers, owner: str, origins: set[str], ips: set[str] | None = None) -> str | None:

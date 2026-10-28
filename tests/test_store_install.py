@@ -24,6 +24,8 @@ def test_changes_from_the_box_itself_are_refused():
         assert si.check_request({**GOOD, "X-Forwarded-For": xff}, "owner@x.com", ORIG, box) == si.FROM_BOX, xff
     assert si.check_request({k: v for k, v in GOOD.items() if k != "X-Forwarded-For"}, "owner@x.com", ORIG,
                             box) == si.FROM_BOX
+    # Tailscale didn't say which addresses are this node's: nothing can be told apart, so refuse
+    assert si.check_request(GOOD, "owner@x.com", ORIG, set()) == si.FROM_BOX
     # the address comes from Tailscale itself (the conftest stub) when not given
     assert si.check_request({**GOOD, "X-Forwarded-For": "fd7a:115c:a1e0::1"}, "owner@x.com", ORIG) == si.FROM_BOX
 
