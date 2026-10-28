@@ -70,8 +70,22 @@ def test_page_and_assets_are_served_with_the_owner_api_wired(listener):
     assert "frame-ancestors 'self'" in hd["Content-Security-Policy"]
     code, hd, b = call("GET", "/_connections/wizard-apps.js")
     assert code == 200 and b"renderConnections" in b and hd["Content-Type"].startswith("text/javascript")
+    code, hd, b = call("GET", "/_connections/connections-map.js")
+    assert code == 200 and b"export function mapModel" in b and hd["Content-Type"].startswith("text/javascript")
     for bad in ("/_connections/../wam/cli.py", "/_connections/README.md", "/_connections/x.js", "/_connectionsx"):
         assert call("GET", bad)[0] in (403, 404), bad
+
+
+def test_the_page_reuses_the_shells_kit_sheet_and_app_glyphs(listener):
+    """The map is drawn with the shell's own pieces on the same origin (kit tokens + look, WzSheet, WizSigil), linked
+    before the App Manager's styles so its rules still win a tie; the page needs nothing else from the shell."""
+    call, _ = listener
+    b = call("GET", "/_connections/")[2].decode()
+    for ref in ("/wizard-os-home/kit/wizard-tokens.css", "/wizard-os-home/kit/wizard-ui.css", "/wizard-os-home/core/sigils.css",
+                "/wizard-os-home/kit/wizard-sheet.js", "/wizard-os-home/core/sigils.js"):
+        assert ref in b, ref
+        assert b.index(ref) < b.index('href="wux.css"'), ref
+    assert 'data-wz-shared="kit"' in b   # app-client.js treats it as the shared kit, not a vendored copy to swap
 
 
 def test_reads_say_whether_this_device_may_change(listener):

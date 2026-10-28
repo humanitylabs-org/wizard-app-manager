@@ -222,8 +222,13 @@ the app leaving the mesh joins its new links first, then leaves the mesh, so oth
 `wam connections` shows the mode in the first line ("Open: everything is connected unless you disconnect it") and, per
 app, "can reach: every other app except ..." with the reason (you disconnected it, waiting for your approval, sensitive
 and not connected) and whether it is on the mesh or on how many links. The live check compares Docker with this plan the
-same way as in declared mode. The Connections view says the mode plainly, switches it, lists each app's cut pairs with
-Reconnect / Approve / Deny / Connect, and offers "Disconnect from" any app it still reaches.
+same way as in declared mode. The Connections view draws this as one picture (`renderConnections`, model in `wizard-views/connections-map.js`):
+every app in one "All connected" cluster with the agent wired into it, and only the exceptions drawn (a red broken line
+for a Disconnect, an amber pulse for a request waiting for the owner, a lock on an app that asks first). Tapping an app
+opens a sheet that says what it can talk to ("Movies can talk to: everything except Shopping") with Cut off from…,
+Reconnect and Ask me first (= sensitive); a waiting request is a card with Allow / Don't allow. The mode switch ("Strict
+mode: apps only reach what they ask for" = declared), the live check, the gateway and what can't be enforced sit under
+Details.
 
 Switching to declared leaves the decisions as they are (Disconnects stay, open grants are kept but never link, open-mode
 waits are dropped); switching back to open restores the mesh. `wam network off` still turns isolation off entirely.

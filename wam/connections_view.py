@@ -26,7 +26,16 @@ from pathlib import Path
 PREFIX = "_connections"
 VIEWS = Path(__file__).resolve().parent.parent / "wizard-views"
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
-FILES = {"index.html", "standalone.js", "wizard-apps.js", "runtipi-open.js", "wux.css", "wizard-apps.css", "standalone.css"}
+FILES = {"index.html", "standalone.js", "wizard-apps.js", "connections-map.js", "runtipi-open.js", "wux.css", "wizard-apps.css",
+         "standalone.css"}
+# Shared Wizard pieces the map reuses from the shell on the same origin (wizard-ux docs/COMPONENTS.md): the kit
+# tokens and look, its one pop-up (WzSheet) and the app glyphs (WizSigil). Linked before the page's own styles, so
+# the App Manager's rules win a tie; on a shell without them the view falls back to letters and a plain dialog.
+SHARED = (b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-tokens.css" data-wz-shared="tokens">\n  '
+          b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-ui.css" data-wz-shared="kit">\n  '
+          b'<link rel="stylesheet" href="/wizard-os-home/core/sigils.css">\n  '
+          b'<script defer src="/wizard-os-home/kit/wizard-sheet.js"></script>\n  '
+          b'<script defer src="/wizard-os-home/core/sigils.js"></script>\n  ')
 APP = r"([a-z0-9][a-z0-9-]{1,40})"
 TO = re.compile(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}")
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'; "
@@ -35,7 +44,7 @@ CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inlin
 
 def page() -> bytes:
     """index.html showing only Connections, wired to this listener (standalone.js reads the data- attributes)."""
-    b = (VIEWS / "index.html").read_bytes()
+    b = (VIEWS / "index.html").read_bytes().replace(b'<link rel="stylesheet" href="wux.css">', SHARED + b'<link rel="stylesheet" href="wux.css">', 1)
     return b.replace(b'<body class="wux">', b'<body class="wux" data-only="connections" data-api="api" '
                      b'data-connections="api/connections" data-owner-header="X-Wizard-Store">', 1)
 
