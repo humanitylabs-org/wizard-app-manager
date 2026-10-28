@@ -31,22 +31,38 @@ def test_missing_data_fixture_or_three_apps_cannot_pass(guest, ids):
         guest.select_apps([{'id': name} for name in ids])
 
 
-def test_guest_queries_catalog_before_first_install_and_persists_selection(guest, tmp_path, monkeypatch):
+def test_guest_queries_catalog_first_and_skips_apps_main_cannot_install(guest, tmp_path, monkeypatch):
     selection = tmp_path / 'apps.json'
     monkeypatch.setattr(guest, 'SELECTION', selection)
     monkeypatch.setattr(guest.os, 'getuid', lambda: 0)
     calls = []
-    class FirstInstall(Exception): pass
+    class AfterInstalls(Exception): pass
     def agent(*args):
         calls.append(args)
         if args == ('wam', 'search', '--json'):
-            return json.dumps([{'id': name} for name in ('wizard-calendar', 'wizard-notes', 'wizard-shopping')])
-        assert args == ('wam', 'install', 'wizard-calendar')
-        assert json.loads(selection.read_text()) == ['wizard-calendar', 'wizard-shopping', 'wizard-notes']
-        raise FirstInstall
+            return json.dumps([{'id': n} for n in ('wizard-calendar', 'wizard-notes', 'wizard-shopping', 'profiles')])
+        if args == ('wam', 'install', 'wizard-notes'):
+            raise AssertionError('wizard-notes: install failed')
+        if args[:2] == ('wam', 'install'):
+            return ''
+        raise AfterInstalls
     monkeypatch.setattr(guest, 'agent', agent)
-    with pytest.raises(FirstInstall): guest.main(['legacy', 'a' * 40])
-    assert calls == [('wam', 'search', '--json'), ('wam', 'install', 'wizard-calendar')]
+    def stop_mkdir(*a, **k): raise AfterInstalls
+    monkeypatch.setattr(guest.Path, 'mkdir', stop_mkdir)
+    with pytest.raises(AfterInstalls): guest.main(['legacy', 'a' * 40])
+    assert calls[0] == ('wam', 'search', '--json')
+    assert json.loads(selection.read_text()) == ['wizard-calendar', 'wizard-shopping', 'profiles']
+
+
+def test_calendar_install_failure_is_never_skipped(guest, tmp_path, monkeypatch):
+    monkeypatch.setattr(guest, 'SELECTION', tmp_path / 'apps.json')
+    monkeypatch.setattr(guest.os, 'getuid', lambda: 0)
+    def agent(*args):
+        if args == ('wam', 'search', '--json'):
+            return json.dumps([{'id': n} for n in ('wizard-calendar', 'wizard-notes', 'wizard-shopping')])
+        raise AssertionError('install failed')
+    monkeypatch.setattr(guest, 'agent', agent)
+    with pytest.raises(AssertionError): guest.main(['legacy', 'a' * 40])
 
 
 def test_later_phase_loads_exact_selected_apps_without_new_catalog_lookup(guest, tmp_path, monkeypatch):
@@ -80,3 +96,8 @@ def test_live_host_mount_and_canary_are_required(guest, monkeypatch, read_only, 
 def test_select_apps_uses_unprefixed_public_index_ids(guest):
     catalog = [{'id': name} for name in ('wizard-calendar', 'profiles', 'wisdom', 'transcriber')]
     assert guest.select_apps(catalog) == ['wizard-calendar', 'profiles', 'wisdom']
+
+
+def test_select_candidates_puts_calendar_first_and_keeps_fallbacks(guest):
+    catalog = [{'id': n} for n in ('wisdom', 'wizard-notes', 'wizard-calendar', 'profiles', 'money')]
+    assert guest.select_candidates(catalog) == ['wizard-calendar', 'wizard-notes', 'profiles', 'wisdom', 'money']

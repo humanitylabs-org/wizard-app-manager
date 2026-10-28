@@ -29,6 +29,16 @@ def select_apps(catalog):
     return apps
 
 
+def select_candidates(catalog):
+    """Every preferred indexed app, Calendar first, for install-with-fallback."""
+    select_apps(catalog)  # same coverage precondition
+    available = {row['id'] for row in catalog}
+    preferred = ('wizard-calendar', 'wizard-shopping', 'wizard-notes', 'wizard-reference', 'wizard-stories',
+                 'wizard-wisdom', 'wizard-profiles', 'profiles', 'wisdom', 'stories', 'notes', 'reference',
+                 'morning-report', 'money')
+    return [app for app in preferred if app in available]
+
+
 def run(argv, *, expected=0, **kwargs):
     p = subprocess.run([str(x) for x in argv], check=False, capture_output=True,text=True,timeout=1200,**kwargs)
     # Never print bearer values or copied integration files.
@@ -93,14 +103,26 @@ def main(argv):
     assert os.getuid() == 0
     if phase == "legacy":
         catalog = json.loads(agent("wam", "search", "--json"))
-        APPS = select_apps(catalog)
+        # Legacy setup runs main's wam: a store app main cannot install is not
+        # this branch's concern, so try the next indexed candidate instead.
+        candidates = select_candidates(catalog)
+        APPS, skipped = [], {}
+        for app in candidates:
+            if len(APPS) == 3: break
+            try:
+                agent('wam', 'install', app)
+                APPS.append(app)
+            except AssertionError as e:
+                if app == 'wizard-calendar': raise
+                skipped[app] = str(e).strip()[-300:]
+        assert 'wizard-calendar' in APPS and len(APPS) == 3, (APPS, skipped)
         SELECTION.write_text(json.dumps(APPS))
-        print(json.dumps({"catalog_ids": sorted(row["id"] for row in catalog), "selected_apps": APPS}), flush=True)
+        print(json.dumps({"catalog_ids": sorted({row["id"] for row in catalog}), "selected_apps": APPS,
+                          "skipped_main_install_failures": skipped}), flush=True)
     else:
         APPS = json.loads(SELECTION.read_text())
     assert len(APPS) >= 3 and len(set(APPS)) == len(APPS)
     if phase=='legacy':
-        for app in APPS: agent('wam','install',app)
         Path('/srv/slice6-host').mkdir(exist_ok=True)
         Path('/srv/slice6-host/canary').write_text('grandfathered host access\n')
         p=OLD/'runtipi/user-config/wizardapps/wizard-calendar/docker-compose.yml'
