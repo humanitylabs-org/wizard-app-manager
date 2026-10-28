@@ -34,3 +34,6 @@ def test_problem_report_keeps_two_try_stop_consent_and_public_fallback():
         assert required in text
     assert 'wizard-os/issues/new' not in text
     assert 'not confirmation that an issue was filed' in text
+    assert 'This report will be public on GitHub, where anyone can read it.' in text
+    assert 'do not create a public link or submit it' in text
+    assert text.index('This report will be public') < text.index('https://github.com/')

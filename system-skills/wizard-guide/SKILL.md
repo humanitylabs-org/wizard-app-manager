@@ -104,7 +104,7 @@ Already tried: <your attempts and what each did>
 ```
 
 - Never include private content: no messages, chat text, file names or contents, names, emails, addresses, links to their box, passwords, keys or tokens. Describe instead ("a pinned chat", "a photo upload").
-- Show the whole report to the owner and change what they ask. Send nothing without their OK.
+- Show the whole report to the owner and change what they ask. Explain before asking for approval: "This report will be public on GitHub, where anyone can read it." Send nothing without their OK to that public report. If they do not want it public, offer the report text to share privately with whoever set up their Wizard instead; do not create a public link or submit it. For a report tool, explain its actual destination and visibility before asking for approval.
 - With their OK, give them one link that opens the report ready to send: `https://github.com/humanitylabs-org/wizard-ux/issues/new?title=<title>&body=<body>` (both URL-encoded; keep the body under about 1,500 characters). Tell them: "Tap the link, sign in to GitHub (a free account is fine) and tap Create." If they don't want an account, give them the report text to send to whoever set up their Wizard.
 - If you have a tool that sends Wizard problem reports, use it instead of the link, still only after their OK.
 - Afterwards, say in one line what actually happened, and keep any safe workaround you found. A prefilled link is a draft for the owner to submit, not confirmation that an issue was filed; say "Your report is ready to send". Claim it was sent only after a report tool returns a confirmed issue URL or the owner confirms submission.
