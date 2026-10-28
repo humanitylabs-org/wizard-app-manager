@@ -158,6 +158,14 @@ export function cutRows(mode, controls, a, b) {
   return rows.length ? rows.map((r) => ({ from: r.from, to: r.to })) : [{ from: a, to: b }];
 }
 
+/** The decisions Reconnect undoes: every Disconnect recorded between the pair, either way (falls back to pairRow). */
+export function reconnectRows(controls, a, b) {
+  const rows = (controls || []).filter((r) => r.status === 'disconnected' && ((r.from === a && provides(r, b)) || (r.from === b && provides(r, a))));
+  return rows.length
+    ? rows.map((r) => ({ from: r.from, to: r.to }))
+    : [pairRow(controls, a, b, 'disconnected')].map((r) => ({ from: r.from, to: r.to }));
+}
+
 /** The apps an app can be cut off from (it still talks to them), by name. */
 export function cuttable(model, id) {
   const me = model.apps.find((a) => a.id === id);

@@ -12,7 +12,7 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
-import { cutRows, cuttable, doneWords, list, mapModel, pairRow, talksSentence } from './connections-map.js';
+import { cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
 const STORE = 'wizardapps';
@@ -1026,11 +1026,17 @@ export async function renderConnections(el, ctx = {}) {
     }
     if (b.matches('[data-cm-reconnect]')) {
       const other = b.dataset.cmReconnect;
-      const row = pairRow(d.controls, sheetId, other, 'disconnected');
-      return void run(`reconnect:${other}`, () => grant(row.from, row.to, true), doneWords('reconnect', nameOf(sheetId), nameOf(other)), {
-        close: true,
-      });
+      const rows = reconnectRows(d.controls, sheetId, other);
+      return void run(
+        `reconnect:${other}`,
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, true);
+        },
+        doneWords('reconnect', nameOf(sheetId), nameOf(other)),
+        { close: true },
+      );
     }
+
     if (b.matches('[data-cm-connect]')) {
       const other = b.dataset.cmConnect;
       // the request goes to the app that asks first, like an Approve

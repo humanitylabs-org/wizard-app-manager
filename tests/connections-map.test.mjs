@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cutRows, cuttable, doneWords, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
+import { cutRows, cuttable, doneWords, reconnectRows, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
   id,
@@ -185,4 +185,17 @@ test('Strict mode says what apps on Runtipi’s shared network still reach', () 
   const m = mapModel(d);
   assert.equal(talksSentence(m.apps[0]), 'Files can talk to: Photos');
   assert.match(m.lead, /except apps published through Runtipi, which can still reach each other/);
+});
+
+test('Reconnect undoes every Disconnect between the pair, so no half-cut pair is left', () => {
+  const controls = [
+    { from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare'], status: 'disconnected' },
+    { from: 'wizard-cloudflare', to: 'backup', providers: ['backup'], status: 'disconnected' },
+    { from: 'backup', to: 'files', providers: ['files'], status: 'disconnected' },
+  ];
+  assert.deepEqual(reconnectRows(controls, 'wizard-cloudflare', 'backup'), [
+    { from: 'backup', to: 'slot:backup-storage' },
+    { from: 'wizard-cloudflare', to: 'backup' },
+  ]);
+  assert.deepEqual(reconnectRows([], 'cinequeue', 'wizard-shopping'), [{ from: 'cinequeue', to: 'wizard-shopping' }]);
 });
