@@ -13,21 +13,25 @@
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
 import {
-  BANDS,
   BUILTIN,
+  agentRows,
   bandOf,
   bands,
   canUse,
   connectable,
   cutGroups,
+  cutList,
   cutRows,
   cuttable,
   doneWords,
+  footerLine,
   linkInfo,
+  linkedApps,
   list,
   mapModel,
   reconnectRows,
   talksSentence,
+  waitingLines,
 } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
@@ -615,6 +619,7 @@ export async function renderConnections(el, ctx = {}) {
   let details = false;
   let sheetId = ''; // the app whose sheet is open ('@agent:<i>' an agent, '@sys:<id>' part of Wizard, '@link:<a>|<b>' a line)
   let picking = false; // the sheet's chooser is open: Cut off from… (Open mode) or Connect to… (Strict mode)
+  let showMap = false; // phone widths: the list shows, the map is one tap away (See map)
   let drawn = '';
   let dlg = null;
   const ago = (t) => {
@@ -789,9 +794,76 @@ export async function renderConnections(el, ctx = {}) {
           toast.undo ? `<button type="button" class="wam-btn" data-cm-undo${dis('undo')}>Undo</button>` : ''
         }</div>`
       : '<div class="wam-cm-toast" role="status" aria-live="polite" hidden></div>';
-    const html = `<div class="wam-cm">
+    // Phone widths (the container query in wizard-apps.css): the same model as a list, the map one tap away.
+    const chev = '<i class="wam-cm-go" aria-hidden="true"></i>';
+    const waits = waitingLines(m);
+    const linkedRows = linkedApps(m);
+    const cutRowsList = cutList(m);
+    const sec = (title, count, body) =>
+      `<section class="wam-cl-sec" aria-label="${esc(title)}"><h3>${esc(title)}${count == null ? '' : ` <span>${count}</span>`}</h3><div class="wam-cl-card">${body}</div></section>`;
+    const listHtml = `<div class="wam-cl">
+        <h2 class="wam-cl-title">Connections</h2>
+        ${roOnly()}
+        ${
+          waits.length
+            ? `<section class="wam-cl-wait" aria-label="Waiting for your OK"><h3>Waiting for your OK</h3>${waits
+                .map((p) => {
+                  const key = `ask:${p.from}:${p.to}`;
+                  return `<div class="wam-cl-ask"><span class="wam-cm-ask-ics">${cmGlyph({ id: p.from, name: p.fromName })}${cmGlyph({ id: p.toIds[0], name: nm(p.toIds[0]) })}</span><p>${esc(p.text)}</p>
+                    <span class="wam-cm-ask-acts"><button type="button" class="wam-btn" data-cm-deny data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Don’t allow</button><button type="button" class="wam-btn primary" data-cm-allow data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Allow</button></span></div>`;
+                })
+                .join('')}</section>`
+            : ''
+        }
+        ${sec(
+          m.agents.length > 1 ? 'Your agents' : 'Your agent',
+          null,
+          agentRows(m)
+            .map(
+              (g) =>
+                `<button type="button" class="wam-cl-row" data-cm-agent="${g.index}" aria-haspopup="dialog">${cmGlyph({ id: g.main ? 'wizard' : m.agents[g.index].id, name: g.title })}<span class="wam-cl-tx"><b>${esc(g.title)}</b> <span>· ${esc(g.line)}</span></span>${chev}</button>`,
+            )
+            .join(''),
+        )}
+        ${
+          linkedRows.length
+            ? sec(
+                'Linked apps',
+                linkedRows.length,
+                linkedRows
+                  .map(
+                    (r) =>
+                      `<button type="button" class="wam-cl-row" data-cm-uses="${esc(r.id)}" aria-haspopup="dialog">${cmGlyph(r)}<span class="wam-cl-tx"><b>${esc(r.name)}</b> <span>→ ${esc(r.links.map((l) => l.name).join(', '))}</span></span>${chev}</button>`,
+                  )
+                  .join(''),
+              )
+            : ''
+        }
+        ${
+          cutRowsList.length
+            ? sec(
+                'Cut by you',
+                null,
+                cutRowsList
+                  .map((x) => {
+                    const at = x.pair ? `data-cm-recut="${esc(x.pair)}"` : `data-cm-regrant="${esc(`${x.group.from}|${x.group.to}`)}"`;
+                    const key = `recut:${x.pair || `${x.group.from}|${x.group.to}`}`;
+                    return `<div class="wam-cl-row is-static"><span class="wam-cm-pair">${cmGlyph({ id: x.a, name: nm(x.a) })}${cmGlyph({ id: x.b, name: nm(x.b) })}</span><span class="wam-cl-tx"><b>${esc(x.text)}</b></span><button type="button" class="wam-btn" ${at}${dis(key)}>Reconnect</button></div>`;
+                  })
+                  .join(''),
+              )
+            : ''
+        }
+        <p class="wam-cl-foot">${esc(footerLine(m.mode))}</p>
+        <button type="button" class="wam-btn wam-cl-mapbtn" data-cm-seemap>See map</button>
+      </div>`;
+    const html = `<div class="wam-cm${showMap ? ' is-map' : ''}">
+        ${listHtml}
+        <div class="wam-cm-full">
+        <button type="button" class="wam-btn wam-cl-back" data-cm-seelist>‹ Back to list</button>
         <p class="wam-cm-lead">${esc(m.lead)}${m.hint ? `<small>${esc(m.hint)}</small>` : ''}</p>
         ${roOnly()}${asks}${map}
+        </div>
         <button type="button" class="wam-cm-more" data-cm-details aria-expanded="${details}">Details<i class="wam-cm-chev${details ? ' is-up' : ''}" aria-hidden="true"></i></button>
         ${detailsHtml}${toastHtml}
       </div>`;
@@ -937,27 +1009,57 @@ export async function renderConnections(el, ctx = {}) {
         g.real && g.real !== g.name
           ? `<p class="wam-cm-sh-note">${esc(`${g.name} is ${g.real}${g.main ? ', running on this server' : ''}.`)}</p>`
           : '';
-      // What it can use, group by group: one row per item (data-cm-agent-use), where per-agent choices will go.
-      const uses = BANDS.filter((b) => b.key !== 'agent')
-        .map((b) => {
-          const items = [...m.apps.filter((a) => a.kind === b.key), ...(m.builtin || []).filter((s) => s.kind === b.key)].sort((x, y) =>
-            x.name.localeCompare(y.name),
-          );
-          if (!items.length) return '';
-          return `<div class="wam-cm-uses" role="group" aria-label="${esc(b.title)}"><h5>${esc(b.title)}</h5><div class="wam-cm-chips">${items
-            .map((x) => {
-              // Wizard's own pieces are how the agent reaches everything: never listed as out of its reach
-              const no = !x.builtin && g.allow && !g.allow.includes(x.id);
-              return `<span class="wam-cm-chip${no ? ' is-off' : ''}" data-cm-agent-use="${esc(x.id)}">${cmGlyph(x)}<span>${esc(x.name)}</span></span>`;
-            })
-            .join('')}</div></div>`;
-        })
+      // What it can use, group by group: one read-only row per item (data-cm-agent-use), where per-agent switches
+      // will go. Wizard's own pieces are how the agent reaches everything: never listed as out of its reach.
+      const row = agentRows(m)[Number(sheetId.slice(7))];
+      const uses = row.groups
+        .map(
+          (b) =>
+            `<div class="wam-cm-uses" role="group" aria-label="${esc(b.title)}"><h5>${esc(b.title)}</h5>${b.items
+              .map(
+                (x) =>
+                  `<div class="wam-cm-srow wam-cm-use${x.off ? ' is-off' : ''}" data-cm-agent-use="${esc(x.id)}">${cmGlyph(x)}<span class="wam-cm-tx"><b>${esc(x.name)}</b>${
+                    x.builtin ? `<small>${esc(BUILTIN)}</small>` : x.off ? '<small>Not used</small>' : ''
+                  }</span></div>`,
+              )
+              .join('')}</div>`,
+        )
         .join('');
       set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span><h2 id="wamCmTitle">${esc(g.name)}</h2></div>
         ${where('agent')}
-        <p class="wam-cm-says">${esc(`Can use: ${canUse(g)}`)}</p>${who}
+        <p class="wam-cm-says">${esc(`${row.title} ${row.line}.`)}</p>${who}
+        <p class="wam-cm-sh-note">Turning items off for an agent is coming next.</p>
         ${uses}
         <p class="wam-cm-sh-note">It uses them through Wizard itself, not through the app networks, so keeping apps apart never cuts off your agent.</p>`);
+      return;
+    }
+    if (sheetId.startsWith('@uses:')) {
+      // The phone list: what one app is linked to, why, and Disconnect / Connect to…
+      const id = sheetId.slice(6);
+      const a = m.apps.find((x) => x.id === id);
+      if (!a) return sheetClose(dlg);
+      const r = linkedApps(m).find((x) => x.id === id) || { links: [] };
+      const can = connectable(m, id);
+      const rows = r.links
+        .map((l) => {
+          const key = l.pair ? `disconnect:${l.pair}` : `ungroup:${l.group.from}|${l.group.to}`;
+          const at = l.pair ? `data-cm-disconnect="${esc(l.pair)}"` : `data-cm-ungroup="${esc(`${l.group.from}|${l.group.to}`)}"`;
+          return `<div class="wam-cm-srow">${cmGlyph({ id: l.id, name: l.name })}<span class="wam-cm-tx"><b>${esc(l.name)}</b><small>${esc(l.why)}</small></span><button type="button" class="wam-btn" ${at}${dis(key)}>Disconnect</button></div>`;
+        })
+        .join('');
+      const pick = picking
+        ? `<div class="wam-cm-pick"><p>${esc(`Tap what ${a.name} should be able to talk to. It works both ways.`)}</p><div class="wam-cm-chips">${can
+            .map(
+              (x) =>
+                `<button type="button" class="wam-cm-chip" data-cm-join="${esc(x.id)}"${dis(`join:${x.id}`)}>${cmGlyph(x)}<span>${esc(x.name)}</span></button>`,
+            )
+            .join('')}</div></div>`
+        : '';
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(a)}</span><h2 id="wamCmTitle">${esc(a.name)}</h2></div>
+        <p class="wam-cm-says">${esc(r.links.length ? `${a.name} is linked to:` : `${a.name} isn’t linked to any app.`)}</p>
+        ${rows}
+        ${can.length && a.enforce ? `<div class="wam-cm-sh-acts"><button type="button" class="wam-btn${picking ? ' primary' : ''}" data-cm-pick aria-expanded="${picking}"${canAct ? '' : ' disabled'}>Connect to…</button></div>${pick}` : ''}
+        ${roOnly()}`);
       return;
     }
     if (sheetId.startsWith('@sys:')) {
@@ -1176,6 +1278,14 @@ export async function renderConnections(el, ctx = {}) {
     if (sysNode) return openSheet(`@sys:${sysNode.dataset.cmSys}`);
     const line = t('[data-cm-link]');
     if (line) return openSheet(`@link:${line.getAttribute('data-cm-link')}`);
+    const usesRow = t('[data-cm-uses]');
+    if (usesRow) return openSheet(`@uses:${usesRow.dataset.cmUses}`);
+    if (t('[data-cm-seemap]') || t('[data-cm-seelist]')) {
+      showMap = !!t('[data-cm-seemap]');
+      paint(d);
+      el.querySelector(showMap ? '.wam-cl-back' : '.wam-cl')?.scrollIntoView?.({ block: 'start' });
+      return;
+    }
     if (t('[data-cm-details]')) {
       details = !details;
       el._wamHtml = '';
@@ -1217,7 +1327,8 @@ export async function renderConnections(el, ctx = {}) {
     if (b.matches('[data-cm-join]')) {
       // Strict mode: Connect to… records the owner's own connection (it links both ways)
       const to = b.dataset.cmJoin;
-      return void run(`join:${to}`, () => grant(sheetId, to, true), doneWords('connect', nameOf(sheetId), nameOf(to)), { close: true });
+      const from = sheetId.replace(/^@uses:/, '');
+      return void run(`join:${to}`, () => grant(from, to, true), doneWords('connect', nameOf(from), nameOf(to)), { close: true });
     }
     if (b.matches('[data-cm-cutgroup]')) {
       const g = cutGroups(el._wamModel, sheetId)[Number(b.dataset.cmCutgroup)];
@@ -1238,6 +1349,31 @@ export async function renderConnections(el, ctx = {}) {
       return void run(`regroup:${b.dataset.cmRegroup}`, () => grant(g.from, g.to, true), doneWords('reconnect', nameOf(g.from), g.names), {
         close: true,
       });
+    }
+    if (b.matches('[data-cm-recut]')) {
+      // the phone list's Cut by you: Reconnect undoes every Disconnect between the pair
+      const [p, q] = b.dataset.cmRecut.split('|');
+      const rows = reconnectRows(d.controls, p, q);
+      return void run(
+        `recut:${p}|${q}`,
+        async () => {
+          for (const r of rows) await grant(r.from, r.to, true);
+        },
+        doneWords('reconnect', nameOf(p), nameOf(q)),
+      );
+    }
+    if (b.matches('[data-cm-regrant], [data-cm-ungroup]')) {
+      // a connection to a slot several apps provide, reconnected (Cut by you) or disconnected (an app's sheet) as one
+      const back = b.matches('[data-cm-regrant]');
+      const [from, to] = (back ? b.dataset.cmRegrant : b.dataset.cmUngroup).split('|');
+      const g = (el._wamModel?.groups || []).find((x) => x.from === from && x.to === to);
+      const names = g?.names || nameOf(to);
+      return void run(
+        `${back ? 'recut' : 'ungroup'}:${from}|${to}`,
+        () => grant(from, to, back),
+        doneWords(back ? 'reconnect' : 'disconnect', nameOf(from), names),
+        back ? {} : { close: true, undo: { rows: [{ from, to }], a: from, b: g?.providers?.[0] || to } },
+      );
     }
     if (b.matches('[data-cm-reconnect]')) {
       const other = b.dataset.cmReconnect;

@@ -4,21 +4,27 @@ import test from 'node:test';
 
 import {
   BUILTIN,
+  agentRows,
   agentsLine,
   bandOf,
   bands,
   canUse,
   connectable,
   cutGroups,
+  cutList,
   cutRows,
   cuttable,
   doneWords,
+  footerLine,
   reconnectRows,
   linkInfo,
+  linkReason,
+  linkedApps,
   list,
   mapModel,
   pairRow,
   talksSentence,
+  waitingLines,
 } from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
@@ -550,4 +556,117 @@ test('A request from an app-backed agent stays, said with the agent’s name; a 
       ['hermes-agent', 'Your agent', true],
     ],
   );
+});
+
+// The phone list: the box as Miguel has it (Strict mode, a few links, one pair he cut, the host's agent).
+const phoneBox = () => {
+  const d = report(
+    [
+      app('money', 'Money', [], { provides: ['money'] }),
+      app('card-benefits', 'Card Benefits'),
+      app('messenger', 'Messenger'),
+      app('wizard-claude', 'Claude', [], { kind: 'connector' }),
+      app('wizard-simplefin', 'SimpleFIN', [], { kind: 'connector', provides: ['bank-connection', 'simplefin-bank-data'] }),
+      app('wizard-monarch', 'Monarch', [], { kind: 'connector', provides: ['bank-connection', 'monarch-finance-data'] }),
+      app('wizard-music', 'Music'),
+      app('wizard-youtube-music', 'YouTube Music', [], { kind: 'connector', provides: ['odd-job'] }),
+      app('transcriber', 'Transcriber', [], { kind: 'agent-app' }),
+      app('backup', 'Backup'),
+      app('wizard-cloudflare', 'Cloudflare', [], { kind: 'connector', provides: ['cloudflare-connection', 'backup-storage'] }),
+      app('s3', 'S3', [], { kind: 'connector', provides: ['backup-storage'] }),
+    ],
+    {
+      mode: 'declared',
+      agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }],
+      controls: [
+        { from: 'money', to: 'wizard-simplefin', providers: ['wizard-simplefin'], status: 'connected', origin: 'declared' },
+        { from: 'money', to: 'wizard-monarch', providers: ['wizard-monarch'], status: 'connected', origin: 'declared' },
+        { from: 'card-benefits', to: 'transcriber', providers: ['transcriber'], status: 'connected', origin: 'declared' },
+        { from: 'wizard-music', to: 'wizard-youtube-music', providers: ['wizard-youtube-music'], status: 'connected', origin: 'owner' },
+        { from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare', 's3'], status: 'connected', origin: 'declared' },
+        { from: 'messenger', to: 'money', providers: ['money'], status: 'disconnected', origin: 'owner' },
+        { from: 'wizard-claude', to: 'money', providers: ['money'], status: 'pending', origin: 'requested' },
+      ],
+    },
+  );
+  for (const a of d.apps) a.open = null;
+  return d;
+};
+
+test('Phone list: one row per linked app, by name, each link with a plain reason', () => {
+  const m = mapModel(phoneBox());
+  const rows = linkedApps(m);
+  assert.deepEqual(
+    rows.map((r) => r.line),
+    ['Backup → Cloudflare and S3', 'Card Benefits → Transcriber', 'Money → Monarch, SimpleFIN', 'Music → YouTube Music'],
+  );
+  const money = rows.find((r) => r.id === 'money');
+  assert.deepEqual(
+    money.links.map((l) => [l.name, l.why, l.pair]),
+    [
+      ['Monarch', 'for bank balances', 'money|wizard-monarch'],
+      ['SimpleFIN', 'for bank balances', 'money|wizard-simplefin'],
+    ],
+  );
+  // no known job: who made the link instead
+  assert.equal(rows.find((r) => r.id === 'card-benefits').links[0].why, 'declared by Card Benefits');
+  assert.equal(rows.find((r) => r.id === 'wizard-music').links[0].why, 'connected by you');
+  // a slot several apps provide is one link, disconnected as one, its reason from the slot
+  const backup = rows.find((r) => r.id === 'backup').links;
+  assert.equal(backup.length, 1);
+  assert.deepEqual(backup[0].group, { from: 'backup', to: 'slot:backup-storage' });
+  assert.equal(backup[0].why, 'to store backups');
+  assert.equal(linkReason(m, { from: 'x', to: 'y', origin: 'requested' }, 'y'), 'allowed by you');
+  // nothing about links in Open mode: everything is connected there
+  assert.deepEqual(linkedApps({ ...m, mode: 'open' }), []);
+});
+
+test('Phone list: the agent row, the pairs cut by you, the waiting card and the last line', () => {
+  const m = mapModel(phoneBox());
+  const [hermes] = agentRows(m);
+  assert.equal(hermes.title, 'Hermes');
+  // every app, agent app and connector, plus Wizard's own pieces (it reaches everything through them)
+  assert.equal(hermes.line, 'can use all 14 apps');
+  assert.deepEqual(
+    hermes.groups.map((g) => [g.title, g.items.length]),
+    [
+      ['Apps', 7],
+      ['Agent apps', 1],
+      ['Connectors', 6],
+    ],
+  );
+  assert.ok(hermes.groups.flatMap((g) => g.items).every((x) => !x.off));
+  // an agent whose lists leave some out says so, and its sheet marks those rows
+  const d = phoneBox();
+  d.agents = [
+    { id: 'host-hermes', name: 'host Hermes', main: true },
+    { id: 'helper', name: 'Helper', apps: ['money', 'backup'] },
+  ];
+  const two = agentRows(mapModel(d));
+  assert.equal(two[1].title, 'Helper');
+  assert.equal(two[1].line, 'can use 4 of 14 apps');
+  assert.equal(two[1].groups.flatMap((g) => g.items).filter((x) => x.off).length, 10);
+  assert.deepEqual(
+    cutList(m).map((c) => [c.text, c.pair]),
+    [['Messenger ✕ Money', 'messenger|money']],
+  );
+  assert.deepEqual(
+    waitingLines(m).map((w) => w.text),
+    ['Claude wants to use Money'],
+  );
+  assert.equal(footerLine('declared'), 'Everything else is kept apart.');
+  assert.equal(footerLine('open'), 'Everything is connected unless you cut it.');
+  // a cut slot connection is one row, reconnected as one
+  const g = phoneBox();
+  g.controls.find((r) => r.from === 'backup').status = 'disconnected';
+  const gm = mapModel(g);
+  const cuts = cutList(gm);
+  assert.deepEqual(
+    cuts.map((c) => c.text),
+    ['Backup ✕ Cloudflare and S3', 'Messenger ✕ Money'],
+  );
+  assert.deepEqual(cuts[0].group, { from: 'backup', to: 'slot:backup-storage' });
+  // and the words stay plain
+  for (const w of [...linkedApps(m).flatMap((r) => [r.line, ...r.links.map((l) => l.why)]), hermes.line, footerLine('declared'), footerLine('open')])
+    assert.doesNotMatch(w, /mesh|grant|drift|slot|network|gateway/i);
 });

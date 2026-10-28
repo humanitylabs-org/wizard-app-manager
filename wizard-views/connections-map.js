@@ -171,6 +171,8 @@ export function mapModel(d) {
       inOpen,
       enforce,
       kind: kindOf(a),
+      // the jobs it does for other apps (its wizard.md `provides:`), for a link's plain reason on the phone list
+      provides: Array.isArray(a.provides) ? a.provides.map(String) : [],
       // Strict mode: connected to no other app (it sits apart on the map)
       alone: mode === 'declared' && alone,
       state: a.state,
@@ -411,4 +413,132 @@ export function doneWords(kind, aName, bName) {
     strict: 'Apps can’t talk to each other now unless connected.',
     open: 'All your apps can talk to each other now.',
   }[kind];
+}
+
+// ---- The phone list (narrow widths): the same model as plain rows instead of the map ----------------------------
+// Connections on a phone is a list: requests waiting for the owner's OK, the agent and what it can use, the apps that
+// are linked (and to what, and why), the pairs the owner cut, and one line for everything else. The map stays one
+// tap away (See map).
+
+/** Why an app uses another, from the job the other does (its wizard.md `provides:` slot). Unknown jobs say nothing. */
+export const JOB_WORDS = {
+  'bank-connection': 'for bank balances',
+  'simplefin-bank-data': 'for bank balances',
+  'monarch-finance-data': 'for bank balances',
+  'backup-storage': 'to store backups',
+  files: 'for your files',
+  browser: 'to open web pages',
+  transcription: 'to turn speech into text',
+  notifications: 'to send you notifications',
+  'music-source': 'to play music',
+  'youtube-music': 'to play music',
+  'ai-connection': 'for AI answers',
+  'website-publishing': 'to publish websites',
+  domains: 'for your domains',
+  'web-search': 'to search the web',
+  'agent-service': 'to reach your agent',
+  'hermes-agent': 'to reach your agent',
+  money: 'for your spending and balances',
+  calendar: 'for your calendar',
+  'smart-home': 'for your smart home',
+};
+
+/** The words for the agent's own name: "host Hermes" (the box's own agent) reads as "Hermes". */
+const agentTitle = (g) => String((g.main ? g.real : g.name) || g.name || 'Your agent').replace(/^host\s+/i, '') || 'Your agent';
+
+/**
+ * The agents, one row each: { index, title, line: "can use all 32 apps", groups: [{ key, title, items: [{ id, name,
+ * builtin, off }] }] }. Wizard's own pieces count as usable: the agent reaches everything through them.
+ */
+export function agentRows(model) {
+  const items = (key) =>
+    [...model.apps.filter((a) => a.kind === key), ...(model.builtin || []).filter((s) => s.kind === key)].sort((x, y) =>
+      x.name.localeCompare(y.name),
+    );
+  return model.agents.map((g, index) => {
+    const groups = BANDS.filter((b) => b.key !== 'agent')
+      .map((b) => ({
+        key: b.key,
+        title: b.title,
+        items: items(b.key).map((x) => ({ id: x.id, name: x.name, builtin: !!x.builtin, off: !x.builtin && !!g.allow && !g.allow.includes(x.id) })),
+      }))
+      .filter((b) => b.items.length);
+    const all = groups.flatMap((b) => b.items);
+    const can = all.filter((x) => !x.off).length;
+    const line = !all.length
+      ? 'nothing installed yet'
+      : can === all.length
+        ? `can use all ${all.length} ${all.length === 1 ? 'app' : 'apps'}`
+        : can
+          ? `can use ${can} of ${all.length} apps`
+          : 'can’t use any apps';
+    return { index, title: agentTitle(g), line, main: !!g.main, groups };
+  });
+}
+
+/** Why one connected row joins its app to a provider: the job, else who made it. */
+export function linkReason(model, row, provider) {
+  const nm = (id) => model.apps.find((x) => x.id === id)?.name || slotName(id);
+  const slot = String(row?.to || '').startsWith('slot:') ? slotName(row.to) : '';
+  const p = model.apps.find((x) => x.id === provider);
+  const job = [slot, ...(p?.provides || [])].find((s) => s && JOB_WORDS[s]);
+  if (job) return JOB_WORDS[job];
+  return row?.origin === 'owner' ? 'connected by you' : row?.origin === 'requested' ? 'allowed by you' : `declared by ${nm(row?.from)}`;
+}
+
+/**
+ * Strict mode: one row per app that uses others, "Money → SimpleFIN, Monarch", by name. Each link: { id, name, why,
+ * pair: "a|b" (Disconnect the pair) } or, for a slot several apps provide, { group: { from, to } } (disconnected as
+ * one).
+ */
+export function linkedApps(model) {
+  if (model.mode !== 'declared') return [];
+  const ids = new Set(model.apps.map((a) => a.id));
+  const nm = (id) => model.apps.find((x) => x.id === id)?.name || slotName(id);
+  const by = new Map();
+  const add = (from, item) => {
+    const row = by.get(from) || { id: from, name: nm(from), links: [] };
+    if (!row.links.some((l) => (l.pair && l.pair === item.pair) || (l.group && item.group && l.group.to === item.group.to))) row.links.push(item);
+    by.set(from, row);
+  };
+  for (const rows of Object.values(model.linkRows || {}))
+    for (const r of rows) {
+      if (r.status !== 'connected' || !ids.has(r.from)) continue;
+      const prov = (r.providers || []).filter((x) => ids.has(x) && x !== r.from);
+      if (prov.length > 1) {
+        add(r.from, { id: prov[0], name: list(prov.map(nm)), why: linkReason(model, r, prov[0]), group: { from: r.from, to: r.to } });
+        continue;
+      }
+      const p = prov[0] || slotName(r.to);
+      if (!ids.has(p)) continue;
+      add(r.from, { id: p, name: nm(p), why: linkReason(model, r, p), pair: [r.from, p].sort().join('|') });
+    }
+  return [...by.values()]
+    .map((r) => ({ ...r, links: r.links.sort((x, y) => x.name.localeCompare(y.name)), line: `${r.name} → ${r.links.map((l) => l.name).join(', ')}` }))
+    .sort((x, y) => x.name.localeCompare(y.name));
+}
+
+/**
+ * The pairs the owner cut, each once: { a, b, text: "Messenger ✕ Money", pair: "a|b" } (Reconnect the pair), or for a
+ * slot several apps provide { group: { from, to } } (reconnected as one).
+ */
+export function cutList(model) {
+  const nm = (id) => model.apps.find((x) => x.id === id)?.name || slotName(id);
+  const cutGroupsAll = model.mode === 'declared' ? (model.groups || []).filter((g) => g.cut) : [];
+  const inGroup = (a, b) => cutGroupsAll.some((g) => (g.from === a && g.providers.includes(b)) || (g.from === b && g.providers.includes(a)));
+  const pairs = (model.cuts || []).filter(([a, b]) => !inGroup(a, b)).map(([a, b]) => ({ a, b, text: `${nm(a)} ✕ ${nm(b)}`, pair: `${a}|${b}` }));
+  const groups = cutGroupsAll.map((g) => ({ a: g.from, b: g.providers[0], text: `${nm(g.from)} ✕ ${g.names}`, group: { from: g.from, to: g.to } }));
+  return [...pairs, ...groups].sort((x, y) => x.text.localeCompare(y.text));
+}
+
+/** Requests waiting for the owner's OK, one sentence each: "Claude wants to use Money". */
+export const waitingLines = (model) => (model.pending || []).map((p) => ({ ...p, text: `${p.fromName} wants to use ${p.toName}` }));
+
+/** The list's last line: what is true of everything not listed above. */
+export function footerLine(mode) {
+  return mode === 'open'
+    ? 'Everything is connected unless you cut it.'
+    : mode === 'off'
+      ? 'All your apps can talk to each other.'
+      : 'Everything else is kept apart.';
 }
