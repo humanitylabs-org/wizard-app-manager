@@ -424,10 +424,8 @@ describe('installed pre-rule-15 recipes with their own fixed-name volume (wam#28
     new DockerComposeBuilder().getDockerCompose(source as Parameters<DockerComposeBuilder['getDockerCompose']>[0], {}, urn as AppUrn, '10.1.0.0/24');
   function volume(info: Record<string, any> | null) {
     run.mockImplementation(async (_f, args) => {
-      if (args[0] === 'volume' && args[1] === 'inspect') {
-        if (!info) throw new Error('Error response from daemon: get wizard-smart-home-config: no such volume');
-        return { stdout: JSON.stringify(info) };
-      }
+      if (args[0] === 'volume' && args[1] === 'ls') return { stdout: info ? 'other\nwizard-smart-home-config\n' : 'other\n' };
+      if (args[0] === 'volume' && args[1] === 'inspect' && info) return { stdout: JSON.stringify(info) };
       throw new Error(`Unexpected Docker call: ${args.join(' ')}`);
     });
   }
@@ -465,10 +463,32 @@ describe('installed pre-rule-15 recipes with their own fixed-name volume (wam#28
     expect(apply).toHaveBeenCalledOnce();
     expect(result.volumes).toEqual({ 'smart-home-config': { name: 'wizard-smart-home-config' } });
     expect(result.services['smart-home-engine'].volumes).toContain('smart-home-config:/config');
-    expect(run.mock.calls.map(([, args]) => args.slice(0, 2).join(' '))).toEqual(['volume inspect']);
+    expect(run.mock.calls.map(([, args]) => args.slice(0, 2).join(' '))).toEqual(['volume ls', 'volume inspect']);
+  });
+  it('gives ordinary app-data storage, never a new fixed-name volume, when the volume is missing (new install or reset)', async () => {
+    const user = `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`;
+    const mine = structuredClone(smartHome);
+    for (const svc of Object.values(mine.services)) (svc as { user?: string }).user = user;
+    const urn = await install({ id: 'smart-home' }, mine);
+    volume(null);
+    const apply = vi.fn();
+    const result = yaml.parse(await store.prepare(urn, build(mine, urn), apply));
+    expect(apply).toHaveBeenCalledOnce();
+    expect(result.volumes).toBeUndefined();
+    expect(result.services['smart-home'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/ha');
+    expect(result.services['smart-home-engine'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/config');
+    expect(result['x-wizard-volumes']).toEqual([{ name: 'smart-home-config', old: 'smart-home-config', relative: 'volumes/smart-home-config' }]);
+    expect((await fs.stat(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config'))).isDirectory()).toBe(true);
+    expect(run.mock.calls.some(([, args]) => ['create', 'run'].includes(args[1] ?? '') || args[0] === 'run')).toBe(false);
+  });
+  it('refuses to start rather than switch storage when Docker cannot list volumes', async () => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    run.mockRejectedValue(new Error('Cannot connect to the Docker daemon'));
+    const apply = vi.fn();
+    await expect(store.prepare(urn, build(smartHome, urn), apply)).rejects.toThrow('Docker daemon');
+    expect(apply).not.toHaveBeenCalled();
   });
   it.each([
-    ['is missing (a new install never creates one)', null, 'earlier install'],
     ['was created by another app', labelled('files_wizardapps'), 'created by files_wizardapps'],
     ['is not a plain local volume', { Driver: 'local', Options: { type: 'none', o: 'bind', device: '/elsewhere' } }, 'plain local'],
     ['uses another driver', { Driver: 'nfs', Options: null }, 'plain local'],
