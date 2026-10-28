@@ -922,6 +922,28 @@ def reverse_edit(home, e):
         hcfg_unset(home, e['key'])
 
 
+def separated_handoff(home):
+    client = os_home() / 'client.json'
+    if not client.is_file():
+        return
+    cfg = json.loads(client.read_text())
+    # The handoff is written at the agent uid. No privileged process parses it.
+    uid = os.getuid()
+    state = Path('/var/lib/wizard-agent') / str(uid)
+    if state.stat().st_uid != uid:
+        raise Fail('tool_error', 'Agent Service state is not owned by this account')
+    doc = {'hermes_key': env_names(home / '.env').get('API_SERVER_KEY'),
+           'mcp_token': secret_file(os_home() / 'mcp-token'),
+           'wam_url': cfg['url'], 'wam_token': (os_home() / 'agent-token').read_text().strip()}
+    target = state / 'link.json'
+    tmp = state / 'link.json.new'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(doc, f)
+    os.chmod(tmp, 0o600)
+    tmp.replace(target)
+
+
 def cmd_link(ns) -> dict:
     import shutil
     import time as _t
@@ -950,6 +972,7 @@ def cmd_link(ns) -> dict:
             hcfg_set(home, 'skills.external_dirs', after)
         rec['config_sha_after'] = sha256_file(cfgp)
         save_record(rec)
+        separated_handoff(home)
         restarted = ns.restart and run_hermes(home, 'gateway', 'restart', check=False, timeout=180).returncode == 0
         return {"ok": True, "already_linked": True, 'builder': builder, 'plugin_refreshed': True,
                 'gateway_restarted': bool(restarted), "record": str(os_home() / LINK_FILE)}
@@ -1085,6 +1108,7 @@ def cmd_link(ns) -> dict:
             raise
         raise Fail("tool_error", f"link failed ({_why(e)}); nothing was left changed in {home}",
                    stage="rolled_back", rolled_back=undone) from None
+    separated_handoff(home)
     p = osh / LINK_FILE
     restarted = False
     if ns.restart:

@@ -261,25 +261,9 @@ def network_escapes(compose: dict, app_id: str | None = None, store: str = "wiza
 
 
 def host_access(compose: dict | str, app_id: str | None = None, store: str = "wizardapps") -> list[str]:
-    """What in a recipe escapes app isolation: host networking, networks the app does not own, privileged mode,
-    the container runtime socket."""
-    if isinstance(compose, str):
-        try:
-            compose = load_yaml(compose) or {}
-        except yaml.YAMLError as e:
-            return [f"compose does not parse ({str(e)[:80]})"]
-    out = network_escapes(compose, app_id, store)
-    for name, s in ((compose.get("services") or {}) if isinstance(compose, dict) else {}).items():
-        s = _plain(s)
-        if not isinstance(s, dict):
-            continue
-        if _plain(s.get("privileged")) is True:
-            out.append(f"{name}: privileged (full control of the server)")
-        for v in _plain(s.get("volumes")) or []:
-            src = v.split(":")[0] if isinstance(v, str) else str((v or {}).get("source", ""))
-            if any(x in src for x in ("docker.sock", "containerd.sock", "podman.sock")):
-                out.append(f"{name}: mounts the container runtime socket {src} (controls every app)")
-    return out
+    """Compatibility wrapper for the one app-admission allowlist."""
+    from .host_policy import risks
+    return risks(compose, app_id, store)
 
 
 # ---------------------------------------------------------------- reading what is installed (files only)

@@ -22,7 +22,7 @@
 #
 # What it does:
 #   1. As root: installs Docker, git, gh and python3-yaml, and creates the `wizard` user (docker group,
-#      passwordless sudo) that owns everything. Skipped when run by an existing sudo user.
+#      fixed root helpers, no blanket sudo). The agent is a container without the Docker socket.
 #   2. GitHub login only when asked for with WIZARD_GITHUB=1 (for private, team-only apps). All default apps are
 #      public today, so normally nothing is asked.
 #   3. As the wizard user: clones the Wizard App Manager and runs install.sh (Runtipi with the Wizard image,
@@ -199,7 +199,7 @@ fresh_box() {  # fresh_box [user]
   # Runtipi is also started by alongside host preparation. Without an explicit fresh receipt, a verified
   # existing host Hermes wins over that container heuristic (including root reruns for a named owner).
   has_hermes && return 1
-  { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx runtipi
 }
 # Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
 alongside_users() {
@@ -365,6 +365,12 @@ as_user() {
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
     bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+}
+prepare_fresh_user() {  # root only, before removing the historical blanket grant
+  local helper; helper="$(mktemp)"
+  curl -fsSL "$REPO/raw/$REF/scripts/prepare-fresh-user.sh" -o "$helper"
+  bash "$helper" "$WUSER" "$REPO" "$REF" "$SUDOERS_DIR"
+  rm -f "$helper"
 }
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
@@ -689,7 +695,13 @@ for k in sorted(os.environ):
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
+separated_manager() {
+  [ "$(id -un)" = wizard-system ] && [ "$HOME" = /var/lib/wizard-os ] &&
+    [ -f /var/lib/wizard-os/.wizard-os/privsep.json ]
+}
 named_host_ready() {
+  separated_manager && return 0  # host-prepared service has no agent user bus/home
+  [ ! -f "$HOME/.wizard-os/client.json" ] || return 0
   [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
   docker info >/dev/null 2>&1 || { docker_group_member && command -v sg >/dev/null &&
     sg docker -c 'docker info' >/dev/null 2>&1; } || return 1
@@ -898,6 +910,14 @@ if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] && [ "${WIZARD_APPROVED
     fi
   fi
 fi
+# A prepared separated account never re-enters the legacy same-uid installer.
+if [ "$(id -u)" -ne 0 ] && [ -f "$HOME/.wizard-os/client.json" ] &&
+   [ "${WIZARD_CHECK:-0}" != 1 ] && [[ "${1:-}" != check && "${1:-}" != --check ]]; then
+  case "${1:-}" in
+    status) echo 'Wizard OS is installed with a separate system account; wam doctor checks it.'; exit 0 ;;
+    *) exec /usr/local/bin/wam doctor ;;
+  esac
+fi
 case "${1:-}" in
   start) install_start; exit 0 ;;
   status) install_status; exit 0 ;;
@@ -909,7 +929,12 @@ export WIZARD_AGENT_SAFE="$AGENT_SAFE"
 case "${1:-}" in --check|check) WIZARD_CHECK=1 ;; esac
 if [ "${WIZARD_CHECK:-0}" = 1 ]; then preflight; exit 0; fi
 
-if [ "$MODE" != fresh ]; then
+# An already separated manager updates its protected checkout as itself. Never
+# scan the agent home, re-run root host preparation or re-enter the agent login.
+if separated_manager; then
+  MODE=alongside; export WIZARD_MODE=alongside WIZARD_SEPARATED=1
+fi
+if [ "$MODE" != fresh ] && ! separated_manager; then
   prc=0; pick_hermes || prc=$?
   if [ "$prc" -eq 2 ]; then stop_several; fi
   if { [ "$prc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; } ||
@@ -944,6 +969,15 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       exit 2
     fi
     prepare_server
+    if [ "$ALONG_USER" != root ] && { [ "$(wos_mode "$ALONG_USER")" = none ] || [ -f /var/lib/wizard-os/.wizard-privsep ]; }; then
+      # Only NEW alongside installs use this layout. The root step fetches trusted
+      # code itself; nothing executed by the system lives in the Hermes home.
+      helper="$(mktemp /run/wizard-prepare.XXXXXXXX.py)"
+      curl -fsSL "$REPO/raw/$REF/scripts/prepare-alongside.py" -o "$helper"
+      /usr/bin/python3 -I "$helper" "$ALONG_USER" "$ALONG_HOME" "$REF"
+      rm -f "$helper"
+      exit 0
+    fi
     if [ "$ALONG_USER" != root ]; then
       # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
       # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
@@ -972,9 +1006,10 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
     useradd -m -s /bin/bash "$WUSER"
     echo "created user $WUSER"
   fi
+  # This remains the service account, not the agent (which runs in hermes-agent
+  # without the Docker socket). A new login below activates Docker membership.
   usermod -aG docker "$WUSER"
-  echo "$WUSER ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_DIR/90-wizard-$WUSER"
-  chmod 0440 "$SUDOERS_DIR/90-wizard-$WUSER"
+  prepare_fresh_user
   # Root's SSH keys also let you in as the wizard user.
   if [ -s /root/.ssh/authorized_keys ] && [ ! -s "/home/$WUSER/.ssh/authorized_keys" ]; then
     install -d -m 700 -o "$WUSER" -g "$WUSER" "/home/$WUSER/.ssh"
@@ -1003,7 +1038,10 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
 fi
 
 # ---- as the wizard user (or any user with sudo) ----
-command -v git >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq git >/dev/null
+command -v git >/dev/null || {
+  echo 'Git is missing. Ask an administrator to run host preparation before retrying.' >&2
+  exit 2
+}
 if [ "${WIZARD_GITHUB:-0}" = "1" ] && command -v gh >/dev/null && ! gh auth status >/dev/null 2>&1 && tty_ok; then
   printf "Log in to GitHub for private apps? [Y/n] " >/dev/tty
   read -r -t 120 ans </dev/tty || ans=n
@@ -1415,10 +1453,7 @@ def run(*cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
-try:
-    docker = ["docker"] if subprocess.run(["docker", "info"], capture_output=True).returncode == 0 else ["sudo", "-n", "docker"]
-except OSError:
-    docker = ["docker"]
+docker = ["docker"]
 def digests_of(container):
     image_id = run(*docker, "inspect", "--format", "{{.Image}}", container)
     if not image_id:

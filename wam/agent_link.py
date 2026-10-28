@@ -95,12 +95,12 @@ print(json.dumps(out))
 
 
 def _docker():
-    """`docker`, or `sudo -n docker` on a fresh box before group membership is active (as doctor does)."""
+    """The service account's Docker access; never elevate or prompt."""
     try:
         subprocess.run(['docker', 'ps', '-q'], capture_output=True, text=True, timeout=15, check=True)
-        return ['docker']
-    except (OSError, subprocess.CalledProcessError):
-        return ['sudo', '-n', 'docker']
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ValueError('Docker is unavailable to this service account; ask an administrator to run host preparation, then start a new login: ' + str(e)) from e
+    return ['docker']
 
 
 def _container(docker, service):

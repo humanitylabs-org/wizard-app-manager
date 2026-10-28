@@ -76,14 +76,21 @@ class _WouldNotRestart(Exception):
 
 
 def _missing_images(box: Box, urn: str) -> list[str]:
-    """Image refs the app's containers were created from that this box no longer has (e.g. pruned by hand).
-    Runtipi recreates containers on start, so a missing one means the app cannot start again."""
+    """Image refs of the app's live containers that are no longer available.
+    Ignore exited curator/init and superseded containers: their historical image
+    refs are not a prerequisite for restarting the running app's data services."""
     import subprocess
     from .dockercli import docker
     env = box.child_env
     try:
-        p = subprocess.run([*docker(env), "ps", "-a", "--filter", f"label=runtipi.appurn={urn}", "--format",
-                            "{{.Image}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+        p = subprocess.run([*docker(env), "ps", "--filter", "status=running", "--filter", f"label=runtipi.appurn={urn}", "--format",
+                            "{{.ID}}"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+        if p.returncode or not p.stdout.strip():
+            return []
+        # `docker ps .Image` drops @sha256 on digest-pinned images, producing a
+        # tag that need not exist locally. Inspect the exact configured reference.
+        p = subprocess.run([*docker(env), 'inspect', '--format', '{{.Config.Image}}', *p.stdout.split()],
+                           capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return []                      # cannot tell: behave as before
     if p.returncode:

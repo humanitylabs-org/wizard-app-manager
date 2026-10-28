@@ -275,6 +275,21 @@ def new_app(app_id, dev_root=None, request='', *, name=None):
     return target
 
 
+def _copy_build_source(root, snapshot):
+    # wam serve has UMask=0077. Docker COPY retains modes: normalize source
+    # under the protected 0700 staging ancestor so the image's unprivileged
+    # runtime can read its code, without widening access to the host snapshot.
+    for p in source_files(root):
+        dest = snapshot / p.relative_to(root)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(p, dest)
+        dest.chmod(0o644)
+    snapshot.chmod(0o755)
+    for directory in snapshot.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o755)
+
+
 def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799, trusted_origins=()):
     if not stage_only:
         raise ValueError('Local candidate requires --stage-only; production lifecycle belongs to App installation lane.')
@@ -300,8 +315,7 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
         # built and reported is exactly what was staged.
         snapshot = scratch / 'source'; snapshot.mkdir()
         before = source_hash(root)
-        for p in source_files(root):
-            dest = snapshot / p.relative_to(root); dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, dest)
+        _copy_build_source(root, snapshot)
         digest = source_hash(snapshot)
         if digest != before or source_hash(root) != before:
             raise ValueError('Source changed while staging; nothing was staged. Try again when edits finish.')
@@ -340,6 +354,9 @@ def install_local(root, os_home=None, *, stage_only=False, run=False, port=18799
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
+        from .host_policy import require
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[Path(rec['compose'])],
+                base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
         rec['state'] = 'started_health_unverified'
@@ -359,8 +376,7 @@ def update_local(root, os_home=None, *, run=False):
     try:
         snapshot = scratch / 'source'; snapshot.mkdir()
         before = source_hash(root)
-        for p in source_files(root):
-            dest = snapshot / p.relative_to(root); dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, dest)
+        _copy_build_source(root, snapshot)
         digest = source_hash(snapshot)
         if digest != before or source_hash(root) != before:
             raise ValueError('Source changed while updating; nothing was changed.')
@@ -387,6 +403,9 @@ def update_local(root, os_home=None, *, run=False):
         if scratch.exists():
             shutil.rmtree(scratch)
     if run:
+        from .host_policy import require
+        require(os_home, app_id, [Path(rec['compose']).read_text()], paths=[Path(rec['compose'])],
+                base=stage, app_data=stage / 'data')
         subprocess.run(['docker', 'compose', '-p', rec['project'], '-f', rec['compose'], 'up', '-d', '--build'], check=True,
                        stdout=sys.stderr)  # build logs never pollute the JSON receipt on stdout
     return {**rec, 'update': 'updated'}

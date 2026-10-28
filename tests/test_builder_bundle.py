@@ -352,35 +352,36 @@ def test_legacy_link_migrates_explicit_plugin_pin(homes, wizard, monkeypatch, tm
         assert rec['plugin_ref'] is None
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason='root reads every file; the foreign-owner path needs an unprivileged user')
 def test_fresh_on_a_box_whose_wizard_user_is_not_the_agents_uid(homes, tmp_path, monkeypatch):
-    # Demo-box fresh install (0.3.24): the new `wizard` user is uid 1001, stock Hermes remaps itself to the recipe's
-    # HERMES_UID 1000 and keeps config.yaml 0640, so `builder-bundle fresh --restart` died with Errno 13 and the whole
-    # install failed. The installer's passwordless sudo reads/replaces it, keeping the agent's owner and mode.
+    # Execute the actual in-container config script, with a daemon-free Docker
+    # transport. The host owner mismatch must never trigger host sudo.
     osh, hh = homes
     c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
     data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
     data.mkdir(parents=True)
     cfg = data / 'config.yaml'
     cfg.write_text('mcp_servers:\n  wizard:\n    url: http://wizard-agent-service:8787/wizard/mcp\n')
-    cfg.chmod(0)                                   # stands in for 0640 owned by another uid
-    calls = tmp_path / 'sudo-calls'
-    fake = tmp_path / 'fakebin'
-    fake.mkdir()
-    (fake / 'sudo').write_text('#!/bin/sh\n[ "$1" = -n ] && shift\necho "$*" >> "$SUDO_CALLS"\n'
-                               'case "$1" in cat) chmod u+r "$3"; cat "$3"; s=$?; chmod 0 "$3"; exit $s;; esac\nexec "$@"\n')
-    (fake / 'sudo').chmod(0o755)
-    monkeypatch.setenv('PATH', str(fake) + os.pathsep + os.environ['PATH'])
-    monkeypatch.setenv('SUDO_CALLS', str(calls))
-    monkeypatch.setattr(bb, '_foreign', lambda p: p == cfg, raising=False)
+    cfg.chmod(0o640)
+    calls = []
+    real_run = subprocess.run
+    def run(argv, **kw):
+        if argv[0] != 'docker':
+            assert argv[0] != 'sudo'
+            return real_run(argv, **kw)
+        calls.append(argv)
+        if 'exec' not in argv:
+            out = 'engine-id hermes-agent-engine\n' if '--format' in argv else 'engine-id\n'
+            return subprocess.CompletedProcess(argv, 0, out, '')
+        assert argv[:6] == ['docker', 'exec', '-i', '-u', '1000:1000', 'engine-id']
+        return real_run([sys.executable, *argv[7:]], env={**os.environ, 'HERMES_HOME': str(data)}, **kw)
+    monkeypatch.setattr(bb.subprocess, 'run', run)
+    monkeypatch.setattr(bb, '_foreign', lambda p: p == cfg)
+    assert bb._agent_config(cfg) == cfg.read_bytes()
     result = bb.fresh(c)
     assert result['restart_required']
-    log = calls.read_text()
-    assert 'cat -- ' + str(cfg) in log and ' -m 0 ' in log and 'mv -f -- ' in log
-    assert (cfg.stat().st_mode & 0o777) == 0, 'the agent keeps its own mode (and owner)'
-    cfg.chmod(0o600)
+    assert (cfg.stat().st_mode & 0o777) == 0o640
     doc = yaml.safe_load(cfg.read_text())
-    assert doc['mcp_servers']['wizard']['url'].endswith('/wizard/mcp'), 'owner config kept'
+    assert doc['mcp_servers']['wizard']['url'].endswith('/wizard/mcp')
     assert bb.RUNTIME + '/current/system-skills' in doc['skills']['external_dirs']
-    cfg.chmod(0)
     assert all(r[1] for r in bb.health(osh, data, bb.RUNTIME + '/current/system-skills'))
+    assert any(argv[-1] == 'write' for argv in calls)

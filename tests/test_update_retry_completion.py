@@ -22,8 +22,18 @@ def test_index_recreate_is_idempotent_and_scoped(tmp_path, docker_access, leftov
 
     p, home, root, calls, _ = sandbox(tmp_path / "box", docker_access, before,
                                     WIZARD_RELEASE_PINS=str(pins))
-    assert p.returncode == 0, p.stdout + p.stderr
     log = calls.read_text()
+    if not docker_access:
+        # No privileged Docker fallback: host preparation is now required.
+        # A refused retry must leave BOTH the stale index and owner data intact.
+        assert p.returncode == 2, p.stdout + p.stderr
+        assert 'administrator to run host preparation' in p.stderr
+        assert 'sudo -n docker' not in log and 'compose ' not in log
+        assert (home / 'stale-release-index').exists() == leftover
+        assert (home / 'unrelated-app').read_text() == 'owner data'
+        assert 'wam -m wam bootstrap' not in log
+        return
+    assert p.returncode == 0, p.stdout + p.stderr
     prefix = "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml "
     assert log.index(prefix + "rm --stop --force wizard-release-index") < log.index(
         prefix + "up -d --force-recreate --wait wizard-release-index")

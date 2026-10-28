@@ -74,9 +74,10 @@ def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
     calls, state = fake_tailscale
     state.write_text(json.dumps({"BackendState": "NeedsLogin", "Self": {"DNSName": ""}}))
     res = links.publish(REG, tmp_path / "home", {"wizard-shell"})
-    assert res["links"] == [] and "tailscale up" in res["note"]
+    assert res["links"] == [] and "Ask the owner" in res["note"]
+    assert 'sudo' not in res['note']
     assert "serve --bg" not in calls.read_text()
-    assert "tailscale up" in links.describe(res)
+    assert "Ask the owner" in links.describe(res)
 
 
 def test_failed_serve_is_reported_not_listed(tmp_path, fake_tailscale, monkeypatch):

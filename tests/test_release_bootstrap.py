@@ -159,7 +159,16 @@ def test_alongside_skips_external_hermes_and_keeps_host_override(install_box, mo
     (c.home / 'hermes').mkdir()
     sentinel = c.home / 'hermes/config.yaml'
     sentinel.write_bytes(b'owner sentinel\n')
-    cli.install(c, 'wizard-ux')
+    from wam import host_policy
+    for _ in range(5):
+        try:
+            cli.install(c, 'wizard-ux')
+            break
+        except host_policy.NeedsOwnerApproval as exc:
+            # Legacy alongside wiring is host access, never grandfathered.
+            host_policy.approve(c.home, exc.payload['app'], exc.payload['approve_url'].split('/')[-1])
+    else:
+        pytest.fail('approved recipes must eventually install')
     assert [a for a, _, _ in calls] == ['wizard-agent-service', 'wizard-ux']
     assert not any(repo.endswith('/hermes-agent') for repo, _ in fetched)
     assert sentinel.read_bytes() == b'owner sentinel\n'
@@ -188,8 +197,8 @@ def test_installer_keeps_manager_digest_and_starts_pin_view_first(pins, tmp_path
     assert '!override' in text and '127.0.0.1:8480:80' in text
     assert 'ports:' not in text.split('  wizard-release-index:')[1]
     log = calls.read_text()
-    assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps runtipi')
-    assert log.index('up -d --force-recreate --no-deps runtipi') < log.index('wam -m wam bootstrap')
+    assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps --wait runtipi')
+    assert log.index('up -d --force-recreate --no-deps --wait runtipi') < log.index('--no-deps runtipi-reverse-proxy') < log.index('wam -m wam bootstrap')
     assert f'WIZARD_RELEASE_PINS={pins}' in (home / '.config/systemd/user/wizard-app-manager-api.service').read_text()
 
 

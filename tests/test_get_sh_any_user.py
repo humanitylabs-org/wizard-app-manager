@@ -49,6 +49,24 @@ STUBS["useradd"] = ("#!/bin/sh\necho \"useradd $*\" >> \"$FAKE_LOG\"\nfor u; do 
 for name in ("apt-get", "loginctl", "systemctl", "usermod", "install", "chown", "curl"):
     STUBS[name] = f"#!/bin/sh\necho \"{name} $*\" >> \"$FAKE_LOG\"\nexit 0\n"
 
+# The separated host helper is an explicitly recorded root phase, not an actual
+# useradd/Docker install on the unit-test host.
+STUBS['curl'] = r"""#!/bin/bash
+echo "curl $*" >> "$FAKE_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; -*) ;; *) url="$1";; esac; shift; done
+if [[ "$url" == */scripts/prepare-alongside.py ]] && [ -n "$out" ]; then
+  printf '%s\n' 'import os,sys' 'with open(os.environ["FAKE_LOG"],"a") as f: f.write("SEPARATED owner="+sys.argv[1]+" home="+sys.argv[2]+" WIZARD_AGENT_SAFE="+os.environ.get("WIZARD_AGENT_SAFE","")+"\n")' > "$out"
+fi
+"""
+
+STUBS['mktemp'] = r"""#!/bin/bash
+if [[ "${1:-}" == /run/wizard-prepare.* ]]; then
+  echo "root-helper-safe-directory $*" >> "$FAKE_LOG"
+  exec /usr/bin/mktemp "$(dirname "$FAKE_LOG")/root-helper.XXXXXXXX.py"
+fi
+exec /usr/bin/mktemp "$@"
+"""
 
 class Box:
     def __init__(self, tmp: Path):
@@ -112,6 +130,9 @@ class Box:
         return subprocess.run(["bash", str(script), *args], env=self.env(user, **extra), capture_output=True,
                               text=True, timeout=60, cwd=self.tmp)
 
+    def separated(self) -> str:
+        return next((l for l in self.log.read_text().splitlines() if l.startswith('SEPARATED ')), '')
+
     def handoff(self) -> str:
         """The `sudo -iu <user> env ...` line get.sh handed the install to (empty if none)."""
         return next((l for l in self.log.read_text().splitlines() if l.startswith("sudo -iu ")), "")
@@ -149,10 +170,10 @@ def test_custom_named_user_hermes_is_installed_alongside_as_that_user(box):
     box.hermes("alice")
     p = box.run("root")
     assert p.returncode == 0, p.stdout + p.stderr
-    line = box.handoff()
-    assert line.startswith("sudo -iu alice "), line
-    env = _env_of(line)
-    assert env["WIZARD_MODE"] == "alongside" and env["HERMES_HOME"] == str(box.users["alice"][1] / ".hermes")
+    line = box.separated()
+    assert line.startswith("SEPARATED owner=alice "), line
+    assert "home=" + str(box.users["alice"][1] / ".hermes") in line
+    assert not box.handoff(), "new installs must never execute privileged code from the agent home"
     assert "useradd" not in box.log.read_text()
     assert (box.sudoers / "90-wizard-alice").exists() is False   # stub sudo said alice already has sudo
 
@@ -162,8 +183,8 @@ def test_sudo_user_hermes_still_installs_alongside_as_the_sudo_user(box):
     box.hermes("bob")
     p = box.run("root", SUDO_USER="bob")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert box.handoff().startswith("sudo -iu bob "), box.handoff()
-    assert _env_of(box.handoff())["WIZARD_MODE"] == "alongside"
+    assert box.separated().startswith("SEPARATED owner=bob "), box.log.read_text()
+    assert not box.handoff()
 
 
 def test_system_unit_with_custom_hermes_home_is_found(box, tmp_path):
@@ -197,7 +218,7 @@ def test_several_hermes_installs_stop_with_a_clear_message_and_a_picker(box):
     assert "user alice" in p.stderr and "user bob" in p.stderr
     assert not box.handoff() and "apt-get" not in box.log.read_text(), "nothing may change before the stop"
     p = box.run("root", WIZARD_HERMES_USER="bob")
-    assert p.returncode == 0 and box.handoff().startswith("sudo -iu bob "), p.stdout + p.stderr
+    assert p.returncode == 0 and box.separated().startswith("SEPARATED owner=bob "), p.stdout + p.stderr
 
 
 def test_profiles_of_one_hermes_are_one_install(box):
@@ -215,7 +236,8 @@ def test_no_hermes_root_still_makes_the_wizard_user_fresh(box):
     assert "useradd -m -s /bin/bash wizard" in box.log.read_text()
     line = box.handoff()
     assert line.startswith("sudo -iu wizard ") and _env_of(line)["WIZARD_MODE"] == "fresh"
-    assert (box.sudoers / "90-wizard-wizard").exists()
+    assert not (box.sudoers / "90-wizard-wizard").exists()
+    assert 'scripts/prepare-fresh-user.sh' in box.log.read_text()
 
 
 @pytest.mark.parametrize("record", ["none", "alongside", "failed"])
@@ -233,8 +255,12 @@ def test_running_runtipi_is_not_a_fresh_receipt_for_named_owner(box, record):
     assert "would install:     alongside as alice" in checked.stdout, checked.stdout
     result = box.run("root")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert box.handoff().startswith("sudo -iu alice "), box.log.read_text()
-    assert _env_of(box.handoff())["WIZARD_MODE"] == "alongside"
+    if record == "none":
+        assert box.separated().startswith("SEPARATED owner=alice "), box.log.read_text()
+        assert not box.handoff()
+    else:
+        assert box.handoff().startswith("sudo -iu alice "), box.log.read_text()
+        assert _env_of(box.handoff())["WIZARD_MODE"] == "alongside"
     assert "useradd" not in box.log.read_text()
     assert list(box.sudoers.iterdir()) == []
 
@@ -273,7 +299,7 @@ def test_rerun_with_two_hermes_requires_explicit_selection(box):
     assert not box.handoff()
     p = box.run("root", WIZARD_HERMES_USER="alice")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert box.handoff().startswith("sudo -iu alice ")
+    assert box.separated().startswith("SEPARATED owner=alice ")
 
 
 def test_wizard_mode_fresh_is_respected_as_root(box):
@@ -335,6 +361,7 @@ def _local_wam(tmp: Path, install_body: str | None = None) -> Path:
 def test_agent_detection_is_passed_to_the_install(box, tmp_path, marker):
     box.add_user("alice", 1001)
     box.hermes("alice")
+    box.wos("alice", "alongside")
     box.run("root", **marker)
     assert _env_of(box.handoff())["WIZARD_AGENT_SAFE"] == "1"
     p = box.run("root", WIZARD_CHECK="1", **marker)

@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+"""Protected, owner-entered migration/rollback CLI; no token or sudo fallback."""
+import os
+from pathlib import Path
+import sys
+if os.getuid() != 0:
+    raise SystemExit('Ask the owner to run this host-preparation command. Use the thin wam client for app actions.')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from wam.privilege_migration import main
+sys.exit(main())

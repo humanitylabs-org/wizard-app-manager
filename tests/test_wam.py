@@ -849,7 +849,7 @@ def test_vendored_wizard_cli_matches_recorded_provenance():
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
 
-def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
+def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch, safe_recipes):
     """`wam app update X` goes through the App Manager API and leaves a running app running."""
     from wam import cli
     seen = []
@@ -868,7 +868,7 @@ def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
     assert res["status"] == "running" and res["restarted"] is True
 
 
-def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypatch):
+def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypatch, safe_recipes):
     """wizard-ux `uses: [agent-service]` names a spot, not an app: install that spot's default (the Agent Service)
     first, and skip it when something already provides the spot."""
     from wam import cli
@@ -902,7 +902,7 @@ def test_install_resolves_slot_dependency_to_its_default_app(tmp_path, monkeypat
     assert calls == ["wizard-ux"]                      # spot already filled: no second service
 
 
-def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monkeypatch):
+def test_install_stops_waiting_when_the_app_manager_drops_a_failed_install(monkeypatch, safe_recipes):
     """A failed install deletes the app record; wam reports it right away instead of polling for 15 minutes."""
     from wam import cli
     import pytest

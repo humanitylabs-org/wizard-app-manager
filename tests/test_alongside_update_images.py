@@ -70,6 +70,17 @@ def box(tmp_path, monkeypatch):
         (live / "docker-compose.yml").write_text(yaml.safe_dump({"services": {app: {"image": "example/catalog:old"}}}))
     monkeypatch.setenv("WIZARD_RELEASE_PINS", str(pins))
     monkeypatch.setattr(cli, "installed_ids", lambda *a: set(APPS))
+    # These release-selection tests include the legacy alongside host mounts.
+    # Simulate a human reviewing EACH refused recipe; never bypass the gate.
+    from wam import host_policy
+    real_update = cli.app_update
+    def owner_update(*args, **kwargs):
+        try:
+            return real_update(*args, **kwargs)
+        except host_policy.NeedsOwnerApproval as exc:
+            host_policy.approve(c.home, exc.payload['app'], exc.payload['approve_url'].split('/')[-1])
+            return real_update(*args, **kwargs)
+    monkeypatch.setattr(cli, 'app_update', owner_update)
     return c, doc, pins, calls
 
 
@@ -164,6 +175,9 @@ def test_other_store_is_not_reconfigured(box, monkeypatch):
     c, _, _, _ = box
     before = override_path(c, APPS[0]).read_bytes()
     monkeypatch.setattr(c.runtipi(), "update", lambda *a, **kw: None)
+    recipe = c.runtipi_root / "repos/otherstore/apps" / APPS[0] / "docker-compose.yml"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text("services: {unit: {image: example/unit-test}}\n")
     cli.app_update(c, APPS[0] + ":otherstore")
     assert override_path(c, APPS[0]).read_bytes() == before
 

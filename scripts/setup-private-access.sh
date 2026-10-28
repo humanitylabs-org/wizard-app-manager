@@ -29,9 +29,9 @@ if [ "$(id -u)" -eq 0 ]; then
   root() { "$@"; }
 else
   root() {
-    # Use the supported operator interface when sudo is unavailable; never prompt or retry a
-    # failed `up` as a second user, since its exact preservation diagnostic must remain intact.
-    if [ "$1" = tailscale ] && ! sudo -n true 2>/dev/null; then
+    # Host preparation assigns the operator. Never retry Tailscale as root or
+    # probe a blanket sudo grant; preserve the CLI's exact failure diagnostic.
+    if [ "$1" = tailscale ]; then
       "$@"
     else
       sudo -n "$@"

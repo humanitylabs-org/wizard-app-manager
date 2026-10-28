@@ -99,7 +99,7 @@ def test_app_with_missing_image_is_not_stopped(monkeypatch, tmp_path):
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        if "ps" in argv:
+        if "ps" in argv or '{{.Config.Image}}' in argv:
             return sp.CompletedProcess(argv, 0, "wizard-messenger:gone\nsynapse@sha256:abc\nsha256:123\n", "")
         if "inspect" in argv:
             return sp.CompletedProcess(argv, 1 if argv[-1] == "wizard-messenger:gone" else 0, "", "")

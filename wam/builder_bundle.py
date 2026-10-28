@@ -41,21 +41,49 @@ def _foreign(path):
         return False
 
 
-def _sudo(args, **kw):
-    """The fresh installer's passwordless sudo (the same fallback the Docker probe uses); never prompts."""
+def _agent_config(path, text=None):
+    """Only the stock app's config, read/written as its own container uid.
+
+    Host ownership can differ from HERMES_UID. Never use host root or broaden
+    this into an arbitrary-path privileged file operation.
+    """
+    path = Path(path)
+    if (path.name != 'config.yaml' or path.parent.name != 'data'
+            or path.parent.parent.name != 'hermes-agent'
+            or path.parent.parent.parent.parent.name != 'app-data'):
+        raise PermissionError(f'{path} is not this user\'s file; ask its owner to edit it')
+    from .agent_link import _docker, _container, HERMES_PY
+    docker = _docker()
+    eng = _container(docker, 'hermes-agent-engine')[0]
+    script = """import os, sys, tempfile
+home = os.environ.get('HERMES_HOME') or '/opt/data'
+p = os.path.join(home, 'config.yaml')
+if sys.argv[1] == 'read':
+    sys.stdout.buffer.write(open(p, 'rb').read())
+else:
+    mode = os.stat(p).st_mode & 0o777 if os.path.exists(p) else 0o600
+    fd, tmp = tempfile.mkstemp(prefix='.config.yaml.', dir=home)
     try:
-        return subprocess.run(['sudo', '-n', *args], capture_output=True, timeout=30, check=True, **kw)
-    except (OSError, subprocess.SubprocessError) as e:
-        detail = getattr(e, 'stderr', b'') or b''
-        detail = detail.decode(errors='replace') if isinstance(detail, bytes) else str(detail)
-        raise PermissionError(f'{args[-1]} belongs to another user and sudo -n is unavailable: {detail.strip()[-200:] or e}')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(sys.stdin.buffer.read())
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+"""
+    p = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', eng, HERMES_PY,
+                                 '-c', script, 'read' if text is None else 'write'],
+                       input=None if text is None else text.encode(), capture_output=True, timeout=30)
+    if p.returncode:
+        raise PermissionError('Stock agent config unavailable; start hermes-agent and retry: ' + p.stderr.decode(errors='replace')[-300:])
+    return p.stdout
 
 
 def _read_bytes(path):
     try:
         return path.read_bytes()
     except PermissionError:
-        return _sudo(['cat', '--', str(path)]).stdout
+        return _agent_config(path)
 
 
 def _read_text(path):
@@ -65,17 +93,7 @@ def _read_text(path):
 def _atomic(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     if _foreign(path):
-        # Keep the agent's own owner and mode: replacing it as this user would lock the agent out of its config.
-        st = path.stat()
-        d = tempfile.mkdtemp()
-        try:
-            src = Path(d) / path.name
-            src.write_text(text)
-            stage = path.with_name(f'.{path.name}.{os.getpid()}.wam')
-            _sudo(['install', '-o', str(st.st_uid), '-g', str(st.st_gid), '-m', oct(st.st_mode & 0o777)[2:], str(src), str(stage)])
-            _sudo(['mv', '-f', '--', str(stage), str(path)])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
+        _agent_config(path, text)
         return
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
     try:
@@ -378,18 +396,7 @@ def runtime_health(c):
         terminal = cfg.get('terminal') or {}
         docker = ['docker']
         ps = ['ps', '-q', '--filter', 'label=com.docker.compose.service=hermes-agent-engine']
-        try:
-            p = subprocess.run(docker + ps, capture_output=True, text=True, timeout=15, check=True)
-        except subprocess.CalledProcessError as error:
-            # Fresh installs use passwordless sudo before Docker group membership
-            # is active. Probe the same local daemon; never switch a remote/rootless
-            # context or prompt for credentials from doctor.
-            detail = (error.stderr or '').lower()
-            if (os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT')
-                    or 'permission denied' not in detail or '/var/run/docker.sock' not in detail):
-                raise
-            docker = ['sudo', '-n', 'docker']
-            p = subprocess.run(docker + ps, capture_output=True, text=True, timeout=15, check=True)
+        p = subprocess.run(docker + ps, capture_output=True, text=True, timeout=15, check=True)
         ids = p.stdout.split()
         if len(ids) != 1:
             raise ValueError('expected one running stock Hermes engine; found ' + str(len(ids)))

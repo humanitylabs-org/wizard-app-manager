@@ -191,6 +191,7 @@ def _no_secret_anywhere(box: Box) -> None:
 
 
 def test_approved_link_runs_only_the_root_step_then_finishes_as_owner(box, relay, tmp_path):
+    box.wos("dana", "alongside")  # existing layouts retain the root-prep-only contract
     env = _env(box, tmp_path, relay.url)
     p = box.run("dana", "start", **env)
     assert p.returncode == 0, p.stdout + p.stderr
@@ -220,6 +221,7 @@ def test_approved_link_runs_only_the_root_step_then_finishes_as_owner(box, relay
 
 
 def test_wrong_password_shows_a_fresh_link_then_approves(box, relay, tmp_path):
+    box.wos("dana", "alongside")  # existing layouts retain the root-prep-only contract
     env = _env(box, tmp_path, relay.url)
     assert box.run("dana", "start", **env).returncode == 0
     first = _link(_wait_for(box, env, lambda o: any(l.startswith("Owner action: Open this link") for l in o)), relay)
@@ -237,6 +239,7 @@ def test_wrong_password_shows_a_fresh_link_then_approves(box, relay, tmp_path):
 
 
 def test_expired_link_is_replaced_by_a_fresh_one(box, relay, tmp_path):
+    box.wos("dana", "alongside")  # existing layouts retain the root-prep-only contract
     env = _env(box, tmp_path, relay.url)
     assert box.run("dana", "start", **env).returncode == 0
     first = _link(_wait_for(box, env, lambda o: any(l.startswith("Owner action: Open this link") for l in o)), relay)

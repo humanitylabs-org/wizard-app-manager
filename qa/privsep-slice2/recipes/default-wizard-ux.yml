@@ -1,0 +1,20 @@
+services:
+  wizard-ux:
+    image: ${WIZARD_UX_IMAGE:-ghcr.io/humanitylabs-org/wizard-ux:0.3.0-candidate.20261012}
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 512m
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,uid=101,gid=101"]
+    environment:
+      WIZARD_AGENT_SERVICE_ORIGIN: http://wizard-agent-service:8787
+    ports:
+      - 127.0.0.1:${APP_PORT}:8788
+    x-runtipi:
+      is_main: true
+      internal_port: 8788
+x-runtipi:
+  schema_version: 2
+  overrides: []

@@ -1,0 +1,162 @@
+#!/usr/bin/python3 -I
+"""Fixed host-prepared helper. No imports from any writable Wizard checkout."""
+import datetime
+import fcntl
+import grp
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import stat
+import subprocess
+import sys
+import syslog
+import tempfile
+import time
+
+CONFIG = Path('/etc/wizard-os/server-access.json')
+STATE = Path('/var/lib/wizard-os-server-access')
+SUDOERS = Path('/etc/sudoers.d')
+HELPERS = Path('/usr/local/libexec/wizard-os')
+FILE = '91-wizard-agent-access'
+MAX_SECONDS = 604800
+
+
+def secure(path, directory=False):
+    for p in [*reversed(path.parents), path]:
+        s = p.lstat()
+        if stat.S_ISLNK(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
+            raise ValueError('unsafe root path: ' + str(p))
+    if directory and not path.is_dir():
+        raise ValueError('expected root directory')
+
+
+def atomic(path, data, mode=0o600):
+    secure(path.parent, True)
+    fd, name = tempfile.mkstemp(prefix='.server-access-', dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, 'w') as f:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def hashes():
+    result = {}
+    for directory in (SUDOERS, HELPERS):
+        for p in sorted(directory.iterdir()):
+            # No symlink traversal, report such changes instead of reading targets.
+            result[str(p)] = ('symlink:' + os.readlink(p) if p.is_symlink() else
+                              hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else 'not a regular file')
+    return result
+
+
+def read_state():
+    path = STATE / 'grant.json'
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def revoke(reason):
+    (SUDOERS / FILE).unlink(missing_ok=True)
+    (STATE / 'grant.json').unlink(missing_ok=True)
+    syslog.syslog(syslog.LOG_WARNING, 'Wizard agent server access revoked: ' + reason)
+    return {'active': False, 'reason': reason}
+
+
+def status():
+    doc = read_state()
+    if doc and doc['expires_epoch'] <= time.time():
+        return revoke('expired')
+    if not doc:
+        # Orphaned sudoers is never a valid grant.
+        if (SUDOERS / FILE).exists(): return revoke('orphaned sudoers')
+        return {'active': False}
+    actual = hashes(); expected = doc['hashes']
+    drift = [k for k in sorted(set(actual) | set(expected)) if actual.get(k) != expected.get(k)]
+    return {'active': True, 'expires_at': doc['expires_at'], 'agent': doc['agent'],
+            'drift': drift, 'migration': doc.get('migration', False), 'severity': 'red'}
+
+
+def grant(config, request):
+    if set(request) - {'seconds', 'migration'}:
+        raise ValueError('unknown grant fields')
+    seconds = request.get('seconds', MAX_SECONDS)
+    if type(seconds) is not int or not 1 <= seconds <= MAX_SECONDS:
+        raise ValueError('expiry must be 1..604800 seconds')
+    name = config.get('agent')
+    if not name:
+        raise ValueError('Full server access is unsupported for fresh hermes-agent containers: host sudo is not available. Use your owner SSH login.')
+    user = pwd.getpwnam(name)
+    if not user.pw_uid or name == 'wizard-system': raise ValueError('invalid agent identity')
+    migration = request.get('migration', False)
+    if type(migration) is not bool: raise ValueError('migration must be boolean')
+    ledger = STATE / 'migration-used'
+    if migration:
+        groups = {grp.getgrgid(g).gr_name for g in os.getgrouplist(name, user.pw_gid)}
+        if ledger.exists() or 'docker' not in groups or seconds != MAX_SECONDS:
+            raise ValueError('one-time migration requires existing docker membership and an unused seven-day grant')
+    else:
+        dev = json.loads((Path(config['manager_home']) / 'developer.json').read_text())
+        if dev.get('enabled') is not True:
+            raise ValueError('developer mode must be on')
+    expires = time.time() + seconds
+    text = (f'# Wizard agent full server access; expires {datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat()}\n'
+            f'Defaults:{name} logfile="/var/log/wizard-os-agent-sudo.log"\n'
+            f'{name} ALL=(ALL:ALL) NOTAFTER={datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).strftime("%Y%m%d%H%M%SZ")} NOPASSWD: ALL\n')
+    # Candidate and complete host policy must both validate before publication.
+    fd, candidate = tempfile.mkstemp(prefix='candidate-', dir=STATE)
+    try:
+        with os.fdopen(fd, 'w') as f: f.write(text)
+        os.chmod(candidate, 0o440)
+        subprocess.run(['/usr/sbin/visudo', '-cf', candidate], check=True, capture_output=True)
+        subprocess.run(['/usr/sbin/visudo', '-c'], check=True, capture_output=True)
+        # Do not install a grant unless the persistent root expiry timer runs.
+        subprocess.run(['/usr/bin/systemctl', 'is-active', '--quiet', 'wizard-agent-access-expiry.timer'], check=True)
+        previous = read_state()
+        if migration: atomic(ledger, 'used\n')  # consume before granting; never reusable after partial failure
+        atomic(SUDOERS / FILE, text, 0o440)
+        subprocess.run(['/usr/sbin/visudo', '-c'], check=True, capture_output=True)
+        baseline = previous.get('hashes') if previous and previous['expires_epoch'] > time.time() else None
+        # Preserve drift on extension; only our own expiry comment changes legitimately.
+        actual = hashes()
+        if baseline:
+            baseline[str(SUDOERS / FILE)] = actual[str(SUDOERS / FILE)]
+        doc = {'agent': name, 'expires_epoch': expires,
+               'expires_at': datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat(),
+               'hashes': baseline or actual, 'migration': migration}
+        atomic(STATE / 'grant.json', json.dumps(doc) + '\n')
+    except Exception:
+        revoke('grant failed'); raise
+    finally:
+        Path(candidate).unlink(missing_ok=True)
+    syslog.syslog(syslog.LOG_WARNING, f'Wizard agent {name} granted full server access until {doc["expires_at"]}; migration={migration}')
+    return status()
+
+
+def main():
+    # Exact finite argv, no flags or path/user/duration arguments.
+    if len(sys.argv) != 2 or sys.argv[1] not in ('grant', 'revoke', 'status'):
+        raise ValueError('usage: server-access grant|revoke|status (no other arguments)')
+    if os.getuid() != 0: raise ValueError('root helper requires sudo')
+    os.environ.clear(); os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
+    secure(CONFIG); secure(SUDOERS, True); secure(HELPERS, True); secure(STATE, True)
+    config = json.loads(CONFIG.read_text())
+    with (STATE / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        action = sys.argv[1]
+        if action == 'grant':
+            request = json.loads(sys.stdin.read(4097))
+            if not isinstance(request, dict): raise ValueError('JSON object required')
+            result = grant(config, request)
+        else:
+            result = revoke('owner switched off') if action == 'revoke' else status()
+    print(json.dumps(result))
+
+
+if __name__ == '__main__':
+    try: main()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr); sys.exit(2)

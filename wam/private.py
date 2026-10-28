@@ -237,9 +237,8 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         if not cfg_p.is_file() or not comp_p.is_file():
             raise PrivateError(f"{repo}: wizard.md runtime.config/compose missing")
         ctext = comp_p.read_text()
-        risks = wizardmd.compose_risks(ctext)
-        if risks:
-            raise PrivateError(f"{repo} asks for host-level access: {'; '.join(risks)}")
+        # Staging is not execution. The shared lifecycle gate below binds owner
+        # consent to the final compiled recipe, including packaging transforms.
         compose = yaml.safe_load(ctext) or {}
         if source_pin and source_pin.get('image'):
             mains = [svc for svc in compose.get('services', {}).values()

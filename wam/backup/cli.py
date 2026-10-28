@@ -14,6 +14,7 @@ from .filesystem import Path
 from . import filesystem as datafs
 
 from . import capture, crypto, fmt, keys as keylib, restic, restore, schedule, snapshot
+from .. import host_policy
 from .box import Box, HermesError, RuntipiError, SpaceError, human
 from .crypto import BackupCryptoError
 
@@ -175,6 +176,9 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     try:
         res = _dispatch(args, box)
         code = 0 if res.get("ok", True) else (PARTIAL if res.get("partial") else 1)
+    except host_policy.NeedsOwnerApproval as e:
+        from ..host_policy import EXIT_APPROVAL
+        res, code = e.payload, EXIT_APPROVAL
     except schedule.Busy as e:
         res, code = ({"ok": True, "skipped": str(e)}, 0) if args.cmd == "run" else ({"ok": False, "error": str(e)}, 1)
     except (BackupCryptoError, restore.RestoreError, capture.ExportError, SpaceError, schedule.ScheduleError,

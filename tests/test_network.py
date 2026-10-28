@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from wam import network as net
+from wam import network as net, host_policy
 
 
 def app(app_id, uses=(), provides=(), services=None, **kw):
@@ -657,9 +657,11 @@ def test_installer_refuses_host_access_unless_the_owner_flags_it(tmp_path, monke
     import pytest
     cli, installs, steps = gate_env(tmp_path, monkeypatch,
                                     "services:\n  x:\n    image: a\n    network_mode: host\n    volumes: ['/var/run/docker.sock:/s']\n")
-    with pytest.raises(SystemExit, match="REFUSED: x asks for access that escapes app isolation"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.install(cli.Config(), "x")
     assert installs == [] and steps == []
+    sha = host_policy._read(cli.Config().home)["pending"]["x"]["sha256"]
+    host_policy.approve(cli.Config().home, "x", sha)
     res = cli.install(cli.Config(), "x", allow_host_access=True)
     assert installs == ["x:wizardapps"] and res["status"] == "running"
 
@@ -795,7 +797,7 @@ def test_installer_refuses_an_external_network_recipe(tmp_path, monkeypatch):
     cli, installs, steps = gate_env(tmp_path, monkeypatch, "services:\n  x:\n    image: a\n    networks: [sneak]\n"
                                     "networks:\n  sneak:\n    external: true\n    name: runtipi_tipi_main_network\n")
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
-    with pytest.raises(SystemExit, match="REFUSED: x asks for access that escapes app isolation"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.install(cli.Config(), "x")
     assert installs == [] and steps == []
 
@@ -806,7 +808,10 @@ def test_allow_host_access_is_recorded_for_the_app_managers_start_gate(tmp_path,
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("WIZARD_OS_HOME", str(home))
-    cli.install(cli.Config(), "x", allow_host_access=True)
+    with pytest.raises(host_policy.NeedsOwnerApproval) as e:
+        cli.install(cli.Config(), "x", allow_host_access=True)
+    host_policy.approve(home, "x", e.value.payload["approve_url"].split("/")[-1])
+    cli.install(cli.Config(), "x")
     assert installs == ["x:wizardapps"] and net.host_access_allowed(home) == {"x"}
     c = type("C", (), {"home": home, "runtipi_root": tmp_path / "runtipi"})()
     assert net.write_policy(c, True) is True and net.write_policy(c, True) is False
@@ -898,14 +903,18 @@ def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):
     plain = "services:\n  x:\n    image: a\n"
     sneaky = plain + "    networks: [sneak]\nnetworks:\n  sneak:\n    external: true\n    name: wizard-link-a--b\n"
     cli, updates, steps = update_env(tmp_path, monkeypatch, plain, sneaky)
-    with pytest.raises(SystemExit, match="REFUSED: the update of x asks for access"):
+    with pytest.raises(host_policy.NeedsOwnerApproval, match="needs_owner_approval"):
         cli.app_update(cli.Config(), "x")
     assert updates == [] and steps == []
+    sha = host_policy._read(cli.Config().home)["pending"]["x"]["sha256"]
+    host_policy.approve(cli.Config().home, "x", sha)
     assert cli.app_update(cli.Config(), "x", allow_host_access=True)["status"] == "running"
     assert updates == ["x:wizardapps"] and net.host_access_allowed(tmp_path / "home") == {"x"}
-    # an unchanged risk the installed recipe already had is not asked again
-    cli, updates, steps = update_env(tmp_path / "c", monkeypatch, sneaky, sneaky)
-    assert cli.app_update(cli.Config(), "x")["status"] == "running"
+    # The first upgrade snapshot preserves access already in use, not new risks.
+    cli, updates, steps = update_env(tmp_path / "c", monkeypatch, sneaky, sneaky + '# new image\n')
+    cfg = cli.Config()
+    assert host_policy._read(cfg.home)['approvals']['x']['source'] == 'grandfathered at upgrade'
+    assert cli.app_update(cfg, "x")["status"] == "running"
 
 
 def test_exposed_core_components_stay_on_the_gateway_networks():
@@ -1173,6 +1182,8 @@ def test_network_deny_stops_a_running_app_that_still_has_the_access(tmp_path, mo
     assert cli.main(["network", "deny", "x"]) == 0
     assert calls == [("stop", "x"), "reconcile"] and net.host_access_allowed(home) == set()
     calls.clear()
+    assert cli.main(["network", "allow", "x"]) == 23
+    host_policy.approve(home, "x", host_policy._read(home)["pending"]["x"]["sha256"])
     assert cli.main(["network", "allow", "x"]) == 0 and calls == ["reconcile"]   # allowing never stops anything
 
 

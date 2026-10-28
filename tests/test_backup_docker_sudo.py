@@ -37,14 +37,15 @@ def test_plain_docker_when_socket_is_reachable(monkeypatch):
     assert len(calls) == 1
 
 
-def test_sudo_docker_before_group_membership_is_active(monkeypatch):
+def test_denied_socket_never_uses_passwordless_sudo(monkeypatch):
     calls = fake(monkeypatch)
-    expected = ["sudo", "-n", "docker", "--host", "unix:///var/run/docker.sock"]
+    expected = ["docker"]
     assert dockercli.docker({}) == expected
     result = dockercli.docker({})
     result.append("mutation")
     assert dockercli.docker({}) == expected
-    assert len(calls) == 3  # plain info, local context, sudo info; then cached
+    assert len(calls) == 3  # failures are retried, never escalated or cached
+    assert all(argv[0] == 'docker' for argv, _ in calls)
 
 
 def test_probe_uses_sanitized_box_environment(monkeypatch):
@@ -53,7 +54,7 @@ def test_probe_uses_sanitized_box_environment(monkeypatch):
            "WIZARD_BACKUP_KEY": "private", "WIZARD_BACKUP_PASSPHRASE": "private",
            "WIZARD_S3_SECRET_ACCESS_KEY": "private"}
     prefix = dockercli.docker(env)
-    assert prefix == ["sudo", "-n", "docker", "--host", env["DOCKER_HOST"]]
+    assert prefix == ["docker"]
     for _, kw in calls:
         assert kw["env"] == {"PATH": "/box/bin", "DOCKER_HOST": env["DOCKER_HOST"]}
     assert env["WIZARD_BACKUP_KEY"] == "private"
@@ -74,7 +75,7 @@ def test_never_sudo_a_remote_or_custom_context(monkeypatch, extra):
 
 def test_explicit_default_context_takes_precedence_over_docker_host(monkeypatch):
     fake(monkeypatch)
-    assert dockercli.docker({"DOCKER_CONTEXT": "default", "DOCKER_HOST": "unix:///run/ignored.sock"})[-1] == "unix:///var/run/docker.sock"
+    assert dockercli.docker({"DOCKER_CONTEXT": "default", "DOCKER_HOST": "unix:///run/ignored.sock"}) == ["docker"]
 
 
 def test_configured_nondefault_context_does_not_switch_daemons(monkeypatch):
@@ -92,17 +93,18 @@ def test_neither_works_is_not_cached(monkeypatch):
 
 
 def test_cache_is_environment_scoped_and_expires(monkeypatch):
-    calls = fake(monkeypatch)
+    calls = fake(monkeypatch, plain=True)
     clock = [10.0]
     monkeypatch.setattr(dockercli.time, "monotonic", lambda: clock[0])
     a = {"DOCKER_HOST": "unix:///run/a.sock", "HOME": "/owner-a"}
     b = {"DOCKER_HOST": "unix:///run/b.sock", "HOME": "/owner-b"}
-    assert dockercli.docker(a)[-1] == a["DOCKER_HOST"]
-    assert dockercli.docker(b)[-1] == b["DOCKER_HOST"]
-    assert len(calls) == 4
+    assert dockercli.docker(a) == ["docker"]
+    assert dockercli.docker(b) == ["docker"]
+    assert dockercli.docker(a) == ["docker"]
+    assert len(calls) == 2
     clock[0] += 31
     dockercli.docker(a)
-    assert len(calls) == 6
+    assert len(calls) == 3
 
 
 def test_verb():
@@ -112,11 +114,9 @@ def test_verb():
 
 
 def test_real_subprocess_fallback_streams_and_filters_secrets(tmp_path, monkeypatch):
-    """No daemon/VM: real exec paths simulate socket denial and noninteractive sudo.
+    """Real, unprivileged exec paths stream backup bytes and filter secrets.
 
-    Exercise AppData's streamed helper, the long-lived root filesystem helper,
-    and HermesRunner, not just a mocked selector. The sudo double intentionally
-    drops DOCKER_HOST like sudo env_reset; --host must carry the exact socket.
+    Exercise AppData, the filesystem helper and HermesRunner, never a sudo fallback.
     """
     import shutil
     import sys
@@ -132,10 +132,8 @@ args = sys.argv[1:]
 with open(os.environ['PROBE_LOG'], 'a') as f:
     f.write(json.dumps({'argv':args, 'sudo':os.environ.get('VIA_SUDO'),
                         'secrets':[k for k in os.environ if k.startswith('WIZARD_S3_') or k in ('WIZARD_BACKUP_KEY','WIZARD_BACKUP_PASSPHRASE')]})+'\\n')
-if not os.environ.get('VIA_SUDO'):
-    print('permission denied on docker.sock', file=sys.stderr); sys.exit(1)
-assert args[:2] == ['--host', 'unix:///run/backup-probe.sock']
-args = args[2:]
+assert os.environ['DOCKER_HOST'] == 'unix:///run/backup-probe.sock'
+assert not os.environ.get('VIA_SUDO')
 if args[0] == 'info': print('fake-daemon'); sys.exit(0)
 if args[0] == 'inspect': print('example/helper:test'); sys.exit(0)
 if '--entrypoint' in args:
@@ -146,10 +144,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 ''')
     sudo = bindir / "sudo"
     sudo.write_text(f"#!{sys.executable}\n" + '''import os, sys
-assert sys.argv[1:3] == ['-n','docker']
-os.environ.pop('DOCKER_HOST', None)
-os.environ['VIA_SUDO']='1'
-os.execv(os.path.join(os.path.dirname(__file__), 'docker'), sys.argv[2:])
+raise SystemExit('forbidden sudo invocation')
 ''')
     docker.chmod(0o755)
     sudo.chmod(0o755)
@@ -181,7 +176,7 @@ os.execv(os.path.join(os.path.dirname(__file__), 'docker'), sys.argv[2:])
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert rows[0]["sudo"] is None  # real denied unprivileged process
     assert all(not row["secrets"] for row in rows)
-    assert all(row["sudo"] == "1" for row in rows[1:])
+    assert all(row["sudo"] is None for row in rows)
     if sys.platform == "linux":
         assert any("node" in row["argv"] for row in rows)
     assert any("sh" in row["argv"] for row in rows)

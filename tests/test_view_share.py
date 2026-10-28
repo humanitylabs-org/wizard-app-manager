@@ -57,7 +57,7 @@ def test_revert_through_settings_owner_listener_and_readback(tmp_path, monkeypat
     home, shared = fixture(tmp_path)
     monkeypatch.setattr(cli.StoreHandler, 'cfg', SimpleNamespace(home=home), raising=False)
     (home / 'links.json').write_text('{"host":"box.test"}')
-    monkeypatch.setattr(store_install, 'peer_uid', lambda p: 0)
+    monkeypatch.setattr(store_install, 'peer_uid', lambda p, *args: 0)
     monkeypatch.setattr(store_install, 'owner_login', lambda: 'owner@example.test')
     monkeypatch.setattr(store_install, 'served_origins', lambda h: {'https://box.test'})
     srv = ThreadingHTTPServer(('127.0.0.1', 0), cli.StoreHandler)

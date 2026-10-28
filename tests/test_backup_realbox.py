@@ -201,6 +201,11 @@ def test_new_app_gets_its_user_config_before_runtipi_installs_it(realbox):
     new.rt.install = install
     before = box_digest(new.box())
     code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 23 and rec['error'] == 'needs_owner_approval'
+    assert not seen and box_digest(new.box()) == before
+    from wam import host_policy
+    host_policy.approve(new.box().home, rec['app'], rec['approve_url'].split('/')[-1])
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
     assert code == 0, rec
     # carried, with the old box's paths rewritten to this box's (the two fake boxes live in different folders)
     nhome = new.runtipi / "app-data/wizardapps/wizard-agent-service/data/wizard-os/agents/research/home"

@@ -50,8 +50,9 @@ PER_MACHINE = {"api-token", "mcp-token", "runtipi-operator.json", "agent-runtime
                # which Wizard release/pins were installed here (a restore must not replace them with another box's)
                "builder", "bin", "release.json", "release-pins.json", "install-outcome.json",
                # the agent's ssh key for a terminal on this box (Wizard for Mac), authorised only here
-               "agent-ssh"}
-REGENERATED = {"apps.json", "skills", "system-skills", "cache", "dev", "staged-apps"}
+               "developer.json", "developer.lock", "developer.tmp",
+               "agent-ssh", "approval-registry.json", "owner-login", "privsep.json", "agent-token", "client.json"}
+REGENERATED = {"apps.json", "skills", "system-skills", "cache", "dev", "staged-apps", "build-work"}
 ENGINE = {"restores", "backup-work", "backup-status.json", "backup.lock", "agents"}
 NEVER_CAPTURE = PER_MACHINE | REGENERATED | ENGINE
 
@@ -137,6 +138,12 @@ class Box:
             rt.ensure_operator(self.home / "runtipi-operator.json")
             self._rt = rt
         return self._rt
+
+    def runtipi(self) -> Runtipi:
+        """Config-compatible adapter for independently verifying managed topology.
+        Restore policy must derive exemptions from this box's live grants, never
+        trust a carried x-wizard-networks marker or skip the allowlist."""
+        return self.rt
 
     @property
     def runner(self) -> "HermesRunner":
@@ -276,7 +283,11 @@ class Box:
         out: list[Agent] = []
         st = alongside.load(self.home)
         if st and (st.get("agent") or {}).get("hermes_home"):
-            out.append(Agent(MAIN_AGENT, True, Path(st["agent"]["hermes_home"]), "host"))
+            from .. import privsep
+            # Running a linked host's launcher would execute agent-writable code
+            # with Docker privileges. Its home is backed up at the agent uid, not here.
+            if not privsep.enabled(self.home):
+                out.append(Agent(MAIN_AGENT, True, Path(st["agent"]["hermes_home"]), "host"))
         else:
             urn = f"{MAIN_APP}:{STORE}"
             if installed is None or urn in installed:
@@ -522,6 +533,9 @@ class HermesRunner:
 
     # ---- host agent
     def host_binary(self) -> str:
+        from .. import privsep
+        if privsep.enabled(self.box.home):
+            raise HermesError('host Hermes belongs to the agent uid; never executed by wizard-system')
         b = self.box.env.get("WIZARD_HERMES_BIN") or shutil.which("hermes", path=self.box.env.get("PATH")) \
             or alongside.hermes_binary()
         if not b:
@@ -720,7 +734,7 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
         if not is_dir and root_runtime_digest_path(box, rel, 'wizard-os'):
             return True
         top = rel.split("/", 1)[0]
-        return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
+        return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json", "approval-registry.json"}) \
             or rel.endswith(".lock")
 
     from .agents import keep_in_place

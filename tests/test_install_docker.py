@@ -21,7 +21,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("bash", "sh", "cat", "mkdir", "cp", "chmod", "rm", "date", "dirname", "seq", "grep", "cut", "sed",
-                 "mv", "mktemp", "find"):
+                 "mv", "mktemp", "find", "touch"):
         (bin_dir / name).symlink_to(shutil.which(name))
     calls = tmp_path / "calls"
 
@@ -31,7 +31,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
         target.chmod(0o755)
 
     tool("id", 'case "${1:-}" in -un) echo sandbox;; *) echo 1000;; esac\n')
-    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; export MOCK_SUDO=1; exec "$@"\n')
+    tool("sudo", 'printf "sudo %s\\n" "$*" >> "$CALLS"; [ "${1:-}" != -n ] || shift; export MOCK_SUDO=1; exec "$@"\n')
     tool("docker", '''printf "docker sudo=%s %s\\n" "${MOCK_SUDO:-0}" "$*" >> "$CALLS"
 if [ "$1" = info ] && [ "$DOCKER_ACCESS" = 0 ]; then exit 1; fi
 if [ "$1" != info ] && [ "$DOCKER_ACCESS" = 0 ] && [ "${MOCK_SUDO:-0}" != 1 ]; then exit 1; fi
@@ -42,6 +42,14 @@ case "$*" in
   *"rm --stop --force wizard-release-index")
     [ "${INDEX_REMOVE_RC:-0}" = 0 ] || exit "$INDEX_REMOVE_RC"
     rm -f "$HOME/stale-release-index";;
+  *"--no-deps --wait runtipi")
+    [ "${MANAGER_WAIT_RC:-0}" = 0 ] || exit "$MANAGER_WAIT_RC"
+    # Backend initialization writes Traefik's static entrypoints before health.
+    touch "$HOME/manager-initialized";;
+  *"--no-deps runtipi-reverse-proxy")
+    if [ "${REQUIRE_MANAGER_HEALTH:-0}" = 1 ] && [ ! -f "$HOME/manager-initialized" ]; then
+      echo 'Traefik started without static entrypoints: 404 page not found' >&2; exit 1
+    fi;;
   *"up -d --force-recreate --wait wizard-release-index")
     if [ -f "$HOME/stale-release-index" ]; then echo 'Conflict: runtipi-wizard-release-index-1' >&2; exit 1; fi;;
 esac
@@ -91,6 +99,11 @@ exec "PYEXE" "$@"
 @pytest.mark.parametrize("docker_access", [True, False])
 def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_access):
     p, home, root, calls, outcome = sandbox(tmp_path, docker_access)
+    if not docker_access:
+        assert p.returncode == 2, p.stdout + p.stderr
+        assert 'administrator to run host preparation' in p.stderr
+        assert 'sudo -n docker' not in calls.read_text()
+        return
     assert p.returncode == 0, p.stdout + p.stderr
     log = calls.read_text().splitlines()
     docker_calls = [line for line in log if line.startswith("docker ")]
@@ -103,7 +116,7 @@ def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_acc
     assert actual[3:] == [
         "image inspect ghcr.io/humanitylabs-org/wizard-app-manager:latest",
         "pull ghcr.io/humanitylabs-org/wizard-app-manager:latest",
-        "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps runtipi",
+        "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-deps --wait runtipi",
         "compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps "
         "runtipi-reverse-proxy",
         "rm -f wizard-store wizard-skin",
@@ -248,7 +261,7 @@ def test_a_rerun_recreates_missing_base_containers_before_the_app_manager(tmp_pa
     assert p.returncode == 0, p.stdout + p.stderr
     log = calls.read_text().splitlines()
     base = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --wait runtipi-db runtipi-queue"))
-    manager = next(i for i, l in enumerate(log) if l.endswith("up -d --no-deps runtipi"))
+    manager = next(i for i, l in enumerate(log) if l.endswith("up -d --no-deps --wait runtipi"))
     proxy = next(i for i, l in enumerate(log) if l.endswith("--no-recreate --no-deps runtipi-reverse-proxy"))
     intent = next(i for i, l in enumerate(log) if "status = 'running'" in l)
     assert base < intent < manager < proxy
@@ -258,6 +271,26 @@ def test_a_rerun_recreates_missing_base_containers_before_the_app_manager(tmp_pa
     assert log[rec] == "wam -m wam recover --running files:wizardapps --running wizard-ux:wizardapps"
     assert rec < next(i for i, l in enumerate(log) if l.startswith("wam -m wam bootstrap"))
     assert outcome["status"] == "ok"
+
+
+def test_partial_base_waits_for_manager_static_config_before_first_proxy_start(tmp_path):
+    # Upstream may leave .env and Compose files after a failed Hub pull, without
+    # ever starting the backend that writes Traefik's static entrypoints.
+    p, home, _, calls, outcome = sandbox(tmp_path, REQUIRE_MANAGER_HEALTH='1')
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (home / 'manager-initialized').is_file()
+    log = calls.read_text()
+    assert log.index('--no-deps --wait runtipi') < log.index('--no-deps runtipi-reverse-proxy')
+    assert outcome is not None and outcome['status'] == 'ok'
+
+
+def test_unhealthy_manager_never_starts_a_configless_proxy(tmp_path):
+    p, _, _, calls, _ = sandbox(tmp_path, MANAGER_WAIT_RC='17', REQUIRE_MANAGER_HEALTH='1')
+    assert p.returncode == 17, p.stdout + p.stderr
+    log = calls.read_text()
+    assert '--wait runtipi' in log
+    assert '--no-deps runtipi-reverse-proxy' not in log
+    assert 'wam -m wam bootstrap' not in log
 
 
 def test_failed_core_recovery_fails_the_install_and_other_apps_degrade(tmp_path):
@@ -310,7 +343,7 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     target = dl.split(" -o ", 1)[1]
     assert not target.startswith("/tmp/runtipi-setup.sh")
     assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
-    assert any(l.startswith("sudo bash " + target) for l in log)
+    assert any(l.startswith("sudo -n bash " + target) for l in log)
     assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"

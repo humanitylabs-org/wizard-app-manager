@@ -40,11 +40,11 @@ YML
   # an earlier install) can't be overwritten in sticky /tmp, and curl then fails with exit 23 before Runtipi exists.
   SETUP_DIR="$(mktemp -d)"
   curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh"
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo -n bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
   rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
-  sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
-  sudo find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
+  sudo -n chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
+  sudo -n find "$RUNTIPI_ROOT" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$(id -u):$(id -g)" {} +
 fi
 # The Python that runs wam needs PyYAML. Do not trust whichever python3 is first on PATH: a Hermes agent puts its own
 # bundled Python (no PyYAML) first for the commands it runs, and wam would then fail mid-install. Pick the first
@@ -56,15 +56,18 @@ pick_py() {
   done
   return 1
 }
-PY="$(pick_py)" || { sudo apt-get install -y python3-yaml >/dev/null; PY="$(pick_py)"; } \
+PY="$(pick_py)" || { sudo -n apt-get install -y python3-yaml >/dev/null; PY="$(pick_py)"; } \
   || { echo "Wizard OS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again." >&2; exit 1; }
-command -v git >/dev/null || sudo apt-get install -y git
-# An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
-# the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
+command -v git >/dev/null || sudo -n apt-get install -y git
+# Host preparation activates Docker membership with a fresh login. Never turn
+# a daemon/socket failure into root access (including alongside without sudo).
 DOCKER=(docker)
-docker info >/dev/null 2>&1 || DOCKER=(sudo docker)
+if ! docker info >/dev/null 2>&1; then
+  echo 'Docker is unavailable to this account. Ask an administrator to run host preparation, then start a new login and retry.' >&2
+  exit 2
+fi
 # Shared, read-only copy of apps.json for app containers (the Wizard shell mounts it).
-mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
+mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo -n mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo -n chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
 
 # 1) Run the Wizard App Manager image instead of Runtipi's (user-config override; survives Runtipi's own files).
 mkdir -p "$RUNTIPI_ROOT/user-config"
@@ -95,9 +98,17 @@ if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml rm --stop --force wizard-release-index)
   (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --force-recreate --wait wizard-release-index)
 fi
-(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
+# A partially completed upstream setup can leave .env but no initialized manager.
+# The manager writes Traefik's STATIC entrypoints during startup. Wait for its
+# internal health check before starting a missing proxy; otherwise Traefik keeps
+# its empty startup config and serves 404 even after the manager becomes healthy.
+(cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps --wait runtipi)
 # The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
+
+# Separated host preparation installs system units and provisions the agent itself.
+# Never execute the legacy same-uid user-unit/link/bootstrap path there.
+if [ "${WIZARD_SEPARATED:-0}" = 1 ]; then exit 0; fi
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"

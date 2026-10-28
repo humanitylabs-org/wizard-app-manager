@@ -1,0 +1,95 @@
+x-security: &security
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  mem_limit: 512m
+  pids_limit: 128
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,uid=1000,gid=1000"]
+services:
+  ingress:
+    <<: *security
+    build: &build
+      context: .
+      dockerfile: app/Dockerfile
+    command: [python, app/ingress.py]
+    networks: [ingress-lane, edge]
+    x-runtipi:
+      is_main: true
+      internal_port: 8799
+  wizard-connectors:
+    <<: *security
+    build: *build
+    environment:
+      PORT: "8799"
+      DATA_DIR: /data
+      CONNECTORS_OWNER_TOKEN: ${CONNECTORS_OWNER_TOKEN:?Required}
+      CONNECTORS_MCP_TOKEN: ${CONNECTORS_MCP_TOKEN:?Required}
+      MUSIC_ADAPTER_TOKEN: ${MUSIC_ADAPTER_TOKEN:?Required}
+      BROKER_TOKEN: ${BROKER_TOKEN:?Required}
+      PRIVATE_WORKER_TOKEN: ${PRIVATE_WORKER_TOKEN:?Required}
+      PRIVATE_ROUTE_CONFIGURED: ${PRIVATE_ROUTE_CONFIGURED:-false}
+      MEDIA_WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:?Required}
+      ISOLATED_PACKAGE: "true"
+      WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-localhost,127.0.0.1}
+      WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
+    volumes: ["ui-data:/data"]
+    networks: [ingress-lane, google-lane, private-lane, media-lane]
+  google-broker:
+    <<: *security
+    build: *build
+    command: [python, app/services.py]
+    environment:
+      SERVICE_ROLE: google
+      PORT: "8800"
+      BROKER_DATA_DIR: /data
+      BROKER_TOKEN: ${BROKER_TOKEN:?Required}
+      GOOGLE_REVIEW_APPROVED: ${GOOGLE_REVIEW_APPROVED:-false}
+      GOOGLE_STORE_KEY: ${GOOGLE_STORE_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+    volumes: ["google-data:/data"]
+    networks: [google-lane, google-egress]
+  media-worker:
+    <<: *security
+    build: *build
+    command: [python, app/services.py]
+    environment:
+      SERVICE_ROLE: media
+      PORT: "8802"
+      MEDIA_WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:?Required}
+      HOME: /tmp
+    # No volumes: anonymous media cannot read the broker's encrypted store/key.
+    networks: [media-lane, media-egress]
+  private-worker:
+    <<: *security
+    build: *build
+    command: [python, app/services.py]
+    environment:
+      SERVICE_ROLE: private
+      PORT: "8801"
+      PRIVATE_WORKER_TOKEN: ${PRIVATE_WORKER_TOKEN:?Required}
+      TINFOIL_API_KEY: ${TINFOIL_API_KEY:-}
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+    networks: [private-lane, model-egress]
+volumes:
+  ui-data: {}
+  google-data: {}
+networks:
+  google-lane:
+    internal: true
+  ingress-lane:
+    internal: true
+  edge: {}
+  private-lane:
+    internal: true
+  google-egress: {}
+  model-egress: {}
+  media-lane:
+    internal: true
+  media-egress: {}
+x-runtipi:
+  schema_version: 2
+  overrides: []

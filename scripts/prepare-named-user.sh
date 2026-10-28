@@ -4,6 +4,13 @@
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo 'Host preparation requires an administrator.' >&2; exit 2; }
 owner="${1:?selected Hermes owner required}"
+reassign_from=""
+if [ "${2:-}" = --reassign-from ]; then
+  [ "$#" -eq 3 ] && [ "$owner" = wizard-system ] && id "$3" >/dev/null 2>&1 || { echo 'Explicit operator reassignment requires wizard-system and the prior named user.' >&2; exit 2; }
+  reassign_from="$3"
+elif [ "$#" -ne 1 ]; then
+  echo 'Unknown host preparation arguments.' >&2; exit 2
+fi
 if [ "$owner" = root ] || ! id "$owner" >/dev/null 2>&1; then
   echo 'Host preparation requires an existing named owner, not root.' >&2
   exit 2
@@ -44,10 +51,15 @@ if [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = tailscale ]; then
   systemctl enable --now tailscaled
   # Do not silently replace an existing designated operator. A conflicting administrator is a real gate.
   operator="$(tailscale debug prefs | python3 -c 'import json,sys; print(json.load(sys.stdin).get("OperatorUser") or "")')"
-  if [ -n "$operator" ] && [ "$operator" != "$owner" ]; then
+  if [ -n "$operator" ] && [ "$operator" != "$owner" ] && [ "$operator" != "$reassign_from" ]; then
     echo "Tailscale is managed by $operator; an administrator must approve operator access for $owner before retrying." >&2
     exit 2
   fi
+  # Changing only OperatorUser preserves Serve, DNS, routes and node identity.
+  before_serve="$(tailscale serve status --json)"
   tailscale set --operator="$owner"
+  actual_operator="$(tailscale debug prefs | python3 -c 'import json,sys; print(json.load(sys.stdin).get("OperatorUser") or "")')"
+  [ "$actual_operator" = "$owner" ] || { echo 'Tailscale operator handoff did not take effect.' >&2; exit 2; }
+  [ "$(tailscale serve status --json)" = "$before_serve" ] || { echo 'Published links changed during operator reassignment; stop and restore the saved configuration.' >&2; exit 2; }
 fi
 printf 'Administrator host preparation complete for %s; no passwordless sudo was granted.\n' "$owner"

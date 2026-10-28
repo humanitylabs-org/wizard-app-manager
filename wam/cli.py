@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, index, private, registry, slots, release_pins, host_policy, privsep
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -89,6 +89,9 @@ class Config:
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
         self.secrets = self.home / "secrets"
         self.token_file = self.home / "api-token"
+        # Seal the installed disk snapshot before any install/update/restore can
+        # mutate recipes; never enroll a new app at admission time.
+        host_policy.migrate(self)
 
     def runtipi(self) -> Runtipi:
         rt = Runtipi.from_install(self.runtipi_root)
@@ -356,6 +359,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         try:
             print(f"installing dependency {dep}", file=sys.stderr)
             install(c, dep, None, wait, _seen)
+        except host_policy.NeedsOwnerApproval:
+            raise
         except (index.IndexError_, SystemExit, RuntimeError, RuntipiError) as e:
             print(f"note: dependency {dep} not installed ({e}); {app_id} may need it", file=sys.stderr)
     urn = f"{app_id}:{STORE}"
@@ -367,16 +372,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    host = host_access_risks(c, app_id)
     from . import network as _network
-    if host and not allow_host_access and app_id not in _network.host_access_allowed(c.home):
-        raise SystemExit(f"REFUSED: {app_id} asks for access that escapes app isolation:\n  - " + "\n  - ".join(host) +
-                         f"\nIt could reach every app and the server itself. Install it only if you trust it completely:\n"
-                         f"  wam install {app_id} --allow-host-access")
-    if host:
-        print(f"WARNING: {app_id} is installed WITH HOST ACCESS (owner flag): " + "; ".join(host), file=sys.stderr)
-        # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
-        _network.set_host_access_allowed(c.home, app_id, True)
+    # Deprecated allow_host_access is intentionally ignored: only a recipe-bound
+    # entry written by the owner route / administrator command can approve.
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     role = alongside_role(rec, app_id)
     if role in ("service", "shell") and alongside.LEGACY_BUNDLE in have and not _split:
@@ -404,7 +402,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
-    if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
+    if al and not privsep.enabled(c.home):   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
         try:
             for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
                 if r.get("state") == "error":
@@ -414,6 +412,10 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             print(f"note: Claude login not linked ({str(e)[:120]}); run `wam alongside`", file=sys.stderr)
     if missing:
         raise SystemExit(f"{app_id} needs: " + "; ".join(missing) + f"\n  e.g. wam install {app_id} --set KEY=VALUE")
+    # Check again after WAM-owned alongside/login overrides have been generated.
+    approval_sha = host_policy.require_app(c, app_id, given=form)
+    _network.set_host_access_allowed(c.home, app_id,
+        approval_sha != host_policy.risk_digest(app_id, []))
     # The app's networks exist and its override is written before its first start, so it never joins the shared
     # network; the apps it connects to join their new link live.
     net_pre = network_step(c, rt, extra={app_id}, restart=False)
@@ -440,7 +442,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                          " (the App Manager removed it; see `docker logs runtipi`)")
     net_post = network_step(c, rt)
     reg = write_registry(c, rt)
-    if status == "running" and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
+    if status == "running" and not privsep.enabled(c.home) and alongside.load(c.home) and app_id in host_dashboard_consumers(c, {app_id}):
         try:   # e.g. ChatGPT: its sign-in runs through the agent's dashboard, which alongside lives on the host
             dash = host_dashboard_cmd(c, rt)
             if app_id in (dash.get("changed_apps") or []):
@@ -472,12 +474,11 @@ def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
     """Host networking, networks the app does not own, privileged mode or the container runtime socket in the app's
     recipe. where="any": the store copy the App Manager just fetched, else the installed copy; "store" / "installed":
     only that copy. wam's own alongside overrides are not recipes and never count."""
-    from . import network
     store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml"
     installed = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
     for comp in {"any": (store_copy, installed), "store": (store_copy,), "installed": (installed,)}[where]:
         try:
-            return network.host_access(comp.read_text(), app_id, STORE)
+            return host_policy.risks(comp.read_text(), app_id, **host_policy.context(c, app_id, STORE))
         except OSError:
             continue
     return []
@@ -688,11 +689,49 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
 LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stopped"}}
 
 
+def agent_app_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', value):
+        raise ValueError('use a public store app id, not a path, URN or repository')
+    return value
+
+
+def app_logs(c, app_id, tail=100):
+    agent_app_id(app_id)
+    if not 1 <= tail <= 1000:
+        raise ValueError('tail must be between 1 and 1000')
+    rt = c.runtipi()
+    if app_id not in installed_ids(rt):
+        raise ValueError('app is not installed')
+    # Derive the project from this installed app. No container name, path or
+    # raw Docker options are accepted from the client; cap total output as well.
+    urn = app_id + ':' + STORE
+    p = subprocess.run(['docker', 'ps', '-aq', '--filter',
+                        'label=com.docker.compose.project=' + urn.replace(':', '_')],
+                       capture_output=True, text=True, timeout=30)
+    ids = p.stdout.split()
+    # Runtipi project names use the app URN with a hyphen separator.
+    if not ids:
+        p = subprocess.run(['docker', 'ps', '-aq', '--filter',
+                            'label=com.docker.compose.project=' + app_id + '-' + STORE],
+                           capture_output=True, text=True, timeout=30)
+        ids = p.stdout.split()
+    output = []
+    for cid in ids[:20]:
+        if not re.fullmatch(r'[0-9a-f]{12,64}', cid):
+            raise RuntimeError('invalid container identity')
+        r = subprocess.run(['docker', 'logs', '--tail', str(tail), cid],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        output.append(r.stdout[-262144:].decode('utf-8', errors='replace'))
+    return {'app': app_id, 'logs': '\n'.join(output)[-262144:], 'containers': len(ids)}
+
+
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
     runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if verb in ("start", "restart"):
+        host_policy.require_app(c, urn.split(":")[0], where="installed")
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
     getattr(rt, verb)(urn)
@@ -1317,7 +1356,15 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
 
 
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
-    out = []
+    if privsep.enabled(c.home):
+        return privsep.doctor(c)
+    from . import developer
+    out = host_policy.grandfathered_health(c.home) + developer.health(c.home)
+    from . import owner
+    if (c.home / 'owner-login').is_file():
+        state = owner.health(c.home)
+        out.append(('owner login', state['ok'], 'owner login is unchanged' if state['ok'] else
+                    'owner login changed; an administrator must review the owner pin before approvals work'))
     from . import builder_bundle
     if fix:
         try:
@@ -1438,21 +1485,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
-    def _authorized(self) -> bool:
+    agent_token: str = ""
+
+    def _agent_request(self):
+        return bool(self.agent_token and hmac.compare_digest(
+            self.headers.get('Authorization', '').encode(), ('Bearer ' + self.agent_token).encode()))
+
+    def _authorized(self, *, owner_only=False) -> bool:
         got = self.headers.get("Authorization", "")
         if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
+            return True
+        if self.agent_token and hmac.compare_digest(got.encode(), f"Bearer {self.agent_token}".encode()):
+            if owner_only:
+                self._json(403, {"error": "owner_only"})
+                return False
             return True
         self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         return False
 
     def _body(self) -> dict:
+        from .agent_actions import BODY_LIMIT
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 65536:
-            return {}
+        limit = BODY_LIMIT if urlparse(self.path).path.startswith('/api/builder/') else 65536
+        if n < 0 or n > limit:
+            raise ValueError('request body exceeds limit')
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
+            body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
-            return {}
+            raise ValueError('invalid JSON body') from None
+        if not isinstance(body, dict):
+            raise ValueError('JSON object required')
+        return body
 
     VIEW_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
@@ -1499,8 +1562,19 @@ class Handler(BaseHTTPRequestHandler):
             except RuntipiError:
                 return self._json(503, {"error": "grants_unavailable"})
         if u.path == "/api/apps":
+            if self.agent_token:
+                if not self._authorized(): return
+                return self._json(200, write_registry(c))
             p = c.home / "apps.json"
             return self._json(200, json.loads(p.read_text()) if p.is_file() else {"apps": []})
+        log_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{0,62})/logs", u.path)
+        if log_match:
+            if not self._authorized(): return
+            try:
+                tail = int((parse_qs(u.query).get("tail") or ["100"])[0])
+                return self._json(200, app_logs(c, log_match[1], tail))
+            except (ValueError, RuntimeError, RuntipiError) as e:
+                return self._json(400, {"error": str(e)})
         if u.path == "/api/search":
             q = parse_qs(u.query)
             try:
@@ -1510,6 +1584,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/slots":
             p = c.home / "apps.json"
             return self._json(200, {"spots": slots.table(json.loads(p.read_text()) if p.is_file() else {})})
+        if u.path in ('/api/developer', '/api/status'):
+            if not self._authorized(): return
+            from . import developer
+            return self._json(200, developer.status(c.home))
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
@@ -1522,31 +1600,60 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/views" or u.path.startswith("/views/"):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
-            return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+            return self._json(200, [{"check": n, "ok": ok, "detail": d,
+                                     "severity": "red" if not ok and n.startswith('Agent has full server access until ') else ("warning" if not ok else "ok")} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if not self._authorized():
-            return
         c, path = self.cfg, urlparse(self.path).path
+        from . import owner
+        if not self._authorized(owner_only=path in owner.PATHS):
+            return
         try:
+            if path in owner.PATHS:
+                why = owner.check(self, post=True)
+                if why:
+                    return self._json(403, {'error': why})
+                return self._json(200, owner.execute(c, path, self._body()))
+            if path in ('/api/backup/run', '/api/backup/snapshots', '/api/backup/restore', '/api/backup/undo'):
+                from .agent_actions import backup
+                return self._json(200, backup(c, path.rsplit('/', 1)[-1], self._body()))
+            if path in ('/api/links/publish', '/api/links/unpublish'):
+                from .agent_actions import private_link
+                b = self._body()
+                if set(b) != {'app'}:
+                    raise ValueError('send installed app id only')
+                app_id = agent_app_id(b.get('app'))
+                # Internal registry URLs use Runtipi's INTERNAL_IP for sibling
+                # containers. Serve must target the actual loopback published port,
+                # independently of cached owner/gateway view projections.
+                local = registry.build(c.runtipi().installed(), STORE, '127.0.0.1', c.runtipi_root)
+                result = private_link(c, local, app_id, path.endswith('/publish'))
+                write_registry(c)
+                return self._json(200, result)
+            if path in ('/api/builder/install-local', '/api/builder/update-local', '/api/builder/check'):
+                from .agent_actions import build
+                return self._json(200, build(c, path.rsplit('/', 1)[-1], self._body()))
+            if path in ('/api/app/start', '/api/app/stop', '/api/app/restart', '/api/app/update'):
+                body = self._body()
+                app_id = agent_app_id(body.get('app')) if self._agent_request() else str(body.get('app', ''))
+                verb = path.rsplit('/', 1)[-1]
+                result = app_update(c, app_id) if verb == 'update' else app_lifecycle(c, verb, app_id)
+                write_registry(c)
+                return self._json(200, result)
             if path == "/api/install":
                 b = self._body()
-                return self._json(200, install(c, str(b.get("app", "")), {k: str(v) for k, v in (b.get("set") or {}).items()}))
+                app_id = agent_app_id(b.get('app')) if self._agent_request() else str(b.get('app', ''))
+                execute = install_with_retry if self._agent_request() else install
+                return self._json(200, execute(c, app_id, {k: str(v) for k, v in (b.get("set") or {}).items()}))
             if path == "/api/bootstrap":
+                if not self._authorized(owner_only=True): return
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
-            if path == "/api/updates":            # {"mode": "auto"|"ask"} or {"channel": "stable"|"latest"}
-                from . import updates
-                body = self._body()
-                if set(body) == {"channel"}:
-                    return self._json(200, updates.set_channel(str(body.get("channel", ""))))
-                return self._json(200, updates.set_mode(str(body.get("mode", ""))))
-            if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
-                from . import updates
-                return self._json(200, updates.apply(force=self._body().get("force") is True))
-        except (RuntipiError, SystemExit, RuntimeError, index.IndexError_) as e:
+        except host_policy.NeedsOwnerApproval as exc:
+            return self._json(409, exc.payload)
+        except (RuntipiError, SystemExit, RuntimeError, index.IndexError_, ValueError, OSError, subprocess.SubprocessError) as e:
             return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
 
@@ -1554,7 +1661,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urlparse(self.path).path
-        if path.startswith("/api/apps/"):
+        if (re.fullmatch(r"/api/apps/[a-z0-9][a-z0-9-]{0,62}", path) if self._agent_request()
+                else path.startswith("/api/apps/")):
             try:
                 return self._json(200, uninstall(self.cfg, path.split("/")[3]))
             except (RuntipiError, SystemExit, RuntimeError) as e:
@@ -1574,20 +1682,24 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _go(self, method: str) -> None:
         from . import store_install as si
-        if si.peer_uid(self.client_address[1]) != 0:
-            return self._json(403, {"error": "only reachable through tailscale serve"})
-        c = self.cfg
-        lp = c.home / "links.json"
-        ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
-        origins = si.served_origins(ts) if ts else set()
-        owner = si.owner_login()
-        if method == "POST":
-            why = si.check_request(self.headers, owner, origins)
-        else:
-            why = None if owner and (self.headers.get("Tailscale-User-Login") or "").lower() == owner.lower() else "owner only"
+        from . import owner
+        why = owner.check(self, post=method == 'POST')
         if why:
-            return self._json(403, {"error": why})
+            return self._json(403, {'error': why})
+        c = self.cfg
         app_id = urlparse(self.path).path.strip("/")
+        if app_id.startswith('_approve/'):
+            from . import approval
+            return approval.respond(self, method, app_id.removeprefix('_approve/'))
+        if app_id.startswith('_owner/'):
+            try:
+                path = '/api/' + app_id.removeprefix('_owner/')
+                if method != 'POST' or path not in owner.PATHS:
+                    return self._json(404, {'error': 'not found'})
+                return self._json(200, owner.execute(c, path, Handler._body(self)))
+            except (ValueError, RuntimeError, OSError) as exc:
+                from .host_policy import NeedsOwnerApproval
+                return self._json(409, exc.payload) if isinstance(exc, NeedsOwnerApproval) else self._json(400, {'error': str(exc)})
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
         if app_id.startswith('_views/'):
@@ -1746,18 +1858,10 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
+    from . import network as _network
+    approval_sha = host_policy.require_app(c, app, store, where='store')
     if store == STORE:
-        # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
-        # that the installed recipe didn't have, unless the owner allowed this app.
-        from . import network as _network
-        new = [r for r in host_access_risks(c, app, "store") if r not in set(host_access_risks(c, app, "installed"))]
-        if new and not allow_host_access and app not in _network.host_access_allowed(c.home):
-            raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
-                             "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
-                             f"  wam app update {app} --allow-host-access")
-        if new:
-            print(f"WARNING: {app} is updated WITH HOST ACCESS (owner flag): " + "; ".join(new), file=sys.stderr)
-            _network.set_host_access_allowed(c.home, app, True)
+        _network.set_host_access_allowed(c.home, app, approval_sha != host_policy.risk_digest(app, [], store))
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
         pre = network_step(c, rt, restart=False, fresh={app})
         if _network.enabled(c.home) and (pre or {}).get("errors"):
@@ -1802,7 +1906,41 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The stock builder bundle also carries a wam entry point. On a separated
+    # account it must remain the same thin transport, not a local CLI escape or
+    # a confusing Docker permission failure. The protected manager has no marker.
+    if (registry.home() / 'client.json').is_file():
+        from .client import main as remote_main
+        return remote_main(argv)
+    effective = sys.argv[1:] if argv is None else argv
+    if effective and effective[0] == 'privilege':
+        from .privilege_migration import main as privilege_main
+        return privilege_main(effective[1:])
+    from .host_policy import NeedsOwnerApproval, EXIT_APPROVAL
+    try:
+        return _main(argv)
+    except NeedsOwnerApproval as exc:
+        print(json.dumps(exc.payload), file=sys.stderr)
+        return EXIT_APPROVAL
+
+
+def _main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == 'developer':
+        from . import developer
+        return developer.main(argv[1:], Config().home)
+    if argv == ['status']:
+        from . import developer
+        print(json.dumps(developer.status(Config().home), indent=2))
+        return 0
+    if argv and argv[0] == 'approve':
+        p = argparse.ArgumentParser(prog='wam approve')
+        p.add_argument('app'); p.add_argument('sha256')
+        args = p.parse_args(argv[1:])
+        # Local administrator escape hatch until slice 3 changes the agent uid.
+        # There is deliberately no API token / header equivalent of this command.
+        print(json.dumps(host_policy.approve(Config().home, args.app, args.sha256)))
+        return 0
     # Builder lives in its own module; lifecycle/global registry remains separate.
     if argv and argv[0] == "grants":
         gp = argparse.ArgumentParser(prog="wam grants")
@@ -1872,7 +2010,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
     i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
     i.add_argument("--allow-host-access", action="store_true",
-                   help="the owner accepts an app with host networking, privileged mode or the Docker socket")
+                   help="deprecated; does not approve host access (use the owner approval link)")
     cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
     cn.add_argument("--json", action="store_true")
     nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on | mode open|declared")
@@ -1962,6 +2100,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.action in ("allow", "deny"):
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
+                if args.action == 'allow':
+                    # Local human CLI remains available, but only for this recipe.
+                    try:
+                        host_policy.require_app(c, args.app)
+                    except host_policy.NeedsOwnerApproval:
+                        raise  # print the exact wam approve command, never self-approve
+                else:
+                    with host_policy.LOCK:
+                        state = host_policy._read(c.home)
+                        state.get('approvals', {}).pop(args.app, None)
+                        host_policy._write(c.home, state)
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
                 stopped = None
                 if args.action == "deny" and host_access_risks(c, args.app, "installed"):
@@ -2042,9 +2191,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import owner, store_install
+            owner.pin_login(c.home, store_install.owner_login())
             from . import recommended
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
+            agent_token = c.home / "agent-token"
+            Handler.agent_token = agent_token.read_text().strip() if agent_token.is_file() else ""
             StoreHandler.cfg = c
             try:
                 import threading
@@ -2059,6 +2212,8 @@ def main(argv: list[str] | None = None) -> int:
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
+    except host_policy.NeedsOwnerApproval:
+        raise
     except (index.IndexError_, RuntipiError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

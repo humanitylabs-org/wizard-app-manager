@@ -55,8 +55,9 @@ def test_existing_user_is_not_granted_passwordless_sudo(box):
     (box.bin / 'sudo').write_text('#!/bin/sh\n[ "$1" = -iu ] || exit 1\necho "sudo $*" >> "$FAKE_LOG"\n')
     p = box.run('root')
     assert p.returncode == 0, p.stdout + p.stderr
-    assert 'scripts/prepare-named-user.sh' in box.log.read_text()
-    assert box.handoff().startswith('sudo -iu alice ')
+    assert 'scripts/prepare-alongside.py' in box.log.read_text()
+    assert box.separated().startswith('SEPARATED owner=alice ')
+    assert not box.handoff()
     assert not list(box.sudoers.iterdir())
 
 

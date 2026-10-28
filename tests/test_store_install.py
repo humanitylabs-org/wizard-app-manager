@@ -69,7 +69,7 @@ def _serve_store(monkeypatch, cfg):
     import http.client, json as _j
     from http.server import ThreadingHTTPServer
     from wam import cli
-    monkeypatch.setattr(si, "peer_uid", lambda p: 0)
+    monkeypatch.setattr(si, "peer_uid", lambda p, *args: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "o@x")
     monkeypatch.setattr(si, "served_origins", lambda h: {"https://b"})
     monkeypatch.setattr(si, "check_request", lambda *a: None)
@@ -78,7 +78,7 @@ def _serve_store(monkeypatch, cfg):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     body = _j.dumps({"source": "standard", "repo": "org/app", "commit": "a" * 40, "operation": "install"})
     h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
-    h.request("POST", "/app", body, {"Content-Type": "application/json", "Content-Length": str(len(body))})
+    h.request("POST", "/app", body, {"Content-Type": "application/json", "Content-Length": str(len(body)), "Tailscale-User-Login": "o@x"})
     r = h.getresponse(); out = (r.status, _j.loads(r.read() or b"{}")); srv.shutdown(); return out
 
 

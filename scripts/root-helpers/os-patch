@@ -1,0 +1,76 @@
+#!/usr/bin/python3 -I
+"""Root-owned, argument-free security patch entry point (Debian/Ubuntu).
+
+Never executes a checkout, imports user modules, or consumes caller configuration.
+Quiet-window scheduling and the owner's patch setting belong to a later slice.
+"""
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import signal
+import sys
+import tempfile
+
+if len(sys.argv) != 1:
+    sys.exit('os-patch takes no arguments')
+if os.geteuid() != 0:
+    sys.exit('os-patch requires root; use sudo -n /usr/local/libexec/wizard-os/os-patch')
+
+def interrupted(signum, frame):
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
+
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root',
+       'DEBIAN_FRONTEND': 'noninteractive', 'NEEDRESTART_MODE': 'l', 'NEEDRESTART_SUSPEND': '1'}
+CONFIG = r'''
+#clear Unattended-Upgrade::Allowed-Origins;
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Origins-Pattern {
+  "origin=Ubuntu,archive=${distro_codename}-security";
+  "origin=Debian,label=Debian-Security";
+};
+Unattended-Upgrade::Package-Blacklist {
+  ".*(docker|containerd|runc|podman|tailscale|systemd|udev|dbus).*";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+'''
+
+# Serialize helpers and restore the host's exact policy even after a failed upgrade.
+with open('/run/wizard-os-patch.lock', 'w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with tempfile.TemporaryDirectory(prefix='wizard-os-patch-', dir='/run') as work:
+        config = Path(work) / 'apt.conf'
+        config.write_text(CONFIG)
+        env = dict(ENV, APT_CONFIG=str(config))
+        subprocess.run(['/usr/bin/apt-get', '-o', 'DPkg::Lock::Timeout=600', 'update', '-qq'],
+                       env=env, stdin=subprocess.DEVNULL, check=True)
+        # APT_CONFIG is read before system fragments: explicitly use this file last
+        # as well, so neither distro defaults nor caller flags can widen origins.
+        env['APT_CONFIG'] = str(config)
+        policy = Path('/usr/sbin/policy-rc.d')
+        saved = Path(work) / 'policy-rc.d'
+        had_policy = policy.exists() or policy.is_symlink()
+        try:
+            if had_policy:
+                policy.rename(saved)
+            policy.write_text('#!/bin/sh\nexit 101\n')
+            policy.chmod(0o755)
+            # unattended-upgrade reads apt configuration; force our security-only
+            # overrides after the normal fragments using Dir::Etc::main.
+            loader = Path(work) / 'loader.conf'
+            loader.write_text('Dir::Etc::main "' + str(config) + '";\n')
+            env['APT_CONFIG'] = str(loader)
+            subprocess.run(['/usr/bin/unattended-upgrade', '--minimal-upgrade-steps'],
+                           env=env, stdin=subprocess.DEVNULL, check=True)
+        finally:
+            if saved.exists() or saved.is_symlink():
+                policy.unlink(missing_ok=True)
+                saved.rename(policy)
+            elif not had_policy:
+                policy.unlink(missing_ok=True)
+print('Security patch run completed; no service restart or reboot requested.')

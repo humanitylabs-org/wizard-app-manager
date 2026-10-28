@@ -33,6 +33,8 @@ def owner_login() -> str:
     try:
         d = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True,
                                       timeout=15).stdout or "{}")
+        if (d.get("Self") or {}).get("Tags"):
+            return ""  # tagged nodes have no human owner, even if UserID is also populated
         uid = str((d.get("Self") or {}).get("UserID") or "")
         return str(((d.get("User") or {}).get(uid) or {}).get("LoginName") or "")
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -114,7 +116,11 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
         except SystemExit as e:
             job.update(state="failed", error=str(e)[:400])
         except Exception as e:  # noqa: BLE001 - report, never crash the API server
-            job.update(state="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+            from .host_policy import NeedsOwnerApproval
+            if isinstance(e, NeedsOwnerApproval):
+                job.update(state="needs_owner_approval", **e.payload)
+            else:
+                job.update(state="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
         job["finished"] = int(time.time())
 
     threading.Thread(target=run, name=f"store-install-{app_id}", daemon=True).start()
@@ -140,7 +146,9 @@ def _links(c) -> None:
 
 def status(app_id: str) -> tuple[int, dict]:
     job = _jobs.get(app_id)
-    return (200, job) if job else (404, {"error": "no install for that app"})
+    if job:
+        return (409 if job.get('error') == 'needs_owner_approval' else 200), job
+    return 404, {"error": "no install for that app"}
 
 
 PORT = 7791
