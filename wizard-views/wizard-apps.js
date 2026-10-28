@@ -700,20 +700,22 @@ export async function renderConnections(el, ctx = {}) {
       return `<section class="wam-cm-band" data-cm-band="${b.key}" aria-label="${esc(b.title)}">${head(b)}<div class="wam-cm-nodes${wide}">${nodes.join('')}</div></section>`;
     };
     const inCluster = groups.filter((b) => b.key === 'app' || b.key === 'connector');
-    const map = m.apps.length
-      ? `<div class="wam-cm-map" data-mode="${m.mode}">
+    // Shown whenever there is something to group: on a box with only Wizard itself, the Agents and System bands.
+    const map =
+      m.apps.length || m.system.length
+        ? `<div class="wam-cm-map" data-mode="${m.mode}">
           <svg class="wam-cm-lines" aria-hidden="true"></svg>
           ${groups
             .filter((b) => b.key === 'agent')
             .map(band)
             .join('')}
-          <div class="wam-cm-cluster"><span class="wam-cm-tag" data-cm-tag>${esc(tag)}</span>${inCluster.map(band).join('')}</div>
+          ${inCluster.length ? `<div class="wam-cm-cluster"><span class="wam-cm-tag" data-cm-tag>${esc(tag)}</span>${inCluster.map(band).join('')}</div>` : ''}
           ${groups
             .filter((b) => b.key === 'system')
             .map(band)
             .join('')}
         </div>`
-      : note('No apps installed');
+        : note('No apps installed');
     // Details: the words an expert wants (mode, the live Docker check, the gateway, what can't be enforced).
     const unenforced = [];
     for (const a of d.apps)

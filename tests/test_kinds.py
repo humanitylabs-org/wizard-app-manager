@@ -53,13 +53,29 @@ def test_agents_the_box_knows_about(tmp_path):
     assert kinds.agents(home) == [] and kinds.agents(None) == []
     (home / "alongside.json").write_text(json.dumps({"mode": "alongside", "agent": {
         "external": True, "id": "host-hermes", "name": "host Hermes", "origin": "http://127.0.0.1:8642"}}))
+    # the Agent Service keeps its agents in its own app data
+    root = tmp_path / "runtipi" / "app-data" / "wizardapps" / "wizard-agent-service" / "data" / "wizard-os" / "agents"
     for aid, extra in (("hermes", {}), ("private", {"label": "Private", "privacy": "private",
-                                                    "permissions": {"wizard_apps": []}}), ("Bad", {})):
-        (home / "agents" / aid).mkdir(parents=True)
-        (home / "agents" / aid / "agent.json").write_text(json.dumps({"schema": 1, "id": aid, **extra}))
-    (home / "agents" / "junk").mkdir()
-    (home / "agents" / "junk" / "agent.json").write_text("{not json")
-    assert kinds.agents(home) == [
-        {"id": "host-hermes", "name": "host Hermes", "main": True, "private": False, "limited": False},
-        {"id": "private", "name": "Private", "main": False, "private": True, "limited": True},
+                                                    "permissions": {"wizard_apps": ["files"], "agent_apps": []},
+                                                    "runtime": {"kind": "container", "app_id": "agent-private"}}),
+                       ("Bad", {})):
+        (root / aid).mkdir(parents=True)
+        (root / aid / "agent.json").write_text(json.dumps({"schema": 1, "id": aid, **extra}))
+    (root / "junk").mkdir()
+    (root / "junk" / "agent.json").write_text("{not json")
+    (home / "agents").mkdir()   # an older layout loses to the Agent Service's own folder
+    assert kinds.agents_dir(home, tmp_path / "runtipi") == root
+    assert kinds.agents(home, tmp_path / "runtipi") == [
+        {"id": "host-hermes", "name": "host Hermes", "main": True, "private": False, "apps": None, "app": None},
+        {"id": "private", "name": "Private", "main": False, "private": True, "apps": ["files"], "app": "agent-private"},
     ]
+    # the main agent's own app lists (.main-agent.json): the gateway enforces them, so the map says them
+    (root / ".main-agent.json").write_text(json.dumps({"schema": 1, "wizard_apps": ["money", "files"], "agent_apps": ["transcriber"]}))
+    assert kinds.main_agent_apps(root) == ["files", "money", "transcriber"]
+    assert kinds.agents(home, tmp_path / "runtipi")[0]["apps"] == ["files", "money", "transcriber"]
+    assert kinds.main_agent_apps(None) is None
+
+
+def test_a_private_app_is_reported_private():
+    assert kinds.fields({"type": "service", "privacy": "Private"})["private"] is True
+    assert "private" not in kinds.fields({"type": "service"})

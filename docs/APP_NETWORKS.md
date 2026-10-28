@@ -250,9 +250,12 @@ it per app as `kind`.
 only when the rule gets an app wrong. Bad values are ignored.
 
 Agents that are not apps are listed too (report `agents`): the host's own agent on an alongside box (`alongside.json`)
-and the Agent Service's agents registry (`agents/<id>/agent.json`, wizard-os `spec/AGENTS.md`). The main agent shows as
-"Your agent"; none known shows one "Your agent". An agent's line says what it can use: "every app and connector",
-or "only the apps you picked for it" when its `agent.json` lists `permissions.wizard_apps`. Connectors are on the app
+and the Agent Service's agents registry (`agents/<id>/agent.json` in the Agent Service's app data, wizard-os
+`spec/AGENTS.md`). The main agent shows as "Your agent"; none known shows one "Your agent". An agent that runs as an
+installed app (`runtime.app_id`) is shown once, as the agent. An agent's line says what it can use, from the app lists
+the gateway enforces (`permissions.wizard_apps` + `agent_apps`; the main agent's in `.main-agent.json`, report
+`main_agent_apps`; without them, every installed app except `privacy: private` ones): "every app and connector" or
+"2 of your 30 apps and connectors". Connectors are on the app
 networks like apps: they can be cut off, asked first, and are in the "All connected" cluster. System items can't be
 cut off; their sheet says so.
 

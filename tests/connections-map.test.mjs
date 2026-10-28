@@ -317,19 +317,52 @@ test('Agents: one "Your agent" when the box names none; what an agent can use is
   );
   assert.equal(bands(m)[0].key, 'agent');
   assert.equal(canUse(m.agents[0]), 'every app and connector');
+  const apps = [app('cinequeue', 'Movies'), app('files', 'Files'), app('wizard-monarch', 'Monarch', [], { kind: 'connector' })];
   const two = mapModel(
-    report([app('cinequeue', 'Movies')], {
+    report(apps, {
       agents: [
-        { id: 'host-hermes', name: 'host Hermes', main: true },
-        { id: 'private', name: 'Private', private: true, limited: true },
+        { id: 'host-hermes', name: 'host Hermes', main: true, apps: ['cinequeue', 'files', 'wizard-monarch', 'gone-app'] },
+        { id: 'private', name: 'Private', private: true, apps: ['files'] },
+        { id: 'sealed', name: 'Sealed', private: true, apps: [] },
       ],
     }),
   );
   assert.deepEqual(
-    two.agents.map((a) => a.name),
-    ['Your agent', 'Private'],
+    two.agents.map((a) => [a.name, canUse(a)]),
+    [
+      ['Your agent', 'every app and connector'],
+      ['Private', '1 of your 3 apps and connectors'],
+      ['Sealed', 'none of your apps or connectors'],
+    ],
   );
-  assert.equal(canUse(two.agents[1]), 'only the apps you picked for it');
+  // the main agent's own lists (.main-agent.json) when its entry carries none; without lists, private apps are left out
+  const listed = mapModel(report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }], main_agent_apps: ['files'] }));
+  assert.equal(canUse(listed.agents[0]), '1 of your 3 apps and connectors');
+  const priv = report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] });
+  priv.apps[0].privacy = 'private';
+  assert.equal(canUse(mapModel(priv).agents[0]), '2 of your 3 apps and connectors');
+});
+
+test('An agent that runs as an installed app is shown once, as the agent', () => {
+  const d = report([app('cinequeue', 'Movies'), app('agent-private', 'Private agent', [], { kind: 'agent' })], {
+    agents: [{ id: 'private', name: 'Private', private: true, apps: ['cinequeue'], app: 'agent-private' }],
+  });
+  const g = bands(mapModel(d));
+  assert.deepEqual(
+    g[0].agents.map((a) => a.id),
+    ['private'],
+  );
+  assert.deepEqual(g[0].apps, []);
+  assert.equal(canUse(g[0].agents[0]), 'every app and connector');
+});
+
+test('A box with only Wizard itself still has its Agents and System groups', () => {
+  const m = mapModel(report([]));
+  assert.deepEqual(m.apps, []);
+  assert.deepEqual(
+    bands(m).map((b) => b.key),
+    ['agent', 'system'],
+  );
 });
 
 test('Groups: an agent app in the core is an agent, not System', () => {

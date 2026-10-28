@@ -28,7 +28,9 @@ def fields(w: dict | None) -> dict:
     w = w if isinstance(w, dict) else {}
     k = str(w.get("kind") or "").strip().lower()
     return {"type": w.get("type"), "category": w.get("category"), "view": bool(w.get("view")),
-            "system": w.get("system") is True, **({"kind": k} if k in KINDS else {})}
+            "system": w.get("system") is True, **({"kind": k} if k in KINDS else {}),
+            # `privacy: private` (registry.py): the main agent gets it only once the owner ticks it in Agents
+            **({"private": True} if str(w.get("privacy", "")).strip().lower() == "private" else {})}
 
 
 def kind_of(meta: dict | None, core: bool = False) -> str:
@@ -53,34 +55,74 @@ def kind_of(meta: dict | None, core: bool = False) -> str:
     return "app"
 
 
-def agents(home: Path | str | None) -> list[dict]:
-    """The agents this box knows about that are not apps: the host's own agent on an alongside box
-    (alongside.json), and the Agent Service's agents registry (`<home>/agents/<id>/agent.json`, spec/AGENTS.md).
-    Each: {id, name, main, private, limited}. `limited`: its agent.json lists the apps it may use (the gateway
-    enforces that list); otherwise it can use every app and connector."""
-    if not home:
-        return []
-    home = Path(home)
-    out: list[dict] = []
+def agents_dir(home: Path | None, runtipi_root: Path | None, store: str = "wizardapps") -> Path | None:
+    """Where the Agent Service keeps its agents (its own app data; the same order as wam backup's agents_root):
+    app-data/<store>/wizard-agent-service/data/wizard-os/agents, the pre-split bundle, the Wizard home, a shared
+    app-data/wizard-os. The first that exists, else None."""
+    from .slots import BUNDLE_FILLS
+    cands = []
+    if runtipi_root:
+        r = Path(runtipi_root)
+        cands += [r / "app-data" / store / app / "data" / "wizard-os" / "agents"
+                  for app in ("wizard-agent-service", *[a for a, f in BUNDLE_FILLS.items() if "agent-service" in f])]
+    if home:
+        cands.append(Path(home) / "agents")
+    if runtipi_root:
+        cands.append(Path(runtipi_root) / "app-data" / "wizard-os" / "agents")
+    for d in cands:
+        try:
+            if d.is_dir():
+                return d
+        except OSError:
+            continue
+    return None
+
+
+def _read(f: Path):
     try:
-        from . import alongside
-        ext = (alongside.external_slots(home) or {}).get("agent")
-    except Exception:  # noqa: BLE001 - no alongside state: no host agent
-        ext = None
+        return json.loads(f.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _apps(perms) -> list[str] | None:
+    """The app ids an agent may use (Agent Service: wizard_apps + agent_apps), or None when it doesn't say."""
+    if not isinstance(perms, dict) or not any(isinstance(perms.get(k), list) for k in ("wizard_apps", "agent_apps")):
+        return None
+    return sorted({str(x) for k in ("wizard_apps", "agent_apps") for x in (perms.get(k) or []) if isinstance(x, str)})
+
+
+def main_agent_apps(root: Path | None) -> list[str] | None:
+    """The main agent's app lists (`.main-agent.json`, Agent Service #58). None: absent, i.e. every installed app."""
+    st = _read(root / ".main-agent.json") if root else None
+    return _apps(st) if isinstance(st, dict) and st.get("schema") == 1 else None
+
+
+def agents(home: Path | str | None, runtipi_root: Path | str | None = None) -> list[dict]:
+    """The agents this box knows about: the host's own agent on an alongside box (alongside.json) and the Agent
+    Service's agents registry (`agents/<id>/agent.json`, spec/AGENTS.md). Each: {id, name, main, private, apps, app}.
+    `apps`: the app ids it may use (the gateway enforces them), None = every installed app. `app`: the installed app
+    that runs it (`runtime.app_id`), so the map shows that agent once."""
+    out: list[dict] = []
+    root = agents_dir(Path(home) if home else None, Path(runtipi_root) if runtipi_root else None)
+    ext = None
+    if home:
+        try:
+            from . import alongside
+            ext = (alongside.external_slots(Path(home)) or {}).get("agent")
+        except Exception:  # noqa: BLE001 - no alongside state: no host agent
+            ext = None
     if isinstance(ext, dict) and ext.get("id"):
         out.append({"id": str(ext["id"]), "name": str(ext.get("name") or ext["id"]), "main": True, "private": False,
-                    "limited": False})
-    root = home / "agents"
-    for f in sorted(root.glob("*/agent.json")) if root.is_dir() else []:
-        try:
-            a = json.loads(f.read_text())
-        except (OSError, ValueError):
-            continue
+                    "apps": main_agent_apps(root), "app": None})
+    for f in sorted(root.glob("*/agent.json")) if root else []:
+        a = _read(f)
         if not isinstance(a, dict) or a.get("schema") != 1 or not AGENT_ID.fullmatch(str(a.get("id") or "")):
             continue
         if a["id"] == "hermes" and any(x["main"] for x in out):
             continue   # the main agent, already listed as the host's agent
-        perms = a.get("permissions") if isinstance(a.get("permissions"), dict) else {}
+        rt = a.get("runtime") if isinstance(a.get("runtime"), dict) else {}
         out.append({"id": a["id"], "name": str(a.get("label") or a["id"]), "main": a["id"] == "hermes",
-                    "private": a.get("privacy") == "private", "limited": isinstance(perms.get("wizard_apps"), list)})
+                    "private": a.get("privacy") == "private", "apps": _apps(a.get("permissions")),
+                    "app": str(rt["app_id"]) if isinstance(rt.get("app_id"), str) else None})
     return out

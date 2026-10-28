@@ -34,8 +34,12 @@ export function bandOf(kind) {
   return { key: b.key, where: `In ${b.title}`, blurb: b.blurb };
 }
 
-/** What an agent can use, in words that are true today: every app and connector, unless its agent.json lists apps. */
-export const canUse = (agent) => (agent?.limited ? 'only the apps you picked for it' : 'every app and connector');
+/** What an agent can use, in words that are true today: every app and connector, unless its app lists leave some out. */
+export const canUse = (agent) => {
+  const l = agent?.limit;
+  if (!l) return 'every app and connector';
+  return l.can ? `${l.can} of your ${l.of} apps and connectors` : 'none of your apps or connectors';
+};
 
 const pairKey = (a, b) => (a < b ? `${a}\0${b}` : `${b}\0${a}`);
 const provides = (r, id) => (r.providers || []).includes(id) || slotName(r.to) === id;
@@ -170,6 +174,23 @@ export function mapModel(d) {
   // an agent that is part of the core (a fresh box's agent app). None known: one "Your agent", as before.
   const coreItems = core.map((a) => ({ id: a.id, name: a.name || a.id, kind: kindOf(a, 'system') }));
   const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
+  // An agent that runs as an installed app (`agent-<id>`) is shown once, as the agent: its app copy leaves the bands.
+  const backing = new Set(known.map((a) => a.app).filter((x) => x && ids.has(x)));
+  // What an agent may use (the Agent Service's lists, enforced by the gateway), against the apps and connectors here.
+  const usable = out.filter((a) => (a.kind === 'app' || a.kind === 'connector') && !backing.has(a.id));
+  const limitOf = (list) => {
+    if (!Array.isArray(list)) return null;
+    const ok = new Set(list);
+    const can = usable.filter((a) => ok.has(a.id)).length;
+    return can >= usable.length ? null : { can, of: usable.length };
+  };
+  // The main agent without its own lists uses every installed app except private ones (Agent Service #58).
+  const privateIds = new Set(all.filter((a) => a.privacy === 'private').map((a) => a.id));
+  const mainApps = Array.isArray(d?.main_agent_apps)
+    ? d.main_agent_apps
+    : privateIds.size
+      ? usable.map((a) => a.id).filter((x) => !privateIds.has(x))
+      : null;
   const agents = [
     ...known.map((a) => ({
       id: a.id,
@@ -177,17 +198,25 @@ export function mapModel(d) {
       real: a.name || a.id,
       main: !!a.main,
       private: !!a.private,
-      limited: !!a.limited,
+      limit: limitOf(a.main && !Array.isArray(a.apps) ? mainApps : a.apps),
     })),
     ...coreItems
       .filter((a) => a.kind === 'agent')
-      .map((a) => ({ id: a.id, name: known.length ? a.name : 'Your agent', real: a.name, main: !known.length, private: false, limited: false })),
+      .map((a) => ({
+        id: a.id,
+        name: known.length ? a.name : 'Your agent',
+        real: a.name,
+        main: !known.length,
+        private: false,
+        limit: limitOf(mainApps),
+      })),
   ];
-  if (!agents.length) agents.push({ id: '', name: 'Your agent', real: '', main: true, private: false, limited: false });
+  if (!agents.length) agents.push({ id: '', name: 'Your agent', real: '', main: true, private: false, limit: limitOf(mainApps) });
   return {
     mode,
     apps: out,
     agents,
+    backing: [...backing],
     system: coreItems.filter((a) => a.kind !== 'agent'),
     agent: { ids: core.map((a) => a.id), detail: d?.gateway?.detail || '' },
     cuts: [...cuts.values()],
@@ -208,7 +237,7 @@ export function bands(model) {
   return BANDS.map((b) => ({
     ...b,
     agents: b.key === 'agent' ? model.agents : [],
-    apps: model.apps.filter((a) => a.kind === b.key),
+    apps: model.apps.filter((a) => a.kind === b.key && !(model.backing || []).includes(a.id)),
     system: (model.system || []).filter((s) => s.kind === b.key),
   })).filter((b) => b.agents.length + b.apps.length + b.system.length);
 }

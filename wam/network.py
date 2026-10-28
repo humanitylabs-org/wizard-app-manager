@@ -1441,6 +1441,7 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             "id": a["id"], "name": a.get("name") or a["id"], "state": a["state"], "why": a.get("why") or "",
             # the group the Connections map shows it in (wam/kinds.py): agent | app | connector | system
             "kind": kinds.kind_of(a.get("wizard"), a["id"] in p["gateway"]["core"]),
+            **({"privacy": "private"} if (a.get("wizard") or {}).get("private") else {}),
             "running": running, "internet": internet, "gateway": gw, "host_access": a.get("host_access") or [],
             "can_reach": [{"to": e["provider"] or e["to"], "declared": e["to"], "reason": e["reason"], "state": e["state"],
                            "network": e.get("network")} for e in out_edges] +
@@ -1496,7 +1497,8 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                                    "network": shared_docker} for x in peers]
     shared_members = sorted(n for n in (live["networks"].get(shared_docker) or {}).get("containers", []))
     res = {"schema": 1, "enabled": p["enabled"], "mode": p.get("mode") or "declared", "checked_at": int(time.time()), "live": live_ok,
-           "gateway": p["gateway"], "apps": apps, "agents": kinds.agents(getattr(c, "home", None)),
+           "gateway": p["gateway"], "apps": apps, "agents": kinds.agents(getattr(c, "home", None), getattr(c, "runtipi_root", None)),
+           "main_agent_apps": kinds.main_agent_apps(kinds.agents_dir(getattr(c, "home", None), getattr(c, "runtipi_root", None))),
            "networks": [{"name": n, "kind": v["kind"], "internal": v["internal"],
                          "members": sorted({f"{m['app']}/{m['service']}" for m in v["members"]}),
                          "exists": n in live["networks"], "matches": network_matches(v, live["networks"].get(n))}
