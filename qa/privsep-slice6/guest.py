@@ -59,6 +59,12 @@ def agent(*args, **kwargs):
                 'PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin',*args],**kwargs)
 
 
+def original_operator():
+    expected = json.loads((CONTROL/'journal.json').read_text())['operator']
+    actual = json.loads(run(['tailscale','debug','prefs'])).get('OperatorUser') or ''
+    assert actual == expected, (actual, expected)
+
+
 def app_lifecycle(verb, app):
     """Scope lifecycle to an app on both main and the separated thin client.
 
@@ -225,7 +231,7 @@ def main(argv):
         saved=json.loads(Path('/root/slice6-before.json').read_text())
         assert set(run(['id','-nG','hermes']).split())==set(saved['groups'])
         assert hashlib.sha256((OLD/'.wizard-os/api-token').read_bytes()).hexdigest()==saved['api_token_hash']
-        assert json.loads(run(['tailscale','debug','prefs']))['OperatorUser']=='hermes'
+        original_operator()
         assert agent('systemctl','--user','is-active','wizard-app-manager-api.service').strip()=='active'
         canaries(OLD); host_canary()
         expected=json.loads(Path('/root/slice6-all-data-hashes.json').read_text())

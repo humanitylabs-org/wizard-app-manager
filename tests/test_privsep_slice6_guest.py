@@ -28,6 +28,17 @@ def test_guest_agent_uses_its_own_bus_not_the_root_ssh_environment(guest, monkey
     assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1234/bus' in argv
 
 
+@pytest.mark.parametrize('before,after,ok', [('',{},True),('hermes',{'OperatorUser':'hermes'},True),
+    ('hermes',{},False),('',{'OperatorUser':'wizard-system'},False)])
+def test_rollback_compares_exact_original_operator_even_when_it_was_unset(guest,tmp_path,monkeypatch,before,after,ok):
+    monkeypatch.setattr(guest,'CONTROL',tmp_path)
+    (tmp_path/'journal.json').write_text(json.dumps({'operator':before}))
+    monkeypatch.setattr(guest,'run',lambda args:json.dumps(after))
+    if ok: guest.original_operator()
+    else:
+        with pytest.raises(AssertionError):guest.original_operator()
+
+
 def test_guest_selects_three_observed_apps_without_assuming_quest(guest):
     catalog = [{'id': name} for name in ('wizard-calendar', 'wizard-notes', 'wizard-shopping', 'unrelated')]
     assert guest.select_apps(catalog) == ['wizard-calendar', 'wizard-shopping', 'wizard-notes']
