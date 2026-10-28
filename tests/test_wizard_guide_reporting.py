@@ -37,3 +37,18 @@ def test_problem_report_keeps_two_try_stop_consent_and_public_fallback():
     assert 'This report will be public on GitHub, where anyone can read it.' in text
     assert 'do not create a public link or submit it' in text
     assert text.index('This report will be public') < text.index('https://github.com/')
+
+
+def test_owned_app_changes_do_not_require_wizard_developer_mode():
+    text = GUIDE.read_text()
+    assert "Changes to an owner's own app server or stored data do not require Wizard developer mode" in text
+    assert text.index('If it is an app the owner built or owns') < text.index('Wizard has three levels')
+
+
+def test_idea_and_code_contributions_require_privacy_and_public_consent():
+    text = GUIDE.read_text().split('### Proposing a change for everyone', 1)[1].split("### When you can't fix", 1)[0]
+    for required in ('never paste the whole `skin.js`', 'This report will be public on GitHub',
+                     'privacy-scrub the code and metadata', 'which GitHub account will publish it',
+                     'use the private handoff if they decline public sharing'):
+        assert required in text
+    assert text.index('This report will be public') < text.index('pull request')

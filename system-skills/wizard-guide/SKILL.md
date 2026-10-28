@@ -58,6 +58,8 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 
 ## Changing or fixing Wizard itself
 
+If it is an app the owner built or owns, or their My skin, just make the change with `wizard-builder`. Changes to an owner's own app server or stored data do not require Wizard developer mode. The levels below apply only to Wizard's own parts.
+
 Wizard has three levels of change. Before you start, tell the owner which one their request needs, in one line.
 
 1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
@@ -80,8 +82,8 @@ Rules:
 
 When they want a change in Standard (or a tweak they like for everyone):
 
-1. Write it up in three short lines (what happens now, what they want, why); attach the tweak if there is one.
-2. Show it to them. Only with their OK, send it the same way as a problem report (below), with the title starting `Idea:`; or open a pull request if they asked you to and you have access.
+1. Write it up in three short lines (what happens now, what they want, why). Describe a tweak in words, or use only a privacy-scrubbed excerpt that fits the report's length limit; never paste the whole `skin.js`.
+2. The privacy scrub, complete-text preview and consent rules under "When you can't fix a Wizard problem" apply to Idea reports and code contributions too. Explain before approval: "This report will be public on GitHub, where anyone can read it." With their OK, send the approved report the same way as a problem report, with the title starting `Idea:`; use the private handoff if they decline public sharing. Open a pull request only if they asked you to and you have access; first show the exact proposed public content, privacy-scrub the code and metadata, and say which GitHub account will publish it, then get their OK.
 3. Once it ships in Standard, offer to turn their own copy off.
 
 ### When you can't fix a Wizard problem
