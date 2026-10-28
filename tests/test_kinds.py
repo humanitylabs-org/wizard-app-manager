@@ -77,6 +77,11 @@ def test_agents_the_box_knows_about(tmp_path):
     (root / ".main-agent.json").write_text(json.dumps({"schema": 1, "wizard_apps": ["money", "files"], "agent_apps": ["transcriber"]}))
     assert kinds.main_agent_apps(root) == ["files", "money", "transcriber"]
     assert kinds.agents(home, tmp_path / "runtipi")[0]["apps"] == ["files", "money", "transcriber"]
+    # a registry `hermes` (a fresh box's main agent) takes the same lists, never its own permissions
+    (home / "alongside.json").unlink()
+    (root / "hermes" / "agent.json").write_text(json.dumps({"schema": 1, "id": "hermes", "permissions": {"wizard_apps": ["x"]}}))
+    assert kinds.agents(home, tmp_path / "runtipi")[0] == {"id": "hermes", "name": "hermes", "main": True, "private": False,
+                                                           "apps": ["files", "money", "transcriber"], "app": None}
     assert kinds.main_agent_apps(None) is None
 
 

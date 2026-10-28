@@ -128,6 +128,8 @@ def agents(home: Path | str | None, runtipi_root: Path | str | None = None) -> l
             continue   # the main agent, already listed as the host's agent
         rt = a.get("runtime") if isinstance(a.get("runtime"), dict) else {}
         out.append({"id": a["id"], "name": str(a.get("label") or a["id"]), "main": a["id"] == "hermes",
-                    "private": a.get("privacy") == "private", "apps": _apps(a.get("permissions")),
+                    "private": a.get("privacy") == "private",
+                    # the main agent's lists live in .main-agent.json (Agent Service #58), not in a registry entry
+                    "apps": main_agent_apps(root) if a["id"] == "hermes" else _apps(a.get("permissions")),
                     "app": str(rt["app_id"]) if isinstance(rt.get("app_id"), str) else None})
     return out

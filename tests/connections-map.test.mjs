@@ -338,6 +338,14 @@ test('Agents: one "Your agent" when the box names none; what an agent can use is
   // the main agent's own lists (.main-agent.json) when its entry carries none; without lists, private apps are left out
   const listed = mapModel(report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }], main_agent_apps: ['files'] }));
   assert.equal(canUse(listed.agents[0]), '1 of your 3 apps and connectors');
+  // and only there: a registry entry's own permissions never speak for the main agent
+  const reg = mapModel(
+    report(apps, {
+      agents: [{ id: 'hermes', name: 'Hermes', main: true, apps: ['files'] }],
+      main_agent_apps: ['cinequeue', 'files', 'wizard-monarch'],
+    }),
+  );
+  assert.equal(canUse(reg.agents[0]), 'every app and connector');
   const priv = report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] });
   priv.apps[0].privacy = 'private';
   assert.equal(canUse(mapModel(priv).agents[0]), '2 of your 3 apps and connectors');

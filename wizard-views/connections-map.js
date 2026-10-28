@@ -203,7 +203,8 @@ export function mapModel(d) {
       real: a.name || a.id,
       main: !!a.main,
       private: !!a.private,
-      limit: limitOf(a.main && !Array.isArray(a.apps) ? mainApps : a.apps),
+      // the main agent's lists live in .main-agent.json (main_agent_apps), never in a registry entry
+      limit: limitOf(a.main ? mainApps : a.apps),
     })),
     // a core agent app (a fresh box's agent) unless a registry entry already shows it; it is the main agent
     // unless the box names another one
