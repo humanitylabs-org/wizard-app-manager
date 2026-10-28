@@ -434,7 +434,11 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
         for p in files:
             p.unlink(missing_ok=True)
         run("daemon-reload")
-    return {"mode": m, "timer": m == "auto"}
+    out = {"mode": m, "timer": m == "auto"}
+    if unit_dir is None:   # the installer's call also sets up app updates (their own mode, default Automatic)
+        from . import app_updates
+        out.update(app_updates.ensure_timer(home, None, systemctl))
+    return out
 
 
 def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, systemctl: bool = True) -> dict:

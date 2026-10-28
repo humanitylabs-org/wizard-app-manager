@@ -18,6 +18,8 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
+  wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
+                                checked and rolled back on failure)
   wam doctor [--fix]            check the whole chain
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
@@ -1339,6 +1341,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
+        if u.path == "/api/app-updates":
+            from . import app_updates
+            return self._json(200, app_updates.status(c))
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -1361,6 +1366,14 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) == {"channel"}:
                     return self._json(200, updates.set_channel(str(body.get("channel", ""))))
                 return self._json(200, updates.set_mode(str(body.get("mode", ""))))
+            if path == "/api/app-updates":        # {"mode": "auto"|"ask"}, {"hold"|"unhold": id} or {"action": "apply"}
+                from . import app_updates
+                body = self._body()
+                if body.get("action") == "apply":
+                    return self._json(200, app_updates.start_detached())
+                if body.get("hold") or body.get("unhold"):
+                    return self._json(200, app_updates.hold(str(body.get("hold") or body.get("unhold")), bool(body.get("hold"))))
+                return self._json(200, app_updates.set_mode(str(body.get("mode", ""))))
             if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
                 from . import updates
                 return self._json(200, updates.apply(force=self._body().get("force") is True))
@@ -1666,7 +1679,25 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
+                                             "(default) / --ask, --hold / --unhold <id>")
+    aug = au.add_mutually_exclusive_group()
+    aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
+    aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
+    aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
+    aug.add_argument("--ensure-timer", action="store_true")
+    au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
     args = ap.parse_args(argv)
+    if args.cmd == "app-updates":
+        from . import app_updates as au_
+        res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
+               else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
+               else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto
+               else au_.apply(only=args.apply or None, dry_run=args.dry_run) if args.apply is not None
+               else au_.status())
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") or res.get("failed") else 0
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:
