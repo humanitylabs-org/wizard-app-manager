@@ -181,6 +181,9 @@ view's Open / Declared switch, `wam network mode open|declared`). `wam serve` re
   grant) is not new: it gets an ordinary grant with its key and never waits. Turning Sensitive off drops the open grants
   and what was waiting: open mode connects them anyway. Because a link is two-way, a sensitive app can't open a
   connection to an app that may not reach it either.
+- A cut between two apps that both keep Runtipi's shared network (each publishes a service through the reverse proxy)
+  can't be enforced: they still meet there. `wam connections` ("NOT CUT") and the view say so; unpublish one of them to
+  enforce it. The shell, Agent Service and agent reach every app through the gateway, so they can't be marked sensitive.
 - The gateway path, the start-time gate, host access, foreign/reserved networks, Traefik labels and the owner-only API
   are the same as in declared mode. `wizard-mesh` is reserved like every `wizard-*` network: a recipe that names it is
   refused (wam and the App Manager).

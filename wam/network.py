@@ -619,7 +619,9 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
     part = {a["id"]: a for a in apps if a["state"] in ("isolated", "exposed")}
     for a in iso.values():
         member(app_net(a["id"]), "app", a, svc_members(a), False, owner=a["id"])
-    opened = open_topology(part, core, state, resolve) if (on and mode == "open") else None
+    opened = (open_topology(part, core, state, resolve,
+                            shared={i for i, a in part.items() if any(keeps_shared(a, s) for s in a["services"])})
+              if (on and mode == "open") else None)
     for e in edges:
         c, p = part.get(e["from"]), part.get(e["provider"] or "")
         if not e["provider"]:
@@ -637,6 +639,8 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             pair = frozenset((c["id"], p["id"]))
             if pair in opened["blocked"]:
                 e["state"], e["network"] = opened["blocked"][pair], None
+            elif pair in opened["unenforced"]:
+                e["state"], e["network"] = "shared-network", None
             elif c["id"] in opened["mesh"] and p["id"] in opened["mesh"]:
                 e["state"], e["network"] = "mesh", MESH_NET
             else:
@@ -680,7 +684,7 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             "mode": mode, "open": opened}
 
 
-def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
+def open_topology(part: dict, core, state: dict | None, resolve, shared=frozenset()) -> dict:
     """Open mode (the default): every app reaches every other app, except
     - a pair the owner disconnected (a `denied` row, either direction: Docker networks are two-way, so a Disconnect cuts
       the pair both ways), and
@@ -692,7 +696,10 @@ def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
     the mesh, and each of those gets one internal link per app it may still reach. Networks = 1 + about
     (apps out of the mesh) x (apps). The gateway components (fresh boxes: shell, Agent Service, agent) keep their
     gateway networks and never join the mesh.
-    Returns {mesh: set, out: set, blocked: {frozenset(pair): why}, links: {frozenset(pair): network}, link_ends}."""
+    `shared`: apps that keep Runtipi's shared network (a service published through the reverse proxy). Two of them still
+    meet there, so a cut between them can't be enforced: it is reported under `unenforced`, never claimed as blocked.
+    Returns {mesh: set, out: set, blocked: {frozenset(pair): why}, links: {frozenset(pair): network}, link_ends,
+    unenforced: {frozenset(pair): why}}."""
     peers = sorted(i for i in part if i not in set(core))
     sensitive = set((state or {}).get("sensitive") or []) & set(peers)
 
@@ -719,6 +726,9 @@ def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
             pair = frozenset((x, s))
             if x != s and pair not in blocked and (x, s) not in granted and (s, x) not in by_owner:
                 blocked[pair] = "pending" if ((x, s) in waiting or (s, x) in waiting) else "sensitive"
+    unenforced = {pr: why for pr, why in blocked.items() if pr <= set(shared)}
+    for pr in unenforced:
+        del blocked[pr]
     # Who leaves the mesh: every sensitive app (its reach is per approval), then a greedy cover of the remaining cuts.
     out = set(sensitive)
     left = [pr for pr in blocked if not (pr & out)]
@@ -740,7 +750,7 @@ def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
             a, b = sorted((x, y))
             name = link_name(a, b)
             links[pair], ends[name] = name, (a, b)
-    return {"mesh": mesh, "out": out, "blocked": blocked, "links": links, "link_ends": ends}
+    return {"mesh": mesh, "out": out, "blocked": blocked, "links": links, "link_ends": ends, "unenforced": unenforced}
 
 
 def keeps_shared(a: dict, service: str) -> bool:
@@ -1465,7 +1475,10 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                 "mesh": a["id"] in o["mesh"],
                 "links": sorted(n for pr, n in o["links"].items() if a["id"] in pr),
                 "unreachable": sorted(({"app": next(iter(pr - {a["id"]})), "why": why}
-                                       for pr, why in o["blocked"].items() if a["id"] in pr), key=lambda r: r["app"])}
+                                       for pr, why in o["blocked"].items() if a["id"] in pr), key=lambda r: r["app"]),
+                # cut by the owner, but both keep Runtipi's shared network (published through the reverse proxy)
+                "unenforced": sorted(({"app": next(iter(pr - {a["id"]})), "why": why}
+                                      for pr, why in o["unenforced"].items() if a["id"] in pr), key=lambda r: r["app"])}
     # Apps that keep Runtipi's shared network (isolation off, a published service, custom / host-access apps) can
     # all open connections to each other there, declared or not: list those peers both ways, so the report never
     # understates what an app can actually reach.
@@ -1533,6 +1546,9 @@ def describe(rep: dict) -> str:
             cut = [f"{r['app']}{word.get(r['why'], '')}" for r in a["open"]["unreachable"]]
             lines.append(f"  can reach: every other app{(' except ' + ', '.join(cut)) if cut else ''} "
                          f"({'the mesh' if a['open']['mesh'] else str(len(a['open']['links'])) + ' links'})")
+            for r in a["open"].get("unenforced") or []:
+                lines.append(f"  NOT CUT: {r['app']} ({r['why']}): both keep Runtipi's shared network (published through the "
+                             "reverse proxy), so they still reach each other; unpublish one to enforce it")
         else:
             lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
         by = [b["from"] + (" (shared network)" if b["state"] == "shared-network" else "")

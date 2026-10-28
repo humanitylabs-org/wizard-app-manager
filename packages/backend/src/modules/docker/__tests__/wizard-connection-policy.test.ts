@@ -360,6 +360,13 @@ describe('open mode (the default): everything connected unless the owner disconn
     expect(s.denied).toEqual([]);
   });
 
+  it('refuses Sensitive for the shell, Agent Service and agent (the gateway reaches every app)', async () => {
+    await install('wizard-agent-service', { name: 'Agent Service', provides: ['agent-service'] });
+    await expect(store.setSensitive('wizard-agent-service', true)).rejects.toThrow(/can’t be marked sensitive/);
+    expect((await state()).sensitive).toEqual([]);
+    expect((await store.setSensitive('wizard-agent-service', false)).sensitive).toEqual([]); // turning it off always works
+  });
+
   it('the mode route sits behind the owner sign-in like the others', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, WizardSharesController)).toEqual([AuthGuard]);
     expect(Object.getOwnPropertyNames(WizardSharesController.prototype)).toContain('mode');

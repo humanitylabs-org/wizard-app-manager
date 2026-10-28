@@ -1455,3 +1455,21 @@ def test_the_mesh_fits_a_small_configured_pool():
     with pytest.raises(net.NetworkError):
         net._subnet_for(n, ["10.99.0.0/26", "10.99.0.64/27"], small, set())   # 36 addresses don't fit in a /27
     assert net._subnet_for({"name": "wizard-link-a--b"}, [], small, set()) == "10.99.0.0/27"
+
+
+def test_a_cut_between_two_published_apps_is_reported_not_claimed():
+    apps = carlos()
+    for a in apps:
+        if a["id"] in ("carlos-crm", "resend-connector", "stripe-connector"):
+            a["services"][a["id"]]["exposed"] = True       # published through Runtipi's reverse proxy
+    st = _st(denied=[("carlos-crm", "resend-connector"), ("carlos-crm", "twenty-crm")])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    o = p["open"]
+    assert frozenset(("carlos-crm", "resend-connector")) in o["unenforced"]
+    assert frozenset(("carlos-crm", "resend-connector")) not in o["blocked"]
+    assert o["blocked"][frozenset(("carlos-crm", "twenty-crm"))] == "disconnected"   # twenty-crm isn't published: enforced
+    p["state"] = st
+    rep = net.report(__import__("types").SimpleNamespace(), p=p, live={"networks": {}, "containers": []})
+    crm = next(a for a in rep["apps"] if a["id"] == "carlos-crm")
+    assert crm["open"]["unenforced"] == [{"app": "resend-connector", "why": "disconnected"}]
+    assert "NOT CUT: resend-connector" in net.describe(rep)

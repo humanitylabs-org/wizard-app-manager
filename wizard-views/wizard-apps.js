@@ -654,15 +654,19 @@ export async function renderConnections(el, ctx = {}) {
         : `<span class="wam-tag bad">Drift found</span>`
       : `<span class="wam-tag warn">Live check unavailable</span>`;
     const waiting = controls.filter((r) => r.status === 'pending');
+    // Which app is sensitive: usually the one reached; in open mode it can be the one asking (networks are two-way).
+    const sensitiveWhy = (rows) => {
+      const sens = d.sensitive || [];
+      const ids = rows
+        .flatMap((r) => [...(r.providers || []).filter((p) => sens.includes(p)), ...(sens.includes(r.from) ? [r.from] : [])])
+        .filter((v, i, a) => a.indexOf(v) === i);
+      if (!ids.length) return 'New connections to a sensitive app need you.';
+      return `${ids.map(nm).join(', ')} ${ids.length > 1 ? 'are' : 'is'} marked sensitive: new connections to or from ${ids.length > 1 ? 'them' : 'it'} need you.`;
+    };
     const pendingHtml = waiting.length
       ? `<div class="wam-conn-pending" role="region" aria-label="Waiting for your OK"><h5>Waiting for your OK</h5>
         ${waiting.map((r) => ctl({ ...r }, `${nm(r.from)} → ${target(r)}`)).join('')}
-        <p class="wam-conn-why">${esc(
-          waiting
-            .map((r) => target(r))
-            .filter((v, i, a) => a.indexOf(v) === i)
-            .join(', '),
-        )} ${waiting.length > 1 ? 'are' : 'is'} marked sensitive: new connections to it need you.</p></div>`
+        <p class="wam-conn-why">${esc(sensitiveWhy(waiting))}</p></div>`
       : '';
     const notices = (d.notices || []).slice(0, 8);
     const noticesHtml = notices.length
@@ -727,6 +731,12 @@ export async function renderConnections(el, ctx = {}) {
                   )}</select><button class="wam-btn" data-wam-cut="${esc(a.id)}"${!canAct || busy ? ' disabled' : ''}>${busy === `cut:${a.id}` ? '…' : 'Disconnect'}</button></span></div>`
               : ''
           }
+          ${(a.open.unenforced || [])
+            .map(
+              (r) =>
+                `<p class="wam-conn-bad">${esc(nm(r.app))}: disconnected, but both are published through Runtipi’s reverse proxy and still share its network, so they can still reach each other. Unpublish one to enforce it.</p>`,
+            )
+            .join('')}
           <p class="wam-conn-why">${a.open.mesh ? 'On the shared app mesh.' : `Out of the mesh: ${a.open.links.length} direct links.`}</p>`
             : '';
         const detail =
@@ -747,7 +757,11 @@ export async function renderConnections(el, ctx = {}) {
           <h5>Reached by</h5>
           ${inc.length ? inc.map((r) => ctl(r, nm(r.from))).join('') : '<p>No other app.</p>'}`
           }
-          <div class="wam-conn-ctl"><span class="st-tx"><b>Sensitive</b><small>${a.sensitive ? 'New connections to it wait for your OK.' : 'New connections to it are added for you.'}</small></span><span class="wam-conn-acts">${sens}</span></div>
+          ${
+            (d.gateway?.core || []).includes(a.id)
+              ? ''
+              : `<div class="wam-conn-ctl"><span class="st-tx"><b>Sensitive</b><small>${a.sensitive ? 'New connections to it wait for your OK.' : 'New connections to it are added for you.'}</small></span><span class="wam-conn-acts">${sens}</span></div>`
+          }
           ${served.length ? `<p><b>Gateway to</b> ${esc(served.join(', '))} <span class="wam-conn-why">(their gateway networks)</span></p>` : ''}
           ${core.length ? `<p><b>Wizard core</b> ${esc(core.join(', '))} <span class="wam-conn-why">(shares its gateway network, so it can reach them too)</span></p>` : ''}
           ${shared.length ? `<p class="wam-conn-bad"><b>Shared network</b> ${esc(shared.join(', '))} <span class="wam-conn-why">(not declared, but they share Runtipi's network, so each can reach the other)</span></p>` : ''}
