@@ -106,6 +106,29 @@ def test_wiring_changes_only_manager_metadata_not_private_bytes(migration,monkey
     assert (state/'api-token').read_text() != (state/'agent-token').read_text()
 
 
+def test_new_agent_token_is_owned_by_manager_not_the_root_migration_process(migration,monkeypatch):
+    rt=m.BASE/'runtipi';state=m.BASE/'.wizard-os';rt.mkdir(parents=True);state.mkdir()
+    (state/'alongside.json').write_text(json.dumps({'agent':{'hermes_home':migration.doc['hermes_home']}}))
+    (state/'api-token').write_text('legacy-manager-token')
+    owned=[]
+    monkeypatch.setattr(m.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=24123,pw_gid=24124))
+    monkeypatch.setattr(m.os,'chown',lambda p,u,g:owned.append((p,u,g)))
+    monkeypatch.setattr(migration,'system',lambda code:None)
+    migration.wiring()
+    assert owned==[(state/'api-token',24123,24124),(state/'agent-token',24123,24124)]
+    assert all((state/n).stat().st_mode & 0o777==0o600 for n in ('api-token','agent-token'))
+
+
+def test_doctor_never_allows_cutover_when_the_actual_agent_api_handoff_fails(migration,monkeypatch):
+    monkeypatch.setattr(migration,'system',lambda code:None)
+    monkeypatch.setattr(migration,'check_links',lambda:pytest.fail('API must succeed before links/success'))
+    def unavailable(*args,**kw):raise RuntimeError('agent API unavailable')
+    monkeypatch.setattr(migration,'user',unavailable)
+    with pytest.raises(RuntimeError,match='agent API unavailable'):migration.doctor()
+    assert not migration.doc.get('doctor_passed')
+    with pytest.raises(ValueError,match='Doctor'):migration.remove_docker()
+
+
 def test_rollback_before_snapshot_restarts_exact_original_units(migration,monkeypatch):
     calls=[]
     migration.doc['done']=['inventory','quiesce']
@@ -231,9 +254,11 @@ def test_base_containers_are_recreated_only_when_their_binds_point_at_old_root(m
 def test_doctor_marks_success_only_after_all_rows_and_links(migration,monkeypatch):
     calls=[]
     monkeypatch.setattr(migration,'system',lambda code:calls.append(code))
+    monkeypatch.setattr(migration,'user',lambda *args,**kw:calls.append(args))
     monkeypatch.setattr(migration,'check_links',lambda:calls.append('links'))
     migration.doctor()
     assert 'all(ok for _,ok,_ in rows)' in calls[0]
+    assert calls[1]==('/usr/local/bin/wam','apps','--json')
     assert calls[-1]=='links' and migration.doc['doctor_passed']
 
 

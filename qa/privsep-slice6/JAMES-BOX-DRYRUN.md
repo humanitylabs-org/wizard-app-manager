@@ -131,6 +131,11 @@ application files. The privacy seal applies equally to inactive app data.
   to the corresponding protected paths rather than re-enrolling from rewritten
   recipes. The Agent Service override is regenerated from protected wiring;
   Hermes itself and its login/cache paths stay at the selected agent's UID.
+- **Manager credential ownership:** a legacy box may not have an `agent-token`.
+  Root rotation must assign both protected tokens to `wizard-system`, not leave
+  a newly created 0600 token owned by root. The pre-cutover doctor also makes an
+  actual agent-scoped App Manager API request; direct CLI checks alone cannot
+  prove that the daemon can read its token or that the thin-client handoff works.
 - **Failed-cutover rollback is a separate check:** the rehearsal injects an
   exception immediately before recovery, rolls back, and verifies original app
   containers and canaries before attempting the real migration. Rollback uses

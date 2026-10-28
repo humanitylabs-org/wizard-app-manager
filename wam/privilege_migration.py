@@ -292,6 +292,9 @@ class Migration:
             p = state/token
             if p.resolve() != p: raise ValueError('Unsafe legacy token symlink')
             p.write_text(secrets.token_urlsafe(32)+'\n'); p.chmod(0o600)
+            # agent-token may not have existed in legacy state: root creates it,
+            # but only the manager UID must own/read either protected credential.
+            os.chown(p, system.pw_uid, system.pw_gid)
         # Never re-enroll from the rewritten definitions. The approval registry
         # was translated together with the original management metadata above.
 
@@ -429,6 +432,10 @@ print(json.dumps(out))
     def doctor(self):
         self.system('import json; from wam.cli import Config,doctor; rows=doctor(Config()); '
                     'print(json.dumps(rows)); assert rows and all(ok for _,ok,_ in rows), "Doctor failed: Docker membership kept"')
+        # Direct manager CLI checks do not prove the daemon can read its token
+        # or that the agent handoff works. Exercise the actual scoped API before
+        # granting temporary access or removing the legacy Docker membership.
+        self.user('/usr/local/bin/wam', 'apps', '--json', capture_output=True)
         self.check_links()
         self.doc['doctor_passed'] = True
 
