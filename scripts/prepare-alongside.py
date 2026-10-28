@@ -151,6 +151,10 @@ def main():
             write(state / token, secrets.token_urlsafe(32) + '\n', 0o600, suid, sgid)
     sysenv = {**env, 'USER': 'wizard-system', 'LOGNAME': 'wizard-system', 'RUNTIPI_ROOT': str(BASE / 'runtipi'),
               'WIZARD_OS_HOME': str(state), 'WIZARD_MODE': 'alongside', 'WIZARD_SEPARATED': '1', 'WIZARD_TAILSCALE_WAIT': '1'}
+    if migration:
+        # Preserve the existing Serve graph; the ordinary installer must not
+        # publish new links. Operator reassignment above is a separate root step.
+        sysenv['WIZARD_PRIVATE_ACCESS'] = 'none'
     run(['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'], cwd=BASE)
     unit_env = f'Environment=HOME={BASE}\nEnvironment=WIZARD_OS_HOME={state}\nEnvironment=RUNTIPI_ROOT={BASE}/runtipi\n'
     write(Path('/etc/systemd/system/wizard-app-manager-api.service'), f'''[Unit]
@@ -191,7 +195,13 @@ WantedBy=multi-user.target
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'enable', '--now', 'wizard-runtipi.service', 'wizard-app-manager-api.service'])
     # Hand off only the agent token; root never opens a file in the agent home.
-    handoff = {'url': 'http://127.0.0.1:7790', 'hermes_home': hh, 'service_port': 8923}
+    service_port = int((snapshot.get('service') or {}).get('port') or 8923)
+    cfg_path = state / 'app-manager.json'
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    manager_port = int(cfg.get('port') or 7790)
+    if not all(1 <= p <= 65535 for p in (service_port, manager_port)):
+        raise SystemExit('Invalid saved App Manager or Agent Service port')
+    handoff = {'url': f'http://127.0.0.1:{manager_port}', 'hermes_home': hh, 'service_port': service_port}
     script = '''import json,os,pathlib,sys
 h=pathlib.Path.home()/'.wizard-os'; h.mkdir(mode=0o700,exist_ok=True)
 d=json.load(sys.stdin)
@@ -205,12 +215,13 @@ for name,value in [('client.json',json.dumps(d['client'])),('agent-token',d['tok
     run([*prefix, '/usr/bin/python3', '-c', script], input=json.dumps({'client': handoff,
         'token': (state / 'agent-token').read_text().strip(), 'alongside': snapshot}).encode(), cwd=agent.pw_dir)
     # wizard link installs the stock plugin and API config as the Hermes uid only.
-    run([*prefix, '/usr/local/bin/wizard', 'link', '--hermes-home', hh, '--url', 'http://127.0.0.1:8923/wizard/mcp', '--restart'], cwd=agent.pw_dir)
+    run([*prefix, '/usr/local/bin/wizard', 'link', '--hermes-home', hh, '--url', f'http://127.0.0.1:{service_port}/wizard/mcp', '--restart'], cwd=agent.pw_dir)
     cmd = ['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], '/usr/bin/python3', '-m', 'wam']
     for app in ('wizard-agent-service', 'wizard-ux'):
         run(cmd + ['install', app], cwd=tree)
     run(cmd + ['apps'], cwd=tree)
-    print('Separated alongside installed. Hermes has only an agent-scoped wam token; no Docker/sudo/operator grant.')
+    print('System services prepared; Docker membership stays until migration doctor passes.' if migration else
+          'Separated alongside installed. Hermes has only an agent-scoped wam token; no Docker/sudo/operator grant.')
 
 
 if __name__ == '__main__':

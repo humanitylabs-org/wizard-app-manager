@@ -341,6 +341,9 @@ if sha:
  out['wizard-store-data.service']=store_data.unit_text(node,tools,sha,service='http://127.0.0.1:'+str(lay['agent_port']))
 print(json.dumps(out))
 '''
+        host = next(iter(self.doc.get('serve', {}).get('Web', {})), '').rsplit(':', 1)[0]
+        code = code.replace("env=t.environment(lay,'',[],t.tailnet_owner(),base)",
+                            f"env=t.environment(lay,{host!r},[],t.tailnet_owner(),base)")
         response = self.system(code, capture_output=True)
         generated = json.loads(response.stdout.splitlines()[-1])
         return {unit: text.replace('[Service]','[Service]\nUser=wizard-system\nGroup=wizard-system').replace('WantedBy=default.target','WantedBy=multi-user.target')
