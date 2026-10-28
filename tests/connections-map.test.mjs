@@ -397,3 +397,40 @@ test('Only Wizard itself is System: an app that calls itself system stays an app
   );
   assert.ok(cuttable(m, 'cinequeue').some((a) => a.id === 'spare-shell'));
 });
+
+test('A request from an app-backed agent stays, said with the agent’s name; a registry-backed core agent shows once', () => {
+  const d = report([app('cinequeue', 'Movies'), app('agent-private', 'agent-private', [], { kind: 'agent' })], {
+    agents: [{ id: 'private', name: 'Private', private: true, app: 'agent-private' }],
+    controls: [{ from: 'agent-private', to: 'cinequeue', status: 'pending' }],
+  });
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.pending.map((p) => [p.fromName, p.toName]),
+    [['Private', 'Movies']],
+  );
+  assert.deepEqual(m.waits, []); // no line to a node that isn't drawn
+  const core = report([app('cinequeue', 'Movies')], {
+    gateway: { core: ['wizard-ux', 'wizard-agent-service', 'hermes-agent'] },
+    agents: [
+      { id: 'hermes', name: 'Hermes', main: true, app: 'hermes-agent' },
+      { id: 'private', name: 'Private', private: true },
+    ],
+  });
+  core.apps.push({ id: 'hermes-agent', name: 'Hermes agent', state: 'isolated', open: null, kind: 'agent' });
+  assert.deepEqual(
+    mapModel(core).agents.map((a) => [a.id, a.name]),
+    [
+      ['hermes', 'Your agent'],
+      ['private', 'Private'],
+    ],
+  );
+  // without a registry entry the core agent app is the main agent, even beside extra agents
+  core.agents = [{ id: 'private', name: 'Private', private: true }];
+  assert.deepEqual(
+    mapModel(core).agents.map((a) => [a.id, a.name, a.main]),
+    [
+      ['private', 'Private', false],
+      ['hermes-agent', 'Your agent', true],
+    ],
+  );
+});

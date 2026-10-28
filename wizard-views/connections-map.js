@@ -57,15 +57,17 @@ export function mapModel(d) {
   const mode = enabled ? (d?.mode === 'open' ? 'open' : 'declared') : 'off';
   const coreIds = new Set(d?.gateway?.core || []);
   const all = Array.isArray(d?.apps) ? d.apps : [];
-  const names = Object.fromEntries(all.map((a) => [a.id, a.name || a.id]));
+  // An agent that runs as an installed app (`agent-<id>`, its registry entry's `app`) is shown once, as the agent:
+  // its app copy is left off the map and out of every cut and Ask me first. A request it makes for the owner's OK
+  // stays (hiding it would leave the agent waiting forever) and is said with the agent's name.
+  const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
+  const allIds = new Set(all.map((a) => a.id));
+  const claimed = new Map(known.filter((a) => a.app && allIds.has(a.app)).map((a) => [a.app, a]));
+  const backing = new Set([...claimed.keys()].filter((x) => !coreIds.has(x)));
+  const names = Object.fromEntries(all.map((a) => [a.id, claimed.get(a.id)?.name || a.name || a.id]));
   const nm = (id) => names[id] || slotName(id);
   const controls = Array.isArray(d?.controls) ? d.controls : [];
   const sensitive = new Set(d?.sensitive || all.filter((a) => a.sensitive).map((a) => a.id));
-  // An agent that runs as an installed app (`agent-<id>`, its registry entry's `app`) is shown once, as the agent:
-  // its app copy is left off the map and out of every connection control.
-  const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
-  const allIds = new Set(all.map((a) => a.id));
-  const backing = new Set(known.map((a) => a.app).filter((x) => x && allIds.has(x) && !coreIds.has(x)));
   const apps = all.filter((a) => !coreIds.has(a.id) && !backing.has(a.id));
   const ids = new Set(apps.map((a) => a.id));
   const cuts = new Map();
@@ -203,13 +205,15 @@ export function mapModel(d) {
       private: !!a.private,
       limit: limitOf(a.main && !Array.isArray(a.apps) ? mainApps : a.apps),
     })),
+    // a core agent app (a fresh box's agent) unless a registry entry already shows it; it is the main agent
+    // unless the box names another one
     ...coreItems
-      .filter((a) => a.kind === 'agent')
+      .filter((a) => a.kind === 'agent' && !claimed.has(a.id))
       .map((a) => ({
         id: a.id,
-        name: known.length ? a.name : 'Your agent',
+        name: known.some((k) => k.main) ? a.name : 'Your agent',
         real: a.name,
-        main: !known.length,
+        main: !known.some((k) => k.main),
         private: false,
         limit: limitOf(mainApps),
       })),
