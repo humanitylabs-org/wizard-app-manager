@@ -242,6 +242,14 @@ def _endpoint(c, rt, app_id: str) -> tuple[str, bool] | None:
     return None
 
 
+def baseline(c, rt, app_id: str, status: str | None, *, endpoint=_endpoint, probe=_probe) -> bool | None:
+    """Whether the app's health URL / MCP endpoint answers BEFORE its update (None: not running or none declared)."""
+    if status != "running":
+        return None
+    ep = endpoint(c, rt, app_id)
+    return probe(ep[0], ep[1], 10) if ep else None
+
+
 def verify(c, rt, urn: str, app_id: str, res: dict, before: dict, *, settle: float = SETTLE_SECONDS,
            probe_seconds: float = PROBE_SECONDS, sleep=time.sleep, containers=_containers, probe=_probe,
            endpoint=_endpoint) -> str | None:
@@ -264,7 +272,9 @@ def verify(c, rt, urn: str, app_id: str, res: dict, before: dict, *, settle: flo
     if states.count("running") < before["running"]:
         return f"{states.count('running')} of {before['running']} containers running"
     ep = endpoint(c, rt, app_id)
-    if ep:
+    # An endpoint that did not answer before the update either (e.g. an app whose host check refuses loopback
+    # with 403 "Unknown host") says nothing about the update: containers decide, as for apps without one.
+    if ep and before.get("endpoint_ok") is not False:
         deadline = time.monotonic() + probe_seconds
         while not probe(ep[0], ep[1], 10):
             if time.monotonic() >= deadline:
@@ -366,7 +376,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         for r in due:
             urn = f"{r['id']}:{cli.STORE}"
             states = _containers(urn)
-            before = {**r, "running": states.count("running")}
+            before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
