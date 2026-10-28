@@ -1446,6 +1446,8 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             "kind": kinds.kind_of(a.get("wizard"), a["id"] in p["gateway"]["core"], box_kinds.get(a["id"])),
             **({"builtin": True} if a["id"] in p["gateway"]["core"] else {}),
             **({"privacy": "private"} if (a.get("wizard") or {}).get("private") else {}),
+            # the jobs it does for other apps (wizard.md provides:): the phone list says why an app is linked to it
+            "provides": list(a.get("provides") or []),
             "running": running, "internet": internet, "gateway": gw, "host_access": a.get("host_access") or [],
             "can_reach": [{"to": e["provider"] or e["to"], "declared": e["to"], "reason": e["reason"], "state": e["state"],
                            "network": e.get("network")} for e in out_edges] +
