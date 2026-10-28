@@ -145,6 +145,29 @@ def test_other_apps_backups_are_untouched(box):
     assert rt.ids(OTHER) == ["music-old-0.tar.gz", "music-old-1.tar.gz", "music-old-2.tar.gz"]
 
 
+def test_backup_named_by_a_restore_journal_is_kept(box):
+    c, rt = box
+    rt.seed(URN, 13, 72)
+    rt.seed(OTHER, 72)
+    journal = c.home / "restores" / "20261001T000000Z" / "journal.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(json.dumps({"steps": [{"kind": "app_snapshot", "urn": URN, "backup": "notes-old-1.tar.gz"},
+                                             {"kind": "app_snapshot", "urn": OTHER, "backup": "notes-old-0.tar.gz"}]}))
+    out = cli.app_update(c, "notes")
+    assert out["backups_pruned"] == ["notes-old-0.tar.gz"]
+    assert rt.ids(URN) == ["notes-new.tar.gz", "notes-old-1.tar.gz"]
+
+
+def test_unreadable_restore_journal_prunes_nothing(box):
+    c, rt = box
+    rt.seed(URN, 13, 72)
+    journal = c.home / "restores" / "20261001T000000Z" / "journal.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text("{")
+    out = cli.app_update(c, "notes")
+    assert rt.deleted == [] and "restore journals" in out["backup_prune_warning"] and "error" not in out
+
+
 @pytest.mark.parametrize("where", ["list", "delete"])
 def test_backup_api_errors_only_warn(box, capsys, where):
     c, rt = box

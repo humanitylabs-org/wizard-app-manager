@@ -12,6 +12,7 @@ Defaults can be changed in `<wizard-os home>/app-manager.json`:
 from __future__ import annotations
 
 import calendar
+import json
 import re
 import shutil
 import time
@@ -39,15 +40,37 @@ def settings(cfg: dict | None) -> dict:
             "hermes_max_age_days": num("hermes_max_age_days", HERMES_MAX_AGE_DAYS, 0)}
 
 
-def prune_app(rt, urn: str, started_ms: int, opts: dict | None = None, now_ms: int | None = None) -> dict:
+def journal_backups(home: Path | None, urn: str) -> set[str]:
+    """Runtipi backups of `urn` named by a restore journal (`<home>/restores/*/journal.json`, written before
+    appdata.py): `wam backup undo` restores exactly that file, so it must never be pruned. Raises OSError/ValueError
+    when a journal cannot be read, so the caller prunes nothing rather than guess."""
+    names: set[str] = set()
+    root = Path(home) / "restores" if home else None
+    if not root or not root.is_dir():
+        return names
+    for journal in root.glob("*/journal.json"):
+        doc = json.loads(journal.read_text())
+        for s in (doc.get("steps") or []) if isinstance(doc, dict) else []:
+            if isinstance(s, dict) and s.get("urn") == urn and s.get("backup"):
+                names.add(str(s["backup"]))
+    return names
+
+
+def prune_app(rt, urn: str, started_ms: int, opts: dict | None = None, now_ms: int | None = None,
+              home: Path | None = None) -> dict:
     """Prune one app's Runtipi backups through Runtipi's API, after an update of `urn` that began at `started_ms`.
 
     Only `urn`'s backups are listed or deleted. Nothing is deleted unless the newest backup was made by this update
-    (no fresh rollback point, no pruning). Returns {"deleted": [...], "kept": [...], "errors": [...]}; never raises.
+    (no fresh rollback point, no pruning), and a backup a restore journal under `home` names is always kept. Returns {"deleted": [...], "kept": [...], "errors": [...]}; never raises.
     """
     o = opts or settings(None)
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     out: dict = {"deleted": [], "kept": [], "errors": []}
+    try:
+        protected = journal_backups(home, urn)
+    except (OSError, ValueError) as e:
+        out["errors"].append(f"could not read the restore journals, so no backup was removed: {e}"[:300])
+        return out
     try:
         backups = [b for b in (rt.list_backups(urn) or []) if isinstance(b, dict) and b.get("id")]
     except Exception as e:  # noqa: BLE001 - pruning must never fail the update
@@ -60,7 +83,8 @@ def prune_app(rt, urn: str, started_ms: int, opts: dict | None = None, now_ms: i
         return out
     cutoff = now_ms - o["app_max_age_hours"] * 3600 * 1000
     for i, b in enumerate(backups):
-        if i < o["keep"] or not isinstance(b.get("date"), (int, float)) or b["date"] >= cutoff:
+        if (i < o["keep"] or b["id"] in protected or not isinstance(b.get("date"), (int, float))
+                or b["date"] >= cutoff):
             out["kept"].append(b["id"])
             continue
         try:

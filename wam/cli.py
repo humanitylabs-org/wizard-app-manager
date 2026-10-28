@@ -1835,7 +1835,8 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     if backup and status in ("running", "stopped") and not out.get("error"):
         # Bounded retention: keep the copy this update just made, remove this app's older ones past the minimum age.
         # Only through Runtipi's backup API, only for this urn, and never a reason to fail the update.
-        pruned = update_backups.prune_app(rt, urn, started_ms, getattr(c, "update_backups", None))
+        pruned = update_backups.prune_app(rt, urn, started_ms, getattr(c, "update_backups", None),
+                                          home=getattr(c, "home", None))
         if pruned["deleted"]:
             out["backups_pruned"] = pruned["deleted"]
         if pruned["errors"]:
