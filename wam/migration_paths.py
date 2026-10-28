@@ -141,9 +141,10 @@ def assert_clean(rt, state, old):
             # host sources, arbitrary extra settings and stale paths still fail.
             from types import SimpleNamespace
             from .managed_overrides import normalize
+            from .host_policy import _plain
             from .network import load_yaml
             c = SimpleNamespace(home=state, runtipi_root=rt, migration_metadata_only=True)
-            text = json.dumps(normalize(c, 'wizard-agent-service', 'wizardapps', load_yaml(text)))
+            text = json.dumps(_plain(normalize(c, 'wizard-agent-service', 'wizardapps', load_yaml(text))))
         if replace(text, old, ['__MOVED__'] * len(old)) != text:
             stale.append(str(p))
     if stale:
