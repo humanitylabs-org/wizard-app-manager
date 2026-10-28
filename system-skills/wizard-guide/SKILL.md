@@ -1,7 +1,7 @@
 ---
 name: wizard-guide
-description: "Use when the owner asks how to use Wizard, what you can do, wants tips or a reminder, or on a first chat."
-version: 1.0.0
+description: "Use when the owner asks how to use Wizard, wants tips or a reminder, or wants to change or fix how Wizard works."
+version: 1.1.0
 author: Wizard OS
 license: MIT
 metadata:
@@ -56,10 +56,28 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 - "Build me an app that…": load `wizard-builder` and follow it. The app installs into their Apps.
 - Ready-made apps and connectors live in the Store (from Home). A connector links one outside account (for example Cloudflare for websites and domains). When a request needs one ("make me a website"), say which connector it needs and ask them to open it in the Store, tap Get and sign in once. Never ask for passwords or keys in chat.
 
-## Change requests
+## Changing or fixing Wizard itself
 
-When they say "change request:" or describe something they want to work differently:
+Wizard has three levels of change. Before you start, tell the owner which one their request needs, in one line.
 
-1. If it is their own app or their skin, just make the change.
-2. If it is Wizard itself, write it up in three short lines (what happens now, what they want, why) and show it to them.
-3. Only with their OK, give them a ready link to file it: `https://github.com/humanitylabs-org/wizard-os/issues/new?title=<title>&body=<body>` (URL-encoded). Never send it anywhere on your own.
+1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
+2. **Tweaks** (anything on screen, front end only): their own tweak is `Skins/My skin/skin.js`. It can add controls and gestures, and replace a whole front-end **part** through `api.parts.replace` (pins today; `api.parts.list()` shows what this Wizard offers). Shared settings that must match on every device go through `api.prefs`. After every edit the owner must tap Turn on in Settings › Look for that exact file. Updates never wipe or rebase a tweak; if an update changes a part, the tweak pauses with a note and you update it. Full API and a working example: `docs/TWEAKS.md` in humanitylabs-org/wizard-ux.
+3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): a personal build that is merged onto each update. Only with the owner's explicit yes; say plainly that a clash can hold them on their current version until it is resolved. If they don't want that, propose the change upstream instead.
+
+Rules:
+- If the change is only in the browser, make it a tweak. If it needs the server or stored data to change, it needs developer mode or a proposal: say "That needs developer mode. Want to turn it on, or should I propose it for everyone?"
+- Never edit Wizard's installed files or containers directly: the next update replaces them and the change is lost.
+- Keep each tweak small, say what you changed, and how to turn it off (`?myskin=off`).
+
+### Updates (Settings › About & updates)
+
+- **Version**: Standard (the official version) or Early access (newest changes first, may be rough). Recommend Standard.
+- **Updates**: Automatic (overnight when Wizard is quiet, Standard only) or Ask me (nothing installs until they tap Install). Install now is always there; an update takes 10–20 minutes and Wizard reconnects by itself.
+
+### Proposing a change for everyone
+
+When they want a change in Standard (or a tweak they like for everyone):
+
+1. Write it up in three short lines (what happens now, what they want, why); attach the tweak if there is one.
+2. Show it to them. Only with their OK, give them a ready link: `https://github.com/humanitylabs-org/wizard-os/issues/new?title=<title>&body=<body>` (URL-encoded), or open a pull request if they asked you to and you have access. Never send it anywhere on your own.
+3. Once it ships in Standard, offer to turn their own copy off.
