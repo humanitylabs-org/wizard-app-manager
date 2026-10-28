@@ -454,6 +454,26 @@
   min-height: 44px;
   min-width: 96px;
 }
+/* Open mode: "Disconnect from" picks the app; styled like the buttons beside it. */
+.wam .wam-select {
+  min-height: 44px;
+  min-width: 0;
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: rgba(205, 190, 255, 0.08);
+  border: 1px solid var(--line-2);
+}
+.wam .wam-select option {
+  color: CanvasText;
+  background: Canvas;
+}
+.wam .wam-select[disabled] {
+  opacity: 0.55;
+}
 .wam-conn-pending {
   margin: 8px 14px 12px;
   padding: 4px 12px 8px;

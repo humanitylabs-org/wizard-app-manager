@@ -1875,9 +1875,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="the owner accepts an app with host networking, privileged mode or the Docker socket")
     cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
     cn.add_argument("--json", action="store_true")
-    nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on")
-    nw.add_argument("action", choices=("reconcile", "status", "off", "on", "allow", "deny"))
-    nw.add_argument("app", nargs="?", help="allow|deny: the app whose host access / foreign networks the owner allows")
+    nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on | mode open|declared")
+    nw.add_argument("action", choices=("reconcile", "status", "off", "on", "allow", "deny", "mode"))
+    nw.add_argument("app", nargs="?", help="allow|deny: the app whose host access / foreign networks the owner allows; "
+                    "mode: open (everything connected unless you disconnect it) or declared")
     nw.add_argument("--dry-run", action="store_true"); nw.add_argument("--json", action="store_true")
     nw.add_argument("--no-restart", action="store_true", help="never restart an app (report it instead)")
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
@@ -1943,6 +1944,21 @@ def main(argv: list[str] | None = None) -> int:
                 rep = network.report(c)
                 print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
                 return 0 if rep.get("ok") else 1
+            if args.action == "mode":
+                if args.app not in (None, *network.MODES):
+                    raise SystemExit("usage: wam network mode [open|declared]")
+                rt = c.runtipi()
+                if args.app is None:   # show it
+                    print(network.connection_mode(network.connection_state(c, rt)))
+                    return 0
+                # The owner's choice lives with the other connection decisions, behind the App Manager's owner sign-in.
+                st = rt.req("POST", "/apps/wizard/connection-mode", {"mode": args.app})
+                res = network.reconcile(c, rt, restart=not args.no_restart,
+                                        restart_fn=lambda a: app_lifecycle(c, "restart", a))
+                write_registry(c)
+                print(json.dumps({"mode": (st or {}).get("mode") if isinstance(st, dict) else None,
+                                  "networks": _net_brief(res)}, indent=2))
+                return 1 if res.get("errors") else 0
             if args.action in ("allow", "deny"):
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")

@@ -1,8 +1,16 @@
-# App networks: declared connections are the only app-to-app paths
+# App networks: open by default, the owner in control
 
 Stock Runtipi puts every app's main service on one shared Docker network (`runtipi_tipi_main_network`), so any app
-can open a connection to any other app. The App Manager replaces that with one network per declared connection.
-Docker enforces it; no app holds a secret for another app. Code: `wam/network.py`.
+can open a connection to any other app. With isolation on, the App Manager replaces that with networks it manages, in
+one of two modes the owner picks (App Manager → Connections, or `wam network mode open|declared`):
+
+- **Open (the default):** everything is connected unless you disconnect it. Every app reaches every other app, except a
+  pair the owner disconnected (cut both ways) and new connections to an app the owner marked sensitive, which wait for
+  approval. See [Open mode](#open-mode-the-default).
+- **Declared:** each app reaches only the apps it declares (`uses`, `requires`) or the owner connected: one network per
+  declared connection. The rest of this page up to "Open mode" describes it.
+
+Docker enforces both; no app holds a secret for another app. Code: `wam/network.py`.
 
 ## Networks
 
@@ -154,12 +162,68 @@ unless the owner allows it, and stops before the update when its networks can't 
 offers only Connections: My Apps, the App Store and Resources need Runtipi's API and the Wizard front, which live on the
 shell's origin.
 
+## Open mode (the default)
+
+The owner's mode is kept with the other connection decisions in the App Manager's `wizard-grants.json` (`mode`, missing
+= open) and changed only through its owner-authenticated API (`POST /api/apps/wizard/connection-mode`, the Connections
+view's Open / Declared switch, `wam network mode open|declared`). `wam serve` reconciles live within seconds of a switch.
+
+### Who reaches whom
+
+- Every app reaches every other app, both ways, by its app id (and its main service's name).
+- **Disconnect** (the owner's sticky `denied` row, by app id or by a slot the app fills) cuts that one pair in both
+  directions: Docker networks are two-way, so "A can't reach B" also means "B can't reach A". Every other pair stays
+  connected. Reconnect removes the row. No update, reinstall or runtime request brings a Disconnect back.
+- **Sensitive:** marking an app sensitive keeps the connections it has: the App Manager records one `approved: open`
+  grant for every installed app (no key is minted; it never links in declared mode). An app installed later waits for
+  the owner (`pending`, reason `open`, a high-priority notification); so does a new declaration or runtime request.
+  Approve makes an owner grant, Deny a sticky Disconnect. A declaration of a connection the app already has (its open
+  grant) is not new: it gets an ordinary grant with its key and never waits. Turning Sensitive off drops the open grants
+  and what was waiting: open mode connects them anyway. Because a link is two-way, a sensitive app can't open a
+  connection to an app that may not reach it either.
+- A cut between two apps that both keep Runtipi's shared network (each publishes a service through the reverse proxy)
+  can't be enforced: they still meet there. `wam connections` ("NOT CUT") and the view say so; unpublish one of them to
+  enforce it. The shell, Agent Service and agent reach every app through the gateway, so they can't be marked sensitive.
+- The gateway path, the start-time gate, host access, foreign/reserved networks, Traefik labels and the owner-only API
+  are the same as in declared mode. `wizard-mesh` is reserved like every `wizard-*` network: a recipe that names it is
+  refused (wam and the App Manager).
+
+### How Docker does it
+
+Docker can't remove one pair from a shared network, and one network per pair grows as N·(N−1)/2: 528 networks for 33
+apps, 1770 for 60. Each is a Linux bridge with its own iptables rules, every container joins N−1 of them, and with
+/27 subnets the 10.255.0.0/16 pool holds 2048, so ~64 apps would exhaust it (Docker's own default pools are smaller
+still). Open mode therefore uses:
+
+| Network | Members | Internal | Purpose |
+|---|---|---|---|
+| `wizard-mesh` | every app with no cut pair (its services that Runtipi would put on the shared network), each main service answering as its app id | yes | everything connected |
+| `wizard-link-<a>--<b>` | an app out of the mesh + one app it may still reach (ids sorted); both main services answer by their app id | yes | one allowed pair |
+| `wizard-app-<id>` | as in declared mode | no | internet and the published port |
+
+Who leaves the mesh: every sensitive app (its reach depends on approvals), then a greedy vertex cover of the remaining
+Disconnects (the app cut most often first; on a tie the app that was disconnected from). An app out of the mesh gets one
+link per app it may still reach, so the box needs `1 + (apps out of the mesh) x (apps)` shared networks instead of
+`N·(N−1)/2`: 1 network for 33 apps with nothing cut, 32 with one Disconnect, 59 for 60 apps with one Disconnect, 154 for 60 apps
+with two Disconnects and a sensitive app that 40 of them may reach (computed by `plan()`, tests/test_network.py). The mesh is one /22 (about 1000 services) from the same pool; links stay /27. A Disconnect is applied live:
+the app leaving the mesh joins its new links first, then leaves the mesh, so other pairs never drop. Gateway networks
+(fresh boxes) are unchanged and the gateway components never join the mesh.
+
+`wam connections` shows the mode in the first line ("Open: everything is connected unless you disconnect it") and, per
+app, "can reach: every other app except ..." with the reason (you disconnected it, waiting for your approval, sensitive
+and not connected) and whether it is on the mesh or on how many links. The live check compares Docker with this plan the
+same way as in declared mode. The Connections view says the mode plainly, switches it, lists each app's cut pairs with
+Reconnect / Approve / Deny / Connect, and offers "Disconnect from" any app it still reaches.
+
+Switching to declared leaves the decisions as they are (Disconnects stay, open grants are kept but never link, open-mode
+waits are dropped); switching back to open restores the mesh. `wam network off` still turns isolation off entirely.
+
 ## Limits
 
 - Host processes reach every app's published `127.0.0.1` port, as before. Those are the gateway and anything else
   running as a host process. Layer 2 (per-grant keys) covers them.
 - Ports that the host binds on all interfaces stay reachable from containers, as before.
-- Links are two-way (see above). One-way enforcement would need per-link firewall rules.
+- Links, the mesh and a Disconnect are two-way (see above). One-way enforcement would need per-link firewall rules.
 - On fresh boxes each app can also reach the shell, Agent Service and agent over its `wizard-gw-<id>`, as it could on
   the shared network. The view lists them as "Wizard core". Other apps stay out of reach.
 - Apps from other Runtipi stores stay on the shared network and can't reach isolated Wizard apps.

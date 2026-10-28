@@ -73,6 +73,8 @@ describe('app networks at every start (UI installs/updates included)', () => {
       { sneak: { external: true, name: 'runtipi_tipi_main_network' } },
       { sneak: { external: true, name: 'twenty-crm_wizardapps_twenty-crm_wizardapps_network' } },
       { sneak: { name: 'wizard-link-carlos-crm--twenty-crm' } },
+      { sneak: { name: 'wizard-mesh' } }, // open mode's shared app mesh: only wam puts an app on it
+      { 'wizard-mesh': {} },
       { sneak: { name: 'shared-by-two-apps' } },
       { sneak: { driver: 'macvlan' } },
     ];

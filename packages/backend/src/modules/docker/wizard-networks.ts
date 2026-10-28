@@ -22,7 +22,7 @@ export const POLICY_FILE = 'wizard-app-networks.json';
 export const WIZARD_STORE = 'wizardapps';
 const MARK = 'x-wizard-networks';
 const SHARED = 'tipi_main_network';
-const OURS = /^(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core)$/;
+const OURS = /^(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core|wizard-mesh)$/;
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const PRIVATE_PROVIDER = '# WAM private-provider internal bootstrap';
 
@@ -113,7 +113,14 @@ export function hostRisks(doc: Doc): string[] {
   return out;
 }
 
-export function isolate(doc: Doc, app: string, policy: NetworkPolicy, override: string | null, store = WIZARD_STORE, publishedServices: readonly string[] = []): boolean {
+export function isolate(
+  doc: Doc,
+  app: string,
+  policy: NetworkPolicy,
+  override: string | null,
+  store = WIZARD_STORE,
+  publishedServices: readonly string[] = [],
+): boolean {
   if (!policy.enabled || policy.allow.includes(app)) return false; // off, or the owner's call for this app
   const escapes = [...networkEscapes(doc, app, store), ...hostRisks(doc)];
   if (escapes.length)
@@ -159,7 +166,12 @@ export async function pruneStaleOverride(file: string, services: string[]): Prom
 }
 
 /** Apply the network policy to one app's generated compose right before `compose up`. */
-export async function enforceAppNetworks(urn: string, generated: string, dataDir: string, publishedServices: readonly string[] = []): Promise<string> {
+export async function enforceAppNetworks(
+  urn: string,
+  generated: string,
+  dataDir: string,
+  publishedServices: readonly string[] = [],
+): Promise<string> {
   const [app, store] = urn.split(':');
   if (store !== WIZARD_STORE || !app || !ID.test(app)) return generated;
   const doc = (yaml.parse(generated) ?? {}) as Doc;

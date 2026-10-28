@@ -31,7 +31,18 @@ export class WizardSharesController {
   @Post(':id/sensitive')
   async sensitive(@Param('id') id: string, @Body() body: { sensitive: boolean }) {
     if (typeof body?.sensitive !== 'boolean') throw new BadRequestException('sensitive must be boolean');
-    return this.docker.storage.setSensitive(id.split(':')[0]!, body.sensitive);
+    try {
+      return await this.docker.storage.setSensitive(id.split(':')[0]!, body.sensitive);
+    } catch (e) {
+      // the owner's request can't be applied (not installed, a gateway component): say why instead of a 500
+      if (e instanceof Error && /not installed|can’t be marked sensitive|Invalid sensitive/.test(e.message)) throw new BadRequestException(e.message);
+      throw e;
+    }
+  }
+  @Post('wizard/connection-mode')
+  async mode(@Body() body: { mode: string }) {
+    if (body?.mode !== 'open' && body?.mode !== 'declared') throw new BadRequestException('mode must be open or declared');
+    return this.docker.storage.setMode(body.mode);
   }
   @Post('wizard/connection-notices')
   async notices(@Body() body: { delivered: string[] }) {

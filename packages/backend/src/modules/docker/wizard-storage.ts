@@ -14,12 +14,16 @@ import {
   pendingOf,
   sensitiveOf,
   noticesOf,
+  modeOf,
+  keepOpenConnections,
+  type ConnectionMode,
   appGrant,
   providers,
   REQUESTS_DIR,
   REQUESTS_FILE,
 } from './wizard-app-grants';
 
+const CORE_SLOTS = ['shell', 'agent-service', 'agent'];
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
 const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
@@ -390,7 +394,12 @@ export class WizardStorage {
       const apps = await this.apps();
       const file = await this.readGrants();
       if (on && !apps.some((a) => a.manifest.id === id)) throw new Error('App not installed');
+      // The shell, Agent Service and agent reach every app through the gateway; no decision about them could be enforced.
+      if (on && apps.some((a) => a.manifest.id === id && (a.manifest.provides ?? []).some((s) => CORE_SLOTS.includes(s))))
+        throw new Error('The shell, Agent Service and agent reach apps through the gateway and can’t be marked sensitive');
       const rest = sensitiveOf(file).filter((x) => x !== id);
+      // Open mode: the apps connected to it now stay connected; only new connections wait for the owner.
+      if (on && !sensitiveOf(file).includes(id)) keepOpenConnections(file, apps, id);
       file.sensitive = on ? [...rest, id] : rest;
       await this.writeGrants(file);
       // Turning it off approves what was waiting for it, like any other new connection.
@@ -398,8 +407,21 @@ export class WizardStorage {
       return this.connectionState(file);
     });
   }
+  /** Owner only (AuthGuard'ed API / `wam network mode`): open (everything connected unless disconnected) or declared. */
+  async setMode(mode: ConnectionMode) {
+    if (mode !== 'open' && mode !== 'declared') throw new Error('Invalid connection mode');
+    return this.serial(async () => {
+      const apps = await this.apps();
+      const file = await this.readGrants();
+      file.mode = mode;
+      await this.writeGrants(file);
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+      return this.connectionState(file);
+    });
+  }
   connectionState(file: Grants) {
     return {
+      mode: modeOf(file),
       grants: file.grants.filter(appGrant),
       denied: file.denied.filter(appGrant),
       pending: pendingOf(file),
