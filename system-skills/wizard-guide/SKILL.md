@@ -1,6 +1,6 @@
 ---
 name: wizard-guide
-description: "Use when the owner asks how to use Wizard, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
+description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
 version: 1.2.0
 author: Wizard OS
 license: MIT
@@ -62,7 +62,9 @@ Wizard has three levels of change. Before you start, tell the owner which one th
 
 1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
 2. **Tweaks** (anything on screen, front end only): their own tweak is `Skins/My skin/skin.js`. It can add controls and gestures, and replace a whole front-end **part** through `api.parts.replace` (pins today; `api.parts.list()` shows what this Wizard offers). Shared settings that must match on every device go through `api.prefs`. After every edit the owner must tap Turn on in Settings › Look for that exact file. Updates never wipe or rebase a tweak; if an update changes a part, the tweak pauses with a note and you update it. Full API and a working example: `docs/TWEAKS.md` in humanitylabs-org/wizard-ux.
-3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): a personal build that is merged onto each update. Only with the owner's explicit yes; say plainly that a clash can hold them on their current version until it is resolved. If they don't want that, propose the change upstream instead.
+3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of Standard / Early access; these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
+
+Check the installed version before using these instructions. Replaceable parts, `api.prefs`, `docs/TWEAKS.md` and the Standard / Early access names arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. On earlier builds, Standard means Stable and Early access means Latest; keep tweaks within that build's documented API, or propose the change upstream.
 
 Rules:
 - If the change is only in the browser, make it a tweak. If it needs the server or stored data to change, it needs developer mode or a proposal: say "That needs developer mode. Want to turn it on, or should I propose it for everyone?"
@@ -105,5 +107,5 @@ Already tried: <your attempts and what each did>
 - Show the whole report to the owner and change what they ask. Send nothing without their OK.
 - With their OK, give them one link that opens the report ready to send: `https://github.com/humanitylabs-org/wizard-ux/issues/new?title=<title>&body=<body>` (both URL-encoded; keep the body under about 1,500 characters). Tell them: "Tap the link, sign in to GitHub (a free account is fine) and tap Create." If they don't want an account, give them the report text to send to whoever set up their Wizard.
 - If you have a tool that sends Wizard problem reports, use it instead of the link, still only after their OK.
-- Afterwards, say in one line what you sent, and keep any safe workaround you found.
+- Afterwards, say in one line what actually happened, and keep any safe workaround you found. A prefilled link is a draft for the owner to submit, not confirmation that an issue was filed; say "Your report is ready to send". Claim it was sent only after a report tool returns a confirmed issue URL or the owner confirms submission.
 
