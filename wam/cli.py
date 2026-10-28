@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, index, private, registry, slots, release_pins, update_backups
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -87,6 +87,7 @@ class Config:
             self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
+        self.update_backups = update_backups.settings(cfg)   # retention of the backups updates make
         self.secrets = self.home / "secrets"
         self.token_file = self.home / "api-token"
 
@@ -1810,6 +1811,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
+    started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
@@ -1830,6 +1832,17 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         out["error"] = "the app did not come back; see `docker logs runtipi`"
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
+    if backup and status in ("running", "stopped") and not out.get("error"):
+        # Bounded retention: keep the copy this update just made, remove this app's older ones past the minimum age.
+        # Only through Runtipi's backup API, only for this urn, and never a reason to fail the update.
+        pruned = update_backups.prune_app(rt, urn, started_ms, getattr(c, "update_backups", None),
+                                          home=getattr(c, "home", None))
+        if pruned["deleted"]:
+            out["backups_pruned"] = pruned["deleted"]
+        if pruned["errors"]:
+            out["backup_prune_warning"] = "; ".join(pruned["errors"])[:300]
+            print(f"WARNING: {app_id} updated, but its old backups were not all removed: "
+                  f"{out['backup_prune_warning']}", file=sys.stderr)
     return out
 
 
