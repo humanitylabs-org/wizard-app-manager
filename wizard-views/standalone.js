@@ -25,6 +25,8 @@ const connCtx = {
 };
 if (only) {
   for (const a of menu.querySelectorAll('a')) if (a.getAttribute('href') !== `#${only}`) a.remove();
+  // One view: nothing to switch to, so no Admin menu (the shell's title bar already names the window).
+  btn.parentElement.hidden = true;
 }
 
 function show() {

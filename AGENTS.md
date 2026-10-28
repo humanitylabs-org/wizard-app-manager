@@ -10,7 +10,7 @@ Two kinds of agent read this file:
 The Wizard App Manager is [Runtipi](https://github.com/runtipi/runtipi) with one part replaced: its App Store reads the Wizard App Index. It is a thin fork (wizard-os DECISIONS #32).
 
 - **Keep the diff from upstream Runtipi small.** Wizard behaviour goes in `wam`, the installer, or the `wizardapps` store module. For running the Runtipi dev server, see `AGENTS.runtipi.md`.
-- **Checks:** `python -m pytest -q` and `node --test tests/runtipi-open.test.mjs` must pass. These are the same commands CI runs.
+- **Checks:** `python -m pytest -q` and `node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs` must pass. These are the same commands CI runs.
 - **Installer changes:** `get.sh`, `install.sh` and `os.md` are what every new box runs, through `aiwizards.com/os.sh`. A change to the install path needs a run on a clean VM or box, and its result goes in Verified. That covers both a fresh install and an install alongside an existing Hermes.
 - **Releases:** a release is a `release/X.Y.Z` PR that updates `releases/`. A box pulls a release only once it has merged.
 - **Checker rules:** the `wizard.md` checker copy here must match wizard-os `tools/check_wizard_md.py` and the wizard-app-index rules. Change all three together.
