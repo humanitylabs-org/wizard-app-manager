@@ -975,7 +975,12 @@ export async function renderConnections(el, ctx = {}) {
       const key = `disconnect:${p}|${q}`;
       set(`<div class="wam-cm-sh-head"><span class="wam-cm-pair">${cmGlyph({ id: p, name: nm(p) })}${cmGlyph({ id: q, name: nm(q) })}</span><h2 id="wamCmTitle">${esc(info.title)}</h2></div>
         ${info.why.map((w) => `<p class="wam-cm-says">${esc(w)}</p>`).join('')}
-        ${info.group ? `<p class="wam-cm-sh-note">${esc(`This connection goes to ${list((info.group.providers || []).map(nm))} together, so it is disconnected as one.`)}</p>` : ''}
+        ${info.groups
+          .map(
+            (g) =>
+              `<p class="wam-cm-sh-note">${esc(`${nm(g.from)}’s connection goes to ${list((g.providers || []).map(nm))} together, so it is disconnected as one.`)}</p>`,
+          )
+          .join('')}
         ${info.warn ? `<p class="wam-cm-sh-note">${esc(info.warn)}</p>` : ''}
         <div class="wam-cm-sh-acts"><button type="button" class="wam-btn" data-cm-disconnect="${esc(`${p}|${q}`)}"${dis(key)}>Disconnect</button></div>
         ${roOnly()}`);
@@ -1198,7 +1203,7 @@ export async function renderConnections(el, ctx = {}) {
       // connection to a slot several apps provide is denied as one
       const [p, q] = b.dataset.cmDisconnect.split('|');
       const info = linkInfo(el._wamModel, p, q);
-      const rows = info.group ? [{ from: info.group.from, to: info.group.to }] : cutRows('declared', d.controls, p, q);
+      const rows = info.rows.length ? info.rows : cutRows('declared', d.controls, p, q);
       return void run(
         `disconnect:${p}|${q}`,
         async () => {

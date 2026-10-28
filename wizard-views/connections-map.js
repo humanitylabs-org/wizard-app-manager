@@ -331,15 +331,17 @@ export function linkInfo(model, a, b) {
         ? `${nm(r.from)} asked to talk to ${to}, and it was allowed.`
         : `${nm(r.from)} says it needs ${to} to work.`;
   });
-  const groupOnly = rows.length > 0 && rows.every((r) => (r.providers || []).length > 1);
+  // connections to a slot several apps provide: Disconnect denies each as one (it takes the other providers too)
+  const groups = rows.filter((r) => (r.providers || []).length > 1);
   const needs = rows.filter((r) => r.origin !== 'owner').map((r) => nm(r.from));
   return {
     a,
     b,
     title: `${nm(a)} and ${nm(b)} are connected`,
     why: [...new Set(why)],
-    // a connection to a slot several apps provide is cut as one, never one provider alone
-    group: groupOnly ? rows[0] : null,
+    groups,
+    // what Disconnect denies: every connected row between the two, whichever app declared it (each slot row once)
+    rows: rows.map((r) => ({ from: r.from, to: r.to })),
     warn: needs.length ? `${list([...new Set(needs)])} may stop working properly without it.` : '',
   };
 }

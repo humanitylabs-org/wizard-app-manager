@@ -374,7 +374,8 @@ test('Strict mode is the default: only real connections are lines, each with its
   assert.equal(money.title, 'Money and SimpleFIN are connected');
   assert.deepEqual(money.why, ['Money says it needs SimpleFIN to work.']);
   assert.equal(money.warn, 'Money may stop working properly without it.');
-  assert.equal(money.group, null);
+  assert.deepEqual(money.groups, []);
+  assert.deepEqual(money.rows, [{ from: 'money', to: 'wizard-simplefin' }]);
   const music = linkInfo(m, 'wizard-music', 'wizard-youtube-music');
   assert.deepEqual(music.why, ['You connected them.']);
   assert.equal(music.warn, '');
@@ -397,8 +398,14 @@ test('Strict mode is the default: only real connections are lines, each with its
   });
   const gm = mapModel(g);
   const info = linkInfo(gm, 'backup', 's3');
-  assert.equal(info.group.to, 'slot:backup-storage');
+  assert.equal(info.groups[0].to, 'slot:backup-storage');
   assert.deepEqual(info.why, ['Backup says it needs Cloudflare and S3 to work.']);
+  // a pair joined by two slot connections: Disconnect denies both, once each (Codex review)
+  g.controls.push({ from: 'backup', to: 'slot:offsite', providers: ['s3', 'wizard-cloudflare'], status: 'connected', origin: 'declared' });
+  assert.deepEqual(linkInfo(mapModel(g), 'backup', 's3').rows, [
+    { from: 'backup', to: 'slot:backup-storage' },
+    { from: 'backup', to: 'slot:offsite' },
+  ]);
 });
 
 test('Agents: one "Your agent" when the box names none; what an agent can use is said truthfully', () => {
