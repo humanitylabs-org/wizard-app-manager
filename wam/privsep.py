@@ -17,9 +17,19 @@ def service_override(st, wizard_home, stt_origin=None):
     hh = a['hermes_home']
     state = f'/var/lib/wizard-agent/{uid}'
     stt_origin = stt_origin or 'http://127.0.0.1:9'
-    if not re.fullmatch(r'http://127\.0\.0\.1:\d{2,5}', stt_origin):
+    if (not re.fullmatch(r'http://127\.0\.0\.1:\d{1,5}', stt_origin)
+            or not 1 <= int(stt_origin.rsplit(':', 1)[1]) <= 65535):
         raise ValueError('Transcriber must have a loopback origin')
     checkout = BASE / 'wizard-app-manager'
+    # The Service, running at the agent UID, owns agent registry access. The
+    # manager never parses the copied private homes. Preserve old absolute
+    # registry pointers inside the Service without host-level compatibility links.
+    agent_mounts = f'\n      - {BASE}/.wizard-os/agents:/state/agents'
+    legacy = (st.get('migration') or {}).get('legacy_home')
+    if legacy:
+        if not re.fullmatch(r'/[A-Za-z0-9._/-]+', legacy) or '..' in Path(legacy).parts:
+            raise ValueError('Unsafe legacy agent registry path')
+        agent_mounts += f'\n      - {BASE}/.wizard-os/agents:{legacy}/.wizard-os/agents'
     from .alongside import image_lines, service_port
     # Reset the recipe's mounts/command/entrypoint. Only protected wiring is read
     # by Docker; the launcher reads link.json *after* dropping to the agent uid.
@@ -49,7 +59,7 @@ def service_override(st, wizard_home, stt_origin=None):
       WIZARD_HERMES_STATE_PATH: /hermes/state.db
       WIZARD_PRIVSEP_LINK: /state/link.json
     volumes: !override
-      - {state}:/state
+      - {state}:/state{agent_mounts}
       - {hh}:/hermes
       - {BASE}/runtipi/app-data/wizard-os:/registry:ro
       - {checkout}/scripts/agent-service-start.mjs:/privsep/agent-service-start.mjs:ro
@@ -65,6 +75,8 @@ def doctor(c):
     st = alongside.load(c.home)
     from . import developer
     out = developer.health(c.home)
+    out.append(('Agent uses the protected App Manager', True,
+                'Use the thin wam client for apps, logs and backups. Ask the owner for server repairs; do not use Docker or sudo.'))
     try:
         rt = c.runtipi()
         rt.installed()

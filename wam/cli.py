@@ -1894,6 +1894,10 @@ def main(argv: list[str] | None = None) -> int:
     if (registry.home() / 'client.json').is_file():
         from .client import main as remote_main
         return remote_main(argv)
+    effective = sys.argv[1:] if argv is None else argv
+    if effective and effective[0] == 'privilege':
+        from .privilege_migration import main as privilege_main
+        return privilege_main(effective[1:])
     from .host_policy import NeedsOwnerApproval, EXIT_APPROVAL
     try:
         return _main(argv)

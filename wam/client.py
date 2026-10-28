@@ -128,6 +128,11 @@ def main(argv=None):
             return subprocess.run(['hermes', '--version'], check=False).returncode
         print('Use wam hermes update [--check|--dry-run] for this account.', file=sys.stderr)
         return 2
+    if argv[:1] == ['privilege']:
+        if os.getuid() != 0:
+            print('Ask the owner to run wam privilege from their administrator login. Keep using the thin wam client for apps.', file=sys.stderr)
+            return 2
+        os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', '/var/lib/wizard-os-migration/source/scripts/wam-privilege', *argv[1:]])
     if argv[:1] == ['app']:
         argv = argv[1:]
     if argv[:1] and argv[0] in ('install-local', 'update-local', 'check'):

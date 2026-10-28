@@ -19,8 +19,13 @@ refusal with Docker or sudo. The thin client also supports:
 
 `wizard link` hands the Agent Service the loopback wam URL and agent token at the agent uid.
 `wam hermes update` runs stock Hermes locally; `--check` (or `--dry-run`) reports stock version/update status
-without installing or restarting. Neither requires server privileges. Existing layouts are unchanged;
+without installing or restarting. Neither requires server privileges. Existing layouts change only when the owner explicitly runs the host migration;
 full-host repair instructions are for the administrator, not an elevation route for the agent.
+On an explicitly migrated box, keep using this same thin client. The owner runs
+`wam privilege status` or `wam privilege rollback` from a separate administrator
+login; rollback restores the frozen pre-migration layout and discards later
+changes. Migration is never a nightly update. A temporary seven-day server grant
+is logged, revocable and root-equivalent; Health stays red until it is off.
 
 You are the owner's agent. Follow these steps in order. Keep every message to the owner short. Put each command and each link on its own line.
 

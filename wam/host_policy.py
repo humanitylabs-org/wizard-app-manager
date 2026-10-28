@@ -467,14 +467,17 @@ def context(c, app_id, store='wizardapps', given=None, filesystem=None):
     settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
     data = path_type(settings.get('appDataPath') or env.get('RUNTIPI_APP_DATA_PATH') or host) / 'app-data' / store / app_id
     values = dict(env)
-    for p in (data / 'app.env', root / 'user-config' / store / app_id / 'app.env'):
+    paths = [root / 'user-config' / store / app_id / 'app.env']
+    if not getattr(c, 'migration_metadata_only', False):
+        paths.insert(0, data / 'app.env')
+    for p in paths:
         if p.is_file():
             values.update(read_env(p))
     values.update(given or {})
     from .managed_overrides import agent_mounts
     return {'root': host, 'app_data': data, 'files_root': host / 'media',
             'base': host / 'apps' / store / app_id, 'store': store, 'variables': values,
-            'managed_mounts': agent_mounts(c, app_id, store)}
+            'managed_mounts': () if getattr(c, 'migration_metadata_only', False) else agent_mounts(c, app_id, store)}
 
 
 def normalized_override(c, app_id, store, text, *, offline=False):
