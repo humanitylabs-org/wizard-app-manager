@@ -8,6 +8,7 @@ import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { WizardStorage } from '../wizard-storage';
 import { mountAppGrants } from '../wizard-app-grants';
 import { WizardSharesController } from '../wizard-shares.controller';
+import { BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '../../auth/auth.guard';
 
 let root: string;
@@ -365,6 +366,8 @@ describe('open mode (the default): everything connected unless the owner disconn
     await expect(store.setSensitive('wizard-agent-service', true)).rejects.toThrow(/can’t be marked sensitive/);
     expect((await state()).sensitive).toEqual([]);
     expect((await store.setSensitive('wizard-agent-service', false)).sensitive).toEqual([]); // turning it off always works
+    const c = new WizardSharesController({ storage: store } as any);
+    await expect(c.sensitive('wizard-agent-service:wizardapps', { sensitive: true })).rejects.toThrow(BadRequestException);
   });
 
   it('the mode route sits behind the owner sign-in like the others', () => {
