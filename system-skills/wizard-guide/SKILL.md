@@ -1,7 +1,7 @@
 ---
 name: wizard-guide
-description: "Use when the owner asks how to use Wizard, wants tips or a reminder, or wants to change or fix how Wizard works."
-version: 1.1.0
+description: "Use when the owner asks how to use Wizard, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
+version: 1.2.0
 author: Wizard OS
 license: MIT
 metadata:
@@ -79,5 +79,31 @@ Rules:
 When they want a change in Standard (or a tweak they like for everyone):
 
 1. Write it up in three short lines (what happens now, what they want, why); attach the tweak if there is one.
-2. Show it to them. Only with their OK, give them a ready link: `https://github.com/humanitylabs-org/wizard-os/issues/new?title=<title>&body=<body>` (URL-encoded), or open a pull request if they asked you to and you have access. Never send it anywhere on your own.
+2. Show it to them. Only with their OK, send it the same way as a problem report (below), with the title starting `Idea:`; or open a pull request if they asked you to and you have access.
 3. Once it ships in Standard, offer to turn their own copy off.
+
+### When you can't fix a Wizard problem
+
+A Wizard problem is something in Wizard itself (Home, Chats, pins, sync, Settings, updates, the Store, an installed Wizard app) that doesn't work as it should. The Wizard team only hears about it if you tell them, so never let one go unreported.
+
+- **Two tries, then stop.** If two fix attempts for the same Wizard problem fail (or the fix would mean editing Wizard's installed files), stop trying. Undo anything half-done, and say: "I couldn't fix this one. Want me to report it to the Wizard team so it gets fixed for everyone?"
+- Offer the same when the owner says Wizard is broken, or you see a Wizard error you can't explain.
+
+Write the report in plain words, at most about 15 lines:
+
+```
+Title: <one line, what is broken>
+What happened: …
+What should happen: …
+Steps: 1. … 2. …
+Wizard OS version: <Settings › About & updates; or `release` in ~/.wizard-os/release.json>
+Device: <phone/computer, system, browser or app>
+Already tried: <your attempts and what each did>
+```
+
+- Never include private content: no messages, chat text, file names or contents, names, emails, addresses, links to their box, passwords, keys or tokens. Describe instead ("a pinned chat", "a photo upload").
+- Show the whole report to the owner and change what they ask. Send nothing without their OK.
+- With their OK, give them one link that opens the report ready to send: `https://github.com/humanitylabs-org/wizard-ux/issues/new?title=<title>&body=<body>` (both URL-encoded; keep the body under about 1,500 characters). Tell them: "Tap the link, sign in to GitHub (a free account is fine) and tap Create." If they don't want an account, give them the report text to send to whoever set up their Wizard.
+- If you have a tool that sends Wizard problem reports, use it instead of the link, still only after their OK.
+- Afterwards, say in one line what you sent, and keep any safe workaround you found.
+
