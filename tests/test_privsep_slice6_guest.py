@@ -101,3 +101,31 @@ def test_select_apps_uses_unprefixed_public_index_ids(guest):
 def test_select_candidates_puts_calendar_first_and_keeps_fallbacks(guest):
     catalog = [{'id': n} for n in ('wisdom', 'wizard-notes', 'wizard-calendar', 'profiles', 'money')]
     assert guest.select_candidates(catalog) == ['wizard-calendar', 'wizard-notes', 'profiles', 'wisdom', 'money']
+
+
+@pytest.mark.parametrize('verb,status', [('stop', 'stopped'), ('start', 'running'), ('restart', 'running')])
+def test_app_lifecycle_never_dispatches_to_runtipi_global_controls(guest, monkeypatch, verb, status):
+    calls = []
+    result = {'app': 'wizard-calendar', 'status': status}
+    def agent(*args):
+        calls.append(args)
+        return json.dumps(result)
+    monkeypatch.setattr(guest, 'agent', agent)
+    assert guest.app_lifecycle(verb, 'wizard-calendar') == result
+    assert calls == [('wam', 'app', verb, 'wizard-calendar')]
+
+
+@pytest.mark.parametrize('result', [
+    {},
+    {'app': 'wizard-calendar', 'status': 'stopped'},
+    {'app': 'other-app', 'status': 'running'},
+    {'app': 'wizard-calendar', 'status': 'running', 'error': 'start failed'},
+])
+def test_successful_process_without_expected_app_state_is_not_lifecycle_success(guest, monkeypatch, result):
+    monkeypatch.setattr(guest, 'agent', lambda *args: json.dumps(result))
+    with pytest.raises(AssertionError): guest.app_lifecycle('start', 'wizard-calendar')
+
+
+def test_global_cli_text_is_not_app_lifecycle_success(guest, monkeypatch):
+    monkeypatch.setattr(guest, 'agent', lambda *args: 'Runtipi started successfully')
+    with pytest.raises(ValueError): guest.app_lifecycle('start', 'wizard-calendar')

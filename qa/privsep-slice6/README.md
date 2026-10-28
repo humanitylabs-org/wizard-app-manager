@@ -1,9 +1,8 @@
 # Slice 6 — existing-box separation and rollback
 
-Status: the first real VM rehearsal stopped during legacy app setup and exposed
-an extra migration elevation site in the full suite. Those failures are repaired
-for a staged rerun; **end-to-end VM acceptance has not passed**. Do not merge,
-deploy or run on James's daily driver.
+Status: legacy setup failures are repaired for a staged rerun, including the
+Calendar host-mount fixture's app-scoped lifecycle commands. **End-to-end VM
+acceptance has not passed**. Do not merge, deploy or run on James's daily driver.
 
 Runner usage (real parser, no wrapper-only flags):
 
@@ -31,7 +30,11 @@ first form, without `--smoke` or `--preflight`, so it runs the full pytest gate.
 - Queries the guest's actual `wam search --json` index before installing. Selects
   Calendar plus two available lightweight apps (never assumes Quest exists),
   saves those exact IDs for all later phases, and refuses fewer than three.
-  Adds a local pre-existing host-mount override to Calendar and verifies the
+  Adds a local pre-existing host-mount override to Calendar and applies it through
+  `wam app stop wizard-calendar` and `wam app start wizard-calendar` (main's real
+  app API lifecycle, not the top-level `wam stop`/`wam start`, which control
+  Runtipi itself). Checks the returned
+  app/status rather than trusting exit zero, and verifies the
   read-only mount and its canary in the real container before migration and after
   migration/rollback/remigration. Writes UID-1000 data canaries and records the
   legacy token hash and groups. A real Tailscale daemon has the legacy operator,

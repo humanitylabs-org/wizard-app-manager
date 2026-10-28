@@ -53,6 +53,19 @@ def agent(*args, **kwargs):
                 'PATH=/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin',*args],**kwargs)
 
 
+def app_lifecycle(verb, app):
+    """Scope lifecycle to an app on both main and the separated thin client.
+
+    Main's top-level `wam start/stop/restart` controls Runtipi itself; an extra
+    app argument does not make it an app action and may still exit zero.
+    """
+    assert verb in ('start', 'stop', 'restart'), verb
+    result = json.loads(agent('wam', 'app', verb, app))
+    expected = 'stopped' if verb == 'stop' else 'running'
+    assert result.get('app') == app and result.get('status') == expected and not result.get('error'), result
+    return result
+
+
 def hashes(root):
     out={}
     for directory, dirs, files in os.walk(root,followlinks=False):
@@ -133,7 +146,7 @@ def main(argv):
         doc=doc or {}; doc.setdefault('services',{}).setdefault('wizard-calendar',{}).setdefault('volumes',[]).append('/srv/slice6-host:/preexisting:ro')
         p.parent.mkdir(parents=True,exist_ok=True); p.write_text(dump_yaml(doc))
         run(['chown','-R','hermes:hermes',p.parent])
-        agent('wam','stop','wizard-calendar'); agent('wam','start','wizard-calendar')
+        app_lifecycle('stop', 'wizard-calendar'); app_lifecycle('start', 'wizard-calendar')
         host_canary()
         for app in APPS:
             p=OLD/'runtipi/app-data/wizardapps'/app/'data/slice6-canary'
@@ -174,7 +187,7 @@ def main(argv):
         agent('docker','ps',expected=None)
         agent('tailscale','set','--accept-dns=false',expected=None)
         agent('wam','apps','--json')
-        for verb in ('stop','start','restart'): agent('wam',verb,APPS[1])
+        for verb in ('stop', 'start', 'restart'): app_lifecycle(verb, APPS[1])
         rows=json.loads(agent('wam','doctor','--json'))
         assert rows and all(row['ok'] for row in rows),rows
         wait_service(); canaries(BASE); host_canary()
