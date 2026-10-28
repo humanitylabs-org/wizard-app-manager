@@ -629,7 +629,7 @@ export async function renderConnections(el, ctx = {}) {
                 ? act(r, 'connect')
                 : act(r, 'reconnect');
       return `<div class="wam-conn-ctl">
-        <span class="st-tx"><b>${esc(who)}</b><small><span class="wam-tag ${tone}">${esc(word)}</span> ${esc(ORIGIN_WORDS[r.origin] || '')}</small></span>
+        <span class="st-tx"><b>${esc(who)}</b><small><span class="wam-tag ${tone}">${esc(word)}</span> ${esc(r.origin === 'owner' && r.status !== 'connected' ? '' : ORIGIN_WORDS[r.origin] || '')}</small></span>
         <span class="wam-conn-acts">${btns}</span></div>`;
     };
     const mode = d.mode === 'open' ? 'open' : 'declared';
@@ -733,10 +733,20 @@ export async function renderConnections(el, ctx = {}) {
           open === a.id
             ? `<div class="wam-conn-detail">
           ${openHtml}
-          <h5>${esc(a.name || a.id)} ${openMode && a.open ? 'declares' : 'reaches'}</h5>
+          ${
+            openMode && a.open
+              ? // open mode: what the app declares (connected); the cut ones are under "Can't reach" above
+                out.filter((r) => r.status === 'connected').length
+                ? `<h5>${esc(a.name || a.id)} declares</h5>${out
+                    .filter((r) => r.status === 'connected')
+                    .map((r) => ctl(r, target(r)))
+                    .join('')}`
+                : ''
+              : `<h5>${esc(a.name || a.id)} reaches</h5>
           ${out.length ? out.map((r) => ctl(r, target(r))).join('') : '<p>No other app.</p>'}
           <h5>Reached by</h5>
-          ${inc.length ? inc.map((r) => ctl(r, nm(r.from))).join('') : '<p>No other app.</p>'}
+          ${inc.length ? inc.map((r) => ctl(r, nm(r.from))).join('') : '<p>No other app.</p>'}`
+          }
           <div class="wam-conn-ctl"><span class="st-tx"><b>Sensitive</b><small>${a.sensitive ? 'New connections to it wait for your OK.' : 'New connections to it are added for you.'}</small></span><span class="wam-conn-acts">${sens}</span></div>
           ${served.length ? `<p><b>Gateway to</b> ${esc(served.join(', '))} <span class="wam-conn-why">(their gateway networks)</span></p>` : ''}
           ${core.length ? `<p><b>Wizard core</b> ${esc(core.join(', '))} <span class="wam-conn-why">(shares its gateway network, so it can reach them too)</span></p>` : ''}
