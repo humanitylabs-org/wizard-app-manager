@@ -332,3 +332,17 @@ def test_a_box_whose_other_defaults_moved_since_the_install_is_left_to_the_insta
     assert p["quick"] is False and "files moved" in p["reason"]
     (h / "apps.json").unlink()
     assert quick_update.plan(h, "0.9.2", rel.as_uri())["quick"] is False
+
+
+def test_a_box_running_another_core_image_is_left_to_the_installer(box):
+    """Codex P1: an Agent Service image override must not be reset by the quick read-back."""
+    h, rel = box
+    old = json.loads((rel / "0.9.1.json").read_text())
+    ref = lambda im: im["ref"].split(":")[0] + "@" + im["digest"]   # noqa: E731
+    pins = {a: ref(old["images"][a]) for a in ("wizard-ux", "wizard-agent-service")}
+    (h / "alongside.json").write_text(json.dumps({"mode": "alongside", "shell": {"port": 8796}, "images": pins}))
+    assert quick_update.plan(h, "0.9.2", rel.as_uri())["quick"] is True     # pins as released: fine
+    pins["wizard-agent-service"] = "ghcr.io/someone/agent@" + D("7")
+    (h / "alongside.json").write_text(json.dumps({"mode": "alongside", "shell": {"port": 8796}, "images": pins}))
+    p = quick_update.plan(h, "0.9.2", rel.as_uri())
+    assert p["quick"] is False and "wizard-agent-service runs another image" in p["reason"]

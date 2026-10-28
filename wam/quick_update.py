@@ -177,6 +177,17 @@ def plan(home: Path | None, want: str | None, base: str | None = None, checkout=
             # The box no longer matches its receipt (e.g. the owner updated Files): the quick read-back would fail
             # on it. Leave that box to the installer's documented release_updates behaviour, never start here.
             return no(f"{row['app']} moved since the last install")
+    from . import release_pins
+    pinned = (_read(h / "alongside.json") or {}).get("images") or {}
+    for app, im in (local.get("images") or {}).items():
+        if app in QUICK_APPS or app not in pinned:
+            continue
+        try:
+            same = pinned[app] == release_pins.image_ref(im)
+        except ValueError:
+            same = False
+        if not same:      # e.g. an owner/test image override: the read-back would put it back; leave it to the installer
+            return no(f"{app} runs another image than the release")
     target = release_doc(want, base)
     if not target:
         return no(f"could not read release {want}")
@@ -187,7 +198,6 @@ def plan(home: Path | None, want: str | None, base: str | None = None, checkout=
     if commit != ((local.get("components") or {}).get("wizard-app-manager") or {}).get("commit") or not clean:
         return no("the App Manager checkout is not the release's commit")
     try:
-        from . import release_pins
         tmp = h / f".quick-check-{os.getpid()}.json"
         tmp.write_bytes(target[1])
         try:
