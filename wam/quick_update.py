@@ -27,6 +27,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -251,6 +252,12 @@ class Ops:
                 rt / "user-config" / "tipi-compose.yml", rt / "user-config" / ".wizard-release-index" / "release-pins.json",
                 *[rt / "user-config" / "wizardapps" / app / "docker-compose.yml" for app in QUICK_APPS]]
 
+    def dirs(self) -> list[Path]:
+        """Directories this update can change: the staged store recipe (resolve_any rewrites it and its
+        .wizard-selection before Runtipi's update; a rollback must not leave the target recipe staged)."""
+        rt = self.runtipi_root()
+        return [rt / "repos" / "wizardapps" / "apps" / app for app in QUICK_APPS]
+
     def container(self, app: str) -> str:
         p = subprocess.run(self.docker() + ["ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=30)
         names = [n for n in p.stdout.split() if n.startswith(app + "_wizardapps-")]
@@ -430,6 +437,7 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         return {"started": False, "quick": True, "note": "an install or update is already running"}
     ops = ops or Ops(h, log)
     snapshot: dict[Path, bytes | None] = {}
+    dirs: dict[Path, Path] = {}
     touched = set_pins_env = False
     started = time.monotonic()
     result: dict = {"started": True, "quick": True, "release": version}
@@ -451,6 +459,12 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
                 snapshot[f] = f.read_bytes()
             except OSError:
                 snapshot[f] = None
+        saved = h / ".quick-rollback"
+        shutil.rmtree(saved, ignore_errors=True)
+        for i, d in enumerate(ops.dirs()):
+            dirs[d] = saved / str(i)
+            if d.is_dir():
+                shutil.copytree(d, dirs[d], symlinks=True)
         pins = h / "release-pins.json"
         from . import release_pins
         manager_image = release_pins.image_ref((target.get("images") or {})["wizard-app-manager"])
@@ -479,7 +493,7 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         log(f"quick update failed: {why}")
         rolled = True
         if touched:
-            rolled = _rollback(h, ops, snapshot, log)
+            rolled = _rollback(h, ops, snapshot, log, dirs)
         fallback = os.environ.get(FALLBACK_ENV, "1") != "0"
         if fallback:
             _status(h, state="running", step="handing over to the full update",
@@ -494,6 +508,7 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         _status(h, state="failed", exit_code=1, failure_reason=f"quick update failed: {why}", message="")
         return {**result, "done": False, "error": why, "rolled_back": rolled, "fallback": False}
     finally:
+        shutil.rmtree(h / ".quick-rollback", ignore_errors=True)
         if set_pins_env:
             os.environ.pop("WIZARD_RELEASE_PINS", None)
         for fd in fds:
@@ -501,9 +516,17 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         logf.close()
 
 
-def _rollback(h: Path, ops, snapshot: dict, log) -> bool:
+def _rollback(h: Path, ops, snapshot: dict, log, dirs: dict | None = None) -> bool:
     """Put back every touched file, the index view and the shell the box ran before. True when the old shell runs."""
     ok = True
+    for d, copy in (dirs or {}).items():
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+            if copy.is_dir():
+                shutil.copytree(copy, d, symlinks=True)
+        except OSError as e:
+            ok = False
+            log(f"rollback: could not restore {d}: {e}")
     for f, data in snapshot.items():
         try:
             if data is None:

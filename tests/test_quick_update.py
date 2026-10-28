@@ -131,9 +131,14 @@ class FakeOps:
         self.h, self.fail, self.steps, self.installer, self.failed = h, fail, [], [], False
         self.files_list = [h / "release.json", h / "release-pins.json", h / "alongside.json", h / "override.yml"]
         (h / "override.yml").write_text("image: 0.9.1\n")
+        (h / "recipe").mkdir(exist_ok=True)
+        (h / "recipe" / ".wizard-commit").write_text("old\n")
 
     def files(self):
         return self.files_list
+
+    def dirs(self):
+        return [self.h / "recipe"]
 
     def _step(self, name, *a):
         self.steps.append((name, *a))
@@ -148,6 +153,8 @@ class FakeOps:
     def update_apps(self, apps):
         v = json.loads((self.h / "release-pins.json").read_text())["version"]
         (self.h / "override.yml").write_text(f"image: {v}\n")       # app_update rewrites it from the pins
+        if v == "0.9.2":
+            (self.h / "recipe" / ".wizard-commit").write_text("new\n")   # resolve_any stages the target recipe
         self._step("update_apps", v)
 
     def ensure_image(self, app, digest):
@@ -197,6 +204,8 @@ def test_a_failed_check_rolls_back_then_hands_over_to_the_installer(box):
     for f, data in before.items():
         assert f.read_bytes() == data, f                      # every file back as it was
     assert (h / "override.yml").read_text() == "image: 0.9.1\n"
+    assert (h / "recipe" / ".wizard-commit").read_text() == "old\n"   # Codex P2: the staged recipe is put back
+    assert not (h / ".quick-rollback").exists()
     # the rollback re-pointed the index and the shell at the installed release's pins
     back = ops.steps[ops.steps.index(("rollback-mark",)) + 1:]
     assert ("refresh_index", "0.9.1", "ghcr.io/humanitylabs-org/wizard-app-manager@" + D("e")) in back
