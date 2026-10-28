@@ -160,6 +160,9 @@ class FakeOps:
     def ensure_image(self, app, digest):
         self._step("ensure_image", app, digest)
 
+    def store_data(self):
+        self._step("store_data", json.loads((self.h / "release-pins.json").read_text())["version"])
+
     def readback(self, pins):
         d = json.loads(pins.read_text())
         (self.h / "release.json").write_text(json.dumps({"release": d["version"], "mode": "alongside",
@@ -181,7 +184,8 @@ def test_runner_swaps_the_shell_and_records_the_release_like_the_installer(box):
     res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
     assert res["done"] is True and ops.installer == []
     names = [s[0] for s in ops.steps]
-    assert names == ["refresh_index", "update_apps", "ensure_image", "readback", "verify_shell"]
+    assert names == ["refresh_index", "update_apps", "ensure_image", "store_data", "readback", "verify_shell"]
+    assert ("store_data", "0.9.2") in ops.steps          # Codex: the Store adapter follows the shell commit
     assert ops.steps[0][1] == "0.9.2" and ops.steps[0][2] == "ghcr.io/humanitylabs-org/wizard-app-manager@" + D("e")
     assert ops.steps[2] == ("ensure_image", "wizard-ux", D("9"))
     assert (h / "release-pins.json").read_bytes() == (rel / "0.9.2.json").read_bytes()   # the published bytes
@@ -210,6 +214,7 @@ def test_a_failed_check_rolls_back_then_hands_over_to_the_installer(box):
     back = ops.steps[ops.steps.index(("rollback-mark",)) + 1:]
     assert ("refresh_index", "0.9.1", "ghcr.io/humanitylabs-org/wizard-app-manager@" + D("e")) in back
     assert ("update_apps", "0.9.1") in back and ("verify_shell", "wizard-ux", D("1")) in back
+    assert back[-1] == ("store_data", "0.9.1")           # and back to the old shell's adapter
     assert updates.installed(h) == "0.9.1"
     assert "rolled back to 0.9.1" in (h / "install.log").read_text()
 

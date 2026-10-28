@@ -10,7 +10,8 @@ module applies such a release the way the installer's own upgrade steps do, just
    recreate the wizard-release-index sidecar and the App Manager so its index cache forgets the old commit);
 3. `release_updates` moves the shell to the release's source commit (Runtipi's queued, backed-up app update; on an
    alongside box `app_update` rewrites the user-config override with the new image digest first);
-4. the installer's read-back (get.sh's own read-back program, run from this checkout) records ~/.wizard-os/release.json
+4. the installer's `wam store-data` moves the Store adapter to the new shell commit (it runs from that commit);
+5. the installer's read-back (get.sh's own read-back program, run from this checkout) records ~/.wizard-os/release.json
    exactly as a full run would, and the shell container must be healthy and serve the new image's files.
 
 Any failure rolls every touched file and the shell back to the installed release and then hands the update to the
@@ -329,6 +330,18 @@ class Ops:
             time.sleep(3)
         raise QuickError(f"{app} did not switch to {digest[:19]}… (image pull or start failed; Runtipi kept the old one)")
 
+    def store_data(self) -> None:
+        """The installer's `wam store-data`: the Store adapter runs from the installed shell's commit (store_data.py),
+        so a moved shell needs it refreshed. Like the installer, a failure here degrades the Store, not the update."""
+        from . import cli
+        try:
+            out = cli.store_data_cmd(self.config())
+        except (Exception, SystemExit) as e:   # noqa: BLE001
+            out = {"state": f"error: {type(e).__name__}: {e}"[:200]}
+        state = out.get("state")
+        self.log(f"App Store data for the installed shell: {state}"
+                 + ("" if state in ("ready", "skipped") else " (degraded, as a full update would report it; `wam store-data` shows why)"))
+
     def readback(self, pins_path: Path) -> dict:
         """get.sh's own read-back (from this checkout's get.sh), so release.json is written exactly like a full run."""
         script = readback_program(wam_dir() / "get.sh")
@@ -478,6 +491,7 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
             want = ((target.get("images") or {}).get(app) or {}).get("digest")
             if want:
                 ops.ensure_image(app, want)
+        ops.store_data()
         _status(h, step="checking", message="")
         rec = ops.readback(pins)
         for app in p["apps"]:
@@ -547,6 +561,7 @@ def _rollback(h: Path, ops, snapshot: dict, log, dirs: dict | None = None) -> bo
             if want:
                 ops.ensure_image(app, want)
                 ops.verify_shell(app, want)
+        ops.store_data()               # the Store adapter back on the old shell's commit
         log(f"rolled back to {old.get('version')}")
     except (Exception, SystemExit) as e:   # noqa: BLE001
         ok = False
