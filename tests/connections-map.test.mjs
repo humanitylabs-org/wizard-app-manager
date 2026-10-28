@@ -2,7 +2,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cutGroups, cutRows, cuttable, doneWords, reconnectRows, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
+import {
+  bandOf,
+  bands,
+  canUse,
+  cutGroups,
+  cutRows,
+  cuttable,
+  doneWords,
+  reconnectRows,
+  list,
+  mapModel,
+  pairRow,
+  talksSentence,
+} from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
   id,
@@ -244,6 +257,188 @@ test('Ask me first is offered only where the app networks can hold a connection 
       ['files', true],
       ['hostapp', false],
       ['a', true],
+    ],
+  );
+});
+
+test('Groups: the agents on top, then apps, connectors and Wizard itself, each from the report kind', () => {
+  const d = report(
+    [
+      app('cinequeue', 'Movies', [], { kind: 'app' }),
+      app('wizard-monarch', 'Monarch', [], { kind: 'connector' }),
+      app('transcriber', 'Transcriber', [], { kind: 'connector' }),
+      app('old', 'Old App'), // an older App Manager without kinds: an app
+    ],
+    { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] },
+  );
+  d.apps.find((a) => a.id === 'wizard-ux').kind = 'system';
+  const m = mapModel(d);
+  const g = bands(m);
+  assert.deepEqual(
+    g.map((b) => [b.key, b.title]),
+    [
+      ['agent', 'Agents'],
+      ['app', 'Apps'],
+      ['connector', 'Connectors'],
+      ['system', 'System'],
+    ],
+  );
+  assert.deepEqual(
+    g[0].agents.map((a) => [a.name, a.real, a.main]),
+    [['Your agent', 'host Hermes', true]],
+  );
+  assert.deepEqual(
+    g[1].apps.map((a) => a.id),
+    ['cinequeue', 'old'],
+  );
+  assert.deepEqual(
+    g[2].apps.map((a) => a.id),
+    ['wizard-monarch', 'transcriber'],
+  );
+  // the core without a kind is System too
+  assert.deepEqual(
+    g[3].system.map((a) => a.id),
+    ['wizard-ux', 'wizard-agent-service'],
+  );
+  assert.equal(g[2].blurb, 'Background services your apps and agent use. Nothing to open day to day.');
+  // every group says in one line what it is, and each sheet says which group
+  for (const b of g) assert.ok(b.blurb.length > 10 && b.blurb.length < 90, b.key);
+  assert.deepEqual(bandOf('connector').where, 'In Connectors');
+  assert.deepEqual(bandOf('nonsense').where, 'In Apps');
+  // a connector is still on the map like any app: it can be cut off from an app
+  assert.ok(cuttable(m, 'wizard-monarch').some((a) => a.id === 'cinequeue'));
+});
+
+test('Agents: one "Your agent" when the box names none; what an agent can use is said truthfully', () => {
+  const m = mapModel(report([app('cinequeue', 'Movies')]));
+  assert.deepEqual(
+    m.agents.map((a) => a.name),
+    ['Your agent'],
+  );
+  assert.equal(bands(m)[0].key, 'agent');
+  assert.equal(canUse(m.agents[0]), 'every app and connector');
+  const apps = [app('cinequeue', 'Movies'), app('files', 'Files'), app('wizard-monarch', 'Monarch', [], { kind: 'connector' })];
+  const two = mapModel(
+    report(apps, {
+      agents: [
+        { id: 'host-hermes', name: 'host Hermes', main: true, apps: ['cinequeue', 'files', 'wizard-monarch', 'gone-app'] },
+        { id: 'private', name: 'Private', private: true, apps: ['files'] },
+        { id: 'sealed', name: 'Sealed', private: true, apps: [] },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    two.agents.map((a) => [a.name, canUse(a)]),
+    [
+      ['Your agent', 'every app and connector'],
+      ['Private', '1 of your 3 apps and connectors'],
+      ['Sealed', 'none of your apps or connectors'],
+    ],
+  );
+  // the main agent's own lists (.main-agent.json) when its entry carries none; without lists, private apps are left out
+  const listed = mapModel(report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }], main_agent_apps: ['files'] }));
+  assert.equal(canUse(listed.agents[0]), '1 of your 3 apps and connectors');
+  // and only there: a registry entry's own permissions never speak for the main agent
+  const reg = mapModel(
+    report(apps, {
+      agents: [{ id: 'hermes', name: 'Hermes', main: true, apps: ['files'] }],
+      main_agent_apps: ['cinequeue', 'files', 'wizard-monarch'],
+    }),
+  );
+  assert.equal(canUse(reg.agents[0]), 'every app and connector');
+  const priv = report(apps, { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] });
+  priv.apps[0].privacy = 'private';
+  assert.equal(canUse(mapModel(priv).agents[0]), '2 of your 3 apps and connectors');
+});
+
+test('An agent that runs as an installed app is shown once, as the agent', () => {
+  const d = report([app('cinequeue', 'Movies'), app('agent-private', 'Private agent', [], { kind: 'agent' })], {
+    agents: [{ id: 'private', name: 'Private', private: true, apps: ['cinequeue'], app: 'agent-private' }],
+  });
+  const g = bands(mapModel(d));
+  assert.deepEqual(
+    g[0].agents.map((a) => a.id),
+    ['private'],
+  );
+  assert.deepEqual(g[0].apps, []);
+  assert.equal(canUse(g[0].agents[0]), 'every app and connector');
+  // and out of every connection control
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.apps.map((a) => a.id),
+    ['cinequeue'],
+  );
+  assert.deepEqual(cuttable(m, 'cinequeue'), []);
+});
+
+test('A box with only Wizard itself still has its Agents and System groups', () => {
+  const m = mapModel(report([]));
+  assert.deepEqual(m.apps, []);
+  assert.deepEqual(
+    bands(m).map((b) => b.key),
+    ['agent', 'system'],
+  );
+});
+
+test('Groups: an agent app in the core is an agent, not System', () => {
+  const d = report([app('cinequeue', 'Movies')], { gateway: { core: ['wizard-ux', 'wizard-agent-service', 'hermes-agent'] } });
+  d.apps.push({ id: 'hermes-agent', name: 'Hermes', state: 'isolated', open: null, kind: 'agent' });
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.agents.map((a) => [a.id, a.name]),
+    [['hermes-agent', 'Your agent']],
+  );
+  assert.deepEqual(
+    m.system.map((a) => a.id),
+    ['wizard-ux', 'wizard-agent-service'],
+  );
+});
+
+test('Only Wizard itself is System: an app that calls itself system stays an app, with its controls', () => {
+  const m = mapModel(report([app('cinequeue', 'Movies'), app('spare-shell', 'Spare Shell', [], { kind: 'system' })]));
+  assert.equal(m.apps.find((a) => a.id === 'spare-shell').kind, 'app');
+  assert.deepEqual(
+    bands(m)
+      .find((b) => b.key === 'system')
+      .system.map((s) => s.id),
+    ['wizard-ux', 'wizard-agent-service'],
+  );
+  assert.ok(cuttable(m, 'cinequeue').some((a) => a.id === 'spare-shell'));
+});
+
+test('A request from an app-backed agent stays, said with the agent’s name; a registry-backed core agent shows once', () => {
+  const d = report([app('cinequeue', 'Movies'), app('agent-private', 'agent-private', [], { kind: 'agent' })], {
+    agents: [{ id: 'private', name: 'Private', private: true, app: 'agent-private' }],
+    controls: [{ from: 'agent-private', to: 'cinequeue', status: 'pending' }],
+  });
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.pending.map((p) => [p.fromName, p.toName]),
+    [['Private', 'Movies']],
+  );
+  assert.deepEqual(m.waits, []); // no line to a node that isn't drawn
+  const core = report([app('cinequeue', 'Movies')], {
+    gateway: { core: ['wizard-ux', 'wizard-agent-service', 'hermes-agent'] },
+    agents: [
+      { id: 'hermes', name: 'Hermes', main: true, app: 'hermes-agent' },
+      { id: 'private', name: 'Private', private: true },
+    ],
+  });
+  core.apps.push({ id: 'hermes-agent', name: 'Hermes agent', state: 'isolated', open: null, kind: 'agent' });
+  assert.deepEqual(
+    mapModel(core).agents.map((a) => [a.id, a.name]),
+    [
+      ['hermes', 'Your agent'],
+      ['private', 'Private'],
+    ],
+  );
+  // without a registry entry the core agent app is the main agent, even beside extra agents
+  core.agents = [{ id: 'private', name: 'Private', private: true }];
+  assert.deepEqual(
+    mapModel(core).agents.map((a) => [a.id, a.name, a.main]),
+    [
+      ['private', 'Private', false],
+      ['hermes-agent', 'Your agent', true],
     ],
   );
 });

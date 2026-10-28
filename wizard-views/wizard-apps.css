@@ -528,6 +528,62 @@
   -webkit-backdrop-filter: blur(10px) saturate(1.2);
   backdrop-filter: blur(10px) saturate(1.2);
 }
+/* The groups: Agents on top, Apps and Connectors inside the cluster (they all talk to each other), System below.
+   Each has a plain title and one line saying what it is. */
+.wam-cm-band {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.wam-cm-cluster > .wam-cm-band + .wam-cm-band {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--cm-chip-line);
+}
+.wam-cm-bh {
+  max-width: 30em;
+  padding: 0 10px;
+  text-align: center;
+}
+.wam-cm-bh h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.wam-cm-bh p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-3);
+  text-wrap: balance;
+}
+.wam-cm-band .wam-cm-grid {
+  width: 100%;
+}
+.wam-cm-band .wam-cm-top {
+  flex-wrap: wrap;
+  gap: 14px 22px;
+}
+.wam-cm-band[data-cm-band="system"] {
+  --cm-d: 40px;
+  opacity: 0.92;
+}
+.wam-cm-band .wam-cm-top .wam-cm-node:not(.is-agent) {
+  width: var(--cm-node);
+}
+.wam .wam-cm-node.is-agent {
+  width: auto;
+  max-width: 240px;
+}
+.is-agent .wam-cm-role {
+  white-space: normal;
+}
 .wam-cm-grid {
   position: relative;
   display: grid;
@@ -922,6 +978,27 @@
   margin: 0;
   font-size: 13.5px;
   color: var(--ink-2);
+}
+.wam-cm-sh-note + .wam-cm-sh-note {
+  margin-top: 6px;
+}
+/* Which group an item is in, at the top of its sheet: "In Connectors" and the group's one line. */
+.wam-cm-where {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+.wam-cm-where b {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--cm-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cm-accent) 45%, transparent);
 }
 .wam-cm-srow > .wam-cm-ic {
   flex: none;

@@ -12,7 +12,7 @@
 // 'https://apps.aiwizards.com/v1'), chipsEl, extraTiles (html strings shown first under Apps), shell (true: Open
 // buttons carry data-app and bubble to the shell's own launcher), onApp(app, from), onGetApps(), onBack().
 
-import { cutGroups, cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
+import { bandOf, bands, canUse, cutGroups, cutRows, cuttable, doneWords, list, mapModel, reconnectRows, talksSentence } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
 const STORE = 'wizardapps';
@@ -594,7 +594,7 @@ export async function renderConnections(el, ctx = {}) {
   let toast = null; // { text, undo: {from, to} } after a change
   let toastTimer = 0;
   let details = false;
-  let sheetId = ''; // the app whose sheet is open ('@agent' for the agent)
+  let sheetId = ''; // the app whose sheet is open ('@agent:<i>' for an agent, '@sys:<id>' for part of Wizard)
   let picking = false;
   let drawn = '';
   let dlg = null;
@@ -621,11 +621,11 @@ export async function renderConnections(el, ctx = {}) {
         )}</p>`;
 
   // Exceptions first and side by side (so a cut pair's broken line stays short), then everyone else by name.
-  const order = (m) => {
-    const byName = [...m.apps].sort((x, y) => x.name.localeCompare(y.name));
+  const order = (m, apps = m.apps) => {
+    const byName = [...apps].sort((x, y) => x.name.localeCompare(y.name));
     const out = [];
     const put = (id) => {
-      const a = m.apps.find((x) => x.id === id);
+      const a = apps.find((x) => x.id === id);
       if (a && !out.includes(a)) out.push(a);
     };
     for (const [a, b] of [...m.cuts, ...m.waits]) {
@@ -679,19 +679,43 @@ export async function renderConnections(el, ctx = {}) {
           .join('')}</div>`
       : '';
     const tag = m.mode === 'declared' ? 'Strict mode' : 'All connected';
-    const agent = `<button type="button" class="wam-cm-node is-agent" data-cm-agent aria-haspopup="dialog" aria-label="Your agent can use every app">
-        <span class="wam-cm-disc">${cmGlyph({ id: 'wizard', name: 'Your agent' })}</span>
-        <span class="wam-cm-label"><span class="wam-cm-name">Your agent</span><span class="wam-cm-role">Uses every app</span></span></button>`;
-    const map = m.apps.length
-      ? `<div class="wam-cm-map" data-mode="${m.mode}">
+    // Groups top to bottom (connections-map.js bands): the agents, wired into one cluster holding the apps and the
+    // connectors (they all talk to each other), then Wizard itself. Each group says in one line what it is.
+    const agentNode = (g, i) =>
+      `<button type="button" class="wam-cm-node is-agent" data-cm-agent="${i}" aria-haspopup="dialog" aria-label="${esc(`${g.name} can use ${canUse(g)}`)}">
+        <span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span>
+        <span class="wam-cm-label"><span class="wam-cm-name">${esc(g.name)}</span><span class="wam-cm-role">${esc(`Can use: ${canUse(g)}`)}</span></span></button>`;
+    const sysNode = (s) =>
+      `<button type="button" class="wam-cm-node is-sys" data-cm-sys="${esc(s.id)}" aria-haspopup="dialog" aria-label="${esc(`${s.name}, part of Wizard itself`)}">
+        <span class="wam-cm-disc">${cmGlyph(s)}</span><span class="wam-cm-label"><span class="wam-cm-name">${esc(s.name)}</span></span></button>`;
+    const head = (b) => `<header class="wam-cm-bh"><h3>${esc(b.title)}</h3><p>${esc(b.blurb)}</p></header>`;
+    const groups = bands(m);
+    const band = (b) => {
+      const nodes = [
+        ...b.agents.map((g) => agentNode(g, m.agents.indexOf(g))),
+        ...order(m, b.apps).map((a) => node(a, nm)),
+        ...b.system.map(sysNode),
+      ];
+      const wide = b.key === 'agent' || b.key === 'system' ? ' wam-cm-top' : ' wam-cm-grid';
+      return `<section class="wam-cm-band" data-cm-band="${b.key}" aria-label="${esc(b.title)}">${head(b)}<div class="wam-cm-nodes${wide}">${nodes.join('')}</div></section>`;
+    };
+    const inCluster = groups.filter((b) => b.key === 'app' || b.key === 'connector');
+    // Shown whenever there is something to group: on a box with only Wizard itself, the Agents and System bands.
+    const map =
+      m.apps.length || m.system.length
+        ? `<div class="wam-cm-map" data-mode="${m.mode}">
           <svg class="wam-cm-lines" aria-hidden="true"></svg>
-          <div class="wam-cm-top">${agent}</div>
-          <div class="wam-cm-cluster"><span class="wam-cm-tag" data-cm-tag>${esc(tag)}</span>
-            <div class="wam-cm-grid">${order(m)
-              .map((a) => node(a, nm))
-              .join('')}</div></div>
+          ${groups
+            .filter((b) => b.key === 'agent')
+            .map(band)
+            .join('')}
+          ${inCluster.length ? `<div class="wam-cm-cluster"><span class="wam-cm-tag" data-cm-tag>${esc(tag)}</span>${inCluster.map(band).join('')}</div>` : ''}
+          ${groups
+            .filter((b) => b.key === 'system')
+            .map(band)
+            .join('')}
         </div>`
-      : note('No apps installed');
+        : note('No apps installed');
     // Details: the words an expert wants (mode, the live Docker check, the gateway, what can't be enforced).
     const unenforced = [];
     for (const a of d.apps)
@@ -721,6 +745,7 @@ export async function renderConnections(el, ctx = {}) {
             : ''
         }
         <p>${check} <span class="wam-cm-at">Checked ${esc(ago(d.checked_at))}</span></p>
+        <p><b>Groups</b> come from each app’s wizard.md: a <code>kind:</code> line if it has one, else an agent is <code>type: agent</code>, System is the shell and Agent Service, a connector is <code>type: external</code> or has no screen (or only a setup screen, <code>category: system</code>), and the rest are apps.</p>
         ${d.gateway?.detail ? `<p><b>Your agent</b> reaches apps through the Wizard gateway: ${esc(d.gateway.detail)}.</p>` : ''}
         ${m.mode === 'open' ? `<p><b>Mode</b> Open: ${meshCount} apps share one app network (the mesh)${linked.length ? `; ${linked.map((a) => nm(a.id)).join(', ')} use${linked.length === 1 ? 's' : ''} direct links instead` : ''}.</p>` : m.mode === 'declared' ? '<p><b>Mode</b> Declared: one network per connection an app declares or you approve.</p>' : '<p><b>Mode</b> Isolation is off: apps share Runtipi’s network.</p>'}
         ${odd.map((a) => `<p class="wam-cm-warn"><b>${esc(a.name || a.id)}</b> ${esc(a.why || STATE_WORDS[a.state] || a.state || '')}${(a.host_access || []).length ? ` Host access: ${esc(a.host_access.join(', '))}.` : ''}</p>`).join('')}
@@ -770,9 +795,9 @@ export async function renderConnections(el, ctx = {}) {
     };
     const disc = (id) => map.querySelector(`[data-cm-app="${CSS.escape(id)}"] .wam-cm-disc`);
     const specs = [];
-    const agent = map.querySelector('[data-cm-agent] .wam-cm-disc');
     const tag = map.querySelector('[data-cm-tag]');
-    if (agent && tag) {
+    // one wire from each agent into the cluster, as on the Home map
+    for (const agent of tag ? map.querySelectorAll('[data-cm-agent] .wam-cm-disc') : []) {
       const a = at(agent);
       const t = at(tag);
       specs.push(['flow', `M${f(a.x)} ${f(a.b + 4)} L${f(t.x)} ${f(t.t - 2)}`]);
@@ -860,10 +885,29 @@ export async function renderConnections(el, ctx = {}) {
       body._h = h;
       body.innerHTML = h;
     };
-    if (sheetId === '@agent') {
-      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: 'wizard', name: 'Your agent' })}</span><h2 id="wamCmTitle">Your agent</h2></div>
-        <p class="wam-cm-says">Your agent can use every app.</p>
-        <p class="wam-cm-sh-note">It reaches apps through Wizard itself, not through the app networks, so cutting apps off from each other never cuts off your agent.</p>`);
+    const where = (kind) => {
+      const b = bandOf(kind);
+      return `<p class="wam-cm-where"><b>${esc(b.where)}</b> ${esc(b.blurb)}</p>`;
+    };
+    if (sheetId.startsWith('@agent:')) {
+      const g = m.agents[Number(sheetId.slice(7))];
+      if (!g) return sheetClose(dlg);
+      const who =
+        g.real && g.real !== g.name
+          ? `<p class="wam-cm-sh-note">${esc(`${g.name} is ${g.real}${g.main ? ', running on this server' : ''}.`)}</p>`
+          : '';
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span><h2 id="wamCmTitle">${esc(g.name)}</h2></div>
+        ${where('agent')}
+        <p class="wam-cm-says">${esc(`Can use: ${canUse(g)}`)}</p>${who}
+        <p class="wam-cm-sh-note">It reaches them through Wizard itself, not through the app networks, so cutting apps off from each other never cuts off your agent.</p>`);
+      return;
+    }
+    if (sheetId.startsWith('@sys:')) {
+      const s = (m.system || []).find((x) => x.id === sheetId.slice(5));
+      if (!s) return sheetClose(dlg);
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(s)}</span><h2 id="wamCmTitle">${esc(s.name)}</h2></div>
+        ${where(s.kind)}
+        <p class="wam-cm-sh-note">Your agent reaches your apps through Wizard itself, so cutting apps off from each other never touches it.</p>`);
       return;
     }
     const a = m.apps.find((x) => x.id === sheetId);
@@ -909,6 +953,7 @@ export async function renderConnections(el, ctx = {}) {
       : '';
 
     set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph(a)}</span><h2 id="wamCmTitle">${esc(a.name)}</h2></div>
+      ${where(a.kind)}
       <p class="wam-cm-says">${esc(talksSentence(a))}</p>
       ${cutList.join('')}${askRows.join('')}
       ${
@@ -1015,7 +1060,10 @@ export async function renderConnections(el, ctx = {}) {
     const d = el._wamConn;
     const appNode = t('[data-cm-app]');
     if (appNode) return openSheet(appNode.dataset.cmApp);
-    if (t('[data-cm-agent]')) return openSheet('@agent');
+    const agentNode = t('[data-cm-agent]');
+    if (agentNode) return openSheet(`@agent:${agentNode.dataset.cmAgent}`);
+    const sysNode = t('[data-cm-sys]');
+    if (sysNode) return openSheet(`@sys:${sysNode.dataset.cmSys}`);
     if (t('[data-cm-details]')) {
       details = !details;
       el._wamHtml = '';

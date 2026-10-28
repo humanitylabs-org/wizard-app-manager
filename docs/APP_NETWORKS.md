@@ -223,12 +223,42 @@ the app leaving the mesh joins its new links first, then leaves the mesh, so oth
 app, "can reach: every other app except ..." with the reason (you disconnected it, waiting for your approval, sensitive
 and not connected) and whether it is on the mesh or on how many links. The live check compares Docker with this plan the
 same way as in declared mode. The Connections view draws this as one picture (`renderConnections`, model in `wizard-views/connections-map.js`):
-every app in one "All connected" cluster with the agent wired into it, and only the exceptions drawn (a red broken line
+the agents on top, wired into one "All connected" cluster that holds the Apps and the Connectors, with the Wizard core
+(System) below; each group has a plain title and one line saying what it is (see "Groups on the map" below). Only the
+exceptions are drawn (a red broken line
 for a Disconnect, an amber pulse for a request waiting for the owner, a lock on an app that asks first). Tapping an app
 opens a sheet that says what it can talk to ("Movies can talk to: everything except Shopping") with Cut off from…,
 Reconnect and Ask me first (= sensitive); a waiting request is a card with Allow / Don't allow. The mode switch ("Strict
 mode: apps only reach what they ask for" = declared), the live check, the gateway and what can't be enforced sit under
 Details.
+
+### Groups on the map
+
+Every item on the map sits in one group, and its sheet says which ("In Connectors"). The group comes from the
+app's own `wizard.md`, by one rule in `wam/kinds.py`; no app id is listed anywhere. `wam connections --json` reports
+it per app as `kind`.
+
+| Group | What the owner reads | Rule, first match wins |
+|---|---|---|
+| (override) | | `kind: agent \| app \| connector` in `wizard.md` |
+| Agents | Your agents. They do things for you with your apps and connectors. | `type: agent` or `category: agent` |
+| System | Wizard itself. It runs everything and links your agent to your apps. | the active shell and Agent Service (the gateway core) only, whatever `kind:` says |
+| Connectors | Background services your apps and agent use. Nothing to open day to day. | `type: external`; or no `view:`; or `category: system` with a view (a screen that only sets it up) |
+| Apps | Things you open and use. Each has its own screen. | `type: view`, and everything else |
+
+`kind:` is optional and read only here: the checker ignores it, and an app without it is grouped by the rule. Use it
+only when the rule gets an app wrong. Bad values are ignored. System is never chosen: its items can't be cut off, so an
+app on the app networks can't put itself there.
+
+Agents that are not apps are listed too (report `agents`): the host's own agent on an alongside box (`alongside.json`)
+and the Agent Service's agents registry (`agents/<id>/agent.json` in the Agent Service's app data, wizard-os
+`spec/AGENTS.md`). The main agent shows as "Your agent"; none known shows one "Your agent". An agent that runs as an
+installed app (`runtime.app_id`) is shown once, as the agent. An agent's line says what it can use, from the app lists
+the gateway enforces (`permissions.wizard_apps` + `agent_apps`; the main agent's in `.main-agent.json`, report
+`main_agent_apps`; without them, every installed app except `privacy: private` ones): "every app and connector" or
+"2 of your 30 apps and connectors". Connectors are on the app
+networks like apps: they can be cut off, asked first, and are in the "All connected" cluster. System items (the core)
+can't be cut off; their sheet says so.
 
 Switching to declared leaves the decisions as they are (Disconnects stay, open grants are kept but never link, open-mode
 waits are dropped); switching back to open restores the mesh. `wam network off` still turns isolation off entirely.
