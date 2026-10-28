@@ -385,3 +385,9 @@ Channel: on latest only.
 Canonical: wizard-os releases/0.3.71.json (wizard-os #287). SHA256: `7f854dbbe2cb15129615f3a2fd3ed1632a46d749219013f890a093fe0812a850`.
 0.3.70 with Notifications 2.29.0-wizard10 (`oscarhenrycollins/notifications` `cdce9f18`, #277); compose images unchanged from 2.29.0-wizard2. Everything else exactly 0.3.70.
 Channel: on latest only.
+
+## 0.3.72 provenance
+
+Canonical: wizard-os releases/0.3.72.json (wizard-os #292). SHA256: `0bf3563ed9d27b24f479819678d982cff036d17c32b246cc8602f1833257c588`.
+0.3.71 with Wizard UX main `970378b2` (wizard-ux #670: pinned chats stay the same on every device; image `sha256:d1b00210…`, push run 40628699290). Everything else exactly 0.3.71.
+Channel: on latest only.
