@@ -392,7 +392,7 @@ print(json.dumps(out))
         # The saved APP_DATA_DIR/APP_SOURCE_DIR/ROOT_FOLDER_HOST otherwise override
         # the relocated root even when every Compose definition is correct.
         self.system('from wam.cli import Config; from wam.migration_paths import regenerate; '
-                    'regenerate(Config().runtipi())')
+                    'regenerate(Config().runtipi(), old='+repr([str(self.old/p) for p in ('runtipi','.wizard-os','wizard-app-manager')])+', new='+repr([str(BASE/'runtipi'),str(BASE/'.wizard-os'),str(self.tree)])+')')
         self.system('from wam.cli import Config,recover; c=Config(); r=recover(c, running='+repr(self.doc['running_apps'])+'); print(r); assert not r["failed"],r')
         from .migration_paths import assert_clean
         old_roots = [self.old/'runtipi', self.old/'.wizard-os', self.old/'wizard-app-manager']

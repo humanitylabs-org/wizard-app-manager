@@ -18,7 +18,7 @@ def test_all_management_metadata_moves_but_private_payload_is_opaque(tmp_path, m
     files = [rt/'.env',rt/'state/settings.json',rt/'apps/wizardapps/demo/docker-compose.yml',
         rt/'apps/wizardapps/demo/docker-compose.generated.yml',rt/'repos/wizardapps/apps/demo/docker-compose.yml',
         rt/'apps/wizardapps/demo/.wizard-source',rt/'user-config/wizardapps/demo/docker-compose.yml',
-        rt/'user-config/wizardapps/demo/app.env',state/'apps.json',state/'builder/current/bundle.json',
+        rt/'user-config/wizardapps/demo/app.env',state/'apps.json',state/'bin/wam',
         rt/'app-data/wizard-os/apps.json']
     for f in files: put(f, old+'/app-data/demo\n')
     private=put(rt/'app-data/wizardapps/demo/data/private',old)
@@ -69,6 +69,38 @@ def test_regeneration_uses_runtipi_and_preserves_full_saved_form():
     assert p.regenerate(rt)==['demo:wizardapps']
     assert calls==[(('PATCH','/app-lifecycle/demo:wizardapps/update-config',{**form,'enableAuth':True}),{'timeout':120})]
     assert 'enableAuth' not in form
+
+
+def test_builder_relative_current_and_absolute_discovery_links_migrate_without_rewriting_release(tmp_path):
+    from wam.builder_bundle import MARKER
+    rt=tmp_path/'system/runtipi'; state=tmp_path/'system/.wizard-os';rt.mkdir(parents=True);state.mkdir()
+    old='/home/legacy/.wizard-os'
+    put(state/'builder/.owner',MARKER+'\n')
+    manifest=put(state/'builder/releases/abc/bundle.json','{"immutable":"bundle"}\n')
+    put(state/'builder/releases/abc/system-skills/wizard-builder/SKILL.md','unchanged')
+    (state/'builder/current').symlink_to('releases/abc')
+    skill=state/'system-skills/wizard-builder';skill.parent.mkdir()
+    skill.symlink_to(old+'/builder/current/system-skills/wizard-builder')
+    put(state/'builder/python','/home/legacy/wizard-app-manager/.venv/bin/python\n')
+    command=put(state/'bin/wam','exec '+old+'/builder/current/bin/wam "$@"\n')
+    p.rewrite(rt,state,[old,'/home/legacy/wizard-app-manager'],[str(state),str(rt.parent/'wizard-app-manager')])
+    assert (state/'builder/current').readlink()==Path('releases/abc')
+    assert skill.readlink()==state/'builder/current/system-skills/wizard-builder'
+    assert manifest.read_text()=='{"immutable":"bundle"}\n'
+    assert (state/'builder/python').read_text()=='/usr/bin/python3\n'
+    assert str(state) in command.read_text()
+
+
+def test_renderer_moves_saved_path_inputs_but_keeps_other_settings_and_secrets():
+    calls=[]
+    form={'DATA_ROOT':'/old/runtipi/app-data/demo','CUSTOM_SETTING':'unchanged','port':1234,
+          'exposed':False,'NESTED':{'paths':['/old/runtipi/data',42,True]}}
+    rt=SimpleNamespace(installed=lambda:[{'info':{'urn':'demo:wizardapps'}}],
+        app=lambda urn:{'app':{'config':form}},req=lambda *a,**kw:calls.append(a))
+    p.regenerate(rt,['/old/runtipi'],['/system/runtipi'])
+    assert calls[0][2]=={**form,'DATA_ROOT':'/system/runtipi/app-data/demo',
+        'NESTED':{'paths':['/system/runtipi/data',42,True]}}
+    assert form['DATA_ROOT']=='/old/runtipi/app-data/demo'
 
 
 def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_path, monkeypatch):

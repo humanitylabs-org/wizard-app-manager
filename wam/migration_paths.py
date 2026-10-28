@@ -21,7 +21,7 @@ def metadata(rt, state):
                                    'user-config/tipi-compose.yml')]
     paths += [state / name for name in ('alongside.json', 'backup.json', 'backup-state.json',
         'app-manager.json', 'apps.json', 'app-sources.json', 'approval-registry.json',
-        'network-state.json', 'linked.json', 'builder/current/bundle.json')]
+        'network-state.json', 'linked.json', 'builder/python', 'bin/wam')]
     paths += [rt / 'app-data/wizard-os/apps.json']
     for base in (rt / 'apps', rt / 'repos'):
         pattern = '*/*' if base.name == 'apps' else '*/apps/*'
@@ -32,8 +32,46 @@ def metadata(rt, state):
     return sorted(set(paths))
 
 
-def rewrite(rt, state, old, new):
+def builder_links(state, old, new):
+    """Move generated discovery links, not the immutable hashed bundle itself."""
+    from .builder_bundle import COMPANION_SKILLS, MARKER
+    base = state / 'builder'
+    if not base.exists():
+        return []
+    if base.resolve() != base or (base / '.owner').is_symlink() or (base / '.owner').read_text().strip() != MARKER:
+        raise ValueError('Unmanaged builder destination during migration')
     changed = []
+    current = base / 'current'
+    if current.is_symlink():
+        target = replace(str(current.readlink()), old, new)
+        resolved = (current.parent / target).resolve()
+        if not resolved.is_relative_to(base / 'releases'):
+            raise ValueError('Builder current escapes its protected releases')
+        if target != str(current.readlink()):
+            current.unlink(); current.symlink_to(target)
+            changed.append(str(current))
+    for name in ('wizard-builder', *COMPANION_SKILLS):
+        link = state / 'system-skills' / name
+        if link.is_symlink():
+            target = replace(str(link.readlink()), old, new)
+            if target != str(base / 'current/system-skills' / name):
+                raise ValueError('Unmanaged builder discovery link during migration')
+            if target != str(link.readlink()):
+                link.unlink(); link.symlink_to(target)
+                changed.append(str(link))
+    # This host binding lives outside the content-addressed release. The new
+    # service uses distro Python, not a venv in the old agent-writable checkout.
+    interpreter = base / 'python'
+    if interpreter.is_symlink():
+        raise ValueError('Unsafe builder interpreter symlink')
+    if interpreter.is_file():
+        interpreter.write_text('/usr/bin/python3\n')
+        changed.append(str(interpreter))
+    return changed
+
+
+def rewrite(rt, state, old, new):
+    changed = builder_links(state, old, new)
     for p in metadata(rt, state):
         if p.resolve() != p:
             raise ValueError('Unsafe manager metadata symlink: ' + str(p))
@@ -55,12 +93,17 @@ def rewrite(rt, state, old, new):
     return changed
 
 
-def regenerate(rt):
+def regenerate(rt, old=(), new=()):
     """Use the normal queue-backed renderer, retaining the full saved form.
 
     This handles runtime-owned app.env without a privileged payload scan or
     rewriting arbitrary application files. Runtipi regenerates Compose on start.
     """
+    def relocate(value):
+        if isinstance(value, str): return replace(value, old, new)
+        if isinstance(value, list): return [relocate(v) for v in value]
+        if isinstance(value, dict): return {k: relocate(v) for k, v in value.items()}
+        return value
     refreshed = []
     for row in rt.installed():
         urn = (row.get('info') or {}).get('urn')
@@ -72,7 +115,7 @@ def regenerate(rt):
                     'localSubdomain', 'isVisibleOnGuestDashboard', 'enableAuth', 'maxBackups'):
             if key in app and key not in form:
                 form[key] = app[key]
-        rt.req('PATCH', f'/app-lifecycle/{urn}/update-config', form, timeout=120)
+        rt.req('PATCH', f'/app-lifecycle/{urn}/update-config', relocate(form), timeout=120)
         refreshed.append(urn)
     return refreshed
 
