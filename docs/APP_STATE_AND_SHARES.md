@@ -19,6 +19,16 @@ Source contract: `humanitylabs-org/wizard-os`, branch `spec/app-owned-logins`
   compatibility exception is the already-used `wizard-ai-accounts-claude`
   login: Claude/Hermes migrate to a share, and other installed consumers may
   retain a verified bind alias (below). New recipes still fail rule 15.
+- Installed apps released before rule 15 with a fixed-name volume of their own
+  (`wizard-smart-home-config`, `wizard-cloudflare-private-data`,
+  `wizard-tinfoil-private-data`; wam#289) keep that exact volume: no copy and no
+  move. Only a plain `{name: ...}` whose name is `<id>-…` or `wizard-<id>-…`
+  qualifies, and pre-start checks that the volume already exists, is a plain
+  local volume, was not created by another app's Compose project, and that no
+  other installed app has a longer id claiming the name. A new install of such a
+  recipe is refused before it starts (it never creates a fixed-name volume), and
+  candidates still fail rule 15. `wam backup` already archives these volumes
+  (it reads `name:`). Stop, start, restart and the backup's stop work as before.
 - Pre-start looks for Compose's `<app>_<store>_<volume>` (the same project name
   DockerService passes to Compose), or the legacy Claude fixed volume. A
   digest-pinned, network-disabled Alpine helper mounts the source read-only,
