@@ -280,7 +280,7 @@ class Ops:
         c = self.config()
         rt = c.runtipi()
         failed: dict = {}
-        cli.release_updates(c, rt, failed)
+        cli.release_updates(c, rt, failed, only=set(apps))   # never another default the owner moved
         bad = {k: v for k, v in failed.items()}
         if bad:
             raise QuickError("; ".join(f"{k}: {v}" for k, v in bad.items())[:300])
@@ -454,7 +454,7 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         log(f"quick update to {version} done in {secs}s ({rec.get('status')}, was {old.get('version')})")
         _status(h, state="done", step="done", exit_code=0, failure_reason=None, message="", seconds=secs)
         return {**result, "done": True, "seconds": secs, "status": rec.get("status")}
-    except Exception as e:   # noqa: BLE001 - every failure must roll back and hand over to the installer
+    except (Exception, SystemExit) as e:   # noqa: BLE001 - wam's CLI helpers exit with SystemExit; roll back on all
         why = f"{type(e).__name__}: {e}"[:300] if not isinstance(e, QuickError) else str(e)[:300]
         log(f"quick update failed: {why}")
         rolled = True
@@ -505,7 +505,7 @@ def _rollback(h: Path, ops, snapshot: dict, log) -> bool:
                 ops.ensure_image(app, want)
                 ops.verify_shell(app, want)
         log(f"rolled back to {old.get('version')}")
-    except Exception as e:   # noqa: BLE001
+    except (Exception, SystemExit) as e:   # noqa: BLE001
         ok = False
         log(f"rollback incomplete: {type(e).__name__}: {e}"[:300])
     return ok

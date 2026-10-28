@@ -1200,12 +1200,13 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
     e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
     Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
@@ -1214,6 +1215,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
     out = []
     for row in (doc.get("default_apps") or {}).values():
         if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        if only is not None and row.get("app") not in only:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id

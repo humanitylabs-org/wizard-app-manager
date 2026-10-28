@@ -267,3 +267,51 @@ def test_a_rolled_back_app_update_fails_fast_instead_of_waiting_for_the_read_bac
     seq = iter([[D("1")], [D("1")], [D("9")]])
     monkeypatch.setattr(quick_update.Ops, "digests", lambda self, app: next(seq))
     ops.ensure_image("wizard-ux", D("9"))      # switched after the update: fine
+
+
+def test_a_cli_exit_mid_update_still_rolls_back_and_hands_over(box):
+    """Codex P1: app_update() raises SystemExit (not Exception) when the shell is missing or networks refuse."""
+    h, rel = box
+    before = (h / "release-pins.json").read_bytes()
+    ops = FakeOps(h)
+    calls = []
+
+    def boom(app, digest):
+        calls.append(app)
+        if len(calls) == 1:
+            raise SystemExit("wizard-ux is not installed")
+    ops.ensure_image = boom
+    res = quick_update.run("0.9.2", h, rel.as_uri(), ops=ops)
+    assert res["done"] is False and res["rolled_back"] is True and ops.installer == [("0.9.2", False)]
+    assert (h / "release-pins.json").read_bytes() == before
+    st = json.loads((h / "install-status.json").read_text())
+    assert st["state"] == "running" and "full update" in st["step"]     # the installer's runner takes over
+
+
+def test_release_updates_only_touches_the_planned_apps(tmp_path, monkeypatch):
+    """Codex P1: an owner-moved Files must not be put back by a shell-only quick update."""
+    from wam import cli
+    root = tmp_path / "runtipi"
+    for app in ("wizard-ux", "files"):
+        live = root / "apps" / "wizardapps" / app
+        live.mkdir(parents=True)
+        (live / ".wizard-commit").write_text("0" * 40)
+        (live / ".wizard-source").write_text(json.dumps({"repo": f"o/{app}"}))
+    doc = {"default_apps": {"shell": {"app": "wizard-ux", "repo": "o/wizard-ux", "commit": "1" * 40},
+                            "files": {"app": "files", "repo": "o/files", "commit": "2" * 40}}}
+    monkeypatch.setattr(cli.release_pins, "load", lambda *a: doc)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"wizard-ux", "files"})
+    monkeypatch.setattr(cli.registry, "app_meta", lambda *a: {})
+    tried = []
+
+    def resolve(c, app):
+        tried.append(app)
+        raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "resolve_any", resolve)
+    c = type("C", (), {"runtipi_root": root})()
+    failed: dict = {}
+    cli.release_updates(c, None, failed, only={"wizard-ux"})
+    assert tried == ["wizard-ux"] and set(failed) == {"wizard-ux"}
+    tried.clear(); failed.clear()
+    cli.release_updates(c, None, failed)                       # the installer still moves every default
+    assert tried == ["wizard-ux", "files"]
