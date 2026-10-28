@@ -396,3 +396,9 @@ Channel: on latest only.
 
 Canonical: wizard-os #293 (promotion), cut in wizard-os #292. `releases/stable` → 0.3.72 (sha256 `d8c646206043137d6ef9e2a12e9f1de591b37cb026b94f4476c101db0f3338ab`); `promotions/0.3.72.json` sha256 `3911f6babcf670f2d43df22145926e35720c369d1efb0436a4751045ecfc44a7`.
 Fast-tracked under DECISIONS #93 as a **feature** (owner-requested pins fix wizard-ux #670, plus ride-alongs: Notifications 2.29.0-wizard10, Wizard UX main features, App Manager 08b54f65). Installed upgrade 0.3.68 → 0.3.72 passed: wizard-os docs/acceptance/promote-0.3.72.md.
+
+## 0.3.73 provenance
+
+Canonical: wizard-os releases/0.3.73.json (wizard-os #297). SHA256: `6e2f9439a8f842f134e40554d64218ee46821f099b2de313b7bd0ebfd5ec4002`.
+0.3.72 plus automatic app updates (wizard-app-manager #305): App Manager source `08b54f65` → `1d2efb45` (branch `maintenance/app-updates-0.3.73`, the Python/host part of #305 only; image inputs unchanged, so the App Manager image stays `v4.10.2-wizard.571-80c76cf`). Everything else exactly 0.3.72.
+Channel: on latest only.
