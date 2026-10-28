@@ -328,6 +328,32 @@ describe('open mode (the default): everything connected unless the owner disconn
     expect(await opens('resend-connector')).toEqual(['carlos-campaigns', 'twenty-crm']);
   });
 
+  it("a sensitive app's own new connection to an app that may not reach it waits too (the network is two-way)", async () => {
+    await install('stripe-connector', { name: 'Stripe' });
+    await store.reconcile(); // stripe is an existing app now
+    await store.setSensitive('resend-connector', true); // stripe keeps its connection to it
+    await install('zoom-connector', { name: 'Zoom' });
+    await store.reconcile();
+    await store.change({ kind: 'app', from: 'zoom-connector', to: 'resend-connector' }, false); // zoom may not reach it
+    await update('resend-connector', { name: 'Resend', uses: ['stripe-connector', 'zoom-connector'] });
+    await store.reconcile();
+    let s = await state();
+    // stripe already reaches it: an ordinary grant; zoom doesn't: the Disconnect stands, nothing is added
+    expect(s.grants).toContainEqual(expect.objectContaining({ from: 'resend-connector', to: 'stripe-connector', approved: 'install' }));
+    expect(s.grants.filter((g) => g.from === 'resend-connector' && g.to === 'zoom-connector')).toEqual([]);
+    await store.change({ kind: 'app', from: 'zoom-connector', to: 'resend-connector' }, true); // reconnect, then
+    await install('calendly-connector', { name: 'Calendly' }); // a new app: its pair with resend waits
+    await store.reconcile();
+    await update('resend-connector', { name: 'Resend', uses: ['stripe-connector', 'calendly-connector'] });
+    await store.reconcile();
+    s = await state();
+    expect(s.pending.map((g) => `${g.from}>${g.to}`).sort()).toEqual(['calendly-connector>resend-connector', 'resend-connector>calendly-connector']);
+    expect(s.notices.map((n) => n.text)).toContain(
+      'Resend, which you marked sensitive, wants to connect to Calendly. Approve or deny it in App Manager → Connections.',
+    );
+    expect(s.grants.filter((g) => g.from === 'resend-connector' && g.to === 'calendly-connector')).toEqual([]);
+  });
+
   it('the mode route sits behind the owner sign-in like the others', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, WizardSharesController)).toEqual([AuthGuard]);
     expect(Object.getOwnPropertyNames(WizardSharesController.prototype)).toContain('mode');

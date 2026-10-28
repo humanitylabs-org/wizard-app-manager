@@ -1436,3 +1436,22 @@ def test_wam_network_mode_goes_through_the_owner_api(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["mode"] == "declared"
     with pytest.raises(SystemExit):
         cli.main(["network", "mode", "everything"])
+
+
+def test_a_sensitive_apps_own_waiting_request_is_reported_as_waiting():
+    st = _st(sensitive=["resend-connector"], pending=[("resend-connector", "stripe-connector")],
+             grants=[("carlos-crm", "resend-connector", "open"), ("resend-connector", "stripe-connector", "install")])
+    p = net.plan(carlos(), [], set(), state=st, mode="open")
+    assert p["open"]["blocked"][frozenset(("stripe-connector", "resend-connector"))] == "pending"
+    assert ("resend-connector", "stripe-connector") not in reach(p)
+
+
+def test_the_mesh_fits_a_small_configured_pool():
+    n = {"name": net.MESH_NET, "prefixlen": net.MESH_PREFIXLEN, "members": [{}] * 20}
+    small = ipaddress.IPv4Network("10.99.0.0/25")
+    assert net._subnet_for(n, [], small, set()) == "10.99.0.0/25"
+    # takes a smaller free block when the big one is used, as long as every member fits with headroom
+    assert net._subnet_for(n, ["10.99.0.0/26"], small, set()) == "10.99.0.64/26"
+    with pytest.raises(net.NetworkError):
+        net._subnet_for(n, ["10.99.0.0/26", "10.99.0.64/27"], small, set())   # 36 addresses don't fit in a /27
+    assert net._subnet_for({"name": "wizard-link-a--b"}, [], small, set()) == "10.99.0.0/27"

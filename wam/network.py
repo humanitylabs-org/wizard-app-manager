@@ -718,7 +718,7 @@ def open_topology(part: dict, core, state: dict | None, resolve) -> dict:
         for x in peers:
             pair = frozenset((x, s))
             if x != s and pair not in blocked and (x, s) not in granted and (s, x) not in by_owner:
-                blocked[pair] = "pending" if (x, s) in waiting else "sensitive"
+                blocked[pair] = "pending" if ((x, s) in waiting or (s, x) in waiting) else "sensitive"
     # Who leaves the mesh: every sensitive app (its reach is per approval), then a greedy cover of the remaining cuts.
     out = set(sensitive)
     left = [pr for pr in blocked if not (pr & out)]
@@ -919,6 +919,24 @@ def _free_subnet(used: list[str], pool_net: ipaddress.IPv4Network, taken: set, p
         if not any(cand.overlaps(b) for b in busy):
             return str(cand)
     raise NetworkError(f"no free /{prefixlen} left in {pool_net} for app networks (set network_pool in app-manager.json)")
+
+
+def _subnet_for(n: dict, used, pool_net: ipaddress.IPv4Network, taken: set) -> str:
+    """A link or app network gets a /27. The mesh asks for a /22 (room to grow) but takes the largest free block that
+    fits the configured pool and still holds every member with headroom, so a box with a small `network_pool` keeps
+    working when open mode becomes the default."""
+    want = int(n.get("prefixlen") or PREFIXLEN)
+    if want == PREFIXLEN:
+        return _free_subnet(used, pool_net, taken)
+    need = len(n.get("members") or []) + 16                                     # members + headroom + gateway
+    smallest = min(PREFIXLEN, 32 - max(need + 1, 2).bit_length())              # the smallest block that holds them
+    err = None
+    for pl in range(max(want, pool_net.prefixlen), smallest + 1):
+        try:
+            return _free_subnet(used, pool_net, taken, pl)
+        except NetworkError as e:
+            err = e
+    raise err or NetworkError(f"no room for {n.get('name')} in {pool_net} (set network_pool in app-manager.json)")
 
 
 def _bridged(container: dict) -> bool:
@@ -1154,7 +1172,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
                 out["errors"].append(f"{name}: a different network with this name exists; not touched")
                 rejected.add(name)
                 continue
-        sub = _free_subnet(used, the_pool, taken, int(n.get("prefixlen") or PREFIXLEN))
+        sub = _subnet_for(n, used, the_pool, taken)
         taken.add(sub)
         args = ["network", "create", "--driver", "bridge", "--subnet", sub]
         if n["internal"]:
