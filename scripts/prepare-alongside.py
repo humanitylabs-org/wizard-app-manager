@@ -146,6 +146,18 @@ def main():
         snapshot['agent'].update(uid=agent.pw_uid, gid=agent.pw_gid, hermes_home=hh)
     if migration or not (state / 'alongside.json').exists():
         write(state / 'alongside.json', json.dumps(snapshot), 0o600, suid, sgid)
+    if migration:
+        # Already-installed apps do not pass install's override generator again.
+        # Regenerate the protected service wiring rather than carrying the legacy
+        # Hermes cache binds into the new policy context. Read only Compose
+        # metadata for the saved loopback STT endpoint, never agent/app payloads.
+        sys.path.insert(0, str(tree))
+        from wam.network import load_yaml
+        from wam.privsep import service_override
+        override = BASE / 'runtipi/user-config/wizardapps/wizard-agent-service/docker-compose.yml'
+        doc = load_yaml(override.read_text()) if override.is_file() else {}
+        env = (((doc or {}).get('services') or {}).get('wizard-agent-service') or {}).get('environment') or {}
+        write(override, service_override(snapshot, state, stt_origin=env.get('WIZARD_STT_ORIGIN')), 0o644, suid, sgid)
     for token in ('api-token', 'agent-token'):
         if not (state / token).exists():
             write(state / token, secrets.token_urlsafe(32) + '\n', 0o600, suid, sgid)

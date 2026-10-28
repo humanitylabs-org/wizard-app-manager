@@ -72,6 +72,9 @@ def load_skeleton(source):
                '--agent hermes --hermes-home /home/hermes/.hermes --ref '+ref+' --stop-after relocate')
         if guest('checkpoint-migrate',setup,600,True): return
         if guest('checkpoint','python3 /root/slice6-guest.py checkpoint '+ref,600,True): return
+        if guest('injected-failure','python3 /root/slice6-guest.py fail-before-recover '+ref,900,True): return
+        if guest('failure-rollback','/usr/local/bin/wam privilege rollback',1500,True): return
+        if guest('failure-restored','python3 /root/slice6-guest.py rollback '+ref,900,True): return
         prepare=('/usr/bin/python3 -I /var/lib/wizard-os-migration/source/scripts/prepare-privilege-migration.py '
                  'hermes /home/hermes/.hermes '+ref)
         if guest('migrate',prepare,2400,True): return
@@ -94,7 +97,7 @@ def load_skeleton(source):
 
 def finalize(value):
     names=('fresh','tools','tailscale-package','stock-hermes','legacy-install','mirror','legacy-source','slice6-script',
-           'legacy','checkpoint-migrate','checkpoint','migrate','migrated','rollback','rolled-back','remigrate','again','source','doctor')
+           'legacy','checkpoint-migrate','checkpoint','injected-failure','failure-rollback','failure-restored','migrate','migrated','rollback','rolled-back','remigrate','again','source','doctor')
     steps={row['name']:row['exit'] for row in value['steps']}
     value['candidate_passed']=(all(steps.get('candidate-'+n)==0 for n in names) and
         value.get('candidate_doctor_passed') is True and len(value['vms'])==1 and value['vms'][0]['stopped'])

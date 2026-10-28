@@ -291,7 +291,8 @@ def test_start_requires_successful_lifecycle_and_preserved_links(migration,monke
     monkeypatch.setattr(migration,'system',lambda code:calls.append(code))
     monkeypatch.setattr(migration,'check_links',lambda:calls.append('links'))
     migration.start()
-    assert 'assert not r["failed"]' in calls[0] and calls[-1]=='links'
+    assert 'regenerate' in calls[0]
+    assert 'assert not r["failed"]' in calls[1] and calls[-1]=='links'
 
 
 def test_inventory_is_metadata_only_and_captures_original_authority(migration,monkeypatch):

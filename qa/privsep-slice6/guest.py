@@ -169,6 +169,20 @@ def main(argv):
         Path('/root/slice6-all-data-hashes.json').write_text(json.dumps(before,sort_keys=True))
         canaries(BASE)
         print(json.dumps({'all_app_data_files_identical_at_relocation':len(before)}))
+    elif phase=='fail-before-recover':
+        # Use real production steps up to and including protected-unit preparation.
+        # Replace only start() once; rollback must recover this interrupted layout.
+        sys.path.insert(0,str(BASE/'wizard-app-manager'))
+        from wam.privilege_migration import Migration
+        migration=Migration()
+        def fail(): raise RuntimeError('slice6 injected pre-recover failure')
+        migration.start=fail
+        try: migration.migrate()
+        except RuntimeError as e: assert str(e)=='slice6 injected pre-recover failure'
+        else: raise AssertionError('failure was not injected')
+        journal=json.loads((CONTROL/'journal.json').read_text())
+        assert 'prepare' in journal['done'] and 'start' not in journal['done']
+        print('PASS injected real mid-migration failure before recover')
     elif phase in ('migrated','again'):
         saved=json.loads(Path('/root/slice6-before.json').read_text())
         assert not set(run(['id','-nG','hermes']).split()) & {'docker','sudo','wheel','admin'}

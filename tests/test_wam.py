@@ -1044,6 +1044,8 @@ def _recover_env(tmp_path, monkeypatch, installed, states):
     rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": u}, "app": {"status": s}} for u, s in installed]})()
     c.runtipi = lambda: rt
     started, written = [], []
+    from wam import network
+    monkeypatch.setattr(network, 'reconcile', lambda *a, **kw: {'errors': []})
     monkeypatch.setattr(cli, "_app_container_states", lambda urn: states.get(urn, []))
     monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: started.append((verb, urn)) or {"status": "running"})
     monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: written.append(1) or {})

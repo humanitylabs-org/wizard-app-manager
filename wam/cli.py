@@ -1316,6 +1316,7 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
             installed[urn] = (row.get("app") or {}).get("status")
     want = [f"{a}:{STORE}" for a in core] + [u if ":" in u else f"{u}:{STORE}" for u in running]
     started, failed, skipped = [], {}, []
+    topology_ready = False
     for urn in dict.fromkeys(want):
         app_id = urn.split(":", 1)[0]
         if urn not in installed:
@@ -1325,6 +1326,14 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
             states = _app_container_states(urn)
             if states and all(s == "running" for s in states):
                 continue
+            if not topology_ready:
+                # Keep the healthy no-op read-only, but recreate external bridges
+                # before asking Compose to join them after relocation/pruning.
+                from . import network
+                topology = network.reconcile(c, rt, restart=False)
+                if topology.get('errors') or topology.get('unavailable'):
+                    raise RuntimeError('recovery network preparation failed: ' + str(topology))
+                topology_ready = True
             res = app_lifecycle(c, "start", urn)
             if res.get("error"):
                 failed[app_id] = res["error"][:200]

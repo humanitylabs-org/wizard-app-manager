@@ -76,9 +76,8 @@ def remove(path):
 def relocate_text(text, old, new):
     # Longest first so nested paths do not get double-rewritten. No home-wide
     # replacement: the Hermes home and Claude login share remain at the agent uid.
-    for a, b in sorted(zip(old, new), key=lambda pair: -len(str(pair[0]))):
-        text = text.replace(str(a), str(b))
-    return text
+    from .migration_paths import replace
+    return replace(text, old, new)
 
 
 def timer_template(text):
@@ -273,21 +272,14 @@ class Migration:
                         os.chown(directory, system.pw_uid, system.pw_gid)
                         for file in files:
                             os.chown(Path(directory)/file, system.pw_uid, system.pw_gid, follow_symlinks=False)
-        # Finite metadata surface only. Never glob app-data or agents. Compose
-        # overrides include builder, agent_link mounts, extra agents and Claude.
-        paths = [rt/'.env', rt/'state/settings.json', state/'alongside.json',
-                 state/'backup.json', state/'backup-state.json', state/'app-manager.json',
-                 state/'apps.json', state/'app-sources.json']
-        paths += [rt/'docker-compose.yml']
-        paths += list((rt/'apps').glob('*/*/docker-compose.yml'))
-        paths += list((rt/'user-config').glob('*/*/docker-compose.yml'))
-        paths += list((rt/'user-config').glob('*/*/app.env'))
-        paths += [rt/'user-config/tipi-compose.yml']
-        for p in paths:
-            if p.resolve() != p: raise ValueError('Unsafe manager metadata symlink: ' + str(p))
-            if p.is_file():
-                text = p.read_text(); changed = relocate_text(text, old, new)
-                if changed != text: p.write_text(changed)
+        # Seal the ORIGINAL installed access before changing any definitions.
+        # A resumed/previously sealed registry is not enrolled again. Its exact
+        # existing risks (including manager-only Hermes shares) relocate with it.
+        self.system('from pathlib import Path; from types import SimpleNamespace; from wam import host_policy; '
+                    f'c=SimpleNamespace(home=Path({str(state)!r}),runtipi_root=Path({str(rt)!r}),migration_metadata_only=True); '
+                    'host_policy.migrate(c)')
+        from .migration_paths import rewrite
+        self.doc['relocated_metadata'] = rewrite(rt, state, old, new)
         st = json.loads((state/'alongside.json').read_text())
         st['agent'].update(uid=self.agent.pw_uid, gid=self.agent.pw_gid,
                            hermes_home=self.doc['hermes_home'])
@@ -300,11 +292,8 @@ class Migration:
             p = state/token
             if p.resolve() != p: raise ValueError('Unsafe legacy token symlink')
             p.write_text(secrets.token_urlsafe(32)+'\n'); p.chmod(0o600)
-        # Seal grandfathering BEFORE Config's ordinary startup migration. A later
-        # install cannot enroll new permissions. Existing approvals are retained.
-        self.system('from pathlib import Path; from types import SimpleNamespace; from wam import host_policy; '
-                    f'c=SimpleNamespace(home=Path({str(state)!r}),runtipi_root=Path({str(rt)!r}),migration_metadata_only=True); '
-                    'host_policy.migrate(c)')
+        # Never re-enroll from the rewritten definitions. The approval registry
+        # was translated together with the original management metadata above.
 
     def prepare(self):
         if not (CONTROL/'agent-handoff-ready').exists():
@@ -380,6 +369,11 @@ print(json.dumps(out))
         run(['systemctl', 'daemon-reload'])
 
     def start(self):
+        # Regenerate derived app.env through Runtipi before admission reads it.
+        # The saved APP_DATA_DIR/APP_SOURCE_DIR/ROOT_FOLDER_HOST otherwise override
+        # the relocated root even when every Compose definition is correct.
+        self.system('from wam.cli import Config; from wam.migration_paths import regenerate; '
+                    'regenerate(Config().runtipi())')
         self.system('from wam.cli import Config,recover; c=Config(); r=recover(c, running='+repr(self.doc['running_apps'])+'); print(r); assert not r["failed"],r')
         # Recreate old running apps through WAM, not docker start (which would
         # retain old bind sources). Runtipi base was recreated by host preparation.
@@ -514,8 +508,15 @@ print(json.dumps(out))
         # Restore applications with the original user-owned CLI at its original
         # UID, after Docker membership returns. Running the new Config against
         # restored legacy state would silently re-enroll approvals during rollback.
-        for urn in self.doc['running_apps']:
-            self.user(str(self.old/'.local/bin/wam'), 'start', urn)
+        legacy = str(self.old/'.local/bin/wam')
+        self.user(legacy, 'network', 'reconcile', '--no-restart')
+        for urn in dict.fromkeys(self.doc['running_apps']):
+            # Top-level `start` controls Runtipi, NOT an app (even with an urn).
+            self.user(legacy, 'app', 'start', urn)
+            states = run(['docker','ps','-a','--filter','label=runtipi.appurn='+urn,
+                          '--format','{{.State}}'], capture_output=True).stdout.split()
+            if not states or any(s != 'running' for s in states):
+                raise ValueError('Rollback app did not restart: ' + urn)
         # Retain the protected code for the documented root rollback/status CLI.
         # Drop the migrated runtime so a subsequent migration replays the snapshot.
         for name in ('runtipi', '.wizard-os', '.wizard-privsep'):
