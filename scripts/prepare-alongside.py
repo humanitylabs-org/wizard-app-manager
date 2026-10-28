@@ -156,8 +156,8 @@ def main():
         from wam.privsep import service_override
         override = BASE / 'runtipi/user-config/wizardapps/wizard-agent-service/docker-compose.yml'
         doc = load_yaml(override.read_text()) if override.is_file() else {}
-        env = (((doc or {}).get('services') or {}).get('wizard-agent-service') or {}).get('environment') or {}
-        write(override, service_override(snapshot, state, stt_origin=env.get('WIZARD_STT_ORIGIN')), 0o644, suid, sgid)
+        service_env = (((doc or {}).get('services') or {}).get('wizard-agent-service') or {}).get('environment') or {}
+        write(override, service_override(snapshot, state, stt_origin=service_env.get('WIZARD_STT_ORIGIN')), 0o644, suid, sgid)
     for token in ('api-token', 'agent-token'):
         if not (state / token).exists():
             write(state / token, secrets.token_urlsafe(32) + '\n', 0o600, suid, sgid)

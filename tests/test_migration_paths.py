@@ -116,6 +116,27 @@ def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_
     assert managed_overrides.normalize(c,'wizard-agent-service','wizardapps',doc) is not None
 
 
+def test_saved_service_environment_never_replaces_the_root_or_agent_execution_environment(tmp_path):
+    import ast
+    script=Path(__file__).parents[1]/'scripts/prepare-alongside.py'
+    main=next(n for n in ast.parse(script.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='main')
+    block=next(n for n in main.body if isinstance(n,ast.If) and isinstance(n.test,ast.Name)
+        and n.test.id=='migration' and any(isinstance(v,ast.Call) and isinstance(v.func,ast.Name)
+        and v.func.id=='service_override' for v in ast.walk(n)))
+    state=tmp_path/'.wizard-os';state.mkdir()
+    put(tmp_path/'runtipi/user-config/wizardapps/wizard-agent-service/docker-compose.yml',
+        'services:\n  wizard-agent-service:\n    environment:\n      WIZARD_STT_ORIGIN: http://127.0.0.1:8870\n      PATH: /app-controlled\n')
+    env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/root'};writes=[]
+    scope={'BASE':tmp_path,'state':state,'tree':script.parent.parent,'env':env.copy(),
+        'sys':SimpleNamespace(path=[]),'suid':1001,'sgid':1001,
+        'snapshot':{'agent':{'uid':1000,'gid':1000,'hermes_home':'/home/hermes/.hermes'}},
+        'write':lambda *args:writes.append(args)}
+    exec(compile(ast.Module(body=block.body,type_ignores=[]),str(script),'exec'),scope)
+    assert scope['env']==env
+    assert len(writes)==1 and 'http://127.0.0.1:8870' in writes[0][1]
+    assert '/app-controlled' not in writes[0][1]
+
+
 def test_metadata_symlink_escape_is_refused(tmp_path):
     rt=tmp_path/'runtipi'; home=tmp_path/'state';rt.mkdir();home.mkdir()
     outside=put(tmp_path/'outside','/old/runtipi')
