@@ -31,6 +31,12 @@ def _rel(version, ux="1", ux_commit="b", agent="2", wam_commit=WAM, files_commit
     }
 
 
+def _apps(h, rel, **moved):
+    """apps.json as the installer's projection writes it: each default at its release source commit."""
+    apps = [{"id": r["app"], "commit": moved.get(r["app"], r["commit"])} for r in rel["default_apps"].values()]
+    (h / "apps.json").write_text(json.dumps({"apps": apps}))
+
+
 @pytest.fixture(autouse=True)
 def _clean():
     updates._latest.clear(); quick_update._docs.clear()
@@ -51,6 +57,7 @@ def box(tmp_path, monkeypatch):
                                                 "install_rc": 0, "checks": []}))
     (h / "release-pins.json").write_bytes((rel / "0.9.1.json").read_bytes())
     (h / "alongside.json").write_text(json.dumps({"mode": "alongside", "shell": {"port": 8796}}))
+    _apps(h, old)
     monkeypatch.setattr(quick_update, "checkout_state", lambda: (WAM, True))
     monkeypatch.delenv("WIZARD_RELEASE_BASE", raising=False)
     return h, rel
@@ -315,3 +322,13 @@ def test_release_updates_only_touches_the_planned_apps(tmp_path, monkeypatch):
     tried.clear(); failed.clear()
     cli.release_updates(c, None, failed)                       # the installer still moves every default
     assert tried == ["wizard-ux", "files"]
+
+
+def test_a_box_whose_other_defaults_moved_since_the_install_is_left_to_the_installer(box):
+    """Codex P1: never start a quick run whose read-back would fail on an owner-moved app (then fall back)."""
+    h, rel = box
+    _apps(h, json.loads((rel / "0.9.1.json").read_text()), files="7" * 40)
+    p = quick_update.plan(h, "0.9.2", rel.as_uri())
+    assert p["quick"] is False and "files moved" in p["reason"]
+    (h / "apps.json").unlink()
+    assert quick_update.plan(h, "0.9.2", rel.as_uri())["quick"] is False

@@ -167,6 +167,16 @@ def plan(home: Path | None, want: str | None, base: str | None = None, checkout=
     published = release_doc(have, base)
     if not published or published[0] != local:
         return no("the installed pins differ from the published release")
+    try:
+        installed_apps = {a.get("id"): a for a in json.loads((h / "apps.json").read_text()).get("apps") or []}
+    except (OSError, ValueError, AttributeError):
+        return no("could not read the installed apps")
+    for row in (local.get("default_apps") or {}).values():
+        app = installed_apps.get((row or {}).get("app"))
+        if row and row.get("commit") and app and app.get("commit") != row["commit"]:
+            # The box no longer matches its receipt (e.g. the owner updated Files): the quick read-back would fail
+            # on it. Leave that box to the installer's documented release_updates behaviour, never start here.
+            return no(f"{row['app']} moved since the last install")
     target = release_doc(want, base)
     if not target:
         return no(f"could not read release {want}")
