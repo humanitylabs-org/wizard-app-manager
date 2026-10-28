@@ -15,6 +15,28 @@ export function list(names) {
   return `${n.slice(0, -1).join(', ')} and ${n[n.length - 1]}`;
 }
 
+/**
+ * The map's groups, top to bottom, in plain words. Which group an item is in comes from its wizard.md (wam/kinds.py,
+ * the report's `kind`); the words here are all the owner reads about it.
+ */
+export const BANDS = [
+  { key: 'agent', title: 'Agents', blurb: 'Your agents. They do things for you with your apps and connectors.' },
+  { key: 'app', title: 'Apps', blurb: 'Things you open and use. Each has its own screen.' },
+  { key: 'connector', title: 'Connectors', blurb: 'Background services your apps and agent use. Nothing to open day to day.' },
+  { key: 'system', title: 'System', blurb: 'Wizard itself. It runs everything and links your agent to your apps.' },
+];
+const KIND = new Set(BANDS.map((b) => b.key));
+const kindOf = (a, fallback = 'app') => (KIND.has(a?.kind) ? a.kind : fallback);
+
+/** Which group an item is in, for its sheet: { where: "In Connectors", blurb: "Background services …" }. */
+export function bandOf(kind) {
+  const b = BANDS.find((x) => x.key === kind) || BANDS[1];
+  return { key: b.key, where: `In ${b.title}`, blurb: b.blurb };
+}
+
+/** What an agent can use, in words that are true today: every app and connector, unless its agent.json lists apps. */
+export const canUse = (agent) => (agent?.limited ? 'only the apps you picked for it' : 'every app and connector');
+
 const pairKey = (a, b) => (a < b ? `${a}\0${b}` : `${b}\0${a}`);
 const provides = (r, id) => (r.providers || []).includes(id) || slotName(r.to) === id;
 
@@ -120,6 +142,7 @@ export function mapModel(d) {
       warn,
       inOpen,
       enforce,
+      kind: kindOf(a),
       state: a.state,
       why: a.why || '',
     };
@@ -143,9 +166,29 @@ export function mapModel(d) {
           ? 'Strict mode: each app talks only to the apps it asks for, except apps published through Runtipi, which can still reach each other (see Details). Tap one to see or change them.'
           : 'Strict mode: each app talks only to the apps it asks for. Tap one to see or change them.';
   const core = all.filter((a) => coreIds.has(a.id));
+  // The agents: the ones the box knows that are not apps (the host's agent, the Agent Service's agents registry), and
+  // an agent that is part of the core (a fresh box's agent app). None known: one "Your agent", as before.
+  const coreItems = core.map((a) => ({ id: a.id, name: a.name || a.id, kind: kindOf(a, 'system') }));
+  const known = (Array.isArray(d?.agents) ? d.agents : []).filter((a) => a && a.id);
+  const agents = [
+    ...known.map((a) => ({
+      id: a.id,
+      name: a.main ? 'Your agent' : a.name || a.id,
+      real: a.name || a.id,
+      main: !!a.main,
+      private: !!a.private,
+      limited: !!a.limited,
+    })),
+    ...coreItems
+      .filter((a) => a.kind === 'agent')
+      .map((a) => ({ id: a.id, name: known.length ? a.name : 'Your agent', real: a.name, main: !known.length, private: false, limited: false })),
+  ];
+  if (!agents.length) agents.push({ id: '', name: 'Your agent', real: '', main: true, private: false, limited: false });
   return {
     mode,
     apps: out,
+    agents,
+    system: coreItems.filter((a) => a.kind !== 'agent'),
     agent: { ids: core.map((a) => a.id), detail: d?.gateway?.detail || '' },
     cuts: [...cuts.values()],
     waits: [...waits.values()],
@@ -155,6 +198,19 @@ export function mapModel(d) {
     pending,
     lead,
   };
+}
+
+/**
+ * The map's groups top to bottom, each with its items: [{ key, title, blurb, agents, apps, system }]. An empty group
+ * is left out. `agents` are agent nodes, `apps` the app nodes (cut, waiting, ask first), `system` plain nodes.
+ */
+export function bands(model) {
+  return BANDS.map((b) => ({
+    ...b,
+    agents: b.key === 'agent' ? model.agents : [],
+    apps: model.apps.filter((a) => a.kind === b.key),
+    system: (model.system || []).filter((s) => s.kind === b.key),
+  })).filter((b) => b.agents.length + b.apps.length + b.system.length);
 }
 
 /** The sentence at the top of an app's sheet: "Movies can talk to: everything except Shopping". */

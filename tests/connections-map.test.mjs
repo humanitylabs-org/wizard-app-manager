@@ -2,7 +2,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cutGroups, cutRows, cuttable, doneWords, reconnectRows, list, mapModel, pairRow, talksSentence } from '../wizard-views/connections-map.js';
+import {
+  bandOf,
+  bands,
+  canUse,
+  cutGroups,
+  cutRows,
+  cuttable,
+  doneWords,
+  reconnectRows,
+  list,
+  mapModel,
+  pairRow,
+  talksSentence,
+} from '../wizard-views/connections-map.js';
 
 const app = (id, name, unreachable = [], extra = {}) => ({
   id,
@@ -245,5 +258,90 @@ test('Ask me first is offered only where the app networks can hold a connection 
       ['hostapp', false],
       ['a', true],
     ],
+  );
+});
+
+test('Groups: the agents on top, then apps, connectors and Wizard itself, each from the report kind', () => {
+  const d = report(
+    [
+      app('cinequeue', 'Movies', [], { kind: 'app' }),
+      app('wizard-monarch', 'Monarch', [], { kind: 'connector' }),
+      app('transcriber', 'Transcriber', [], { kind: 'connector' }),
+      app('old', 'Old App'), // an older App Manager without kinds: an app
+    ],
+    { agents: [{ id: 'host-hermes', name: 'host Hermes', main: true }] },
+  );
+  d.apps.find((a) => a.id === 'wizard-ux').kind = 'system';
+  const m = mapModel(d);
+  const g = bands(m);
+  assert.deepEqual(
+    g.map((b) => [b.key, b.title]),
+    [
+      ['agent', 'Agents'],
+      ['app', 'Apps'],
+      ['connector', 'Connectors'],
+      ['system', 'System'],
+    ],
+  );
+  assert.deepEqual(
+    g[0].agents.map((a) => [a.name, a.real, a.main]),
+    [['Your agent', 'host Hermes', true]],
+  );
+  assert.deepEqual(
+    g[1].apps.map((a) => a.id),
+    ['cinequeue', 'old'],
+  );
+  assert.deepEqual(
+    g[2].apps.map((a) => a.id),
+    ['wizard-monarch', 'transcriber'],
+  );
+  // the core without a kind is System too
+  assert.deepEqual(
+    g[3].system.map((a) => a.id),
+    ['wizard-ux', 'wizard-agent-service'],
+  );
+  assert.equal(g[2].blurb, 'Background services your apps and agent use. Nothing to open day to day.');
+  // every group says in one line what it is, and each sheet says which group
+  for (const b of g) assert.ok(b.blurb.length > 10 && b.blurb.length < 90, b.key);
+  assert.deepEqual(bandOf('connector').where, 'In Connectors');
+  assert.deepEqual(bandOf('nonsense').where, 'In Apps');
+  // a connector is still on the map like any app: it can be cut off from an app
+  assert.ok(cuttable(m, 'wizard-monarch').some((a) => a.id === 'cinequeue'));
+});
+
+test('Agents: one "Your agent" when the box names none; what an agent can use is said truthfully', () => {
+  const m = mapModel(report([app('cinequeue', 'Movies')]));
+  assert.deepEqual(
+    m.agents.map((a) => a.name),
+    ['Your agent'],
+  );
+  assert.equal(bands(m)[0].key, 'agent');
+  assert.equal(canUse(m.agents[0]), 'every app and connector');
+  const two = mapModel(
+    report([app('cinequeue', 'Movies')], {
+      agents: [
+        { id: 'host-hermes', name: 'host Hermes', main: true },
+        { id: 'private', name: 'Private', private: true, limited: true },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    two.agents.map((a) => a.name),
+    ['Your agent', 'Private'],
+  );
+  assert.equal(canUse(two.agents[1]), 'only the apps you picked for it');
+});
+
+test('Groups: an agent app in the core is an agent, not System', () => {
+  const d = report([app('cinequeue', 'Movies')], { gateway: { core: ['wizard-ux', 'wizard-agent-service', 'hermes-agent'] } });
+  d.apps.push({ id: 'hermes-agent', name: 'Hermes', state: 'isolated', open: null, kind: 'agent' });
+  const m = mapModel(d);
+  assert.deepEqual(
+    m.agents.map((a) => [a.id, a.name]),
+    [['hermes-agent', 'Your agent']],
+  );
+  assert.deepEqual(
+    m.system.map((a) => a.id),
+    ['wizard-ux', 'wizard-agent-service'],
   );
 });
