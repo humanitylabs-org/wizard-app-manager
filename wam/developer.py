@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shlex
@@ -167,6 +168,21 @@ def apply_source(home, runner=subprocess.run):
     doc = read(home)
     checkout = Path(__file__).resolve().parents[1]
     repo = doc['source']['repo'] if doc['enabled'] else RELEASE_REPO
+    base_runner = runner
+    state_owner = Path(home).stat().st_uid
+    def manager_runner(argv, **kwargs):
+        env = dict(kwargs.pop('env', os.environ))
+        if os.getuid() == 0 and state_owner != 0:
+            # Root authenticates the human, but never runs a personal checkout or
+            # the installer at root. Execute as the protected manager identity.
+            user = pwd.getpwuid(state_owner)
+            argv = ['runuser', '-u', user.pw_name, '--', *argv]
+            env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name)
+        env.update(WIZARD_OS_HOME=str(home), WAM_DIR=str(checkout))
+        if (Path(home) / 'privsep.json').exists():
+            env.update(WIZARD_SEPARATED='1', WIZARD_MODE='alongside', RUNTIPI_ROOT='/var/lib/wizard-os/runtipi')
+        return base_runner(argv, env=env, **kwargs)
+    runner = manager_runner
     # get.sh fetches origin on an existing checkout. Point it at the selected
     # fork (or back at the official source) before invoking that same installer.
     changed = runner(['git', '-C', str(checkout), 'remote', 'set-url', 'origin', repo],
@@ -175,11 +191,11 @@ def apply_source(home, runner=subprocess.run):
         return {'started': False, 'error': (changed.stderr or changed.stdout)[-300:]}
     if not doc['enabled']:
         # Same installer and release selection as the ordinary Update button.
-        return updates.apply(home, runner=runner, force=True, restore_release=True)
+        return updates.apply(home, runner=runner, force=True, restore_release=True, installer=checkout / 'get.sh')
     env = {**os.environ, 'WAM_REPO': doc['source']['repo'], 'WAM_REF': doc['source']['ref'], 'WIZARD_STRICT': '0'}
     for key in ('WIZARD_RELEASE', 'WIZARD_RELEASE_PINS', 'WAM_IMAGE'):
         env.pop(key, None)
-    p = runner(['bash', '-o', 'pipefail', '-c', f'curl -fsSL {shlex.quote(updates.INSTALLER)} | bash -s start'],
+    p = runner(['bash', str(checkout / 'get.sh'), 'start'],
                env=env, capture_output=True, text=True, timeout=600)
     return {'started': p.returncode == 0, 'source': doc['source'],
             **({'error': (p.stderr or p.stdout)[-300:]} if p.returncode else {})}

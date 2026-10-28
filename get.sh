@@ -695,7 +695,12 @@ for k in sorted(os.environ):
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
+separated_manager() {
+  [ "$(id -un)" = wizard-system ] && [ "$HOME" = /var/lib/wizard-os ] &&
+    [ -f /var/lib/wizard-os/.wizard-os/privsep.json ]
+}
 named_host_ready() {
+  separated_manager && return 0  # host-prepared service has no agent user bus/home
   [ ! -f "$HOME/.wizard-os/client.json" ] || return 0
   [ -f "$HOME/runtipi/.env" ] && [ -S "/run/user/$(id -u)/bus" ] || return 1
   docker info >/dev/null 2>&1 || { docker_group_member && command -v sg >/dev/null &&
@@ -924,7 +929,12 @@ export WIZARD_AGENT_SAFE="$AGENT_SAFE"
 case "${1:-}" in --check|check) WIZARD_CHECK=1 ;; esac
 if [ "${WIZARD_CHECK:-0}" = 1 ]; then preflight; exit 0; fi
 
-if [ "$MODE" != fresh ]; then
+# An already separated manager updates its protected checkout as itself. Never
+# scan the agent home, re-run root host preparation or re-enter the agent login.
+if separated_manager; then
+  MODE=alongside; export WIZARD_MODE=alongside WIZARD_SEPARATED=1
+fi
+if [ "$MODE" != fresh ] && ! separated_manager; then
   prc=0; pick_hermes || prc=$?
   if [ "$prc" -eq 2 ]; then stop_several; fi
   if { [ "$prc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; } ||

@@ -30,6 +30,7 @@ import calendar
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.request
@@ -461,7 +462,7 @@ def set_channel(new: str, home: Path | None = None) -> dict:
 
 
 def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False,
-          target: str | None = None, restore_release: bool = False) -> dict:
+          target: str | None = None, restore_release: bool = False, installer: Path | None = None) -> dict:
     """Start the update now: the installer's own detached, agent-safe rerun. Progress: `os.sh | bash -s status`.
 
     The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
@@ -495,7 +496,9 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
         env = 'WAM_REF= WAM_IMAGE= WIZARD_RELEASE_PINS= WAM_REPO=https://github.com/humanitylabs-org/wizard-app-manager ' + env
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
-    r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
+    command = (f'{env}bash {shlex.quote(str(installer))} start' if installer else
+               f'curl -fsSL {INSTALLER} | {env}bash -s start')
+    r = runner(["bash", "-c", command], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
     if ok and not target:

@@ -22,7 +22,14 @@ sudo env HOME=/var/lib/wizard-os WIZARD_OS_HOME=/var/lib/wizard-os/.wizard-os \
 
 The ordinary agent's `wam` is only the thin HTTP client, not this protected CLI.
 `developer on` saves an HTTPS repository and ref; `developer apply` installs from
-it through the ordinary detached installer with `WAM_REPO` and `WAM_REF`. Saving a
+it through the ordinary detached installer with `WAM_REPO` and `WAM_REF`. The
+protected checkout's own `get.sh` is the bootstrap: using an older public script
+would miss the separated-manager route. The existing git `origin` is switched to
+the selected fork, and back to the official repository on return. A root-entered
+human CLI drops subprocesses to the protected state owner's uid before any git or
+installer execution; neither subprocess runs as root. An already
+prepared wizard-system identity uses its protected marker instead of inspecting
+an agent home or requiring an agent user bus. Saving a
 source is deliberately separate from installing it. Automatic release updates
 are paused and ordinary release apply is refused while developer mode is on.
 The current commit/ref and distance from **locally cached** `origin/main` are

@@ -153,7 +153,7 @@ def test_source_application_and_release_return_use_installer(tmp_path, monkeypat
     assert developer.apply_source(tmp_path, runner)['started']
     assert calls[0][0][-4:] == ['remote', 'set-url', 'origin', developer.RELEASE_REPO]
     assert calls[1][1]['env']['WAM_REF'] == 'my/branch'
-    assert 'os.sh' in calls[1][0][-1] and 'start' in calls[1][0][-1]
+    assert calls[1][0][-2:] == [str(ROOT / 'get.sh'), 'start']
     developer.save(tmp_path, {'enabled': False})
     monkeypatch.setattr(updates, 'status', lambda *a, **k: {'retry_target': None, 'checked': True, 'installing': False,
         'unpinned': False, 'update_available': False, 'latest': '0.3.25'})
@@ -161,6 +161,36 @@ def test_source_application_and_release_return_use_installer(tmp_path, monkeypat
     command = calls[-1][0][-1]
     assert 'WAM_REF= ' in command and 'WAM_REPO=' + developer.RELEASE_REPO in command
     assert 'WIZARD_RELEASE=0.3.25' in command
+
+
+def test_root_owner_never_runs_personal_source_as_root(tmp_path, monkeypatch):
+    developer.save(tmp_path, {'enabled': True, 'source': {'repo': developer.RELEASE_REPO, 'ref': 'personal'}})
+    (tmp_path / 'privsep.json').write_text('{}')
+    real_stat = Path.stat
+    monkeypatch.setattr(Path, 'stat', lambda path, *a, **kw: SimpleNamespace(st_uid=1000) if path == tmp_path else real_stat(path, *a, **kw))
+    monkeypatch.setattr(developer.os, 'getuid', lambda: 0)
+    monkeypatch.setattr(developer.pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_name='wizard-system', pw_dir='/var/lib/wizard-os'))
+    calls = []
+    def runner(argv, **kwargs):
+        calls.append((argv, kwargs)); return SimpleNamespace(returncode=0, stdout='', stderr='')
+    assert developer.apply_source(tmp_path, runner)['started']
+    for argv, kwargs in calls:
+        assert argv[:4] == ['runuser', '-u', 'wizard-system', '--']
+        assert kwargs['env']['HOME'] == '/var/lib/wizard-os'
+        assert kwargs['env']['WIZARD_SEPARATED'] == '1'
+        assert kwargs['env']['WAM_DIR'] == str(ROOT)
+    assert calls[-1][0][-2:] == [str(ROOT / 'get.sh'), 'start']
+
+
+def test_separated_installer_never_reenters_agent_discovery():
+    source = (ROOT / 'get.sh').read_text()
+    # The root-selected service identity + protected marker, not a caller flag,
+    # authorizes the prepared manager path without an agent home or user bus.
+    fn = source.split('separated_manager() {', 1)[1].split('\n}', 1)[0]
+    assert 'id -un' in fn and 'wizard-system' in fn and '/var/lib/wizard-os/.wizard-os/privsep.json' in fn
+    assert 'WIZARD_SEPARATED' not in fn
+    assert 'if [ "$MODE" != fresh ] && ! separated_manager; then' in source
+    assert 'separated_manager && return 0' in source
 
 
 def test_developer_approve_page_requires_same_root_peer_owner_and_origin(tmp_path, monkeypatch):
