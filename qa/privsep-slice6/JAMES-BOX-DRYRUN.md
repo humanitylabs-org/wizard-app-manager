@@ -14,7 +14,8 @@ no personal home path or credential belongs in this document.
 - `$LEGACY_HOME/runtipi` and `$LEGACY_HOME/.wizard-os` exist and have UID/GID 1000.
   The login has the `docker` supplementary group, with no sudo/wheel/admin group.
   No sudoers snippet names were found. This is not a claim that every possible
-  sudo rule was audited; the production migration checks `sudo -n true` itself.
+  sudo rule was audited; the production migration queries the legacy account's
+  policy from its root-only authority checker.
 - The user unit `wizard-app-manager-api.service` runs Python from
   `$LEGACY_HOME/workspace/wizard-app-manager`, points Runtipi at
   `$LEGACY_HOME/runtipi`, and uses the default manager state directory. The

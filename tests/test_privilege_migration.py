@@ -276,12 +276,13 @@ def test_prepare_uses_protected_source_and_opaque_main_agent_handoff(migration,m
 
 def test_migration_grant_is_not_renewed_by_resume_or_rollback_marker(migration,monkeypatch):
     calls=[]
-    monkeypatch.setattr(migration,'system',lambda code:calls.append(code))
+    monkeypatch.setattr(m,'run',lambda argv,**kw:calls.append((argv,kw)))
+    monkeypatch.setattr(migration,'system',lambda *a,**k:pytest.fail('root migration must not elevate through developer.helper'))
     # Only this known root ledger is outside the test filesystem.
     original=Path.exists
     monkeypatch.setattr(Path,'exists',lambda p:False if str(p)=='/var/lib/wizard-os-server-access/migration-used' else original(p))
     migration.grant(); migration.grant()
-    assert len(calls)==1 and 'migration_grant(None, True)' in calls[0]
+    assert calls == [([m.HELPER, 'grant'], {'input': json.dumps({'seconds': 604800, 'migration': True}), 'capture_output': True})]
     assert (m.CONTROL/'migration-used').is_file()
 
 
@@ -313,6 +314,30 @@ def test_inventory_is_metadata_only_and_captures_original_authority(migration,mo
     assert migration.doc['running_apps']==['wizard-calendar:wizardapps']
     assert not any('inspect' in c for c in commands)
     assert not migration.snapshot.exists()
+    assert commands[0] == ['/usr/bin/python3', '-I', m.CONTROL/'source/scripts/check-migration-authority.py', 'hermes']
+
+
+def test_inventory_policy_refusal_prevents_quiesce_or_snapshot(migration,monkeypatch):
+    (migration.old/'.wizard-os/alongside.json').write_text('{"mode":"alongside"}')
+    monkeypatch.setattr(m.os,'getgrouplist',lambda *a:[1000])
+    monkeypatch.setattr(m.grp,'getgrgid',lambda gid:SimpleNamespace(gr_name='hermes'))
+    def refuse(argv, **kw):
+        raise m.subprocess.CalledProcessError(2, argv)
+    monkeypatch.setattr(m,'run',refuse)
+    monkeypatch.setattr(migration,'quiesce',lambda:pytest.fail('authority must be checked first'))
+    with pytest.raises(m.subprocess.CalledProcessError): migration.migrate()
+    assert not migration.snapshot.exists() and not m.BASE.exists()
+    assert migration.doc['done'] == []
+
+
+def test_failed_root_grant_never_consumes_control_marker(migration,monkeypatch):
+    original=Path.exists
+    monkeypatch.setattr(Path,'exists',lambda p:False if str(p)=='/var/lib/wizard-os-server-access/migration-used' else original(p))
+    def refuse(argv, **kw):
+        raise m.subprocess.CalledProcessError(2, argv)
+    monkeypatch.setattr(m,'run',refuse)
+    with pytest.raises(m.subprocess.CalledProcessError): migration.grant()
+    assert not (m.CONTROL/'migration-used').exists()
 
 
 def test_refuses_nonroot_owner_command(monkeypatch):

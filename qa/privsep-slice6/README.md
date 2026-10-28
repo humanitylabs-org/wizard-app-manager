@@ -1,8 +1,9 @@
 # Slice 6 — existing-box separation and rollback
 
-Status: implementation + unit checks; **real VM acceptance not run yet**. Do not
-merge, deploy or run on James's daily driver. This directory is the rehearsal
-runner, not a claim that migration already passed.
+Status: the first real VM rehearsal stopped during legacy app setup and exposed
+an extra migration elevation site in the full suite. Those failures are repaired
+for a staged rerun; **end-to-end VM acceptance has not passed**. Do not merge,
+deploy or run on James's daily driver.
 
 Runner usage (real parser, no wrapper-only flags):
 
@@ -27,10 +28,18 @@ first form, without `--smoke` or `--preflight`, so it runs the full pytest gate.
   `dbus-user-session`, and stock-Hermes setup explicitly enables linger and starts
   `user@uid` before main's user phase. This workaround is not a product patch or
   an edit to stock Hermes. The legacy source SHA is read back.
-- Installs real Calendar, Quest and Shopping recipes, puts a pre-existing host
-  mount on Calendar, writes UID-1000 canaries, and records the legacy token hash
-  and groups. A real Tailscale daemon has the legacy operator, with no login and
-  no published tailnet link.
+- Queries the guest's actual `wam search --json` index before installing. Selects
+  Calendar plus two available lightweight apps (never assumes Quest exists),
+  saves those exact IDs for all later phases, and refuses fewer than three.
+  Adds a local pre-existing host-mount override to Calendar and verifies the
+  read-only mount and its canary in the real container before migration and after
+  migration/rollback/remigration. Writes UID-1000 data canaries and records the
+  legacy token hash and groups. A real Tailscale daemon has the legacy operator,
+  with no login and no published tailnet link.
+- Keeps migration authority owner-run/root: a protected root-only policy checker
+  queries legacy permissions without executing an elevated agent command, and
+  the migration calls the fixed root grant helper directly. The strict WAM
+  elevation audit is unchanged.
 - Invokes the production root migration with a `relocate` checkpoint. Hashes
   **every file under the stopped app-data tree**, including modes and numeric
   owners, against the opaque pre-migration snapshot before apps write again.

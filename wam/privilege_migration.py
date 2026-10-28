@@ -140,10 +140,10 @@ class Migration:
         groups = [grp.getgrgid(g).gr_name for g in os.getgrouplist(self.agent.pw_name, self.agent.pw_gid)]
         if grp.getgrgid(self.agent.pw_gid).gr_name == 'docker':
             raise ValueError('Docker is the primary group; owner must map a normal primary group first.')
-        if set(groups) & {'sudo', 'wheel', 'admin'}:
-            raise ValueError('Remove administrator groups explicitly before migration; never silently revoke owner access.')
-        if self.user('sudo', '-n', 'true', check=False, capture_output=True).returncode == 0:
-            raise ValueError('Existing sudo policy needs an owner review before migration.')
+        # This is already an owner-run root process. Query legacy authority via
+        # its protected, read-only policy checker, never by elevating the agent.
+        run(['/usr/bin/python3', '-I', CONTROL/'source/scripts/check-migration-authority.py',
+             self.agent.pw_name])
         # Unrecognised services that consume these trees must not be silently
         # left running as writers. Inspect unit metadata only, never its data.
         unitdir = self.old/'.config/systemd/user'
@@ -421,7 +421,10 @@ print(json.dumps(out))
                 raise ValueError('The one-time access handoff was interrupted; owner review is required before removing Docker access.')
             atomic(CONTROL/'migration-used', 'used\n')
             return
-        self.system('from wam.developer import migration_grant; print(migration_grant(None, True))')
+        # Already root: call the fixed helper directly, not developer.helper's
+        # service-account elevation route. Its root ledger enforces one use.
+        run([HELPER, 'grant'], input=json.dumps({'seconds': 604800, 'migration': True}),
+            capture_output=True)
         atomic(CONTROL/'migration-used', 'used\n')
 
     def remove_docker(self):
