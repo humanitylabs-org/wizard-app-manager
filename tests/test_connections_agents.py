@@ -223,6 +223,27 @@ def test_agents_are_instances_with_name_harness_model_and_what_each_may_use(serv
     assert (helper["name"], helper["on"], helper["model"]) == ("Helper", ["money"], "claude-opus-5-5")
 
 
+def test_two_owner_changes_at_once_never_undo_each_other(service, tmp_path, monkeypatch):
+    # Codex (PR #328): each change reads an app's agent list and writes it back whole; slow the service between the
+    # read and the write so two unserialized changes would interleave and the last one would undo the first.
+    import time
+    real = agent_access._req
+
+    def slow(origin, method, path, body=None, timeout=10):
+        out = real(origin, method, path, body, timeout)
+        if method == "GET" and path.endswith("/agents") and "/apps/" in path:
+            time.sleep(0.3)
+        return out
+    monkeypatch.setattr(agent_access, "_req", slow)
+    runs = [threading.Thread(target=agent_access.set_access, args=(tmp_path, "helper", ["cinequeue"], True)),
+            threading.Thread(target=agent_access.set_access, args=(tmp_path, "hermes", ["cinequeue"], False))]
+    for t in runs:
+        t.start()
+    for t in runs:
+        t.join()
+    assert service.lists["helper"] >= {"cinequeue"} and "cinequeue" not in service.lists["hermes"]
+
+
 def test_a_switch_changes_only_that_agent_through_the_agent_service(service, tmp_path):
     got = agent_access.set_access(tmp_path, "hermes", ["cinequeue"], False)
     assert service.puts == [("cinequeue", {"agents": []})]

@@ -23,7 +23,9 @@ a new standard agent starts with every installed app on (Agent Service, Miguel 2
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -128,6 +130,26 @@ def instances(home: Path | None) -> dict:
     return {"service": True, "agents": out}
 
 
+@contextlib.contextmanager
+def _writer_lock(home: Path | None):
+    """One access change at a time from this box's owner tools (Connections tabs, `wam agents access`): each change
+    reads an app's agent list and writes the whole list back, so two at once could undo each other (Codex, PR #328).
+    Inside the lock every change re-reads the current lists first."""
+    import fcntl
+    d = Path(home) if home else Path.home() / ".wizard-os"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        fd = os.open(d / ".agent-access.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield   # no writable home: the Agent Service still checks each PUT
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def set_access(home: Path | None, agent: str, apps: list[str], on: bool) -> dict:
     """Turn `apps` on or off for one agent (the owner's switch, or Turn all on for a group). Each app goes through
     the Agent Service's `PUT /wizard/v1/apps/<app>/agents`, which sets exactly which agents may use it, so another
@@ -141,6 +163,12 @@ def set_access(home: Path | None, agent: str, apps: list[str], on: bool) -> dict
     origin = service_origin(home)
     if not origin:
         raise AccessError("this box has no Agent Service", 503)
+    with _writer_lock(home):
+        _set_access(origin, agent, apps, on)
+    return instances(home)
+
+
+def _set_access(origin: str, agent: str, apps: list[str], on: bool) -> None:
     agents = {a.get("id") for a in (_req(origin, "GET", "/wizard/v1/agents").get("agents") or []) if isinstance(a, dict)}
     if agent not in agents:
         raise ValueError(f"no agent called {agent}")
@@ -165,7 +193,6 @@ def set_access(home: Path | None, agent: str, apps: list[str], on: bool) -> dict
             except AccessError:
                 pass
         raise
-    return instances(home)
 
 
 def resolve(home: Path | None, agent: str) -> str:
