@@ -258,8 +258,13 @@ def migration(vm, d):
     fixture_tree = ast.parse((vm.stage / 'helpers/privsep-slice4/run.py').read_bytes())
     setup = next(ast.literal_eval(n.value) for n in fixture_tree.body if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == 'HERMES_SETUP' for t in n.targets))
-    assert isinstance(setup, str) and '__HERMES_SHA__' in setup
-    vm.installer('stock-hermes-fixture', setup.replace('__HERMES_SHA__', d['hermes_commit']), timeout=1800)
+    clone = 'git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$HOME/hermes-agent"'
+    assert isinstance(setup, str) and setup.count(clone) == 1
+    pinned_clone = ('git init "$HOME/hermes-agent"\n'
+                    'git -C "$HOME/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git\n'
+                    'git -C "$HOME/hermes-agent" fetch --depth 1 origin ' + d['hermes_commit'] + '\n'
+                    'git -C "$HOME/hermes-agent" checkout --detach FETCH_HEAD')
+    vm.installer('stock-hermes-fixture', setup.replace(clone, pinned_clone), timeout=1800)
     vm.guest('baseline-bus-workaround', 'loginctl enable-linger hermes; uid=$(id -u hermes); systemctl start user@$uid.service; test -S /run/user/$uid/bus')
     vm.installer('legacy-install', 'set -euo pipefail\numask 022\n'
                  f'export WAM_REF={d["baseline_revision"]} WAM_IMAGE={d["baseline_image"]} WIZARD_RELEASE=none '
