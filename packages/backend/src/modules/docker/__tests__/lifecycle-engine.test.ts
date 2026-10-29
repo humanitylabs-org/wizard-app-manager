@@ -68,6 +68,7 @@ afterEach(async () => {
   if (failures.length) {
     // Vitest retains the original body failure separately. Preserve the first AND
     // all cleanup failures, and prohibit another engine fixture after unsafe cleanup.
+    await collect('cleanup failure marker', () => fs.writeFile('/opt/lifecycle/cleanup-failure.json', JSON.stringify(failures.map((error) => ({ message: error.message, cause: String(error.cause) })))));
     cleanupFailure = new AggregateError(failures, 'Lifecycle fixture cleanup incomplete', { cause: failures[0] });
     throw cleanupFailure;
   }
