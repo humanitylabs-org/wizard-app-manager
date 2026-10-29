@@ -310,7 +310,10 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
     before = (override.read_bytes() if override.exists() else None,
               _read_bytes(data / 'config.yaml') if (data / 'config.yaml').exists() else None)
-    doc = yaml.safe_load(override.read_text()) or {} if override.exists() else {}
+    # The override carries Compose merge tags (`networks: !override`, written by `wam network`); safe_load can't
+    # read them and safe_dump would drop them, so read and write it with the tag-preserving YAML helpers.
+    from .network import dump_yaml, load_yaml
+    doc = load_yaml(override.read_text()) or {} if override.exists() else {}
     service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
     mount = {'type': 'bind', 'source': str(Path(c.home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
     vols = service.setdefault('volumes', [])
@@ -327,7 +330,7 @@ def fresh(c, app_id='hermes-agent', store='wizardapps'):
     if mount not in vols:
         vols.append(mount)
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
-    _atomic(override, yaml.safe_dump(doc, sort_keys=False))
+    _atomic(override, dump_yaml(doc))
     after = (override.read_bytes(), _read_bytes(data / 'config.yaml'))
     pending = Path(c.home) / 'builder/restart-required'
     if before != after:
