@@ -469,3 +469,9 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/326 (release train). `releases/stable` → 0.3.81; `promotions/0.3.81.json` sha256 `8b68d2b3fa684545d4147507d6293f0f750814f4aefccad6b135ddc887d515ba`.
 Fast-tracked as **feature**. Installed upgrade 0.3.76 → 0.3.81 passed: wizard-os docs/acceptance/promote-0.3.81.md.
+
+## 0.3.82 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/327 and #328 (notes). SHA256: `160895672760666f737975078f3959d1e9dcc5dae02fc07e99f08c743d305f49`.
+0.3.81 plus Recommended fixes from a fresh-install rehearsal: App Manager #341, Wizard UX #743, Claude 0.2.11 / ChatGPT 0.2.9 (wizard-app-store #43).
+Channel: latest; the release train promotes after the upgrade test.
