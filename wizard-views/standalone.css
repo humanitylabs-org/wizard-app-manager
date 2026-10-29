@@ -91,3 +91,31 @@ body.wux {
 #adminMenu a:hover, #adminMenu a.on { background: var(--wz-accent-soft, #3a3a3a); }
 /* Semantic warning/success/error colours remain legible on a light surface. */
 html[data-color-scheme="light"] .wux { --amber: #946000; --green: #146c43; --red: #b42318; }
+
+/* Connections alone (wam's loopback page, and on the shell's origin as a Wizard window): no Admin strip, the map gets
+   the window's width, and inside Wizard the window glass is the canvas (no second panel painted on it). */
+.admin[hidden] {
+  display: none;
+}
+body.wux[data-only] {
+  padding-top: 12px;
+}
+body.wux[data-only] .wux-sheet {
+  --wux-top: 24px;
+  max-width: 980px;
+}
+html[data-wz-hosted] body.wux[data-only] {
+  padding: 0;
+  background: transparent;
+}
+html[data-wz-hosted] body.wux[data-only] .wux-sheet {
+  --wux-top: 0px;
+  height: 100dvh;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}

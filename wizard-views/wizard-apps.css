@@ -335,40 +335,12 @@
   color: var(--amber);
 }
 
-/* Connections (Settings group): one row per app, tap for what it reaches; colours are Wizard UX tokens only */
-.wam-conn .wam-conn-row {
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: 0;
-  cursor: pointer;
-  min-height: 44px;
-  gap: 12px;
-}
-.wam-conn .wam-conn-row .wam-tag {
-  max-width: 54%;
-  white-space: normal;
-  text-align: right;
-}
-.wam-conn .wam-conn-row .st-tx {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.wam-conn .wam-conn-row .st-tx small {
-  white-space: normal;
-}
-.wam-conn .wam-conn-row:focus-visible {
-  outline: 2px solid var(--wz-accent, #8f63ff);
-  outline-offset: -2px;
-}
-.wam-conn .wam-conn-row.warn .st-tx b {
-  color: var(--amber);
-}
+/* Connections as one picture (renderConnections, connections-map.js). The visual language of Wizard's Home map:
+   round discs, wires drawn between them, every word on a small chip, exceptions only. Colours are kit tokens (through
+   the .wux variables) — no literal colours. Miguel's skins (obsidian, obsidian-light, landscapes) get the Home map's
+   pearl discs and frosted chips; every other skin keeps the app glyph tiles. */
 .wam-tag {
   flex: none;
-  margin-left: auto;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
@@ -388,26 +360,1052 @@
   color: var(--red);
   border-color: var(--red);
 }
-.wam-conn-detail {
-  padding: 4px 14px 10px 14px;
-  color: var(--ink-2);
-  font-size: 13px;
+.wam-cm,
+.wam-cm-sheet {
+  --cm-chip: var(--glass);
+  --cm-chip-line: var(--line);
+  --cm-accent: var(--violet);
+  --cm-wire: color-mix(in srgb, var(--ink) 38%, transparent);
+  --cm-bad: var(--red);
+  --cm-warn: var(--amber);
+  --cm-d: 50px;
+  --cm-node: 108px;
+  --cm-ease: var(--ease);
 }
-.wam-conn-detail p {
-  margin: 4px 0;
-}
-.wam-conn-detail b {
+.wam-cm {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 2px 12px;
   color: var(--ink);
-  font-weight: 600;
-  margin-right: 6px;
 }
-.wam-conn-why {
+.wam-cm-lead {
+  margin: 6px 12px 0;
+  max-width: 34em;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: center;
+  text-wrap: balance;
+}
+.wam-cm-ro {
+  margin: 0 12px;
+  font-size: 13px;
+  color: var(--ink-3);
+  text-align: center;
+}
+.wam .wam-cm .wam-btn,
+.wam-cm-sheet .wam-btn {
+  min-height: 44px;
+}
+
+/* Buttons in the map and its sheet: kit tokens, like the Home map's action buttons (accent tint + hairline ring). */
+.wam .wam-cm .wam-btn,
+.wam.wam-cm-sheet .wam-btn {
+  background: var(--cm-chip);
+  border-color: var(--cm-chip-line);
+}
+.wam .wam-cm .wam-btn.primary,
+.wam.wam-cm-sheet .wam-btn.primary {
+  background: color-mix(in srgb, var(--cm-accent) 24%, transparent);
+  border-color: color-mix(in srgb, var(--cm-accent) 55%, transparent);
+}
+
+/* A request waiting for the owner: one plain card, Allow on the thumb side. */
+.wam-cm-asks {
+  width: min(100%, 520px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wam-cm-ask {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 12px 10px;
+  border-radius: 18px;
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cm-warn) 70%, transparent);
+}
+.wam-cm-ask p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.3;
+}
+.wam-cm-ask small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
   color: var(--ink-3);
 }
-.wam-conn-bad {
-  color: var(--red);
+.wam-cm-ask-ics {
+  display: flex;
 }
-.wam-conn-at {
+.wam-cm-ask-ics .wam-cm-ic {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+.wam-cm-ask-ics .wam-cm-ic + .wam-cm-ic {
+  margin-left: -8px;
+}
+.wam-cm-ask-acts {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.wam-cm-srow .wam-cm-ask-acts {
+  grid-column: auto;
+}
+
+/* The map: the agent on top, wired into one cluster of apps that all talk to each other. */
+.wam-cm-map {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  max-width: 920px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+  padding: 6px 0 2px;
+}
+.wam-cm-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 1;
+}
+.wam-cm-top {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+}
+.wam-cm-cluster {
+  position: relative;
+  width: 100%;
+  padding: 28px 10px 14px;
+}
+/* The cluster's glass sits behind the wires; the discs sit above them. */
+.wam-cm-cluster::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 30px;
+  background:
+    radial-gradient(60% 50% at 50% 0%, color-mix(in srgb, var(--cm-accent) 14%, transparent), transparent 80%),
+    color-mix(in srgb, var(--cm-chip) 60%, transparent);
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+}
+.wam-cm-map[data-mode="declared"] .wam-cm-cluster::before {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+}
+.wam-cm-tag {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 4px 12px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--ink);
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cm-accent) 55%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+/* The groups: Agents on top, Apps and Connectors inside the cluster (they all talk to each other), System below.
+   Each has a plain title and one line saying what it is. */
+.wam-cm-band {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.wam-cm-cluster > .wam-cm-band + .wam-cm-band {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--cm-chip-line);
+}
+.wam-cm-bh {
+  max-width: 30em;
+  padding: 0 10px;
+  text-align: center;
+}
+.wam-cm-bh h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.wam-cm-bh p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-3);
+  text-wrap: balance;
+}
+.wam-cm-band .wam-cm-grid {
+  width: 100%;
+}
+.wam-cm-band .wam-cm-top {
+  flex-wrap: wrap;
+  gap: 14px 22px;
+}
+.wam-cm-band .wam-cm-top .wam-cm-node:not(.is-agent) {
+  width: var(--cm-node);
+}
+.wam .wam-cm-node.is-agent {
+  width: auto;
+  max-width: 240px;
+}
+.is-agent .wam-cm-role {
+  white-space: normal;
+}
+.wam-cm-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--cm-node), 1fr));
+  gap: 18px 4px;
+  justify-items: center;
+}
+
+/* A node: disc + a name chip under it; a status line on its own line only when something is different. */
+.wam .wam-cm-node {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border-radius: 16px;
+  -webkit-tap-highlight-color: transparent;
+}
+.wam-cm-node:focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: 3px;
+}
+.wam-cm-disc {
+  position: relative;
+  flex: none;
+  width: var(--cm-d);
+  height: var(--cm-d);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transition: transform 260ms var(--cm-ease);
+}
+.wam-cm-node:hover .wam-cm-disc {
+  transform: scale(1.05);
+}
+.wam-cm-node:active .wam-cm-disc {
+  transform: scale(0.95);
+}
+.wam-cm-disc > .wam-cm-ic {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+.wam-cm-letter {
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--ink);
+  background: var(--glass);
+  border: 1px solid var(--line-2);
+}
+.is-agent .wam-cm-disc {
+  --cm-d: 62px;
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--cm-accent) 30%, transparent),
+    0 0 0 12px color-mix(in srgb, var(--cm-accent) 10%, transparent);
+}
+.wam-cm-label {
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 8px 3px;
+  border-radius: 10px;
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+}
+.wam-cm-name,
+.wam-cm-role {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+.wam-cm-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 17px;
+}
+.wam-cm-role {
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 14px;
+  color: var(--ink-3);
+}
+.wam-cm-role.bad {
+  color: var(--cm-bad);
+}
+.wam-cm-role.warn {
+  color: var(--cm-warn);
+}
+.is-agent .wam-cm-role {
+  color: var(--cm-accent);
+}
+/* Asks you first: a lock badge on the disc. Waiting for you: an amber pulse around it. */
+.wam-cm-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--wz-base, Canvas);
+  background: var(--ink);
+  box-shadow: 0 0 0 2px var(--cm-chip-line);
+}
+.wam-cm-badge svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+.wam-cm-node.is-wait .wam-cm-disc::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--cm-warn);
+  animation: wam-cm-wait 1.6s ease-out infinite;
+}
+@keyframes wam-cm-wait {
+  0% { box-shadow: 0 0 0 2px var(--cm-warn), 0 0 0 0 color-mix(in srgb, var(--cm-warn) 70%, transparent); }
+  80%, 100% { box-shadow: 0 0 0 2px var(--cm-warn), 0 0 0 12px transparent; }
+}
+.wam-cm-node.is-cut .wam-cm-disc {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cm-bad) 70%, transparent);
+}
+
+/* Wires: the agent's (a light runs down it), a cut pair (red, broken, an x in the middle), a request waiting
+   (amber, broken, moving) and, in Strict mode, each connection that exists. */
+.wam-cm-w {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.wam-cm-w.is-flow {
+  stroke: var(--cm-accent);
+  stroke-opacity: 0.55;
+}
+.wam-cm-comet {
+  fill: none;
+  stroke: var(--cm-accent);
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  animation: wam-cm-run 2.2s linear infinite;
+}
+@keyframes wam-cm-run {
+  from { stroke-dashoffset: var(--from); }
+  to { stroke-dashoffset: var(--to); }
+}
+.wam-cm-w.is-cut {
+  stroke: var(--cm-bad);
+  stroke-width: 2.2;
+  stroke-dasharray: 5 5;
+}
+.wam-cm-w.is-wait {
+  stroke: var(--cm-warn);
+  stroke-width: 2.2;
+  stroke-dasharray: 3 6;
+  animation: wam-cm-march 1s linear infinite;
+}
+@keyframes wam-cm-march {
+  to { stroke-dashoffset: -9; }
+}
+.wam-cm-w.is-link {
+  stroke: var(--cm-accent);
+  stroke-opacity: 0.6;
+  stroke-width: 1.8;
+}
+/* Strict mode: a line is tappable (it opens Disconnect). The groups let taps through to it; the nodes still take theirs. */
+.wam-cm-map[data-mode="declared"] :is(.wam-cm-cluster, .wam-cm-band, .wam-cm-nodes, .wam-cm-bh) {
+  pointer-events: none;
+}
+.wam-cm-map[data-mode="declared"] .wam-cm-node {
+  pointer-events: auto;
+}
+.wam-cm-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 22;
+  stroke-linecap: round;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.wam-cm-hit:hover {
+  stroke: color-mix(in srgb, var(--cm-accent) 18%, transparent);
+}
+/* Strict mode: an app connected to nothing sits apart, inside its own dashed fence. */
+.wam-cm-node.is-alone .wam-cm-disc::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--cm-chip-line);
+  pointer-events: none;
+}
+.wam-cm-node.is-alone .wam-cm-disc {
+  opacity: 0.86;
+}
+/* Comes with Wizard: a small sparkle on the disc and a quiet line under the name. */
+.wam-cm-badge.is-wiz {
+  left: -3px;
+  right: auto;
+  color: var(--wz-base, Canvas);
+  background: var(--cm-accent);
+}
+.wam-cm-badge.is-wiz svg {
+  fill: currentColor;
+  stroke: none;
+}
+.wam-cm-role.is-builtin {
+  color: var(--cm-accent);
+  white-space: normal;
+  line-height: 12px;
+}
+.wam-cm-lead small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.wam-cm-pair {
+  display: inline-flex;
+}
+.wam-cm-pair .wam-cm-ic {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.wam-cm-pair .wam-cm-ic + .wam-cm-ic {
+  margin-left: -8px;
+}
+.wam-cm-uses h5 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--ink-3);
+}
+/* The agent's list shows every item (it is the whole answer to "what can it use"), not a scrolling picker. */
+.wam-cm-uses .wam-cm-chips {
+  max-height: none;
+  overflow: visible;
+}
+.wam-cm-sheet .wam-cm-uses .wam-cm-chip {
+  min-height: 36px;
+  cursor: default;
+}
+.wam-cm-chip.is-off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.wam-cm-x circle {
+  fill: var(--cm-bad);
+}
+.wam-cm-x path {
+  fill: none;
+  stroke: var(--wz-base, Canvas);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+/* Details: one quiet chevron chip; the technical words live inside. */
+.wam .wam-cm-more {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-2);
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+}
+.wam-cm-chev {
+  width: 8px;
+  height: 8px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 300ms var(--cm-ease);
+}
+.wam-cm-chev.is-up {
+  transform: translateY(2px) rotate(225deg);
+}
+.wam-cm-details {
+  width: min(100%, 620px);
+  padding: 6px 14px 10px;
+  border-radius: 18px;
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wam-cm-details[hidden] {
+  display: none;
+}
+.wam-cm-details p {
+  margin: 8px 0;
+}
+.wam-cm-details b {
+  color: var(--ink);
+  font-weight: 650;
+}
+.wam-cm-details h5 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink-3);
+}
+.wam-cm-warn {
+  color: var(--cm-warn);
+}
+.wam-cm-at {
   color: var(--ink-3);
   white-space: nowrap;
+}
+
+/* A switch row (Ask me first, Strict mode): words left, the switch on the thumb side. */
+.wam-cm-row,
+.wam-cm-srow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.wam-cm-tx {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wam-cm-tx b {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.wam-cm-tx small {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+.wam .wam-cm-switch,
+.wam-cm-sheet .wam-cm-switch {
+  flex: none;
+  position: relative;
+  width: 52px;
+  height: 32px;
+  border-radius: 99px;
+  background: var(--line-2);
+  transition: background 200ms;
+}
+.wam-cm-switch::before {
+  content: "";
+  position: absolute;
+  inset: -6px -2px;
+}
+.wam-cm-switch i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 220ms var(--cm-ease);
+}
+.wam-cm-switch[aria-checked="true"] {
+  background: var(--cm-accent);
+}
+.wam-cm-switch[aria-checked="true"] i {
+  transform: translateX(20px);
+  background: var(--cm-on-accent, var(--wz-on-accent, var(--ink)));
+}
+.wam-cm-details > .wam-cm-row:first-child {
+  border-top: 0;
+}
+.wam-cm-switch[disabled] {
+  opacity: 0.5;
+}
+.wam-cm-switch[aria-busy="true"] i {
+  animation: wam-cm-busy 0.9s ease-in-out infinite;
+}
+@keyframes wam-cm-busy {
+  50% { opacity: 0.4; }
+}
+
+/* After a change: one line near the thumb, with Undo for a cut. */
+.wam-cm-toast {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  max-width: min(100%, 520px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--wz-overlay, var(--glass));
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  animation: wam-cm-in 220ms var(--cm-ease) both;
+}
+.wam-cm-toast[hidden] {
+  display: none;
+}
+@keyframes wam-cm-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+/* The sheet (WzSheet from the shell's kit; on wam's loopback page a plain dialog with the same look). */
+.wam-cm-sheet {
+  color: var(--ink);
+}
+.wam-cm-sheet.wam-cm-own {
+  width: min(520px, calc(100% - 24px));
+  max-height: 85%;
+  padding: 16px;
+  border-radius: 22px;
+  border: 1px solid var(--line-2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+.wam-cm-sheet.wam-cm-own::backdrop {
+  background: color-mix(in srgb, var(--glass) 70%, transparent);
+}
+.wam-cm-sheet.wam-cm-own .wz-sheet-x {
+  float: right;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--ink-2);
+  background: var(--line);
+  font-size: 18px;
+}
+.wam-cm-sh {
+  --cm-d: 46px;
+  font: 15px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wam-cm-sh-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 8px;
+}
+.wam-cm-sh-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 750;
+}
+.wam-cm-says {
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.wam-cm-sh-note {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.wam-cm-sh-note + .wam-cm-sh-note {
+  margin-top: 6px;
+}
+/* Which group an item is in, at the top of its sheet: "In Connectors" and the group's one line. */
+.wam-cm-where {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+.wam-cm-where b {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--cm-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cm-accent) 45%, transparent);
+}
+.wam-cm-srow > .wam-cm-ic {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.wam-cm-sh-acts {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--line);
+}
+.wam-cm-sh-acts .wam-btn {
+  min-width: 140px;
+}
+.wam-cm-pick p {
+  margin: 4px 0 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wam-cm-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+.wam-cm-sheet .wam-cm-chip {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 99px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  text-align: left;
+  color: var(--ink);
+  background: var(--glass);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.wam-cm-chip:hover {
+  border-color: var(--cm-bad);
+}
+.wam-cm-chip .wam-cm-ic {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+}
+.wam-cm-chip span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wam-cm-sheet .wam-cm-ro {
+  margin: 10px 0 0;
+  text-align: left;
+}
+
+/* Phone width: smaller discs, four or five to a row, all inside 390 px. */
+@container (max-width: 560px) {
+  .wam-cm > * {
+    --cm-d: 44px;
+    --cm-node: 80px;
+  }
+  .wam-cm-grid {
+    gap: 16px 2px;
+  }
+  .wam-cm-cluster {
+    padding: 26px 4px 12px;
+  }
+  .wam-cm-name {
+    font-size: 11px;
+  }
+  .wam-cm-label {
+    padding: 2px 5px 3px;
+  }
+  .is-agent .wam-cm-disc {
+    --cm-d: 56px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wam-cm *,
+  .wam-cm *::before,
+  .wam-cm *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+  .wam-cm-comet {
+    display: none;
+  }
+}
+
+/* ---- Miguel's skins: the Home map's pearl discs and frosted chips (opinionated, these skins only) ---- */
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) {
+  --cm-pearl: radial-gradient(circle at 34% 26%, var(--wz-text) 0%, color-mix(in srgb, var(--wz-text) 90%, var(--wz-base)) 48%, color-mix(in srgb, var(--wz-text) 76%, var(--wz-base)) 100%);
+  --cm-pearl-ink: var(--wz-base);
+  /* the Home map has no purple: accents (wires, the agent's rings, switches) are the skin's ink */
+  --cm-accent: var(--wz-text);
+  --cm-on-accent: var(--wz-base);
+  --cm-chip: color-mix(in srgb, var(--wz-text) 7%, transparent);
+  --cm-chip-line: color-mix(in srgb, var(--wz-text) 11%, transparent);
+}
+html[data-skin="landscapes"] :is(.wam-cm, .wam-cm-sheet) {
+  --cm-chip: color-mix(in srgb, var(--wz-base) 74%, transparent);
+  --cm-chip-line: color-mix(in srgb, var(--wz-text) 14%, transparent);
+}
+html[data-skin="obsidian-light"] :is(.wam-cm, .wam-cm-sheet) {
+  --cm-pearl: radial-gradient(circle at 34% 26%, var(--wz-base) 0%, var(--wz-base) 50%, color-mix(in srgb, var(--wz-base) 88%, var(--wz-text)) 100%);
+  --cm-pearl-ink: var(--wz-text);
+  --cm-chip: color-mix(in srgb, var(--wz-base) 86%, transparent);
+  --cm-chip-line: color-mix(in srgb, var(--wz-text) 9%, transparent);
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) .wam-cm-disc {
+  background: var(--cm-pearl);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--wz-text) 30%, transparent),
+    0 10px 24px -12px color-mix(in srgb, var(--cm-pearl-ink) 60%, transparent);
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) .wam-cm-disc > .wam-cm-ic {
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  color: var(--cm-pearl-ink);
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) .wam-cm-disc > .wam-cm-ic::before,
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) .wam-cm-disc > .wam-cm-ic::after {
+  display: none;
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm, .wam-cm-sheet) .wam-cm-disc .sgi {
+  width: 56%;
+  height: 56%;
+  background: var(--cm-pearl-ink) !important;
+  filter: none !important;
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm .is-agent .wam-cm-disc {
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--wz-text) 26%, transparent),
+    0 0 0 12px color-mix(in srgb, var(--wz-text) 9%, transparent),
+    0 14px 40px -12px color-mix(in srgb, var(--wz-text) 50%, transparent);
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cm-label, .wam-cm-more, .wam-cm-details, .wam-cm-ask) {
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::before {
+  background: radial-gradient(60% 50% at 50% 0%, color-mix(in srgb, var(--wz-text) 9%, transparent), transparent 80%);
+}
+
+/* Phone widths: Connections is a list (waiting, your agent, linked apps, cut by you); the map is one tap away. The
+   list is hidden on wider panes, where the map shows as before. Kit tokens only, through the map's --cm-* aliases. */
+.wam-cl,
+.wam-cl-back {
+  display: none;
+}
+.wam-cm-full {
+  display: contents;
+}
+@container (max-width: 600px) {
+  .wam-cl {
+    display: flex;
+  }
+  .wam-cm:not(.is-map) > .wam-cm-full,
+  .wam-cm.is-map > .wam-cl {
+    display: none;
+  }
+  .wam-cm.is-map .wam-cl-back {
+    display: inline-flex;
+    align-self: flex-start;
+    margin-left: 8px;
+  }
+}
+.wam-cl {
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 12px 8px;
+  box-sizing: border-box;
+}
+.wam-cl-title {
+  margin: 4px 4px 0;
+  font-size: 26px;
+  font-weight: 750;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.wam-cl .wam-cm-ro {
+  margin: 0 4px;
+  text-align: left;
+}
+.wam-cl-sec h3,
+.wam-cl-wait h3 {
+  margin: 0 4px 8px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.wam-cl-sec h3 span {
+  margin-left: 4px;
+  color: var(--ink-2);
+}
+.wam-cl-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1px var(--cm-chip-line);
+  overflow: hidden;
+}
+.wam .wam-cl-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 14px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wam .wam-cl-row + .wam-cl-row {
+  border-top: 1px solid var(--line);
+}
+.wam .wam-cl-row.is-static {
+  cursor: default;
+}
+.wam-cl-row:focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: -2px;
+}
+.wam-cl-row:not(.is-static):active {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.wam-cl-row > .wam-cm-ic {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.wam-cl-row .wam-cm-pair .wam-cm-ic {
+  width: 30px;
+  height: 30px;
+}
+.wam-cl-tx {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.wam-cl-tx b {
+  font-weight: 650;
+}
+.wam-cl-tx span {
+  color: var(--ink-2);
+}
+.wam-cm-go {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border: solid var(--ink-3);
+  border-width: 2px 2px 0 0;
+  transform: rotate(45deg);
+}
+.wam-cl-row .wam-btn {
+  flex: none;
+  min-height: 44px;
+}
+.wam-cl-wait {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wam-cl-ask {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px;
+  border-radius: 18px;
+  background: var(--cm-chip);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cm-warn) 70%, transparent);
+}
+.wam-cl-ask p {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.wam-cl-ask .wam-cm-ask-acts .wam-btn {
+  flex: 1 1 0;
+}
+.wam-cl-foot {
+  margin: 0 4px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.wam .wam-cl-mapbtn {
+  align-self: stretch;
+  min-height: 48px;
+}
+.wam-cm-use.is-off {
+  opacity: 0.5;
+}
+.wam-cm-sheet .wam-cm-uses .wam-cm-srow {
+  min-height: 44px;
+  padding: 6px 0;
+}
+html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cl-card, .wam-cl-ask) {
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
 }

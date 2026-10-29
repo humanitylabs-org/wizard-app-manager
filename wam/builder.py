@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
-from . import app_standard, wizardmd, system_functions
+from . import app_standard, wizardmd, system_functions, style_check
 
 REPO = Path(__file__).resolve().parent.parent
 ID = re.compile(r'[a-z0-9][a-z0-9-]{1,40}')
@@ -128,6 +128,9 @@ _FRAME = {'.wz-app', '.wz-scroll', 'html', 'body', ':root', 'main', '#app', '.ap
 _COLOUR = re.compile(r'#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\s*\(')
 _DIALOG = re.compile(r'(?<![\w.$])(?:window\.)?(alert|confirm|prompt)\s*\(')
 _RULES_URL = 'https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md'
+# Shell features that reach outside the app's window (Chats, navigation). Newer Wizards add them, so an app
+# that calls one unguarded breaks on every older Wizard. Guarded = feature-detected before use.
+_SHELL_CALL = re.compile(r'WizardApp\.(nav|chat)\.(\w+)\s*\(')
 
 
 def _own_files(root, suffixes):
@@ -163,7 +166,7 @@ def _simple(compound):
 def design_rows(root):
     """Warnings for app/design rule breaks (wizard-os style/APP-DESIGN-RULES.md). Never errors."""
     root = Path(root)
-    frame, capped, colours, dialogs = _frame_tokens(root), [], [], []
+    frame, capped, colours, dialogs, unguarded = _frame_tokens(root), [], [], [], []
     for p in _own_files(root, {'.css', '.scss', '.less'}):
         css = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         for sel, decl in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
@@ -180,6 +183,10 @@ def design_rows(root):
         text = re.sub(r'(?m)^\s*//.*$', '', text)
         if any(not re.search(r'function\s*$', text[max(0, m.start() - 40):m.start()]) for m in _DIALOG.finditer(text)):
             dialogs.append(str(p.relative_to(root)))
+        for m in _SHELL_CALL.finditer(text):
+            fn = m.group(2)
+            if not re.search(r'(\?\.\s*' + fn + r'\b)|(typeof\s+[\w.?]*\b' + fn + r'\b)|([\'"]' + fn + r'[\'"]\s+in\b)', text):
+                unguarded.append(f'{p.relative_to(root)}: WizardApp.{m.group(1)}.{fn}')
     rows = []
     if capped:
         rows.append({'rule': 'design: the window is the page', 'ok': False, 'severity': 'warning',
@@ -193,6 +200,45 @@ def design_rows(root):
         rows.append({'rule': 'design: one pop-up, the sheet', 'ok': False, 'severity': 'warning',
                      'detail': 'window.alert/confirm/prompt in ' + ', '.join(dialogs[:5]) + '. Use <dialog class="wz-sheet"> '
                                'with WzSheet.open (wizard-sheet.js), or .wz-status for messages. See ' + _RULES_URL})
+    if unguarded:
+        rows.append({'rule': 'compatibility: works on every Wizard', 'ok': False, 'severity': 'warning',
+                     'detail': 'unguarded shell call (' + '; '.join(sorted(set(unguarded))[:5]) + '). Older Wizards lack '
+                               'newer shell features, so check first (typeof WizardApp?.nav?.<fn> === \'function\') and '
+                               'hide the control when it is missing; one store release then runs on every Wizard.'})
+    return rows
+
+
+def style_rows(root):
+    """Same canonical lexical gate as CI: no importing or running app code.
+
+    Generated hello apps are strict from day one. Tracked existing sources ratchet
+    against origin/main (or HEAD for a local dirty tree). Non-Git legacy imports
+    remain warnings; do not pretend an unavailable baseline is strict proof.
+    """
+    root = Path(root).resolve()
+    marker = root / '.builder.json'
+    try:
+        strict = marker.is_file() and json.loads(marker.read_text()).get('template') == 'hello-wizard'
+        base = None
+        if not strict:
+            for candidate in ('origin/main', 'HEAD'):
+                try:
+                    style_check.git(root, 'rev-parse', '--verify', candidate + '^{commit}')
+                    base = candidate
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+        policy = json.loads((Path(__file__).with_name('style-policy.json')).read_text())
+        findings = style_check.scan(root, policy, base=base, strict=strict)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        return [{'rule': 'style: check available', 'ok': False, 'severity': 'error', 'detail': str(error)}]
+    rows = []
+    for failing in (True, False):
+        group = [r for r in findings if r['error'] == failing]
+        if group:
+            rows.append({'rule': 'style: new code uses the canonical kit' if failing else 'style: legacy debt',
+                         'ok': False, 'severity': 'error' if failing else 'warning',
+                         'detail': f'{len(group)} findings: ' + '; '.join('{path}:{line} {rule}'.format(**r) for r in group[:8]) + '. ' + _RULES_URL})
     return rows
 
 
@@ -203,6 +249,7 @@ def check_app(root, proposal=False):
     rows += system_functions.check(root)
     rows += kit_rows(root)
     rows += design_rows(root)
+    rows += style_rows(root)
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)
@@ -217,7 +264,8 @@ def validate_style_snapshot(template):
     """Fail closed on edits to the generated canonical style distribution assets."""
     lock = json.loads((template / 'appearance-provenance.json').read_text())
     mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
-               'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js'}
+               'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js',
+               'style/standalone-tokens.css': 'web/standalone-tokens.css'}
     if (lock.get('schema') != 3 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
             or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
             or set(lock.get('files', {})) != set(mapping)):

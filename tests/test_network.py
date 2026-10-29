@@ -10,7 +10,7 @@ from wam import network as net
 
 
 def app(app_id, uses=(), provides=(), services=None, **kw):
-    services = services or {app_id: {"main": True, "on_shared": True, "network_mode": "", "exposed": False,
+    services = services or {app_id: {"main": True, "internal_port": 80, "on_shared": True, "network_mode": "", "exposed": False,
                                      "networks": {"tipi_main_network": {"gw_priority": 1}}}}
     return {"id": app_id, "name": app_id, "uses": list(uses), "provides": list(provides), "router": False,
             "services": services, "custom": None, "host_access": [], **kw}
@@ -113,6 +113,150 @@ def test_missing_and_external_providers_are_reported_not_linked():
     assert states[("wizard-chatgpt", "hermes-agent")] == "external"
     assert states[("x", "nope")] == "not-installed"
     assert not [n for n in p["networks"].values() if n["kind"] == "link"]
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("collision", ["foreign-label", "wrong-internal", "wrong-owner", "missing-owner"])
+def test_connections_never_reports_colliding_network_identity_as_healthy(running, collision):
+    p = net.plan([app("x")], [], set())
+    live = live_from(p)
+    live["containers"][0]["running"] = running
+    name = net.app_net("x")
+    if collision == "foreign-label":
+        live["networks"][name]["labels"] = {}
+    elif collision == "wrong-internal":
+        live["networks"][name]["internal"] = not p["networks"][name]["internal"]
+    elif collision == "wrong-owner":
+        live["networks"][name]["labels"]["org.wizard-os.owner"] = "another-app"
+    else:
+        live["networks"][name]["labels"].pop("org.wizard-os.owner")
+    rep = net.report(type("C", (), {})(), p=p, live=live)
+    assert rep["live"] and not rep["ok"]
+    assert any("different network" in problem for problem in rep["apps"][0]["drift"])
+    assert not next(row for row in rep["networks"] if row["name"] == name)["matches"]
+    assert "matches the declarations" not in net.describe(rep)
+    assert bool(net.drift(p, live)) is running
+    if running:
+        assert name in net.drift(p, live)[0]["missing"]
+
+
+@pytest.mark.parametrize("field", ["owner", "consumer", "provider"])
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("populated", [False, True])
+def test_network_ownership_collision_never_attaches_or_deletes(tmp_path, monkeypatch, field, missing, populated):
+    grant = {"kind": "app", "from": "a", "to": "b", "reason": "uses", "approved": "install"}
+    p = net.plan([app("a", uses=["b"]), app("b")], [grant], set(), approved=[grant])
+    label = f"org.wizard-os.{field}"
+    name = next(n for n, spec in p["networks"].items() if label in spec["labels"])
+    live = live_from(p)
+    if missing:
+        live["networks"][name]["labels"].pop(label)
+    else:
+        live["networks"][name]["labels"][label] = "another-app"
+    live["networks"][name]["containers"] = ["foreign-container"] if populated else []
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (p, "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["errors"] and any(name in e for e in result["errors"])
+    assert not [call for call in fake.calls if call[:2] == ("network", "connect") and name in call]
+    assert not [call for call in fake.calls if call[:2] == ("network", "rm") and name in call]
+    assert name in fake.live["networks"]
+
+
+@pytest.mark.parametrize("kind", ["app", "link", "gateway"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_cleanup_preserves_foreign_orphans_with_incomplete_or_wrong_identity(tmp_path, monkeypatch, kind, missing):
+    name = net.link_name("gone", "other") if kind == "link" else net.app_net("gone") if kind == "app" else net.gw_net("gone")
+    labels = {net.LABEL: kind, "org.wizard-os.consumer": "gone", "org.wizard-os.provider": "other"} if kind == "link" else {
+        net.LABEL: kind, "org.wizard-os.owner": "gone"}
+    field = "org.wizard-os.consumer" if kind == "link" else "org.wizard-os.owner"
+    if missing:
+        labels.pop(field)
+    else:
+        labels[field] = "another-stack"
+    live = {"networks": {name: {"labels": labels, "internal": kind != "app", "subnets": [], "containers": ["foreign"]}}, "containers": []}
+    fake = FakeDocker(live)
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (net.plan([], [], set()), "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    result = net.reconcile(Cfg(tmp_path))
+    assert result["removed"] == [] and name in fake.live["networks"]
+    assert not [call for call in fake.calls if call[:2] in (("network", "disconnect"), ("network", "rm"))]
+
+
+@pytest.mark.parametrize("rows", [None, object(), {"info": {}}, [None, {"info": None}, {"info": "x", "app": {"exposed": True}}]])
+def test_unreadable_lifecycle_state_never_authorizes_publication(rows):
+    rt = type("RT", (), {"installed": lambda self: rows})()
+    assert net.published_urns(rt) == set()
+
+
+def test_lifecycle_lookup_failure_never_authorizes_publication():
+    def unavailable(self):
+        raise RuntimeError("temporarily offline")
+    assert net.published_urns(type("RT", (), {"installed": unavailable})()) == set()
+
+
+@pytest.mark.parametrize("main_service", ["base", "arch-main"])
+def test_watcher_preserves_the_owner_published_architecture_specific_main(tmp_path, monkeypatch, main_service):
+    from wam import test_catalog
+    monkeypatch.setattr(test_catalog, "host_architecture", lambda: "arm64")
+    recipe = {"services": {"base": {"image": "a", "command": ["base"], "x-runtipi": {"is_main": False}}},
+              "x-runtipi": {"overrides": [
+                  {"architecture": "amd64", "services": {"other-arch": {"image": "a", "x-runtipi": {"is_main": True}}}},
+                  {"architecture": "arm64", "services": {main_service: {"image": "b", "command": ["override"],
+                    "x-runtipi": {"is_main": True, "internal_port": 80}}}}]}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {"exposed": True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == "exposed"
+    planned = p["apps"][0]
+    assert main_service in planned["services"] and "other-arch" not in planned["services"]
+    assert net.keeps_shared(planned, main_service)
+    if main_service != "base":
+        assert not net.keeps_shared(planned, "base")
+    assert net.source_services(recipe)[main_service]["command"] == ["override"]
+    assert recipe["services"]["base"]["command"] == ["base"]
+
+
+@pytest.mark.parametrize("internal_port", [None, 0, 80])
+@pytest.mark.parametrize("source_mode", [{}, {"network_mode": None}, {"network_mode": ""}, {"network_mode": False}])
+@pytest.mark.parametrize("exposure", ["exposed", "exposedLocal"])
+def test_watcher_never_republishes_an_unroutable_main_with_stale_router_labels(tmp_path, monkeypatch, internal_port, source_mode, exposure):
+    meta = {"is_main": True}
+    if internal_port is not None:
+        meta["internal_port"] = internal_port
+    recipe = {"services": {"main": {"image": "a", "x-runtipi": meta, **source_mode}}}
+    generated = {"services": {"main": {"image": "a", "labels": {"traefik.enable": "true"}, "networks": {net.SHARED: {}}}}}
+    write_app(tmp_path, "wizardapps", "x", {"id": "x"}, recipe, generated=generated)
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": "x:wizardapps"}, "app": {exposure: True}}]})()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    c = type("C", (), {"home": tmp_path / "home", "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    planned = p["apps"][0]
+    routed = bool(internal_port) and not source_mode
+    assert planned["state"] == ("exposed" if routed else "isolated")
+    assert net.keeps_shared(planned, "main") is routed
+
+
+@pytest.mark.parametrize("published_urn", [None, "x:other-store", "x:wizardapps"])
+def test_watcher_never_trusts_recipe_exposure_labels_or_another_stores_same_id(monkeypatch, tmp_path, published_urn):
+    class RT:
+        def installed(self):
+            return [{"info": {"id": "x", "urn": published_urn or "x:wizardapps"}, "app": {"exposed": bool(published_urn)}}]
+    rt = RT()
+    monkeypatch.setattr(net, "_context", lambda *args: (rt, {"x"}, [], set(), "wizardapps", []))
+    forged = app("x")
+    forged["services"]["x"]["exposed"] = True
+    monkeypatch.setattr(net, "read_apps", lambda *args, **kwargs: [forged])
+    c = type("C", (), {"home": tmp_path, "runtipi_root": tmp_path})()
+    p, _ = net.build(c, on=True)
+    assert p["apps"][0]["state"] == ("exposed" if published_urn == "x:wizardapps" else "isolated")
 
 
 def test_fresh_report_shows_the_core_an_app_can_reach_over_its_gateway_network(monkeypatch):
@@ -329,7 +473,7 @@ def live_from(p, on_shared=(), extra=None):
             nets.update((extra or {}).get((a["id"], s), {}))
             containers.append({"id": "x", "name": f"{a['id']}-{s}", "urn": f"{a['id']}:wizardapps", "service": s,
                                "running": True, "network_mode": "", "networks": nets})
-    return {"networks": {n: {"labels": {net.LABEL: v["kind"]}, "internal": v["internal"], "subnets": [],
+    return {"networks": {n: {"labels": dict(v["labels"]), "internal": v["internal"], "subnets": [],
                              "containers": []} for n, v in p["networks"].items()}, "containers": containers}
 
 
@@ -404,7 +548,7 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
     for cont in live["containers"]:
         cont["ports"] = [("127.0.0.1", 18000)] if cont["service"] == "stripe-connector" else []
     live["networks"] = {"runtipi_tipi_main_network": {"labels": {}, "internal": False, "subnets": ["172.18.0.0/16"], "containers": []},
-                        "wizard-link-old--gone": {"labels": {net.LABEL: "link"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
+                        "wizard-link-old--gone": {"labels": {net.LABEL: "link", "org.wizard-os.consumer": "old", "org.wizard-os.provider": "gone"}, "internal": True, "subnets": ["10.255.0.0/27"], "containers": []}}
     fake = FakeDocker(live)
     restarted = []
     # stripe's published port stops answering after it leaves the shared network: only it is restarted
@@ -1134,3 +1278,201 @@ def test_the_report_lists_shared_network_peers_both_ways():
     row = {r["id"]: r for r in net.report(C, p=on, live={"networks": {}, "containers": []})["apps"]}
     assert {e["to"] for e in row["pub"]["can_reach"] if e["state"] == "shared-network"} == {"cust"}
     assert not [e for e in row["iso"]["can_reach"] if e["state"] == "shared-network"]
+
+
+# ---------------------------------------------------------------- open mode (the default): everything connected
+# unless the owner disconnects it (docs/APP_NETWORKS.md "Open mode")
+
+def _st(grants=(), denied=(), pending=(), sensitive=(), mode="open"):
+    row = lambda f, t, **k: {"kind": "app", "from": f, "to": t, **k}  # noqa: E731
+    return {"grants": [row(*g[:2], approved=(g[2] if len(g) > 2 else "install")) for g in grants],
+            "denied": [row(*d, approved="owner") for d in denied], "pending": [row(*p) for p in pending],
+            "sensitive": list(sensitive), "notices": [], "mode": mode}
+
+
+def _many(n):
+    return [app(f"app{i:02d}") for i in range(n)]
+
+
+def test_open_mode_puts_every_app_on_one_mesh_and_every_pair_reaches():
+    apps = carlos()
+    p = net.plan(apps, [], set(), state=_st(), mode="open")
+    ids = {a["id"] for a in apps}
+    assert set(p["networks"]) == {net.MESH_NET} | {net.app_net(i) for i in ids}
+    mesh = p["networks"][net.MESH_NET]
+    assert mesh["internal"] and mesh["kind"] == "mesh" and mesh["prefixlen"] == net.MESH_PREFIXLEN
+    assert reach(p) >= {(a, b) for a in ids for b in ids if a != b}
+    # every main service answers by its app id on the mesh; a database that never was on the shared network stays off
+    twenty = next(m for m in mesh["members"] if m["app"] == "twenty-crm")
+    assert twenty == {"app": "twenty-crm", "service": "twenty-crm", "aliases": ["twenty-crm"]}
+    assert not any(m["service"] == "twenty-db" for m in mesh["members"])
+    assert {e["state"] for e in p["edges"] if e["provider"]} == {"mesh"}
+    ov = net.overlay_for(next(a for a in p["apps"] if a["id"] == "carlos-crm"))
+    assert ov["services"]["carlos-crm"][net.MESH_NET] == {"aliases": ["carlos-crm"]}
+    assert ov["networks"][net.MESH_NET] == {"name": net.MESH_NET, "external": True}
+
+
+def test_a_disconnect_cuts_exactly_that_pair_both_ways():
+    apps = carlos()
+    st = _st(denied=[("carlos-crm", "resend-connector")])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    pairs = reach(p)
+    ids = {a["id"] for a in apps}
+    want = {(a, b) for a in ids for b in ids if a != b} - {("carlos-crm", "resend-connector"), ("resend-connector", "carlos-crm")}
+    assert pairs == want
+    assert p["open"]["out"] == {"resend-connector"}    # the app disconnected from leaves the mesh ...
+    links = [n for n, v in p["networks"].items() if v["kind"] == "link"]
+    assert len(links) == len(ids) - 2                  # ... and gets one link to each app it still reaches
+    for n in links:
+        v = p["networks"][n]
+        assert v["internal"] and all(m["aliases"] for m in v["members"])   # both ends answer by their id
+    e = next(e for e in p["edges"] if e["from"] == "carlos-crm" and e["provider"] == "resend-connector")
+    assert e["state"] == "disconnected" and e["network"] is None
+    # slot-named Disconnects cut the app behind the slot
+    p2 = net.plan(carlos(), [], set(), state=_st(denied=[("carlos-campaigns", "slot:email")]), mode="open")
+    assert ("carlos-campaigns", "resend-connector") not in reach(p2) and ("resend-connector", "carlos-campaigns") not in reach(p2)
+
+
+def test_sensitive_apps_keep_their_connections_and_new_ones_wait():
+    apps = carlos()
+    st = _st(grants=[("carlos-crm", "resend-connector", "open"), ("twenty-crm", "resend-connector", "open")],
+             pending=[("stripe-connector", "resend-connector")], sensitive=["resend-connector"])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    pairs = reach(p)
+    assert ("carlos-crm", "resend-connector") in pairs and ("resend-connector", "twenty-crm") in pairs
+    for other in ("stripe-connector", "calendly-connector", "carlos-campaigns", "gohighlevel-connector"):
+        assert (other, "resend-connector") not in pairs and ("resend-connector", other) not in pairs
+    assert p["open"]["blocked"][frozenset(("stripe-connector", "resend-connector"))] == "pending"
+    assert p["open"]["blocked"][frozenset(("calendly-connector", "resend-connector"))] == "sensitive"
+    assert p["open"]["out"] == {"resend-connector"}
+    # the rest still reach each other on the mesh
+    assert ("stripe-connector", "calendly-connector") in pairs
+
+
+def test_an_owner_reconnect_from_the_sensitive_apps_side_opens_the_pair():
+    base = dict(sensitive=["resend-connector"], grants=[("carlos-crm", "resend-connector", "open")])
+    st = _st(**{**base, "grants": base["grants"] + [("resend-connector", "stripe-connector", "owner")]})
+    pairs = reach(net.plan(carlos(), [], set(), state=st, mode="open"))
+    assert ("stripe-connector", "resend-connector") in pairs and ("resend-connector", "stripe-connector") in pairs
+    # an automatic grant of the sensitive app itself (its own declaration) is not the owner's approval
+    st = _st(**{**base, "grants": base["grants"] + [("resend-connector", "stripe-connector", "install")]})
+    assert ("stripe-connector", "resend-connector") not in reach(net.plan(carlos(), [], set(), state=st, mode="open"))
+
+
+def test_declared_mode_is_unchanged_and_open_grants_never_link_there():
+    st = _st(grants=[("calendly-connector", "resend-connector", "open")], sensitive=["resend-connector"], mode="declared")
+    p = net.plan(carlos(), [], set(), state=st, mode="declared")
+    assert net.MESH_NET not in p["networks"]
+    assert ("calendly-connector", "resend-connector") not in reach(p)
+    assert ("calendly-connector", "twenty-crm") in reach(p)
+    assert ("calendly-connector", "stripe-connector") not in reach(p)
+    # declared is the default (no mode recorded, or an App Manager without connection state); open is the owner's choice
+    assert net.connection_mode(None) == "declared" and net.connection_mode({}) == "declared"
+    assert net.connection_mode({"mode": "open"}) == "open" and net.connection_mode({"mode": "declared"}) == "declared"
+    assert net._state_from({"grants": [], "denied": []})["mode"] == "declared"
+    assert net.connection_mode({"mode": "nonsense"}) == "declared"
+
+
+def test_open_mode_scales_to_sixty_apps_with_a_handful_of_networks():
+    apps = _many(60)
+    st = _st(denied=[("app01", "app02"), ("app03", "app02"), ("app10", "app11")], sensitive=["app40"],
+             grants=[(f"app{i:02d}", "app40", "open") for i in range(40)])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    shared = [n for n, v in p["networks"].items() if v["kind"] != "app"]
+    # per-pair networks would be 60*59/2 = 1770; here: the mesh + one link per (app out of the mesh, app it reaches)
+    assert len(shared) < 1 + 3 * 60
+    assert p["open"]["out"] == {"app02", "app40", "app11"} or p["open"]["out"] == {"app02", "app40", "app10"}
+    pairs = reach(p)
+    ids = [a["id"] for a in apps]
+    cut = {frozenset(("app01", "app02")), frozenset(("app03", "app02")), frozenset(("app10", "app11"))}
+    cut |= {frozenset((f"app{i:02d}", "app40")) for i in range(41, 60)}
+    for a in ids:
+        for b in ids:
+            if a != b:
+                assert ((a, b) in pairs) == (frozenset((a, b)) not in cut), (a, b)
+
+
+def test_the_mesh_is_reserved_and_owned_like_every_wam_network():
+    assert net.ours(net.MESH_NET) and not net.ours("wizard-mesh_wizardapps_network")
+    doc = {"services": {"x": {"image": "a", "networks": ["sneak"]}}, "networks": {"sneak": {"external": True, "name": "wizard-mesh"}}}
+    assert any("reserved Wizard network" in r for r in net.host_access(doc))
+    live = {"labels": {net.LABEL: "mesh"}, "internal": True, "subnets": [], "containers": []}
+    assert net.owned_network(net.MESH_NET, live)
+    assert not net.owned_network(net.MESH_NET, {**live, "internal": False})
+    assert not net.owned_network("wizard-core", live)
+    sub = net._free_subnet(["10.255.0.0/27"], ipaddress.IPv4Network("10.255.0.0/16"), set(), net.MESH_PREFIXLEN)
+    assert sub == "10.255.4.0/22"
+
+
+def test_report_and_describe_say_the_mode_plainly(monkeypatch):
+    from types import SimpleNamespace
+    st = _st(denied=[("carlos-crm", "resend-connector")])
+    p = net.plan(carlos(), [], set(), state=st, mode="open")
+    p["state"] = st
+    live = {"networks": {}, "containers": []}
+    rep = net.report(SimpleNamespace(), p=p, live=live)
+    assert rep["mode"] == "open"
+    crm = next(a for a in rep["apps"] if a["id"] == "carlos-crm")
+    assert crm["open"]["unreachable"] == [{"app": "resend-connector", "why": "disconnected"}]
+    text = net.describe(rep)
+    assert "Open: everything is connected unless you disconnect it" in text
+    assert "can reach: every other app except resend-connector (you disconnected it" in text
+    assert "reached by: every other app except resend-connector;" in text
+    from wam import connections
+    assert connections.signature({**st, "mode": "open"}) != connections.signature({**st, "mode": "declared"})
+
+
+def test_wam_network_mode_goes_through_the_owner_api(monkeypatch, capsys):
+    from wam import cli
+    calls = []
+
+    class RT:
+        def req(self, method, path, body=None):
+            calls.append((method, path, body))
+            return {"mode": (body or {}).get("mode", "open"), "grants": [], "denied": []}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(net, "reconcile", lambda *a, **k: {"errors": []})
+    monkeypatch.setattr(cli, "write_registry", lambda c: None)
+    monkeypatch.setattr(cli.release_pins, "load", lambda *a, **k: None)
+    assert cli.main(["network", "mode", "declared"]) == 0
+    assert ("POST", "/apps/wizard/connection-mode", {"mode": "declared"}) in calls
+    assert json.loads(capsys.readouterr().out)["mode"] == "declared"
+    with pytest.raises(SystemExit):
+        cli.main(["network", "mode", "everything"])
+
+
+def test_a_sensitive_apps_own_waiting_request_is_reported_as_waiting():
+    st = _st(sensitive=["resend-connector"], pending=[("resend-connector", "stripe-connector")],
+             grants=[("carlos-crm", "resend-connector", "open"), ("resend-connector", "stripe-connector", "install")])
+    p = net.plan(carlos(), [], set(), state=st, mode="open")
+    assert p["open"]["blocked"][frozenset(("stripe-connector", "resend-connector"))] == "pending"
+    assert ("resend-connector", "stripe-connector") not in reach(p)
+
+
+def test_the_mesh_fits_a_small_configured_pool():
+    n = {"name": net.MESH_NET, "prefixlen": net.MESH_PREFIXLEN, "members": [{}] * 20}
+    small = ipaddress.IPv4Network("10.99.0.0/25")
+    assert net._subnet_for(n, [], small, set()) == "10.99.0.0/25"
+    # takes a smaller free block when the big one is used, as long as every member fits with headroom
+    assert net._subnet_for(n, ["10.99.0.0/26"], small, set()) == "10.99.0.64/26"
+    with pytest.raises(net.NetworkError):
+        net._subnet_for(n, ["10.99.0.0/26", "10.99.0.64/27"], small, set())   # 36 addresses don't fit in a /27
+    assert net._subnet_for({"name": "wizard-link-a--b"}, [], small, set()) == "10.99.0.0/27"
+
+
+def test_a_cut_between_two_published_apps_is_reported_not_claimed():
+    apps = carlos()
+    for a in apps:
+        if a["id"] in ("carlos-crm", "resend-connector", "stripe-connector"):
+            a["services"][a["id"]]["exposed"] = True       # published through Runtipi's reverse proxy
+    st = _st(denied=[("carlos-crm", "resend-connector"), ("carlos-crm", "twenty-crm")])
+    p = net.plan(apps, [], set(), state=st, mode="open")
+    o = p["open"]
+    assert frozenset(("carlos-crm", "resend-connector")) in o["unenforced"]
+    assert frozenset(("carlos-crm", "resend-connector")) not in o["blocked"]
+    assert o["blocked"][frozenset(("carlos-crm", "twenty-crm"))] == "disconnected"   # twenty-crm isn't published: enforced
+    p["state"] = st
+    rep = net.report(__import__("types").SimpleNamespace(), p=p, live={"networks": {}, "containers": []})
+    crm = next(a for a in rep["apps"] if a["id"] == "carlos-crm")
+    assert crm["open"]["unenforced"] == [{"app": "resend-connector", "why": "disconnected"}]
+    assert "NOT CUT: resend-connector" in net.describe(rep)

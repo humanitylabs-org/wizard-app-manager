@@ -53,9 +53,9 @@ html[data-presentation="window"] .wz-head { display: none; }
 
 /* ---------- section label: .ch-sec-h ---------- */
 .wz-sec + .wz-sec { border-top: 1px solid var(--line); }
-.wz-sec-h { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 8px 8px; font-size: 11.5px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
-.wz-sec-h small { font-size: 11.5px; font-weight: 800; letter-spacing: .05em; color: var(--ink-3); }
-.wz-count { margin-left: auto; padding: 1px 8px; border-radius: 99px; font-size: 10.5px; letter-spacing: .04em; color: var(--ink-2); background: var(--fill); }
+.wz-sec-h { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 8px 8px; font-size: var(--wz-text-sm); font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
+.wz-sec-h small { font-size: var(--wz-text-sm); font-weight: 800; letter-spacing: .05em; color: var(--ink-3); }
+.wz-count { margin-left: auto; padding: 1px 8px; border-radius: 99px; font-size: var(--wz-text-sm); letter-spacing: .04em; color: var(--ink-2); background: var(--fill); }
 .wz-count.all { color: var(--on-accent); background: var(--accent); }
 
 /* ---------- rows: .ch-row ---------- */
@@ -87,10 +87,10 @@ html[data-skin="signal"] .wz-check i { border-radius: 2px; }
 /* ---------- single-line add field (forms such as "New habit"; never a chat) ----------
  * .wz-compose / .wz-input / .wz-send are the pre-23 Oct 2026 names, kept so existing apps keep their look. */
 .wz-field-row, .wz-compose { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); }
-.wz-field, .wz-input { flex: 1; min-width: 0; height: 42px; padding: 0 16px; border-radius: var(--r-pill); border: 1px solid var(--line-2); outline: 0; background: var(--fill); color: var(--ink); font-size: 15px; }
+.wz-field, .wz-input { flex: 1; min-width: 0; height: 44px; padding: 0 16px; border-radius: var(--r-pill); border: 1px solid var(--line-2); outline: 0; background: var(--fill); color: var(--ink); font-size: 15px; }
 .wz-field::placeholder, .wz-input::placeholder { color: var(--ink-3); }
 .wz-field:focus, .wz-input:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
-.wz-field-go, .wz-send { flex: none; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); transition: opacity 140ms, transform 140ms; }
+.wz-field-go, .wz-send { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); transition: opacity 140ms, transform 140ms; }
 html[data-skin="signal"] :is(.wz-field-go, .wz-send) { border-radius: 2px; }
 :is(.wz-field-go, .wz-send) svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; }
 :is(.wz-field-go, .wz-send):disabled { opacity: .4; cursor: default; }
@@ -111,20 +111,23 @@ html.wz-hosted #wiz-staging-tag { display: none !important; }
 .wz-card > :first-child { margin-top: 0; } .wz-card > :last-child { margin-bottom: 0; }
 .wz-chip { display: inline-flex; align-items: center; gap: var(--wz-space-2); padding: 4px 10px; border-radius: var(--r-pill); background: var(--fill); color: var(--ink-2); font-size: 13px; }
 .wz-bar { display: flex; align-items: center; gap: var(--wz-space-2); padding: 8px 10px; background: var(--wz-chrome); border-bottom: 1px solid var(--line); backdrop-filter: blur(16px); }
-.wz-button { min-height: 44px; padding: 8px 16px; border-radius: var(--r-tile); background: var(--accent); color: var(--on-accent); font-weight: 600; }
-.wz-button.secondary { background: var(--fill); color: var(--ink); border: 1px solid var(--line-2); }
+.wz-button { display: inline-flex; align-items: center; justify-content: center; border: 0; font: inherit; text-decoration: none; cursor: pointer; box-sizing: border-box; min-height: 44px; padding: 8px 16px; border-radius: var(--r-tile); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.wz-button.secondary, .wz-button.quiet { background: var(--fill); color: var(--ink); border: 1px solid var(--line-2); }
 .wz-button:disabled { opacity: .45; cursor: default; }
 /* ---------- layout helpers (rules 1, 2, 5) ---------- */
 .wz-grid { display: grid; gap: var(--wz-space-3); grid-template-columns: 1fr; }
 @container wz-app (min-width: 600px) { .wz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @container wz-app (min-width: 960px) { .wz-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); } }
 .wz-prose { max-width: 72ch; }
-.wz-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: var(--r-pill); font-size: 12.5px; font-weight: 650; color: var(--ink-2); background: var(--fill); white-space: nowrap; }
+.wz-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: var(--r-pill); font-size: 13px; font-weight: 650; color: var(--ink-2); background: var(--fill); white-space: nowrap; }
 .wz-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .wz-pill.ok { color: var(--wz-success, var(--accent)); }
 .wz-pill.warn { color: var(--wz-warning, var(--danger)); }
+/* Light schemes: deep green and burnt orange that pass 4.5:1 on pale pages (white, cream, sepia). */
+html[data-color-scheme="light"] .wz-pill.ok { color: var(--wz-success-light, var(--ink)); }
+html[data-color-scheme="light"] .wz-pill.warn { color: var(--wz-warning-light, var(--ink)); }
 .wz-pill.off { color: var(--ink-3); }
-.wz-meter { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-3); }
+.wz-meter { display: grid; gap: 4px; font-size: 13px; color: var(--ink-3); }
 .wz-meter > i { display: block; height: 6px; border-radius: 3px; background: var(--fill-2); overflow: hidden; }
 .wz-meter > i > b { display: block; height: 100%; width: var(--v, 0%); border-radius: inherit; background: var(--accent); }
 .wz-conn { display: flex; align-items: center; gap: var(--wz-space-3); padding: var(--wz-space-4); border: 1px solid var(--line); border-radius: var(--r); background: var(--fill); }
@@ -138,9 +141,10 @@ html.wz-hosted #wiz-staging-tag { display: none !important; }
 .wz-more > summary::-webkit-details-marker { display: none; }
 
 /* ---------- the one pop-up (rule 4): bottom sheet when narrow, centred card when wide. Behaviour: style/sheet.js ---------- */
-.wz-sheet { color: var(--ink); background: var(--wz-overlay); border: 1px solid var(--line-2); border-radius: var(--r); padding: var(--wz-space-4); width: min(520px, calc(100% - 24px)); max-width: none; max-height: 85%; overflow: auto; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.wz-sheet { color: var(--ink); background: var(--wz-panel); border: 1px solid var(--line-2); border-radius: var(--r); padding: var(--wz-space-4); width: min(520px, calc(100% - 24px)); max-width: none; max-height: 85%; overflow: auto; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .wz-sheet::backdrop { background: color-mix(in srgb, var(--wz-base) 74%, transparent); }
 .wz-sheet-x { position: sticky; top: 0; float: right; width: 36px; height: 36px; margin: -6px -6px 0 8px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-2); background: var(--fill); font-size: 18px; line-height: 1; z-index: 1; }
+.wz-sheet-x::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; } /* 44px touch target (APP-DESIGN-RULES rule 6) around the 36px visual */
 .wz-sheet-grip { display: none; }
 .wz-sheet > h2 { margin: 0 0 var(--wz-space-3); font-size: 17px; font-weight: 700; }
 @media (max-width: 599px) {
@@ -149,3 +153,17 @@ html.wz-hosted #wiz-staging-tag { display: none !important; }
   .wz-sheet-grip { display: block; width: 40px; height: 5px; margin: 4px auto 10px; border-radius: 3px; background: var(--line-2); touch-action: none; }
 }
 @keyframes wz-sheet-up { from { transform: translateY(40px); opacity: .6; } }
+
+/* Shared control variants; do not redraw in apps. */
+.wz-button.destructive { background: color-mix(in srgb, var(--wz-danger) 16%, var(--wz-base)); color: var(--wz-danger); border: 1px solid var(--wz-danger); }
+.wz-icon-button { display: inline-grid; place-items: center; min-width: var(--wz-target); min-height: var(--wz-target); border-radius: var(--wz-radius-tile); background: var(--wz-surface); color: var(--wz-text); }
+.wz-icon-button svg { width: var(--wz-icon-size); height: var(--wz-icon-size); }
+.wz-pill.error { color: var(--wz-danger); }
+
+/* Captioned media actions reuse the same target; no opaque tile over imagery. */
+.wz-icon-button.ghost { background: none; }
+.wz-icon-button.caption { display: inline-flex; flex-direction: column; justify-content: center; gap: var(--wz-space-1); white-space: nowrap; font-size: var(--wz-text-sm); }
+.wz-icon-button.caption :is(span, small) { font-size: var(--wz-text-sm); white-space: nowrap; }
+
+/* Native hidden state must beat authored display rules on shared controls. */
+.wz-button[hidden], .wz-row[hidden], .wz-icon-button[hidden], .wz-input[hidden] { display: none !important; }

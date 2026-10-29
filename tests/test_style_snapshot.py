@@ -102,6 +102,9 @@ def test_template_add_field_uses_look_only_names():
 
 def test_design_rules_template_is_clean_and_breaks_warn(tmp_path):
     app = builder.new_app('design-rules', tmp_path, 'A design-rules app')
+    # This fixture exercises an existing non-Git import. Generated apps are now
+    # strict (covered in test_style_gate); legacy design guidance still warns.
+    (app / '.builder.json').unlink()
     assert builder.design_rows(app) == []
     web = app / 'web'
     (web / 'styles.css').write_text((web / 'styles.css').read_text()
@@ -138,3 +141,16 @@ def test_design_rules_skip_vendored_and_find_the_top_frame(tmp_path):
     (app / 'src').mkdir()
     (app / 'src/View.tsx').write_text('export const ask = () => window.confirm("Sure?")\n')
     assert 'src/View.tsx' in builder.design_rows(app)[-1]['detail']
+
+
+def test_unguarded_shell_calls_warn_and_guarded_ones_pass(tmp_path):
+    app = builder.new_app('shell-compat', tmp_path, 'A shell-compat app')
+    web = app / 'web'
+    (web / 'reply.js').write_text("button.onclick = () => window.WizardApp.nav.openContextDraft({id: 'a'});\n")
+    rows = [r for r in builder.design_rows(app) if r['rule'] == 'compatibility: works on every Wizard']
+    assert rows and 'web/reply.js: WizardApp.nav.openContextDraft' in rows[0]['detail'] and rows[0]['severity'] == 'warning'
+    (web / 'reply.js').write_text("const ok = typeof window.WizardApp?.nav?.openContextDraft === 'function';\n"
+                                  "if (ok) window.WizardApp.nav.openContextDraft({id: 'a'});\n")
+    assert not [r for r in builder.design_rows(app) if r['rule'].startswith('compatibility')]
+    (web / 'reply.js').write_text("window.WizardApp?.chat?.prompt('hi');\n")
+    assert not [r for r in builder.design_rows(app) if r['rule'].startswith('compatibility')]

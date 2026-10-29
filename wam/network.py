@@ -35,9 +35,14 @@ from pathlib import Path
 
 import yaml
 
+from . import kinds
+
 SHARED = "tipi_main_network"                 # Runtipi's logical name for the shared network in generated composes
 SHARED_DOCKER = "runtipi_tipi_main_network"  # and its Docker name (RUNTIPI_DOCKER_NETWORK can change it)
 APP_PREFIX, LINK_PREFIX, GW_PREFIX, CORE_NET = "wizard-app-", "wizard-link-", "wizard-gw-", "wizard-core"
+MESH_NET = "wizard-mesh"                       # open mode: every app that may reach every other app (docs/APP_NETWORKS.md)
+MESH_PREFIXLEN = 22                            # room for ~1000 app services on the one mesh network
+MODES = ("open", "declared")                   # declared (default): apps reach only what they are connected to
 LABEL = "org.wizard-os.network"              # kind: app | link | gateway | core
 MARK = "x-wizard-networks"                   # top-level key in the override: what wam set (so it can be removed)
 HEADER = "# App networks: the block marked x-wizard-networks is written by wam (`wam network reconcile`).\n"
@@ -51,7 +56,7 @@ class NetworkError(RuntimeError):
     pass
 
 
-OURS = re.compile(r"(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core)")
+OURS = re.compile(r"(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core|wizard-mesh)")
 
 
 def ours(name: str) -> bool:
@@ -300,6 +305,28 @@ def override_path(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "user-config" / store / app_id / "docker-compose.yml"
 
 
+def source_services(doc: dict) -> dict:
+    """Match ComposeBuilder: active-architecture mappings merge, arrays replace."""
+    import copy
+    services = copy.deepcopy(_plain(doc.get("services")) or {})
+    overrides = (_plain(doc.get("x-runtipi")) or {}).get("overrides") or []
+    if not overrides:
+        return services
+    from .test_catalog import host_architecture
+    architecture = host_architecture()
+    override = next((o for o in overrides if o.get("architecture") == architecture), {})
+
+    def merge(base, incoming):
+        if isinstance(base, dict) and isinstance(incoming, dict):
+            result = copy.deepcopy(base)
+            for key, value in incoming.items():
+                result[key] = merge(result.get(key), value)
+            return result
+        return copy.deepcopy(incoming)
+
+    return merge(services, override.get("services") or {})
+
+
 def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -> dict | None:
     """One installed (or about-to-be-installed) Wizard app as the planner needs it. Prefers the compose Runtipi
     generated (what actually runs), else the recipe from the installed or store copy (before the first install)."""
@@ -320,7 +347,7 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
         return {"id": app_id, "custom": f"compose does not parse ({str(e)[:80]})", "services": {}, "uses": []}
     w = _front(wm.read_text()) if wm else {}
     req = w.get("requires") if isinstance(w.get("requires"), dict) else {}
-    rsvcs = rdoc.get("services") or {}
+    rsvcs = source_services(rdoc)
     multi = len([s for s in rsvcs.values() if s]) > 1
     services = {}
     for name, rs in rsvcs.items():
@@ -350,7 +377,9 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
             return str(d.get("name")) if isinstance(d, dict) and d.get("name") else f"{app_id}_{store}_{logical}"
         services[name] = {
             "docker_networks": sorted(docker_name(k) for k in nets if k != SHARED),
-            "main": bool(xr.get("is_main")),
+            "main": xr.get("is_main") is True,
+            "internal_port": xr.get("internal_port"),
+            "source_network_mode_present": "network_mode" in rs,
             "on_shared": SHARED in nets or bool(xr.get("is_main") or xr.get("add_to_main_network")) and not nm,
             "network_mode": nm,
             "networks": {k: v for k, v in nets.items()},
@@ -359,7 +388,7 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
     uses = [str(u) for u in (w.get("uses") or []) if isinstance(u, str)]
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
-           "host_access": host_access(rdoc, app_id, store)}
+           "host_access": host_access(rdoc, app_id, store), "wizard": kinds.fields(w)}
     taken = sorted({n for s in services.values() for n in s["docker_networks"] if ours(n)})
     if taken:   # a recipe must never attach itself to a link or gateway network: refused at install, never isolated
         out["custom"] = f"its compose attaches to reserved Wizard networks ({', '.join(taken)})"
@@ -421,15 +450,62 @@ def _gname(to: str) -> str:
     return str(to).removeprefix("slot:")
 
 
+def _controls(apps, by_id, state, ok_grants, grant_target, resolve) -> list[dict]:
+    """One row per connection the owner can act on: {from, to (the grant's target), providers, status, origin}.
+    status: connected | disconnected (the owner's sticky Disconnect or Deny) | pending (waits for the owner: its provider
+    is sensitive) | not-approved (an App Manager without connection state). origin: declared (wizard.md uses/requires),
+    requested (the app asked at runtime) or owner (the owner connected it)."""
+    def app_rows(key):
+        return [g for g in ((state or {}).get(key) or []) if isinstance(g, dict) and g.get("kind", "app") == "app"
+                and g.get("from") in by_id and isinstance(g.get("to"), str)]
+    granted = {(g["from"], g["to"]): g for g in app_rows("grants")}
+    denied = {(g["from"], g["to"]): g for g in app_rows("denied")}
+    pending = {(g["from"], g["to"]): g for g in app_rows("pending")}
+    rows: dict[tuple, dict] = {}
+
+    def row(frm: str, to: str, origin: str) -> None:
+        rows.setdefault((frm, to), {"from": frm, "to": to, "origin": origin})
+    for a in apps:
+        for u in a.get("uses") or []:
+            row(a["id"], grant_target(u), "declared")
+        if a.get("router"):
+            row(a["id"], "slot:connection-router", "declared")
+    for k, g in [*granted.items(), *denied.items(), *pending.items()]:
+        if g.get("approved") == "install" and k not in rows and k not in denied:
+            continue   # an automatic grant whose declaration an update dropped: no connection
+        row(k[0], k[1], "requested" if g.get("reason") == "request" else
+            "declared" if g.get("reason") in ("uses", "requires") else "owner")
+    out = []
+    for (frm, to), r in rows.items():
+        if (frm, to) in pending:
+            status = "pending"
+        elif (frm, to) in denied:
+            status = "disconnected"
+        elif state is not None and (frm, to) in granted:
+            status = "connected"
+        elif state is None and (ok_grants is None or (frm, to) in ok_grants):
+            status = "connected"
+        else:
+            status = "not-approved"
+        provs, _ = resolve(to)
+        out.append({**r, "providers": [x for x in provs if x != frm], "status": status,
+                    "at": ((pending.get((frm, to)) or denied.get((frm, to)) or granted.get((frm, to)) or {}).get("created_at"))})
+    return sorted(out, key=lambda r: (r["from"], r["to"]))
+
+
 def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: bool = True,
-         slot_choice: dict | None = None, multi_slots=None, approved: list | None = None) -> dict:
+         slot_choice: dict | None = None, multi_slots=None, approved: list | None = None,
+         state: dict | None = None, mode: str = "declared") -> dict:
     """Desired topology. `apps`: read_app() records; `grants`: apps.json grants; `external_slots`: slots filled from
     outside Runtipi (alongside: the host's Hermes), by slot name and by the app id that normally fills it.
     `approved`: the App Manager's approved grants when known (wizard-grants.json). Then a `uses` / `requires`
     declaration links only while its grant is approved: the App Manager approves it at install, and the owner's
     revoke (`wam grants revoke`) takes the network away too. A grant the App Manager approved automatically for a
     declaration (approved: install) never links on its own, so dropping the declaration in an update drops the link;
-    an owner's grant (approved: owner) does. Returns {apps, networks, edges, gateway}."""
+    an owner's grant (approved: owner) does. `mode`: "declared" (only declared / approved connections link) or "open"
+    (every app reaches every app except the pairs the owner disconnected and unapproved connections to sensitive apps;
+    see open_topology()). Returns {apps, networks, edges, gateway, mode, open}."""
+    mode = mode if mode in MODES else "declared"
     by_id = {a["id"]: a for a in apps}
     external_slots = set(external_slots or ())
     for a in apps:
@@ -484,11 +560,16 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
         same name are different grants."""
         return to if to.startswith("slot:") or to in by_id else f"slot:{to}"
 
+    held = {(str(g.get("from")), g.get("to")): k for k in ("pending", "denied")
+            for g in ((state or {}).get(k) or []) if isinstance(g, dict) and g.get("kind", "app") == "app"}
+
     def add(frm: str, to: str, reason: str) -> None:
-        if ok_grants is not None and reason in ("uses", "requires") and (frm, grant_target(to)) not in ok_grants:
+        if (mode != "open" and ok_grants is not None and reason in ("uses", "requires")
+                and (frm, grant_target(to)) not in ok_grants):
             if (frm, to) not in seen:
                 seen.add((frm, to))
-                edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": "not-approved"})
+                why = {"pending": "pending", "denied": "disconnected"}.get(held.get((frm, grant_target(to))), "not-approved")
+                edges.append({"from": frm, "to": to, "provider": None, "reason": reason, "state": why})
             return
         targets, state = resolve(to)
         if not targets:
@@ -509,8 +590,13 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             add(a["id"], "slot:connection-router", "requires")
     for g in grants or []:
         if (isinstance(g, dict) and g.get("kind", "app") == "app" and g.get("from") in by_id and isinstance(g.get("to"), str)
-                and g.get("approved") != "install"):   # automatic grants follow their declaration (see above)
+                and g.get("approved") not in ("install", "open")):   # automatic grants follow their declaration (see
+            # above); an open-mode grant (approved: open) only keeps a sensitive app's existing connection, never a link
             add(g["from"], g["to"], "grant")
+    # The owner's control panel (the Connections view, `wam connections`): every connection an app has, had or asks
+    # for, by grant (consumer, grant target), with its status. A declared or requested connection is approved by the App
+    # Manager automatically unless the owner disconnected it (sticky) or its provider is sensitive (pending).
+    controls = _controls(apps, by_id, state, ok_grants, grant_target, resolve)
 
     nets: dict[str, dict] = {}
 
@@ -535,6 +621,9 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
     part = {a["id"]: a for a in apps if a["state"] in ("isolated", "exposed")}
     for a in iso.values():
         member(app_net(a["id"]), "app", a, svc_members(a), False, owner=a["id"])
+    opened = (open_topology(part, core, state, resolve,
+                            shared={i for i, a in part.items() if any(keeps_shared(a, s) for s in a["services"])})
+              if (on and mode == "open") else None)
     for e in edges:
         c, p = part.get(e["from"]), part.get(e["provider"] or "")
         if not e["provider"]:
@@ -548,11 +637,31 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             if c["id"] in core and p["id"] in core:
                 e["network"] = CORE_NET
             continue
+        if opened is not None:   # open mode: the pair's path is the mesh or its open link (below), unless cut
+            pair = frozenset((c["id"], p["id"]))
+            if pair in opened["blocked"]:
+                e["state"], e["network"] = opened["blocked"][pair], None
+            elif pair in opened["unenforced"]:
+                e["state"], e["network"] = "shared-network", None
+            elif c["id"] in opened["mesh"] and p["id"] in opened["mesh"]:
+                e["state"], e["network"] = "mesh", MESH_NET
+            else:
+                e["state"], e["network"] = "link", opened["links"][pair]
+            continue
         name = link_name(c["id"], p["id"])
         e["state"], e["network"] = "link", name
         member(name, "link", c, svc_members(c), False, consumer=c["id"], provider=p["id"])
         mp = main_of(p)
         member(name, "link", p, [mp] if mp else [], True, consumer=c["id"], provider=p["id"])
+    if opened is not None:
+        if len(opened["mesh"]) > 1:
+            for i in sorted(opened["mesh"]):
+                member(MESH_NET, "mesh", part[i], svc_members(part[i]), True)
+            nets[MESH_NET]["prefixlen"] = MESH_PREFIXLEN
+        for pair, name in sorted(opened["links"].items(), key=lambda kv: kv[1]):
+            x, y = opened["link_ends"][name]
+            for side in (x, y):   # both ends answer by their app id: either may open the connection
+                member(name, "link", part[side], svc_members(part[side]), True, consumer=x, provider=y)
     if gateway["path"] == "network":
         cores = [part[c] for c in core_bridge]
         for c in cores:
@@ -573,7 +682,77 @@ def plan(apps: list[dict], grants: list | None = None, external_slots=None, on: 
             if m["service"] in a.get("want", {}):
                 cur = a["want"][m["service"]].setdefault(n["name"], [])
                 a["want"][m["service"]][n["name"]] = sorted(set(cur) | set(m["aliases"]))
-    return {"apps": apps, "networks": nets, "edges": edges, "gateway": gateway, "enabled": on}
+    return {"apps": apps, "networks": nets, "edges": edges, "gateway": gateway, "enabled": on, "controls": controls,
+            "mode": mode, "open": opened}
+
+
+def open_topology(part: dict, core, state: dict | None, resolve, shared=frozenset()) -> dict:
+    """Open mode (the default): every app reaches every other app, except
+    - a pair the owner disconnected (a `denied` row, either direction: Docker networks are two-way, so a Disconnect cuts
+      the pair both ways), and
+    - a connection to an app marked sensitive that the owner has not approved: the apps connected when it was marked
+      sensitive keep a grant (approved: open, written by the App Manager), anything newer waits in `pending`.
+    Docker can't subtract one pair from a shared network, and one network per pair is N*(N-1)/2 networks (528 for 33
+    apps, 1770 for 60), which crowds Docker and the address pool. So: one internal `wizard-mesh` network for every app
+    with no cut pair; a vertex cover of the cut pairs (sensitive apps first, then the app that is cut most often) leaves
+    the mesh, and each of those gets one internal link per app it may still reach. Networks = 1 + about
+    (apps out of the mesh) x (apps). The gateway components (fresh boxes: shell, Agent Service, agent) keep their
+    gateway networks and never join the mesh.
+    `shared`: apps that keep Runtipi's shared network (a service published through the reverse proxy). Two of them still
+    meet there, so a cut between them can't be enforced: it is reported under `unenforced`, never claimed as blocked.
+    Returns {mesh: set, out: set, blocked: {frozenset(pair): why}, links: {frozenset(pair): network}, link_ends,
+    unenforced: {frozenset(pair): why}}."""
+    peers = sorted(i for i in part if i not in set(core))
+    sensitive = set((state or {}).get("sensitive") or []) & set(peers)
+
+    def rows(key):
+        return [g for g in ((state or {}).get(key) or []) if isinstance(g, dict) and g.get("kind", "app") == "app"
+                and isinstance(g.get("from"), str) and isinstance(g.get("to"), str)]
+
+    def provs(to: str) -> set:
+        return set(resolve(to)[0])
+    blocked: dict[frozenset, str] = {}
+    cut_as_provider: dict[str, int] = {}
+    for g in rows("denied"):
+        for p in provs(g["to"]):
+            if g["from"] != p and g["from"] in peers and p in peers:
+                blocked[frozenset((g["from"], p))] = "disconnected"
+                cut_as_provider[p] = cut_as_provider.get(p, 0) + 1
+    granted = {(g["from"], p) for g in rows("grants") for p in provs(g["to"])}
+    # The owner's own approval counts in either direction (the network is two-way): a Reconnect made from the
+    # sensitive app's card is stored as sensitive -> peer. Automatic grants of the sensitive app itself do not.
+    by_owner = {(g["from"], p) for g in rows("grants") if g.get("approved") == "owner" for p in provs(g["to"])}
+    waiting = {(g["from"], p) for g in rows("pending") for p in provs(g["to"])}
+    for s in sorted(sensitive):
+        for x in peers:
+            pair = frozenset((x, s))
+            if x != s and pair not in blocked and (x, s) not in granted and (s, x) not in by_owner:
+                blocked[pair] = "pending" if ((x, s) in waiting or (s, x) in waiting) else "sensitive"
+    unenforced = {pr: why for pr, why in blocked.items() if pr <= set(shared)}
+    for pr in unenforced:
+        del blocked[pr]
+    # Who leaves the mesh: every sensitive app (its reach is per approval), then a greedy cover of the remaining cuts.
+    out = set(sensitive)
+    left = [pr for pr in blocked if not (pr & out)]
+    while left:
+        deg: dict[str, int] = {}
+        for pr in left:
+            for x in pr:
+                deg[x] = deg.get(x, 0) + 1
+        pick = sorted(deg, key=lambda x: (-deg[x], -cut_as_provider.get(x, 0), x))[0]
+        out.add(pick)
+        left = [pr for pr in left if pick not in pr]
+    mesh = set(peers) - out
+    links, ends = {}, {}
+    for x in sorted(out):
+        for y in peers:
+            pair = frozenset((x, y))
+            if x == y or pair in blocked or pair in links:
+                continue
+            a, b = sorted((x, y))
+            name = link_name(a, b)
+            links[pair], ends[name] = name, (a, b)
+    return {"mesh": mesh, "out": out, "blocked": blocked, "links": links, "link_ends": ends, "unenforced": unenforced}
 
 
 def keeps_shared(a: dict, service: str) -> bool:
@@ -739,23 +918,75 @@ def ports_answer(ports, timeout: float = 3.0, tries: int = 5) -> bool:
     return True
 
 
-def _free_subnet(used: list[str], pool_net: ipaddress.IPv4Network, taken: set) -> str:
+def _free_subnet(used: list[str], pool_net: ipaddress.IPv4Network, taken: set, prefixlen: int = PREFIXLEN) -> str:
     busy = []
     for s in list(used) + list(taken):
         try:
             busy.append(ipaddress.ip_network(s, strict=False))
         except ValueError:
             continue
-    for cand in pool_net.subnets(new_prefix=PREFIXLEN):
+    if prefixlen < pool_net.prefixlen:
+        raise NetworkError(f"{pool_net} is smaller than a /{prefixlen} (set network_pool in app-manager.json)")
+    for cand in pool_net.subnets(new_prefix=prefixlen):
         if not any(cand.overlaps(b) for b in busy):
             return str(cand)
-    raise NetworkError(f"no free /{PREFIXLEN} left in {pool_net} for app networks (set network_pool in app-manager.json)")
+    raise NetworkError(f"no free /{prefixlen} left in {pool_net} for app networks (set network_pool in app-manager.json)")
+
+
+def _subnet_for(n: dict, used, pool_net: ipaddress.IPv4Network, taken: set) -> str:
+    """A link or app network gets a /27. The mesh asks for a /22 (room to grow) but takes the largest free block that
+    fits the configured pool and still holds every member with headroom, so a box with a small `network_pool` keeps
+    working when open mode becomes the default."""
+    want = int(n.get("prefixlen") or PREFIXLEN)
+    if want == PREFIXLEN:
+        return _free_subnet(used, pool_net, taken)
+    need = len(n.get("members") or []) + 16                                     # members + headroom + gateway
+    smallest = min(PREFIXLEN, 32 - max(need + 1, 2).bit_length())              # the smallest block that holds them
+    err = None
+    for pl in range(max(want, pool_net.prefixlen), smallest + 1):
+        try:
+            return _free_subnet(used, pool_net, taken, pl)
+        except NetworkError as e:
+            err = e
+    raise err or NetworkError(f"no room for {n.get('name')} in {pool_net} (set network_pool in app-manager.json)")
 
 
 def _bridged(container: dict) -> bool:
     """A container that can join networks (not host / none / another container's or service's namespace)."""
     nm = str(container.get("network_mode") or "")
     return nm not in ("host", "none") and not nm.startswith(("container:", "service:"))
+
+
+def network_owned_by(planned: dict, live: dict | None) -> bool:
+    """Full ownership identity; a generic management-kind label is not authority."""
+    return bool(live and (live.get("labels") or {}).get(LABEL) == planned["kind"] and
+                all((live.get("labels") or {}).get(k) == v for k, v in planned["labels"].items()))
+
+
+def network_matches(planned: dict, live: dict | None) -> bool:
+    """Match identity and shape consistently in reconciliation, drift and reporting."""
+    return live is not None and network_owned_by(planned, live) and live.get("internal") == planned["internal"]
+
+
+def owned_network(name: str, live: dict) -> bool:
+    """An orphan is ours only when its complete labels identify this canonical name."""
+    labels = live.get("labels") or {}
+    kind = labels.get(LABEL)
+    expected = {LABEL: kind}
+    if kind in ("app", "gateway"):
+        owner = labels.get("org.wizard-os.owner")
+        if not isinstance(owner, str) or not ID.fullmatch(owner) or name != (app_net(owner) if kind == "app" else gw_net(owner)):
+            return False
+        expected["org.wizard-os.owner"] = owner
+    elif kind == "link":
+        consumer, provider = labels.get("org.wizard-os.consumer"), labels.get("org.wizard-os.provider")
+        if (not isinstance(consumer, str) or not ID.fullmatch(consumer) or
+                not isinstance(provider, str) or not ID.fullmatch(provider) or name != link_name(consumer, provider)):
+            return False
+        expected.update({"org.wizard-os.consumer": consumer, "org.wizard-os.provider": provider})
+    elif not ((kind == "core" and name == CORE_NET) or (kind == "mesh" and name == MESH_NET)):
+        return False
+    return network_matches({"kind": kind, "internal": kind != "app", "labels": expected}, live)
 
 
 def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
@@ -767,7 +998,8 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
         for c in live["containers"]:
             if c["urn"] != urn or not c["running"]:
                 continue
-            have = {k for k in c["networks"] if ours(k)}
+            have = {k for k in c["networks"] if ours(k) and
+                    (k not in p["networks"] or k not in live["networks"] or network_matches(p["networks"][k], live["networks"][k]))}
             want = set((a.get("want") or {}).get(c["service"]) or {})
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
@@ -806,25 +1038,85 @@ def approved_grants(c, rt) -> list | None:
         return None
 
 
+def _state_from(doc: dict) -> dict:
+    lst = lambda k: [g for g in (doc.get(k) or []) if isinstance(g, dict)] if isinstance(doc.get(k), list) else []  # noqa: E731
+    return {"grants": lst("grants"), "denied": lst("denied"), "pending": lst("pending"),
+            "sensitive": sorted({x for x in (doc.get("sensitive") or []) if isinstance(x, str) and ID.fullmatch(x)})
+            if isinstance(doc.get("sensitive"), list) else [],
+            "notices": lst("notices")[-50:], "updated_at": doc.get("updated_at"),
+            # The owner's connection mode (App Manager → Connections, `wam network mode`): declared (apps stay apart
+            # unless connected) unless they chose open. Same default as the App Manager's modeOf.
+            "mode": "open" if doc.get("mode") == "open" else "declared"}
+
+
+def connection_state(c, rt) -> dict | None:
+    """The App Manager's connection state: approved grants, the owner's Disconnects (denied), requests waiting for
+    the owner (pending), sensitive apps and recent notices. wizard-grants.json when readable, else its owner API
+    (GET /apps/wizard/connections); None on an App Manager that has neither."""
+    try:
+        doc = json.loads((Path(c.runtipi_root) / "state" / "wizard-grants.json").read_text())
+        if isinstance(doc, dict) and isinstance(doc.get("grants"), list) and isinstance(doc.get("denied"), list):
+            return _state_from(doc)
+    except (OSError, ValueError):
+        pass
+    try:
+        got = (rt or c.runtipi()).req("GET", "/apps/wizard/connections")
+        if isinstance(got, dict) and isinstance(got.get("grants"), list):
+            return _state_from(got)
+    except Exception:  # noqa: BLE001 - an older App Manager
+        pass
+    return None
+
+
+def connection_mode(state: dict | None) -> str:
+    """Declared (the default: apps can't talk to each other unless connected) or open: the owner's choice, kept by the
+    App Manager with the other connection decisions. An App Manager without connection state has no mode: declared."""
+    return "open" if (state or {}).get("mode") == "open" else "declared"
+
+
 def _context(c, rt=None, extra=()):
     """(installed ids, grants, external slots, mode) for the planner, from the App Manager and wam's own files."""
     from . import alongside
     from .cli import STORE, installed_ids, read_grants
     rt = rt or c.runtipi()
     ids = installed_ids(rt)
-    approved = grants = approved_grants(c, rt)
+    state = connection_state(c, rt)
+    approved = grants = state["grants"] if state is not None else approved_grants(c, rt)
     if grants is None:
         grants = read_grants(c, rt)
     from . import slots
     ext = set(alongside.external_slots(c.home))
     defaults = slots.load_defaults()
     ext |= {(defaults.get(s_) or {}).get("app") for s_ in list(ext)} - {None}
-    return rt, ids | set(extra), grants, ext, STORE, approved
+    return rt, ids | set(extra), grants, ext, STORE, approved, state
+
+
+def published_urns(rt) -> set[str]:
+    """Unreadable or malformed lifecycle state authorizes no publication."""
+    try:
+        rows = rt.installed()
+    except Exception:  # noqa: BLE001 - an unavailable owner record is not permission
+        return set()
+    if not isinstance(rows, (list, tuple)):
+        return set()
+    return {r["info"]["urn"] for r in rows if isinstance(r, dict) and isinstance(r.get("info"), dict)
+            and isinstance(r["info"].get("urn"), str) and isinstance(r.get("app"), dict)
+            and (r["app"].get("exposed") is True or r["app"].get("exposedLocal") is True)}
 
 
 def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict, str]:
-    rt, ids, grants, ext, store, approved = _context(c, rt, extra)
+    ctx = _context(c, rt, extra)
+    rt, ids, grants, ext, store, approved = ctx[:6]
+    state = ctx[6] if len(ctx) > 6 else None
     apps = read_apps(c.runtipi_root, store, ids, fresh=fresh)
+    # Generated labels may predate the start gate or come from a malicious recipe. Only the App Manager's
+    # owner-configured lifecycle state can publish an app; do not let the watcher rejoin it from labels alone.
+    published = published_urns(rt)
+    for a in apps:
+        for service in a["services"].values():
+            service["exposed"] = (f"{a['id']}:{store}" in published and service.get("main", False) and
+                                  bool(service.get("internal_port")) and not service.get("source_network_mode_present", False)
+                                  and not service.get("network_mode"))
     from . import slots as _slots
     try:
         chosen = {k: v.get("default") for k, v in (json.loads((c.home / "apps.json").read_text()).get("slots") or {}).items()
@@ -832,8 +1124,10 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
     except (OSError, ValueError):
         chosen = {}
     multi = {k for k, v in _slots.load_defaults().items() if (v or {}).get("multi")}
-    return plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
-                approved=approved), store
+    p = plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
+             approved=approved, state=state, mode=connection_mode(state))
+    p["state"] = state
+    return p, store
 
 
 def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), restart_fn=None, on: bool | None = None,
@@ -882,16 +1176,16 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     the_pool, taken, rejected = pool(c.home), set(), set()
     for name, n in sorted(p["networks"].items()):
         have = live["networks"].get(name)
-        if have and have["internal"] == n["internal"] and have["labels"].get(LABEL) == n["kind"]:
+        if network_matches(n, have):
             continue
-        if have:   # same name, wrong shape (or not ours): replace only if it is ours and empty
-            if have["labels"].get(LABEL) and not have["containers"]:
+        if have:   # only our exact ownership identity may replace an empty network with the wrong shape
+            if network_owned_by(n, have) and not have["containers"]:
                 _run(docker, "network", "rm", name, check=False)
             else:
                 out["errors"].append(f"{name}: a different network with this name exists; not touched")
                 rejected.add(name)
                 continue
-        sub = _free_subnet(used, the_pool, taken)
+        sub = _subnet_for(n, used, the_pool, taken)
         taken.add(sub)
         args = ["network", "create", "--driver", "bridge", "--subnet", sub]
         if n["internal"]:
@@ -997,7 +1291,7 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
     for name, n in sorted(live["networks"].items()):
-        if n["labels"].get(LABEL) and ours(name) and name not in p["networks"] and name not in rejected:
+        if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             r = _run(docker, "network", "rm", name, check=False)
@@ -1107,11 +1401,16 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
     for r in rows:
         by_app.setdefault(r["app"], []).append(r)
     apps = []
+    invalid_networks = {name for name, planned in p["networks"].items()
+                        if name in live["networks"] and not network_matches(planned, live["networks"][name])}
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
+    box_kinds = kinds.box_kinds(getattr(c, "home", None))   # the owner's own groups (app-kinds.json)
     for a in p["apps"]:
         out_edges = [e for e in p["edges"] if e["from"] == a["id"]]
         in_edges = [e for e in p["edges"] if e.get("provider") == a["id"]]
-        problems = []
+        problems = [f"{name}: a different network with this name exists (wrong ownership or internal flag)"
+                    for name in sorted(invalid_networks)
+                    if any(m["app"] == a["id"] for m in p["networks"][name]["members"])]
         for r in by_app.get(a["id"], []):
             if r["on_shared"] and not r["should_share"] and a["state"] in ("isolated", "exposed"):
                 problems.append(f"{r['service']} is still on the shared network (every app can reach it)")
@@ -1142,6 +1441,13 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             gw = "on its published 127.0.0.1 port"
         apps.append({
             "id": a["id"], "name": a.get("name") or a["id"], "state": a["state"], "why": a.get("why") or "",
+            # the group the Connections map shows it in (wam/kinds.py): agent | app | agent-app | connector; Wizard's
+            # own core carries the "comes with Wizard" badge (builtin) wherever the rule puts it
+            "kind": kinds.kind_of(a.get("wizard"), a["id"] in p["gateway"]["core"], box_kinds.get(a["id"])),
+            **({"builtin": True} if a["id"] in p["gateway"]["core"] else {}),
+            **({"privacy": "private"} if (a.get("wizard") or {}).get("private") else {}),
+            # the jobs it does for other apps (wizard.md provides:): the phone list says why an app is linked to it
+            "provides": list(a.get("provides") or []),
             "running": running, "internet": internet, "gateway": gw, "host_access": a.get("host_access") or [],
             "can_reach": [{"to": e["provider"] or e["to"], "declared": e["to"], "reason": e["reason"], "state": e["state"],
                            "network": e.get("network")} for e in out_edges] +
@@ -1174,6 +1480,16 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                             and any(m["app"] == a["id"] for m in n["members"])]),
             "drift": problems,
         })
+        if p.get("open") is not None and a["id"] in {i for pr in p["open"]["links"] for i in pr} | p["open"]["mesh"] | p["open"]["out"]:
+            o = p["open"]
+            apps[-1]["open"] = {
+                "mesh": a["id"] in o["mesh"],
+                "links": sorted(n for pr, n in o["links"].items() if a["id"] in pr),
+                "unreachable": sorted(({"app": next(iter(pr - {a["id"]})), "why": why}
+                                       for pr, why in o["blocked"].items() if a["id"] in pr), key=lambda r: r["app"]),
+                # cut by the owner, but both keep Runtipi's shared network (published through the reverse proxy)
+                "unenforced": sorted(({"app": next(iter(pr - {a["id"]})), "why": why}
+                                      for pr, why in o["unenforced"].items() if a["id"] in pr), key=lambda r: r["app"])}
     # Apps that keep Runtipi's shared network (isolation off, a published service, custom / host-access apps) can
     # all open connections to each other there, declared or not: list those peers both ways, so the report never
     # understates what an app can actually reach.
@@ -1186,13 +1502,28 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
             row["reached_by"] += [{"from": x, "reason": "shared network", "state": "shared-network",
                                    "network": shared_docker} for x in peers]
     shared_members = sorted(n for n in (live["networks"].get(shared_docker) or {}).get("containers", []))
-    res = {"schema": 1, "enabled": p["enabled"], "checked_at": int(time.time()), "live": live_ok,
-           "gateway": p["gateway"], "apps": apps,
+    res = {"schema": 1, "enabled": p["enabled"], "mode": p.get("mode") or "declared", "checked_at": int(time.time()), "live": live_ok,
+           "gateway": p["gateway"], "apps": apps, "agents": kinds.agents(getattr(c, "home", None), getattr(c, "runtipi_root", None)),
+           "main_agent_apps": kinds.main_agent_apps(kinds.agents_dir(getattr(c, "home", None), getattr(c, "runtipi_root", None))),
            "networks": [{"name": n, "kind": v["kind"], "internal": v["internal"],
                          "members": sorted({f"{m['app']}/{m['service']}" for m in v["members"]}),
-                         "exists": n in live["networks"]} for n, v in sorted(p["networks"].items())],
+                         "exists": n in live["networks"], "matches": network_matches(v, live["networks"].get(n))}
+                        for n, v in sorted(p["networks"].items())],
            "shared_network": {"name": shared_docker, "containers": shared_members},
-           "ok": live_ok and not any(x["drift"] for x in apps) and all(n in live["networks"] for n in p["networks"])}
+           "ok": live_ok and not invalid_networks and not any(x["drift"] for x in apps)
+                 and all(network_matches(v, live["networks"].get(n)) for n, v in p["networks"].items())}
+    # The owner's controls: Disconnect / Reconnect, Approve / Deny, Sensitive, and the recent notices.
+    state = p.get("state")
+    sensitive = set((state or {}).get("sensitive") or [])
+    names = {a["id"]: a["name"] for a in apps}
+    for row in apps:
+        row["sensitive"] = row["id"] in sensitive
+    res["owner_state"] = state is not None
+    res["controls"] = [{**r, "label": f"{names.get(r['from'], r['from'])} → "
+                                      f"{', '.join(names.get(x, x) for x in r['providers']) or r['to'].removeprefix('slot:')}"}
+                       for r in p.get("controls") or []]
+    res["sensitive"] = sorted(sensitive)
+    res["notices"] = list(reversed((state or {}).get("notices") or []))[:20]
     if not live_ok:
         res["error"] = f"could not read Docker ({err})"
     return res
@@ -1200,8 +1531,11 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
 
 def describe(rep: dict) -> str:
     """`wam connections`: one block per app, plain words."""
-    lines = [f"App isolation: {'on' if rep['enabled'] else 'OFF (every app can reach every app)'}; "
-             f"gateway: {rep['gateway']['detail']}",
+    open_mode = rep.get("mode") == "open"
+    mode = ("Open: everything is connected unless you disconnect it" if open_mode else
+            "Declared: apps can't talk to each other unless connected (declared, or connected by you)")
+    lines = [f"App isolation: {'on' if rep['enabled'] else 'OFF (every app can reach every app)'}"
+             f"{f' ({mode})' if rep['enabled'] else ''}; gateway: {rep['gateway']['detail']}",
              f"Live check: {'matches the declarations' if rep['ok'] else 'DRIFT (see below)' if rep['live'] else rep.get('error')}", ""]
     word = {"link": "", "gateway": " (gateway network)", "external": " (outside Runtipi: not reachable from apps)",
             "host": " (from the server's network, on its published 127.0.0.1 port)",
@@ -1209,6 +1543,10 @@ def describe(rep: dict) -> str:
             "core": " (Wizard core, over this app's gateway network)",
             "not-installed": " (not installed)", "unmanaged": " (not isolated: shared network)", "shared": " (shared network)",
             "not-approved": " (declared, but its grant is revoked or not approved yet: no network)",
+            "pending": " (waiting for your approval: it is sensitive; no network)",
+            "mesh": " (open mode: the mesh)",
+            "sensitive": " (it is sensitive and you haven't connected them: no network)",
+            "disconnected": " (you disconnected it: no network until you reconnect)",
             "collision": " (its network name is taken by another network: not connected, see `wam network reconcile`)",
             "shared-network": " (shared network: not declared, but reachable)"}
     for a in rep["apps"]:
@@ -1216,13 +1554,34 @@ def describe(rep: dict) -> str:
         lines.append(f"{a['id']}  [{a['state']}{'' if a['running'] else ', stopped'}]")
         if a["why"]:
             lines.append(f"  note: {a['why']}")
-        lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
+        if a.get("open") is not None:
+            cut = [f"{r['app']}{word.get(r['why'], '')}" for r in a["open"]["unreachable"]]
+            lines.append(f"  can reach: every other app{(' except ' + ', '.join(cut)) if cut else ''} "
+                         f"({'the mesh' if a['open']['mesh'] else str(len(a['open']['links'])) + ' links'})")
+            for r in a["open"].get("unenforced") or []:
+                lines.append(f"  NOT CUT: {r['app']} ({r['why']}): both keep Runtipi's shared network (published through the "
+                             "reverse proxy), so they still reach each other; unpublish one to enforce it")
+        else:
+            lines.append(f"  can reach: {', '.join(reach) or 'no other app'}")
         by = [b["from"] + (" (shared network)" if b["state"] == "shared-network" else "")
               for b in a["reached_by"] if b["state"] in ("link", "gateway", "core", "shared-network")]
+        if a.get("open") is not None:   # open mode is two-way: whoever it reaches reaches it
+            by = ["every other app" + (" except " + ", ".join(r["app"] for r in a["open"]["unreachable"])
+                                       if a["open"]["unreachable"] else "")]
         lines.append(f"  reached by: {', '.join(by) or 'no other app'}; agent gateway {a['gateway']}")
         lines.append(f"  internet: {'yes' if a['internet'] else 'no' if a['internet'] is False else 'unknown'}")
         for h in a["host_access"]:
             lines.append(f"  HOST ACCESS: {h}")
         for d in a["drift"]:
             lines.append(f"  DRIFT: {d}")
+        if a.get("sensitive"):
+            lines.append("  sensitive: new connections to it wait for your approval")
+    waiting = [r for r in rep.get("controls") or [] if r["status"] == "pending"]
+    if waiting:
+        lines += ["", "Waiting for your approval (wam grants approve|deny <app> <to>):"]
+        lines += [f"  {r['from']} -> {r['to']}" for r in waiting]
+    off = [r for r in rep.get("controls") or [] if r["status"] == "disconnected"]
+    if off:
+        lines += ["", "Disconnected by you (wam grants grant <app> <to> reconnects):"]
+        lines += [f"  {r['from']} -> {r['to']}" for r in off]
     return "\n".join(lines)

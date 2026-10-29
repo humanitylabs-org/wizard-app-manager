@@ -379,3 +379,31 @@ Promotion JSON SHA256: `0984d62ca0b54ac0e4dab86e26df9b2dee7d2f93ddd89783f29eb8a3
 Canonical: wizard-os releases/0.3.70.json (wizard-os #270). SHA256: `1488db56ff5f4fa1f83105f18700d5f172b926934d201e933533a84f144699b4`.
 0.3.69 (WAM `08b54f65`, #267) with 0.3.68's Agent Service `b1f8d2c1`, Wizard UX `d53b2b24`, Claude 0.2.8 and ChatGPT 0.2.6.
 Channel: on latest only.
+
+## 0.3.71 provenance
+
+Canonical: wizard-os releases/0.3.71.json (wizard-os #287). SHA256: `7f854dbbe2cb15129615f3a2fd3ed1632a46d749219013f890a093fe0812a850`.
+0.3.70 with Notifications 2.29.0-wizard10 (`oscarhenrycollins/notifications` `cdce9f18`, #277); compose images unchanged from 2.29.0-wizard2. Everything else exactly 0.3.70.
+Channel: on latest only.
+
+## 0.3.72 provenance
+
+Canonical: wizard-os releases/0.3.72.json (wizard-os #292). SHA256: `0bf3563ed9d27b24f479819678d982cff036d17c32b246cc8602f1833257c588`.
+0.3.71 with Wizard UX main `970378b2` (wizard-ux #670: pinned chats stay the same on every device; image `sha256:d1b00210…`, push run 40628699290). Everything else exactly 0.3.71.
+Channel: on latest only.
+
+## stable 0.3.72
+
+Canonical: wizard-os #293 (promotion), cut in wizard-os #292. `releases/stable` → 0.3.72 (sha256 `d8c646206043137d6ef9e2a12e9f1de591b37cb026b94f4476c101db0f3338ab`); `promotions/0.3.72.json` sha256 `3911f6babcf670f2d43df22145926e35720c369d1efb0436a4751045ecfc44a7`.
+Fast-tracked under DECISIONS #93 as a **feature** (owner-requested pins fix wizard-ux #670, plus ride-alongs: Notifications 2.29.0-wizard10, Wizard UX main features, App Manager 08b54f65). Installed upgrade 0.3.68 → 0.3.72 passed: wizard-os docs/acceptance/promote-0.3.72.md.
+
+## 0.3.73 provenance
+
+Canonical: wizard-os releases/0.3.73.json (release train). SHA256: `79ee11458bed4df743fda84a0484afc021440f5861043383233e30c9d52a511b`.
+Latest 0.3.72 with Wizard UX 970378b2 -> db361987, Agent Service b1f8d2c1 -> 3773ca0c. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#674 Recommended fix: Spaces and subject order keep every device's edit; humanitylabs-org/wizard-ux#675 Recommended fix (performance): Settings says 'Takes about 2 minutes' when only the interfa; humanitylabs-org/wizard-ux#676 Recommended fix: an unreachable Wizard on Tailscale says what to check instead of 'No inte; humanitylabs-org/wizard-agent-service#205 Recommended fix: serve live run events for model-locked turns (events were 404 for every W; humanitylabs-org/wizard-agent-service#206 Recommended fix: archive window honours the Auto-archive choice; humanitylabs-org/wizard-agent-service#214 Recommended fix: owners choose Summary or Concise replies; humanitylabs-org/wizard-agent-service#219 Recommended fix: bring live fixes onto main: dismissed errors stay dismissed, faster Chats; humanitylabs-org/wizard-agent-service#221 Recommended fix: apps list carries declared type and category; humanitylabs-org/wizard-agent-service#237 Recommended fix: every picture or file an agent sends shows in chats; humanitylabs-org/wizard-agent-service#238 Recommended fix: shared lists keep every device's edit (item operations on ui-preferences); humanitylabs-org/wizard-agent-service#243 Recommended fix: Setup stops saying a phone is connected once the last phone leaves the ta. Stable stays 0.3.72 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.73
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/303 (release train). `releases/stable` → 0.3.73; `promotions/0.3.73.json` sha256 `915e97a34a50a70d4e6d1e3fb38dfedcf3d751a40c02a86eb487b14a2e58747b`.
+Fast-tracked as **feature**. Installed upgrade 0.3.72 → 0.3.73 passed: wizard-os docs/acceptance/promote-0.3.73.md.

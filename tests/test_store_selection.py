@@ -224,7 +224,7 @@ def test_http_selection_and_auth_fail_closed(c,monkeypatch):
     cli.StoreHandler.cfg=c
     server=ThreadingHTTPServer(('127.0.0.1',0),cli.StoreHandler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-    headers={'Tailscale-User-Login':'owner@test','Origin':'https://box.ts.net:8444','X-Wizard-Store':'1','Content-Type':'application/json'}
+    headers={'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login':'owner@test','Origin':'https://box.ts.net:8444','X-Wizard-Store':'1','Content-Type':'application/json'}
     def post(body,extra=None):
         req=Request(f'http://127.0.0.1:{server.server_port}/demo',data=json.dumps(body).encode(),headers={**headers,**(extra or {})})
         try:

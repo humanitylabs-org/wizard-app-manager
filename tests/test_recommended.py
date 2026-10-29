@@ -157,7 +157,7 @@ def test_store_recommendations_preserve_owner_and_origin_checks(tmp_path, monkey
             h.request(method, '/_recommended', '{}' if method == 'POST' else None, headers)
             r = h.getresponse(); body = json.loads(r.read()); h.close()
             return r.status, body
-        headers = {'Tailscale-User-Login': 'owner@example.com', 'Origin': 'https://box.example',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.com', 'Origin': 'https://box.example',
                    'Content-Type': 'application/json', 'X-Wizard-Store': '1'}
         assert call('GET', {})[0] == 403
         assert call('GET', headers)[0] == 200

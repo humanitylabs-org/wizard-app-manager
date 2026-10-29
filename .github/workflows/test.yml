@@ -29,10 +29,14 @@ jobs:
       - run: pip install pyyaml pytest pyjwt
       - name: Portable paths guard
         run: python tests/test_portable_paths.py
+      - name: Verify canonical snapshot and strict new-app styles
+        run: |
+          python tools/sync_wizard_style.py --check
+          python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
       - run: python -m pytest -q
       - uses: actions/setup-node@v4
         with: {node-version: "22"}
-      - run: node --test tests/runtipi-open.test.mjs
+      - run: node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: '1.3.0'}
       - run: bun test tests/curator-mirrors.test.ts

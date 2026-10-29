@@ -90,6 +90,15 @@ def test_rootless_docker_found_without_path_or_docker_host(tmp_path):
         dockercli._cached.clear()
 
 
+def test_lookup_ref_drops_tag_from_digest_pinned_refs():
+    """Digest-pinned images have no tag locally, so backups must look them up by digest (#291)."""
+    from wam.backup.capture import _lookup_ref
+    assert _lookup_ref("python:3.12-alpine@sha256:1b66") == "python@sha256:1b66"
+    assert _lookup_ref("filebrowser/filebrowser:v2.63.23@sha256:ab") == "filebrowser/filebrowser@sha256:ab"
+    assert _lookup_ref("localhost:5000/team/app:1@sha256:ab") == "localhost:5000/team/app@sha256:ab"
+    assert _lookup_ref("ghcr.io/o/app:v1") == "ghcr.io/o/app:v1"
+
+
 def test_app_with_missing_image_is_not_stopped(monkeypatch, tmp_path):
     """A backup never stops an app whose image is gone: Runtipi could not start it again (Messenger, Oct 2026)."""
     import subprocess as sp
@@ -100,9 +109,13 @@ def test_app_with_missing_image_is_not_stopped(monkeypatch, tmp_path):
     def fake_run(argv, **kw):
         calls.append(argv)
         if "ps" in argv:
-            return sp.CompletedProcess(argv, 0, "wizard-messenger:gone\nsynapse@sha256:abc\nsha256:123\n", "")
+            return sp.CompletedProcess(argv, 0, "c1\nc2\nc3\nc4\n", "")
+        if "container" in argv:
+            return sp.CompletedProcess(argv, 0, "wizard-messenger:gone\nsynapse@sha256:abc\nsha256:123\n"
+                                                "filebrowser/filebrowser:v2.63.23@sha256:def\n", "")
         if "inspect" in argv:
-            return sp.CompletedProcess(argv, 1 if argv[-1] == "wizard-messenger:gone" else 0, "", "")
+            ok = {"synapse@sha256:abc", "filebrowser/filebrowser@sha256:def"}
+            return sp.CompletedProcess(argv, 0 if argv[-1] in ok else 1, "", "")
         return sp.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(sp, "run", fake_run)

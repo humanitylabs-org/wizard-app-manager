@@ -20,6 +20,8 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
+  wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
+                                checked and rolled back on failure)
   wam doctor [--fix]            check the whole chain
   wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
                                 access, and a live check of Docker's networks against the declarations
@@ -57,7 +59,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins
+from . import alongside, index, private, registry, slots, release_pins, update_backups
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -87,6 +89,7 @@ class Config:
             self.private_apps[k] = repo
         self.bind = os.environ.get("WAM_BIND", cfg.get("bind", "127.0.0.1"))
         self.port = int(os.environ.get("WAM_PORT", cfg.get("port", 7790)))
+        self.update_backups = update_backups.settings(cfg)   # retention of the backups updates make
         self.secrets = self.home / "secrets"
         self.token_file = self.home / "api-token"
 
@@ -528,6 +531,24 @@ def start_network_watch(c: Config) -> None:
 
     threading.Thread(target=network.watch, args=(step,), name="wam-network-watch", daemon=True).start()
     print("app networks: reconciling after every Wizard app start", flush=True)
+
+
+def start_connections_watch(c: Config) -> None:
+    """`wam serve`: the owner's connection decisions in the Connections view (Disconnect / Reconnect, Approve / Deny,
+    Sensitive) and the App Manager's automatic approvals take effect within seconds, live, without restarts; the
+    App Manager's notices go to the owner's Notifications app (wam/connections.py)."""
+    if any(os.environ.get(k, "1").strip().lower() in ("0", "false", "off", "no")
+           for k in ("WAM_NETWORK_WATCH", "WAM_CONNECTIONS_WATCH")):
+        return
+    from . import connections
+
+    def apply() -> bool:
+        res = network_step(c, restart=False) or {}
+        if res.get("errors"):
+            print(f"app networks: {'; '.join(res['errors'])[:400]}", file=sys.stderr, flush=True)
+        # Docker unavailable, the reconcile raised, or a Docker operation failed: the watcher retries (with backoff)
+        return not (res.get("unavailable") or "enabled" not in res or res.get("errors"))
+    connections.start(c, apply, lambda: write_registry(c))
 
 
 def _net_brief(res: dict | None) -> dict:
@@ -1182,12 +1203,13 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
     e.g. Files on the 0.3.12 commit after an upgrade to 0.3.13+, and the read-back failed its source check.
     Only apps installed from the release's own repo are moved; anything else the owner chose stays.
+    `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
@@ -1196,6 +1218,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
     out = []
     for row in (doc.get("default_apps") or {}).values():
         if not row or not row.get("commit") or row.get("app") not in have:
+            continue
+        if only is not None and row.get("app") not in only:
             continue
         app_id = row["app"]
         live = c.runtipi_root / "apps" / STORE / app_id
@@ -1495,6 +1519,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
+        if u.path == "/api/app-updates":
+            from . import app_updates
+            return self._json(200, app_updates.status(c))
         if u.path == "/api/connections":
             # Read-only, live: declared connections vs Docker's actual networks (the Connections view's data).
             from . import network
@@ -1525,6 +1552,14 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) == {"channel"}:
                     return self._json(200, updates.set_channel(str(body.get("channel", ""))))
                 return self._json(200, updates.set_mode(str(body.get("mode", ""))))
+            if path == "/api/app-updates":        # {"mode": "auto"|"ask"}, {"hold"|"unhold": id} or {"action": "apply"}
+                from . import app_updates
+                body = self._body()
+                if body.get("action") == "apply":
+                    return self._json(200, app_updates.start_detached())
+                if body.get("hold") or body.get("unhold"):
+                    return self._json(200, app_updates.hold(str(body.get("hold") or body.get("unhold")), bool(body.get("hold"))))
+                return self._json(200, app_updates.set_mode(str(body.get("mode", ""))))
             if path == "/api/updates/apply":      # the Update button; {"force": true} is the only way on unpinned
                 from . import updates
                 return self._json(200, updates.apply(force=self._body().get("force") is True))
@@ -1570,6 +1605,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         if why:
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
+        if app_id == "_connections" or app_id.startswith("_connections/"):   # the Connections view (connections_view.py)
+            return self._connections(method, urlparse(self.path).path)
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
         if app_id.startswith('_views/'):
@@ -1602,6 +1639,49 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _connections(self, method: str, path: str) -> None:
+        """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
+        (and, for a POST, check_request: another device, the shell's origin, JSON with X-Wizard-Store)."""
+        from . import connections_view as cv, network, store_install as si
+        sub = path.lstrip("/").removeprefix(cv.PREFIX)
+        if not sub:   # relative asset and API URLs need the trailing slash; Serve strips its mount, so stay relative
+            self.send_response(308)
+            self.send_header("Location", f"{cv.PREFIX}/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        sub = sub.lstrip("/")
+        try:
+            if method == "GET":
+                if sub == "api/connections":
+                    return self._json(200, network.report(self.cfg))
+                if sub == "api/apps/wizard/connections":
+                    why = si.FROM_BOX if si.from_box(self.headers, si.own_ips()) else None
+                    return self._json(200, cv.state(self.cfg.runtipi(), why))
+                got = cv.asset(sub or "index.html")
+                if not got:
+                    return self._json(404, {"error": "not found"})
+                b, ctype = got
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(b)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", cv.CSP)
+                self.end_headers()
+                self.wfile.write(b)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            return self._json(200, cv.change(self.cfg.runtipi(), sub, self.rfile.read(size)))
+        except LookupError:
+            return self._json(404, {"error": "not found"})
+        except ValueError as e:
+            return self._json(400, {"error": str(e)[:200]})
+        except RuntipiError as e:
+            return self._json(502, {"error": f"The App Manager couldn't make this change: {str(e)[:240]}"})
 
     def _chats_default(self, method: str) -> None:
         from . import chats_views
@@ -1747,6 +1827,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
+    started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
@@ -1767,6 +1848,17 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         out["error"] = "the app did not come back; see `docker logs runtipi`"
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
+    if backup and status in ("running", "stopped") and not out.get("error"):
+        # Bounded retention: keep the copy this update just made, remove this app's older ones past the minimum age.
+        # Only through Runtipi's backup API, only for this urn, and never a reason to fail the update.
+        pruned = update_backups.prune_app(rt, urn, started_ms, getattr(c, "update_backups", None),
+                                          home=getattr(c, "home", None))
+        if pruned["deleted"]:
+            out["backups_pruned"] = pruned["deleted"]
+        if pruned["errors"]:
+            out["backup_prune_warning"] = "; ".join(pruned["errors"])[:300]
+            print(f"WARNING: {app_id} updated, but its old backups were not all removed: "
+                  f"{out['backup_prune_warning']}", file=sys.stderr)
     return out
 
 
@@ -1790,17 +1882,30 @@ def main(argv: list[str] | None = None) -> int:
         gp = argparse.ArgumentParser(prog="wam grants")
         gs = gp.add_subparsers(dest="action", required=True)
         gs.add_parser("list")
+        gs.add_parser("pending")      # connections waiting for the owner (their provider is sensitive) + recent notices
         proposed = gs.add_parser("proposed"); proposed.add_argument("app")
-        for action in ("grant", "revoke"):
+        # grant = Reconnect / Approve, revoke = Disconnect / Deny (sticky: updates and app requests never re-add it)
+        for action in ("grant", "revoke", "approve", "deny"):
             p = gs.add_parser(action); p.add_argument("app"); p.add_argument("to")
+        sens = gs.add_parser("sensitive"); sens.add_argument("app"); sens.add_argument("on", choices=("on", "off"))
         ga = gp.parse_args(argv[1:])
         if any(not re.fullmatch(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}", value) for value in (getattr(ga, "app", "valid"), getattr(ga, "to", "valid"))):
             gp.error("invalid app or slot id")
         c = Config(); rt = c.runtipi()
         if ga.action == "list": result = rt.req("GET", "/apps/wizard/grants")
+        elif ga.action == "pending":
+            st = rt.req("GET", "/apps/wizard/connections")
+            result = {"pending": st.get("pending", []), "sensitive": st.get("sensitive", []),
+                      "notices": list(reversed(st.get("notices", [])))[:10]} if isinstance(st, dict) else st
         elif ga.action == "proposed": result = rt.req("GET", f"/apps/{ga.app}:wizardapps/proposed-grants")
+        elif ga.action == "sensitive":
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/sensitive", {"sensitive": ga.on == "on"})
+            net_res = _net_brief(network_step(c, rt))   # turning it off approves what was waiting: links now
+            if isinstance(result, dict) and net_res:
+                result = {**result, "networks": net_res}
+            write_registry(c)
         else:
-            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action == "grant"})
+            result = rt.req("POST", f"/apps/{ga.app}:wizardapps/app-grants", {"to": ga.to, "approve": ga.action in ("grant", "approve")})
             # a grant is a declared connection: its link appears (or, revoked, disappears) now, live
             net_res = _net_brief(network_step(c, rt))
             if isinstance(result, dict) and net_res:
@@ -1844,9 +1949,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="the owner accepts an app with host networking, privileged mode or the Docker socket")
     cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
     cn.add_argument("--json", action="store_true")
-    nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on")
-    nw.add_argument("action", choices=("reconcile", "status", "off", "on", "allow", "deny"))
-    nw.add_argument("app", nargs="?", help="allow|deny: the app whose host access / foreign networks the owner allows")
+    nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on | mode open|declared")
+    nw.add_argument("action", choices=("reconcile", "status", "off", "on", "allow", "deny", "mode"))
+    nw.add_argument("app", nargs="?", help="allow|deny: the app whose host access / foreign networks the owner allows; "
+                    "mode: open (everything connected unless you disconnect it) or declared")
     nw.add_argument("--dry-run", action="store_true"); nw.add_argument("--json", action="store_true")
     nw.add_argument("--no-restart", action="store_true", help="never restart an app (report it instead)")
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
@@ -1880,7 +1986,32 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
+    up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
+    au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
+                                             "(default) / --ask, --hold / --unhold <id>")
+    aug = au.add_mutually_exclusive_group()
+    aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
+    aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
+    aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
+    aug.add_argument("--ensure-timer", action="store_true")
+    au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
     args = ap.parse_args(argv)
+    if args.cmd == "updates" and args.quick_apply:
+        from . import quick_update
+        res = quick_update.run(args.quick_apply, auto=args.quick_auto)
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("done") or res.get("fallback") else 1
+    if args.cmd == "app-updates":
+        from . import app_updates as au_
+        res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
+               else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
+               else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto
+               else au_.apply(only=args.apply or None, dry_run=args.dry_run) if args.apply is not None
+               else au_.status())
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") or res.get("failed") else 0
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:
@@ -1912,6 +2043,21 @@ def main(argv: list[str] | None = None) -> int:
                 rep = network.report(c)
                 print(json.dumps(rep, indent=2) if args.json else network.describe(rep))
                 return 0 if rep.get("ok") else 1
+            if args.action == "mode":
+                if args.app not in (None, *network.MODES):
+                    raise SystemExit("usage: wam network mode [open|declared]")
+                rt = c.runtipi()
+                if args.app is None:   # show it
+                    print(network.connection_mode(network.connection_state(c, rt)))
+                    return 0
+                # The owner's choice lives with the other connection decisions, behind the App Manager's owner sign-in.
+                st = rt.req("POST", "/apps/wizard/connection-mode", {"mode": args.app})
+                res = network.reconcile(c, rt, restart=not args.no_restart,
+                                        restart_fn=lambda a: app_lifecycle(c, "restart", a))
+                write_registry(c)
+                print(json.dumps({"mode": (st or {}).get("mode") if isinstance(st, dict) else None,
+                                  "networks": _net_brief(res)}, indent=2))
+                return 1 if res.get("errors") else 0
             if args.action in ("allow", "deny"):
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
@@ -2008,6 +2154,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
             start_network_watch(c)
+            start_connections_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()
