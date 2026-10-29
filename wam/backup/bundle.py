@@ -20,7 +20,8 @@ import tarfile
 import time
 import zipfile
 import zlib
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from .fmt import Damaged
 
@@ -88,8 +89,8 @@ class BundleWriter:
         self.sums[name] = {"type": "dir"}
 
     def add_file(self, name: str, path: Path, st: os.stat_result | None = None) -> int:
-        st = st or os.lstat(path)
-        with open(path, "rb") as f:
+        st = st or datafs.lstat(path)
+        with datafs.open(path, "rb") as f:
             r = _SizedReader(f, st.st_size)
             self.tar.addfile(self._info(name, st.st_size, stat.S_IMODE(st.st_mode), st.st_mtime), r)
         if r.changed:
@@ -125,7 +126,7 @@ class BundleWriter:
         root = Path(root)
         if not root.is_dir():
             return {"count": 0, "bytes": 0}
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in datafs.walk(root):
             dp = Path(dirpath)
             rel_dir = dp.relative_to(root).as_posix()
             keep = []
@@ -138,7 +139,7 @@ class BundleWriter:
                     self.skipped.append(f"{prefix}/{rel}")
                     continue
                 keep.append(d)
-                st = os.lstat(p)
+                st = datafs.lstat(p)
                 self.add_dir(f"{prefix}/{rel}", stat.S_IMODE(st.st_mode), st.st_mtime)
             dirnames[:] = keep
             for fn in sorted(filenames):
@@ -147,7 +148,7 @@ class BundleWriter:
                     continue
                 p = dp / fn
                 try:
-                    st = os.lstat(p)
+                    st = datafs.lstat(p)
                 except FileNotFoundError:
                     continue
                 if not stat.S_ISREG(st.st_mode):
@@ -203,7 +204,7 @@ def tree_size(root: Path, skip=None) -> dict:
     root = Path(root)
     if not root.is_dir():
         return {"count": 0, "bytes": 0}
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in datafs.walk(root):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(root).as_posix()
         dirnames[:] = [d for d in dirnames if not (dp / d).is_symlink()
@@ -213,7 +214,7 @@ def tree_size(root: Path, skip=None) -> dict:
             if skip and skip(rel, False):
                 continue
             try:
-                st = os.lstat(dp / fn)
+                st = datafs.lstat(dp / fn)
             except FileNotFoundError:
                 continue
             if stat.S_ISREG(st.st_mode):
@@ -313,7 +314,7 @@ class StageSink:
         for p in parts:
             cur = cur / p
             try:
-                st = os.lstat(cur)
+                st = datafs.lstat(cur)
             except FileNotFoundError:
                 os.mkdir(cur, 0o700)
                 continue

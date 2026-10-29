@@ -102,7 +102,7 @@ def test_automatic_installs_a_fast_tracked_stable_fix(tmp_path):
     calls = []
     res = updates.apply_if_auto(h, d.as_uri(), _runner(calls), is_busy=lambda: False)
     assert res["started"] is True
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.32 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.32 bash -s start"]]
 
 
 def test_only_releases_before_the_split_can_be_grandfathered():
@@ -183,7 +183,7 @@ def test_automatic_installs_only_a_promoted_stable_release(tmp_path):
     calls = []
     res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
     assert res["started"] is True
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.26 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.26 bash -s start"]]
 
 
 def test_automatic_skips_a_stable_pointer_without_a_promotion(tmp_path):

@@ -121,7 +121,11 @@ class Runtipi:
         return self.req("POST", f"/app-lifecycle/{urn}/install", form or {}, timeout=120)
 
     def update(self, urn: str, perform_backup: bool = True) -> dict:
-        return self.req("PATCH", f"/app-lifecycle/{urn}/update", {"performBackup": perform_backup}, timeout=120)
+        body = {"performBackup": perform_backup}
+        if urn.split(':', 1)[0] == 'hermes-agent':
+            from .hermes_lock import authorize
+            body['hermesPromotion'] = authorize()
+        return self.req("PATCH", f"/app-lifecycle/{urn}/update", body, timeout=120)
 
     def start(self, urn: str) -> dict:
         return self.req("POST", f"/app-lifecycle/{urn}/start", {}, timeout=120)

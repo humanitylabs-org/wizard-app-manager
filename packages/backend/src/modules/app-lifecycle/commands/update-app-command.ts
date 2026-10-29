@@ -162,6 +162,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (this.wasRunningBeforeUpdate) {
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+        // Docker creates bind-mount folders a new version adds during `up`, after ensureAppDir's chmod; open them
+        // here too (as install does) so a non-root container can write them before the app's next restart.
+        await appFilesManager.setAppDataDirPermissions(appUrn);
       }
 
       return { success: true, message: `App ${appUrn} updated successfully` };

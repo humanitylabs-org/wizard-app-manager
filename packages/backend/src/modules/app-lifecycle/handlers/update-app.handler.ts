@@ -11,9 +11,11 @@ import { AppEventsQueue } from '../../queue/entities/app-events';
 import { StatusManagerService } from '../services/status-manager.service';
 import { UpdateConfigHandler } from './update-config.handler';
 import { type HandlerResult, type ILifecycleHandler, generateRequestId } from './base-handler';
+import { assertHermesUpdate } from '../hermes-lock';
 
 export type UpdateAppParams = {
   performBackup: boolean;
+  hermesPromotion?: string;
 };
 
 @Injectable()
@@ -30,6 +32,7 @@ export class UpdateAppHandler implements ILifecycleHandler<UpdateAppParams> {
   ) {}
 
   async execute(appUrn: AppUrn, params?: UpdateAppParams): Promise<HandlerResult> {
+    assertHermesUpdate(appUrn, params?.hermesPromotion); // before lookup, status transition or queue publication
     const { performBackup } = params ?? { performBackup: false };
     const app = await this.appRepository.getAppByUrn(appUrn);
 

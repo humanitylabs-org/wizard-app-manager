@@ -10,7 +10,8 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MAPPING = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css', 'style/boot.js': 'web/boot.js'}
+MAPPING = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css', 'style/boot.js': 'web/boot.js',
+           'style/sheet.js': 'web/wizard-sheet.js', 'style/standalone-tokens.css': 'web/standalone-tokens.css'}
 TEMPLATE = ROOT / 'templates/hello-wizard'
 LOCK = TEMPLATE / 'appearance-provenance.json'
 
@@ -30,7 +31,11 @@ def check(source=None):
         assert sha((TEMPLATE / dst).read_bytes()) == item['sha256'], dst + ' drifted'
         if source:
             assert sha((source / src).read_bytes()) == item['sha256'], src + ' diverged from source'
-    print('PASS: template runtime assets match the immutable style/ pin.')
+    for src, dst in [('style/check_style.py', 'wam/style_check.py'), ('style/style-policy.json', 'wam/style-policy.json')]:
+        item = lock.get('gate_files', {}).get(src, {})
+        assert item.get('destination') == dst and sha((ROOT / dst).read_bytes()) == item.get('sha256'), dst + ' gate drifted'
+        if source: assert (ROOT / dst).read_bytes() == (source / src).read_bytes(), src + ' gate diverged'
+    print('PASS: template runtime assets and style gate match the immutable style/ pin.')
 
 
 def main():
@@ -57,6 +62,11 @@ def main():
         content = (args.source / src).read_bytes()
         (TEMPLATE / dst).write_bytes(content)
         lock['files'][src] = {'destination': dst, 'sha256': sha(content)}
+    lock['gate_files'] = {}
+    for src, dst in [('style/check_style.py', 'wam/style_check.py'), ('style/style-policy.json', 'wam/style-policy.json')]:
+        content = (args.source / src).read_bytes()
+        (ROOT / dst).write_bytes(content)
+        lock['gate_files'][src] = {'destination': dst, 'sha256': sha(content)}
     LOCK.write_text(json.dumps(lock, indent=2) + '\n')
     import sys
     sys.path.insert(0, str(ROOT))

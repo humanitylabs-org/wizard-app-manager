@@ -1,5 +1,47 @@
 # Owner-controlled host Hermes updates
 
+**Hermes updates are paused by the shared Wizard lock.** Status and dry-run are
+read-only; real host or `hermes-agent` app updates refuse until a reviewed
+promotion exists in `wam/hermes-lock.json` and the operator explicitly sets
+`WIZARD_HERMES_PROMOTION=<approved-id>`. Ordinary OS reruns skip installed Hermes;
+Automatic clears this opt-in. Other Wizard app updates are unchanged. Fresh
+installs consume the locked recipe even without an OS snapshot. Public installer
+metadata in `releases/hermes-lock.json` must be byte-identical to the packaged
+lock. Both vendor wizard-os `releases/hermes-lock.json` and `tools/hermes_lock.py`.
+
+The normal Apps UI and bulk-update handler also enforce the pause before status
+or queue changes. The CLI forwards the approved id as optional `hermesPromotion`;
+the backend validates it against its own bundled policy. The index store forces
+the locked source even on legacy installs without `.wizard-selection`, and rejects
+an out-of-lock owner selection. Bulk updates still update unrelated apps.
+The backend Docker build includes `wam/hermes-lock.json`. Both copies of the
+lock (and `.dockerignore`) trigger image builds on push and pull request. A
+promotion must pin the newly built image, not a prior frozen-policy image.
+
+For future release snapshots that reuse an image, `images.wizard-app-manager.image_inputs`
+must cover **all** image workflow paths, including the policy, for example:
+
+```json
+["packages/**", "Dockerfile", ".dockerignore", "package.json", "bun.lock", "turbo.json", "wam/hermes-lock.json", "releases/hermes-lock.json", ".github/workflows/image.yml"]
+```
+
+The canonical wizard-os `tools/check_release.py` reads the pinned image workflow's
+paths and rejects an `image_inputs` list omitting any of them, then compares those
+inputs between image source and component commits. Its workflow-file comparison
+also prevents reusing an older image across this trigger change. Keep the inline
+workflow paths parseable by that checker; never rewrite historical manifests.
+
+The initial freeze preserves the existing September baseline, whose acceptance
+record has a known compacted-history visibility limitation. It is not a newly
+certified latest release and never automatically downgrades an alongside host.
+Promotion requires seven full days after publication, bug review, exact-source
+acceptance/canary and rollback evidence, a recommendation, and non-author admin
+approval (James for stable). See
+[the shared contract](https://github.com/humanitylabs-org/wizard-os/pull/215).
+Do not deploy the global/default change without its clean-VM fresh/alongside
+installer acceptance and non-author approval. Raw Docker/Runtipi admin commands,
+stock `hermes update` and owner cron must be audited separately.
+
 ```sh
 wam hermes status --json
 wam hermes update --dry-run --json
@@ -39,7 +81,9 @@ for manual updating. No service units are installed or rewritten.
   online SQLite snapshot, config, dotenv, optional install stamp, previous commit
   and the venv's package freeze. Backup directories are mode 0700; secret-bearing
   files and receipts are mode 0600. Treat backups as credentials and retain them
-  until the update is accepted.
+  until the update is accepted. After a verified update, wam keeps this update's
+  backup (the newest) and removes its own `hermes-*` backups older than 30 days;
+  a failed or rolled-back update removes none (see `update_backups` in BACKUP.md).
 - Work census includes the Agent Service queue, gateway `active_work`, unexpired
   turn leases, pending/running delegations and running cron executions. Missing
   optional files/tables are idle; unreadable existing state or an unknown

@@ -28,3 +28,7 @@ templates/
 .venv/
 .pytest_cache/
 **/node_modules
+# wam Python stays out of the image; only its shared policy is a backend input.
+!wam/
+wam/*
+!wam/hermes-lock.json

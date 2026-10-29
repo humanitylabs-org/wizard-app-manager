@@ -1,0 +1,16 @@
+{
+  "version": "0.3.59",
+  "latest_since": "2026-10-26T12:57:30Z",
+  "promoted_at": "2026-10-26T13:09:01Z",
+  "upgrade_test": {
+    "from": "0.3.57",
+    "to": "0.3.59",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.59.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-authorized (Miguel, 26 Oct 2026: 'Ship it (not limited to just 2 though)'; DECISIONS #93 launch-phase feature fast-track): any number of Claude subscriptions in the Claude app (claude-connection 0.2.5, engine wizard-claude 0.2.5) plus the shell's Claude-pool routing (UX #537+#558 via #564) and the App Manager account-broker wiring (#249/#252 via #250). Claude pool tests 8/8 incl. 3/5/12 accounts and 4th/5th add (4 fail on main), browser fixture 390+1440px, UX 769/769 on the pin, WAM host_dashboard 10/10 (6 failing-first), released images against fixtures: one account keeps legacy routing, 3 and 5 ready pool accounts default Opus/new chats to anthropic; component-level upgrade 0.3.57->0.3.59 keeps the original sign-in byte-identical and rolls back cleanly.",
+    "notes": "Changed pins vs 0.3.57: Claude app (3b2d618 -> eb434ae), wizard-ux (ffa4c636 -> 325be039, image differs only in core/chat-models.js), App Manager (d926eec -> e3f76a68 on maintenance/stable-0.3.57; image inputs unchanged). No other pins, no migrations. Risks: account changes now on for alongside dashboards (WIZARD_ACCOUNT_CHANGES=1; owner's explicit value kept); Claude account changes accepted without a page password from same-origin requests (same posture as the original Connect); host dashboard restarts once on upgrade. Not a full os.sh run on a real box (demo boxes offline/expired); fresh-mode agents keep single-account behaviour (no wizard-os plugin there). Older 0.3.26-0.3.31 Automatic updaters skip fast-tracked stable (Update now works)."
+  }
+}

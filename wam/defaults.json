@@ -95,6 +95,14 @@
       "app": "secret-drop",
       "required": false
     },
+    "web-search": {
+      "name": "Web search",
+      "app": "wizard-search",
+      "repo": "humanitylabs-org/wizard-search",
+      "required": false,
+      "provides": ["web-search", "image-search"],
+      "note": "Search works on install: a bundled SearXNG sidecar gives free private web and image results with no account or key. Optional AI overviews come from the Tinfoil app when the owner turns them on."
+    },
     "cloudflare-connection": {
       "name": "Cloudflare",
       "app": "wizard-cloudflare",

@@ -14,6 +14,7 @@ agent's own container image with the home bind-mounted (container agents) or fro
 (the alongside host agent). Stock Hermes is never modified.
 """
 from __future__ import annotations
+from .dockercli import docker
 
 import hashlib
 import json
@@ -26,7 +27,8 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from .filesystem import Path
+from . import filesystem as datafs
 
 from .. import alongside, registry
 from ..runtipi import Runtipi, RuntipiError, read_env
@@ -72,6 +74,11 @@ class Agent:
     urn: str | None = None           # the Runtipi app for a container agent
     folder: Path | None = None       # extra agents: <wizard home>/agents/<id>
     meta: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.home = Path(self.home)
+        if self.folder is not None:
+            self.folder = Path(self.folder)
 
     def describe(self) -> dict:
         return {"id": self.id, "main": self.main, "runtime": self.runtime, "app": (self.urn or "").split(":")[0] or None,
@@ -184,6 +191,7 @@ class Box:
             return Path(mp) / "media"
         return self.runtipi_root / "media"
 
+    @datafs.with_access
     def agents_root(self) -> Path:
         """Where extra agents' folders live: the Agent Service keeps them in its own app data (its /state volume:
         app-data/<store>/wizard-agent-service/data/wizard-os/agents, or the same path under the pre-split bundle).
@@ -207,6 +215,9 @@ class Box:
             from .appdata import AppData
             self._appdata = AppData(self)
         return self._appdata
+
+    def operation(self):
+        return datafs.operation(self)
 
     def work_dir(self) -> Path:
         d = Path(self.env.get("WAM_BACKUP_WORK") or self.home / "backup-work")
@@ -260,6 +271,7 @@ class Box:
         return out
 
     # ------------------------------------------------------------ agents
+    @datafs.with_access
     def agents(self, installed: dict[str, dict] | None = None) -> list[Agent]:
         out: list[Agent] = []
         st = alongside.load(self.home)
@@ -325,6 +337,96 @@ class HermesError(RuntimeError):
     pass
 
 
+
+# Two stock `hermes backup` behaviours make a busy, long-lived agent's backup fail every time (seen on a 10 GB
+# state.db with the gateway chatting): the SQLite copy runs in 256-page steps with a 0.1 s sleep and restarts from
+# the start whenever another connection writes, so it never finishes; and a file deleted between the scan and the
+# archive (a rotated log or cron output) marks the whole backup incomplete. Hermes stays stock: this runs it with
+# those two functions replaced for the one run. Its own excludes, file list, zip format and import are unchanged.
+HERMES_BACKUP_PATCH = r"""
+import os as _o, sqlite3 as _sq, sys as _s
+from pathlib import Path as _P
+try:
+    import hermes_cli.backup as _hb
+    try:                                   # newer Hermes moved the copy into its own module; v2026.9.24 has it inline
+        import hermes_cli.backup_sqlite as _hbs
+    except ImportError:
+        _hbs = None
+
+    def _one_step_copy(src, dst, *, timeout_seconds=10.0):
+        s = d = None
+        try:
+            fd = _o.open(dst, _o.O_WRONLY | _o.O_CREAT | getattr(_o, "O_NOFOLLOW", 0), 0o600)
+            _o.fchmod(fd, 0o600)
+            _o.close(fd)
+            s = _sq.connect(_P(src).resolve().as_uri() + "?mode=ro", uri=True, timeout=max(timeout_seconds, 60.0))
+            d = _sq.connect(str(dst))
+            s.backup(d, pages=-1)          # one read transaction: WAL writers carry on, nothing restarts
+            return True
+        except Exception as e:
+            print("wam: SQLite snapshot of %s failed: %s" % (src, e), file=_s.stderr)
+            if d is not None:
+                d.close()
+                d = None
+            _P(dst).unlink(missing_ok=True)
+            return False
+        finally:
+            for c in (d, s):
+                if c is not None:
+                    c.close()
+
+    _orig_entries = _hb._write_zip_entries
+
+    def _entries(*a, on_error=None, **k):
+        def _err(rel, exc):
+            if isinstance(exc, FileNotFoundError):
+                return                     # deleted after the scan: there is nothing left to save
+            if on_error:
+                on_error(rel, exc)
+        return _orig_entries(*a, on_error=_err, **k)
+
+    if callable(getattr(_hb, "_safe_copy_db", None)) and callable(_orig_entries):
+        _hb._safe_copy_db = _one_step_copy
+        if _hbs is not None and callable(getattr(_hbs, "_safe_copy_db", None)):
+            _hbs._safe_copy_db = _one_step_copy
+        _hb._write_zip_entries = _entries
+except Exception as _e:                    # a Hermes without these names: run it stock
+    print("wam: hermes backup runs stock (%s)" % _e, file=_s.stderr)
+"""
+HERMES_MAIN = "from hermes_cli.main import main\nsys.argv[0] = 'hermes'\nsys.exit(main())\n"
+
+
+def hermes_backup_argv(launcher: Path, _depth: int = 0) -> list[str] | None:
+    """[python, ..., '-c', code] that runs `hermes` with HERMES_BACKUP_PATCH; None when the launcher has an unknown
+    shape (the caller then runs it stock). Handles the managed `#!/bin/sh exec <python> -I -c '<code>'` launcher and
+    a plain `#!<python>` console script."""
+    import shlex
+    try:
+        text = launcher.read_text(errors="replace")
+    except OSError:
+        return None
+    w = re.fullmatch(r"#!/bin/sh\nexec (/\S+) \"\$@\"\s*", text)
+    if w and _depth < 3:                   # a thin `exec <launcher> "$@"` wrapper (~/.local/bin/hermes)
+        return hermes_backup_argv(Path(w.group(1)).resolve(), _depth + 1)
+    m = re.match(r"#!/bin/sh\nexec (\S+) (-I )?-c (.*) \"\$@\"\s*$", text, re.S)
+    if m:
+        try:
+            code = shlex.split(m.group(3))
+        except ValueError:
+            return None
+        anchor = "from hermes_cli.main import main"
+        if len(code) != 1 or code[0].count(anchor) != 1:
+            return None
+        return [m.group(1), *(["-I"] if m.group(2) else []), "-c",
+                code[0].replace(anchor, HERMES_BACKUP_PATCH + "\n" + anchor)]
+    first = text.split("\n", 1)[0]
+    if first.startswith("#!") and "python" in first and "from hermes_cli.main import main" in text:
+        parts = first[2:].split()
+        py = parts[1] if parts and Path(parts[0]).name == "env" and len(parts) > 1 else parts[0] if parts else None
+        if py:
+            return [py, "-c", "import sys\n" + HERMES_BACKUP_PATCH + HERMES_MAIN]
+    return None
+
 class HermesRunner:
     """Runs stock Hermes for one agent. Container agents: `docker run` of the agent app's own image with the home
     bind-mounted at /opt/data, no network, as the home's owner (adapted from try-wizard wizard-import-hermes).
@@ -354,9 +456,9 @@ class HermesRunner:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
         (Runtipi's stop is `compose down`, so a stopped app has no container)."""
         project = (agent.urn or "").replace(":", "_")
-        ids = self._run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
+        ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
         if ids:
-            info = json.loads(self._run(["docker", "inspect", *ids]) or "[]")
+            info = json.loads(self._run([*docker(self.box.child_env), "inspect", *ids]) or "[]")
             for c in info:
                 if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
                     return c["Config"]["Image"]
@@ -410,8 +512,8 @@ class HermesRunner:
 
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:
-        st = os.stat(agent.home)
-        cmd = ["docker", "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
+        st = datafs.stat(agent.home)
+        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
         for src, dst, ro in mounts:
             cmd += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
@@ -450,7 +552,8 @@ class HermesRunner:
         """Stock `hermes backup` (SQLite backup API, Hermes' own excludes) into out_zip."""
         out_zip.parent.mkdir(parents=True, exist_ok=True)
         if agent.runtime == "host":
-            self._run([self.host_binary(), "backup", "-o", str(out_zip)], env=self._host_env(agent))
+            argv = hermes_backup_argv(Path(self.host_binary()).resolve()) or [self.host_binary()]
+            self._run([*argv, "backup", "-o", str(out_zip)], env=self._host_env(agent))
         else:
             os.chmod(out_zip.parent, 0o777)   # the one-off container runs as the home's owner
             try:
@@ -546,7 +649,7 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
     root = Path(root)
     if not root.exists():
         return h.hexdigest(), 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in datafs.walk(root):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(root).as_posix()
         dirnames.sort()
@@ -565,19 +668,19 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
             if hide and name in keep and hide(rel):
                 continue
             try:
-                st = os.lstat(p)
+                st = datafs.lstat(p)
             except FileNotFoundError:
                 continue
             n += 1
             line = f"{rel}\0{stat.S_IFMT(st.st_mode)}\0{stat.S_IMODE(st.st_mode) if modes else ''}"
             if stat.S_ISLNK(st.st_mode):
-                line += "\0" + os.readlink(p)
+                line += "\0" + datafs.readlink(p)
             elif stat.S_ISREG(st.st_mode):
                 line += f"\0{st.st_size}"
                 if content or st.st_size <= DIGEST_HASH_MAX:
                     try:
                         fh = hashlib.sha256()
-                        with open(p, "rb") as f:
+                        with datafs.open(p, "rb") as f:
                             while b := f.read(1 << 20):
                                 fh.update(b)
                         line += "\0" + fh.hexdigest()
@@ -596,10 +699,26 @@ def tree_digest(root: Path, skip=None, content: bool = True, modes: bool = True,
     return h.hexdigest(), n
 
 
+def root_runtime_digest_path(box: Box, rel: str, tree: str = 'runtipi/app-data') -> bool:
+    """Only coordination files immediately in this box's known agents root."""
+    from .agents import root_runtime_file
+    if not root_runtime_file(rel.rsplit('/', 1)[-1]):
+        return False
+    base = box.home if tree == 'wizard-os' else box.runtipi_root / 'app-data'
+    try:
+        prefix = box.agents_root().relative_to(base).as_posix() + '/'
+    except ValueError:
+        return False
+    return rel.startswith(prefix) and root_runtime_file(rel[len(prefix):])
+
+
+@datafs.with_access
 def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, owners=True) -> dict:
     """What an import may change, as digests: the Wizard home (owner state), Runtipi app-data/user-config/apps, the
     owner's files and each agent home. Regenerated and engine-owned entries are left out."""
     def home_skip(rel, is_dir):
+        if not is_dir and root_runtime_digest_path(box, rel, 'wizard-os'):
+            return True
         top = rel.split("/", 1)[0]
         return top in (REGENERATED | {"restores", "backup-work", "backup.lock", "backup-status.json"}) \
             or rel.endswith(".lock")
@@ -619,6 +738,8 @@ def box_digest(box: Box, agents: list[Agent] | None = None, *, entries=None, own
                 pass
 
     def rt_skip(rel, is_dir):   # app-data/wizard-os is regenerated, except an agents/ folder there
+        if not is_dir and root_runtime_digest_path(box, rel):
+            return True
         if rel.startswith("wizard-os/") and not (rel == "wizard-os/agents" or rel.startswith("wizard-os/agents/")):
             return True
         return any(rel.startswith(h) and keep_in_place(rel[len(h):]) for h in homes)

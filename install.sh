@@ -199,11 +199,18 @@ fi
 RESTART_NOW=1
 [ "${WIZARD_AGENT_SAFE:-0}" = 1 ] && RESTART_NOW=""
 RESTART_LATER=""
+hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
+  # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
+  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
+  case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
+  printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
+}
 schedule_hermes_restart() {  # outside this process tree (its own systemd unit), so it survives the restart it does
   local delay="${WIZARD_RESTART_DELAY:-20}" hermes log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
   hermes="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
-  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}' '$hermes' gateway restart; sleep 20; '$HOME/.local/bin/wizard' doctor"
+  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; $(hermes_restart_job "$hermes"); sleep 20; '$HOME/.local/bin/wizard' doctor"
   local -a run=(systemd-run --user)
   [ "$(id -u)" -eq 0 ] && run=(systemd-run)
   if command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \
@@ -224,8 +231,21 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   # Active threads use the supported Hermes HTTP session reader. Keep archive/database sharing opt-in.
-  if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
+  # `wam alongside` also recreates connection apps (ChatGPT, Claude) whose agent address changed or whose running
+  # containers still hold an old one (e.g. after a tailnet move); one it could not restart is reported.
+  if ! al_out="$("$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"})"; then
     FAILED+=("could not record alongside mode (wam alongside)")
+  else
+    al_rec="$(printf '%s' "$al_out" | python3 -c 'import json,sys
+r = json.load(sys.stdin).get("recreated") or {}
+print(", ".join(a for a, v in r.items() if v == "recreated"))
+print("; ".join(f"{a} ({v})" for a, v in r.items() if str(v).startswith("error")))' 2>/dev/null || true)"
+    [ -z "$(printf '%s\n' "$al_rec" | sed -n 1p)" ] || echo "Restarted with the current agent address: $(printf '%s\n' "$al_rec" | sed -n 1p)"
+    al_bad="$(printf '%s\n' "$al_rec" | sed -n 2p)"
+    [ -z "$al_bad" ] || DEGRADED+=("these apps still run with an old agent address, so signing in through them may not reach your agent: $al_bad (fix: wam app restart <app>)")
+  fi
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    :
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
       ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"}; then
     FAILED+=("'wizard link' failed (its message is above); your Hermes was left as it was. Fix it, then re-run the install")
@@ -237,6 +257,16 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
     up=0
     for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && { up=1; break; }; sleep 2; done
     [ "$up" = 1 ] || DEGRADED+=("your Hermes API ($ORIGIN) did not answer after the restart")
+  fi
+  # `wizard link` refreshes the wizard-os plugin; the host dashboard (the apps' account broker and usage reader)
+  # loads plugins only when it starts, so restart it if it runs. It holds no chats; apps retry on their next read.
+  # Not installed is fine; an installed (enabled) or running dashboard that is not running afterwards is reported,
+  # including one that an earlier restart in `wam alongside` left down.
+  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service 2>/dev/null \
+      || systemctl --user is-active --quiet wizard-host-dashboard.service 2>/dev/null; }; then
+    systemctl --user restart wizard-host-dashboard.service >/dev/null 2>&1 && sleep 3 \
+      && systemctl --user is-active --quiet wizard-host-dashboard.service \
+      || DEGRADED+=("the agent dashboard (wizard-host-dashboard.service) did not come back after the plugin refresh, so app sign-in and usage may be unavailable; see: systemctl --user status wizard-host-dashboard")
   fi
 fi
 

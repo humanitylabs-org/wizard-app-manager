@@ -40,3 +40,5 @@ health: /healthz
 The builder base: an API and MCP over the same stdlib service layer, with a vanilla view that calls only the API. Add a habit, mark today done, undo it; SQLite persists in app-data. Original time/echo MCP jobs are preserved.
 
 PR24 API/view-source declarations are proposed. The candidate checks them in explicit proposal mode while preserving approved checker compatibility. app/Dockerfile builds from the repository root; the Runtipi compose inlines the exact source for portable installation without publishing an image. Re-run template packaging after source edits.
+
+Appearance decisions: [the canonical Wizard app style guide](https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md). Use the shared kit; do not invent a per-app palette or UI font. New apps are strict in the builder; CI ratchets added/changed lines.

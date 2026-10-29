@@ -1,7 +1,7 @@
 ---
 name: wizard-guide
-description: "Use when the owner asks how to use Wizard, what you can do, wants tips or a reminder, or on a first chat."
-version: 1.0.0
+description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
+version: 1.2.0
 author: Wizard OS
 license: MIT
 metadata:
@@ -56,10 +56,58 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 - "Build me an app that…": load `wizard-builder` and follow it. The app installs into their Apps.
 - Ready-made apps and connectors live in the Store (from Home). A connector links one outside account (for example Cloudflare for websites and domains). When a request needs one ("make me a website"), say which connector it needs and ask them to open it in the Store, tap Get and sign in once. Never ask for passwords or keys in chat.
 
-## Change requests
+## Changing or fixing Wizard itself
 
-When they say "change request:" or describe something they want to work differently:
+If it is an app the owner built with you, or their own independently maintained copy of one, just make the change with `wizard-builder`. Changes to such an owner's own app server or stored data do not require Wizard developer mode. Apps installed from the Store or shipped with Wizard are Wizard's parts and follow the levels below. `skin.css` and `skin.js` changes always follow My skin and Tweaks below, including activation and installed-API checks.
 
-1. If it is their own app or their skin, just make the change.
-2. If it is Wizard itself, write it up in three short lines (what happens now, what they want, why) and show it to them.
-3. Only with their OK, give them a ready link to file it: `https://github.com/humanitylabs-org/wizard-os/issues/new?title=<title>&body=<body>` (URL-encoded). Never send it anywhere on your own.
+Wizard has three levels of change. Before you start, tell the owner which one their request needs, in one line.
+
+1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
+2. **Tweaks** (anything on screen, front end only): their own tweak is `Skins/My skin/skin.js`. It can add controls and gestures, and replace a whole front-end **part** through `api.parts.replace` (pins today; `api.parts.list()` shows what this Wizard offers). Shared settings that must match on every device go through `api.prefs`. After every edit the owner must tap Turn on in Settings › Look for that exact file. Updates never wipe or rebase a tweak; if an update changes a part, the tweak pauses with a note and you update it. Full API and a working example: `docs/TWEAKS.md` in humanitylabs-org/wizard-ux.
+3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of Standard / Early access; these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
+
+Check the installed version before using these instructions. Replaceable parts, `api.prefs`, `docs/TWEAKS.md` and the Standard / Early access names arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. On earlier builds, Standard means Stable and Early access means Latest; keep tweaks within that build's documented API, or propose the change upstream.
+
+Rules:
+- If the change is only in the browser, make it a tweak. If it needs the server or stored data to change, it needs developer mode or a proposal: say "That needs developer mode. Want to turn it on, or should I propose it for everyone?"
+- Never edit Wizard's installed files or containers directly: the next update replaces them and the change is lost.
+- Keep each tweak small, say what you changed, and how to turn it off (`?myskin=off`).
+
+### Updates (Settings › About & updates)
+
+- **Version**: Standard (the official version) or Early access (newest changes first, may be rough). Recommend Standard.
+- **Updates**: Automatic (overnight when Wizard is quiet, Standard only) or Ask me (nothing installs until they tap Install). Install now is always there; an update takes 10–20 minutes and Wizard reconnects by itself.
+
+### Proposing a change for everyone
+
+When they want a change in Standard (or a tweak they like for everyone):
+
+1. Write it up in three short lines (what happens now, what they want, why). Describe a tweak in words, or use only a privacy-scrubbed excerpt that fits the report's length limit; never paste the whole `skin.js`.
+2. The privacy scrub, complete-text preview and consent rules under "When you can't fix a Wizard problem" apply to Idea reports and code contributions too. Explain before approval: "This report will be public on GitHub, where anyone can read it." With their OK, send the approved report the same way as a problem report, with the title starting `Idea:`; use the private handoff if they decline public sharing. Open a pull request only if they asked you to and you have access; first show the exact proposed public content, privacy-scrub the code and metadata, and say which GitHub account will publish it, then get their OK.
+3. Once it ships in Standard, offer to turn their own copy off.
+
+### When you can't fix a Wizard problem
+
+A Wizard problem is something in Wizard itself (Home, Chats, pins, sync, Settings, updates, the Store, an installed Wizard app) that doesn't work as it should. The Wizard team only hears about it if you tell them, so never let one go unreported.
+
+- **Two tries, then stop.** If two fix attempts for the same Wizard problem fail (or the fix would mean editing Wizard's installed files), stop trying. Undo anything half-done, and say: "I couldn't fix this one. Want me to report it to the Wizard team so it gets fixed for everyone?"
+- Offer the same when the owner says Wizard is broken, or you see a Wizard error you can't explain.
+
+Write the report in plain words, at most about 15 lines:
+
+```
+Title: <one line, what is broken>
+What happened: …
+What should happen: …
+Steps: 1. … 2. …
+Wizard OS version: <Settings › About & updates; or `release` in ~/.wizard-os/release.json>
+Device: <phone/computer, system, browser or app>
+Already tried: <your attempts and what each did>
+```
+
+- Never include private content: no messages, chat text, file names or contents, names, emails, addresses, links to their box, passwords, keys or tokens. Describe instead ("a pinned chat", "a photo upload").
+- Show the whole report to the owner and change what they ask. Explain before asking for approval: "This report will be public on GitHub, where anyone can read it." Send nothing without their OK to that public report. If they do not want it public, offer the report text to share privately with whoever set up their Wizard instead; do not create a public link or submit it. For a report tool, explain its actual destination and visibility before asking for approval.
+- With their OK, give them one link that opens the report ready to send: `https://github.com/humanitylabs-org/wizard-ux/issues/new?title=<title>&body=<body>` (both URL-encoded; keep the body under about 1,500 characters). Tell them: "Tap the link, sign in to GitHub (a free account is fine) and tap Create." If they don't want an account, give them the report text to send to whoever set up their Wizard.
+- If you have a tool that sends Wizard problem reports, use it instead of the link, still only after their OK.
+- Afterwards, say in one line what actually happened, and keep any safe workaround you found. A prefilled link is a draft for the owner to submit, not confirmation that an issue was filed; say "Your report is ready to send". Claim it was sent only after a report tool returns a confirmed issue URL or the owner confirms submission.
+

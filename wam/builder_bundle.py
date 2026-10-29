@@ -272,7 +272,12 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
             for p in skills:
                 if legacy_alias and p.parent == named:
                     continue
-                data = p.read_text()
+                try:
+                    data = p.read_text()
+                except FileNotFoundError:
+                    # Gone between the listing and the read: an App Manager registry rewrite replaced or removed it.
+                    # A vanished file can't collide; the remaining files are still checked.
+                    continue
                 try:
                     meta = yaml.safe_load(data.split('---', 2)[1]) if data.startswith('---') else {}
                 except (IndexError, yaml.YAMLError):
