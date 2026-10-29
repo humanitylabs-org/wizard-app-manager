@@ -267,9 +267,13 @@ def execute(stage, doc, module):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', type=Path, required=True)
+    parser.add_argument('--manifest-sha256', required=True)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('--preflight', action='store_true'); modes.add_argument('--execute', action='store_true')
-    args = parser.parse_args(); stage = args.stage.absolute(); doc, facts = preflight(stage)
+    args = parser.parse_args(); stage = args.stage.absolute()
+    assert re.fullmatch('[0-9a-f]{64}', args.manifest_sha256)
+    assert digest(stage/'manifest.json') == args.manifest_sha256, 'submitted manifest binding changed'
+    doc, facts = preflight(stage)
     if args.preflight: print(json.dumps(facts, sort_keys=True)); return 0
     assert facts['capacity_admissible'], 'protected reserve + pending footprint unavailable'
     module = load_original(stage); module.native_lock()
