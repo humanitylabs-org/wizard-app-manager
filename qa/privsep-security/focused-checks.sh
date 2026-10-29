@@ -59,6 +59,12 @@ done
 
 step backend-typecheck-and-tests dock "$WORK/wam" node:22-bookworm sh -ec '
   mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
+  # The cross-process authority regression requires both real lock consumers.
+  apt-get update
+  apt-get install -y --no-install-recommends python3 util-linux
+  command -v python3
+  command -v flock
+  python3 -c "import fcntl"
   npm install --global --no-audit --no-fund bun@1.3.0
   timeout 900 bun install --frozen-lockfile
   bun run --cwd packages/common build
@@ -66,6 +72,7 @@ step backend-typecheck-and-tests dock "$WORK/wam" node:22-bookworm sh -ec '
   # Resolve the workspace-local pinned compiler/test packages via normal scripts.
   bun run tsc
   bun run test --maxWorkers=2 src/modules/docker/__tests__/wizard-host-guard.test.ts \
+    src/modules/docker/__tests__/compose-consumption.test.ts src/modules/docker/__tests__/host-policy-lock.test.ts \
     src/modules/apps/__tests__/leaked-env-repair.test.ts src/modules/apps/__tests__/app.helpers.test.ts \
     src/modules/docker/__tests__/docker.service.test.ts src/modules/docker/__tests__/wizard-storage.test.ts
   cd /src
@@ -98,7 +105,7 @@ fi
 step wam-python-focused dock "$WORK/wam" ghcr.io/astral-sh/uv:python3.12-bookworm sh -ec '
   mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
   uv run --no-project --with pytest --with pyyaml python -m pytest -q -p no:anyio \
-    tests/test_final_host_gate.py tests/test_owner_confirm.py tests/test_privilege_migration.py \
+    tests/test_final_host_gate.py tests/test_privsep_review_repair.py tests/test_owner_confirm.py tests/test_privilege_migration.py \
     tests/test_privsep_slice5.py tests/test_privsep_host_policy.py tests/test_fresh_privilege_audit.py \
     tests/test_network.py tests/test_store_install.py tests/test_portable_paths.py'
 
