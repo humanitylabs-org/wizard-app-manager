@@ -378,6 +378,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
+                # The new recipe may add required inputs (e.g. the shared agent-dashboard login); fill them the
+                # way install does, or the update fails validation and the nightly notice repeats every night.
+                missing = cli.reconcile_update_form(c, rt, r["id"])
+                if missing:
+                    raise SystemExit("new required settings need owner input: " + "; ".join(missing))
                 res = cli.app_update(c, r["id"])
             except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
