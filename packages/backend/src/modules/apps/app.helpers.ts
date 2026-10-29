@@ -11,8 +11,19 @@ import { AppFilesManager } from './app-files-manager';
 
 /** The only base-environment keys an app's env receives (privilege separation). Manager credentials are absent. */
 export const APP_PUBLIC_ENV = new Set([
-  'TZ', 'DOMAIN', 'LOCAL_DOMAIN', 'INTERNAL_IP', 'DNS_IP', 'ARCHITECTURE', 'NGINX_PORT', 'NGINX_PORT_SSL',
-  'ROOT_FOLDER_HOST', 'RUNTIPI_APP_DATA_PATH', 'TIPI_VERSION', 'APPS_REPO_ID', 'APPS_REPO_URL',
+  'TZ',
+  'DOMAIN',
+  'LOCAL_DOMAIN',
+  'INTERNAL_IP',
+  'DNS_IP',
+  'ARCHITECTURE',
+  'NGINX_PORT',
+  'NGINX_PORT_SSL',
+  'ROOT_FOLDER_HOST',
+  'RUNTIPI_APP_DATA_PATH',
+  'TIPI_VERSION',
+  'APPS_REPO_ID',
+  'APPS_REPO_URL',
 ]);
 
 @Injectable()

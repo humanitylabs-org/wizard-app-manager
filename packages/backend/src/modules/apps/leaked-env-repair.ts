@@ -26,13 +26,18 @@ export async function scrubLeakedManagerCredentials(appDataDir: string, credenti
       const kept = lines.filter((line) => {
         const eq = line.indexOf('=');
         if (eq < 1) return true;
-        const value = line.slice(eq + 1).trim().replace(/^(['"])(.*)\1$/, '$2');
+        const value = line
+          .slice(eq + 1)
+          .trim()
+          .replace(/^(['"])(.*)\1$/, '$2');
         return !secrets.has(value);
       });
       if (kept.length !== lines.length) {
         const tmp = `${file}.${process.pid}.scrub`;
         await fs.writeFile(tmp, kept.join('\n'), { mode: 0o600, flag: 'wx' });
-        await fs.chown(tmp, st.uid, st.gid).catch(() => {});
+        await fs.chown(tmp, st.uid, st.gid).catch(() => {
+          // Legacy ownership is best effort; on refusal retain the private manager-created replacement.
+        });
         await fs.rename(tmp, file);
         repaired.push(`${store.name}/${app.name}`);
       } else if ((st.mode & 0o077) !== 0) {

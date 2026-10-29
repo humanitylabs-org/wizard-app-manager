@@ -129,7 +129,9 @@ export class FilesystemService {
         if (owner) await fs.promises.chown(temporary, owner.uid, owner.gid);
         await fs.promises.rename(temporary, safeFilePath);
       } finally {
-        await fs.promises.unlink(temporary).catch(() => {});
+        await fs.promises.unlink(temporary).catch(() => {
+          // Best-effort cleanup: rename already removed the temporary path on success.
+        });
       }
       return true;
     } catch (error) {
