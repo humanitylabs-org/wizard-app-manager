@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
-from . import app_standard, wizardmd, system_functions
+from . import app_standard, wizardmd, system_functions, style_check
 
 REPO = Path(__file__).resolve().parent.parent
 ID = re.compile(r'[a-z0-9][a-z0-9-]{1,40}')
@@ -208,6 +208,40 @@ def design_rows(root):
     return rows
 
 
+def style_rows(root):
+    """Same canonical lexical gate as CI: no importing or running app code.
+
+    Generated hello apps are strict from day one. Tracked existing sources ratchet
+    against origin/main (or HEAD for a local dirty tree). Non-Git legacy imports
+    remain warnings; do not pretend an unavailable baseline is strict proof.
+    """
+    root = Path(root).resolve()
+    marker = root / '.builder.json'
+    try:
+        strict = marker.is_file() and json.loads(marker.read_text()).get('template') == 'hello-wizard'
+        base = None
+        if not strict:
+            for candidate in ('origin/main', 'HEAD'):
+                try:
+                    style_check.git(root, 'rev-parse', '--verify', candidate + '^{commit}')
+                    base = candidate
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+        policy = json.loads((Path(__file__).with_name('style-policy.json')).read_text())
+        findings = style_check.scan(root, policy, base=base, strict=strict)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        return [{'rule': 'style: check available', 'ok': False, 'severity': 'error', 'detail': str(error)}]
+    rows = []
+    for failing in (True, False):
+        group = [r for r in findings if r['error'] == failing]
+        if group:
+            rows.append({'rule': 'style: new code uses the canonical kit' if failing else 'style: legacy debt',
+                         'ok': False, 'severity': 'error' if failing else 'warning',
+                         'detail': f'{len(group)} findings: ' + '; '.join('{path}:{line} {rule}'.format(**r) for r in group[:8]) + '. ' + _RULES_URL})
+    return rows
+
+
 def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
@@ -215,6 +249,7 @@ def check_app(root, proposal=False):
     rows += system_functions.check(root)
     rows += kit_rows(root)
     rows += design_rows(root)
+    rows += style_rows(root)
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)
@@ -229,7 +264,8 @@ def validate_style_snapshot(template):
     """Fail closed on edits to the generated canonical style distribution assets."""
     lock = json.loads((template / 'appearance-provenance.json').read_text())
     mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
-               'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js'}
+               'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js',
+               'style/standalone-tokens.css': 'web/standalone-tokens.css'}
     if (lock.get('schema') != 3 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
             or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
             or set(lock.get('files', {})) != set(mapping)):

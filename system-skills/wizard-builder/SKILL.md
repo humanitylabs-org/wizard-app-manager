@@ -12,6 +12,8 @@ metadata:
 ---
 # Build an app for Wizard OS
 
+**Visual authority:** [wizard-os/style/APP-DESIGN-RULES.md](https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md). Use the mirrored kit classes and `--wz-*` roles, not app-local colour/type literals. `wam check` is strict for new generated apps; legacy debt warns, while new/changed style violations and changed stale kit copies fail. See `references/appearance.md` for immutable pin refresh and justified exception handling.
+
 Owner-facing words (wizard-os DECISIONS #84): an app with a screen is an **app**; a screenless app agents use is an **agent app**. Never say "Wizard app" to the owner.
 
 Use the smallest artifact that finishes the owner's job. This system skill lives outside generated app skills, so installs and removals preserve it. Candidate capabilities are source scaffolding, checking, isolated local staging and publication preparation. Production install and public execution remain separate gates.

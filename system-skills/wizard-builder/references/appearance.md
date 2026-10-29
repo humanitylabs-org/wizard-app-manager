@@ -7,7 +7,7 @@ The authoritative tokens and components live in [wizard-os/style/](https://githu
 - `web/boot.js` ← `style/boot.js`: hosted marker before first paint.
 - `web/wizard-tokens.css` ← `style/tokens.css`: generated from `style/tokens.json`.
 - `web/wizard-sheet.js` ← `style/sheet.js`: `WzSheet.open(dialog)` wires the one pop-up's five closes (×, Esc, outside tap, Back, swipe down).
-- `web/wizard-ui.css` ← `style/ui.css`: card, chip, bar, sheet, row, button, empty state, single-line add field and frame. Look only: talking to an agent is the real Chats thread (`WizardApp.nav.openThread`), never a composer built from these classes. Inside Wizard, `WizardApp` swaps this copy for the shell's live kit (`/wizard-os-home/kit/wizard-ui.css`) and layers the active skin and My skin after `styles.css`, so skins can restyle `.wz-*`; never edit the copy (`wam check` warns), put app styles in `styles.css`.
+- `web/wizard-ui.css` ← `style/ui.css`: card, chip, bar, sheet, row, button, empty state, single-line add field and frame. Look only: talking to an agent is the real Chats thread (`WizardApp.nav.openThread`), never a composer built from these classes. Inside Wizard, `WizardApp` swaps this copy for the shell's live kit (`/wizard-os-home/kit/wizard-ui.css`) and layers the active skin and My skin after `styles.css`, so skins can restyle `.wz-*`; never edit the copy (the canonical hash gate detects drift), put app styles in `styles.css`.
 - `/wizard-os-home/core/app-client.js`: shared capability-negotiated WizardApp v1, including Appearance v1. No copied per-app transport.
 - `web/standalone.css`: retained system-media light fallback before host appearance arrives, separate from the immutable canonical CSS.
 - `web/styles.css`: app-specific layout. This is the file the builder edits.
@@ -15,7 +15,7 @@ The authoritative tokens and components live in [wizard-os/style/](https://githu
 Appearance owns surfaces and ink; the app owns layout, content and intentional typography. Hosted canvas is transparent; standalone uses the skin base. The accepted skins are Nebula (default), Grove, Tide, Ember and Signal. Selection belongs in the shell. Generic light-mode transport stays available without reviving retired skins. Static type, spacing, radius and motion roles are CSS defaults; the v1 host message carries colours only.
 Paper is retired; use one of the accepted skins from the shell registry.
 
-Use the classes documented in the canonical style README. Keep existing app accents and serif reading where intentional. Use `WizardApp.back.register/push` for domain callbacks and `back.useHistory` only for real routes. Core owns root guards; the app never copies them. Read `references/system-functions.md` and complete its mandatory QA before handoff.
+Use the classes and visual rules documented in the canonical `APP-DESIGN-RULES.md`; the style README covers distribution only. Keep existing app accents and serif reading where intentional. Use `WizardApp.back.register/push` for domain callbacks and `back.useHistory` only for real routes. Core owns root guards; the app never copies them. Read `references/system-functions.md` and complete its mandatory QA before handoff.
 
 ## Design rules
 
@@ -26,9 +26,9 @@ Use the classes documented in the canonical style README. Keep existing app acce
 3. **No own title header** in a window; the shell names the app.
 4. **One pop-up:** `<dialog class="wz-sheet">` opened with `WzSheet.open`. No `alert/confirm/prompt`, drawers or full-page takeovers.
 5. **Connector apps:** `.wz-conn` status card with one `.wz-pill`, accounts as `.wz-row` (+ `.wz-meter`), one primary `.wz-button`, details in `<details class="wz-more">`.
-6. **Kit only:** colours/type from kit variables, never hex/rgb/hsl in app CSS; 44 px targets, 13 px text.
+6. **Kit only:** colours/type from kit variables, never hex/rgb/hsl in app CSS; 44 px minimum targets, 15 px body text and the 13 px label floor, through the guide’s named roles.
 
-`wam check` warns (never fails) on a frame `max-width`, colour literals in the app's own CSS and `alert/confirm/prompt`.
+Style admission uses the canonical source-only `style/check_style.py` and hash policy mirrored into `wam`: new `hello-wizard` apps fail on every literal colour, font family, px type size or kit drift. Existing apps warn about baseline debt; new/changed violations fail. Review exceptions in the canonical policy with exact file hash and a reason; never silence the gate in an app. Frame `max-width` and `alert/confirm/prompt` retain their existing transition warnings.
 
 **App checklist:** loads `wizard-ui.css`, frame has no `max-width`; looks right at 360, 700 and 1200 px in two skins (one light); every pop-up is a `.wz-sheet` closing five ways; connector apps follow pattern 5; no own title header; no hex colours.
 
