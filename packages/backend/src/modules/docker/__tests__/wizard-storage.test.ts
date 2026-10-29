@@ -127,6 +127,26 @@ describe('owner share grants', () => {
     expect(yaml.parse(await store.prepare(urn, mounted)).services.main.volumes).toEqual([]);
     expect(await store.proposed()).toEqual([]); // denied, not silently reproposed
   });
+  it('mounts the share on the service whose recipe mounts that path (Hermes Agent engine), not the front', async () => {
+    // Fresh 0.3.83 box: the grant mounted the Claude login on hermes-agent (front proxy) while Claude Code runs in
+    // hermes-agent-engine, so every chat said Claude Code had no login (demo VPS, 30 Oct 2026).
+    const two = {
+      volumes: { 'claude-login': { name: LEGACY_CLAUDE } },
+      services: {
+        'hermes-agent': { image: 'front', 'x-runtipi': { is_main: true } },
+        'hermes-agent-engine': { image: 'engine', volumes: ['${APP_DATA_DIR}/data:/opt/data', 'claude-login:/claude'] },
+      },
+    };
+    await install(provider);
+    const urn = await install({ id: 'hermes-agent' }, two);
+    await store.change({ kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login' }, true);
+    const out = yaml.parse(await store.prepare(urn, yaml.stringify(two))).services;
+    const at = (svc: any) => (svc.volumes ?? []).filter((v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target) === '/claude');
+    expect(at(out['hermes-agent-engine'])).toEqual([
+      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+    ]);
+    expect(at(out['hermes-agent'])).toEqual([]);
+  });
   it('proposes when provider installed later and keeps provider data on consumer uninstall', async () => {
     await install(consumer);
     expect(await store.proposed()).toEqual([]);

@@ -723,10 +723,17 @@ rm -f ".$1.wizard-copy-ready"`;
         );
         const folder = await confined(p.data, `data/${share.path}`, true);
         if (p.manifest.id === 'wizard-claude' && share.id === 'claude-login') await this.migrate(this.legacyClaudeVolume, `data/${share.path}`, p);
+        // The services whose own recipe mounts this path get the share (Hermes Agent: Claude Code runs in its engine
+        // service, not the main front service); otherwise the main service.
+        const declared = Object.keys(app.compose.services).filter((n) =>
+          (app.compose.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path),
+        );
         const main = Object.keys(app.compose.services).filter((n) => app.compose.services[n]['x-runtipi']?.is_main);
-        if (main.length !== 1 || !doc.services[main[0]!]) throw new Error('Share consumer requires exactly one main service');
-        const svc = doc.services[main[0]!];
-        if ((svc.volumes ?? []).some((v: any) => targetOf(v) === m.path)) throw new Error(`Share mount conflicts at ${m.path}`);
+        if (!declared.length && main.length !== 1) throw new Error('Share consumer requires exactly one main service');
+        const names = declared.length ? declared : main;
+        if (names.some((n) => !doc.services[n])) throw new Error('Share consumer service missing');
+        const targets = names.map((n) => doc.services[n]);
+        if (targets.some((svc) => (svc.volumes ?? []).some((v: any) => targetOf(v) === m.path))) throw new Error(`Share mount conflicts at ${m.path}`);
         // New provider folders inherit the provider service uid, never consumer uid.
         const providerSvc =
           Object.values(p.compose.services).find((s) =>
@@ -737,8 +744,10 @@ rm -f ".$1.wizard-copy-ready"`;
         const [uid, gid] = user.split(':').map(Number);
         const stat = await fs.stat(folder);
         if (missing && (stat.uid !== uid || stat.gid !== (gid ?? uid))) await fs.chown(folder, uid!, gid ?? uid!);
-        svc.volumes ??= [];
-        svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
+        for (const svc of targets) {
+          svc.volumes ??= [];
+          svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
+        }
         doc['x-wizard-share-mounts'].push(m.path);
       }
       const prepared = yaml.stringify(doc);
