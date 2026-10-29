@@ -1036,7 +1036,7 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, *, held: dict | None =
             source = json.loads((live / ".wizard-source").read_text()).get("repo")
         except (OSError, ValueError):
             continue
-        if commit == row["commit"] or source != row["repo"]:
+        if source != row["repo"]:
             continue
         from .source_integrity import update_block
         reason = update_block(c.runtipi_root, STORE, app_id, verify_legacy=True)
@@ -1044,6 +1044,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, *, held: dict | None =
             if held is not None:
                 held[app_id] = reason
             print(f"keeping {app_id} unchanged: {reason}", file=sys.stderr)
+            continue
+        if commit == row["commit"]:
             continue
         try:
             print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)

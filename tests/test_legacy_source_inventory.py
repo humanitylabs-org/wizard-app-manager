@@ -98,8 +98,6 @@ def test_installer_rerun_verifies_legacy_before_prepare_and_reports_hold_separat
 
 @pytest.mark.parametrize('args', [['app', 'update', '--no-backup', 'demo'], ['app', 'update', '--all']])
 def test_update_passthroughs_never_skip_source_guard(tmp_path, monkeypatch, args):
-    from wam import hermes_lock
-    monkeypatch.setattr(hermes_lock, 'authorize', lambda: 'fixture')
     monkeypatch.setattr(cli.subprocess, 'call', lambda *a, **kw: pytest.fail('unsafe passthrough'))
     with pytest.raises(ValueError, match='wam app update <app>'):
         cli.runtipi_cli(tmp_path, args)
