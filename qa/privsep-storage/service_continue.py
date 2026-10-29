@@ -252,7 +252,8 @@ def make_runner(production,base):
             self.copy(self.evidence/'committed-after.json',ROOT+'/committed-after.json',True)
             assert (self.evidence/'committed-before.json').read_bytes()==(self.evidence/'committed-after.json').read_bytes()
             self.receipt['committed_after_sha256']=digest(self.evidence/'committed-after.json')
-            aggregate=closure['production']['cases']+[dict(r,fresh=True) for r in self.receipt['actual_cases']]
+            aggregate=[dict(r,fresh=False,inherited_receipt_sha256=PRIOR_RECEIPT)
+                for r in closure['production']['cases']]+[dict(r,fresh=True) for r in self.receipt['actual_cases']]
             assert len(aggregate)==len({r['name'] for r in aggregate})==14
             assert sorted(r['name'] for r in aggregate)==sorted(production.CASES) and all(r['passed'] for r in aggregate)
             self.receipt['aggregate_runtime_cases']=aggregate
