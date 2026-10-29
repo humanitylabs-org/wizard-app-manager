@@ -54,12 +54,12 @@ Source contract: `humanitylabs-org/wizard-os`, branch `spec/app-owned-logins`
 `shares: [{id: claude-login, path: claude}]` exports
 `${APP_DATA_DIR}/data/claude`. A consumer declares
 `mounts: [{app: wizard-claude, share: claude-login, path: /claude}]`.
-The mount goes to every consumer service whose own recipe mounts that target
-path (Hermes Agent: `hermes-agent-engine`, where Claude Code runs); when no
-service declares it, the consumer's main service receives it. It exists only
-while the exact `kind: share` grant exists. The recipe's own mount at that
-path (Hermes Agent's legacy `claude-login` volume) is removed first; any other
-mount left at the target is refused as a conflict.
+The mount goes to every consumer service that mounts that target path in the
+generated compose (architecture overrides applied; Hermes Agent:
+`hermes-agent-engine`, where Claude Code runs), replacing that placeholder
+mount; when no service declares it, the consumer's main service receives it,
+and a mount already at the target there is refused as a conflict. It exists
+only while the exact `kind: share` grant exists.
 No share grant grants network access or RPC keys.
 Existing per-app `wizard/grants.json` RPC credentials are not changed.
 

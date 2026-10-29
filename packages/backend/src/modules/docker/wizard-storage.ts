@@ -666,6 +666,14 @@ rm -f ".$1.wizard-copy-ready"`;
       if (!doc['x-wizard-volumes'] || fresh.size) doc = rewriteVolumes(portable(doc), app.manifest.id);
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
+      // Which generated services mount each consumer share path, read before any mount is removed below. The generated
+      // compose already has the architecture overrides applied, so an override that adds or moves the mount counts.
+      const carriers = new Map(
+        (app.manifest.mounts ?? []).map((m) => [
+          m.path,
+          Object.keys(doc.services ?? {}).filter((n) => (doc.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path)),
+        ]),
+      );
       const file = await this.readGrants();
       file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
       await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
@@ -725,14 +733,14 @@ rm -f ".$1.wizard-copy-ready"`;
         if (p.manifest.id === 'wizard-claude' && share.id === 'claude-login') await this.migrate(this.legacyClaudeVolume, `data/${share.path}`, p);
         // The services whose own recipe mounts this path get the share (Hermes Agent: Claude Code runs in its engine
         // service, not the main front service); otherwise the main service.
-        const declared = Object.keys(app.compose.services).filter((n) =>
-          (app.compose.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path),
-        );
+        const declared = carriers.get(m.path) ?? [];
         const main = Object.keys(app.compose.services).filter((n) => app.compose.services[n]['x-runtipi']?.is_main);
         if (!declared.length && main.length !== 1) throw new Error('Share consumer requires exactly one main service');
         const names = declared.length ? declared : main;
         if (names.some((n) => !doc.services[n])) throw new Error('Share consumer service missing');
         const targets = names.map((n) => doc.services[n]);
+        // The share replaces the recipe's own placeholder mount at that path in the selected services.
+        for (const svc of targets) if (declared.length) svc.volumes = (svc.volumes ?? []).filter((v: any) => targetOf(v) !== m.path);
         if (targets.some((svc) => (svc.volumes ?? []).some((v: any) => targetOf(v) === m.path))) throw new Error(`Share mount conflicts at ${m.path}`);
         // New provider folders inherit the provider service uid, never consumer uid.
         const providerSvc =
