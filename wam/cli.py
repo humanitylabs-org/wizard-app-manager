@@ -1014,7 +1014,7 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, *, held: dict | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
@@ -1037,6 +1037,13 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
         except (OSError, ValueError):
             continue
         if commit == row["commit"] or source != row["repo"]:
+            continue
+        from .source_integrity import update_block
+        reason = update_block(c.runtipi_root, STORE, app_id, verify_legacy=True)
+        if reason:
+            if held is not None:
+                held[app_id] = reason
+            print(f"keeping {app_id} unchanged: {reason}", file=sys.stderr)
             continue
         try:
             print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
@@ -1255,6 +1262,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/updates":
             from . import updates
             return self._json(200, updates.status())
+        if u.path == "/api/app-updates":
+            from . import app_updates
+            return self._json(200, app_updates.status(c))
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
         return self._json(404, {"error": "not found"})
@@ -1397,9 +1407,21 @@ class StoreHandler(BaseHTTPRequestHandler):
         POST {"channel": "stable"|"latest"} saves the channel;
         POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
         an unpinned box refuses."""
-        from . import updates
+        from . import updates, app_updates
+
+        def status():
+            out = updates.status()
+            # Do not lose the system controls when an app-status read fails.
+            try:
+                out["apps"] = app_updates.status(self.cfg)
+            except Exception:  # noqa: BLE001 - unknown is not permission to update
+                out["apps"] = {"app_mode": app_updates.mode(self.cfg.home),
+                               "chosen": app_updates._state(self.cfg.home).get("mode") in app_updates.MODES,
+                               "error": "Could not check available app versions", "due": [], "skipped": []}
+            return out
+
         if method == "GET":
-            return self._json(200, updates.status())
+            return self._json(200, status())
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 1024:
@@ -1409,13 +1431,19 @@ class StoreHandler(BaseHTTPRequestHandler):
                 raise ValueError("expected an object")
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
+        if set(body) == {"app_mode"} and body["app_mode"] in app_updates.MODES:
+            app_updates.set_mode(body["app_mode"], self.cfg.home)
+            return self._json(200, status())
+        if body == {"action": "apply-apps"}:
+            res = app_updates.start_detached()
+            return self._json(200 if res.get("started") else 409, res)
         if body.get("action") == "apply" and set(body) == {"action"}:
             res = updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
-            return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
+            return self._json(200, {**updates.set_mode(body["mode"]), **status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
-            return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
+            return self._json(200, {**updates.set_channel(body["channel"]), **status()})
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
                                          '{"action": "apply"}'})
 
@@ -1460,7 +1488,7 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, *, automatic: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     rt = c.runtipi()
@@ -1470,11 +1498,23 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
     app, store = urn.split(":", 1)
+    if store == STORE:
+        from .source_integrity import update_block
+        reason = update_block(c.runtipi_root, store, app, verify_legacy=True)
+        if reason:
+            raise SystemExit(f"REFUSED: {app}: {reason}; keep or merge your source before updating; nothing replaced")
+        from .update_policy import require_update
+        require_update(c, app, store)
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
-    rt.update(urn, perform_backup=backup)
+    from .app_updates import admission
+    with admission(c.home if automatic else None, automatic) as admitted:
+        if admitted:
+            rt.update(urn, perform_backup=backup)
+    if not admitted:
+        return {"id": app_id, "skipped": "manual", "status": before.get("status"), "version": before.get("version")}
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     after = ((rt.app(urn) or {}).get("app") or {})
@@ -1491,6 +1531,8 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
 
 
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
+    if args[:2] == ['app', 'update']:
+        raise ValueError('Use wam app update <app> [--no-backup]; raw or bulk update passthrough is not safe')
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
@@ -1582,7 +1624,25 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
+                                             "(default) / --ask, --hold / --unhold <id>")
+    aug = au.add_mutually_exclusive_group()
+    aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
+    aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
+    aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
+    aug.add_argument("--ensure-timer", action="store_true")
+    au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
     args = ap.parse_args(argv)
+    if args.cmd == "app-updates":
+        from . import app_updates as au_
+        res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
+               else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
+               else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto
+               else au_.apply(only=args.apply or None, dry_run=args.dry_run) if args.apply is not None
+               else au_.status())
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") or res.get("failed") else 0
     if args.cmd == "updates":
         from . import updates
         if args.force and not args.apply:
