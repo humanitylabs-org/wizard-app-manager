@@ -47,6 +47,138 @@ def project_error(exc, allowed):
     return {'class': kind, 'frames': frames[-16:]}
 
 
+def process_error(exc):
+    """Only fixed failure labels; never exception text or arbitrary attributes."""
+    if isinstance(exc, (FileNotFoundError, ProcessLookupError)): return 'missing-or-exited'
+    if isinstance(exc, PermissionError): return 'permission-denied'
+    if isinstance(exc, OSError): return 'os-error'
+    if isinstance(exc, (ValueError, IndexError, UnicodeError)): return 'malformed-or-bound'
+    return 'probe-error'
+
+
+def process_stat(path, pid):
+    """Bounded proc stat; omit comm entirely, including embedded right parens."""
+    import os
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try: raw = os.read(fd, 4097)
+    finally: os.close(fd)
+    if len(raw) > 4096: raise ValueError('bound')
+    head, tail = raw.rsplit(b')', 1)
+    if int(head.split(b'(', 1)[0]) != pid: raise ValueError('pid')
+    fields = tail.split()
+    state = fields[0].decode('ascii')
+    if state not in ('R', 'S', 'D', 'Z', 'T', 't', 'X', 'x', 'K', 'W', 'P', 'I'):
+        raise ValueError('state')
+    # field 3 is state; field 9 is flags; field 22 is starttime.
+    ppid, flags, start = int(fields[1]), int(fields[6]), int(fields[19])
+    if min(ppid, flags, start) < 0 or max(ppid, flags, start) > 2**64-1:
+        raise ValueError('integer')
+    # Fixed comm classification can still help when a zombie has no exe link.
+    # Like path_class this is not authenticated identity; arbitrary comm is omitted.
+    comm = head.split(b'(', 1)[1]
+    classes = {b'systemd-udevd': 'systemd-udevd', b'udev-worker': 'udev-worker',
+               b'udevadm': 'udevadm', b'run-init': 'run-init', b'sh': 'shell',
+               b'busybox': 'busybox'}
+    return {'pid': pid, 'ppid': ppid, 'state': state, 'flags': flags,
+            'comm_class': classes.get(comm, 'unknown'), 'comm_class_is_identity': False,
+            'pf_kthread': bool(flags & 0x00200000), 'start_ticks': start}
+
+
+def process_executable(path, budget):
+    """Fixed path classifications are clues, NOT service identity/admission.
+
+    The proc exe magic link is intentionally followed to hash its opened inode.
+    Never open the path returned by readlink, nor report arbitrary link text.
+    """
+    import hashlib
+    import os
+    import stat
+    labels = {'/usr/lib/systemd/systemd-udevd': 'systemd-udevd',
+              '/lib/systemd/systemd-udevd': 'systemd-udevd',
+              '/sbin/udevd': 'udevd', '/usr/sbin/udevd': 'udevd',
+              '/bin/udevadm': 'udevadm', '/usr/bin/udevadm': 'udevadm',
+              '/sbin/udevadm': 'udevadm', '/usr/sbin/udevadm': 'udevadm',
+              '/bin/run-init': 'run-init', '/usr/bin/run-init': 'run-init',
+              '/bin/busybox': 'busybox', '/usr/bin/busybox': 'busybox'}
+    row = {'path_class': 'unknown', 'path_class_is_identity': False}
+    try:
+        target = os.readlink(path)
+        if len(target) > 4096: raise ValueError('bound')
+        deleted = target.endswith(' (deleted)')
+        if deleted: target = target[:-10]
+        row.update(path_class=labels.get(target, 'unknown'), deleted=deleted)
+    except Exception as exc: row['link_error'] = process_error(exc)
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            row['hash_status'] = 'not-regular'; return row
+        row.update(device=st.st_dev, inode=st.st_ino, uid=st.st_uid,
+                   mode=stat.S_IMODE(st.st_mode), size=st.st_size)
+        if st.st_size > min(16*1024**2, budget[0]):
+            row['hash_status'] = 'byte-budget-exceeded'; return row
+        h = hashlib.sha256()
+        size = 0
+        # At most 257 reads per executable, 64MiB for the whole snapshot.
+        for _ in range(257):
+            left = min(16*1024**2-size, budget[0])
+            if left <= 0:
+                # fstat size and exact byte count still cannot exclude growth.
+                if size == st.st_size and os.fstat(fd).st_size == size:
+                    break
+                row['hash_status'] = 'byte-budget-exceeded'; return row
+            chunk = os.read(fd, min(65536, left))
+            if not chunk: break
+            budget[0] -= len(chunk); size += len(chunk); h.update(chunk)
+        else:
+            row['hash_status'] = 'read-bound-exceeded'; return row
+        after = os.fstat(fd)
+        if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or size != st.st_size:
+            row['hash_status'] = 'inode-changed'; return row
+        row.update(hash_status='hashed', sha256=h.hexdigest())
+    except Exception as exc: row['hash_status'] = process_error(exc)
+    finally:
+        if fd is not None: os.close(fd)
+    return row
+
+
+def process_snapshot(candidates, proc='/proc'):
+    """One finite read of ONLY the exact guard's list after its Refusal.
+
+    No process enumeration, arguments, environ, status, arbitrary locals,
+    waiting, retry, signalling, reaping, or admission decision occurs here.
+    """
+    from pathlib import Path
+    row = {'status': 'captured', 'source': 'require_fence:258:Refusal',
+           'replay_authorized': False, 'processes': []}
+    if type(candidates) is not list:
+        row['status'] = 'invalid-candidate-list'; return row
+    row['candidate_count'] = len(candidates)
+    if len(candidates) > 64:
+        row['status'] = 'candidate-bound-exceeded'; return row
+    if any(type(p) is not int or not 1 < p <= 2**31-1 for p in candidates) or len(set(candidates)) != len(candidates):
+        row['status'] = 'invalid-candidate-list'; return row
+    row['candidate_pids'] = list(candidates)
+    budget = [64*1024**2]
+    for pid in candidates:
+        p = Path(proc)/str(pid)
+        item = {'pid': pid}
+        try: item['stat_before'] = process_stat(p/'stat', pid)
+        except Exception as exc: item['stat_before_error'] = process_error(exc)
+        item['executable'] = process_executable(p/'exe', budget)
+        try: item['stat_after'] = process_stat(p/'stat', pid)
+        except Exception as exc: item['stat_after_error'] = process_error(exc)
+        if 'stat_before' in item and 'stat_after' in item:
+            item['same_pid_lifetime'] = item['stat_before']['start_ticks'] == item['stat_after']['start_ticks']
+            item['stat_changed'] = item['stat_before'] != item['stat_after']
+        else: item['same_pid_lifetime'] = False
+        row['processes'].append(item)
+    row['executable_bytes_read'] = 64*1024**2-budget[0]
+    return row
+
+
 def build_probe(bootstrap, product):
     if hashlib.sha256(bootstrap).hexdigest() != BOOT_SHA:
         raise ValueError('bootstrap source drift')
@@ -59,7 +191,8 @@ def build_probe(bootstrap, product):
     allowed = {BOOT: locations(text), PRODUCT: locations(product.decode())}
     # Embed the exact reviewed projection function; no external import path.
     tree = ast.parse(__import__('pathlib').Path(__file__).read_text())
-    projector = ast.unparse(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'project_error'))
+    projector = '\n\n'.join(ast.unparse(n) for n in tree.body if isinstance(n, ast.FunctionDef)
+        and n.name in ('project_error', 'process_error', 'process_stat', 'process_executable', 'process_snapshot'))
     support = '''
 import json
 _DIAGNOSTIC_ALLOWED = @@ALLOWED@@
@@ -68,12 +201,22 @@ _DIAGNOSTIC_PRODUCT = PRODUCT_VALUE
 class _DiagnosticStop(BaseException): pass
 _DIAGNOSTIC_OPERATION = 'bootstrap-invocation'
 _DIAGNOSTIC_LAST = None
+_DIAGNOSTIC_PROCESS = None
 
 def _diagnostic_trace(frame, event, arg):
-    global _DIAGNOSTIC_OPERATION, _DIAGNOSTIC_LAST
+    global _DIAGNOSTIC_OPERATION, _DIAGNOSTIC_LAST, _DIAGNOSTIC_PROCESS
     code = frame.f_code
     if event == 'call' and code.co_filename == _DIAGNOSTIC_PRODUCT and code.co_name == 'main':
         raise _DiagnosticStop()
+    # Observe only AFTER the real reviewed guard has raised, never before census.
+    if (event == 'exception' and code.co_filename == _DIAGNOSTIC_PRODUCT
+            and code.co_name == 'require_fence' and frame.f_lineno == 258
+            and code is getattr(frame.f_globals.get('require_fence'), '__code__', None)
+            and type(arg[1]) is frame.f_globals.get('Refusal')
+            and _DIAGNOSTIC_PROCESS is None):
+        try: _DIAGNOSTIC_PROCESS = process_snapshot(frame.f_locals['userspace'])
+        except Exception as exc:
+            _DIAGNOSTIC_PROCESS = {'status': process_error(exc), 'replay_authorized': False}
     spans = _DIAGNOSTIC_ALLOWED.get(code.co_filename, {})
     approved = spans.get(code.co_name, [])
     if event == 'line' and any(span[0] <= frame.f_lineno <= span[1] for span in approved):
@@ -100,6 +243,8 @@ def diagnostic_main():
         sys.settrace(None)
     row['operation'] = _DIAGNOSTIC_OPERATION
     row['last_location'] = _DIAGNOSTIC_LAST
+    row['sole_init_process_snapshot'] = _DIAGNOSTIC_PROCESS
+    row['replay_authorized'] = False
     print(json.dumps(row, sort_keys=True), flush=True)
     while True: time.sleep(3600)
 

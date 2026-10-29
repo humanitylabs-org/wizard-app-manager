@@ -26,8 +26,12 @@ ORIGIN_RECEIPT = '0e8e1e413093e67e6429e4960c1241c6b6d9f32de34114a0bd6b65e453d636
 ORIGIN_XML = '67f7c26d4a5a5e709a0d5c2ce620ad060a7cdf150a258a0ea99db5e80808655a'
 RESERVE = 217179869184
 PENDING = 68719476736  # unchanged conservative 56GiB + 4GiB + packaging/log peak
+PRIOR = Path('/srv/work/privsep/storage-cold-diagnostic/e4fc293a843176878111b5f44fdb2e666a057137')
+PRIOR_RECEIPT = 'ea821935205e381869ee18d987726c9b70d47cb9a53abc245d28deacb1c493eb'
+PRIOR_XML = '8c0404310ee1695a5ff01bfd8bf199066c936f9d067244e2da9d7aa70e6168b3'
+PRIOR_MANIFEST = 'bd6dc034bb8066024c21df5fa35cf4a9d57d90cf33c508baa5aefd72f077851f'
 NEW = ('qa/privsep-storage/cold_diagnostic.py', 'qa/privsep-storage/cold_probe.py',
-       'tests/test_storage_cold_diagnostic.py')
+       'tests/test_storage_cold_diagnostic.py', 'tests/test_storage_cold_process.py')
 BOOT = '/usr/local/lib/wizard-storage/maintenance-init'
 ROOT = '/root/storage-cold-qa'
 
@@ -106,6 +110,7 @@ def validate(stage, expected):
         st = p.lstat()
         actual = {k: getattr(st, k) for k in ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_size', 'st_mtime_ns')}
         assert actual == expected_stat
+    prior = validate_prior(stage, d)
     base = load('accepted_cold_vm_lifecycle', ORIGIN/'storage-runner.py')
     assert base.BASE.is_file() and digest(base.BASE) == base.BASE_SHA
     chain = json.loads(subprocess.check_output(['qemu-img', 'info', '--output=json', '--backing-chain', str(ORIGIN/'evidence/disk.qcow2')], text=True, timeout=30))
@@ -119,7 +124,7 @@ def validate(stage, expected):
     assert all(b[k] == v for k, v in a.items()), 'passed source dependencies changed'
     assert current == json.loads((stage/'source-members.json').read_text())
     with tarfile.open(stage/'source.tar') as archive:
-        for member, standalone in ((NEW[0], 'runner.py'), (NEW[1], 'probe.py'), (NEW[2], 'test_probe.py')):
+        for member, standalone in ((NEW[0], 'runner.py'), (NEW[1], 'probe.py'), (NEW[2], 'test_probe.py'), (NEW[3], 'test_process.py')):
             assert hashlib.sha256(archive.extractfile(member).read()).hexdigest() == d['files'][standalone]
         probe = load('cold_probe_static', stage/'probe.py')
         generated = probe.build_probe(archive.extractfile('scripts/storage-maintenance-init.py').read(),
@@ -128,12 +133,59 @@ def validate(stage, expected):
         compile(generated, BOOT, 'exec')  # compile only; no product/guest execution
     heads = subprocess.check_output(['git', 'bundle', 'list-heads', str(stage/'source.bundle')], text=True, timeout=30)
     assert d['revision']+' refs/heads/fix/storage-production-entry-service' in heads
-    process_absence([ORIGIN, stage])
+    process_absence([ORIGIN, PRIOR, stage])
     free = shutil.disk_usage(stage).free
     return d, base, {'static_only': True, 'heavy_executed': False, 'inherited_python_cases': len(ids),
         'inherited_xml_sha256': ORIGIN_XML, 'free_bytes': free, 'reserve_bytes': RESERVE,
         'pending_bytes': PENDING, 'capacity_admissible': free >= RESERVE+PENDING,
-        'full_acceptance': False, 'review_required': True}
+        'full_acceptance': False, 'review_required': True,
+        'prior_diagnostic_cases': prior, 'prior_cases_reexecuted': False}
+
+
+def validate_prior(stage, doc):
+    # Reuse only the saved bounded diagnostic, not its cold refusal as acceptance.
+    assert digest(PRIOR/'manifest.json') == PRIOR_MANIFEST
+    assert digest(PRIOR/'evidence/receipt.json') == PRIOR_RECEIPT
+    assert digest(PRIOR/'evidence/subset.xml') == PRIOR_XML
+    for name, sha in doc['prior_files'].items():
+        assert digest(PRIOR/name) == sha
+    m = json.loads((PRIOR/'manifest.json').read_text())
+    r = json.loads((PRIOR/'evidence/receipt.json').read_text())
+    assert m['revision'] == r['revision'] == PRIOR.name
+    assert r['full_acceptance'] is False and r['review_required'] is True and r['passed'] is False
+    assert r['request_reader_executed'] is False and r['transaction_executed'] is False
+    assert r['owned_qemu_absent'] is True and r['original_disks_preserved'] is True
+    assert r['original_disk_sha256_before'] == r['original_disk_sha256_after']
+    assert all(not Path('/proc', str(b['pid'])).exists() and b['stopped'] for b in r['boots'])
+    assert len(r['boots']) == 2 and r['cleanup_errors'] == r['diagnostic_errors'] == []
+    assert len(r['steps']) == 10
+    required = {'manifest.json', 'source.tar', 'source-members.json', 'runner.py', 'probe.py',
+                'test_probe.py', 'diagnostic-init.py', 'evidence/receipt.json',
+                'evidence/subset.xml', 'evidence/before.json', 'evidence/boot-2-serial.log'}
+    assert set(doc['prior_files']) == required | {'evidence/'+step['log'] for step in r['steps']}
+    for step in r['steps']:
+        assert step['exit'] == 0 and digest(PRIOR/'evidence'/step['log']) == step['sha256']
+    tree = ET.parse(PRIOR/'evidence/subset.xml')
+    cases = sorted(c.get('classname').replace('.', '/')+'.py::'+c.get('name') for c in tree.findall('.//testcase'))
+    assert len(cases) == len(set(cases)) == 10 and cases == m['new_test_cases'] == r['new_regressions']['actual_cases']
+    assert r['new_regressions']['xml_sha256'] == PRIOR_XML
+    assert doc['prior_test_cases'] == cases
+    assert not any(tree.findall('.//'+tag) for tag in ('failure', 'error', 'skipped'))
+    previous = json.loads((PRIOR/'source-members.json').read_text())
+    current = json.loads((stage/'source-members.json').read_text())
+    a, b = ({row['path']: row for row in rows} for rows in (previous, current))
+    assert set(b)-set(a) == {NEW[3]} and not set(a)-set(b)
+    assert {k for k in a if a[k] != b[k]} == set(NEW[:2])
+    # The ten earlier test definitions remain byte/mode-identical; changed helper
+    # coverage is the new focused inventory, not a claim they ran at this head.
+    with tarfile.open(stage/'source.tar') as archive:
+        tests = ast.parse(archive.extractfile(NEW[3]).read())
+    expected = sorted(NEW[3]+'::'+n.name for n in tests.body
+        if isinstance(n, ast.FunctionDef) and n.name.startswith('test_'))
+    assert expected == doc['new_test_cases'] and len(expected) == len(set(expected))
+    assert expected and not any(isinstance(n, ast.Call) and
+        isinstance(n.func, ast.Attribute) and n.func.attr == 'parametrize' for n in ast.walk(tests))
+    return cases
 
 
 def make_runner(base):
@@ -146,7 +198,9 @@ def make_runner(base):
             self.receipt.update(schema='storage-cold-diagnostic-v1', full_acceptance=False, review_required=True,
                 scope='saved synthetic disk bootstrap diagnostic only; no transaction, runtime acceptance or Service proof',
                 origin_receipt_sha256=ORIGIN_RECEIPT, inherited_python_cases=234, inherited_xml_sha256=ORIGIN_XML,
-                transaction_executed=False, request_reader_executed=False, original_runtime_acceptance=False)
+                transaction_executed=False, request_reader_executed=False, original_runtime_acceptance=False,
+                prior_diagnostic_receipt_sha256=PRIOR_RECEIPT, prior_diagnostic_xml_sha256=PRIOR_XML,
+                prior_diagnostic_cases=self.doc['prior_test_cases'], prior_cases_reexecuted=False)
             self.save()
             self.original_disks = {name: digest(ORIGIN/'evidence'/name) for name in ('disk.qcow2', 'secondary.qcow2')}
             self.receipt['original_disk_sha256_before'] = self.original_disks; self.save()
@@ -160,7 +214,7 @@ def make_runner(base):
             self.copy(self.stage/'source.tar', ROOT+'/source.tar')
             self.copy(self.stage/'diagnostic-init.py', ROOT+'/diagnostic-init')
             self.guest('new-source-regressions', 'umask 022\ntar --no-same-permissions -xf '+ROOT+'/source.tar -C '+ROOT+'\n'
-                'cd '+ROOT+'\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q tests/test_storage_cold_diagnostic.py --junitxml='+ROOT+'/subset.xml', 180)
+                'cd '+ROOT+'\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q tests/test_storage_cold_process.py --junitxml='+ROOT+'/subset.xml', 180)
             self.copy(self.evidence/'subset.xml', ROOT+'/subset.xml', True)
             tree = ET.parse(self.evidence/'subset.xml')
             ids = sorted(c.get('classname').replace('.', '/')+'.py::'+c.get('name') for c in tree.findall('.//testcase'))
@@ -195,6 +249,12 @@ def make_runner(base):
             assert observation is not None, 'diagnostic observation timeout'
             assert observation['full_acceptance'] is False and observation['review_required'] is True
             assert observation['transaction_executed'] is False and observation['request_reader_executed'] is False
+            assert observation['replay_authorized'] is False
+            snapshot = observation['sole_init_process_snapshot']
+            if snapshot is not None:
+                assert snapshot['replay_authorized'] is False
+            # Captured metadata is diagnostic evidence even if missing/raced.
+            # Never wait/retry for a better identity or turn a clean fence into replay.
             self.receipt['observation'] = observation
             self.receipt['serial_sha256'] = digest(self.serial)
             self.receipt['diagnostic_collected'] = True
@@ -243,6 +303,8 @@ def main():
                     assert {k: getattr(st, k) for k in wanted} == wanted
                 r.receipt['original_disks_preserved'] = True
             assert digest(ORIGIN/'evidence/receipt.json') == ORIGIN_RECEIPT
+            for name, sha in doc['prior_files'].items():
+                assert digest(PRIOR/name) == sha
         except BaseException: r.receipt['cleanup_errors'].append({'operation': 'preservation-readback'})
         r.diagnostics()
     print(json.dumps({'diagnostic_collected': r.receipt.get('diagnostic_collected', False),
