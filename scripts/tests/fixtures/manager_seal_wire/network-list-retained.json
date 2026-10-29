@@ -1,0 +1,13 @@
+{
+  "source": "958b07a30219940c655de0b564f6b9a33c2ef8d8",
+  "producer": "Compose v2.40.0 / Moby SDK v28.5.0",
+  "producer_witness_sha256": "38d10811569cc02ae24243ef993d50f26b638c62c8996b835cd77c9b5e5558e2",
+  "actual_daemon_query_captured": false,
+  "actual_daemon_ledger_sha256": "dcd5dcbd9af8e8b6b3e25335c73bb32559fe9af5865b6274c67d134096266398",
+  "actual_daemon_ledger_forward_sequence": 49,
+  "actual_daemon_status": 400,
+  "actual_daemon_manager_error": "invalid filter",
+  "actual_daemon_error_source": "manager sanitized log, not captured daemon response body",
+  "incoming_target": "/v1.51/networks?filters=%7B%22name%22%3A%7B%22agent-synthetic_migrated_agent-synthetic-edge-uplink%22%3Atrue%7D%7D",
+  "old_forwarded_target": "/networks?filters=%7B%22name%22%3A%7B%22agent-synthetic_migrated_agent-synthetic-edge-uplink%22%3Atrue%7D%2C%22id%22%3A%5B%220000000000000000000000000000000000000000000000000000000000000000%22%5D%7D"
+}

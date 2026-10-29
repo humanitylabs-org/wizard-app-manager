@@ -292,3 +292,113 @@ one-use controller intent remain enforced: 1 GiB new, 3 GiB retained+peak,
 200 GiB reserve, 12 GiB aggregate hard RAM, 8 GiB aggregate tmpfs, 64 MiB fixture,
 zero swap; cached images only. No live activation, migration, restart, key
 retirement, model/provider/core change, pulls or merges.
+
+## Network-list wire repair: installed HTTP success is retained, not rerun
+
+The actual `958b07a30219940c655de0b564f6b9a33c2ef8d8` job installed through
+session-authenticated HTTP: GET 200, install POST 201 with a real requestId,
+DB `stopped|1|10.128.10.0/24`, installed GET confirming `skipRun:true`, and no
+fixture containers before enrollment. The trusted review pair enrolled. A single
+start POST returned 201 but the manager logged `invalid filter` and the app did
+not run. Guard ledger sequence 48 was a synthetic discovery 404, 49 forwarded
+GET `/networks`, 50 was daemon 400; this was NOT a guard refusal. No retry occurred.
+The original receipt remains failed. Internal cleanup and parent residuals were
+empty. Preserve those source-bound auth/boot/install/broker passes separately
+from the still-unproved start/lifecycle/grant-seal result.
+
+### Serialization diagnosis and evidence boundary
+
+The retained **pinned Compose protocol witness**, not the real daemon log,
+contains this incoming selector at API v1.51:
+`{"name":{"agent-synthetic_migrated_agent-synthetic-edge-uplink":true}}`.
+The old guard preserved that map but injected
+`"id":["0000000000000000000000000000000000000000000000000000000000000000"]`.
+The same old rewrite is deterministic for the real first discovery (`...-seal`).
+The failed real run did not retain its exact query or response body: do not label
+the witness as an actual-daemon wire capture. Its source/ledger/error evidence
+supports this causal path; the fresh daemon A/B gate must confirm compatibility.
+
+Complete public Moby v28.5.0 sources are pinned by bytes/SHA256 in
+`tests/fixtures/manager_seal_wire/public-sources.json`:
+`client/network_list.go` calls `ToParamWithVersion`; this delegates to `ToJSON`
+unless API is below 1.22. `Args.fields` is `map[string]map[string]bool`. The network
+router calls `filters.FromJSON`, which tries the complete map-of-bools, then the
+complete legacy `map[string][]string`. The mixed map + array fails BOTH JSON
+unmarshals and returns the generic `invalid filter`. A full-ID network filter is
+valid; the serialization was inconsistent. The old fake peer never decoded this
+schema, which is why its protocol pass did not establish engine compatibility.
+
+The guard now always emits canonical maps of true-valued sets, normalizing only
+homogeneous, strictly validated canonical or legacy inputs. Unknown/case-shifted
+keys, mixed schemas, false/non-boolean set entries, wrong value types, duplicates,
+empty sets/strings, control characters and unsupported selectors refuse before
+forward. Caller ID prefixes intersect actual owned full IDs; caller immutable
+image references intersect pinned references instead of being overwritten. Other
+caller selectors remain AND constraints. No authority always inserts a full
+zero-ID constraint; nothing can become an unfiltered/global list.
+
+Only known synthetic network names and owned/zero IDs can enter new query audit
+rows. Errors retain only byte count plus the fixed `invalid_filter` or withheld
+class, never arbitrary daemon strings, request bodies, credentials or headers.
+The existing aggregate guard-ledger cap remains 16 MiB.
+
+### Fresh queued canary and failure stop
+
+After source and capacity admission, the controller runs a real-daemon canary
+**before donor extraction, broker canary, tmpfs dependencies, or installed
+lifecycle**. Two private guarded sockets admit only one fixed synthetic network
+list request, empty authority, and no mutation/discovery/global route. The first
+recreates the old mixed query with the all-zero ID and must produce 400 plus
+`invalid filter`. The second emits the corrected canonical query and must produce
+200 with `[]`. Both pass through the actual `Handler` and the same raw daemon;
+they are not answers from the old fake peer. The <=16 KiB receipt is explicitly
+not installed proof. Any mismatch aborts before the expensive prerequisites.
+This code is prepared, **not executed or passed by this repair**.
+
+The offline regression additionally includes a native Go test using the complete,
+unmodified pinned Moby `parse.go` and `errors.go`, no module/network dependency.
+When Go is absent it reports a skip, not an actual-SDK pass. The separate Python
+schema model is labelled as such. Local Go is absent; native execution remains
+unverified. The real-daemon gate remains mandatory regardless of native results.
+
+A terminal start failure is `stopped` in the actual shipped handler, not a
+fictional `failed` enum. The first poll observing an unexpected stable state or
+a new synthetic `App ... <action> failed:` log marker saves a read-only DB state,
+GET app response/status, requestId and only actual guard-owned fixture IDs, then
+aborts. Restart preflight errors that preserve `running` are covered by the new
+log marker. There is no second POST, install/start retry, or 180-second wait after
+terminal failure. Successful skipRun install still accepts terminal `stopped`.
+
+### Capacity decision: blocked before fresh staging
+
+The exact read-only, inode-deduplicated namespace scan retained **2,251,644,928
+allocated bytes**. A new 1,073,741,824-byte peak totals **3,325,386,752**, exceeding
+the unchanged **3,221,225,472** maximum by **104,161,280 bytes**. Remaining peak
+headroom is **969,580,544 bytes**, before any fresh stage. Free space was
+299,713,110,016 bytes, so the 214,748,364,800-byte reserve is not the blocker.
+Historical roots are not deleted, reset or relabelled.
+
+A smaller peak is allowed in principle: 1 GiB is a maximum, not a minimum. But
+512 MiB is **not proved** by this source: its declared non-margin categories total
+**644 MiB (675,282,944 bytes)**, already larger than that candidate. An intermediate
+896 MiB estimate would fit arithmetic headroom but is also not a proved bound:
+Docker overlay/metadata has no task-local allocation quota; controller output,
+guard ledger and all future lifecycle/receipt/rounding writes lack a combined
+pre-write allocation fence. Approximately 104 MB observed in previous runs is
+not an upper bound. Do not merely shave margin and assert safety.
+
+`smaller_envelope_assessment` records those missing bounds and does not lower the
+admission/controller/checkpoint/staging peak. Therefore no new remote stage,
+files, canary, heavy submission or runtime was created in this repair. The
+capacity-blocked continuation specification is local and explicitly cannot be
+submitted. A later proven smaller route must consistently enforce its source,
+archive/tool/log/metadata/overlay aggregate at staging and every runtime boundary;
+otherwise the exact present capacity refusal stands without changing owner caps.
+
+The current `QA_DELTA` adds only the exact guard, capacity, focused test and pinned
+public-source fixture paths listed in `manager_seal_installed_recovery.py`, with
+no wildcard. The earlier four-path/unchanged-guard text describes the earlier
+continuation, not this repair. Backend/common/product/lock/build/runtime assets
+must still match the original complete export byte-for-byte and mode-for-mode.
+The original backend archive and `main.js` hashes above remain mandatory; no
+backend rebuild or broader privacy rerun is introduced.

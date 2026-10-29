@@ -63,5 +63,30 @@
     "url": "https://raw.githubusercontent.com/moby/docker-image-spec/v1.3.1/specs-go/v1/image.go",
     "sha256": "70ff081667b9f247cab5e72d89f08a99625f95d70c12809d29acad940789a9e7",
     "bytes": 2158
+  },
+  "sdk-filter-parse.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/filters/parse.go",
+    "sha256": "47acc600192cb5e15cbba303df2e055741c8f9d2f86eeb74610627e00338c05c",
+    "bytes": 7399
+  },
+  "sdk-filter-errors.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/filters/errors.go",
+    "sha256": "a2f86816a75666b067ffc6c57003fc99026734211deace111aeefa8a6619dec9",
+    "bytes": 487
+  },
+  "sdk-filter-version.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/filters/filters_deprecated.go",
+    "sha256": "46cc0a86e72f5fb50c9af1821a45bfd27be08255aca5f9ce570637dd5e52ea5b",
+    "bytes": 1702
+  },
+  "sdk-network-list.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/client/network_list.go",
+    "sha256": "7433bb4e9b1d140a4db5af0532c33a1c25d6321a2dfe11280554e469593cdbbe",
+    "bytes": 878
+  },
+  "daemon-network-router.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/server/router/network/network_routes.go",
+    "sha256": "aa165fc942d05376a8de70728233ed220885c10bfca3297ae7bf81de9c23f952",
+    "bytes": 12345
   }
 }

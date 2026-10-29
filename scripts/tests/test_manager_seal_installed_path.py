@@ -94,7 +94,9 @@ class PinsAndBounds(unittest.TestCase):
         calls = []
         def http(*a): calls.append(a); raise TimeoutError('synthetic ambiguity')
         r.http = http
-        with self.assertRaises(TimeoutError): r.transaction('install', {'skipRun': True}, 'stopped')
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            r.out = Path(tmp)
+            with self.assertRaises(TimeoutError): r.transaction('install', {'skipRun': True}, 'stopped')
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], 'POST')
 

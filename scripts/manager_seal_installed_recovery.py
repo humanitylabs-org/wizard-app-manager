@@ -20,6 +20,17 @@ QA_DELTA = frozenset({
     'scripts/manager_seal_installed_recovery.py',
     'scripts/tests/test_manager_seal_installed_path.py',
     'docs/manager-seal-installed-recovery.md',
+    'scripts/manager_seal_forward_guard.py',
+    'scripts/manager_seal_installed_capacity.py',
+    'scripts/tests/test_manager_seal_network_filters.py',
+    'scripts/tests/fixtures/manager_seal_wire/public-sources.json',
+    'scripts/tests/fixtures/manager_seal_wire/sdk-filter-parse.go',
+    'scripts/tests/fixtures/manager_seal_wire/sdk-filter-errors.go',
+    'scripts/tests/fixtures/manager_seal_wire/sdk-filter-version.go',
+    'scripts/tests/fixtures/manager_seal_wire/sdk-network-list.go',
+    'scripts/tests/fixtures/manager_seal_wire/daemon-network-router.go',
+    'scripts/tests/fixtures/manager_seal_wire/network_filters_test.go',
+    'scripts/tests/fixtures/manager_seal_wire/network-list-retained.json',
 })
 MANAGER_WORKDIR = '/app'  # Dockerfile final runner, not the QA tooling image.
 CLI_ERL_ARGS = '+S 2:2 +SDcpu 1 +SDio 1 +A 4'

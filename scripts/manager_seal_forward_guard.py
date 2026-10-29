@@ -105,6 +105,57 @@ def endpoint_shape(endpoint):
         require(value is None or (type(value) is kind and value == zero))
 
 
+def canonical_filters(raw, allowed):
+    """Closed Args schema; emit ONLY the SDK's map-of-true-sets encoding.
+
+    Moby FromJSON tries the whole map-of-bools, then the whole legacy map-of-
+    arrays. Mixing these formats fails BOTH decoders. Reject ambiguous input
+    (including false set entries), rather than silently changing its meaning.
+    """
+    value = decode(raw)
+    require(type(value) is dict and set(value) <= allowed and len(value) <= 8)
+    kinds = {type(v) for v in value.values()}
+    require(not kinds or kinds in ({dict}, {list}))
+    result = {}
+    for key, values in value.items():
+        require(type(values) in (dict, list) and 0 < len(values) <= 64)
+        if type(values) is dict:
+            require(all(type(v) is bool and v is True for v in values.values()))
+        require(all(type(v) is str and 0 < len(v) <= 1024
+                    and not re.search(r'[\x00-\x1f\x7f]', v) for v in values))
+        require(len(set(values)) == len(values))
+        result[key] = dict.fromkeys(sorted(values), True)
+    return result
+
+
+def intersect_filters(filters, authority, key):
+    """Full owned IDs only upstream; caller ID prefixes can ONLY narrow them."""
+    owned = sorted(authority)
+    if key in filters:
+        requested = filters[key]
+        if key == 'id':
+            require(all(re.fullmatch(r'[0-9a-f]{1,64}', v) for v in requested))
+            owned = [v for v in owned if any(v.startswith(prefix) for prefix in requested)]
+        else:
+            # This task admits immutable image references only, no tag/glob
+            # expansion or caller reference replacing the ownership constraint.
+            require(all(v.startswith('sha256:') and ID.fullmatch(v[7:]) for v in requested))
+            owned = [v for v in owned if v in requested]
+    filters[key] = dict.fromkeys(owned or ['0'*64 if key == 'id' else 'sha256:'+'0'*64], True)
+    return filters
+
+
+def network_error_class(payload):
+    if len(payload) > 8192:
+        return 'engine_error_withheld'
+    try:
+        if decode(payload) == {'message': 'invalid filter'}:
+            return 'invalid_filter'
+    except (Denied, ValueError, TypeError):
+        pass
+    return 'engine_error_withheld'
+
+
 class UnixHTTP(http.client.HTTPConnection):
     def __init__(self, path, timeout=15):
         super().__init__('localhost', timeout=timeout)
@@ -275,15 +326,18 @@ class Policy:
         elif method == 'GET' and path == '/info':
             require(not query and not data); op = 'info'
         elif method == 'GET' and path in ('/containers/json', '/networks', '/images/json'):
-            require(not data and set(query) <= {'all', 'filters', 'size', 'digests', 'shared-size'})
-            filters = decode(query.get('filters', '{}'))
-            require(isinstance(filters, dict) and set(filters) <= {'id', 'name', 'label', 'status', 'dangling', 'reference'})
+            allowed_query = {'/networks': {'filters'}, '/containers/json': {'all', 'filters', 'size'},
+                             '/images/json': {'all', 'filters', 'digests', 'shared-size'}}[path]
+            require(not data and set(query) <= allowed_query)
+            require(all(v in ('0', '1', 'false', 'true') for k, v in query.items() if k != 'filters'))
             key = 'containers' if path == '/containers/json' else 'networks' if path == '/networks' else 'images'
+            allowed = {'containers': {'id', 'name', 'label', 'status'},
+                       'networks': {'id', 'name', 'label'},
+                       'images': {'reference', 'label', 'dangling'}}[key]
+            filters = canonical_filters(query.get('filters', '{}'), allowed)
             table = self.containers if key == 'containers' else self.networks if key == 'networks' else self.cfg['images']
-            # Keep caller filters; add an immutable authority intersection.
-            owned = list(table) or ['0'*64]
-            filters['id' if key != 'images' else 'reference'] = owned
-            query['filters'] = json.dumps(filters, separators=(',', ':'))
+            filters = intersect_filters(filters, table, 'id' if key != 'images' else 'reference')
+            query['filters'] = json.dumps(filters, sort_keys=True, separators=(',', ':'))
             op = 'list-' + key
         elif method == 'GET' and path == '/events':
             require(not data and set(query) <= {'since', 'until', 'filters'})
@@ -467,6 +521,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if op in ('create-container', 'create-network'):
                     p.audit('creation-intent', kind='container' if op == 'create-container' else 'network',
                             name=query['name'] if op == 'create-container' else body['Name'])
+                # Only closed, synthetic network discovery selectors; no
+                # generic queries, bodies, headers or daemon error strings.
+                if op == 'list-networks':
+                    f = decode(query['filters'])
+                    names = f.get('name', {})
+                    ids = f.get('id', {})
+                    if (set(f) <= {'id', 'name'} and set(names) <= set(p.cfg.get('network_names', []))
+                            and set(ids) <= set(p.networks) | {'0'*64}):
+                        p.audit('synthetic-network-query', filters=f)
                 p.audit('forward', method=self.command, route=target.split('?', 1)[0], kind=op)
                 upstream = UnixHTTP(self.server.raw_socket)
                 upstream.request(self.command, target, body=data or None,
@@ -476,11 +539,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     payload = response.read(MAX_RESPONSE+1)
                     require(len(payload) <= MAX_RESPONSE)
                     if response.status < 300 and payload and ('json' in response.getheader('Content-Type', '') or op.startswith(('create-', 'list-')) or op in ('info', 'owned-network')):
-                        payload = json.dumps(p.response(op, decode(payload), body, query)).encode()
+                        value = decode(payload)
+                        if op == 'list-networks' and not p.networks:
+                            # The canary must prove the ENGINE returned [],
+                            # not merely the guard's post-filtered empty list.
+                            p.audit('zero-authority-network-result', upstream_empty=value == [])
+                        payload = json.dumps(p.response(op, value, body, query)).encode()
                     if response.status < 300 and op.startswith('delete-'):
                         table = p.containers if op == 'delete-containers' else p.networks
                         table.pop(target.split('/')[2].split('?')[0], None)
-                    p.audit('response', kind=op, status=response.status)
+                    details = {}
+                    if op == 'list-networks' and response.status >= 400:
+                        details['error_class'] = network_error_class(payload)
+                        details['error_bytes'] = len(payload)
+                    p.audit('response', kind=op, status=response.status, **details)
             if op == 'events':
                 require(response.status == 200)
                 self.send_response(200); self.send_header('Content-Type', 'application/json')

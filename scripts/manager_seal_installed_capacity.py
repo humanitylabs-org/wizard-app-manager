@@ -77,6 +77,27 @@ def admission(retained, free, *, already_allocated=0, next_peak=ALLOWANCE):
             'accounting': 'per-run additional allocation; no lifetime quota; existing retained already deducted from free'}
 
 
+def smaller_envelope_assessment(footprint, candidate=512*2**20):
+    """An observation is not a bound. Do not auto-admit a smaller estimate.
+
+    Existing controller categories alone exceed 512MiB before margin. In
+    addition, Docker metadata has no task-local allocation quota and the
+    controller/guard/receipt outputs lack a single aggregate pre-write fence.
+    The current authority permits at most ALLOWANCE; it does not prove that
+    either its estimate or a smaller candidate is a filesystem hard quota.
+    """
+    declared = sum(footprint.values())
+    assert declared == ALLOWANCE and 0 < candidate <= ALLOWANCE
+    return {'candidate_additional_peak_bytes': candidate, 'smaller_peak_proven': False,
+            'declared_current_peak_bytes': declared,
+            'declared_components_without_margin_bytes': declared-footprint['margin'],
+            'observed_runs_are_not_upper_bounds': True,
+            'unproven_aggregate_bounds': ['daemon_overlay_and_metadata_estimate',
+                                        'control_and_ledger_combined_outputs',
+                                        'all_future_lifecycle_receipts_and_allocation_rounding'],
+            'decision': 'retain existing peak; stop before staging if admission rejects it'}
+
+
 def probe(root=ROOT):
     start = time.monotonic()
     rows = inventory(root, start + 12)

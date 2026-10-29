@@ -25,6 +25,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import manager_seal_installed_capacity as capacity
 from manager_seal_forward_guard import UnixHTTP
+import manager_seal_forward_guard as forward_guard
 from manager_seal_install_evidence import dependency_step, sanitize_line, capture_install, sanitize_log
 from manager_seal_bundle import validate_bundle
 import manager_seal_installed_recovery as recovery
@@ -60,7 +61,7 @@ TMPFS = {'work': 5*GIB, 'fixture': 64*MIB, 'postgres_data': 512*MIB,
          'rabbit_logs': 16*MIB, 'rabbit_tmp': 16*MIB, 'manager_data': 256*MIB,
          'manager_appdata': 64*MIB, 'manager_cache': 32*MIB, 'manager_tmp': 64*MIB,
          'guard_tmp': 16*MIB, 'controller_tmp': 16*MIB, 'shmem': 12*64*MIB}
-assert sum(FOOTPRINT.values()) == GIB
+assert sum(FOOTPRINT.values()) == GIB == capacity.ALLOWANCE
 assert sum(MEMORY.values()) <= 12*GIB
 assert sum(TMPFS.values()) <= 8*GIB
 
@@ -335,6 +336,69 @@ def reconcile_guard_accounting(rows, expected_denials, network_names, expected_c
     return {'expected_refusals': expected_denials, 'network_discovery_misses': misses, 'paired_network_creations': created}
 
 
+def network_filter_canary(output, raw_socket='/var/run/docker.sock'):
+    """Queued-controller ONLY: two zero-authority reads, through real Handler.
+
+    No caller-supplied targets/authority. The legacy branch recreates ONLY the
+    demonstrated mixed encoding with an all-zero full ID. It cannot enumerate
+    foreign objects, activate, create or mutate anything. No CLI exposure.
+    """
+    import tempfile
+    import urllib.parse
+    name = PROJECT+'_'+NETS[0]
+    incoming = '/networks?'+urllib.parse.urlencode({'filters': json.dumps({'name': {name: True}}, separators=(',', ':'))})
+    cfg = {'containers': {}, 'networks': {}, 'images': [], 'network_names': [name]}
+    report = {'passed': False, 'installed_proof': False, 'zero_authority': True,
+              'same_incoming_query': incoming, 'runs': []}
+    class CanaryPolicy(forward_guard.Policy):
+        def authorize(self, method, target, data=b''):
+            forward_guard.require(method == 'GET' and target == incoming and not data)
+            op, target, data, body = super().authorize(method, target, data)
+            if self.legacy:
+                path, query = self.path(target)
+                filters = forward_guard.decode(self.path(incoming)[1]['filters'])
+                # Exact previous rewrite: preserve SDK map, inject array.
+                filters['id'] = ['0'*64]
+                query['filters'] = json.dumps(filters, separators=(',', ':'))
+                target = path+'?'+urllib.parse.urlencode(query)
+            self.forwarded_target = target
+            return op, target, data, body
+    try:
+        with tempfile.TemporaryDirectory(prefix='msnf-', dir=os.environ.get('TMPDIR')) as tmp:
+            for legacy in (True, False):
+                rows = []; policy = CanaryPolicy(cfg, rows.append); policy.legacy = legacy
+                socket_path = str(Path(tmp)/('old.sock' if legacy else 'new.sock'))
+                assert len(os.fsencode(socket_path)) < 104
+                server = forward_guard.Server(socket_path, raw_socket, policy)
+                thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
+                thread.start(); c = UnixHTTP(socket_path, timeout=10)
+                try:
+                    c.request('GET', incoming); response = c.getresponse()
+                    data = response.read(8193); assert len(data) <= 8192
+                    result = json.loads(data)
+                    # Only fixed public decoder error / empty list can persist.
+                    outcome = ('invalid_filter' if result == {'message': 'invalid filter'}
+                               else 'empty_list' if result == [] else 'withheld_unexpected_response')
+                    row = {'variant': 'previous_mixed' if legacy else 'canonical', 'status': response.status,
+                           'outcome': outcome, 'forwarded_target': policy.forwarded_target,
+                           'forward_count': sum(r['operation'] == 'forward' for r in rows),
+                           'upstream_empty': next((r['upstream_empty'] for r in rows
+                               if r['operation'] == 'zero-authority-network-result'), None)}
+                    report['runs'].append(row)
+                    assert row['forward_count'] == 1
+                    assert legacy or row['upstream_empty'] is True, 'engine list was not empty before guard filtering'
+                    assert (response.status, outcome) == ((400, 'invalid_filter') if legacy else (200, 'empty_list'))
+                finally:
+                    c.close(); server.shutdown(); server.server_close(); thread.join(timeout=2)
+                    assert not thread.is_alive()
+        report['passed'] = True
+        return report
+    finally:
+        raw = (json.dumps(report, sort_keys=True, indent=2)+'\n').encode()
+        assert len(raw) <= 16384
+        with Path(output).open('xb') as stream: stream.write(raw)
+
+
 class Rig:
     def __init__(self, root, args):
         self.root = root; self.args = args; self.owner = 'msi-'+args.source[:12]
@@ -349,7 +413,8 @@ class Rig:
                         'first_installed_synthetic_path_pass': False, 'full_acceptance': False, 'RUNTIPI_ADMITTED': False,
                         'single_accepted_update_pass': False, 'successive_accepted_updates_pass': False,
                         'rollback_transaction_pass': False, 'official_image_pass': False,
-                        'memory_caps': MEMORY, 'tmpfs_caps': TMPFS, 'allocation_envelope': FOOTPRINT}
+                        'memory_caps': MEMORY, 'tmpfs_caps': TMPFS, 'allocation_envelope': FOOTPRINT,
+                        'smaller_envelope_assessment': capacity.smaller_envelope_assessment(FOOTPRINT)}
         self.deadline = time.monotonic()+2500
 
     def checkpoint(self):
@@ -618,6 +683,12 @@ class Rig:
             preflight['sanitized'] = sanitize_log(preflight_log, self.out/'offline-recovery-preflight.sanitized.log')
             self.receipt['offline_recovery_preflight'] = preflight
             assert preflight['exit_code'] == 0 and preflight['log_complete']
+            filter_log = self.out/'offline-network-filter-preflight.log'
+            filter_preflight = capture_install([sys.executable, '-B', '-m', 'unittest', 'discover', '-s',
+                'scripts/tests', '-p', 'test_manager_seal_network_filters.py', '-v'], self.root, filter_log, 60)
+            filter_preflight['sanitized'] = sanitize_log(filter_log, self.out/'offline-network-filter-preflight.sanitized.log')
+            self.receipt['offline_network_filter_preflight'] = filter_preflight
+            assert filter_preflight['exit_code'] == 0 and filter_preflight['log_complete']
         assert os.uname().machine == 'x86_64' and os.getuid() != 0
         assert sha(NODE) == NODE_SHA and sha('/usr/bin/docker') == DOCKER_SHA
         assert self.cmd('daemon-root', ['docker', 'info', '--format', '{{.DockerRootDir}}']) == '/var/lib/docker'
@@ -633,6 +704,8 @@ class Rig:
         assert next(v for v in inventory if v['id'] == RABBIT)['volumes'] == ['/var/lib/rabbitmq']
         for image in (BUILD, PYTHON, DONOR):
             assert not next(v for v in inventory if v['id'] == image)['volumes']
+        self.receipt['phase'] = 'real-daemon-network-filter-prebootstrap'
+        self.receipt['network_filter_canary'] = network_filter_canary(self.out/'network-filter-canary.json')
         uid, gid = os.getuid(), os.getgid()
         self.receipt['phase'] = 'cached-public-tool-and-service-identity'
         donor = self.create(self.owner+'-donor', DONOR, ['--network=none', '--memory=33554432', '--memory-swap=33554432'], [])
@@ -925,16 +998,51 @@ class Rig:
     def sql(self, query):
         return self.exec(self.db, ['psql', '-U', 'tipi', '-d', 'tipi', '-Atc', query])
 
+    def transaction_ready(self, action, terminal, previous, log_offset, request_id):
+        db = self.sql("select status from app where app_name='agent-synthetic' and app_store_slug='migrated';")
+        # Start failure is 'stopped', NOT a mythical 'failed' enum (actual
+        # start-app.handler.ts). A restart preflight can retain 'running'.
+        log = self.out/'manager.sanitized.log'
+        failed_log = False
+        if log.exists():
+            with log.open('rb') as stream:
+                stream.seek(log_offset)
+                failed_log = ('App '+URN+' '+action+' failed:').encode() in stream.read(64*MIB+1)
+        stable = {'', 'stopped', 'running', 'missing'}
+        if failed_log or (db in stable and db != terminal):
+            # Read-only diagnostics, before abort. http() saves sanitized exact
+            # manager body/status independently. There is NEVER a second POST.
+            failure = {'action': action, 'request_id': request_id, 'database_status': db,
+                       'manager_http_status': None, 'owned_fixture_ids': None,
+                       'synthetic_failure_log_seen': failed_log, 'read_only': True}
+            self.receipt['terminal_failure'] = failure
+            try:
+                http_status, _ = self.http('GET', '/api/apps/'+URN)
+                failure['manager_http_status'] = http_status
+                ids = self.owned_fixture_ids()
+                assert all(forward_guard.ID.fullmatch(i) for i in ids) and len(ids) <= 5
+                failure['owned_fixture_ids'] = ids
+            finally:
+                # Also retain the DB state if the diagnostic GET fails; its
+                # bounded HTTP transport/error evidence was saved by http().
+                raw = (json.dumps(failure, indent=2)+'\n').encode(); assert len(raw) <= 16384
+                (self.out/'terminal-failure.json').write_bytes(raw)
+            raise RuntimeError('terminal lifecycle failure; saved read-only app and manager evidence')
+        return db == terminal and (action != 'restart' or
+            (len(ids := self.owned_fixture_ids()) == 5 and not previous.intersection(ids)))
+
     def transaction(self, action, body, terminal):
         # EXACTLY one POST. Any timeout is ambiguous and stops the job; never
         # retry install (existing app takes a different launch path).
         previous = set(self.owned_fixture_ids()) if action == 'restart' else set()
+        log = self.out/'manager.sanitized.log'
+        log_offset = log.stat().st_size if log.exists() else 0
         status, value = self.http('POST', '/api/app-lifecycle/'+URN+'/'+action, body)
         import uuid
         request_id = value['requestId']; assert str(uuid.UUID(request_id)) == request_id
         self.receipt.setdefault('request_ids', []).append(request_id)
-        self.wait('terminal-'+action, lambda: self.sql("select status from app where app_name='agent-synthetic' and app_store_slug='migrated';") == terminal
-                  and (action != 'restart' or len(self.owned_fixture_ids()) == 5 and not previous.intersection(self.owned_fixture_ids())), 180)
+        self.wait('terminal-'+action,
+                  lambda: self.transaction_ready(action, terminal, previous, log_offset, request_id), 180)
         status, value = self.http('GET', '/api/apps/'+URN)
         assert status == 200
         db = self.sql("select status||'|'||version||'|'||coalesce(subnet,'') from app where app_name='agent-synthetic' and app_store_slug='migrated';")
