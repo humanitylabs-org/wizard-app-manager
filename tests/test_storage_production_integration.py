@@ -37,7 +37,9 @@ def test_public_mapping_is_only_physical_bind_and_keeps_both_container_paths(pub
     service = doc['services']['wizard-agent-service']
     assert service['user'] == '1234:1235'
     assert calls == [('hermes', '/home/hermes/.hermes')]
-    mounts = service['volumes']
+    assert service['volumes'].tag == '!override'
+    mounts = service['volumes'].value
+    assert isinstance(mounts, list)
     assert '/var/lib/wizard-agent-homes/1234:/hermes' in mounts
     assert '/var/lib/wizard-agent-homes/1234:/home/hermes/.hermes' in mounts
     assert not any(v.startswith('/home/hermes/.hermes:') for v in mounts)
@@ -207,6 +209,100 @@ def test_effective_inherited_manifest_reads_are_explicit(production_constructor)
     with pytest.raises(runner.ManifestContractError, match='fields changed'):
         runner.validate_runner_contract(stage, doc)
     assert not (stage/'evidence').exists()
+
+
+@pytest.fixture
+def production_readback(production_constructor, monkeypatch):
+    """Real derived class/checkpoint/diagnostics; stub only guest transport."""
+    runner, base, stage, doc = production_constructor
+    instance = runner.make_runner(base)(stage, doc)
+    calls = []
+    def configure(outcome):
+        calls.clear()
+        def copy(local, remote, download=False, *, required=True):
+            assert download is True and required is False
+            assert remote.startswith('/root/storage-production/') and remote.endswith('.json')
+            calls.append(('copy', remote))
+            if outcome in ('collected', 'corrupt'):
+                local.write_text('{broken' if outcome == 'corrupt' else '{"synthetic":true}')
+                return 0
+            return 1
+        def guest(label, script, *, required=True):
+            assert label.startswith('probe-production-') and required is False
+            assert 'then exit 0;' in script and 'then exit 3;' in script and 'else exit 4;' in script
+            calls.append(('probe', label))
+            return {'absent':3, 'transport':0, 'probe':255}[outcome]
+        monkeypatch.setattr(instance, 'copy', copy)
+        monkeypatch.setattr(instance, 'guest', guest)
+        return calls
+    return runner, instance, configure
+
+
+@pytest.mark.parametrize('outcome', ['collected', 'optional-absent', 'required-absent', 'transport', 'probe', 'corrupt'])
+def test_genuine_collect_json_checkpoint_and_report_classification(production_readback, outcome):
+    runner, instance, configure = production_readback
+    calls = configure('absent' if outcome.endswith('-absent') else outcome)
+    required = outcome != 'optional-absent'
+    if outcome == 'collected':
+        assert instance.collect_json('online', required=required) == {'synthetic':True}
+    elif outcome == 'optional-absent':
+        assert instance.collect_json('online', required=False) is None
+    else:
+        error = json.JSONDecodeError if outcome == 'corrupt' else AssertionError
+        with pytest.raises(error): instance.collect_json('online', required=required)
+    row = json.loads((instance.evidence/'receipt.json').read_text())['checkpoints'][-1]
+    expected = {'collected':'collected', 'optional-absent':'missing_optional',
+                'required-absent':'missing_expected', 'transport':'transport_error',
+                'probe':'probe_error', 'corrupt':'collection_error'}
+    assert row['name'] == 'guest-readback-online' and row['artifact_name'] == 'online'
+    assert row['boot'] == 0 and row['status'] == expected[outcome]
+    assert len(calls) == (1 if outcome in ('collected', 'corrupt') else 2)
+    if outcome == 'collected':
+        assert row['sha256'] == runner.digest(instance.evidence/'0-online.json')
+    if outcome == 'corrupt': assert row['error_type'] == 'JSONDecodeError'
+
+
+@pytest.mark.parametrize('outcome', ['collected', 'absent', 'transport', 'probe', 'corrupt'])
+def test_genuine_diagnostics_preserves_first_error_and_optional_absence(production_readback, outcome):
+    _, instance, configure = production_readback
+    configure(outcome)
+    first = {'type':'AssertionError', 'reason':'fixed phase failed: focused-tests'}
+    instance.receipt['first_error'] = copy.deepcopy(first)
+    instance.receipt['boots'].append({'maintenance':False})
+    instance.proc = SimpleNamespace(poll=lambda: None)
+    instance.diagnostics()
+    saved = json.loads((instance.evidence/'receipt.json').read_text())
+    assert saved['first_error'] == first and saved['passed'] is False
+    names = ['original-agent', 'online', 'return-normal', 'installed', 'stale-mapping']
+    assert [r['name'] for r in saved['checkpoints']] == ['guest-readback-'+n for n in names]
+    assert [r['artifact_name'] for r in saved['checkpoints']] == names
+    errors = saved['diagnostic_errors']
+    if outcome in ('collected', 'absent'):
+        assert errors == []
+    else:
+        assert [r['name'] for r in errors] == names
+        assert {r['error_type'] for r in errors} == {'JSONDecodeError' if outcome == 'corrupt' else 'AssertionError'}
+    assert saved['cleanup_errors'] == []
+
+
+@pytest.mark.parametrize('tag', ['!override', '!reset'])
+def test_actual_guest_compose_assertions_preserve_override_tag(public_mapping, tag):
+    from wam import network
+    st, _, _ = public_mapping
+    state = '/var/lib/wizard-os/.wizard-os'
+    text = privsep.service_override(st, state).replace('volumes: !override', 'volumes: '+tag)
+    tree = ast.parse((REPO/'qa/privsep-storage/production_guest.py').read_text())
+    installed = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'installed')
+    # Execute only the genuine finite Compose observation, before any guest
+    # identity, Docker, HTTP or real installed-state access.
+    start = next(i for i,n in enumerate(installed.body) if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == 'doc')
+    end = next(i for i,n in enumerate(installed.body) if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == 'uid')
+    code = compile(ast.Module(body=installed.body[start:end], type_ignores=[]), 'guest-compose-observation', 'exec')
+    scope = {'network':network, 'privsep':SimpleNamespace(service_override=lambda *args: text),
+             'st':st, 'state':state, 'physical':'/var/lib/wizard-agent-homes/1234'}
+    if tag == '!override': exec(code, scope)
+    else:
+        with pytest.raises(AssertionError): exec(code, scope)
 
 
 @pytest.mark.parametrize('phase', ['validate-manifest-and-inherited-contract', 'private-temporary-directory',

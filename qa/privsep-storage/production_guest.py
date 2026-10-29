@@ -201,8 +201,10 @@ def installed(backend, service_image):
     physical = '/var/lib/wizard-agent-homes/'+str(a.pw_uid)
     doc = network.load_yaml(privsep.service_override(st,state))
     generated = doc['services']['wizard-agent-service']
-    assert physical+':/hermes' in generated['volumes']
-    assert physical+':/home/hermes/.hermes' in generated['volumes']
+    assert generated['volumes'].tag == '!override'
+    mounts = generated['volumes'].value
+    assert physical+':/hermes' in mounts
+    assert physical+':/home/hermes/.hermes' in mounts
     uid = pwd.getpwnam('wizard-system').pw_uid
     # Mandatory final helper from the same unchanged backend image, exact
     # production invocation/hardening. Old logical source is a negative control.

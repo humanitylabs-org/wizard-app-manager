@@ -236,13 +236,28 @@ def make_runner(base):
 
         def collect_json(self,name,*,required=True):
             destination=self.evidence/(str(self.boot_index)+'-'+name+'.json')
-            rc=self.copy(destination,'/root/storage-production/'+name+'.json',True,required=False)
-            row={'name':name,'boot':self.boot_index,'copy_exit':rc}
+            remote='/root/storage-production/'+name+'.json'
+            rc=self.copy(destination,remote,True,required=False)
+            row={'artifact_name':name,'boot':self.boot_index,'copy_exit':rc}
             if rc==0:
-                value=json.loads(destination.read_text());row['sha256']=digest(destination)
+                try:
+                    value=json.loads(destination.read_text());row.update(status='collected',sha256=digest(destination))
+                except Exception as exc:
+                    row.update(status='collection_error',error_type=type(exc).__name__)
+                    self.checkpoint('guest-readback-'+name,**row);raise
                 self.checkpoint('guest-readback-'+name,**row);return value
+            # SCP alone cannot distinguish an optional unproduced report from
+            # transport failure. Probe only after a failed copy, as in the base
+            # collector; unexpected copy/probe errors remain disqualifying.
+            path=shlex.quote(remote)
+            probe=self.guest('probe-production-'+name,
+                f'if [ -f {path} ] && [ ! -L {path} ]; then exit 0; '
+                f'elif [ ! -e {path} ] && [ ! -L {path} ]; then exit 3; else exit 4; fi',required=False)
+            row['probe_exit']=probe
+            row['status']=('missing_expected' if required else 'missing_optional') if probe==3 else ('transport_error' if probe==0 else 'probe_error')
             self.checkpoint('guest-readback-'+name,**row)
-            if required:raise AssertionError('missing expected guest artifact: '+name)
+            if probe==3 and not required:return None
+            raise AssertionError('missing expected guest artifact: '+name if probe==3 else 'guest artifact readback failed: '+name)
 
         def cold(self,name,*,success=False,replay=False):
             self.shutdown();self.boot_index+=1
