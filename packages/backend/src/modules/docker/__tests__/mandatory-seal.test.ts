@@ -17,11 +17,12 @@ async function fixture() {
   const main = 'agent-synthetic';
   const urn = `${main}:seal${path.basename(root).toLowerCase().replaceAll(/[^a-z0-9]/g, '').slice(-10)}` as const;
   const network = (suffix: string) => `${main}-${suffix}`;
+  const qaLabel = { 'wizard.qa.manager-seal': process.env.MANAGER_SEAL_QA_OWNER ?? 'unit' };
   const service = (nets: string[]) => ({ image: process.env.MANAGER_SEAL_TEST_IMAGE ?? 'python:3.12-slim',
     entrypoint: ['python3', '-c'], command: ['import time; time.sleep(3600)'], restart: 'no',
     networks: Object.fromEntries(nets.map((s) => [network(s), {}])),
     cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'],
-    labels: { [LABEL]: POLICY } });
+    labels: { [LABEL]: POLICY, ...qaLabel } });
   const doc: any = { services: {
     [main]: { ...service(['seal']), environment: { PUBLIC_KEY: 'wizard-sealed-provider-key-held-by-injector', LITERAL: '$DO_NOT_INTERPOLATE' },
       volumes: [`${root}/home:/home/synthetic`] },
@@ -30,14 +31,14 @@ async function fixture() {
     [`${main}-key`]: { ...service(['seal', 'keyed']), volumes: [`${root}/key:/run/provider-key/key:ro`] },
     [`${main}-edge`]: service(['seal', 'provider', 'edge-uplink']),
   }, networks: Object.fromEntries(['seal', 'provider', 'keyed'].map((s) => [network(s), {
-    internal: true, enable_ipv6: false, driver_opts: { 'com.docker.network.bridge.inhibit_ipv4': 'true' }, labels: { [LABEL]: POLICY },
+    internal: true, enable_ipv6: false, driver_opts: { 'com.docker.network.bridge.inhibit_ipv4': 'true' }, labels: { [LABEL]: POLICY, ...qaLabel },
   }])) };
-  doc.networks[network('edge-uplink')] = { internal: false, enable_ipv6: false };
+  doc.networks[network('edge-uplink')] = { internal: false, enable_ipv6: false, labels: qaLabel };
   await fs.mkdir(path.join(root, 'home'));
   await fs.writeFile(path.join(root, 'home/history.txt'), 'Synthetic continuity only.\n');
   await fs.writeFile(path.join(root, 'key'), 'synthetic-not-a-provider-credential\n', { mode: 0o600 });
   const seal = new MandatorySeal(root);
-  return { root, main, urn, doc, seal };
+  return { root, main, urn, doc, seal, qaLabel };
 }
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
@@ -88,7 +89,7 @@ describe('sticky mandatory enrollment', () => {
 const dockerDescribe = process.env.RUN_MANAGER_SEAL_DOCKER === '1' ? describe : describe.skip;
 dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
   it('disabled, removed and malicious optional config cannot attach a transient public network', async () => {
-    const { root, urn, doc, seal, main } = await fixture();
+    const { root, urn, doc, seal, main, qaLabel } = await fixture();
     const project = urn.replace(':', '_');
     const generated = path.join(root, 'generated.yml');
     const user = path.join(root, 'optional.yml');
@@ -97,8 +98,8 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     const baseline = structuredClone(doc);
     // Reproduce the generator's ordinary per-app bridge on every service and
     // its shared/public main bridge on the client, using owned synthetic names.
-    baseline.networks.public_app = {};
-    baseline.networks.public_main = {};
+    baseline.networks.public_app = { labels: qaLabel };
+    baseline.networks.public_main = { labels: qaLabel };
     for (const service of Object.values(baseline.services) as any[]) service.networks.public_app = {};
     baseline.services[main].networks.public_main = {};
     await fs.writeFile(generated, JSON.stringify(baseline));

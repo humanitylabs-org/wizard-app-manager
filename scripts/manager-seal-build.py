@@ -59,6 +59,10 @@ def main():
         except subprocess.TimeoutExpired: code = 124
         receipt['phases'][name] = {'exit_code': code, 'log_sha256': digest(log)}; save()
         return code
+    owned = False
+    owner = 'wizard.qa.manager-seal='+args.source
+    def resources(kind):
+        return call(['docker', 'ps' if kind == 'containers' else 'network', '-aq' if kind == 'containers' else 'ls', *([] if kind == 'containers' else ['-q']), '--filter', 'label='+owner]).split()
     try:
         node = Path('/srv/work/heavy/incognito-20261027/tooling/node')
         assert digest(node) == NODE_SHA
@@ -92,7 +96,9 @@ def main():
         # invented digest or a mutable tag during the two regression runs.
         image_id = call(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'python:3.12-slim'])
         receipt['regression_fixture_image_id'] = image_id; save()
-        test_env = {'RUN_MANAGER_SEAL_DOCKER':'1', 'MANAGER_SEAL_TEST_IMAGE': image_id}
+        assert not resources('containers') and not resources('networks'), 'refuse resources from an earlier attempt'
+        owned = True
+        test_env = {'RUN_MANAGER_SEAL_DOCKER':'1', 'MANAGER_SEAL_TEST_IMAGE': image_id, 'MANAGER_SEAL_QA_OWNER': args.source}
         baseline = qa/'baseline'; baseline.mkdir()
         with tarfile.open(root/'BASELINE.tar') as tar: tar.extractall(baseline, filter='data')
         for rel in ['packages/backend/src/modules/docker/mandatory-seal.ts', 'packages/backend/'+TEST]:
@@ -141,6 +147,21 @@ def main():
         receipt['blocked'] = {'class': type(e).__name__, 'reason': str(e) if isinstance(e, AssertionError) else 'runner command/prerequisite failed',
                               'returncode': getattr(e, 'returncode', None)}
         receipt['build_regressions_pass'] = False; save()
+    finally:
+        if owned:
+            try:
+                containers, networks = resources('containers'), resources('networks')
+                if containers: call(['docker','rm','-f',*containers])
+                if networks: call(['docker','network','rm',*networks])
+                remaining_containers, remaining_networks = resources('containers'), resources('networks')
+                receipt['cleanup'] = {'removed_containers': len(containers), 'removed_networks': len(networks),
+                                      'remaining_containers': len(remaining_containers), 'remaining_networks': len(remaining_networks)}
+                if containers or networks or remaining_containers or remaining_networks:
+                    receipt['build_regressions_pass'] = False
+            except Exception:
+                receipt['cleanup'] = {'verified': False}
+                receipt['build_regressions_pass'] = False
+            save()
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt.get('build_regressions_pass') else 2
 
