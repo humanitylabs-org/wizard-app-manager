@@ -3,7 +3,7 @@ import os from 'node:os';
 import { teardownApp } from './app-teardown';
 import { withHostAuthority } from './host-policy-lock';
 import { verifyBindSources, executableModel, assertNoWritableBindAncestors } from './compose-consumption';
-import { runBindHelper, reapBindHelper, helperRun } from './bind-helper';
+import { runBindHelper, reapBindHelper, helperRun, bindMetadataImage } from './bind-helper';
 import { constants } from 'node:fs';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
@@ -268,11 +268,12 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
         }
         assertNoWritableBindAncestors(model, existing, existingSources);
       }
+      let metadataImage: string | undefined;
       await verifyBindSources(
         model,
         ctx,
         managerUid,
-        (_file, argv) => runBindHelper(dataDir, argv, undefined, bindDeadline),
+        async (request) => runBindHelper(dataDir, { ...request, image: metadataImage ??= await bindMetadataImage(undefined, bindDeadline) }, undefined, bindDeadline),
         async (source) => {
           // Missing ordinary data directories may be created only through an
           // attested backend mapping of the ancestry the daemon just checked.

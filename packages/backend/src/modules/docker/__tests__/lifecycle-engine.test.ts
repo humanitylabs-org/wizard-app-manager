@@ -15,8 +15,9 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { teardownApp } from '../app-teardown';
-import { BIND_CHECK_IMAGE } from '../compose-consumption';
-import { runBindHelper, reapBindHelper } from '../bind-helper';
+import { runBindHelper, reapBindHelper, bindMetadataImage, helperRun } from '../bind-helper';
+// App/canary fixture only, NEVER the production metadata helper artifact.
+const BIND_CHECK_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 
 vi.mock('node:fs', async (load) => load<typeof import('node:fs')>());
 const exec = promisify(execFile);
@@ -261,8 +262,14 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
     const code = `const ns = await import(${JSON.stringify(moduleUrl)});
       const api = ns.runBindHelper ? ns : ns.default;
       if (typeof api?.runBindHelper !== 'function' || typeof api?.helperRun !== 'function') throw new Error('bind helper export shape unavailable');
-      await api.runBindHelper(${JSON.stringify(f.root)}, ['--rm', '--network=none', ${JSON.stringify(BIND_CHECK_IMAGE)}, 'timeout', '-s', 'KILL', '12', 'sleep', '300'],
-        (args, signal) => { const pending = api.helperRun(args, signal); if (args[0] === 'start') console.log(${JSON.stringify(ready)}); return pending; });`;
+      await api.runBindHelper(${JSON.stringify(f.root)}, { image: await api.bindMetadataImage(), managerUid: 0, source: '/' },
+        (args, signal) => {
+          // Test-only replacement of the body, preserving the production
+          // daemon watchdog/custody. This is a death test, NOT seccomp proof.
+          const at = args.indexOf('/app/libexec/wizard-bind-metadata');
+          const command = at < 0 ? args : [...args.slice(0, at), '/bin/sleep', '300'];
+          const pending = api.helperRun(command, signal);
+          if (args[0] === 'start') console.log(${JSON.stringify(ready)}); return pending; });`;
     // Vitest can itself run under Bun. The helper child must be explicit Node with
     // the workspace-resolved loader, never process.execPath or an implicit loader.
     const child = spawn('node', ['--import', loader, '--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -315,7 +322,11 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
 
   it('bounds a hung helper and acknowledges cleanup before a subsequent consume', async () => {
     const f = await fixture();
-    await expect(runBindHelper(f.root, ['--rm', '--network=none', BIND_CHECK_IMAGE, 'timeout', '-s', 'KILL', '12', 'sleep', '300'])).rejects.toThrow();
+    await expect(runBindHelper(f.root, { image: await bindMetadataImage(), managerUid: 0, source: '/' }, (args, signal) => {
+      // Custody/watchdog-only test seam; hostile post-filter tests are separate.
+      const at = args.indexOf('/app/libexec/wizard-bind-metadata');
+      return helperRun(at < 0 ? args : [...args.slice(0, at), '/bin/sleep', '300'], signal);
+    })).rejects.toThrow();
     expect(await docker('ps', '-aq', '--filter', 'label=wizard.bind-check')).toBe('');
     await expect(fs.stat(path.join(f.root, 'user-config/.wizard-bind-check.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     await f.service.composeApp(f.urn, 'up --detach');

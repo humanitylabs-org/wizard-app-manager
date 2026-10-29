@@ -32,6 +32,19 @@ RUN set -eu; test "$DOCKER_COMPOSE_VERSION" = v2.40.0; \
 
 RUN chmod +x docker-binary
 
+# ---- NATIVE METADATA CHECKER ----
+# Target-native stage: no amd64 emulation for ARM. ARM runtime acceptance is a
+# separate gate; an amd64 receipt does not admit the arm64 build.
+FROM node_base AS metadata_builder
+RUN apk add --no-cache build-base linux-headers binutils
+COPY packages/backend/native/bind-metadata.c /build/bind-metadata.c
+RUN cc -std=c11 -Os -Wall -Wextra -Werror -static -nostdlib -fno-builtin \
+    -fno-stack-protector -fno-pie -no-pie -Wl,--build-id=none,-z,noexecstack \
+    -o /build/wizard-bind-metadata /build/bind-metadata.c && \
+    ! readelf -l /build/wizard-bind-metadata | grep -q INTERP && \
+    objcopy --dump-section .wizard_policy=/build/wizard-bind-metadata.policy /build/wizard-bind-metadata && \
+    sha256sum /build/wizard-bind-metadata /build/wizard-bind-metadata.policy
+
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
@@ -81,9 +94,12 @@ FROM runner_base AS runner
 ENV NODE_ENV="production"
 
 WORKDIR /app
+LABEL org.wizard.bind-metadata="/app/libexec/wizard-bind-metadata"
 
 RUN npm install --no-save --omit=dev argon2 class-transformer
 
+COPY --from=metadata_builder --chmod=0555 /build/wizard-bind-metadata /app/libexec/wizard-bind-metadata
+COPY --from=metadata_builder --chmod=0444 /build/wizard-bind-metadata.policy /app/libexec/wizard-bind-metadata.policy
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/packages/backend/dist ./

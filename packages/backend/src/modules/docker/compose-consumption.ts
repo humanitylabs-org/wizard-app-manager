@@ -1,35 +1,9 @@
 import path from 'node:path';
 import { volumeOf, type GuardContext, HostAccessRefused } from './wizard-host-guard';
 
-// Trusted, digest-pinned helper. No app image/code, no network, no file reads;
-// it inspects ONLY each selected bind pathname and its host-side ancestry.
-export const BIND_CHECK_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
-export const BIND_ANCESTRY_SCRIPT = `set -eu
-set -f
-manager="$1"; source="$2"; current=/host
-check_parent() {
-  [ ! -L "$current" ] && [ -d "$current" ] || exit 42
-  uid=$(stat -c %u -- "$current")
-  mode=$(stat -c %a -- "$current")
-  [ "$uid" = 0 ] || [ "$uid" = "$manager" ] || exit 42
-  [ "$((0$mode & 022))" = 0 ] || exit 42
-}
-check_parent
-rest="$source"
-while [ -n "$rest" ]; do
-  rest="\${rest#/}"
-  [ -n "$rest" ] || break
-  part="\${rest%%/*}"
-  if [ "$rest" = "$part" ]; then rest=; else rest="\${rest#*/}"; fi
-  current="$current/$part"
-  [ ! -L "$current" ] || exit 42
-  if [ ! -e "$current" ]; then printf 'missing\\n'; exit 0; fi
-  if [ -n "$rest" ]; then check_parent; fi
-done
-[ -d "$current" ] || [ -f "$current" ] || exit 42
-printf 'safe\\n'
-`;
-export type BindRun = (file: string, args: string[]) => Promise<{ stdout: string }>;
+import type { BindMetadataRequest } from './bind-helper';
+
+export type BindRun = (request: Omit<BindMetadataRequest, 'image'>) => Promise<{ stdout: string }>;
 const clean = (p: string) => path.posix.normalize(p).replace(/\/+$/, '') || '/';
 const under = (p: string, root: string) => root === '/' || p === root || p.startsWith(`${root}/`);
 
@@ -81,32 +55,7 @@ export async function verifyBindSources(
       const source = clean(v.source);
       const check = async () => {
         try {
-          const args = [
-            '--rm',
-            '--restart=no',
-            '--stop-timeout=1',
-            '--network',
-            'none',
-            '--read-only',
-            '--cap-drop',
-            'ALL',
-            '--security-opt',
-            'no-new-privileges:true',
-            '--mount',
-            'type=bind,source=/,target=/host,readonly,bind-propagation=rprivate',
-            BIND_CHECK_IMAGE,
-            'timeout',
-            '-s',
-            'KILL',
-            '12',
-            'sh',
-            '-c',
-            BIND_ANCESTRY_SCRIPT,
-            'bind-check',
-            String(managerUid),
-            source,
-          ];
-          return (await run('docker', args)).stdout.trim();
+          return (await run({ managerUid, source })).stdout.trim();
         } catch {
           throw new HostAccessRefused(ctx.appId, ['bind source has unsafe or unverifiable host ancestry']);
         }

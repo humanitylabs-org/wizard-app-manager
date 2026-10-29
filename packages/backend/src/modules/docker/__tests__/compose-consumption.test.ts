@@ -11,7 +11,7 @@ import { helperRun, runBindHelper } from '../bind-helper';
 vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
 vi.mock('../bind-helper', async (importOriginal) => ({
   ...await importOriginal<typeof import('../bind-helper')>(),
-  helperRun: vi.fn(), runBindHelper: vi.fn(async () => ({ stdout: 'safe\n' })),
+  helperRun: vi.fn(), bindMetadataImage: vi.fn(async () => 'sha256:' + 'a'.repeat(64)), runBindHelper: vi.fn(async () => ({ stdout: 'safe\n' })),
 }));
 
 const roots: string[] = [];
@@ -93,11 +93,8 @@ describe('final compose consumption', () => {
 
   it('keeps stable sources and enforces private propagation/no auto-create after daemon ancestry validation', async () => {
     const mount: any = { type: 'bind', source: `${context.appDataDir}/data`, target: '/data' };
-    const run = vi.fn(async (_file, args) => {
-      expect(args).toContain('--read-only');
-      expect(args).toContain('none');
-      expect(args).toContain('ALL');
-      expect(args).toContain(mount.source);
+    const run = vi.fn(async (request) => {
+      expect(request).toEqual({ managerUid: 54321, source: mount.source });
       return { stdout: 'safe\n' };
     });
     await verifyBindSources({ services: { web: { volumes: [mount] } } }, context, 54321, run);
