@@ -31,7 +31,7 @@ printf 'safe\\n'
 `;
 export type BindRun = (file: string, args: string[]) => Promise<{ stdout: string }>;
 const clean = (p: string) => path.posix.normalize(p).replace(/\/+$/, '') || '/';
-const under = (p: string, root: string) => p === root || p.startsWith(`${root}/`);
+const under = (p: string, root: string) => root === '/' || p === root || p.startsWith(`${root}/`);
 
 
 /** A rootful app can chmod/chown through a writable ancestor bind even when

@@ -110,6 +110,7 @@ describe('final compose consumption', () => {
   it('refuses writable ancestor overlaps in candidate and already running layouts', () => {
     const model = { services: { web: { volumes: [{ type: 'bind', source: '/safe/root/data', target: '/data' }] } } };
     expect(() => assertNoWritableBindAncestors(model, ['/safe/root'])).toThrow('overlap');
+    expect(() => assertNoWritableBindAncestors(model, ['/'])).toThrow('overlap');
     expect(() => assertNoWritableBindAncestors(model, ['/safe/root/data'])).not.toThrow();
     model.services.web.volumes.push({ type: 'bind', source: '/safe/root', target: '/root' });
     expect(() => assertNoWritableBindAncestors(model)).toThrow('overlap');

@@ -101,6 +101,37 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
     await f.hookAbsent();
   }, 120_000);
 
+  it.each(['override-only', 'stale-recipe'] as const)('fences concurrent revoke and stops existing privilege despite %s drift', async (kind) => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.root, 'user-config/wizard-host-approvals.json'), JSON.stringify({ schema: 1, apps: { [`wizardapps/${f.urn.split(':')[0]}`]: ['web|privileged'] } }));
+    const override = path.join(f.root, 'override.yml');
+    if (kind === 'override-only') {
+      await fs.writeFile(override, 'services:\n  web:\n    privileged: true\n');
+      f.service.getBaseComposeArgsApp = async () => ({ args: ['--project-name', f.project, '--file', f.file, '--file', override], isCustomConfig: false });
+    } else { f.model.services.web.privileged = true; await f.write(); }
+    const done = path.join(f.root, 'revoked');
+    const py = `import sys; sys.path.insert(0, ${JSON.stringify(path.resolve('../..'))}); from pathlib import Path; from types import SimpleNamespace; from wam import host_policy; c=SimpleNamespace(home=Path(${JSON.stringify(path.join(f.root, 'home'))}),runtipi_root=Path(${JSON.stringify(f.root)})); host_policy.revoke(c, ${JSON.stringify(f.urn.split(':')[0])}); Path(${JSON.stringify(done)}).touch()`;
+    let revoke: ReturnType<typeof exec> | undefined;
+    await f.service.composeApp(f.urn, 'up --detach', async () => {
+      // This runs AFTER real final validation, with the shared authority lock held.
+      revoke = exec('python3', ['-c', py], { timeout: 45_000 });
+      await new Promise((r) => setTimeout(r, 100));
+      await expect(fs.stat(done)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+    await revoke;
+    expect(JSON.parse(await fs.readFile(path.join(f.root, 'user-config/wizard-host-approvals.json'), 'utf8')).apps).toEqual({});
+    const id = (await f.ids())[0]!;
+    expect(JSON.parse(await docker('inspect', id))[0].HostConfig.Privileged).toBe(true);
+    // Current recipe no longer declares the running privilege, and gains a hook.
+    delete f.model.services.web.privileged;
+    f.model.services.web.pre_stop = [{ command: ['sh', '-c', 'touch /canary/hook'] }];
+    await f.write();
+    if (kind === 'override-only') await fs.writeFile(override, 'services: {}\n');
+    expect(await new StopAppCommand(f.ref, {} as any).execute(f.urn, {})).toMatchObject({ success: true });
+    expect(await f.ids()).toEqual([]);
+    await f.hookAbsent();
+  }, 120_000);
+
   it('provisions only a missing data endpoint for a real nonroot app, preserving existing secrets', async () => {
     const f = await fixture();
     const secret = path.join(f.appData, 'app-secret');
