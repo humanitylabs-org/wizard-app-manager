@@ -1,0 +1,16 @@
+{
+  "version": "0.3.84",
+  "latest_since": "2026-10-29T21:28:12Z",
+  "promoted_at": "2026-10-29T22:10:15Z",
+  "upgrade_test": {
+    "from": "0.3.83",
+    "to": "0.3.84",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.84.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-approved same-day Stable (Miguel, 29 Oct 2026: 'stable today') for wizard-ux#668 Home & Settings; launch-phase feature fast-track (DECISIONS #93). Installed upgrade 0.3.83 -> 0.3.84 passed on a disposable KVM guest (public os.sh): 153 s, 0 failed checks. A first run failed on a transient Runtipi container-name conflict unrelated to this change (only the shell image moved); the retry passed.",
+    "notes": "Only change: wizard-ux#668 [feature] Home & Settings for everyone (shell image only). Not checked: real Tailscale/HTTPS/Serve, real chats and sign-ins, phones, a fresh install. Watch: first upgrade run hit 'container name /runtipi already in use' (flaky; see evidence)."
+  }
+}
