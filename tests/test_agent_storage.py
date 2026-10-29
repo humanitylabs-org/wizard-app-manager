@@ -104,6 +104,111 @@ def test_runtime_inventory_binds_actual_power_cut_and_respawner_cases():
     assert "os.getpid() == 1" in guest and "os.getpid() != 1" in guest
     assert "signal.SIGKILL if power_cut" in host
     assert 'set(names)==set(self.doc[\'expected_cases\'])' in host
-    assert "not tree.findall('.//skipped')" in host
+    assert "report.get('skipped')==0" in host and "self.doc['expected_pytest_cases']" in host
     assert 'WIZARD_HEAVY_LOCK_FD' in host and '/srv/work/heavy/production/worker.lock' in host
     assert '217179869184' in host and '21474836480' in host
+
+
+def _collector_runner(tmp_path):
+    """Real collector code, synthetic files/transport only; no VM is started."""
+    spec=importlib.util.spec_from_file_location('storage_runner_under_test',REPO/'qa/privsep-storage/run.py')
+    assert spec is not None and spec.loader is not None
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    (tmp_path/'runner.py').write_text('synthetic collector fixture\n')
+    expected=['tests/test_agent_storage.py::test_synthetic']
+    runner=module.Runner(tmp_path,{'revision':'synthetic','expected_pytest_count':1,'expected_pytest_cases':expected})
+    # Guard every external seam unless a test explicitly supplies a fake.
+    def forbidden(*args,**kwargs):raise AssertionError('external command forbidden in collector unit fixture')
+    runner.guest=forbidden;runner.copy=forbidden;runner.start=forbidden
+    return runner
+
+
+@pytest.mark.parametrize('artifact', ('failed-xml','missing-xml','malformed-xml'))
+def test_pytest_nonzero_exports_and_parses_before_preserving_original_failure(tmp_path,artifact):
+    runner=_collector_runner(tmp_path);events=[]
+    def guest(*args,**kwargs):
+        assert kwargs['required'] is False;events.append('pytest');return 1
+    def copy(local,remote,download,**kwargs):
+        assert download and kwargs['required'] is False;events.append('export')
+        if artifact=='missing-xml':return 1
+        local.write_text('<testsuites><testsuite><testcase classname="tests.test_agent_storage" name="test_synthetic"><failure/></testcase></testsuite></testsuites>'
+                         if artifact=='failed-xml' else '<broken')
+        return 0
+    runner.guest=guest;runner.copy=copy
+    with pytest.raises(AssertionError,match='fixed phase failed: focused-tests'):
+        runner.focused_tests()
+    assert events==['pytest','export']
+    report=runner.receipt['focused_pytest']
+    assert runner.receipt['checkpoints'][-1]['name']=='focused-tests-result-collected'
+    assert report['exit']==1 and not runner.receipt['passed']
+    if artifact=='failed-xml':assert report['actual_count']==report['failures']==1 and report['inventory_matches']
+    elif artifact=='missing-xml':assert report['copy_exit']==1
+    else:assert report['collection_error']=='ParseError'
+
+
+@pytest.mark.parametrize('variant', ('exact','missing','wrong-id','duplicate','skipped'))
+def test_pytest_zero_requires_exact_complete_unique_case_inventory(tmp_path,variant):
+    runner=_collector_runner(tmp_path)
+    runner.guest=lambda *a,**k:0
+    def copy(local,*args,**kwargs):
+        name='test_other' if variant=='wrong-id' else 'test_synthetic'
+        case=f'<testcase classname="tests.test_agent_storage" name="{name}">'+('<skipped/>' if variant=='skipped' else '')+'</testcase>'
+        body='' if variant=='missing' else case*(2 if variant=='duplicate' else 1)
+        local.write_text('<testsuites><testsuite>'+body+'</testsuite></testsuites>');return 0
+    runner.copy=copy
+    if variant=='exact':runner.focused_tests()
+    else:
+        with pytest.raises(AssertionError,match='focused pytest evidence incomplete or nonpassing'):runner.focused_tests()
+    assert runner.receipt['focused_pytest']['exit']==0
+    assert runner.receipt['checkpoints'][-1]['name']=='focused-tests-result-collected'
+
+
+def test_early_failure_diagnostics_never_fetch_unentered_storage_phase(tmp_path):
+    runner=_collector_runner(tmp_path);stops=[]
+    runner.receipt['first_error']={'reason':'fixed phase failed: focused-tests'}
+    runner.phase('focused-tests');runner.stop=lambda:stops.append(True)
+    runner.diagnostics()
+    assert stops and [r['status'] for r in runner.receipt['diagnostics']]==['not_reached']*3
+    assert runner.receipt['first_error']=={'reason':'fixed phase failed: focused-tests'}
+    assert runner.receipt['cleanup_errors']==runner.receipt['diagnostic_errors']==runner.receipt['boots']==[]
+
+
+@pytest.mark.parametrize('variant', ('not-reached','optional-absent','expected-absent','probe-failed','copy-failed','malformed','collected'))
+def test_diagnostic_absence_is_not_vm_cleanup_and_transport_stays_distinct(tmp_path,variant):
+    runner=_collector_runner(tmp_path);calls=[]
+    def guest(*args,**kwargs):
+        assert kwargs['required'] is False;calls.append('probe')
+        return 255 if variant=='probe-failed' else 3 if variant.endswith('absent') else 0
+    def copy(local,*args,**kwargs):
+        assert kwargs['required'] is False;calls.append('copy')
+        if variant=='copy-failed':return 1
+        local.write_text('<bad' if variant=='malformed' else '[]');return 0
+    runner.guest=guest;runner.copy=copy
+    row=runner.collect_artifact('cases.json','failure-cases.json',reached=variant!='not-reached',expected=variant=='expected-absent')
+    expected={'not-reached':'not_reached','optional-absent':'missing_optional','expected-absent':'missing_expected',
+              'probe-failed':'probe_error','copy-failed':'transport_error','malformed':'collection_error','collected':'collected'}
+    assert row['status']==expected[variant] and runner.receipt['cleanup_errors']==[]
+    assert bool(runner.receipt['diagnostic_errors']) is (variant in ('expected-absent','probe-failed','copy-failed','malformed'))
+    if variant=='not-reached':assert calls==[]
+    if variant.endswith('absent') or variant=='probe-failed':assert calls==['probe']
+
+
+def test_diagnostics_stop_failure_is_not_hidden_by_optional_absence(tmp_path):
+    runner=_collector_runner(tmp_path)
+    runner.receipt['first_error']={'reason':'original failure'}
+    def stop():raise RuntimeError('synthetic stop failure')
+    runner.stop=stop;runner.diagnostics()
+    assert runner.receipt['cleanup_errors']==['diagnostic-stop:RuntimeError']
+    assert runner.receipt['first_error']=={'reason':'original failure'}
+    assert not runner.receipt['passed']
+
+
+def test_runner_phase_exports_precede_required_assertions_and_preserve_case_oracles():
+    tree=ast.parse((REPO/'qa/privsep-storage/run.py').read_text())
+    runner=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner')
+    execute=next(n for n in runner.body if isinstance(n,ast.FunctionDef) and n.name=='execute')
+    text=ast.unparse(execute)
+    assert text.index("self.collect_artifact('cases.json', 'normal-cases.json'")<text.index("'fixed phase failed: normal-refusal-and-controls'")
+    assert text.index("self.checkpoint('maintenance-results-collected'")<text.index('set(seen) == set(expected_crashes)')
+    assert "set(names) == set(self.doc['expected_cases'])" in text
+    assert "len(names) == len(set(names)) == len(self.doc['expected_cases'])" in text

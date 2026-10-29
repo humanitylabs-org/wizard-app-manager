@@ -26,6 +26,44 @@ PENDING = 21474836480
 BASE = Path('/srv/work/images/debian-12-genericcloud-amd64.qcow2')
 BASE_SHA = '24036a8b79cbb11d809752c60f2f885b1a3b02b1d663faa0b648eb87bd7a256e'
 LOCK = Path('/srv/work/heavy/production/worker.lock')
+PYTEST_MODULES = ('tests/test_agent_storage.py', 'tests/test_privsep_alongside.py',
+                  'tests/test_privilege_migration.py', 'tests/test_get_sh_any_user.py')
+
+
+def pytest_inventory(sources):
+    """Expand this finite four-module closure without importing/collecting tests.
+
+    Refuse new dynamic parametrization rather than guessing a passing count.
+    Names follow pytest's default single-argument IDs (or literal explicit IDs).
+    """
+    steps_tree=ast.parse(sources['wam/privilege_migration.py'])
+    steps=next(ast.literal_eval(n.value) for n in steps_tree.body
+               if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='STEPS' for t in n.targets))
+    rows=[]
+    for path in PYTEST_MODULES:
+        tree=ast.parse(sources[path])
+        assert not any(isinstance(n,ast.ClassDef) and n.name.startswith('Test') for n in tree.body)
+        for node in tree.body:
+            if not isinstance(node,ast.FunctionDef) or not node.name.startswith('test_'):continue
+            suffixes=['']
+            assert len(node.decorator_list)<=1,'review new decorator inventory'
+            for decorator in node.decorator_list:
+                assert isinstance(decorator,ast.Call) and ast.unparse(decorator.func)=='pytest.mark.parametrize'
+                arg=ast.literal_eval(decorator.args[0]);assert isinstance(arg,str) and ',' not in arg
+                expr=decorator.args[1]
+                values=steps if ast.unparse(expr)=='m.STEPS' else ast.literal_eval(expr)
+                keywords={k.arg:ast.literal_eval(k.value) for k in decorator.keywords}
+                assert set(keywords)<= {'ids'}
+                ids=keywords.get('ids')
+                if ids is None:
+                    ids=[str(v).encode('unicode_escape').decode('ascii') if isinstance(v,(str,int,bool))
+                         else arg+str(i) for i,v in enumerate(values)]
+                assert len(ids)==len(values) and all(isinstance(v,str) for v in ids)
+                assert len(ids)==len(set(ids)),'review duplicate parameter IDs'
+                suffixes=['['+v+']' for v in ids]
+            rows.extend(path+'::'+node.name+suffix for suffix in suffixes)
+    assert rows and len(rows)==len(set(rows))
+    return sorted(rows)
 
 
 def digest(path):
@@ -71,9 +109,19 @@ def preflight(stage):
     scope['EXPECTED']=scope['NORMAL']+scope['INIT']+tuple(f'{fs}-crash-{phase}' for fs in ('samefs','crossfs') for phase in scope['BARRIERS'])
     assert list(scope['EXPECTED'])==doc['expected_cases']
     assert len(scope['EXPECTED'])==len(set(scope['EXPECTED']))
+    import tarfile
+    with tarfile.open(stage/'source.tar') as archive:
+        sources={}
+        for name in (*PYTEST_MODULES,'wam/privilege_migration.py'):
+            stream=archive.extractfile(name);assert stream is not None
+            sources[name]=stream.read().decode()
+    expected_python=pytest_inventory(sources)
+    assert expected_python==doc['expected_pytest_cases']
+    assert doc['expected_pytest_count']==len(expected_python)
     assert BASE.is_file() and digest(BASE)==BASE_SHA
     free=shutil.disk_usage(stage).free
     result={'static_integrity':True,'revision':doc['revision'],'cases_expected':len(scope['EXPECTED']),
+            'pytest_cases_expected':len(expected_python),
             'free_bytes':free,'reserve_bytes':RESERVE,'pending_bytes':PENDING,
             'required_bytes':RESERVE+PENDING,'capacity_admissible':free>=RESERVE+PENDING,
             'shortfall_bytes':max(0,RESERVE+PENDING-free),'heavy_executed':False,
@@ -107,7 +155,9 @@ class Runner:
         self.evidence.mkdir(mode=0o700)
         self.receipt={'revision':doc['revision'],'runner_sha256':digest(stage/'runner.py'),
             'passed':False,'full_integration_acceptance':False,'steps':[],'boots':[],
-            'first_error':None,'cleanup_errors':[],'source_binding':'genuine pushed commit + complete git archive',
+            'first_error':None,'cleanup_errors':[],'diagnostics':[],'diagnostic_errors':[],
+            'reached_phases':[],'checkpoints':[],
+            'source_binding':'genuine pushed commit + complete git archive',
             'scope':'protected storage primitive only; stock gateway, installed Service/HTTP/install follow separately'}
         self.proc=None;self.log=None
         self.key=self.evidence/'id_ed25519';self.disk=self.evidence/'disk.qcow2'
@@ -116,6 +166,12 @@ class Runner:
         self.save()
 
     def save(self):put_json(self.evidence/'receipt.json',self.receipt)
+
+    def phase(self,name):
+        self.receipt['reached_phases'].append(name);self.save()
+
+    def checkpoint(self,name,**facts):
+        self.receipt['checkpoints'].append({'name':name,**facts});self.save()
 
     def capacity(self):
         free=shutil.disk_usage(self.stage).free
@@ -143,10 +199,66 @@ class Runner:
         (self.evidence/(label+'.sh')).write_text(script)
         return self.run(label,self.ssh+['bash','-se'],timeout=timeout,input=('set -o pipefail\n'+script+'\n').encode(),required=required)
 
-    def copy(self,local,remote,download=False):
+    def copy(self,local,remote,download=False,*,required=True):
         opts=['scp','-q','-i',str(self.key),'-P',str(self.port),'-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null']
         target='root@127.0.0.1:'+remote
-        return self.run('copy-'+str(len(self.receipt['steps'])),opts+([target,str(local)] if download else [str(local),target]),timeout=180)
+        return self.run('copy-'+str(len(self.receipt['steps'])),opts+([target,str(local)] if download else [str(local),target]),timeout=180,required=required)
+
+    def focused_tests(self):
+        self.phase('focused-tests')
+        rc=self.guest('focused-tests','cd /root/storage-proof/source\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q '
+                      +' '.join(PYTEST_MODULES)+' --junitxml=/root/storage-proof/pytest.xml\n',600,required=False)
+        # Export and parse even on pytest failure. Collection errors are separate
+        # facts and cannot replace the original command's nonzero exit.
+        report={'exit':rc,'expected_count':self.doc['expected_pytest_count']}
+        try:
+            copied=self.copy(self.evidence/'pytest.xml','/root/storage-proof/pytest.xml',True,required=False)
+            report['copy_exit']=copied
+            if copied==0:
+                import xml.etree.ElementTree as ET
+                tree=ET.parse(self.evidence/'pytest.xml');cases=tree.findall('.//testcase')
+                actual=[case.get('classname','').replace('.','/')+'.py::'+case.get('name','') for case in cases]
+                report.update(actual_count=len(cases),actual_cases=sorted(actual),xml_sha256=digest(self.evidence/'pytest.xml'),
+                              failures=len(tree.findall('.//failure')),errors=len(tree.findall('.//error')),
+                              skipped=len(tree.findall('.//skipped')))
+                report['inventory_matches']=(len(actual)==len(set(actual)) and sorted(actual)==self.doc['expected_pytest_cases'])
+        except Exception as exc:report['collection_error']=type(exc).__name__
+        self.receipt['focused_pytest']=report
+        self.checkpoint('focused-tests-result-collected',**report)
+        assert rc==0,'fixed phase failed: focused-tests'
+        assert report.get('inventory_matches') and report.get('failures')==report.get('errors')==report.get('skipped')==0,'focused pytest evidence incomplete or nonpassing'
+
+    def collect_artifact(self,name,local_name,*,reached,expected=False):
+        """Bounded phase-aware readback, never a VM cleanup result.
+
+        A fixed remote probe distinguishes absent optional output from broken
+        SSH/SCP. Failure of an expected transfer stays visible as a diagnostic
+        error; no collector assertion may replace the first proof failure.
+        """
+        assert name in ('cases.json','complete.json','first-error.json','crash-state.json')
+        row={'name':name,'local':local_name,'expected':expected,'status':'not_reached'}
+        if reached:
+            try:
+                path='/root/storage-proof/'+name
+                rc=self.guest('probe-'+local_name,
+                    f'if [ -f {path} ] && [ ! -L {path} ]; then exit 0; '
+                    f'elif [ ! -e {path} ] && [ ! -L {path} ]; then exit 3; else exit 4; fi',required=False)
+                row['probe_exit']=rc
+                if rc==3:row['status']='missing_expected' if expected else 'missing_optional'
+                elif rc!=0:row['status']='probe_error'
+                else:
+                    rc=self.copy(self.evidence/local_name,path,True,required=False);row['copy_exit']=rc
+                    if rc!=0:row['status']='transport_error'
+                    else:
+                        row.update(status='collected',sha256=digest(self.evidence/local_name))
+                        value=json.loads((self.evidence/local_name).read_text())
+                        row['parsed']=True
+                        if isinstance(value,list):row['rows']=len(value)
+            except Exception as exc:row.update(status='collection_error',error=type(exc).__name__)
+        self.receipt['diagnostics'].append(row)
+        if row['status'] not in ('not_reached','missing_optional','collected'):
+            self.receipt['diagnostic_errors'].append(dict(row))
+        self.save();return row
 
     def start(self,index,maintenance=False,boot=None):
         self.capacity()
@@ -210,10 +322,14 @@ class Runner:
             'test "$(git rev-parse HEAD)" = '+self.doc['revision']+'\n'
             'test "$(git rev-parse HEAD^{tree})" = '+self.doc['tree']+'\n'
             'git fsck --full\ntest -z "$(git status --porcelain)"\n',180)
-        self.guest('focused-tests','cd /root/storage-proof/source\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q tests/test_agent_storage.py tests/test_privsep_alongside.py tests/test_privilege_migration.py tests/test_get_sh_any_user.py --junitxml=/root/storage-proof/pytest.xml\n',600)
-        self.copy(self.evidence/'pytest.xml','/root/storage-proof/pytest.xml',True)
-        self.guest('normal-refusal-and-controls','/usr/bin/python3 -I /root/storage-proof/guest.py prepare',360)
-        self.copy(self.evidence/'normal-cases.json','/root/storage-proof/cases.json',True)
+        self.checkpoint('source-and-prerequisites-passed')
+        self.focused_tests()
+        self.phase('normal-refusal-and-controls')
+        rc=self.guest('normal-refusal-and-controls','/usr/bin/python3 -I /root/storage-proof/guest.py prepare',360,required=False)
+        normal=self.collect_artifact('cases.json','normal-cases.json',reached=True,expected=True)
+        self.checkpoint('normal-result-collected',exit=rc,artifact=normal)
+        assert rc==0,'fixed phase failed: normal-refusal-and-controls'
+        assert normal['status']=='collected','normal case export incomplete'
         self.guest('boot-metadata',"python3 -c 'import json,os,subprocess; from pathlib import Path; k=os.uname().release; print(json.dumps({\"kernel\":\"/boot/vmlinuz-\"+k,\"initrd\":\"/boot/initrd.img-\"+k,\"root_uuid\":subprocess.check_output([\"findmnt\",\"-no\",\"UUID\",\"/\"],text=True).strip()}))' > /root/storage-proof/boot.json")
         self.copy(self.evidence/'boot.json','/root/storage-proof/boot.json',True)
         boot=json.loads((self.evidence/'boot.json').read_text());assert re.fullmatch('[A-Fa-f0-9-]+',boot['root_uuid'])
@@ -224,6 +340,7 @@ class Runner:
         except subprocess.TimeoutExpired:raise AssertionError('initial guest did not shut down')
         self.stop()
         seen=[]
+        self.phase('maintenance')
         for index in range(1,16):
             self.start(index,True,boot)
             deadline=time.monotonic()+360
@@ -234,7 +351,9 @@ class Runner:
                 barriers=re.findall(r'STORAGE_CRASH_BARRIER:([a-z0-9_-]+)',text)
                 if barriers:
                     assert len(barriers)==1 and barriers[0] not in seen,'unexpected/repeated crash barrier'
-                    seen.append(barriers[0]);self.stop(power_cut=True);break
+                    seen.append(barriers[0]);self.stop(power_cut=True)
+                    self.receipt['actual_power_cuts']=list(seen)
+                    self.checkpoint('actual-power-cut',case=barriers[0],boot=index);break
                 if 'STORAGE_PROOF_COMPLETE' in text:
                     completed=True
                     self.proc.wait(timeout=60);self.stop();break
@@ -243,35 +362,40 @@ class Runner:
             else:raise TimeoutError('bounded maintenance boot')
             if completed:break
         else:raise AssertionError('too many recovery boots')
-        expected_crashes=[n for n in self.doc['expected_cases'] if '-crash-' in n]
-        assert set(seen)==set(expected_crashes) and len(seen)==len(expected_crashes)
         self.receipt['actual_power_cuts']=seen;self.save()
         self.start(16)
-        for name in ('cases.json','complete.json'):
-            self.copy(self.evidence/name,'/root/storage-proof/'+name,True)
+        artifacts=[self.collect_artifact(name,name,reached=True,expected=True) for name in ('cases.json','complete.json')]
+        self.checkpoint('maintenance-results-collected',artifacts=artifacts,actual_power_cuts=seen)
+        expected_crashes=[n for n in self.doc['expected_cases'] if '-crash-' in n]
+        assert set(seen)==set(expected_crashes) and len(seen)==len(expected_crashes)
+        assert all(row['status']=='collected' for row in artifacts),'maintenance result export incomplete'
         rows=json.loads((self.evidence/'cases.json').read_text());names=[r['name'] for r in rows]
         assert len(names)==len(set(names))==len(self.doc['expected_cases'])
         assert set(names)==set(self.doc['expected_cases']) and all(r['passed'] is True for r in rows)
         complete=json.loads((self.evidence/'complete.json').read_text());assert complete['passed'] is True
-        import xml.etree.ElementTree as ET
-        tree=ET.parse(self.evidence/'pytest.xml');cases=tree.findall('.//testcase')
-        assert cases and not tree.findall('.//failure') and not tree.findall('.//error') and not tree.findall('.//skipped')
-        self.receipt.update(passed=True,actual_case_count=len(rows),python_cases=len(cases),runtime_acceptance='storage seam only')
+        self.receipt.update(passed=True,actual_case_count=len(rows),python_cases=self.receipt['focused_pytest']['actual_count'],runtime_acceptance='storage seam only')
         self.guest('shutdown-final','sync\nsystemctl poweroff\n',60,False)
         self.proc.wait(timeout=60);self.stop()
 
     def diagnostics(self):
         # Read actual guest state after an init failure by booting the same owned
         # disk normally. It does not rerun/relabel the failing proof.
-        if not self.disk.exists():return
-        self.stop()
+        reached='normal-refusal-and-controls' in self.receipt['reached_phases']
+        maintenance='maintenance' in self.receipt['reached_phases']
+        prepared=any(c['name']=='normal-result-collected' and c['exit']==0 for c in self.receipt['checkpoints'])
+        plans=[('cases.json',reached,prepared),('first-error.json',reached,False),('crash-state.json',maintenance,False)]
         try:
-            self.start(99)
-            for name in ('cases.json','first-error.json','crash-state.json'):
-                try:self.copy(self.evidence/('failure-'+name),'/root/storage-proof/'+name,True)
-                except Exception as exc:self.receipt['cleanup_errors'].append('diagnostic '+name+':'+type(exc).__name__)
-        except Exception as exc:self.receipt['cleanup_errors'].append('diagnostic-boot:'+type(exc).__name__)
-        finally:self.stop()
+            self.stop()
+            # No preparation means none of these files can exist; do not boot
+            # the failed disk just to request outputs from an unentered phase.
+            if reached and self.disk.exists():self.start(99)
+            for name,available,expected in plans:
+                self.collect_artifact(name,'failure-'+name,reached=available,expected=expected)
+        except Exception as exc:self.receipt['diagnostic_errors'].append({'status':'diagnostic_boot_error','error':type(exc).__name__})
+        finally:
+            try:self.stop()
+            except Exception as exc:self.receipt['cleanup_errors'].append('diagnostic-stop:'+type(exc).__name__)
+            self.save()
 
 
 def main():
@@ -298,7 +422,7 @@ def main():
         try:runner.stop()
         except BaseException as exc:runner.receipt['cleanup_errors'].append(type(exc).__name__)
         runner.receipt['all_owned_vms_stopped']=all(row['stopped'] for row in runner.receipt['boots'])
-        runner.receipt['passed']=runner.receipt['passed'] and runner.receipt['all_owned_vms_stopped'] and not runner.receipt['cleanup_errors']
+        runner.receipt['passed']=runner.receipt['passed'] and runner.receipt['all_owned_vms_stopped'] and not runner.receipt['cleanup_errors'] and not runner.receipt['diagnostic_errors']
         runner.save()
     print(json.dumps(runner.receipt,sort_keys=True));return 0 if runner.receipt['passed'] else 1
 

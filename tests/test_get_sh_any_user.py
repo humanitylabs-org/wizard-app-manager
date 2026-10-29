@@ -414,7 +414,7 @@ def test_terminal_install_keeps_the_synchronous_restart(box, tmp_path):
     assert "systemd-run" not in box.log.read_text()
 
 
-def _install_alongside_block(tmp: Path, agent_safe: str, outer: str = "0") -> tuple[subprocess.CompletedProcess, str]:
+def _install_alongside_block(tmp: Path, agent_safe: str, outer: str = "0", *, uid: int = 1001) -> tuple[subprocess.CompletedProcess, str]:
     """Run install.sh's alongside block (agent-safe gate .. bootstrap) with stub wam/wizard; return the call log."""
     src = INSTALL_SH.read_text()
     block = src[src.index("# Run by a Hermes agent"):src.index("# 3) Fill every empty")]
@@ -426,6 +426,11 @@ def _install_alongside_block(tmp: Path, agent_safe: str, outer: str = "0") -> tu
                                                 "case \"$1\" in alongside) [ \"$2\" = --detect ] && echo '{\"api_origin\":\"http://127.0.0.1:9\"}';; esac\nexit 0\n")
         (home / ".local/bin" / name).chmod(0o755)
     stub = tmp / "sbin"; stub.mkdir()
+    # This extracted block asks only for the current numeric uid. Never consult
+    # the pytest process/host identity, or silently accept a new id invocation.
+    assert uid in (0, 1001)
+    (stub / "id").write_text(f'#!/bin/sh\n[ "$#" -eq 1 ] && [ "$1" = -u ] || exit 64\nprintf "%s\\n" "{uid}"\n')
+    (stub / "id").chmod(0o755)
     (stub / "systemd-run").write_text(f"#!/bin/sh\necho \"systemd-run $*\" >> {log}\n"); (stub / "systemd-run").chmod(0o755)
     (stub / "curl").write_text("#!/bin/sh\nexit 0\n"); (stub / "curl").chmod(0o755)
     script = f"set -uo pipefail\nFAILED=(); DEGRADED=(); OUTCOME={home}/.wizard-os/outcome.json\n{block}\n{tail}\necho RESTART_LATER=$RESTART_LATER\n"
@@ -436,19 +441,22 @@ def _install_alongside_block(tmp: Path, agent_safe: str, outer: str = "0") -> tu
     return p, log.read_text() if log.exists() else ""
 
 
-def test_install_sh_defers_the_link_restart_under_an_agent(tmp_path):
-    p, calls = _install_alongside_block(tmp_path, "1")
+@pytest.mark.parametrize('uid', (1001, 0), ids=('nonroot-user-manager', 'root-system-manager'))
+def test_install_sh_defers_the_link_restart_under_an_agent(tmp_path, uid):
+    p, calls = _install_alongside_block(tmp_path, "1", uid=uid)
     assert p.returncode == 0, p.stderr
     link = next(l for l in calls.splitlines() if l.startswith("wizard link"))
     assert "--" + RS not in link
     sched = next(l for l in calls.splitlines() if l.startswith("systemd-run"))
-    assert "--user" in sched and "--on-active=20s" in sched and f"/opt/h/hermes' {GW} {RS}" in sched
+    assert ('--user' in sched.split()) is (uid != 0)
+    assert "--on-active=20s" in sched and f"/opt/h/hermes' {GW} {RS}" in sched
     assert calls.index("wizard doctor") < calls.index("systemd-run"), "summary/doctor first, restart last"
     assert "RESTART_LATER=1" in p.stdout and "send any" in p.stdout
 
 
-def test_install_sh_restarts_synchronously_from_a_terminal(tmp_path):
-    p, calls = _install_alongside_block(tmp_path, "0")
+@pytest.mark.parametrize('uid', (1001, 0), ids=('nonroot-user-manager', 'root-system-manager'))
+def test_install_sh_restarts_synchronously_from_a_terminal(tmp_path, uid):
+    p, calls = _install_alongside_block(tmp_path, "0", uid=uid)
     assert p.returncode == 0, p.stderr
     assert "--" + RS in next(l for l in calls.splitlines() if l.startswith("wizard link"))
     assert "systemd-run" not in calls and "RESTART_LATER=\n" in p.stdout + "\n"
