@@ -170,6 +170,21 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
     return {"helper": "ready" if _sha(HELPER) == _sha(_source()) else helper_state(), "changed": True, "user": user}
 
 
+def remove(runner=subprocess.run) -> dict:
+    """Undo `setup`: delete the sudoers rule and the root helper. OS security then stays check-only (unprivileged);
+    `wam maintain setup` puts them back. For a box whose owner never wants root maintenance installed."""
+    if not SUDOERS.exists() and not HELPER.exists():
+        return {"helper": "missing", "changed": False}
+    script = f"set -e; rm -f {SUDOERS}; rm -f {HELPER}"
+    p = runner(["sh", "-c", script] if os.geteuid() == 0 else ["sudo", "-n", "sh", "-c", script],
+               capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
+                "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
+                "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
+    return {"helper": "missing", "changed": True}
+
+
 # ---- settings, timer ---------------------------------------------------------------------------------------------
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
@@ -232,18 +247,21 @@ def set_os_security(mode: str, home: Path | None = None, runner=subprocess.run, 
 
 @contextmanager
 def _lease(home: Path):
-    """The box's one maintenance lease. Also refuses while a Hermes update holds its own lock."""
+    """The box's one maintenance lease. Also refuses while a Hermes update or the nightly app updates
+    (wam/app_updates.py, 04:30 timer; both timers are Persistent, so they can fire together after a box was off) hold
+    their own lock, and holds both locks for the whole run so neither starts underneath OS patching or a restart."""
     home.mkdir(parents=True, exist_ok=True)
     fd = os.open(home / "maintenance.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    other = None
+    others: list[int] = []
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if (home / "hermes-update.lock").exists():
-            other = os.open(home / "hermes-update.lock", os.O_RDWR)
-            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name in ("hermes-update.lock", "app-updates.lock"):
+            if (home / name).exists():
+                others.append(os.open(home / name, os.O_RDWR))
+                fcntl.flock(others[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
-        if other is not None:
+        for other in others:
             os.close(other)
         os.close(fd)   # never unlink a flock inode
 
@@ -554,7 +572,7 @@ def status(home: Path | None = None) -> dict:
 def main(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="wam maintain", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", nargs="?", default="status", choices=("status", "run", "setup", "history", "health"))
+    ap.add_argument("action", nargs="?", default="status", choices=("status", "run", "setup", "remove", "history", "health"))
     ap.add_argument("--os-security", choices=MODES)
     from .quiet_restart import OPTIONS
     for key, choices in OPTIONS.items():
@@ -579,6 +597,8 @@ def main(argv: list[str]) -> int:
         res = run(wait=a.wait_quiet)
     elif a.action == "setup":
         res = setup()
+    elif a.action == "remove":
+        res = remove()
     elif a.action == "history":
         res = history(n=a.n)
     elif a.action == "health":

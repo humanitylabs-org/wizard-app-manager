@@ -30,7 +30,7 @@ Wizard additions:
   wam network allow|deny <app>  let one app keep host access / networks it does not own (the owner's call), or stop
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
-  wam maintain [run|setup|history] [--os-security off|check|patch]
+  wam maintain [run|setup|remove|history] [--os-security off|check|patch]
                                 nightly system maintenance: OS security patches for any Linux (check by default;
                                 patch installs fixes while quiet, never restarts or reboots), history in Health
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]

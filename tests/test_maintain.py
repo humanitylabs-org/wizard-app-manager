@@ -235,6 +235,40 @@ def test_hermes_update_lock_blocks_the_run(tmp_path):
         os.close(fd)
 
 
+def test_app_updates_and_maintenance_never_run_together(tmp_path):
+    import fcntl, os
+    from wam import app_updates
+    fd = os.open(tmp_path / app_updates.LOCK, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:   # nightly app updates running: maintenance changes nothing
+        assert maintain.run(tmp_path, wait=0, is_busy=lambda: [])["state"] == "busy"
+    finally:
+        os.close(fd)
+    with maintain._lease(tmp_path):   # maintenance running: app updates cannot take their lock
+        fd = os.open(tmp_path / app_updates.LOCK, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+
+def test_remove_deletes_only_the_helper_and_its_sudoers_rule(monkeypatch, tmp_path):
+    seen = {}
+    def runner(argv, **k):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    helper, sudoers = tmp_path / "os-patch", tmp_path / "sudoers.d-wizard"
+    helper.write_text("x")
+    monkeypatch.setattr(maintain, "HELPER", helper)
+    monkeypatch.setattr(maintain, "SUDOERS", sudoers)
+    monkeypatch.setattr(maintain.os, "geteuid", lambda: 1000)
+    assert maintain.remove(runner)["changed"]
+    assert seen["argv"][:3] == ["sudo", "-n", "sh"] and seen["argv"][-1] == f"set -e; rm -f {sudoers}; rm -f {helper}"
+    helper.unlink()
+    assert maintain.remove(runner) == {"helper": "missing", "changed": False}
+
+
 def test_health_is_stale_after_three_days(tmp_path):
     old = {"finished_at": "2026-10-01T00:00:00Z", "state": "ok", "os": {"state": "current"}}
     now = time.mktime(time.strptime("2026-10-23", "%Y-%m-%d"))
