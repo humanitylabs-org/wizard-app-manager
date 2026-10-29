@@ -24,6 +24,9 @@ describe('owner-local exact Store selections', () => {
       url: 'https://index.test',
     } as AppStore);
     await fs.promises.mkdir(folder, { recursive: true });
+    // A real selected image recipe carries its manifest too; source/build selections
+    // deliberately proceed through upstream verification (covered in source-repair).
+    await fs.promises.writeFile(path.join(folder, 'wizard.md'), '---\nid: demo\nruntime:\n  package: image\n---\n');
     await fs.promises.writeFile(path.join(folder, '.wizard-commit'), `${sha}\n`);
     await fs.promises.writeFile(path.join(folder, '.wizard-source'), JSON.stringify({ repo: 'org/demo' }));
     await fs.promises.writeFile(path.join(folder, '.wizard-selection'), JSON.stringify({ repo: 'org/demo', commit: sha }));

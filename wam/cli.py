@@ -1197,13 +1197,14 @@ def bootstrap(c: Config) -> dict:
             del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
-    updated = release_updates(c, rt, failed)
+    held = {}
+    updated = release_updates(c, rt, failed, held=held)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
-    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
+    return {"installed": done, "updated": updated, "failed": failed, "held": held, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None, *, held: dict | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
@@ -1236,6 +1237,13 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             continue
         if source != row["repo"]:
             continue
+        from .source_integrity import update_block
+        reason = update_block(c.runtipi_root, STORE, app_id, verify_legacy=True)
+        if reason:
+            if held is not None:
+                held[app_id] = reason
+            print(f"keeping {app_id} unchanged: {reason}", file=sys.stderr)
+            continue  # held is not a failed install; no recipe/config mutation
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
         if commit == row["commit"] and (not row.get("index_version") or
                                           str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
@@ -1725,9 +1733,21 @@ class StoreHandler(BaseHTTPRequestHandler):
         POST {"channel": "stable"|"latest"} saves the channel;
         POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
         an unpinned box refuses."""
-        from . import updates
+        from . import updates, app_updates
+
+        def status():
+            out = updates.status()
+            # Do not lose the system controls when an app-status read fails.
+            try:
+                out["apps"] = app_updates.status(self.cfg)
+            except Exception:  # noqa: BLE001 - unknown is not permission to update
+                out["apps"] = {"app_mode": app_updates.mode(self.cfg.home),
+                               "chosen": app_updates._state(self.cfg.home).get("mode") in app_updates.MODES,
+                               "error": "Could not check available app versions", "due": [], "skipped": []}
+            return out
+
         if method == "GET":
-            return self._json(200, updates.status())
+            return self._json(200, status())
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 1024:
@@ -1737,13 +1757,19 @@ class StoreHandler(BaseHTTPRequestHandler):
                 raise ValueError("expected an object")
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
+        if set(body) == {"app_mode"} and body["app_mode"] in app_updates.MODES:
+            app_updates.set_mode(body["app_mode"], self.cfg.home)
+            return self._json(200, status())
+        if body == {"action": "apply-apps"}:
+            res = app_updates.start_detached()
+            return self._json(200 if res.get("started") else 409, res)
         if body.get("action") == "apply" and set(body) == {"action"}:
             res = updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
-            return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
+            return self._json(200, {**updates.set_mode(body["mode"]), **status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
-            return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
+            return self._json(200, {**updates.set_channel(body["channel"]), **status()})
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
                                          '{"action": "apply"}'})
 
@@ -1788,7 +1814,8 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+               *, automatic: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
@@ -1804,6 +1831,13 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
     app, store = urn.split(":", 1)
+    if store == STORE:
+        from .source_integrity import update_block
+        reason = update_block(c.runtipi_root, store, app, verify_legacy=True)
+        if reason:
+            message = ("Your code needs review; keep or merge your changes" if reason == 'owner-source'
+                       else "Cannot confirm this app is unchanged; retry verification before updating")
+            raise SystemExit(f"REFUSED: {app}: {message}; nothing replaced.")
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
@@ -1829,7 +1863,14 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                              f"turn isolation off with `wam network off`")
     started_ms = int(time.time() * 1000)
     try:
-        rt.update(urn, perform_backup=backup)
+        from .app_updates import admission
+        with admission(c.home if automatic else None, automatic) as admitted:
+            if admitted:
+                rt.update(urn, perform_backup=backup)
+        if not admitted:
+            if store == STORE:
+                network_step(c, rt, restart=False)  # restore installed topology; nothing was queued
+            return {"id": app_id, "skipped": "manual", "status": before.get("status"), "version": before.get("version")}
         time.sleep(3)
         status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException:
@@ -1868,6 +1909,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        # Raw lifecycle calls bypass source, topology and owner-access checks.
+        # Use the guarded single-app API; unsupported/bulk shapes fail closed.
+        raise ValueError('Use wam app update <app> [--no-backup]; raw or bulk update passthrough is not safe')
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)

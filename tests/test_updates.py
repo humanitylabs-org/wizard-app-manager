@@ -221,6 +221,27 @@ def test_store_listener_updates_route(tmp_path, monkeypatch):
     monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 1000)
     assert call("GET")[0] == 403
 
+    # App updates share exactly the same owner/origin/JSON admission, but not the OS mode.
+    from wam import app_updates as au
+    monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 0)
+    saved = {"app_mode": "auto", "chosen": False, "due": [], "skipped": []}
+    monkeypatch.setattr(au, "status", lambda c: dict(saved))
+    monkeypatch.setattr(au, "set_mode", lambda mode, home: saved.update(app_mode=mode, chosen=True))
+    monkeypatch.setattr(au, "start_detached", lambda: {"started": True})
+    assert call("GET")[1]["apps"]["chosen"] is False
+    assert call("POST", {"app_mode": "ask"}, Origin="https://evil.example")[0] == 403
+    assert saved["app_mode"] == "auto"
+    assert call("POST", {"app_mode": "ask"}, **{"Tailscale-User-Login": "other"})[0] == 403
+    assert call("POST", {"app_mode": "ask"}, **{"X-Wizard-Store": None})[0] == 403
+    assert call("POST", {"app_mode": "never"})[0] == 400
+    assert call("POST", {"app_mode": "ask", "force": True})[0] == 400
+    assert call("POST", {"app_mode": "ask"})[1]["apps"] == {**saved, "app_mode": "ask", "chosen": True}
+    assert calls[-1] == {}  # system action/mode untouched by the app choice
+    assert call("POST", {"action": "apply-apps", "force": True})[0] == 400
+    assert call("POST", {"action": "apply-apps"}) == (200, {"started": True})
+    assert saved["app_mode"] == "ask"  # one manual run does not opt in
+    assert call("POST", {"app_mode": "auto"})[1]["apps"]["app_mode"] == "auto"
+
 
 def test_installer_enables_the_timer_on_every_install_and_rerun():
     from pathlib import Path

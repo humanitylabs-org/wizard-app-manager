@@ -83,5 +83,7 @@ def test_prune_keeps_current_and_other_apps(tmp_path):
     root = tmp_path / "app-data"
     for n in ("demo@aaaaaaaaaaaa", f"demo@{SHA[:12]}", "other@aaaaaaaaaaaa"):
         (root / ".wizard-source" / "wizardapps" / n).mkdir(parents=True)
+    from wam.source_integrity import record
+    record(root / ".wizard-source" / "wizardapps" / "demo@aaaaaaaaaaaa")
     packaging.prune(root, "wizardapps", "demo", f"demo@{SHA[:12]}")
     assert sorted(p.name for p in (root / ".wizard-source" / "wizardapps").iterdir()) == [f"demo@{SHA[:12]}", "other@aaaaaaaaaaaa"]

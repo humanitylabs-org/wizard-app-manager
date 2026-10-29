@@ -173,13 +173,11 @@ export class WizardIndexStore extends AppStoreFilesManager {
     return (await this.filesystem.isFile(f)) ? ((await this.filesystem.readTextFile(f)) ?? '').trim() : null;
   }
 
-  /** True when the prepared recipe at `commit` is a source/build package whose app-data source copy is missing. */
-  private async sourceMissing(appName: string, commit: string) {
+  /** Source/build copies need verification even when the commit and directory already exist. */
+  private async sourcePackage(appName: string) {
     const wizardText = await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, 'wizard.md'));
     const pkg = String(((frontMatter(wizardText ?? '').runtime ?? {}) as { package?: unknown }).package ?? '');
-    if (pkg !== 'source' && pkg !== 'build') return false;
-    const { appDataDir } = this.configuration.get('directories');
-    return !(await this.filesystem.isDirectory(sourceDir(appDataDir, this.storeConfig.slug, appName, commit)));
+    return pkg === 'source' || pkg === 'build';
   }
 
   /** Make sure repos/<slug>/apps/<id> holds the commit the index lists now. Fetches only this app. */
@@ -197,6 +195,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     // exact release. Never replace a prepared private/channel selection with an
     // index lookup (including during copyAppFromRepoToInstalled's fresh lookup).
     const selected = path.join(this.getAppStoreFolder(), appName, '.wizard-selection');
+    let pinned: IndexRecord | null = null;
     if (await this.filesystem.isFile(selected)) {
       const pin = JSON.parse((await this.filesystem.readTextFile(selected)) ?? '{}');
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
@@ -204,14 +203,16 @@ export class WizardIndexStore extends AppStoreFilesManager {
         throw new Error('invalid owner-local selection pin');
       if (appName === 'hermes-agent' && (pin.commit !== hermesRecipe.commit || pin.repo !== hermesRecipe.repo))
         throw new Error('Hermes selection differs from the shared exact lock');
-      return;
+      if (!(await this.sourcePackage(appName))) return;
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pin.repo)) throw new Error('invalid source repository');
+      pinned = { id: appName, name: appName, summary: '', repo: pin.repo,
+        install: { git: `https://github.com/${pin.repo}`, commit: pin.commit } };
     }
-    const rec = await this.lookup(appName, fresh);
+    const rec = pinned ?? await this.lookup(appName, fresh);
     if (!rec || !SHA.test(rec.install?.commit ?? '')) return;
     const have = await this.localCommit(appName);
-    // Same commit is done, unless its pinned source copy (source/build packaging) is gone: then the compose's
-    // ${APP_SOURCE_DIR} would be empty and every update fails with "invalid spec: :/app:ro".
-    if (have === rec.install.commit && !(await this.sourceMissing(appName, have))) return;
+    // Never skip the upstream comparison/baseline for existing source copies.
+    if (have === rec.install.commit && !(await this.sourcePackage(appName))) return;
 
     const { dataDir } = this.configuration.get('directories');
     const src = path.join(dataDir, 'repos', `.${this.storeConfig.slug}-src`, `${appName}@${rec.install.commit.slice(0, 12)}`);
@@ -241,6 +242,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
       appName,
       commit: rec.install.commit,
     });
+    if (have === rec.install.commit) return; // verified source; preserve recipe/selection and tipi_version
 
     const dst = path.join(this.getAppStoreFolder(), appName);
     let oldTipi = 0;
