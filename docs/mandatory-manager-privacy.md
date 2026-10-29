@@ -43,6 +43,71 @@ The container has **12 GiB memory including tmpfs, no swap**, 256 pids, four CPU
 
 Frozen install -> common build -> backend types -> normal backend unit suite (`RUN_MANAGER_SEAL_DOCKER=0`, two workers) is the only product execution. Runner regressions run before install. The `early-receipt.json` always has `focused_pass=false`, no image/API acceptance and `RUNTIPI_ADMITTED=false`; it cannot unlock the image phase. Its ephemeral dependency closure is not advertised as reusable disk state. Full focused remains at 16 GiB and image at 40 GiB; source-only early staging is not executed evidence.
 
+### Bounded direct-Docker follow-up (staged, execution pending)
+
+`scripts/manager-seal-docker.py` reuses the successful early bootstrap: exact
+Node/Bun, real compiler/link/load, isolated-store bins, the fixed bunx tmp alias
+and sanitized dependency transport. It validates the inherited receipt and
+unchanged source closure. It reruns the changed mandatory-seal file plus backend
+types and small harness regressions, not the passed full backend unit suite.
+The old disk-backed focused script is not invoked.
+
+The follow-up runs actual DockerService/storage/seal code and actual Compose and
+Docker. AppLifecycleCommandFactory selects the real RestartAppCommand and the
+fixture executes that method with real manager down/up and a real
+invalid-runtime refusal. Generation/DB/filesystem facades remain synthetic and
+the source-handler flag is deliberately named `source_handler_real_docker_pass`.
+This is **not** instantiated Nest dependency registration, queue/Postgres, real
+generation, authenticated HTTP or installed-manager security acceptance.
+`packaged_api_pass`, `full_docker_acceptance`, `image_built` and
+`RUNTIPI_ADMITTED` remain false. Before baseline substitution, the exact candidate
+backend bundle is built, node-syntax-checked, hashed and exported; frontend,
+production external runtime dependencies and official image assembly remain.
+
+A separate **64 MiB tmpfs Docker volume** is mounted inside the worker at its
+canonical host-daemon mountpoint; fixture bind paths therefore mean the same
+files to the worker and daemon. Never use an inside-only /work path as a host
+bind. Linux AF_UNIX 107/108-byte boundary probes, fixture-path bind, Docker socket
+group access and real bind/read probes in both cached fixture images precede
+package installation. App socket grant enforcement is still an API-stage gap.
+Docker socket access grants full daemon authority, not a hostile-client sandbox.
+
+Fixture v1 is exact cached Python 3.12 slim; v2 is the different immutable early
+Node 22 bookworm image's actual Python 3.11.2. Both execute the fixture's python3
+sleeper and are version-checked. This is **not** Python 3.13 compatibility proof.
+No image pulls/builds or disk-backed dependency cache are permitted. Fixture
+roots are read-only, logs disabled and memory/pids/tmpfs allocations capped.
+
+The candidate includes the exact disabled-config bypass; real cross-process
+enrollment/launch exclusion; prefix/shortcut refusals; sticky revoked share
+through update/recovery; no-op bytes, stale CAS and envelope-revision negatives;
+and refusal of a third distinct revision with the first rollback anchor intact.
+The product still does not support arbitrary successive trusted revisions.
+Live events start before the first enrollment/launch race. Readiness and final
+negative/drain barriers, exact container create coverage and exact inspected
+network identities/internal flags detect transient unexpected/public attaches.
+Cleanup uses the exact owner label **and** deterministic synthetic Compose
+project. Fallback cleanup cannot turn a resource leak into a pass.
+
+One frozen dependency closure serves both probes. Baseline restores **both**
+original DockerService and storage bytes from the verified archive; all other
+preexisting baseline files must match candidate hashes except the inherited
+incident test. Only the policy helper/fixture are injected. Baseline must fail
+specifically at the original optional-config-disabled public-network assertion,
+not setup/import/race. The candidate product files are restored afterward.
+
+The **200 GiB reserve is unchanged**. The successful early run measured
+1,390,694,400 bytes in the same capped 8 GiB scratch / 12 GiB no-swap cgroup.
+This follow-up keeps dependencies and source there, caps baseline extraction at
+64 MiB, bundle output at 512 MiB, compressed artifact at 128 MiB, host wire at
+384 MiB, separate dependency evidence at 64 MiB and copied Compose at 100 MiB.
+Fixture data is separately capped at 64 MiB in RAM. A 1 GiB **host-write** budget
+covers exports/control metadata rather than pretending the old 16 GiB disk
+working set is smaller. Admission and the running watchdog preserve the reserve;
+insufficient capacity/RAM or changed closure fails before package installation.
+No deletion is authorized. This source-only bounded phase is not the old full
+focused/image admission and does not unlock that image phase.
+
 ## Remaining acceptance gates — unchanged
 
 Direct `DockerService` with synthetic DB/file facades is not authenticated Nest API/queue/Postgres acceptance. A new manager object is not process-level daemon restart. Manual forced callback failure/prior generated-file recovery is not the actual update transaction. The next exact-image disposable API stage must prove install/start/restart/update, process restart, optional-config disabled/removed/changed, required-policy failure before destructive callbacks, real version update plus forced rollback retaining synthetic home/identity/bindings, socket grants/revocation and Incognito. Preserve full acceptance; do not reduce it to metadata-only updates or grant refusal.

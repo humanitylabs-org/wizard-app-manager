@@ -9,6 +9,16 @@ import { WizardStorage } from '../wizard-storage';
 import * as yaml from 'yaml';
 import { MandatorySeal, sealHash, validateSeal } from '../mandatory-seal';
 import { DockerService } from '../docker.service';
+import Dockerode from 'dockerode';
+import type { ModuleRef } from '@nestjs/core';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppHelpers } from '@/modules/apps/app.helpers';
+
+import { AppLifecycleCommandFactory } from '@/modules/app-lifecycle/app-lifecycle-command.factory';
+import { RestartAppCommand } from '@/modules/app-lifecycle/commands/restart-app-command';
+
 
 const exec = promisify(execFile);
 const LABEL = 'wizard.private-network-policy';
@@ -18,11 +28,13 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), 'mandatory-seal-'));
   roots.push(root);
   const main = 'agent-synthetic';
-  const urn = createAppUrn(main, `seal${path.basename(root).toLowerCase().replaceAll(/[^a-z0-9]/g, '').slice(-10)}`);
+  const urn = createAppUrn(main, `seal${process.env.MANAGER_SEAL_PROJECT_SUFFIX ?? path.basename(root).toLowerCase().replaceAll(/[^a-z0-9]/g, '').slice(-10)}`);
   const network = (suffix: string) => `${main}-${suffix}`;
   const qaLabel = { 'wizard.qa.manager-seal': process.env.MANAGER_SEAL_QA_OWNER ?? 'unit', 'wizard.qa.manager-seal.fixture': urn };
   const service = (nets: string[]) => ({ image: process.env.MANAGER_SEAL_TEST_IMAGE ?? 'python:3.12-slim',
-    entrypoint: ['python3', '-c'], command: ['import time; time.sleep(3600)'], restart: 'no',
+    entrypoint: ['python3', '-c'], command: ['import time; time.sleep(3600)'], restart: 'no', pull_policy: 'never',
+    read_only: true, mem_limit: '128m', memswap_limit: '128m', pids_limit: 32, cpus: 0.5,
+    logging: { driver: 'none' }, tmpfs: ['/tmp:size=4194304,mode=1777,noexec,nosuid,nodev'],
     networks: Object.fromEntries(nets.map((s) => [network(s), {}])),
     cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'],
     labels: { [LABEL]: POLICY, ...qaLabel } });
@@ -94,7 +106,7 @@ function ownedEventTrace(urn: string, project = urn.replace(':', '_')) {
 }
 
 // Shared by the real fixture and the unlabeled-project-extra regression.
-function reconcileEventTrace(events: any[], project: string, services: any, expected: Set<string>, sentinels: string[]) {
+function reconcileEventTrace(events: any[], project: string, services: any, expected: Set<string>, sentinels: string[], networkIds?: Map<string, Record<string, string>>) {
   const creates = events.filter((e) => e.Type === 'container' && e.Action === 'create');
   expect(creates.map((e) => e.Actor.ID).sort()).toEqual([...expected, ...sentinels].sort());
   const created = new Map<string, string>();
@@ -112,6 +124,7 @@ function reconcileEventTrace(events: any[], project: string, services: any, expe
     const svc = created.get(event.Actor.Attributes.container);
     expect(svc).toBeTruthy(); // sentinels must not attach to any network
     expect(Object.keys(services[svc!].networks).map((n) => `${project}_${n}`)).toContain(event.Actor.Attributes.name);
+    if (networkIds) expect(event.Actor.ID).toBe(networkIds.get(event.Actor.Attributes.container)?.[event.Actor.Attributes.name]);
   }
   for (const [id, svc] of created) {
     const actual = connections.filter((e) => e.Actor.Attributes.container === id).map((e) => e.Actor.Attributes.name);
@@ -354,6 +367,11 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     baseline.networks.public_main = { labels: qaLabel };
     for (const service of Object.values(baseline.services) as any[]) service.networks.public_app = {};
     baseline.services[main].networks.public_main = {};
+    // Source-handler proof only: generation/DB facades are deliberately
+    // synthetic; do not describe this as the installed authenticated API.
+    const sourceRecipe = baseline;
+    const restartForm = { skipEnv: true, skipPull: true };
+    let requestedRecipe = sourceRecipe;
     await fs.writeFile(generated, JSON.stringify(baseline));
     await fs.writeFile(env, 'DO_NOT_INTERPOLATE=untrusted\n');
     await fs.writeFile(user, 'services: {}\n');
@@ -362,21 +380,68 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       getUserEnv: async () => ({ path: env, content: 'untrusted' }),
       getGeneratedDockerComposeYaml: async () => ({ path: generated, content: await fs.readFile(generated, 'utf8') }),
       getUserComposeFile: async () => ({ path: user, content: await fs.readFile(user, 'utf8').catch(() => null) }),
+      getInstalledAppInfo: async () => ({ force_pull: false }),
+
     };
     const logger: any = { info() {}, debug() {}, warn() {}, error() {} };
-    const config: any = { get: () => ({ dataDir: root, appDataDir: root }) };
+    const config: any = { get: (key: string) => key === 'architecture' ? 'amd64' : ({ dataDir: root, appDataDir: root }) };
     const apps: any = { getApp: async () => ({ app: { userConfigEnabled: !disabled.value } }) };
     const installed = await installedFixture(f, baseline);
     const repository: any = { getApps: async () => installed.rows };
     const createManager = () => new DockerService(logger, config, files, {} as any, apps, repository);
     let manager = createManager();
+    const registeredRestart = async () => {
+      const dependencies = new Map<unknown, unknown>([
+        [LoggerService, logger], [AppFilesManager, files], [DockerService, manager],
+        [AppHelpers, {}], [ConfigurationService, config],
+      ]);
+      const moduleRef = { get: (token: unknown) => {
+        if (!dependencies.has(token)) throw new Error('unprovided synthetic dependency');
+        return dependencies.get(token);
+      } } as ModuleRef;
+      const factory = new AppLifecycleCommandFactory(moduleRef, new Dockerode({ socketPath: '/var/run/docker.sock' }));
+      const command = factory.createCommand({ command: 'restart' } as Parameters<typeof factory.createCommand>[0]);
+      expect(command).toBeInstanceOf(RestartAppCommand);
+      // Only generation is replaced. Factory selection, execute(), manager
+      // preparation/fence, destructive callback and Docker commands are real.
+      (command as unknown as { ensureAppDir: () => Promise<void> }).ensureAppDir = async () => {
+        await fs.writeFile(generated, JSON.stringify(requestedRecipe));
+      };
+      return command.execute(urn, restartForm);
+    };
     doc['x-wizard-share-mounts'] = ['/managed-share'];
     doc.services[main].volumes.push(`${installed.source}:/managed-share`);
-    let record = await seal.enroll(urn, doc, baseline);
-    await manager.storage.change(installed.grant, true);
+    const baselineNegative = process.env.MANAGER_SEAL_BASELINE_NEGATIVE === '1';
+    const checkEnrollmentRace = async () => {
+    if (!baselineNegative) {
+    // Cross-process enrollment exclusion, before any ordinary launch can run.
+    const modulePath = path.resolve('src/modules/docker/mandatory-seal.ts');
+    const child = spawn('bun', ['-e', `import { MandatorySeal } from ${JSON.stringify(modulePath)}; await new MandatorySeal(${JSON.stringify(root)}).exclusive(${JSON.stringify(urn)}, async () => { console.log('LOCKED'); for await (const _ of Bun.stdin.stream()) {} });`]);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('real CLI fence readiness timeout')), 5000);
+        child.once('error', (e) => { clearTimeout(timer); reject(e); });
+        child.stdout.once('data', (b) => { clearTimeout(timer); String(b).includes('LOCKED') ? resolve() : reject(new Error('real CLI fence not ready')); });
+        child.once('exit', () => { clearTimeout(timer); reject(new Error('real CLI fence exited')); });
+      });
+      let activated = false;
+      await expect(manager.composeApp(urn, 'up --detach', async () => { activated = true; })).rejects.toThrow();
+      expect(activated).toBe(false);
+      await expect(seal.enroll(urn, doc, baseline)).rejects.toThrow();
+    } finally {
+      const exited = child.exitCode === null ? new Promise<void>((resolve) => child.once('exit', () => resolve())) : Promise.resolve();
+      child.stdin.end();
+      const kill = setTimeout(() => child.kill('SIGKILL'), 5000);
+      try { await exited; } finally { clearTimeout(kill); }
+    }
+    }
+    };
+    let record!: Awaited<ReturnType<typeof seal.enroll>>;
+    const checks: string[] = [];
     let shareApproved = true;
     let expectedImage = doc.services[main].image;
     const expectedContainers = new Set<string>();
+    const expectedNetworkIds = new Map<string, Record<string, string>>();
     // Docker network-event label filters match the NETWORK, not its container.
     // They would miss a transient attach to an unlabeled public bridge. Consume
     // only create/connect metadata and retain only this fixture's identities;
@@ -416,7 +481,7 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     const bound = setTimeout(() => { traceError = new Error('event trace deadline'); stream.kill(); }, 210_000);
     const sentinelIds: string[] = [];
     const barrier = async () => {
-      const id = (await exec('docker', ['create', '--label', `wizard.qa.manager-seal=${qaLabel['wizard.qa.manager-seal']}`,
+      const id = (await exec('docker', ['create', '--pull=never', '--network=none', '--read-only', '--log-driver=none', '--memory=33554432', '--memory-swap=33554432', '--pids-limit=16', '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--label', `wizard.qa.manager-seal=${qaLabel['wizard.qa.manager-seal']}`,
         '--label', `wizard.qa.manager-seal.fixture=${urn}`, doc.services[main].image])).stdout.trim();
       sentinelIds.push(id);
       const deadline = Date.now() + 10_000;
@@ -431,13 +496,28 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       const rows = await Promise.all(ids.map(async (id) => {
         const { stdout } = await exec('docker', ['inspect', '--format', '{{json .NetworkSettings.Networks}}', id]);
         const { stdout: service } = await exec('docker', ['inspect', '--format', '{{index .Config.Labels "com.docker.compose.service"}}', id]);
-        return { id, service: service.trim(), networks: Object.keys(JSON.parse(stdout)) };
+        const attached = JSON.parse(stdout);
+        expectedNetworkIds.set(id, Object.fromEntries(Object.entries(attached).map(([name, value]: [string, any]) => [name, value.NetworkID])));
+        for (const [name, value] of Object.entries(attached) as [string, any][]) {
+          const network = JSON.parse((await exec('docker', ['network', 'inspect', '--format', '{{json .}}', value.NetworkID])).stdout);
+          const key = name.slice(project.length + 1);
+          expect(network.Name).toBe(`${project}_${key}`);
+          // Baseline's public network is rejected by the original names
+          // assertion below, not by a different preliminary security check.
+          if (doc.networks[key]) {
+            expect(network.Internal).toBe(doc.networks[key].internal);
+            expect(network.EnableIPv6).toBe(false);
+          }
+        }
+        return { id, service: service.trim(), networks: Object.keys(attached) };
       }));
       expect(rows).toHaveLength(Object.keys(doc.services).length);
       for (const row of rows) expectedContainers.add(row.id);
       for (const row of rows) expect(row.networks.sort()).toEqual(Object.keys(doc.services[row.service].networks).map((n) => `${project}_${n}`).sort());
       const client = rows.find((row) => row.service === main)!;
       const mounts = JSON.parse((await exec('docker', ['inspect', '--format', '{{json .Mounts}}', client.id])).stdout);
+      expect(mounts).toContainEqual(expect.objectContaining({ Destination: '/home/synthetic', Source: path.join(root, 'home') }));
+      expect((await exec('docker', ['exec', client.id, 'cat', '/home/synthetic/history.txt'])).stdout).toBe('Synthetic continuity only.\n');
       expect(mounts.some((m: any) => m.Destination === '/managed-share' && m.Source === installed.source)).toBe(shareApproved);
       expect((await exec('docker', ['inspect', '--format', '{{.Image}}', client.id])).stdout.trim()).toBe(expectedImage);
       // Read only this explicitly synthetic value, never Config.Env or any
@@ -448,46 +528,89 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     try {
       // Original confirmed bypass: optional config disabled, direct manager up.
       await barrier();
-      await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
+      await checkEnrollmentRace();
+      if (!baselineNegative) checks.push('cross-process-enrollment-exclusion');
+      record = await seal.enroll(urn, doc, baseline);
+      await manager.storage.change(installed.grant, true);
+      await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans', async () => {
+        if (!baselineNegative) await expect(seal.stage(urn, record.sha256, doc, baseline)).rejects.toThrow();
+      });
       await inspect();
-      for (const command of [' start', ' restart', ' create', '--ansi never up --detach', 'unknown'])
+      checks.push('disabled-config-original-bypass', 'launch-excludes-enrollment');
+      expect(await registeredRestart()).toMatchObject({ success: true });
+      await inspect();
+      checks.push('factory-registered-restart-synthetic-generation-real-down-up-docker');
+      for (const command of [' start', ' restart', ' create', ' run', ' watch', '--ansi never up --detach', '--profile any up', 'unknown', ''])
         await expect(manager.composeApp(urn, command)).rejects.toThrow();
+      checks.push('prefixed-and-shortcut-refusals');
       await manager.storage.change(installed.grant, false); shareApproved = false;
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans'); await inspect();
+      checks.push('grant-revoked-no-resurrection');
       await manager.storage.change(installed.grant, true); shareApproved = true;
       await manager.composeApp(urn, ' \tup  --detach --force-recreate --remove-orphans'); await inspect();
+      await manager.storage.change(installed.grant, false); shareApproved = false;
+      await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans'); await inspect();
       const changedRuntime = structuredClone(baseline);
       changedRuntime.services[main].image = 'synthetic-unapproved-image:must-not-pull';
       await fs.writeFile(generated, JSON.stringify(changedRuntime));
       let runtimeStopped = false;
       await expect(manager.composeApp(urn, 'up --detach', async () => { runtimeStopped = true; })).rejects.toThrow();
       expect(runtimeStopped).toBe(false);
+      const beforeRefusal = (await exec('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim().split(/\s+/).sort();
+      requestedRecipe = structuredClone(sourceRecipe);
+      requestedRecipe.services[main].image = 'synthetic-unapproved-image:must-not-pull';
+      expect(await registeredRestart()).toMatchObject({ success: false, deploymentUnchanged: true });
+      expect((await exec('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim().split(/\s+/).sort()).toEqual(beforeRefusal);
+      requestedRecipe = sourceRecipe;
+      checks.push('unapproved-runtime-before-destructive-callback');
+      checks.push('factory-registered-restart-invalid-runtime-leaves-real-containers');
       await fs.writeFile(generated, JSON.stringify(baseline));
       await fs.unlink(user);
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       await inspect();
       disabled.value = false;
+      checks.push('optional-config-removed-revocation-sticky');
       await fs.writeFile(user, JSON.stringify({ services: { [main]: { network_mode: 'host', privileged: true }, intruder: { image: doc.services[main].image } }, networks: { public: {} } }));
       manager = createManager(); // daemon object restart re-reads persistent seal
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       await inspect();
+      checks.push('malicious-optional-config-new-manager-object');
       // Unsupported requested values refuse, not a silent metadata-only update.
       const changedEnv = structuredClone(baseline);
       changedEnv.services[main].environment = { LITERAL: 'downgraded' };
       await fs.writeFile(generated, JSON.stringify(changedEnv));
       await expect(manager.prepareApp(urn)).rejects.toThrow();
       await fs.writeFile(generated, JSON.stringify(baseline));
+      const policyPath = path.join(root, 'state/mandatory-seals', sealHash(urn), 'policy.json');
+      const initialBytes = await fs.readFile(policyPath, 'utf8');
+      expect(await seal.stage(urn, record.sha256, doc, baseline)).toEqual(record);
+      expect(await fs.readFile(policyPath, 'utf8')).toBe(initialBytes);
+      checks.push('unsupported-request-refusal', 'noop-stage-byte-preservation');
       const next = structuredClone(doc); const nextCatalogue = structuredClone(baseline);
       const v2 = process.env.MANAGER_SEAL_TEST_IMAGE_V2!;
       expect(v2).toMatch(/^sha256:/); expect(v2).not.toBe(expectedImage);
       next.services[main].image = v2; nextCatalogue.services[main].image = v2;
       record = await seal.stage(urn, record.sha256, next, nextCatalogue);
+      const stagedBytes = await fs.readFile(policyPath, 'utf8');
+      await expect(seal.stage(urn, record.previous!.sha256, next, nextCatalogue)).rejects.toThrow();
+      for (const mutate of [
+        (d: any) => { d.services[main].environment.LITERAL = 'changed'; },
+        (d: any) => { d.services[main].volumes.push('/other:/other'); },
+        (d: any) => { d.services[main].network_mode = 'host'; },
+        (d: any) => { d.services[main].privileged = true; },
+      ]) {
+        const bad = structuredClone(next); mutate(bad);
+        await expect(seal.stage(urn, record.sha256, bad, nextCatalogue)).rejects.toThrow();
+      }
+      expect(await fs.readFile(policyPath, 'utf8')).toBe(stagedBytes);
+      checks.push('stale-cas-and-envelope-revision-negatives');
       await fs.writeFile(generated, JSON.stringify(nextCatalogue));
       await manager.prepareApp(urn);
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       expectedImage = v2;
       await inspect();
       expect(await seal.read(urn)).toEqual(record);
+      checks.push('distinct-pinned-image-real-update-revoked-grant');
       // Forced failure after an update/restart down; recovery goes back through
       // the same guard, never an unsealed fallback launch.
       await expect(manager.composeApp(urn, 'up --detach', async () => {
@@ -498,7 +621,22 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       expectedImage = doc.services[main].image;
       await inspect();
+      checks.push('forced-down-failure-prior-revision-recovery-revoked-grant');
+      const third = structuredClone(next); const thirdCatalogue = structuredClone(nextCatalogue);
+      third.services[main].command = ['import time; time.sleep(3599)'];
+      thirdCatalogue.services[main].command = third.services[main].command;
+      await expect(new MandatorySeal(root).stage(urn, record.sha256, third, thirdCatalogue)).rejects.toThrow();
+      expect(await fs.readFile(policyPath, 'utf8')).toBe(stagedBytes);
+      await fs.writeFile(generated, JSON.stringify(thirdCatalogue));
+      let thirdStopped = false;
+      await expect(manager.composeApp(urn, 'up --detach', async () => { thirdStopped = true; })).rejects.toThrow();
+      expect(thirdStopped).toBe(false);
+      await fs.writeFile(generated, JSON.stringify(baseline));
+      checks.push('successive-distinct-revision-refused-anchor-preserved');
       expect(await fs.readFile(path.join(root, 'home/history.txt'), 'utf8')).toBe('Synthetic continuity only.\n');
+      await manager.storage.change(installed.grant, true); shareApproved = true;
+      await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans'); await inspect();
+      checks.push('explicit-grant-reapproval-only');
       await finalEventCutoff(async () => {
         // Last negative probe belongs to the same captured/reconciled window.
         await fs.unlink(path.join(root, 'state/mandatory-seals', sealHash(urn), 'policy.json'));
@@ -511,7 +649,8 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
         expect(traceError).toBeUndefined(); expect(streamClosed).toBe(false);
       }, stopStream, () => {
         expect(traceError).toBeUndefined(); expect(pending).toBe(''); expect(streamClosed).toBe(true);
-        reconcileEventTrace(events, project, doc.services, expectedContainers, sentinelIds);
+        reconcileEventTrace(events, project, doc.services, expectedContainers, sentinelIds, expectedNetworkIds);
+        checks.push('missing-policy-before-destructive-callback', 'exact-live-create-connect-coverage-no-transient-public-network');
       });
     } finally {
       // Exact synthetic project only. Never use global prune or stop.
@@ -519,7 +658,7 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       const traceDir = process.env.MANAGER_SEAL_TRACE_DIR ?? root;
       await fs.mkdir(traceDir, { recursive: true });
       await fs.writeFile(path.join(traceDir, `${project}-events.json`), JSON.stringify({ readiness: 'sentinel-create', error: traceError?.message,
-        expectedContainers: [...expectedContainers], events }, null, 2));
+        checks, expectedContainers: [...expectedContainers], expectedNetworkIds: [...expectedNetworkIds], events }, null, 2));
       for (const id of sentinelIds) await exec('docker', ['rm', '-f', id]).catch(() => {});
       const ids = (await exec('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim().split(/\s+/).filter(Boolean);
       if (ids.length) await exec('docker', ['rm', '-f', ...ids]);
