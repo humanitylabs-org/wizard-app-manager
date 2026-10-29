@@ -59,19 +59,19 @@ mount-change sequence. No migration or full rehearsal was run for this debug.
   legacy token hash and groups. A real Tailscale daemon has the legacy operator,
   with no login and no published tailnet link.
 - Keeps migration authority owner-run/root: a protected root-only policy checker
-  queries legacy permissions without executing an elevated agent command, and
-  the migration calls the fixed root grant helper directly. The strict WAM
+  queries legacy permissions without executing an elevated agent command.
+  Migration does not grant sudo; the strict WAM
   elevation audit is unchanged.
 - Invokes the production root migration with a `relocate` checkpoint. Hashes
   **every file under the stopped app-data tree**, including modes and numeric
   owners, against the opaque pre-migration snapshot before apps write again.
 - Resumes using the explicit host-preparation entry point. Checks no Docker/admin
-  groups, the actual logged/expiring migration grant and revocation, post-revoke
-  sudo/Docker/operator denials, thin-client lifecycle, grandfathered approval,
+  groups, no active server-access grant or sudoers file immediately after migration,
+  refusal of migration-tagged grant requests, sudo/Docker/operator denials, thin-client lifecycle, grandfathered approval,
   rotated token, Agent Service health/UID and doctor. Canaries stay identical.
 - Runs `wam privilege rollback`, checks original groups, token, user API unit,
   operator and running-app canaries, and rechecks all snapshot hashes. Migrates
-  again, verifies no renewed seven-day grant and reruns doctor/lifecycle checks.
+  again, verifies no automatic grant and reruns doctor/lifecycle checks.
 - Runs all pytest tests. The only allowed failure is exactly
   `tests.test_chats_views::test_typescript_public_index_path_has_identical_seal`.
   Missing migration/rollback steps or missing teardown can never be green.

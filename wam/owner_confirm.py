@@ -68,8 +68,10 @@ def risk_reducing(path: str, body: dict) -> bool:
         return body.get('action') in ('deny', 'on')
     if path == '/api/grants':
         return body.get('action') == 'revoke'
-    if path in ('/api/updates', '/api/updates/apply'):
+    if path == '/api/updates/apply':
         return True  # signed releases on the owner's chosen channel; not a grant of authority
+    if path == '/api/updates':
+        return set(body) == {'mode'}  # a channel change picks different code: confirm it
     return False
 
 

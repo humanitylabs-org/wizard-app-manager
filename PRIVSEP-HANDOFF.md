@@ -70,15 +70,19 @@ yet**, and a second reviewer must check them before anyone calls them fixed.
      access, backup import) no longer run from the shell origin. They become a five-minute, single-use intent bound
      to the exact action and owner, confirmed on a **separate approval origin**: its own `tailscale serve` HTTPS
      port (default 8446) whose whole site is the manager's approval listener (127.0.0.1:7792).
-   - Backing out (revoke, developer off, deny, isolation on, updates) stays one click.
+   - Backing out (revoke, developer off, deny, isolation on) and update mode/apply stay one click. Changing the update
+     channel selects different code and requires the separate confirmation too.
    - **New setup step:** `wam approval-origin enable [--port N]` as the manager. Until it runs, risk-raising owner
      actions are refused with that command (fail closed). Approved apps keep running.
 3. **Migration gave the agent a seven-day sudo window.** Removed, including on resume; resume also revokes a grant an
    earlier candidate left. The `server-access` helper now grants only while developer mode is on, and refuses a
    `migration` request.
 
-Focused acceptance is staged on forum but not run (see the private handoff path held by Archimedes). It builds the
-candidate backend image from source so an old image cannot pass for the fix.
+Focused acceptance is prepared for private staging on forum, not run (see the private handoff held by Archimedes).
+It builds and retains the exact candidate backend image; no old `latest` image is substituted. It runs only focused
+regressions and a synthetic two-origin approval browser check. It does not prove real tailscaled identity, the full
+installed-app lifecycle, or the fresh/migrate/rollback VM path. The separate Slice 6 assertions now require no migration
+grant immediately after migration and remigration, but that VM runner is not part of this focused job.
 
 ## What is already proven (clean Debian 12 KVM guests)
 

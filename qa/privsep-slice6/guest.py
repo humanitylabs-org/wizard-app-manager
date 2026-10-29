@@ -202,17 +202,12 @@ def main(argv):
     elif phase in ('migrated','again'):
         saved=json.loads(Path('/root/slice6-before.json').read_text())
         assert not set(run(['id','-nG','hermes']).split()) & {'docker','sudo','wheel','admin'}
-        if phase=='migrated':
-            access=json.loads(run([HELPER,'status']))
-            assert access['active'] and access['migration'] and access['severity']=='red'
-            grant=json.loads(Path('/var/lib/wizard-os-server-access/grant.json').read_text())
-            assert 604700 < grant['expires_epoch']-time.time() <=604800
-            assert run(['systemctl','is-active','wizard-agent-access-expiry.timer']).strip()=='active'
-            agent('sudo','-n','true')
-            assert 'COMMAND=' in Path('/var/log/wizard-os-agent-sudo.log').read_text()
-            run([HELPER,'revoke'])
-        else:
-            assert not json.loads(run([HELPER,'status']))['active'],'rollback must not renew the migration grant'
+        # Audit A3: no automatic migration sudo, immediately and after resume/remigration.
+        access=json.loads(run([HELPER,'status']))
+        assert not access['active'],('migration must not grant server access',access)
+        assert not Path('/etc/sudoers.d/91-wizard-agent-access').exists()
+        run([HELPER,'grant'],input='{"seconds":60,"migration":true}',expected=None)
+        assert not json.loads(run([HELPER,'status']))['active'],'helper must refuse a migration grant'
         agent('sudo','-n','true',expected=None)
         agent('docker','ps',expected=None)
         agent('tailscale','set','--accept-dns=false',expected=None)

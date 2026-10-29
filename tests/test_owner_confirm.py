@@ -42,6 +42,7 @@ def test_origin_must_be_a_whole_dedicated_site(box, monkeypatch):
     ('/api/network', {'action': 'off'}),
     ('/api/grants', {'action': 'grant', 'app': 'x', 'to': 'files'}),
     ('/api/backup/import', {'file': '/tmp/b'}),
+    ('/api/updates', {'channel': 'alpha'}),
 ])
 def test_shell_origin_never_executes_risk_raising(box, path, body):
     c, calls = box
