@@ -136,6 +136,15 @@ try:
     check('A-nonroot-endpoint-does-not-change-bytes-or-metadata',lambda: launch('0',str(ROOT/'nested/sentinel')) == 'safe\n' or (_ for _ in ()).throw(AssertionError('not safe')))
     after = (ROOT/'nested/sentinel').stat()
     assert before[0] == (ROOT/'nested/sentinel').read_bytes() and (before[1].st_uid,before[1].st_gid,before[1].st_mode) == (after.st_uid,after.st_gid,after.st_mode)
+    (ROOT/'owned').mkdir(mode=0o755); os.chown(ROOT/'owned',54321,54321)
+    (ROOT/'owned/endpoint').write_bytes(b'owned\n')
+    check('A-approved-manager-UID-ancestor',lambda:launch('54321',str(ROOT/'owned/endpoint')) == 'safe\n' or (_ for _ in ()).throw(AssertionError('not safe')))
+    check('A-unapproved-UID-ancestor-refused',lambda:launch('0',str(ROOT/'owned/endpoint'),expected=42))
+    def invalid_protocol():
+        for uid,source in [('4294967296',str(ROOT/'absent')),('4294967295',str(ROOT/'absent')),('x',str(ROOT/'absent')),('0','/a/../b'),('0','/'+'a'*4090)]:
+            assert launch(uid,source,expected=42)==''
+        return {'refusals':5}
+    check('A-fixed-UID-and-path-protocol-bounds',invalid_protocol)
     check('A-missing-is-ENOENT',lambda: launch('0',str(ROOT/'absent')) == 'missing\n' or (_ for _ in ()).throw(AssertionError('not missing')))
     os.symlink('absent',ROOT/'dangling')
     check('A-dangling-symlink-refused',lambda:launch('0',str(ROOT/'dangling'),expected=42))
@@ -159,8 +168,8 @@ try:
         host = Path('/host'); host.mkdir(mode=0o755)
         (host/'trace').write_bytes(b'trace-only\n')
         trace = ROOT/'startup.trace'
-        p=cmd('setpriv','--bounding-set=-all','--inh-caps=-all','--ambient-caps=-all','--no-new-privs',
-              'strace','-o',trace,'-e','trace=statx,seccomp,prctl,close_range,capget,prlimit64,fcntl,exit_group,write',
+        p=cmd('strace','-o',trace,'-e','trace=statx,seccomp,prctl,close_range,capget,prlimit64,fcntl,exit_group,write',
+              'setpriv','--bounding-set=-all','--inh-caps=-all','--ambient-caps=-all','--no-new-privs',
               ROOT/'bin/production','0','/trace')
         assert p.stdout == 'safe\n'
         text=trace.read_text(); at=text.index('seccomp(SECCOMP_SET_MODE_FILTER')

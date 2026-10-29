@@ -12,6 +12,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error Unsupported metadata-helper byte order
+#endif
 #if defined(__x86_64__) && !defined(__ILP32__)
 #define NATIVE_ARCH AUDIT_ARCH_X86_64
 static inline long call6(long n, long a, long b, long c, long d, long e, long f) {
