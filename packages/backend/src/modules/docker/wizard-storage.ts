@@ -668,12 +668,17 @@ rm -f ".$1.wizard-copy-ready"`;
       doc['x-wizard-volumes'] = plans;
       // Which generated services mount each consumer share path, read before any mount is removed below. The generated
       // compose already has the architecture overrides applied, so an override that adds or moves the mount counts.
+      // The selection is kept in the prepared compose: once the share replaced the placeholder and a revoke removed it,
+      // a later approval of that persisted file still finds the same services.
+      const kept = (doc['x-wizard-share-carriers'] ?? {}) as Record<string, unknown>;
       const carriers = new Map(
-        (app.manifest.mounts ?? []).map((m) => [
-          m.path,
-          Object.keys(doc.services ?? {}).filter((n) => (doc.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path)),
-        ]),
+        (app.manifest.mounts ?? []).map((m) => {
+          const found = Object.keys(doc.services ?? {}).filter((n) => (doc.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path));
+          const before = Array.isArray(kept[m.path]) ? (kept[m.path] as unknown[]).filter((n): n is string => typeof n === 'string') : [];
+          return [m.path, [...new Set([...found, ...before])].filter((n) => doc.services?.[n])] as const;
+        }),
       );
+      doc['x-wizard-share-carriers'] = Object.fromEntries(carriers);
       const file = await this.readGrants();
       file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
       await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));

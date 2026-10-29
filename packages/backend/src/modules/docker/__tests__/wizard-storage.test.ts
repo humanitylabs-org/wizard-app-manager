@@ -146,6 +146,18 @@ describe('owner share grants', () => {
       expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
     ]);
     expect(at(out['hermes-agent'])).toEqual([]);
+    // Revoke, then approve again on the persisted prepared file: still the engine, never the front.
+    const grant = { kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login' } as const;
+    const mounted = await store.prepare(urn, yaml.stringify(two));
+    await store.change(grant, false);
+    const revoked = await store.prepare(urn, mounted);
+    expect(at(yaml.parse(revoked).services['hermes-agent-engine'])).toEqual([]);
+    await store.change(grant, true);
+    const again = yaml.parse(await store.prepare(urn, revoked)).services;
+    expect(at(again['hermes-agent-engine'])).toEqual([
+      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+    ]);
+    expect(at(again['hermes-agent'])).toEqual([]);
   });
   it('replaces a sidecar placeholder mount for a non-Hermes consumer instead of reporting a conflict', async () => {
     const reader = { id: 'claude-reader', mounts: [{ app: 'wizard-claude', share: 'claude-login', path: '/claude' }] };
