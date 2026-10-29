@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { assertFinalHostPolicy, composeEnv, finalHostTokens, HostAccessRefused, injectedBinds, readHostApprovals } from '../wizard-host-guard';
+
+// The parity vectors are checked-in source bytes, not memfs fixture contents.
+vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
 
 // Shared with wam/final_host_tokens.py (tests/test_final_host_gate.py): both sides must agree token for token.
 const fixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../../../../tests/fixtures/final-host-tokens.json'), 'utf8'));

@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { scrubLeakedManagerCredentials } from '../leaked-env-repair';
+
+// Sync fixture creation and async production repair must see the same filesystem.
+vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
 
 // Synthetic sentinels only.
 const DB = 'sentinel-db-password-000111';

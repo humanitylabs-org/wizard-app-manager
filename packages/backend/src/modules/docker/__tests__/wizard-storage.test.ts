@@ -7,6 +7,9 @@ import { WizardStorage, rewriteVolumes, validateStorage, confined, COPY_IMAGE, L
 import { DockerComposeBuilder } from '../builders/compose.builder';
 import type { AppUrn } from '@runtipi/common/types';
 
+// Storage keeps the production cross-process lock, not an in-memory stand-in.
+vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
+
 let root: string;
 let store: WizardStorage;
 let installed: { appName: string; appStoreSlug: string }[];

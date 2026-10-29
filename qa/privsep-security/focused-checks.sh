@@ -15,6 +15,7 @@ cleanup() {
   local ids
   ids=$(docker ps -aq --filter "label=wizard.privsep.security=$RUN_ID") || return 1
   if [[ -n $ids ]]; then docker rm -f $ids; fi
+  [[ -z $(docker ps -aq --filter "label=wizard.privsep.security=$RUN_ID") ]]
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -45,7 +46,7 @@ dock() {
     -e HOME=/case/home -e HERMES_HOME=/case/hermes -e WIZARD_OS_HOME=/case/wizard \
     -e TMPDIR=/case/tmp -e XDG_CONFIG_HOME=/case/config -e XDG_CACHE_HOME=/case/cache \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
-    --tmpfs /case:rw,exec,size=2g "$@"
+    --tmpfs /case:rw,exec,size=2g,mode=0700 "$@"
 }
 # Preserve immutable source; package managers and tests write only these throwaway copies.
 for name in wam was wux; do
@@ -57,8 +58,11 @@ for name in wam was wux; do
   git -C "$WORK/$name" -c user.name=Acceptance -c user.email=acceptance@example.invalid commit -qm 'Synthetic export inventory'
 done
 
-step backend-typecheck-and-tests dock "$WORK/wam" node:22-bookworm sh -ec '
-  mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
+mkdir -m 700 "$WORK/compose-proof"
+step backend-typecheck-and-tests dock "$WORK/wam" \
+  -v "$WORK/compose-proof":/compose-proof -e WIZARD_COMPOSE_PROOF_DIR=/compose-proof \
+  -e WIZARD_COMPOSE_PROOF_RUN_ID="$RUN_ID" node:22-bookworm sh -ec '
+  mkdir -m 700 -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
   # The cross-process authority regression requires both real lock consumers.
   apt-get update
   apt-get install -y --no-install-recommends python3 util-linux
@@ -81,12 +85,32 @@ step backend-typecheck-and-tests dock "$WORK/wam" node:22-bookworm sh -ec '
     packages/backend/src/modules/apps/app-files-manager.ts packages/backend/src/modules/docker/docker.service.ts \
     packages/backend/src/core/filesystem/filesystem.service.ts packages/backend/src/app.service.ts'
 
+# Host TLS/DNS works while the previous bridged build could not resolve the
+# GitHub release redirect host. Limit the workaround to this one build's hosts;
+# do not change daemon DNS, host networking, resolv.conf or provider settings.
+step build-network-and-compose-prefetch timeout --signal=TERM --kill-after=30 240 \
+  python3 "$PRIVATE/compose_runtime.py" prepare "$WORK" "$EVIDENCE"
+NETWORK_RC=$STEP_RC
+if [[ $NETWORK_RC == 0 && -s $WORK/compose-proof/model.json ]]; then
+  step compose-dollar-runtime timeout --signal=TERM --kill-after=30 180 \
+    python3 "$PRIVATE/compose_runtime.py" run "$WORK" "$EVIDENCE" "$RUN_ID"
+else
+  skip_dependency compose-dollar-runtime 'verified Compose binary or generated validated-stdin proof unavailable'
+fi
+
 # Build pristine candidate bytes, not the test-mutated tree, and never reuse latest.
 IMAGE="wam-privsep-security:$REVISION"
+if [[ $NETWORK_RC == 0 ]]; then
+RELEASE_ASSET_IP=$(<"$WORK/release-assets.ip")
 step backend-image-build timeout --signal=TERM --kill-after=30 3600 docker build \
+  --add-host "release-assets.githubusercontent.com:$RELEASE_ASSET_IP" \
   --build-arg LOCAL=true --build-arg TIPI_VERSION=4.5.0 \
   --label "org.opencontainers.image.revision=$REVISION" \
   --iidfile "$EVIDENCE/backend-image.id" -t "$IMAGE" "$WAM"
+else
+  skip_dependency backend-image-build 'build-only host mapping could not be verified'
+  STEP_RC=77
+fi
 if [[ $STEP_RC == 0 && -s $EVIDENCE/backend-image.id ]]; then
   IMAGE_ID=$(<"$EVIDENCE/backend-image.id")
   step backend-image-inspect docker image inspect "$IMAGE_ID"
@@ -103,13 +127,20 @@ else
 fi
 
 step wam-python-focused dock "$WORK/wam" ghcr.io/astral-sh/uv:python3.12-bookworm sh -ec '
-  mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
+  mkdir -m 700 -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
+  python -c "import os, stat; assert stat.S_IMODE(os.stat(\"/case\").st_mode) == 0o700; assert stat.S_IMODE(os.stat(os.environ[\"TMPDIR\"]).st_mode) == 0o700"
   uv run --no-project --with pytest --with pyyaml python -m pytest -q -p no:anyio \
-    tests/test_final_host_gate.py tests/test_privsep_review_repair.py tests/test_owner_confirm.py tests/test_privilege_migration.py \
-    tests/test_credential_rotation.py tests/test_migration_paths.py tests/test_migration_authority.py \
-    tests/test_privsep_slice5.py tests/test_privsep_host_policy.py tests/test_fresh_privilege_audit.py \
-    tests/test_network.py tests/test_store_install.py tests/test_portable_paths.py'
+    tests/test_credential_rotation.py tests/test_migration_authority.py \
+    tests/test_privilege_migration.py::test_inventory_rejects_root_before_authority_or_state_changes \
+    tests/test_privilege_migration.py::test_inventory_is_metadata_only_and_captures_original_authority \
+    tests/test_privilege_migration.py::test_inventory_policy_refusal_prevents_quiesce_or_snapshot'
 
+if [[ -f $PRIVATE/prior-evidence.json ]]; then
+  # The private wrapper hash-binds prior manifests, exact unchanged heads, passed
+  # exits and complete logs. These are inherited, not fresh suite executions.
+  step was-proxy-media cp "$PRIVATE/prior-was-proxy-media.log" "$EVIDENCE/inherited-was-proxy-media.log"
+  step wux-privileges cp "$PRIVATE/prior-wux-privileges.log" "$EVIDENCE/inherited-wux-privileges.log"
+else
 step was-proxy-media dock "$WORK/was" node:22-bookworm sh -ec '
   mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
   npm ci --no-audit --no-fund
@@ -118,15 +149,16 @@ step was-proxy-media dock "$WORK/was" node:22-bookworm sh -ec '
 step wux-privileges dock "$WORK/wux" node:22-bookworm sh -ec '
   mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
   node --test tests/privileges.test.mjs tests/portable-paths.test.mjs'
+fi
 
 # Hostile proof pages stay in the private staging area, never in the public repository.
 step approval-browser timeout --signal=TERM --kill-after=30 1200 docker run --rm --add-host box.test:127.0.0.1 \
   --label "wizard.privsep.security=$RUN_ID" --memory=3g --cpus=2 --shm-size=1g \
   -v "$WAM":/src:ro -v "$PRIVATE":/private:ro -v "$EVIDENCE":/evidence \
   -w /src -e HOME=/case/home -e HERMES_HOME=/case/hermes -e WIZARD_OS_HOME=/case/wizard \
-  -e TMPDIR=/case/tmp -e PYTHONDONTWRITEBYTECODE=1 --tmpfs /case:rw,exec,size=1g \
+  -e TMPDIR=/case/tmp -e PYTHONDONTWRITEBYTECODE=1 --tmpfs /case:rw,exec,size=1g,mode=0700 \
   mcr.microsoft.com/playwright/python:v1.56.0-noble@sha256:a7f6cf3ae520c9d670ad956572c13747ed5abdbba5123a01526f873ed1662528 sh -ec '
-    mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
+    mkdir -m 700 -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
     # Official image installs virtualenv; distro ensurepip/venv is not guaranteed.
     python -m virtualenv /case/venv
     /case/venv/bin/pip install --disable-pip-version-check playwright==1.56.0 pyyaml

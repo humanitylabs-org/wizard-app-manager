@@ -21,6 +21,9 @@ vi.mock('@/utils/cooldown/cooldown', () => ({
 }));
 
 beforeEach(async () => {
+  // Security suites explicitly opt into real fs for checked-in fixtures and
+  // inherited flock descriptors. Never seed DATA_DIR on the real filesystem.
+  if (typeof (fs as unknown as FsMock).__resetAllMocks !== 'function') return;
   (fs as unknown as FsMock).__resetAllMocks();
 
   const directories = [DATA_DIR, path.join(DATA_DIR, 'state'), path.join(DATA_DIR, 'backups')];

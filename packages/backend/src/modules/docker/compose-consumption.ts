@@ -107,7 +107,9 @@ export async function verifyBindSources(
 /** Compose interpolates again when consuming stdin. Escape values, not map keys,
  * so resolved credentials containing dollar signs remain byte-for-byte literal. */
 export function executableModel(v: any): any {
-  if (typeof v === 'string') return v.replaceAll('$', '$$');
+  // A string replacement treats $$ as the special "literal $" token. Use a
+  // callback so every input dollar really becomes two for Compose's next pass.
+  if (typeof v === 'string') return v.replaceAll('$', () => '$$');
   if (Array.isArray(v)) return v.map(executableModel);
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, executableModel(x)]));
   return v;

@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DockerService } from '../docker.service';
 import { executableModel, verifyBindSources } from '../compose-consumption';
 
+// These tests exercise real files and inherited kernel lock descriptors. The
+// normal backend setup's memfs mock cannot supply a descriptor to flock.
+vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
@@ -43,7 +47,7 @@ describe('final compose consumption', () => {
 
   it('executes the checked model, not the override/env paths, and preserves dollar values', async () => {
     const { service, file } = await fixture();
-    service.assertHostPolicy = vi.fn(async (args) => {
+    service.assertHostPolicy = vi.fn(async (_urn, args) => {
       const snap = args[args.indexOf('--file') + 1];
       expect(snap).not.toBe(file);
       expect(await fs.readFile(snap, 'utf8')).toContain('image: example');
@@ -105,5 +109,34 @@ describe('final compose consumption', () => {
 
   it('escapes values, never mapping keys', () => {
     expect(executableModel({ $key: ['value$A', { x: '$$' }] })).toEqual({ $key: ['value$$A', { x: '$$$$' }] });
+  });
+
+  it('emits the exact validated stdin for the worker real-Compose dollar regression', async () => {
+    const values = {
+      SINGLE: 'synthetic$VALUE', BRACED: 'synthetic${VALUE}', DOUBLE: 'synthetic$$VALUE',
+      TRAILING: 'synthetic$', BARE: '$', MIXED: '$VALUE:${VALUE}:$$:end$',
+    };
+    const { service } = await fixture();
+    const model = { services: { probe: {
+      image: 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc',
+      network_mode: 'none', read_only: true, cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'],
+      labels: { 'wizard.privsep.security': process.env.WIZARD_COMPOSE_PROOF_RUN_ID ?? 'unit-only' },
+      environment: values,
+      entrypoint: ['/bin/sh', '-ec'],
+      command: ['printf "%s\\n" "$SINGLE" "$BRACED" "$DOUBLE" "$TRAILING" "$BARE" "$MIXED"'],
+    } } };
+    service.assertHostPolicy = vi.fn(async () => ({ model, ctx: context }));
+    const pinned = await service.validatedCompose('demo:wizardapps');
+    expect(pinned.args.slice(-2)).toEqual(['--file', '-']);
+    const decoded = JSON.parse(pinned.input);
+    expect(decoded.services.probe.environment).toEqual(
+      Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.split('$').join('$$')])),
+    );
+    if (process.env.WIZARD_COMPOSE_PROOF_DIR) {
+      // No recreated model: the worker consumes precisely validatedCompose's stdin.
+      const dir = process.env.WIZARD_COMPOSE_PROOF_DIR;
+      await fs.writeFile(path.join(dir, 'model.json'), pinned.input);
+      await fs.writeFile(path.join(dir, 'expected.txt'), Object.values(values).join('\n') + '\n');
+    }
   });
 });

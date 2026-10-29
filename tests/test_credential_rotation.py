@@ -56,13 +56,14 @@ class SyntheticServices:
 
 @pytest.fixture
 def case(tmp_path):
-    # pytest's /tmp root can be 1777; use the configured private scratch root.
-    root = tmp_path / 'system/runtipi'; root.mkdir(parents=True)
+    # The acceptance runner supplies a private TMPDIR, including its mount root.
+    # Do not chmod shared /tmp or relax the production ancestry check for tests.
+    root = tmp_path / 'system/runtipi'; root.mkdir(parents=True, mode=0o700)
     (root / 'user-config').mkdir()
     for name in ('docker-compose.yml', 'user-config/tipi-compose.yml'):
         (root / name).write_text('services: {}\n')
         (root / name).chmod(0o644)
-    for folder in (root, root.parent, root / 'user-config'): folder.chmod(0o755)
+    for folder in (tmp_path, root, root.parent, root / 'user-config'): folder.chmod(0o700)
     env = ('# retain unrelated manager options\n' + ''.join(f'{k}={v}\n' for k, v in OLD.items()) + 'UNCHANGED_MANAGER_OPTION=keep-exact').encode()
     (root / '.env').write_bytes(env); (root / '.env').chmod(0o600)
     parent = tmp_path / 'root-control'; parent.mkdir(mode=0o700)
@@ -147,6 +148,19 @@ def test_symlink_and_hardlink_refused(case):
     env.unlink(); os.link(case.root / 'real.env', env)
     with pytest.raises(r.Refusal): r.Rotation(**case.kwargs).rotate()
     assert not case.io.calls
+
+
+@pytest.mark.parametrize('mode', [0o775, 0o777, 0o1777])
+def test_writable_ancestor_above_private_install_refused(case, mode):
+    parent = case.root.parent
+    parent.chmod(mode)
+    try:
+        with pytest.raises(r.Refusal, match='writable ancestor'):
+            r.Rotation(**case.kwargs).rotate()
+        assert not case.io.calls
+        assert not case.kwargs['control'].exists()
+    finally:
+        parent.chmod(0o700)
 
 
 def test_wrong_uid_refused_even_with_private_leaf(case):

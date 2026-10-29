@@ -20,11 +20,15 @@ ENV TARGETARCH=${TARGETARCH}
 RUN apk add --no-cache curl python3 make g++ git
 
 RUN echo "Building for ${TARGETARCH}"
-RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-      curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
-      elif [ "${TARGETARCH}" = "amd64" ]; then \
-      curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
-      fi
+RUN set -eu; test "$DOCKER_COMPOSE_VERSION" = v2.40.0; \
+    case "$TARGETARCH" in \
+      arm64) arch=aarch64; sha=fa99ca94c96c8cae4024493581a20049764ce723558991d0d1526c1c7b791a79 ;; \
+      amd64) arch=x86_64; sha=bd5835ccbbf06a42dcb5294c65e34a4634b34447afb9ed6fc7adf18a000e0f99 ;; \
+      *) exit 1 ;; \
+    esac; \
+    curl --fail --location --retry 2 --connect-timeout 15 --max-time 180 \
+      -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-$arch"; \
+    printf '%s  docker-binary\n' "$sha" | sha256sum -c -
 
 RUN chmod +x docker-binary
 

@@ -3,9 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { withHostAuthority } from '../host-policy-lock';
 const exec = promisify(execFile);
+
+// Keep both fs APIs on the real isolated filesystem: flock inherits this fd.
+vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
 
 describe('host authority cross-process lock', () => {
   it('fences Python flock on the same inode, supports reentry and releases before returning', async () => {
