@@ -498,3 +498,9 @@ Fast-tracked as **feature** (owner-approved). Installed upgrade 0.3.83 → 0.3.8
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/333. SHA256: `73a059e3bcc34f15cc78333881228a437240bf3d3c217dd90eae00535417845b`.
 0.3.84 plus the Recommended fix App Manager #349 (upgrading boxes keep their apps connected; new boxes start with apps kept apart). Evidence: wizard-os docs/acceptance/release-0.3.85.md (installed upgrade 0.3.83 -> 0.3.84 -> 0.3.85 on a disposable KVM guest).
 Channel: on latest only. Stable stays 0.3.84 (promoted separately by the release train, wizard-os #334); 0.3.85 waits for James.
+
+## 0.3.86 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/335. SHA256: `e47f3d9aac054be5b34cb648e18aa38ee7328dea10383e86660eb7d662404a7d`.
+0.3.85 plus App Manager #350 (a fresh install's agent can use the Claude sign-in; new image v4.10.2-wizard.897-016a8cb) and wizard-app-store #44 (Claude sign-in is just a link and a code box: Claude 0.2.12, ChatGPT 0.2.10).
+Channel: latest only; Stable waits for James on #349.
