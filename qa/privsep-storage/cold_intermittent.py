@@ -34,6 +34,10 @@ PENDING = 68719476736
 COLD_BOOTS = (1, 2, 3)
 
 
+class CampaignInterrupted(BaseException):
+    """Native stop/deadline: cleanup current VM, never start another."""
+
+
 def digest(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -96,7 +100,7 @@ def failure_location(exc):
             frames.append({'file': Path(code.co_filename).name, 'function': code.co_name, 'line': tb.tb_lineno})
         tb = tb.tb_next
     kinds = {AssertionError: 'AssertionError', TimeoutError: 'TimeoutError', FileNotFoundError: 'FileNotFoundError',
-             ValueError: 'ValueError', KeyError: 'KeyError', OSError: 'OSError'}
+             ValueError: 'ValueError', KeyError: 'KeyError', OSError: 'OSError', CampaignInterrupted: 'CampaignInterrupted'}
     return {'class': kinds.get(type(exc), 'other-exception'), 'frames': frames[-16:]}
 
 
@@ -262,7 +266,7 @@ def main():
     # Persist capacity refusal metadata, but never allocate disks or weaken floors.
     r = make_runner(previous, base)(args.stage, doc)
     r.receipt.update(full_acceptance=False, review_required=True, admission=report); r.save()
-    def interrupt(sig, frame): raise TimeoutError('bounded-native-signal')
+    def interrupt(sig, frame): raise CampaignInterrupted()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGALRM): signal.signal(sig, interrupt)
     signal.alarm(2100)  # native 2400s timeout leaves a cleanup margin
     try:

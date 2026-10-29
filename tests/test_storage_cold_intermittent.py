@@ -184,6 +184,19 @@ def test_owned_cleanup_failure_is_not_converted_to_a_guard_refusal(monkeypatch, 
     with pytest.raises(RuntimeError): runner.observe(1)
 
 
+def test_native_interrupt_aborts_remaining_boots_and_cleans_current(monkeypatch, tmp_path):
+    runner, events = fixture(monkeypatch, tmp_path)
+    runner.prepared = {'disk.qcow2': tmp_path/'disk', 'secondary.qcow2': tmp_path/'secondary'}
+    starts = []
+    def interrupt(index, *a, **kw):
+        starts.append(index); raise M.CampaignInterrupted()
+    monkeypatch.setattr(runner, 'start', interrupt)
+    assert not issubclass(M.CampaignInterrupted, Exception)
+    with pytest.raises(M.CampaignInterrupted): M.finite_campaign(runner.observe, runner.record)
+    assert starts == ['cold-1'] and sum(e[0] == 'stop' for e in events) == 1
+    assert sum(e[0] == 'absence' for e in events) == 1
+
+
 def test_static_capacity_gate_unchanged_and_receipt_precedes_disk_allocation():
     assert M.RESERVE == 217179869184 and M.PENDING == 68719476736 and M.COLD_BOOTS == (1, 2, 3)
     tree = ast.parse((REPO/'qa/privsep-storage/cold_intermittent.py').read_text())
@@ -193,6 +206,7 @@ def test_static_capacity_gate_unchanged_and_receipt_precedes_disk_allocation():
     assert source.index("assert report['capacity_admissible']") < source.index('r.execute()')
     assert source.index('r.save()') < source.index("assert report['capacity_admissible']")
     assert 'signal.alarm(2100)' in source and 'signal.alarm(0)' in source
+    assert 'raise CampaignInterrupted()' in source
     assert 'prepared_sha256_after' in source and 'original_disk_sha256_after' in source
 
 
