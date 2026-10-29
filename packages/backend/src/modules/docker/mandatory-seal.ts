@@ -121,9 +121,10 @@ export class MandatorySeal {
       return record;
     });
   }
-  /** Trusted reviewed pair, CAS-bound to current revision. Keep exactly one prior
-   * approved pair for the existing update command's restore-files/up rollback.
-   * Does not activate a container or learn policy from mutable generated files.
+  /** Trusted reviewed pair, CAS-bound to current revision. Never evict a retained
+   * rollback anchor: staging is not evidence that the candidate was installed.
+   * A second distinct revision requires a separately implemented trusted installed
+   * transition under this fence; none is inferred from mutable generated files.
    */
   async stage(urn: string, expected: string, compose: Compose, catalogue: Compose) {
     return this.exclusive(urn, async () => {
@@ -131,7 +132,12 @@ export class MandatorySeal {
       if (!prior || prior.sha256 !== expected) throw fail();
       validatePair(compose, catalogue, urn);
       if (envelope(compose) !== envelope(prior.compose) || envelope(catalogue) !== envelope(prior.catalogue)) throw fail();
-      const record: SealRecord = { schema: 2, urn, policy: POLICY, ...definition(compose, catalogue),
+      const proposed = definition(compose, catalogue);
+      if (proposed.sha256 === prior.sha256) return prior; // byte-preserving no-op, including previous
+      // No authoritative installed-state transition exists yet. Refuse rather
+      // than treating latest staged as installed and evicting a live v1 anchor.
+      if (prior.previous) throw fail();
+      const record: SealRecord = { schema: 2, urn, policy: POLICY, ...proposed,
         previous: definition(prior.compose, prior.catalogue) };
       const dir = await this.enrollment(urn);
       const tmp = path.join(dir, 'policy.json.next');

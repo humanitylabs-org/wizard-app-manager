@@ -41,6 +41,16 @@ def capacity(path, footprint):
     return free
 
 
+def output_directory(root, phase):
+    # Source already tracks qa/. Never reuse it or any previous run's evidence.
+    output = root / 'manager-seal-results'
+    if phase == 'focused':
+        output.mkdir(exist_ok=False)
+    else:
+        assert output.is_dir() and not output.is_symlink(), 'missing focused output directory'
+    return output
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--source', required=True)
@@ -64,8 +74,7 @@ def main():
         inventory = {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()}
         assert inventory == set(manifest['files']) | {'SOURCE.json', 'baseline.tar'}, 'unexpected staged files'
     free = capacity(root, FOOTPRINT[args.phase])
-    qa = root / 'qa'
-    qa.mkdir(exist_ok=args.phase == 'image')
+    qa = output_directory(root, args.phase)
     os.environ['TMPDIR'] = str(qa / 'tmp')
     Path(os.environ['TMPDIR']).mkdir(exist_ok=True)
     owner = f'manager-seal-{args.source[:12]}'

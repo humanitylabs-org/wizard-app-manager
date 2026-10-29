@@ -76,12 +76,13 @@ function seamManager(root: string, doc: any) {
 }
 
 // Fixture-local projection: network actors do not inherit container labels.
-function ownedEventTrace(urn: string) {
+function ownedEventTrace(urn: string, project = urn.replace(':', '_')) {
   const events: any[] = [];
   const ownedIds = new Set<string>();
   const earlyConnections = new Map<string, any[]>();
   return { events, accept(event: any) {
-    if (event.Type === 'container' && event.Action === 'create' && event.Actor.Attributes['wizard.qa.manager-seal.fixture'] === urn) {
+    if (event.Type === 'container' && event.Action === 'create' &&
+        (event.Actor.Attributes['com.docker.compose.project'] === project || event.Actor.Attributes['wizard.qa.manager-seal.fixture'] === urn)) {
       ownedIds.add(event.Actor.ID); events.push(event);
       events.push(...(earlyConnections.get(event.Actor.ID) ?? [])); earlyConnections.delete(event.Actor.ID);
     } else if (event.Type === 'network' && event.Action === 'connect') {
@@ -90,6 +91,39 @@ function ownedEventTrace(urn: string) {
       else earlyConnections.set(id, [...(earlyConnections.get(id) ?? []), event]);
     }
   } };
+}
+
+// Shared by the real fixture and the unlabeled-project-extra regression.
+function reconcileEventTrace(events: any[], project: string, services: any, expected: Set<string>, sentinels: string[]) {
+  const creates = events.filter((e) => e.Type === 'container' && e.Action === 'create');
+  expect(creates.map((e) => e.Actor.ID).sort()).toEqual([...expected, ...sentinels].sort());
+  const created = new Map<string, string>();
+  for (const e of creates) {
+    if (sentinels.includes(e.Actor.ID)) continue;
+    expect(e.Actor.Attributes['com.docker.compose.project']).toBe(project);
+    const svc = e.Actor.Attributes['com.docker.compose.service'];
+    expect(Object.hasOwn(services, svc)).toBe(true); // unknown/removed transient service fails too
+    created.set(e.Actor.ID, svc);
+  }
+  expect([...created.keys()].sort()).toEqual([...expected].sort());
+  const connections = events.filter((e) => e.Type === 'network' && e.Action === 'connect');
+  expect(connections.length).toBeGreaterThan(0);
+  for (const event of connections) {
+    const svc = created.get(event.Actor.Attributes.container);
+    expect(svc).toBeTruthy(); // sentinels must not attach to any network
+    expect(Object.keys(services[svc!].networks).map((n) => `${project}_${n}`)).toContain(event.Actor.Attributes.name);
+  }
+  for (const [id, svc] of created) {
+    const actual = connections.filter((e) => e.Actor.Attributes.container === id).map((e) => e.Actor.Attributes.name);
+    expect(actual.sort()).toEqual(Object.keys(services[svc].networks).map((n) => `${project}_${n}`).sort());
+  }
+}
+
+async function finalEventCutoff(probe: () => Promise<void>, drain: () => Promise<void>, stop: () => Promise<void>, reconcile: () => void) {
+  await probe();
+  await drain();
+  await stop(); // stdout is closed before assertions/evidence use the retained array
+  reconcile();
 }
 
 describe('reviewed manager admission regressions', () => {
@@ -102,6 +136,58 @@ describe('reviewed manager admission regressions', () => {
     trace.accept({ Type: 'container', Action: 'create', Actor: { ID: 'owned', Attributes: { 'wizard.qa.manager-seal.fixture': 'synthetic:fixture' } } });
     expect(trace.events).toHaveLength(2);
     expect(trace.events).toContainEqual(attach);
+  });
+  it('R2 retains a project-owned unlabeled transient intruder and its early public connect, then fails exact reconciliation', () => {
+    const project = 'synthetic_fixture';
+    const trace = ownedEventTrace('synthetic:fixture', project);
+    const attach = { Type: 'network', Action: 'connect', Actor: { ID: 'public', Attributes: { container: 'intruder-id', name: 'unlabeled-public' } } };
+    trace.accept(attach);
+    trace.accept({ Type: 'container', Action: 'create', Actor: { ID: 'intruder-id', Attributes: {
+      'com.docker.compose.project': project, 'com.docker.compose.service': 'intruder',
+    } } });
+    trace.accept({ Type: 'container', Action: 'create', Actor: { ID: 'unrelated', Attributes: { 'com.docker.compose.project': `${project}-other` } } });
+    expect(trace.events).toHaveLength(2);
+    expect(trace.events).toContainEqual(attach);
+    expect(() => reconcileEventTrace(trace.events, project, {}, new Set(), [])).toThrow();
+    // Even if an inspection had seen the extra ID, its unknown service fails.
+    expect(() => reconcileEventTrace(trace.events, project, {}, new Set(['intruder-id']), [])).toThrow();
+  });
+  it('R2 drains and awaits shutdown after the final missing-policy probe before reconciling late events', async () => {
+    const order: string[] = [];
+    const events: string[] = [];
+    await finalEventCutoff(async () => { order.push('missing-policy-probe'); events.push('late-create'); },
+      async () => { order.push('drain'); }, async () => {
+        await Promise.resolve(); events.push('last-stdout'); order.push('closed');
+      }, () => { order.push('reconcile'); expect(events).toEqual(['late-create', 'last-stdout']); });
+    expect(order).toEqual(['missing-policy-probe', 'drain', 'closed', 'reconcile']);
+  });
+  it('R1 no-op stage preserves the prior rollback anchor and exact policy bytes', async () => {
+    const f = await fixture();
+    const v1 = await f.seal.enroll(f.urn, f.doc);
+    const policy = path.join(f.root, 'state/mandatory-seals', sealHash(f.urn), 'policy.json');
+    const initialBytes = await fs.readFile(policy, 'utf8');
+    expect(await f.seal.stage(f.urn, v1.sha256, f.doc, f.doc)).toEqual(v1);
+    expect(await fs.readFile(policy, 'utf8')).toBe(initialBytes);
+    expect((await f.seal.read(f.urn))?.previous).toBeUndefined();
+    const v2 = structuredClone(f.doc); v2.services[f.main].image = 'synthetic-reviewed:v2';
+    const staged = await f.seal.stage(f.urn, v1.sha256, v2, v2);
+    const before = await fs.readFile(policy, 'utf8');
+    const stat = await fs.stat(policy);
+    expect(await f.seal.stage(f.urn, staged.sha256, v2, v2)).toEqual(staged);
+    expect(await fs.readFile(policy, 'utf8')).toBe(before);
+    expect((await fs.stat(policy)).ino).toBe(stat.ino);
+    expect((await f.seal.read(f.urn))?.previous?.sha256).toBe(v1.sha256);
+  });
+  it('R1 v1 stage-v2 recover-v1 stage-v3 refuses without evicting the installed v1 anchor', async () => {
+    const f = await fixture();
+    const v1 = await f.seal.enroll(f.urn, f.doc);
+    const v2 = structuredClone(f.doc); v2.services[f.main].image = 'synthetic-reviewed:v2';
+    const staged = await f.seal.stage(f.urn, v1.sha256, v2, v2);
+    expect(f.seal.select(staged, f.doc, []).services[f.main].image).toBe(f.doc.services[f.main].image);
+    const v3 = structuredClone(v2); v3.services[f.main].image = 'synthetic-reviewed:v3';
+    await expect(new MandatorySeal(f.root).stage(f.urn, staged.sha256, v3, v3)).rejects.toThrow();
+    expect(await f.seal.read(f.urn)).toEqual(staged);
+    expect(f.seal.select((await f.seal.read(f.urn))!, f.doc, []).services[f.main].image).toBe(f.doc.services[f.main].image);
   });
   it('projects installed consumer approval, revoke and reapproval onto the security base under the grant lock', async () => {
     const f = await fixture();
@@ -316,7 +402,17 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       catch { traceError = new Error('invalid Docker event trace'); }
     });
     let streamClosed = false;
-    stream.once('close', () => { streamClosed = true; });
+    const closed = new Promise<void>((resolve) => stream.once('close', () => { streamClosed = true; resolve(); }));
+    const stopStream = async () => {
+      if (streamClosed) return;
+      stream.kill('SIGTERM');
+      const timer = setTimeout(() => {
+        traceError ??= new Error('event stream required forced shutdown');
+        stream.kill('SIGKILL');
+      }, 5000);
+      try { await closed; }
+      finally { clearTimeout(timer); }
+    };
     const bound = setTimeout(() => { traceError = new Error('event trace deadline'); stream.kill(); }, 210_000);
     const sentinelIds: string[] = [];
     const barrier = async () => {
@@ -403,30 +499,23 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       expectedImage = doc.services[main].image;
       await inspect();
       expect(await fs.readFile(path.join(root, 'home/history.txt'), 'utf8')).toBe('Synthetic continuity only.\n');
-      await barrier();
-      expect(traceError).toBeUndefined(); expect(streamClosed).toBe(false);
-      const created = new Map(events.filter((e) => e.Type === 'container' && e.Action === 'create' && e.Actor.Attributes['com.docker.compose.project'] === project).map((e) => [e.Actor.ID, e.Actor.Attributes['com.docker.compose.service']]));
-      expect([...created.keys()].sort()).toEqual([...expectedContainers].sort());
-      const connections = events.filter((e) => e.Type === 'network' && e.Action === 'connect');
-      expect(connections.length).toBeGreaterThan(0);
-      for (const event of connections) {
-        const svc = created.get(event.Actor.Attributes.container) as string;
-        expect(svc).toBeTruthy();
-        expect(Object.keys(doc.services[svc].networks).map((n) => `${project}_${n}`)).toContain(event.Actor.Attributes.name);
-      }
-      for (const [id, svc] of created) {
-        const actual = connections.filter((e) => e.Actor.Attributes.container === id).map((e) => e.Actor.Attributes.name);
-        expect(actual.sort()).toEqual(Object.keys(doc.services[svc as string].networks).map((n) => `${project}_${n}`).sort());
-      }
-      // Policy corruption refuses before a restart's down callback or any up.
-      await fs.unlink(path.join(root, 'state/mandatory-seals', sealHash(urn), 'policy.json'));
-      let stopped = false;
-      await expect(manager.composeApp(urn, 'up --detach', async () => { stopped = true; })).rejects.toThrow();
-      expect(stopped).toBe(false);
-      await inspect();
+      await finalEventCutoff(async () => {
+        // Last negative probe belongs to the same captured/reconciled window.
+        await fs.unlink(path.join(root, 'state/mandatory-seals', sealHash(urn), 'policy.json'));
+        let stopped = false;
+        await expect(manager.composeApp(urn, 'up --detach', async () => { stopped = true; })).rejects.toThrow();
+        expect(stopped).toBe(false);
+        await inspect();
+      }, async () => {
+        await barrier();
+        expect(traceError).toBeUndefined(); expect(streamClosed).toBe(false);
+      }, stopStream, () => {
+        expect(traceError).toBeUndefined(); expect(pending).toBe(''); expect(streamClosed).toBe(true);
+        reconcileEventTrace(events, project, doc.services, expectedContainers, sentinelIds);
+      });
     } finally {
       // Exact synthetic project only. Never use global prune or stop.
-      clearTimeout(bound); stream.kill('SIGTERM');
+      clearTimeout(bound); await stopStream().catch((e) => { traceError ??= e; });
       const traceDir = process.env.MANAGER_SEAL_TRACE_DIR ?? root;
       await fs.mkdir(traceDir, { recursive: true });
       await fs.writeFile(path.join(traceDir, `${project}-events.json`), JSON.stringify({ readiness: 'sentinel-create', error: traceError?.message,
