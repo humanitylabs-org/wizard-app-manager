@@ -315,7 +315,7 @@ class ManagerSealRunners(unittest.TestCase):
                 (package/'package.json').write_text(json.dumps({'name':'@scope/tool', 'version':version}))
                 (package/'cli.js').write_text('#!/usr/bin/env node\n')
                 (package/'cli.js').chmod(0o755)
-            lock = {'workspaces':{'':{'name':'root'}}, 'packages':{
+            lock = {'lockfileVersion':1, 'workspaces':{'':{'name':'root'}}, 'packages':{
                 '@scope/tool':['@scope/tool@1.2.3', '', {'bin':{'tool':'cli.js'}}],
                 'parent/@scope/tool':['@scope/tool@2.0.0'],
                 'absent-version':['@scope/tool@3.0.0']}}
