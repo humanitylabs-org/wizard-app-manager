@@ -1503,8 +1503,9 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         reason = update_block(c.runtipi_root, store, app, verify_legacy=True)
         if reason:
             raise SystemExit(f"REFUSED: {app}: {reason}; keep or merge your source before updating; nothing replaced")
-        from .update_policy import require_update
-        require_update(c, app, store)
+        if app not in alongside.PIN_VARS:  # release-owned alongside lifecycle is not an app-updater candidate
+            from .update_policy import require_update
+            require_update(c, app, store)
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]

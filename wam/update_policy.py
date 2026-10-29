@@ -70,6 +70,8 @@ def network_escapes(compose: dict, app_id: str | None = None, store: str = "wiza
         if not isinstance(s, dict):
             continue
         mode = str(_plain(s.get("network_mode")) or "").lower()
+        if "$" in mode:
+            out.append(f"{name}: network_mode {mode} is set at runtime (unknown network access)")
         if mode == "host":
             out.append(f"{name}: network_mode: host (shares the server's network, bypasses app isolation)")
         elif mode.startswith("container:"):   # another container's namespace (e.g. runtipi's); service: stays allowed
@@ -173,7 +175,7 @@ def _managed_source(source, root, app_data, app_id, store):
 def risks(compose, app_id=None, store='wizardapps', **context):
     try:
         return _risks(compose, app_id, store, **context)
-    except (TypeError, ValueError, AttributeError, RecursionError, yaml.YAMLError) as exc:
+    except (TypeError, ValueError, AttributeError, RecursionError, OSError, RuntimeError, KeyError, yaml.YAMLError) as exc:
         return [f'compose shape is not allowlisted ({type(exc).__name__})']
 
 
@@ -352,6 +354,9 @@ def require_update(c, app, store="wizardapps"):
     if not recipe.is_file():
         raise SystemExit(f"REFUSED: {app}: no prepared recipe for safety check; nothing queued")
     data = packaging.app_data_root(root) / store / app
+    directories = [recipe.parent, root / "apps" / store / app, root / "user-config" / store / app]
+    if any((p / "docker-compose.json").exists() for p in directories):
+        raise SystemExit(f"REFUSED: {app}: owner review required: dynamic recipe not supported by this host adapter; nothing queued")
     paths = [recipe, root / "apps" / store / app / "docker-compose.yml",
              root / "user-config" / store / app / "docker-compose.yml"]
     try:

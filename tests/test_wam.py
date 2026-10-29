@@ -849,7 +849,7 @@ def test_vendored_wizard_cli_matches_recorded_provenance():
         pytest.skip(f"wizard-os not readable from here ({str(e)[:60]}): checked the local pin only")
 
 
-def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
+def test_app_update_uses_api_and_restarts_a_running_app(tmp_path, monkeypatch):
     """`wam app update X` goes through the App Manager API and leaves a running app running."""
     from wam import cli
     seen = []
@@ -862,6 +862,10 @@ def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
         def wait_status(self, urn, want, timeout=0): return self.st
     monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setenv("RUNTIPI_ROOT", str(tmp_path / "rt"))
+    path = tmp_path / "rt/repos/wizardapps/apps/notifications/docker-compose.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text("services: {notifications: {image: synthetic:1}}")
     res = cli.app_update(cli.Config(), "notifications")
     assert seen == [("update", "notifications:wizardapps"), ("start", "notifications:wizardapps")]
     assert res["status"] == "running" and res["restarted"] is True

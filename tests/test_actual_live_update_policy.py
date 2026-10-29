@@ -25,6 +25,7 @@ def recipe(c, text):
 @pytest.mark.parametrize('text', [
     'services: {demo: {image: x, privileged: true}}',
     'services: {demo: {image: x, network_mode: host}}',
+    'services: {demo: {image: x, network_mode: "${NET}"}}',
     'services: {demo: {image: x, volumes: ["/var/run/docker.sock:/socket"]}}',
     'services: {demo: {image: x, volumes: ["/home/owner:/private:ro"]}}',
     'services: {demo: {image: x, cap_add: [SYS_ADMIN]}}',
@@ -36,6 +37,13 @@ def test_protected_recipe_never_queues_or_writes_approval(tmp_path, text):
     with pytest.raises(SystemExit, match='owner review required'):
         cli.app_update(c, 'demo')
     assert not queue and p.read_bytes() == before and not c.home.exists()
+
+
+def test_dynamic_recipe_with_decoy_yaml_never_queues(tmp_path):
+    c, queue = cfg(tmp_path); p = recipe(c, 'services: {demo: {image: x}}')
+    p.with_suffix('.json').write_text('{"services":[{"name":"demo","privileged":true}]}')
+    with pytest.raises(SystemExit, match='dynamic recipe'): cli.app_update(c, 'demo')
+    assert queue == []
 
 
 def test_missing_recipe_unknown_not_permission(tmp_path):
