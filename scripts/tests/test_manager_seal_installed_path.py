@@ -99,6 +99,129 @@ class PinsAndBounds(unittest.TestCase):
         self.assertEqual(calls[0][0], 'POST')
 
 
+class HttpContractAndCapture(unittest.TestCase):
+    root = Path(__file__).resolve().parents[2]
+
+    def node(self, code, argument):
+        import shutil
+        node = str(rig.NODE) if rig.NODE.is_file() else shutil.which('node')
+        assert node is not None, 'offline HTTP source regressions require Node'
+        if rig.NODE.is_file(): self.assertEqual(rig.sha(node), rig.NODE_SHA)
+        result = subprocess.run([node, '--input-type=module', '-e', code, argument],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr[:2048])
+        return json.loads(result.stdout)
+
+    def test_exact_shipped_guard_old_missing_origin_rejects_corrected_accepts(self):
+        # Only import/decorator/constructor wiring is replaced. All helpers and
+        # the actual canActivate body execute unchanged, without Nest/network.
+        code = r"""import fs from 'node:fs';import {stripTypeScriptTypes} from 'node:module';
+import assert from 'node:assert/strict';
+let source=fs.readFileSync(process.argv[1],'utf8').replace(/^import .*;\n/gm,'').replace('@Injectable()','').replace('export class','class').replace('constructor(private readonly logger: LoggerService) {}','constructor(logger) {this.logger=logger;}');
+const suffix=`
+const guard=new AuthGuard({debug(){}});const results=[];
+for(const [name,headers,user,method,expected] of [
+ ['old missing origin',{},true,'POST',403],['wrong origin',{origin:'http://evil.invalid'},true,'POST',403],
+ ['correct origin',{origin:'http://127.0.0.1:3000'},true,'POST',200],
+ ['correct referer',{referer:'http://127.0.0.1:3000/page'},true,'POST',200],
+ ['wrong port',{origin:'http://127.0.0.1:3001'},true,'POST',403],
+ ['unauthenticated',{origin:'http://127.0.0.1:3000'},false,'POST',401],['session readback',{},true,'GET',200]]) {
+ const request={method,url:'/api/app-lifecycle/agent-synthetic:migrated/install',protocol:'http',headers:{host:'127.0.0.1:3000',...headers},user:user?{id:1}:undefined,authMethod:'session'};
+ let status=200;try{await guard.canActivate({switchToHttp:()=>({getRequest:()=>request})});}catch(e){status=e.status;}
+ assert.equal(status,expected,name);results.push({name,status});
+}console.log(JSON.stringify(results));`;
+const js=stripTypeScriptTypes(source,{mode:'strip'});
+await new Function('ForbiddenException','UnauthorizedException','return (async()=>{'+js+suffix+'})()')(
+ class extends Error {status=403},class extends Error {status=401});"""
+        results = self.node(code, str(self.root/'packages/backend/src/modules/auth/auth.guard.ts'))
+        self.assertEqual(len(results), 7)
+        self.assertTrue(recovery.audit_install_http_contract(self.root)['body_fields_permitted'])
+
+    def test_actual_http_javascript_headers_bound_plaintext_and_transport(self):
+        prefix = r"""const request=JSON.parse(process.argv[1]);let calls=0;
+globalThis.fetch=async(url,options)=>{calls++;if(request[2]?.fail)throw new Error('synthetic secret never export');
+if(request[3]&&['POST','PUT','PATCH','DELETE'].includes(request[0])&&options.headers.Origin!=='http://127.0.0.1:3000')throw new Error('missing origin');
+if(!request[3]&&options.headers.Cookie)throw new Error('unexpected cookie');
+if(request[2]?.partial){let n=0;return new Response(new ReadableStream({pull(c){if(n++)throw new Error('synthetic-pass');c.enqueue(new TextEncoder().encode('partial body'));}}),{status:403});}
+return new Response(request[2]?.large?'x'.repeat(20000):'plain rejection',{status:403});};
+"""
+        for body, expected in [({}, (403, False, None)), ({'large': True}, (403, True, None)),
+                               ({'fail': True}, (0, False, 'transport_or_read_error')),
+                               ({'partial': True}, (403, False, 'transport_or_read_error'))]:
+            value = self.node(prefix+recovery.HTTP_CODE, json.dumps(['POST', '/api/app-lifecycle/'+rig.URN+'/install', body, 'synthetic-cookie']))
+            self.assertEqual((value['status'], value['body_truncated'], value['transport_error']), expected)
+            self.assertLessEqual(value['captured_bytes'], recovery.HTTP_BODY_CAP)
+        source = recovery.HTTP_CODE
+        self.assertEqual(source.count('await fetch('), 1)
+        self.assertNotIn('r.text()', source)
+
+    def runner(self, root, value):
+        r = rig.Rig.__new__(rig.Rig); r.out = root; r.receipt = {}; r.manager = 'owned-id'
+        r.secrets = ['synthetic-pass', 'synthetic-sid']; r.cookie = 'runtipi-sid=synthetic-sid'
+        r.exec = lambda *a, **kw: json.dumps(value)
+        r.state = lambda _: {'Running': True}
+        return r
+
+    def envelope(self, **changes):
+        return dict(status=403, cookie=None, body_text='{"message":"Invalid request origin","password":"synthetic-pass","headers":{"cookie":"synthetic-sid"}}',
+                    captured_bytes=120, body_truncated=False, transport_error=None, **changes)
+
+    def test_rejection_saved_before_assertion_no_cookie_headers_or_secrets(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            r = self.runner(Path(tmp), self.envelope())
+            calls = []
+            def execute(*a, **kw): calls.append(a); return json.dumps(self.envelope())
+            r.exec = execute
+            with self.assertRaisesRegex(AssertionError, 'HTTP transaction rejected'):
+                r.transaction('install', {'skipRun': True}, 'stopped')
+            self.assertEqual(len(calls), 1)
+            raw = (r.out/'http-responses.sanitized.json').read_text()
+            row = next(iter(json.loads(raw).values()))['first']
+            self.assertEqual(row['status'], 403)
+            self.assertEqual(row['body']['message'], 'Invalid request origin')
+            for secret in ('synthetic-pass', 'synthetic-sid', 'runtipi-sid='): self.assertNotIn(secret, raw)
+            self.assertEqual(row['body']['headers'], '[credential field withheld]')
+
+    def test_non_json_overflow_timeout_and_exec_failure_still_saved(self):
+        variants = [dict(status=500, body_text='plain error'), dict(status=201, body_text='x'*8192, body_truncated=True),
+                    dict(status=0, transport_error='timeout')]
+        for variant in variants:
+            with self.subTest(variant=variant.keys()), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+                value = self.envelope(); value.update(variant); r = self.runner(Path(tmp), value)
+                with self.assertRaises((AssertionError, RuntimeError)): r.http('POST', '/api/app-lifecycle/'+rig.URN+'/install', {})
+                row = next(iter(json.loads((r.out/'http-responses.sanitized.json').read_text()).values()))['latest']
+                self.assertEqual(row['status'], value['status'])
+                self.assertEqual(row['body_truncated'], value['body_truncated'])
+                self.assertEqual(row['transport_error'], value['transport_error'])
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            r = self.runner(Path(tmp), self.envelope())
+            r.exec = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('synthetic-pass'))
+            with self.assertRaises(RuntimeError): r.http('POST', '/api/app-lifecycle/'+rig.URN+'/install', {})
+            self.assertNotIn('synthetic-pass', (r.out/'http-responses.sanitized.json').read_text())
+
+    def test_readiness_failures_cannot_succeed_and_records_bounded_first_latest(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            value = self.envelope(); value.update(status=401, transport_error='transport_or_read_error')
+            r = self.runner(Path(tmp), value)
+            for _ in range(150):
+                self.assertEqual(r.http('GET', '/api/apps/installed', authenticated=False, allow_notready=True), (0, None))
+            records = json.loads((r.out/'http-responses.sanitized.json').read_text())
+            self.assertEqual(len(records), 1); self.assertEqual(next(iter(records.values()))['attempts'], 150)
+            self.assertLess((r.out/'http-responses.sanitized.json').stat().st_size, 4096)
+
+    def test_registration_cookie_in_memory_only_and_success_request_id_preserved(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            value = self.envelope(); value.update(status=201, cookie='runtipi-sid=new-synthetic-sid; HttpOnly', body_text='{"ok":true}')
+            r = self.runner(Path(tmp), value)
+            self.assertEqual(r.http('POST', '/api/auth/register', {}, authenticated=False), (201, {'ok': True}))
+            self.assertEqual(r.cookie, 'runtipi-sid=new-synthetic-sid')
+            self.assertIn('new-synthetic-sid', r.secrets)
+            self.assertNotIn('new-synthetic-sid', (r.out/'http-responses.sanitized.json').read_text())
+            value.update(cookie=None, body_text='{"requestId":"f6f719cb-e92b-4da2-80a6-9a0989d6c946"}')
+            r.exec = lambda *a, **kw: json.dumps(value)
+            self.assertEqual(r.http('POST', '/api/app-lifecycle/'+rig.URN+'/install', {})[1]['requestId'], 'f6f719cb-e92b-4da2-80a6-9a0989d6c946')
+
+
 class PackagedStartupSource(unittest.TestCase):
     root = Path(__file__).resolve().parents[2]
 

@@ -835,6 +835,9 @@ class Rig:
         register_password = os.urandom(24).hex(); self.secrets.append(register_password)
         self.http('POST', '/api/auth/register', {'username': 'synthetic@example.invalid', 'password': register_password}, authenticated=False)
         self.receipt['auth'] = {'actual_registration': True, 'unauthenticated_lifecycle_denied': True}
+        assert self.http('GET', '/api/apps/installed')[0] == 200, 'registered session readback failed'
+        self.receipt['auth']['actual_session_readback'] = True
+        self.receipt['install_http_source_contract'] = recovery.audit_install_http_contract(self.root)
         self.receipt['phase'] = 'http-install-skipRun'
         assert self.sql("select count(*) from app where app_name='agent-synthetic' and app_store_slug='migrated';") == '0'
         assert not self.owned_fixture_ids(), 'URN collision before first POST'
@@ -867,27 +870,57 @@ class Rig:
         self.receipt['first_installed_synthetic_path_pass'] = True
         self.receipt['phase'] = 'completed-first-installed-slice'
 
+    def capture_http(self, method, path, authenticated, value):
+        # Only this fixed synthetic endpoint set; no request bodies or headers.
+        assert (method, path) in {('GET', '/api/apps/installed'), ('GET', '/api/apps/'+URN),
+            ('POST', '/api/auth/register'), *(('POST', '/api/app-lifecycle/'+URN+'/'+a) for a in ('install', 'start', 'restart'))}
+        clean, parse_error = recovery.sanitized_http_body(value.get('body_text', ''), self.secrets)
+        row = {'status': value.get('status', 0), 'body': clean, 'parse_error': parse_error,
+               'captured_bytes': value.get('captured_bytes', 0), 'body_truncated': value.get('body_truncated', False),
+               'transport_error': value.get('transport_error'), 'authenticated_request': authenticated}
+        assert row['transport_error'] in (None, 'timeout', 'transport_or_read_error', 'owned_exec_failed', 'invalid_envelope')
+        key = method+' '+path+(' authenticated' if authenticated else ' unauthenticated')
+        records = self.receipt.setdefault('http_responses', {})
+        entry = records.setdefault(key, {'attempts': 0, 'first': row})
+        entry['attempts'] += 1; entry['latest'] = row
+        assert len(records) <= 16
+        raw = (json.dumps(records, sort_keys=True, indent=2)+'\n').encode()
+        assert len(raw) <= 256*1024, 'sanitized HTTP evidence cap'
+        with (self.out/'http-responses.sanitized.json').open('wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        return clean, parse_error
+
     def http(self, method, path, body=None, authenticated=True, allow_notready=False):
-        # Real loopback HTTP inside the manager, no published host/LAN port.
-        code = """const [method,path,body,cookie]=JSON.parse(process.argv[1]);
-const r=await fetch('http://127.0.0.1:3000'+path,{method,redirect:'error',headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},body:body===null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
-const text=await r.text();if(text.length>1048576)throw Error('response bound');
-console.log(JSON.stringify({status:r.status,cookie:r.headers.get('set-cookie'),body:JSON.parse(text)}));"""
+        # Exactly one real fetch per call. No timeout/rejection/parse retries.
         try:
-            output = self.exec(self.manager, ['/tooling/node', '--input-type=module', '-e', code,
+            output = self.exec(self.manager, ['/tooling/node', '--input-type=module', '-e', recovery.HTTP_CODE,
                 json.dumps([method, path, body, getattr(self, 'cookie', None) if authenticated else None])], timeout=15)
-        except RuntimeError:
+        except (RuntimeError, subprocess.TimeoutExpired):
+            self.capture_http(method, path, authenticated, {'transport_error': 'owned_exec_failed'})
             if allow_notready:
                 if not self.state(self.manager)['Running']: raise RuntimeError('manager exited')
                 return 0, None
             raise
-        value = json.loads(output)
+        try: value = json.loads(output)
+        except ValueError:
+            self.capture_http(method, path, authenticated, {'transport_error': 'invalid_envelope'})
+            raise RuntimeError('HTTP response envelope invalid') from None
         if value['cookie'] and path == '/api/auth/register':
-            self.cookie = next(c.strip().split(';')[0] for c in value['cookie'].split(',') if c.strip().startswith('runtipi-sid='))
-            self.secrets.append(self.cookie)
+            self.cookie = next((c.strip().split(';')[0] for c in value['cookie'].split(',') if c.strip().startswith('runtipi-sid=')), None)
+            if self.cookie:
+                self.secrets.extend((self.cookie, self.cookie.split('=', 1)[1]))
+        # Persist status/body/parse/transport diagnostics BEFORE ANY assertion.
+        clean, parse_error = self.capture_http(method, path, authenticated, value)
+        if value['transport_error']:
+            if allow_notready:
+                if not self.state(self.manager)['Running']: raise RuntimeError('manager exited')
+                return 0, None
+            raise RuntimeError('HTTP transport failed; saved sanitized response')
         if method != 'GET' and not allow_notready and (authenticated or path == '/api/auth/register'):
-            assert 200 <= value['status'] < 300, 'HTTP transaction rejected'
-        return value['status'], value['body']
+            assert 200 <= value['status'] < 300, 'HTTP transaction rejected; saved sanitized response'
+        assert not value['body_truncated'] and parse_error is None, 'HTTP body incomplete; saved sanitized response'
+        if path == '/api/auth/register': assert getattr(self, 'cookie', None), 'registration cookie missing'
+        return value['status'], json.loads(value['body_text'])
 
     def sql(self, query):
         return self.exec(self.db, ['psql', '-U', 'tipi', '-d', 'tipi', '-Atc', query])

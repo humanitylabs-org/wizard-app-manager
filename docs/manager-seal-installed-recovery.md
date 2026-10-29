@@ -1,5 +1,59 @@
 # Installed synthetic continuation: Rabbit CLI and cleanup recovery
 
+## First authenticated install: demonstrated request-contract mismatch
+
+The retained `b70c9bbe1095` attempt (`heavy_b7899cc8868249fabbe8db2adc3d2c1a`)
+passed actual installed `/app` confinement, full Nest TLS/Git/cache/assets/schema
+bootstrap, registration/Set-Cookie, unauthenticated lifecycle denial, and the
+three real queue consumers (each **1**). Paired causal Rabbit A/B and installed
+RPC evidence remains inherited and immutable. Cleanup errors and parent residuals
+are empty. The run then failed `http-install-skipRun` at the helper's 2xx check.
+**Its actual HTTP status and response body were discarded and are not recovered.**
+No 403, exact refusal body, successful installation, or applied transaction is
+claimed for that old request.
+
+The complete retained backend sourcemap matches the current production sources.
+`AuthMiddleware` maps `runtipi-sid` to `authMethod='session'`; `AuthGuard` requires
+unsafe session requests to supply either a same-origin **Origin** or **Referer**,
+including scheme/host/port (forwarded values take precedence). The old helper
+sent only Content-Type and Cookie, neither Origin nor Referer. Executing the
+actual shipped guard's unchanged methods offline reproduces 403 for that
+session-request shape and accepts the corrected loopback Origin. This is a
+**confirmed harness/source-contract mismatch**, not recovery of the historical
+HTTP response; attributing the original rejection to this guard remains a
+source-backed diagnosis pending the new installed observation.
+
+No DTO/fixture change is demonstrated: the controller passes body as form,
+`appFormSchema` permits every submitted boolean and optional port, and the
+handler preserves `skipRun` through the queued payload. Omitted port falls back
+to store port 18080; the synthetic metadata is amd64, non-exposable, not
+force-exposed, no minimum Tipi version, with empty form fields. Submitted proxy
+flags are false and openPort is false, so domain/port uniqueness checks are not
+requested. Those fields and all production code remain unchanged.
+
+The helper now sends same-origin `Origin: http://127.0.0.1:3000` only on
+cookie-authenticated unsafe requests, without weakening the guard. A real
+session GET readback precedes the fresh absent-URN baseline and single install
+POST. This is a new disposable namespace/DB, not a retry of the old POST.
+Exactly one fetch/POST remains; timeout, malformed/oversized body and rejection
+stop before app polling or another lifecycle mutation.
+
+Before status, body-parse, cookie or transport assertions, the helper fsyncs
+`installed-results/http-responses.sanitized.json`: status, bounded sanitized body,
+parse/transport classification, captured-byte count and truncation flag.
+Streaming body capture is capped at 8192 bytes, GET polling retains only
+first/latest per fixed endpoint with attempt counts (16 keys / 256KiB total).
+Response/request headers, cookies, passwords and session values are not exported;
+the cookie and bare session value are in-memory redaction inputs only. Plaintext,
+non-JSON, overflow and partial-read/transport failures remain diagnosable and
+cannot become readiness/transaction success. Offline fixtures exercise the real
+HTTP JavaScript without network and prove rejection capture occurs before the
+assertion and exactly one transaction call.
+
+This is a staged QA-only continuation, not new installed acceptance. Preserved
+startup/auth/queue/backend/broker passes are source-bound inherited evidence;
+`full_acceptance` and `RUNTIPI_ADMITTED` stay false. Only the parent may submit.
+
 ## Manager cwd and packaged startup audit (no backend rebuild)
 
 The `547b5101da30` attempt retained its passing paired Rabbit canary and

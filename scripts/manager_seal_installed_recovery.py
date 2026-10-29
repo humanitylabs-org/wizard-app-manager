@@ -30,6 +30,68 @@ RABBIT_ESCRIPT_SHA = '863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47
 RABBIT_ESCRIPT_BYTES = 7414174
 
 
+HTTP_BODY_CAP = 8192
+HTTP_ORIGIN = 'http://127.0.0.1:3000'
+# Executed only inside the already-owned manager. No response headers other
+# than the session cookie cross this in-memory boundary; none are persisted.
+HTTP_CODE = r"""const [method,path,body,cookie]=JSON.parse(process.argv[1]);
+const base='http://127.0.0.1:3000';
+const value={status:0,cookie:null,body_text:'',captured_bytes:0,body_truncated:false,transport_error:null};
+try {
+ const r=await fetch(base+path,{method,redirect:'error',headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...(cookie&&['POST','PUT','PATCH','DELETE'].includes(method)?{Origin:new URL(base).origin}:{})},body:body===null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
+ value.status=r.status;value.cookie=r.headers.get('set-cookie');
+ const reader=r.body?.getReader();const chunks=[];let total=0;
+ if(reader) {try {while(true) {const {done,value:chunk}=await reader.read();if(done)break;
+  const room=8192-total;chunks.push(chunk.subarray(0,room));total+=Math.min(room,chunk.length);
+  if(chunk.length>room){value.body_truncated=true;await reader.cancel();break;}
+ }} finally {const all=new Uint8Array(total);let offset=0;for(const chunk of chunks){all.set(chunk,offset);offset+=chunk.length;}
+ value.captured_bytes=total;value.body_text=new TextDecoder().decode(all);}}
+} catch(e) {value.transport_error=e?.name==='TimeoutError'?'timeout':'transport_or_read_error';}
+console.log(JSON.stringify(value));"""
+
+
+def sanitized_http_body(text, secrets=()):
+    """Bounded body only. Never retain headers, credentials or session values."""
+    text = text[:HTTP_BODY_CAP]
+    for secret in secrets:
+        if secret: text = text.replace(secret, '[SYNTHETIC-SECRET-REDACTED]')
+    sensitive = re.compile(r'cookie|authorization|password|secret|token|session|headers|credential', re.I)
+    def clean(value, depth=0):
+        if depth > 8: return '[depth bound]'
+        if isinstance(value, dict):
+            return {key: '[credential field withheld]' if sensitive.search(key) else clean(item, depth+1)
+                    for key, item in list(value.items())[:64]}
+        if isinstance(value, list): return [clean(item, depth+1) for item in value[:64]]
+        if isinstance(value, str): return sanitized_cli(value.encode(), secrets)
+        return value
+    try: return clean(json.loads(text)), None
+    except (ValueError, RecursionError): return sanitized_cli(text.encode(), secrets), 'non_json_or_incomplete'
+
+
+def audit_install_http_contract(root):
+    """Actual shipped request contract, not a historical-response diagnosis."""
+    root = Path(root); pins = {}
+    checks = {
+        'modules/auth/auth.guard.ts': ["['POST', 'PUT', 'PATCH', 'DELETE']", "request.authMethod === 'session'", 'UNSAFE_METHODS.has(request.method)', 'request.headers.origin', 'request.headers.referer', 'origin !== requestOrigin && refererOrigin !== requestOrigin', 'throw new ForbiddenException', 'if (!request.user)', 'throw new UnauthorizedException'],
+        'modules/auth/auth.middleware.ts': ['req.cookies[SESSION_COOKIE_NAME]', 'this.cache.get(`session:${sessionId}`)', "req.authMethod = 'session'"],
+        'modules/auth/auth.controller.ts': ["@Post('/register')", 'await this.authService.register(body)', 'await this.setSessionCookie(res, sessionId, req)', 'res.cookie(SESSION_COOKIE_NAME, sessionId'],
+        'common/constants.ts': ["SESSION_COOKIE_NAME = 'runtipi-sid'"],
+        'modules/app-lifecycle/app-lifecycle.controller.ts': ['@UseGuards(AuthGuard)', "@Post(':urn/install')", 'form: body'],
+        'modules/app-lifecycle/dto/app-lifecycle.dto.ts': ["port: 'number >= 1024 & number <= 65535?'", "skipRun: 'boolean = false'", "skipPull: 'boolean = false'", "skipEnv: 'boolean = false'", "forcePull: 'boolean?'", "openPort: 'boolean = true'", "exposed: 'boolean?'", "exposedLocal: 'boolean?'", "enableAuth: 'boolean?'", "isVisibleOnGuestDashboard: 'boolean?'"],
+        'modules/app-lifecycle/handlers/install-app.handler.ts': ['appFormSchema(form)', 'skipRun ?? parsedForm.skipRun ?? false', 'await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn)', 'await this.validationService.validateInstallSettings(appUrn, appInfo, parsedForm)', 'port: parsedForm.port ?? appInfo.port'],
+        'modules/app-lifecycle/services/app-validation.service.ts': ['if (exposed && !domain)', 'supported_architectures.includes(architecture)', 'if (appInfo.force_expose && !exposed)', 'if (form.openPort && form.port)'],
+    }
+    for rel, tokens in checks.items():
+        path = root/'packages/backend/src'/rel; raw = path.read_bytes()
+        for token in tokens: assert token in raw.decode(), 'HTTP contract source drift: '+rel
+        pins['packages/backend/src/'+rel] = digest(raw)
+    assert "Origin:new URL(base).origin" in HTTP_CODE and HTTP_ORIGIN in HTTP_CODE
+    return {'source_pins': pins, 'session_unsafe_requires_same_origin_or_referer': True,
+            'cookie_name': 'runtipi-sid', 'body_fields_permitted': True,
+            'port_optional_uses_store_default': True, 'production_changed': False,
+            'historical_status_and_body_recovered': False, 'runtime_executed': False}
+
+
 class FatalBrokerCLI(RuntimeError):
     """Deterministic local resource failure, never a readiness retry."""
 
