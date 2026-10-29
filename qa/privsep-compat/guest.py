@@ -231,6 +231,41 @@ def backend(config):
     event('backend-identity', image=image, source_revision=config['image_source_revision'])
 
 
+def policy_diagnostics():
+    # Safe exact product-code evidence before disposable disks/logs are removed.
+    # Match fixed source literals only; never copy arbitrary manager/app logs.
+    signatures = {
+        'bind source has unsafe or unverifiable host ancestry':
+            'packages/backend/src/modules/docker/compose-consumption.ts:85',
+        'bind source unavailable or unsafe':
+            'packages/backend/src/modules/docker/compose-consumption.ts:102',
+        'unnormalized bind':
+            'packages/backend/src/modules/docker/compose-consumption.ts:59',
+    }
+    observed = []
+    try:
+        r = subprocess.run(['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=runtipi',
+                            '--filter', 'label=com.docker.compose.service=runtipi'], capture_output=True, timeout=10)
+        for cid in r.stdout.decode().split():
+            if not re.fullmatch('[0-9a-f]{12,64}', cid): continue
+            logs = subprocess.run(['docker', 'logs', '--tail', '150', cid], capture_output=True, timeout=10)
+            raw = logs.stdout + logs.stderr
+            observed += [{'reason': literal, 'source': loc} for literal, loc in signatures.items() if literal.encode() in raw]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    controls = []
+    for root in (Path('/home/wizard/runtipi'), Path('/home/hermes/runtipi'), Path('/var/lib/wizard-os/runtipi')):
+        for endpoint in (root / 'media', root / 'app-data/wizardapps/wizard-calendar/data', root / 'app-data/wizardapps/files/data'):
+            for p in reversed((endpoint, *endpoint.parents)):
+                if any(x['path'] == str(p) for x in controls): continue
+                try:
+                    s = p.lstat()
+                    controls.append({'path': str(p), 'uid': s.st_uid, 'gid': s.st_gid,
+                                     'mode': oct(s.st_mode & 0o7777), 'symlink': p.is_symlink()})
+                except FileNotFoundError: continue
+    event('safe-policy-diagnostics', fixed_product_reasons=observed, control_ancestry=controls)
+
+
 def failure(error):
     # Trusted filenames/functions/lines only; never payload, locals or exception text.
     frames = []
@@ -248,7 +283,7 @@ def failure(error):
 def main():
     global PHASE
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('seed', 'data', 'copy', 'credentials', 'identity', 'backend'))
+    p.add_argument('action', choices=('seed', 'data', 'copy', 'credentials', 'identity', 'backend', 'diagnose'))
     p.add_argument('scenario', choices=('fresh', 'legacy', 'migrated'))
     p.add_argument('config', type=Path)
     a = p.parse_args()
@@ -259,13 +294,15 @@ def main():
     try:
         {'seed': lambda: seed_and_exercise(a.scenario, c), 'data': lambda: verify_data(a.scenario),
          'copy': stopped_copy, 'credentials': credentials, 'identity': lambda: denied_identity(c),
-         'backend': lambda: backend(c)}[a.action]()
+         'backend': lambda: backend(c), 'diagnose': policy_diagnostics}[a.action]()
         event('completed', action=a.action, scenario=a.scenario)
         return 0
     except Exception as e:
         detail = failure(e)
         save('failure.json', {'phase': PHASE, **detail})
         event('failure', **detail)
+        try: policy_diagnostics()
+        except Exception: event('safe-policy-diagnostics-unavailable')
         return 1
 
 

@@ -205,7 +205,10 @@ class VM:
                    'raw=p.read_bytes()\nprint(json.dumps({"event":"installer","returncode":r.returncode,'
                    '"host_guard_refusal":b"Wizard host policy" in raw,'
                    '"session_bus_missing":b"Failed to connect to bus" in raw,'
-                   '"permission_denied":b"Permission denied" in raw}))\nraise SystemExit(r.returncode)\n')
+                   '"permission_denied":b"Permission denied" in raw}))\n'
+                   'if r.returncode:\n subprocess.run(["/usr/bin/python3","-I","-B",'
+                   '"/opt/privsep-source/qa/privsep-compat/guest.py","diagnose","fresh",'
+                   '"/opt/privsep-compat.json"],timeout=45)\nraise SystemExit(r.returncode)\n')
         return self.run(label, self.ssh + ['/usr/bin/python3', '-'], program.encode(), timeout)
 
     def close(self):
@@ -331,7 +334,8 @@ def preflight_workflows(stage, doc):
             compile(program, label, 'exec')
             self.python.append(label)
             calls = [n for n in ast.walk(program) if isinstance(n, ast.Call)
-                     and isinstance(n.func, ast.Attribute) and n.func.attr == 'run']
+                     and isinstance(n.func, ast.Attribute) and n.func.attr == 'run'
+                     and any(k.arg == 'input' for k in n.keywords)]
             assert len(calls) == 1
             shell = next(ast.literal_eval(k.value) for k in calls[0].keywords if k.arg == 'input')
             return self.guest(label, shell.decode(), timeout)
