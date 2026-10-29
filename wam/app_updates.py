@@ -65,16 +65,27 @@ def _state(home: Path | None) -> dict:
 def _write(home: Path | None, **changes) -> dict:
     h = _home(home)
     h.mkdir(parents=True, exist_ok=True)
-    s = {**_state(h), **changes}
-    tmp = h / (STATE + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1) + "\n")
-    tmp.replace(h / STATE)
-    return s
+    # A finishing batch must not overwrite a concurrently saved Manual choice.
+    with (h / (STATE + ".lock")).open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        s = {**_state(h), **changes}
+        tmp = h / (STATE + ".tmp")
+        tmp.write_text(json.dumps(s, indent=1) + "\n")
+        tmp.replace(h / STATE)
+        return s
 
 
 def mode(home: Path | None = None) -> str:
-    m = _state(home).get("mode")
-    return m if m in MODES else DEFAULT_MODE
+    try:
+        state = json.loads((_home(home) / STATE).read_text())
+    except FileNotFoundError:
+        return DEFAULT_MODE  # preserve the documented default only on a genuinely unconfigured box
+    except (OSError, ValueError):
+        return "ask"  # an unreadable saved choice is not permission to update
+    if not isinstance(state, dict):
+        return "ask"
+    m = state.get("mode", DEFAULT_MODE)
+    return m if m in MODES else "ask"
 
 
 def holds(home: Path | None = None) -> list[str]:
@@ -384,6 +395,9 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             urn = f"{r['id']}:{cli.STORE}"
             states = _containers(urn)
             before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
+            # The baseline probe can take time; Manual chosen during that probe is not an admitted update.
+            if automatic and mode(c.home) != "auto":
+                break
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:

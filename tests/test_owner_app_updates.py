@@ -78,6 +78,12 @@ def test_source_inventory_format_and_link_are_portable(tmp_path):
                                     'empty': {'directory': True}, 'alias': {'link': 'code'}}
 
 
+@pytest.mark.parametrize('saved', ['broken json', '[]', '{"mode":"not-a-choice"}'])
+def test_unreadable_policy_is_not_permission_to_update(tmp_path, saved):
+    (tmp_path / au.STATE).write_text(saved)
+    assert au.mode(tmp_path) == 'ask'
+
+
 def test_manual_choice_survives_reconciliation_and_no_default_is_consent(tmp_path, monkeypatch):
     home, units = tmp_path / 'home', tmp_path / 'units'
     au.set_mode('ask', home, units, systemctl=False)
@@ -102,6 +108,32 @@ def test_queued_timer_rechecks_mode_but_manual_update_still_runs(tmp_path, monke
     c.runtipi = lambda: SimpleNamespace(installed=lambda: calls.append('check') or [])
     assert au.apply(c, dry_run=True, notify=False)['dry_run'] is True
     assert calls == ['check'] and au.mode(home) == 'ask'
+
+
+def test_manual_during_baseline_probe_starts_no_update(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    home.mkdir()
+    c = SimpleNamespace(home=home, runtipi_root=tmp_path / 'rt', runtipi=lambda: SimpleNamespace(installed=lambda: []))
+    monkeypatch.setattr(updates, 'installing', lambda h: False)
+    monkeypatch.setattr(au, 'candidates', lambda *a, **kw: [{'id': 'demo', 'from': 1, 'to': 2, 'status': 'running', 'skip': None}])
+    monkeypatch.setattr(au, '_containers', lambda urn: ['running'])
+    monkeypatch.setattr(au, 'baseline', lambda *a: au._write(home, mode='ask') or True)
+    monkeypatch.setattr(cli, 'app_update', lambda *a: pytest.fail('Manual choice during probe was ignored'))
+    assert au.apply(c, automatic=True, notify=False)['updated'] == []
+    assert au.mode(home) == 'ask'
+
+
+def test_policy_and_batch_result_writes_preserve_each_other(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    home = tmp_path / 'home'
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(au._write, home, **{key: value})
+                   for key, value in [('mode', 'ask'), ('holds', ['mine']), ('last', {'updated': ['demo']}), ('failed', {'demo': {'to': 2}})]]
+        for future in futures:
+            future.result()
+    state = au._state(home)
+    assert state['mode'] == 'ask' and state['holds'] == ['mine']
+    assert state['last']['updated'] == ['demo'] and state['failed']['demo']['to'] == 2
 
 
 def test_manual_stops_next_app_in_already_running_batch(tmp_path, monkeypatch):
