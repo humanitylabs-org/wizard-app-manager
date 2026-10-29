@@ -99,6 +99,67 @@ class PinsAndBounds(unittest.TestCase):
         self.assertEqual(calls[0][0], 'POST')
 
 
+class PackagedStartupSource(unittest.TestCase):
+    root = Path(__file__).resolve().parents[2]
+
+    def invocation(self):
+        return rig.manager_invocation(1000, 1000, 'owned-net', 'owned-work', '/owned/work',
+            'owned-fixture', '/owned/fixture', Path('/owned/shared'), Path('/owned/out'),
+            'a'*40, 'synthetic-db-fixture', 'synthetic-queue-fixture')
+
+    def test_actual_runner_source_and_actual_manager_argv(self):
+        options, command = self.invocation()
+        audit = recovery.audit_packaged_startup(self.root, options, command, 'synthetic-db-fixture')
+        self.assertEqual(audit['canonical_runner_workdir'], '/app')
+        self.assertEqual(audit['actual_manager_argv_workdir'], '/app')
+        self.assertEqual(len(audit['all_cwd_or_module_relative_consumers']), 2)
+        self.assertTrue(audit['database_uses_configured_password'])
+        self.assertFalse(audit['frontend_proven'])
+        self.assertFalse(audit['runtime_executed'])
+        self.assertIn('NOT built/copied', audit['asset_groups']['/app/assets/frontend']['runtime_origin'])
+        # The real run uses this producer and checks Docker's read-back, not just
+        # a test-only argv lookalike. No Docker operation is invoked by this test.
+        source = inspect.getsource(rig.Rig.run)
+        self.assertIn('options, command = manager_invocation(', source)
+        self.assertIn("config['Config']['WorkingDir'] == recovery.MANAGER_WORKDIR", source)
+        self.assertIn('dbpw = os.urandom(24).hex()', source)
+
+    def test_original_missing_workdir_and_other_argv_drift_refused(self):
+        options, command = self.invocation()
+        variants = [options[2:], ['--workdir', '/', *options[2:]],
+                    ['--workdir', '/app', *options]]
+        for changed in variants:
+            with self.subTest(argv=changed[:4]), self.assertRaises(AssertionError):
+                recovery.audit_packaged_startup(self.root, changed, command, 'synthetic-db-fixture')
+        with self.assertRaises(AssertionError):
+            recovery.audit_packaged_startup(self.root, options, ['-c', 'cd /; '+command[1]], 'synthetic-db-fixture')
+        with self.assertRaises(AssertionError):
+            recovery.audit_packaged_startup(self.root, options, command, 'random-but-incompatible')
+
+    def test_actual_source_mutations_refuse_before_runtime(self):
+        import shutil
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            root = Path(tmp)/'source'
+            shutil.copytree(self.root, root, ignore=shutil.ignore_patterns('.git', '__pycache__', 'node_modules', 'installed-results', 'RECOVERY-EVIDENCE'))
+            options, command = self.invocation()
+            cases = [('Dockerfile', 'WORKDIR /app', 'WORKDIR /wrong'),
+                     ('packages/backend/src/modules/i18n/i18n.service.ts', "'assets', 'translations'", "'wrong', 'translations'"),
+                     ('packages/backend/src/core/database/database.service.ts', '${password}', '${wrong}'),
+                     ('packages/backend/src/app.module.ts', "'assets', 'frontend'", "'assets', 'wrong'"),
+                     ('packages/backend/src/core/database/drizzle/meta/_journal.json', '"entries": [', '"entries": [{"tag":"absent-file"},')]
+            for rel, before, after in cases:
+                p = root/rel; raw = p.read_text(); self.assertIn(before, raw)
+                p.write_text(raw.replace(before, after))
+                with self.subTest(source=rel), self.assertRaises(AssertionError):
+                    recovery.audit_packaged_startup(root, options, command, 'synthetic-db-fixture')
+                p.write_text(raw)
+            p = root/'packages/backend/src/new-cwd-consumer.ts'; p.write_text('const x = process.cwd();\n')
+            with self.assertRaises(AssertionError):
+                recovery.audit_packaged_startup(root, options, command, 'synthetic-db-fixture')
+            p.unlink()
+            self.assertTrue(recovery.audit_packaged_startup(root, options, command, 'synthetic-db-fixture')['static_audit_pass'])
+
+
 class EventProof(unittest.TestCase):
     def setUp(self):
         self.cid = 'a'*64; self.net = 'b'*64

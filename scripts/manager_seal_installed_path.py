@@ -118,6 +118,26 @@ def fixture(root, owner, uid, gid):
     return doc, recipe
 
 
+def manager_invocation(uid, gid, net, work, workpath, fixturevol, fixturepath, shared, out, source, dbpw, queuepw):
+    """Actual installed manager argv, also used by the offline source audit."""
+    return (['--workdir', recovery.MANAGER_WORKDIR, '--user', f'{uid}:{gid}', '--network', net,
+            '--memory', str(GIB), '--memory-swap', str(GIB),
+            '--mount', f'type=volume,src={work},dst=/work,readonly,volume-nocopy',
+            '--mount', f'type=bind,src={workpath}/runtime,dst=/app,readonly',
+            '--mount', f'type=volume,src={fixturevol},dst={fixturepath},readonly,volume-nocopy',
+            '--mount', f'type=bind,src={shared}/docker.sock,dst=/var/run/docker.sock',
+            '--mount', f'type=bind,src={NODE},dst=/tooling/node,readonly',
+            '--mount', f'type=bind,src=/usr/bin/docker,dst=/tooling/docker,readonly',
+            '--mount', f'type=bind,src={out}/compose,dst=/tooling/compose,readonly',
+            *sum((['--tmpfs', f'{p}:size={n},uid={uid},gid={gid},mode=0700'] for p, n in [('/data', 256*MIB), ('/app-data', 64*MIB), ('/cache', 32*MIB), ('/tmp', 64*MIB)]), []),
+            '--env', 'NODE_ENV=production', '--env', 'LOG_LEVEL=info', '--env', 'TIPI_VERSION=synthetic-'+source[:12],
+            '--env', 'DOCKER_HOST=unix:///var/run/docker.sock', '--env', 'DOCKER_CONFIG=/tmp/docker-config', '--env', 'HOME=/tmp/home',
+            '--env', 'PATH=/work/bin:/usr/local/bin:/usr/bin:/bin', '--env', 'ROOT_FOLDER_HOST='+fixturepath,
+            '--env', 'POSTGRES_PASSWORD='+dbpw, '--env', 'RABBITMQ_HOST=runtipi-rabbitmq', '--env', 'RABBITMQ_USERNAME=synthetic',
+            '--env', 'RABBITMQ_PASSWORD='+queuepw, '--entrypoint=sh'],
+            ['-c', 'umask 077; mkdir -p /tmp/home /data/state; printf \'%s\' \'{"appsRepoUrl":"http://127.0.0.1:8080/store.git","allowErrorMonitoring":false,"allowAutoThemes":false,"logLevel":"info"}\' > /data/state/settings.json; python3 /app/store_http.py >/tmp/store.log 2>&1 & exec /tooling/node --experimental-sqlite /app/main.mjs'])
+
+
 def inside_build(args):
     root = Path('/source'); pins = manifest(root, args.source, args.manifest_sha256)
     spec = importlib.util.spec_from_file_location('old', root/'scripts/manager-seal-docker.py')
@@ -785,29 +805,19 @@ class Rig:
             except RuntimeError: return False
         self.wait('postgres-ready', dbready, 90)
         self.wait('rabbit-ready', lambda: self.rabbit_ready(infra['rabbit'], ':'.join(map(str, identities['rabbitmq']))), 120)
-        manager = self.create(self.owner+'-manager', BUILD, ['--user', f'{uid}:{gid}', '--network', net,
-            '--memory', str(GIB), '--memory-swap', str(GIB),
-            '--mount', f'type=volume,src={work},dst=/work,readonly,volume-nocopy',
-            '--mount', f'type=bind,src={workpath}/runtime,dst=/app,readonly',
-            '--mount', f'type=volume,src={fixturevol},dst={fixturepath},readonly,volume-nocopy',
-            '--mount', f'type=bind,src={self.shared}/docker.sock,dst=/var/run/docker.sock',
-            '--mount', f'type=bind,src={NODE},dst=/tooling/node,readonly',
-            '--mount', f'type=bind,src=/usr/bin/docker,dst=/tooling/docker,readonly',
-            '--mount', f'type=bind,src={self.out}/compose,dst=/tooling/compose,readonly',
-            *sum((['--tmpfs', f'{p}:size={n},uid={uid},gid={gid},mode=0700'] for p, n in [('/data', 256*MIB), ('/app-data', 64*MIB), ('/cache', 32*MIB), ('/tmp', 64*MIB)]), []),
-            '--env', 'NODE_ENV=production', '--env', 'LOG_LEVEL=info', '--env', 'TIPI_VERSION=synthetic-'+self.args.source[:12],
-            '--env', 'DOCKER_HOST=unix:///var/run/docker.sock', '--env', 'DOCKER_CONFIG=/tmp/docker-config', '--env', 'HOME=/tmp/home',
-            '--env', 'PATH=/work/bin:/usr/local/bin:/usr/bin:/bin', '--env', 'ROOT_FOLDER_HOST='+fixturepath,
-            '--env', 'POSTGRES_PASSWORD='+dbpw, '--env', 'RABBITMQ_HOST=runtipi-rabbitmq', '--env', 'RABBITMQ_USERNAME=synthetic',
-            '--env', 'RABBITMQ_PASSWORD='+queuepw, '--entrypoint=sh'],
-            ['-c', 'umask 077; mkdir -p /tmp/home /data/state; printf \'%s\' \'{"appsRepoUrl":"http://127.0.0.1:8080/store.git","allowErrorMonitoring":false,"allowAutoThemes":false,"logLevel":"info"}\' > /data/state/settings.json; python3 /app/store_http.py >/tmp/store.log 2>&1 & exec /tooling/node --experimental-sqlite /app/main.mjs'])
+        options, command = manager_invocation(uid, gid, net, work, workpath, fixturevol, fixturepath,
+            self.shared, self.out, self.args.source, dbpw, queuepw)
+        self.receipt['packaged_startup_source_audit'] = recovery.audit_packaged_startup(self.root, options, command, dbpw)
+        manager = self.create(self.owner+'-manager', BUILD, options, command)
         self.manager = manager; self.db = infra['postgres']; self.guard = guard
         config = json.loads(self.cmd('owned-manager-confinement', ['docker', 'inspect', manager]))[0]
         assert [m['Source'] for m in config['Mounts'] if m['Destination'] == '/var/run/docker.sock'] == [str(self.shared/'docker.sock')]
         assert config['Config']['Env'].count('DOCKER_HOST=unix:///var/run/docker.sock') == 1
+        assert config['Config']['WorkingDir'] == recovery.MANAGER_WORKDIR
         assert config['HostConfig']['ReadonlyRootfs'] and config['HostConfig']['MemorySwap'] == GIB
         self.receipt['manager_confinement'] = {'dockerode_socket_and_compose_host': 'proxy-only',
-            'raw_socket_mounted': False, 'readonly_root': True, 'no_host_namespaces_or_privilege': True}
+            'raw_socket_mounted': False, 'readonly_root': True, 'no_host_namespaces_or_privilege': True,
+            'working_directory': config['Config']['WorkingDir']}
         self.start(manager, 'manager')
         self.wait('actual-nest-auth-http-ready', lambda: self.http('GET', '/api/apps/installed', authenticated=False, allow_notready=True)[0] in (401, 403), 120)
         self.exec(manager, ['/tooling/node', '/app/review.mjs', 'schema'])

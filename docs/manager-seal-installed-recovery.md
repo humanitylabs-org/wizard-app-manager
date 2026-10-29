@@ -1,5 +1,50 @@
 # Installed synthetic continuation: Rabbit CLI and cleanup recovery
 
+## Manager cwd and packaged startup audit (no backend rebuild)
+
+The `547b5101da30` attempt retained its passing paired Rabbit canary and
+installed-broker RPC/positive-policy proof, then the manager exited 1 without
+OOM: `ENOENT scandir /assets/translations`. The final **runner** stage in
+`Dockerfile:72-88` sets `WORKDIR /app`; the installed QA manager omitted it and
+inherited `/` from the tooling image. Its actual option producer now supplies
+`--workdir /app`; Docker `Config.WorkingDir` is read back before starting it.
+
+`audit_packaged_startup` extends the old static inventory inside the existing
+four QA/doc exceptions. The inventory script itself and all production files
+remain unchanged. It reads actual packaged config/source and the same manager
+argv producer as runtime, rather than a test-only command lookalike:
+
+- I18n has the only two cwd-relative consumers: production `assets/translations`
+  and development `src/modules/i18n/translations`. All translation JSON parses
+  and English exists. The non-test backend scan found no other
+  `process.cwd/chdir`, `__dirname`, or `import.meta` consumer.
+- Drizzle uses absolute `/app/assets/migrations`; every journal tag must have
+  its SQL file. DatabaseService uses its configured password variable, **not** a
+  literal masked credential (tool displays can redact connection URLs). Both
+  service credentials remain freshly randomized synthetic values.
+- `AppService.copyAssets` consumes `/app/assets/traefik/traefik.yml` and
+  `traefik/dynamic/dynamic.yml`; the logo fallback is
+  `/app/assets/default-app-logo.jpg`. These source files must be nonempty.
+- Production static serving uses `/app/assets/frontend`. This rig creates an
+  **empty synthetic directory**, not a built frontend. The corrected audit
+  labels it explicitly and retains `frontend_proven=false`.
+- Writable `/data` holds generated env/state/seed/logs, repos, Traefik and TLS;
+  `/app-data`, `/cache/cache.sqlite` and `/tmp` remain bounded tmpfs. Git global
+  safe.directory has writable `/tmp/home`; smart HTTP serves absolute
+  `/app/store.git` on loopback. Production skips development Swagger output.
+- Queue setup requires the internal broker alias and matching random
+  credentials, durable `app-events-queue`, `repo-queue`, `system-events-queue`,
+  and their real consumers. Bootstrap catches its own errors: HTTP alone still
+  cannot pass. Schema, TLS, Git, cache and actual queue-consumer gates remain.
+
+Focused offline regressions reject omitted/wrong/duplicate cwd, shell override,
+mismatched synthetic DB credential, actual Dockerfile/I18n/database/frontend/
+journal mutations, and new cwd consumers. Parent preflight compares actual
+backend sources against the retained sourcemap. The backend/main/archive pins,
+1047-file non-QA reuse boundary, four QA exceptions, all resource/capacity bounds,
+paired broker canary and installed readiness requirements stay unchanged.
+This source/argv repair and static audit is **not installed acceptance**.
+
 ## File-size-limit candidate: paired canary before setup
 
 The retained `7aea845141a5` receipt records UID/GID `100:101`, 116 successful

@@ -21,6 +21,7 @@ QA_DELTA = frozenset({
     'scripts/tests/test_manager_seal_installed_path.py',
     'docs/manager-seal-installed-recovery.md',
 })
+MANAGER_WORKDIR = '/app'  # Dockerfile final runner, not the QA tooling image.
 CLI_ERL_ARGS = '+S 2:2 +SDcpu 1 +SDio 1 +A 4'
 CLI_ENV = 'RABBITMQ_CTL_ERL_ARGS='+CLI_ERL_ARGS
 DEFAULT_FSIZE = 32*2**20
@@ -31,6 +32,112 @@ RABBIT_ESCRIPT_BYTES = 7414174
 
 class FatalBrokerCLI(RuntimeError):
     """Deterministic local resource failure, never a readiness retry."""
+
+
+def audit_packaged_startup(root, options, command, db_password):
+    """Audit actual source + actual manager argv; no runtime or image claims.
+
+    Extend the old inventory here, inside the existing four-file QA exception.
+    In particular an empty synthetic frontend is NOT the packaged frontend.
+    """
+    from manager_seal_installed_source_audit import inventory
+    root = Path(root)
+    backend = root/'packages/backend/src'
+    pins = {}
+    def source(rel, tokens):
+        p = root/rel
+        assert p.is_file() and not p.is_symlink(), rel
+        raw = p.read_bytes(); text = raw.decode()
+        for token in tokens:
+            assert token in text, 'startup source drift: '+rel+': '+token
+        pins[rel] = digest(raw)
+        return text
+    dockerfile = source('Dockerfile', ['FROM runner_base AS runner'])
+    runner = dockerfile.split('FROM runner_base AS runner', 1)[1]
+    assert re.findall(r'^WORKDIR\s+(\S+)\s*$', runner, re.M) == [MANAGER_WORKDIR], 'runner WORKDIR drift'
+    copies = {
+        '/app/assets': '/app/packages/backend/assets ./assets',
+        '/app/assets/migrations': '/app/packages/backend/src/core/database/drizzle ./assets/migrations',
+        '/app/assets/translations': '/app/packages/backend/src/modules/i18n/translations ./assets/translations',
+        '/app/assets/frontend': '/app/packages/frontend/dist/client ./assets/frontend',
+    }
+    for copy in copies.values():
+        assert 'COPY --from=builder '+copy in runner, 'runner asset COPY drift'
+    assert options.count('--workdir') == 1 and options[options.index('--workdir')+1] == MANAGER_WORKDIR, 'manager WORKDIR drift'
+    mounts = [options[i+1] for i, token in enumerate(options) if token == '--mount']
+    assert len([m for m in mounts if ',dst=/app,' in m and m.endswith(',readonly')]) == 1, 'manager app mount drift'
+    env = [options[i+1] for i, token in enumerate(options) if token == '--env']
+    assert 'NODE_ENV=production' in env and 'HOME=/tmp/home' in env
+    assert 'PATH=/work/bin:/usr/local/bin:/usr/bin:/bin' in env
+    assert len(command) == 2 and command[0] == '-c'
+    for token in ('mkdir -p /tmp/home /data/state', '/data/state/settings.json',
+                  'http://127.0.0.1:8080/store.git', 'python3 /app/store_http.py',
+                  'exec /tooling/node --experimental-sqlite /app/main.mjs'):
+        assert token in command[1], 'manager startup command drift'
+    assert not re.search(r'\bcd\s|\bchdir\b', command[1]), 'shell overrides Docker working directory'
+    checks = {
+        'common/constants.ts': ["APP_DIR = '/app'", "DATA_DIR = '/data'", "APP_DATA_DIR = '/app-data'"],
+        'modules/i18n/i18n.service.ts': ["path.join(process.cwd(), 'assets', 'translations')", 'fs.readdirSync(directory)', "loadPath: path.join(directory, '{{lng}}.json')"],
+        'core/database/database.service.ts': ["path.join(appDir, 'assets', 'migrations')", 'migrationsFolder: this.getMigrationsPath()', 'const connectionString =', '${password}', 'connect_timeout=300'],
+        'app.module.ts': ["NODE_ENV === 'production'", "rootPath: path.join(APP_DIR, 'assets', 'frontend')"],
+        'app.service.ts': ["path.join(appDir, 'assets')", "path.join(assetsFolder, 'traefik', 'traefik.yml')", "path.join(assetsFolder, 'traefik', 'dynamic', 'dynamic.yml')", 'await this.databaseService.migrate()', 'await this.marketplaceService.initialize()', 'await this.copyAssets()', 'await this.generateTlsCertificates'],
+        'modules/app-stores/app-store-files-manager.ts': ["path.join(appDir, 'assets', 'default-app-logo.jpg')"],
+        'core/cache/cache.service.ts': ["new DatabaseSync('/cache/cache.sqlite')"],
+        'common/helpers/env-helpers.ts': ["path.join(DATA_DIR, 'state')", "path.join(DATA_DIR, '.env')", "envMap.set('POSTGRES_HOST', 'runtipi-db')", "dotenv.config({ path: envFilePath, override: true"],
+        'core/config/configuration.service.ts': ["path.join(DATA_DIR, '.env')", 'host: env.RABBITMQ_HOST', 'appDir: APP_DIR'],
+        'modules/queue/queue.factory.ts': ['hostname: host', 'await this.waitForConnection()', 'confirm: true', 'autoDelete: false, durable: true'],
+        'modules/queue/queue.module.ts': ["queueName: 'app-events-queue'", "queueName: 'repo-queue'", "queueName: 'system-events-queue'"],
+        'modules/app-stores/repos.helpers.ts': ["path.join(dataDir, 'repos', id)", "execFileSync('git', ['config', '--global'"],
+        'main.ts': ['await generateSystemEnvFile()', 'await appService.bootstrap()', 'await app.listen(3000)', "NODE_ENV === 'production'"],
+    }
+    for rel, tokens in checks.items(): source('packages/backend/src/'+rel, tokens)
+    source('scripts/manager_seal_store_http.py', ["project_root = '/app'", "('127.0.0.1', 8080)"])
+    # Exhaustive scan of the staged backend source, including any newly added file.
+    # cwd has just the production/dev translations branches; no module-relative loader.
+    cwd = []; asset_consumers = []
+    for p in sorted(backend.rglob('*.ts')):
+        if any(part in ('tests', '__tests__') for part in p.relative_to(backend).parts): continue
+        for n, line in enumerate(p.read_text().splitlines(), 1):
+            row = {'source': str(p.relative_to(backend)), 'line': n, 'text': line.strip()}
+            if re.search(r'process\s*\.\s*(?:cwd|chdir)\s*\(|__dirname|import\s*\.\s*meta', line):
+                cwd.append(row)
+            if not line.lstrip().startswith('//') and re.search(r"['\"]assets['\"]|assetsFolder|migrationsFolder", line):
+                asset_consumers.append(row)
+    assert {r['source'] for r in asset_consumers} == {
+        'app.module.ts', 'app.service.ts', 'core/database/database.service.ts',
+        'modules/app-stores/app-store-files-manager.ts', 'modules/i18n/i18n.service.ts'}, 'new packaged asset consumer'
+    assert [r['text'] for r in cwd] == [
+        "let directory = path.join(process.cwd(), 'assets', 'translations');",
+        "directory = path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');"], 'new cwd/module-relative startup consumer'
+    assert db_password and 'POSTGRES_PASSWORD='+db_password in env, 'configured synthetic database credential mismatch'
+    inv = inventory(root)
+    groups = inv['asset_groups']
+    assert all(g['exists'] and g['file_count'] for d, g in groups.items() if d != '/app/assets/frontend')
+    base = root/'packages/backend/assets'
+    for rel in ('traefik/traefik.yml', 'traefik/dynamic/dynamic.yml', 'default-app-logo.jpg'):
+        assert (base/rel).is_file() and (base/rel).stat().st_size, rel
+    translations = root/groups['/app/assets/translations']['source']
+    for p in translations.glob('*.json'): assert isinstance(json.loads(p.read_bytes()), dict)
+    assert (translations/'en.json').is_file()
+    migrations = root/groups['/app/assets/migrations']['source']
+    journal = json.loads((migrations/'meta/_journal.json').read_bytes())
+    assert journal['entries']
+    for entry in journal['entries']: assert (migrations/(entry['tag']+'.sql')).is_file(), entry['tag']
+    for d in ('/data', '/app-data', '/cache', '/tmp'):
+        assert any(options[i+1].startswith(d+':size=') for i, token in enumerate(options) if token == '--tmpfs'), 'missing writable root '+d
+    corrected = {d: {'source': g['source'], 'exists_in_source': g['exists'], 'source_files': g['file_count'],
+                     'runtime_origin': 'empty synthetic directory; frontend NOT built/copied; UI NOT proven' if d.endswith('/frontend') else 'unchanged actual source files'}
+                 for d, g in groups.items()}
+    return {'static_audit_pass': True, 'canonical_runner_workdir': MANAGER_WORKDIR,
+            'actual_manager_argv_workdir': options[options.index('--workdir')+1],
+            'source_pins': pins, 'all_cwd_or_module_relative_consumers': cwd,
+            'all_packaged_asset_consumer_lines': asset_consumers,
+            'asset_groups': corrected, 'migration_journal_entries': len(journal['entries']),
+            'database_uses_configured_password': True,
+            'queue_prerequisites': ['internal runtipi-rabbitmq alias and synthetic credentials', 'durable app-events-queue/repo-queue/system-events-queue and real consumers required'],
+            'writable_roots': ['/data', '/app-data', '/cache', '/tmp'],
+            'bootstrap_prerequisites': ['data env/state/seed/logs', 'migrations and PostgreSQL authentication', 'loopback Git server and git safe.directory HOME', 'traefik template copy and openssl TLS', 'SQLite cache and real queue consumers'],
+            'frontend_proven': False, 'runtime_executed': False, 'full_acceptance': False, 'RUNTIPI_ADMITTED': False}
 
 
 def cli_classification(outcome):
