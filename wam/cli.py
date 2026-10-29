@@ -1238,7 +1238,7 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
         if source != row["repo"]:
             continue
         from .source_integrity import update_block
-        reason = update_block(c.runtipi_root, STORE, app_id)
+        reason = update_block(c.runtipi_root, STORE, app_id, verify_legacy=True)
         if reason:
             if held is not None:
                 held[app_id] = reason
@@ -1814,7 +1814,8 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+               *, automatic: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
@@ -1832,7 +1833,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     app, store = urn.split(":", 1)
     if store == STORE:
         from .source_integrity import update_block
-        reason = update_block(c.runtipi_root, store, app)
+        reason = update_block(c.runtipi_root, store, app, verify_legacy=True)
         if reason:
             message = ("Your code needs review; keep or merge your changes" if reason == 'owner-source'
                        else "Cannot confirm this app is unchanged; retry verification before updating")
@@ -1862,7 +1863,14 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                              f"turn isolation off with `wam network off`")
     started_ms = int(time.time() * 1000)
     try:
-        rt.update(urn, perform_backup=backup)
+        from .app_updates import admission
+        with admission(c.home if automatic else None, automatic) as admitted:
+            if admitted:
+                rt.update(urn, perform_backup=backup)
+        if not admitted:
+            if store == STORE:
+                network_step(c, rt, restart=False)  # restore installed topology; nothing was queued
+            return {"id": app_id, "skipped": "manual", "status": before.get("status"), "version": before.get("version")}
         time.sleep(3)
         status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException:

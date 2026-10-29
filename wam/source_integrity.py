@@ -56,7 +56,7 @@ def pristine(root: Path) -> bool:
         return False
 
 
-def update_block(runtipi_root: Path, store: str, app: str) -> str | None:
+def update_block(runtipi_root: Path, store: str, app: str, *, verify_legacy: bool = False) -> str | None:
     """Read only the installed recipe; a store check can already prepare the next upstream version."""
     from . import packaging
     from .wizardmd import front_matter
@@ -73,12 +73,12 @@ def update_block(runtipi_root: Path, store: str, app: str) -> str | None:
         if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
             return "source-unverified"
         source = packaging.source_dir(packaging.app_data_root(runtipi_root), store, app, commit)
-        return verify_installed(source, installed, commit)
+        return verify_installed(source, installed, commit, verify_legacy=verify_legacy)
     except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
         return "source-unverified"
 
 
-def verify_installed(source: Path, installed: Path, commit: str) -> str | None:
+def verify_installed(source: Path, installed: Path, commit: str, *, verify_legacy: bool = False) -> str | None:
     """Migrate legacy copies only against a fresh, exact installed-commit checkout.
 
     The prepared store recipe/cache can already be newer or locally edited. Neither
@@ -94,6 +94,9 @@ def verify_installed(source: Path, installed: Path, commit: str) -> str | None:
             if not isinstance(expected, dict):
                 return "source-unverified"
             return None if expected == inventory(source) else "owner-source"
+        # Status/candidates are observation only. Trust migration belongs to explicit mutation.
+        if not verify_legacy:
+            return "source-unverified"
         # Missing/unreadable source is not proof of owner edits.
         actual = inventory(source)
         repo = json.loads((installed / '.wizard-source').read_text()).get('repo')

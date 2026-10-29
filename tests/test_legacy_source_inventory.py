@@ -33,10 +33,10 @@ def test_pristine_legacy_gets_exact_installed_baseline_not_next_recipe(tmp_path,
     cache = root / 'repos/.wizardapps-src' / ('demo@' + 'a' * 12)
     shutil.copytree(source, cache)
     (cache / 'code.py').write_text('not trusted')
-    assert si.update_block(root, 'wizardapps', 'demo') is None
+    assert si.update_block(root, 'wizardapps', 'demo', verify_legacy=True) is None
     assert calls == [('example/demo', 'a' * 40)]
     assert si.pristine(source)
-    assert si.update_block(root, 'wizardapps', 'demo') is None
+    assert si.update_block(root, 'wizardapps', 'demo', verify_legacy=True) is None
     assert len(calls) == 1
 
 
@@ -50,7 +50,7 @@ def test_legacy_changes_never_get_blessed(tmp_path, monkeypatch, mutation):
         (source / 'code.py').unlink()
         (source / 'code.py').symlink_to('../outside')
     before = si.inventory(source)
-    assert si.update_block(root, 'wizardapps', 'demo') == 'owner-source'
+    assert si.update_block(root, 'wizardapps', 'demo', verify_legacy=True) == 'owner-source'
     assert not si.record_path(source).exists()
     assert si.inventory(source) == before
     assert calls == [('example/demo', 'a' * 40)]
@@ -60,14 +60,14 @@ def test_missing_upstream_is_cannot_confirm_not_owner_changed(tmp_path, monkeypa
     root, live, source, _, _ = legacy(tmp_path, monkeypatch)
     def unavailable(*args): raise private.PrivateError('offline')
     monkeypatch.setattr(private, 'fetch', unavailable)
-    assert si.update_block(root, 'wizardapps', 'demo') == 'source-unverified'
+    assert si.update_block(root, 'wizardapps', 'demo', verify_legacy=True) == 'source-unverified'
     assert not si.record_path(source).exists()
 
 
 def test_malformed_installed_yaml_is_unverified_not_a_global_status_failure(tmp_path, monkeypatch):
     root, live, source, _, calls = legacy(tmp_path, monkeypatch)
     (live / 'wizard.md').write_text('---\nruntime: [\n---\n')
-    assert si.update_block(root, 'wizardapps', 'demo') == 'source-unverified'
+    assert si.update_block(root, 'wizardapps', 'demo', verify_legacy=True) == 'source-unverified'
     assert calls == []
     assert not si.record_path(source).exists()
 

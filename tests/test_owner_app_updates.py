@@ -150,7 +150,7 @@ def test_manual_stops_next_app_in_already_running_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(au, 'baseline', lambda *a: True)
     monkeypatch.setattr(au, 'verify', lambda *a: None)
     monkeypatch.setattr(cli, 'STORE', 'wizardapps')
-    def update(*a):
+    def update(*a, **kw):
         calls.append(a[-1])
         au.set_mode('ask', home, units, systemctl=False)
         return {'version': 2, 'status': 'running'}

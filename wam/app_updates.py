@@ -26,6 +26,7 @@ State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {i
 from __future__ import annotations
 
 import fcntl
+from contextlib import contextmanager
 import json
 import os
 import subprocess
@@ -62,12 +63,33 @@ def _state(home: Path | None) -> dict:
     return s if isinstance(s, dict) else {}
 
 
-def _write(home: Path | None, **changes) -> dict:
+@contextmanager
+def _policy_lock(home: Path | None):
+    """The existing cross-process state transaction also serializes per-app queue admission."""
     h = _home(home)
     h.mkdir(parents=True, exist_ok=True)
-    # A finishing batch must not overwrite a concurrently saved Manual choice.
     with (h / (STATE + ".lock")).open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        yield h
+
+
+@contextmanager
+def admission(home: Path | None, automatic: bool):
+    """Hold only through the queue request, never update completion/verification/rollback.
+
+    Manual saved first prevents admission. An already queued app finishes normally.
+    Explicit one-shot requests remain independent of the saved automatic policy.
+    """
+    if not automatic:
+        yield True
+        return
+    with _policy_lock(home):
+        yield mode(home) == "auto"
+
+
+def _write(home: Path | None, **changes) -> dict:
+    # A finishing batch must not overwrite a concurrently saved Manual choice.
+    with _policy_lock(home) as h:
         s = {**_state(h), **changes}
         tmp = h / (STATE + ".tmp")
         tmp.write_text(json.dumps(s, indent=1) + "\n")
@@ -170,7 +192,7 @@ def _selection_pinned(runtipi_root: Path, store: str, app_id: str) -> bool:
 
 
 def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: Path | None = None,
-               release_managed: set[str] | None = None) -> list[dict]:
+               release_managed: set[str] | None = None, verify_legacy: bool = False) -> list[dict]:
     """Every installed app of the Wizard store with a newer version, and why it would be skipped (None = due)."""
     from .source_integrity import update_block
     managed = _release_managed() if release_managed is None else release_managed
@@ -197,7 +219,7 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
         elif (failed.get(app_id) or {}).get("to") == latest and \
                 time.time() - float(failed[app_id].get("at") or 0) < RETRY_DAYS * 86400:
             skip = "failed"            # failed lately; waits for a newer version (or RETRY_DAYS)
-        elif reason := update_block(runtipi_root, store, app_id):
+        elif reason := update_block(runtipi_root, store, app_id, verify_legacy=verify_legacy):
             skip = reason
         elif app.get("status") not in ("running", "stopped"):
             skip = f"busy:{app.get('status')}"
@@ -374,7 +396,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if automatic and mode(c.home) != "auto":
             return {"app_mode": mode(c.home), "started": False}
         rt = c.runtipi()
-        rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+        rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home,
+                          verify_legacy=not dry_run)
         if only:
             unknown = sorted(set(only) - {r["id"] for r in rows})
             rows = [r for r in rows if r["id"] in only]
@@ -401,7 +424,9 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
-                res = cli.app_update(c, r["id"])
+                res = cli.app_update(c, r["id"], **({"automatic": True} if automatic else {}))
+                if res.get("skipped") == "manual":
+                    break
             except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
                 continue
