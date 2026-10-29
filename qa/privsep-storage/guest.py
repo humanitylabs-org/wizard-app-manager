@@ -51,7 +51,8 @@ SECURITY = ('samefs-private-leaf-755-refused', 'samefs-private-leaf-750-refused'
     'mapping-drifted-alias-refused', 'mapping-absent-alias-refused',
     'mapping-directory-alias-refused', 'mapping-relative-alias-refused',
     'samefs-private-commit-other-uid-denied', 'crossfs-private-commit-other-uid-denied',
-    'crossfs-default-anchor-acl-refused','samefs-early-rollback-unavailable','crossfs-early-rollback-unavailable')
+    'crossfs-default-anchor-acl-refused','samefs-early-rollback-unavailable','crossfs-early-rollback-unavailable',
+    'samefs-prealias-rollback-unavailable','crossfs-prealias-rollback-unavailable')
 ROLLBACK_CRASH = tuple(f'{fs}-crash-{phase}' for fs in ('samefs', 'crossfs') for phase in ROLLBACK_BARRIERS)
 CUTS = CRASH + PENDING + ('crossfs-crash-private-stage',) + ROLLBACK_CRASH
 EXPECTED = NORMAL + INIT + CRASH + PENDING + SECURITY + ('crossfs-crash-private-stage',) + ROLLBACK_CRASH
@@ -519,11 +520,11 @@ def init():
             return {'before_state_or_payload_creation':True,'target_default_acl_refused':True}
         finally:command(['setfacl','-k',ANCHOR])
 
-    def early_rollback(index):
+    def early_rollback(index,phase='snapshot_ready'):
         account=account_for(index);source=Path('/home/'+account+'/.hermes');uid=pwd.getpwnam(account).pw_uid
         class Paused(Exception):pass
         def stop(value):
-            if value=='snapshot_ready':raise Paused()
+            if value==phase:raise Paused()
         before=m.fingerprint(source)
         try:m.Transaction(account,source).run(checkpoint=stop)
         except Paused:pass
@@ -531,7 +532,7 @@ def init():
         result=m.Transaction(account,source).run('rollback');assert result['phase']=='rolled_back'
         assert m.fingerprint(source)==before and not (ANCHOR/'.mappings'/f'{uid}.json').exists()
         refuse(lambda:m.Transaction(account,source).run(),'cannot resume forward')
-        return {'original_selection_retained':True,'readiness_withdrawn':True,'forward_resume_denied':True}
+        return {'logical_bytes_metadata_retained':True,'readiness_withdrawn':True,'forward_resume_denied':True,'start_phase':phase}
 
     def rollback_cut(fs,phase,index):
         name=f'{fs}-crash-{phase}';account=account_for(index);source=Path('/home/'+account+'/.hermes');uid=pwd.getpwnam(account).pw_uid
@@ -579,6 +580,7 @@ def init():
         receipt(f'mapping-{variant}-alias-refused',lambda variant=variant,i=i:alias_negative(variant,i))
     receipt('samefs-private-commit-other-uid-denied',lambda:private_commit(56,'rename'))
     receipt('samefs-early-rollback-unavailable',lambda:early_rollback(92))
+    receipt('samefs-prealias-rollback-unavailable',lambda:early_rollback(94,'link_intent'))
     for i,phase in enumerate(ROLLBACK_BARRIERS,60):
         receipt(f'samefs-crash-{phase}',lambda phase=phase,i=i:rollback_cut('samefs',phase,i))
     # Actual distinct block filesystem; no mocked EXDEV or host mount effects.
@@ -596,6 +598,7 @@ def init():
         receipt('crossfs-private-commit-other-uid-denied',lambda:private_commit(57,'copy'))
         receipt('crossfs-default-anchor-acl-refused',anchor_acl)
         receipt('crossfs-early-rollback-unavailable',lambda:early_rollback(93))
+        receipt('crossfs-prealias-rollback-unavailable',lambda:early_rollback(95,'link_intent'))
         receipt('crossfs-crash-private-stage',lambda:pending_case('crossfs-crash-private-stage',58))
         for i,phase in enumerate(ROLLBACK_BARRIERS,80):
             receipt(f'crossfs-crash-{phase}',lambda phase=phase,i=i:rollback_cut('crossfs',phase,i))

@@ -787,7 +787,7 @@ class Transaction:
         # Before link publication the original is still selected. Nothing needs
         # deletion; preserve all copies and simply withdraw any public mapping.
         if phase == 'rollback_unavailable_intent' and (origin in ('prepared', 'snapshot_intent', 'snapshot_ready', 'transfer_intent', 'transfer_ready') or (
-                origin in ('publish_intent', 'published') and self.logical.is_dir() and not self.logical.is_symlink())):
+                origin in ('publish_intent', 'published', 'link_intent') and self.logical.is_dir() and not self.logical.is_symlink())):
             self.source_check()
             return self.withdraw_mapping(checkpoint)
         if phase == 'rollback_unavailable_intent':
