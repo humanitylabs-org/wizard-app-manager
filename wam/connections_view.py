@@ -12,7 +12,7 @@ origin, so the owner opens it from Wizard on his phone, and its API calls go to 
   POST api/apps/<id>:wizardapps/sensitive            {sensitive}
   POST api/apps/wizard/connection-mode               {mode: open|declared}
   GET  api/connections/restore                       what Restore defaults would change, in plain words
-  POST api/connections/restore                       {confirm: true}: Restore defaults (connections_reset.py), live
+  POST api/connections/restore                       {confirm: true, plan}: Restore defaults (connections_reset.py), live
   GET  api/agents                                    the agents and the apps each may use (agent_access.py)
   POST api/agents/<agent>/access                     {apps: [ids], on: bool}: the owner's switch / Turn all on
 
@@ -127,14 +127,17 @@ def agent_change(home, sub: str, raw: bytes) -> dict:
 
 
 def restore_plan(c, rt) -> dict:
-    """GET api/connections/restore: what Restore defaults would change ({changes: [{label, change, text}]})."""
+    """GET api/connections/restore: what Restore defaults would change ({changes: [{label, change, text}], plan: id})."""
     from . import connections_reset, network
-    return {"changes": connections_reset.plan(network.connection_state(c, rt), network.report(c, rt))}
+    changes = connections_reset.plan(network.connection_state(c, rt), network.report(c, rt))
+    return {"changes": changes, "plan": connections_reset.plan_id(changes)}
 
 
 def restore(c, rt, raw: bytes, reconcile=None) -> dict:
-    """POST api/connections/restore {confirm: true}: Restore defaults now (owner only, after the confirm dialog)."""
+    """POST api/connections/restore {confirm: true, plan: <id from GET>}: Restore defaults now (owner only, after the
+    confirm dialog). A plan that no longer matches changes nothing."""
     from . import connections_reset
-    if _body(raw) != {"confirm": True}:
-        raise ValueError('send {"confirm": true}')
-    return connections_reset.apply(c, rt, reconcile)
+    body = _body(raw)
+    if set(body) != {"confirm", "plan"} or body["confirm"] is not True or not isinstance(body["plan"], str):
+        raise ValueError('send {"confirm": true, "plan": "<plan from GET api/connections/restore>"}')
+    return connections_reset.apply(c, rt, reconcile, expect=body["plan"])

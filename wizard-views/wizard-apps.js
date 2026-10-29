@@ -1496,9 +1496,14 @@ export async function renderConnections(el, ctx = {}) {
     }
     if (b.matches('[data-cm-cancel]')) return sheetClose(dlg);
     if (b.matches('[data-cm-restore-go]')) {
-      return void run('restore', () => post(`${c.api}/connections/restore`, { confirm: true }, 'POST', c.headers), restoreWords(restorePlan).done, {
-        close: true,
-      });
+      return void run(
+        'restore',
+        () => post(`${c.api}/connections/restore`, { confirm: true, plan: restorePlan?.plan || '' }, 'POST', c.headers),
+        restoreWords(restorePlan).done,
+        {
+          close: true,
+        },
+      );
     }
     if (b.matches('[data-cm-regrant], [data-cm-ungroup]')) {
       // a connection to a slot several apps provide, reconnected (Cut by you) or disconnected (an app's sheet) as one

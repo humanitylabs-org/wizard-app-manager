@@ -81,7 +81,8 @@ connections; the owner can overrule any of them. Nothing asks the owner except c
   stay. Connections shows what will change first, in plain words ("Messenger → Money will be turned back on.",
   "Movies → Shopping, which you added, will be removed."), and changes nothing until he confirms. API:
   `POST /api/apps/wizard/connections-reset` (owner, `resetToDefaults` in wizard-app-grants.ts); `wam grants reset`
-  (shows the plan, `--yes` applies); the owner listener's `GET|POST api/connections/restore`. On an App Manager that
+  (shows the plan, `--yes` applies); the owner listener's `GET|POST api/connections/restore` (the POST carries the `plan` id the dialog showed; if the
+  links changed meanwhile, nothing is restored and the owner is asked to look again). On an App Manager that
   predates the API, wam applies the same rule to `wizard-grants.json` when it may write it, then re-sends the box's
   current mode so the App Manager reconciles (`wam/connections_reset.py`).
 

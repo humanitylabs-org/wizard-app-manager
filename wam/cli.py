@@ -1922,7 +1922,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not sys.stdin.isatty() or input("Restore defaults? [y/N] ").strip().lower() not in ("y", "yes"):
                     print("Not changed.")
                     return 1
-            out = connections_reset.apply(c, rt, lambda: _net_brief(network_step(c, rt)))
+            out = connections_reset.apply(c, rt, lambda: _net_brief(network_step(c, rt)),
+                                          expect=connections_reset.plan_id(changes))
             write_registry(c)
             print(json.dumps({"restored": len(out["changed"]), "mode": (out.get("state") or {}).get("mode")}, indent=2))
             return 0

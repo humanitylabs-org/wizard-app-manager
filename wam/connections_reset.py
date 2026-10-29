@@ -119,13 +119,28 @@ def _file_reset(c, rt) -> dict:
     return rt.req("POST", "/apps/wizard/connection-mode", {"mode": mode})
 
 
-def apply(c, rt, reconcile=None) -> dict:
+def plan_id(changes: list[dict]) -> str:
+    """A short fingerprint of a plan: the confirm dialog sends back the one it showed, so a restore never applies
+    changes the owner didn't see (another tab or `wam grants` changed the links while the dialog was open)."""
+    import hashlib
+    rows = sorted((str(x.get("from")), str(x.get("to")), str(x.get("change"))) for x in changes)
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
+class PlanChanged(ValueError):
+    """The links changed after the owner saw what Restore defaults would do."""
+
+
+def apply(c, rt, reconcile=None, expect: str | None = None) -> dict:
     """Restore defaults now. Returns {"state": the App Manager's connection state, "changed": plan before}.
-    `reconcile`: the live network step (wam serve's watcher also applies it within seconds)."""
+    `reconcile`: the live network step (wam serve's watcher also applies it within seconds). `expect`: the plan_id the
+    owner confirmed; when the plan is no longer that one, nothing changes (PlanChanged)."""
     from . import network
     from .runtipi import RuntipiError
     before = network.connection_state(c, rt)
     changes = plan(before, network.report(c, rt))
+    if expect is not None and plan_id(changes) != expect:
+        raise PlanChanged("The links changed since you looked. Nothing was restored; check the list and try again.")
     try:
         st = rt.req("POST", RESET_PATH, {})
     except RuntipiError as e:

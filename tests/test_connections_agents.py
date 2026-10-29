@@ -124,6 +124,19 @@ def test_restore_on_an_older_app_manager_edits_its_file_then_reconciles_the_curr
     assert rt.calls[-1] == ("POST", "/apps/wizard/connection-mode", {"mode": "declared"})
 
 
+def test_restore_changes_nothing_when_the_plan_changed_after_the_owner_saw_it(tmp_path, monkeypatch):
+    c, f = _box(tmp_path, monkeypatch)
+    rt = FakeRT()
+    from wam import network
+    seen = cr.plan(network.connection_state(c, rt), network.report(c, rt))
+    stale = cr.plan_id(seen[1:])   # what the dialog showed before another tab cut or added a link
+    with pytest.raises(cr.PlanChanged):
+        cr.apply(c, rt, expect=stale)
+    assert rt.calls == [] and json.loads(f.read_text()) == STATE
+    cr.apply(c, rt, expect=cr.plan_id(seen))
+    assert rt.calls == [("POST", cr.RESET_PATH, {})]
+
+
 def test_restore_refuses_a_file_it_may_not_write(tmp_path, monkeypatch):
     c, f = _box(tmp_path, monkeypatch)
     monkeypatch.setattr(cr.os, "access", lambda p, m: False)

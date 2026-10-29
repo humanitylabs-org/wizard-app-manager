@@ -185,12 +185,16 @@ def test_restore_defaults_shows_its_plan_and_needs_the_owners_confirm(listener, 
         {"from": "messenger", "to": "money", "approved": "owner", "reason": "uses"}]})
     monkeypatch.setattr(network, "report", lambda c, r=None: {"apps": [], "controls": []})
     applied = []
-    monkeypatch.setattr(connections_reset, "apply", lambda c, r, reconcile=None: applied.append(1) or {"changed": []})
+    monkeypatch.setattr(connections_reset, "apply", lambda c, r, reconcile=None, expect=None: applied.append(expect) or {"changed": []})
     code, _, b = call("GET", "/_connections/api/connections/restore")
-    assert code == 200 and json.loads(b)["changes"][0]["text"] == "messenger → money will be turned back on."
-    assert call("POST", "/_connections/api/connections/restore", {"confirm": True}, headers=BOX)[0] == 403
-    assert call("POST", "/_connections/api/connections/restore", {"confirm": False})[0] == 400
+    got = json.loads(b)
+    assert code == 200 and got["changes"][0]["text"] == "messenger → money will be turned back on."
+    assert got["plan"] == connections_reset.plan_id(got["changes"])
+    ok = {"confirm": True, "plan": got["plan"]}
+    assert call("POST", "/_connections/api/connections/restore", ok, headers=BOX)[0] == 403
+    assert call("POST", "/_connections/api/connections/restore", {"confirm": False, "plan": got["plan"]})[0] == 400
+    assert call("POST", "/_connections/api/connections/restore", {"confirm": True})[0] == 400   # no plan: not applied
     assert call("POST", "/_connections/api/connections/restore", {})[0] == 400
     assert applied == []
-    assert call("POST", "/_connections/api/connections/restore", {"confirm": True})[0] == 200
-    assert applied == [1]
+    assert call("POST", "/_connections/api/connections/restore", ok)[0] == 200
+    assert applied == [got["plan"]]
