@@ -1505,7 +1505,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         reason = update_block(c.runtipi_root, store, app, verify_legacy=True)
         if reason:
             raise SystemExit(f"REFUSED: {app}: {reason}; keep or merge your source before updating; nothing replaced")
-        if app not in alongside.PIN_VARS:  # release-owned alongside lifecycle is not an app-updater candidate
+        if automatic or app not in alongside.PIN_VARS:  # explicit release lifecycle retains its installed trust plane
             from .update_policy import require_update
             require_update(c, app, store)
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):

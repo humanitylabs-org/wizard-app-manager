@@ -127,8 +127,8 @@ def _expand(source: str, variables: dict) -> str:
             key = m[1] or m[4]
             if key in variables:
                 return str(variables[key])
-            # Optional defaults are safe only when they resolve back under allowed roots.
-            return m[3] if m[2] else m[0]
+            # App/form environment can override defaults; unknown is not authority.
+            return m[0]
         new = pat.sub(sub, source)
         if new == source:
             break
