@@ -22,7 +22,7 @@ describe('existing payload preservation', () => {
     await fs.writeFile(path.join(root, '.env'), 'SYNTHETIC=1');
     const before = await fs.stat(secret);
     const manager: any = Object.create(AppFilesManager.prototype);
-    manager.config = { get: () => ({ dataDir: root, appDataDir: dataRoot }) };
+    manager.configuration = { getConfig: () => ({ envFilePath: path.join(root, '.env'), directories: { dataDir: root, appDataDir: dataRoot } }) };
     manager.getAppPaths = () => ({ appDataDir: app });
     // Substitute at a deterministic suspension point inside the real method,
     // before it could have enumerated any app-controlled payload tree.

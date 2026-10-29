@@ -18,7 +18,7 @@ import { runBindHelper, reapBindHelper } from '../bind-helper';
 vi.mock('node:fs', async (load) => load<typeof import('node:fs')>());
 const exec = promisify(execFile);
 const enabled = process.env.WIZARD_LIFECYCLE_ENGINE_PROOF === '1';
-const cases: { root: string; urn: string; volume: string }[] = [];
+const cases: { root: string; urn: string; volume: string; appData: string }[] = [];
 const docker = async (...args: string[]) => (await exec('docker', args, { timeout: 45_000 })).stdout.trim();
 
 afterEach(async () => {
@@ -27,6 +27,7 @@ afterEach(async () => {
     await docker('volume', 'rm', c.volume).catch((e) => { if (!String(e.stderr).includes('no such volume')) throw e; });
     await reapBindHelper(c.root);
     await fs.rm(c.root, { recursive: true, force: true });
+    await fs.rm(c.appData, { recursive: true, force: true });
   }
 });
 
@@ -37,9 +38,9 @@ async function fixture() {
   const urn = `${id}:wizardapps` as const;
   const project = `${id}_wizardapps`;
   const volume = `${project}_canary`;
-  cases.push({ root, urn, volume });
-  const appDataRoot = path.join(root, 'app-data');
+  const appDataRoot = '/opt/lifecycle/app-data';
   const appData = path.join(appDataRoot, 'wizardapps', id);
+  cases.push({ root, urn, volume, appData });
   await fs.mkdir(appData, { recursive: true, mode: 0o755 });
   await fs.mkdir(path.join(root, 'user-config'), { mode: 0o755 });
   await fs.writeFile(path.join(root, '.env'), 'SYNTHETIC=1\n');
@@ -52,8 +53,11 @@ async function fixture() {
   const write = async () => fs.writeFile(file, yaml.stringify(model));
   await write();
   const service: any = Object.create(DockerService.prototype);
-  service.config = { get: () => ({ dataDir: root, appDataDir: appDataRoot }) };
-  service.logger = { info: vi.fn() };
+  service.config = {
+    get: () => ({ dataDir: root, appDataDir: appDataRoot }),
+    getConfig: () => ({ directories: { dataDir: root, appDataDir: appDataRoot }, rootFolderHost: root, userSettings: { appDataPath: '/opt/lifecycle' } }),
+  };
+  service.logger = { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
   // Repository/storage generation is outside this seam. Consume real immutable
   // files through the production final gate, Compose executable and daemon APIs.
   service.prepareApp = async (_urn: string, apply: any) => apply(await fs.readFile(file, 'utf8'));
