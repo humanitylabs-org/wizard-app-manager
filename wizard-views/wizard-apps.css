@@ -1519,8 +1519,8 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cl-card, .wa
   overflow-wrap: break-word;
 }
 /* Obsidian Light: the list's and the sheets' small app icons as light pearls with dark glyphs, like the map's discs
-   (the stock sigil reads as a dark blob on the light glass). */
-html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) {
+   (the stock sigil reads as a dark blob on the light glass). A linked-app row holds its icon in its button (.wam-cl-hit). */
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cl-hit > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) {
   background: var(--cm-pearl) !important;
   border: 0 !important;
   box-shadow:
@@ -1528,11 +1528,11 @@ html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam
     0 4px 10px -6px color-mix(in srgb, var(--wz-text) 45%, transparent) !important;
   color: var(--cm-pearl-ink);
 }
-html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::before,
-html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::after {
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cl-hit > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::before,
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cl-hit > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::after {
   display: none;
 }
-html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) .sgi {
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cl-hit > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) .sgi {
   width: 56%;
   height: 56%;
   background: var(--cm-pearl-ink) !important;

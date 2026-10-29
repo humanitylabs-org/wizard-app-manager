@@ -89,7 +89,8 @@ def test_settings_embed_mode_is_marked_before_first_paint_and_only_on_request(li
     for other in ("?embed=", "?embed=window", "?embed=settings%22%20onload%3D", "?x=settings"):
         assert call("GET", "/_connections/" + other)[2] == plain, other
     css = (Path(__file__).resolve().parent.parent / "wizard-views" / "standalone.css").read_text()
-    for rule in ('html[data-embed="settings"] .wam-cl-title', 'html[data-embed="settings"] body.wux .wux-sheet'):
+    for rule in ('html[data-embed="settings"] .wam-cl-title', 'html[data-embed="settings"] body.wux .wux-sheet',
+                 'html[data-embed="settings"] .wam-cl-card'):
         assert rule in css, rule
 
 
