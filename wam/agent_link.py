@@ -123,8 +123,11 @@ def skills_mount(c, store='wizardapps'):
 def add_skills_mount(c, store='wizardapps'):
     """Additive user-config override on the agent's engine service. True when it changed."""
     from .builder_bundle import _atomic
+    from .network import dump_yaml, load_yaml
     override = Path(c.runtipi_root) / 'user-config' / store / AGENT_APP / 'docker-compose.yml'
-    doc = (yaml.safe_load(override.read_text()) or {}) if override.exists() else {}
+    # `wam network` writes `networks: !override` into this file: read and write it with the tag-preserving helpers
+    # (safe_load can't construct the tag, and a fresh install's agent never got the `wizard` gateway).
+    doc = (load_yaml(override.read_text()) or {}) if override.exists() else {}
     service = doc.setdefault('services', {}).setdefault(AGENT_APP + '-engine', {})
     vols = service.setdefault('volumes', [])
     mount = skills_mount(c, store)
@@ -137,7 +140,7 @@ def add_skills_mount(c, store='wizardapps'):
     if not Path(mount['source']).is_dir():
         raise ValueError(f"{mount['source']} is missing: start the Agent Service once so it writes its skills")
     vols.append(mount)
-    _atomic(override, yaml.safe_dump(doc, sort_keys=False))
+    _atomic(override, dump_yaml(doc))
     return True
 
 
