@@ -84,8 +84,11 @@ def copy_source(src: Path, dst: Path, limit: int = SOURCE_LIMIT_BYTES) -> None:
 def prune(app_data: Path, store: str, app: str, keep: str) -> None:
     d = Path(app_data) / SOURCE_ROOT / store
     for p in d.glob(f"{app}@*") if d.is_dir() else []:
-        if p.name != keep:
-            shutil.rmtree(p, ignore_errors=True)
+        if p.name != keep and p.is_dir() and not p.is_symlink():
+            from .source_integrity import pristine, record_path
+            if pristine(p):
+                shutil.rmtree(p, ignore_errors=True)
+                record_path(p).unlink(missing_ok=True)
 
 
 def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str) -> bool:
@@ -115,9 +118,18 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         s["build"] = b
         s["image"] = f"wizard-local/{app}-{name}:{commit[:12]}"
         s["pull_policy"] = "build"
+    from .source_integrity import inventory, record
+    target = Path(target)
+    expected = inventory(Path(src))
+    if target.exists() or target.is_symlink():
+        if inventory(target) != expected:
+            raise PackagingError("Owner source differs: keep or merge your changes before updating; nothing replaced")
+        record(target, expected)
+        return True
     tmp = Path(f"{target}.tmp-{os.getpid()}")
     shutil.rmtree(tmp, ignore_errors=True)
     copy_source(src, tmp)
-    shutil.rmtree(target, ignore_errors=True)
+    # Never remove a destination which appeared while copying.
     tmp.rename(target)
+    record(target, expected)
     return True
