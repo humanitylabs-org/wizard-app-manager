@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import manager_seal_installed_path as rig
+import manager_seal_installed_recovery as recovery
 
 
 class PinsAndBounds(unittest.TestCase):
@@ -149,6 +150,157 @@ class ArtifactCopy(unittest.TestCase):
                 with patch.object(rig.subprocess, 'Popen', return_value=FakeProcess(payload)):
                     with self.assertRaises(AssertionError): rig.copy_owned_file('owned', '/work/file', target, cap)
                 self.assertFalse(target.exists())
+
+
+class Recovery(unittest.TestCase):
+    def test_lowercase_missing_volume_is_exact_daemon_absence(self):
+        for message in ('Error response from daemon: get owned-volume: no such volume\n',
+                        'Error response from daemon: get owned-volume: No such volume\n'):
+            result = types.SimpleNamespace(returncode=1, stdout=b'[]\n', stderr=message.encode())
+            self.assertTrue(recovery.exact_missing(result, 'volume', 'owned-volume'))
+
+    def test_missing_does_not_hide_real_errors_or_wrong_object(self):
+        good = b'Error response from daemon: get owned-volume: no such volume\n'
+        for code, stdout, stderr in [
+            (0, b'[]', good), (2, b'[]', good), (1, b'[{"Name":"owned-volume"}]', good),
+            (1, b'[]', good.replace(b'owned-volume', b'unrelated-volume')),
+            (1, b'[]', good+b'permission denied\n'), (1, b'', b'permission denied: no such volume'),
+            (1, b'', b'Cannot connect to the Docker daemon'), (1, b'', b'context not found'),
+            (1, b'', b'Error response from daemon: remove owned-volume: volume is in use')]:
+            with self.subTest(code=code, stderr=stderr):
+                result = types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+                self.assertFalse(recovery.exact_missing(result, 'volume', 'owned-volume'))
+
+    def test_parent_cleanup_lowercase_absence_and_daemon_failures_are_not_conflated(self):
+        for missing in (True, False):
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+                root = Path(tmp); (root/'installed-results').mkdir()
+                (root/'installed-results/controller-ledger.jsonl').write_text(json.dumps({'kind': 'volume', 'id': 'owned-volume'})+'\n')
+                def command(argv, **kw):
+                    if argv[1:3] == ['volume', 'rm']:
+                        return types.SimpleNamespace(returncode=0, stdout=b'owned-volume\n', stderr=b'')
+                    self.assertEqual(argv, ['docker', 'volume', 'inspect', 'owned-volume'])
+                    error = b'Error response from daemon: get owned-volume: no such volume\n' if missing else b'permission denied\n'
+                    return types.SimpleNamespace(returncode=1, stdout=b'[]\n', stderr=error)
+                with patch.object(rig.subprocess, 'run', side_effect=command), patch.object(rig.shutil, 'disk_usage', return_value=types.SimpleNamespace(free=rig.capacity.RESERVE)):
+                    if missing: rig.emergency_cleanup(root, 'a'*40)
+                    else:
+                        with self.assertRaises(AssertionError): rig.emergency_cleanup(root, 'a'*40)
+                proof = json.loads((root/'parent-cleanup.json').read_text())
+                self.assertEqual(proof['parent_cleanup_residual'], [] if missing else [{'kind': 'volume', 'id': 'owned-volume'}])
+
+    def test_container_and_network_missing_require_target_and_kind(self):
+        for kind, message in [
+            ('container', 'Error: No such object: owned'),
+            ('container', 'Error response from daemon: No such container: owned'),
+            ('network', 'Error response from daemon: network owned not found'),
+            ('network', 'Error: No such network: owned')]:
+            r = types.SimpleNamespace(returncode=1, stdout=b'', stderr=message.encode())
+            self.assertTrue(recovery.exact_missing(r, kind, 'owned'))
+            self.assertFalse(recovery.exact_missing(r, kind, 'other'))
+            self.assertFalse(recovery.exact_missing(r, 'volume', 'owned'))
+
+    def test_all_erlang_cli_actions_have_service_user_scheduler_and_rpc_deadline(self):
+        for action in ('ping', 'check_running', 'list_queues'):
+            argv = recovery.broker_argv('a'*64, '999:999', action)
+            self.assertEqual(argv[:7], ['docker', 'exec', '--user', '999:999', '--env', recovery.CLI_ENV, 'a'*64])
+            self.assertEqual(argv[8:11], ['--timeout', '10', '-q'])
+            self.assertIn('+S 2:2', recovery.CLI_ENV)
+            self.assertIn('+SDcpu 1 +SDio 1 +A 4', recovery.CLI_ENV)
+            self.assertNotIn('RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS', ' '.join(argv))
+        cookie = recovery.broker_argv('a'*64, '999:999', 'cookie_metadata')
+        self.assertIn('stat -c', cookie[-1]); self.assertNotIn('cat ', cookie[-1])
+
+    def test_readiness_requires_metadata_ping_and_check_running_not_tcp(self):
+        r = rig.Rig.__new__(rig.Rig); r.receipt = {}; r.state = lambda cid: {'Running': True}
+        for failed in ('cookie_metadata', 'ping', 'check_running', None):
+            calls = []
+            def cli(cid, user, action):
+                calls.append(action)
+                if action == failed: raise RuntimeError('synthetic original exit153')
+                return '999 999 600 20' if action == 'cookie_metadata' else ''
+            r.broker_cli = cli
+            self.assertEqual(r.rabbit_ready('a'*64, '999:999'), failed is None)
+            if failed is None: self.assertEqual(calls, ['cookie_metadata', 'ping', 'check_running'])
+            else: self.assertEqual(calls[-1], failed)
+        r.state = lambda cid: {'Running': False}
+        with self.assertRaises(RuntimeError): r.rabbit_ready('a'*64, '999:999')
+
+    def test_cli_failure_preserves_exit_action_and_sanitized_bounded_first_latest(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            r = rig.Rig.__new__(rig.Rig); r.out = Path(tmp); r.receipt = {}; r.secrets = ['synthetic-pass']
+            outcome = {'exit_code': 153, 'termination_reason': None, 'stdout': b'',
+                       'stderr': b'Failed to create scheduler thread 98\nErlang cookie hash: dont-export\npassword=synthetic-pass\n'}
+            with patch.object(recovery, 'bounded_cli', return_value=outcome):
+                for _ in range(100):
+                    with self.assertRaises(RuntimeError): r.broker_cli('a'*64, '999:999', 'ping')
+            raw = (r.out/'rabbit-cli.sanitized.json').read_text(); saved = json.loads(raw)['ping']
+            self.assertEqual(saved['attempts'], 100); self.assertEqual(saved['failures'], 100)
+            self.assertEqual(saved['first_failure']['exit_code'], 153)
+            self.assertIn('Failed to create scheduler thread', raw)
+            self.assertNotIn('dont-export', raw); self.assertNotIn('synthetic-pass', raw)
+            self.assertLess(len(raw), 4096)
+            for reason in ('timeout', 'output_cap'):
+                with patch.object(recovery, 'bounded_cli', return_value=dict(outcome, exit_code=0, termination_reason=reason)):
+                    with self.assertRaises(RuntimeError): r.broker_cli('a'*64, '999:999', 'ping')
+
+    def test_bounded_pipe_collector_preserves_both_streams_and_exit(self):
+        result = recovery.bounded_cli([sys.executable, '-c', 'import sys; print("synthetic stdout"); print("synthetic stderr", file=sys.stderr); sys.exit(153)'])
+        self.assertEqual(result['exit_code'], 153); self.assertIsNone(result['termination_reason'])
+        self.assertEqual(result['stdout'], b'synthetic stdout\n'); self.assertEqual(result['stderr'], b'synthetic stderr\n')
+
+    def test_bounded_pipe_collector_rejects_output_overflow_and_timeout(self):
+        for program, reason in [('import os; os.write(2, b"x"*65536)', 'output_cap'),
+                                ('import time; time.sleep(5)', 'timeout')]:
+            result = recovery.bounded_cli([sys.executable, '-c', program], timeout=.15)
+            self.assertEqual(result['termination_reason'], reason)
+            self.assertLessEqual(len(result['stdout']), recovery.CLI_OUTPUT_CAP)
+            self.assertLessEqual(len(result['stderr']), recovery.CLI_OUTPUT_CAP)
+
+    def test_reuse_compares_complete_non_qa_inventory_bytes_and_modes(self):
+        before = {'source': recovery.PRIOR_SOURCE, 'files': {'packages/backend/build.ts': 'a'*64},
+                  'modes': {'packages/backend/build.ts': 0o644}}
+        raw = json.dumps(before).encode()
+        with patch.object(recovery, 'PRIOR_MANIFEST_SHA', recovery.digest(raw)):
+            after = copy.deepcopy(before); after['source'] = 'b'*40
+            self.assertFalse(recovery.verify_reuse(raw, after)['backend_rebuilt'])
+            for field, value in [('files', 'b'*64), ('modes', 0o755)]:
+                changed = copy.deepcopy(after); changed[field]['packages/backend/build.ts'] = value
+                with self.assertRaises(AssertionError): recovery.verify_reuse(raw, changed)
+            for action in ('add', 'delete'):
+                changed = copy.deepcopy(after)
+                if action == 'add': changed['files']['packages/backend/extra.ts'] = 'c'*64
+                else: del changed['files']['packages/backend/build.ts']
+                with self.assertRaises(AssertionError): recovery.verify_reuse(raw, changed)
+
+    def test_bundle_restore_only_exact_pinned_four_files_and_rejects_hostile_members(self):
+        names = ['main.js', 'main.js.map', 'cpufeatures-e8x7s2f1.node', 'sshcrypto-a3khcfhj.node']
+        meta = {'source': recovery.PRIOR_SOURCE, 'built': True,
+                'bundle': {'files': {n: {'bytes': 7, 'sha256': recovery.digest(b'example')} for n in names}}}
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            root = Path(tmp)
+            for hostile in (None, '../escape', 'link', 'duplicate', 'missing'):
+                payload = io.BytesIO()
+                with tarfile.open(fileobj=payload, mode='w:gz') as tf:
+                    data = json.dumps(meta).encode(); member = tarfile.TarInfo('build-result.json'); member.size = len(data)
+                    tf.addfile(member, io.BytesIO(data))
+                    for n in names[:-1] if hostile == 'missing' else names:
+                        member = tarfile.TarInfo('source/packages/backend/dist/'+n); member.size = 7
+                        tf.addfile(member, io.BytesIO(b'example'))
+                    if hostile in ('../escape', 'link', 'duplicate'):
+                        member = tarfile.TarInfo('build-result.json' if hostile == 'duplicate' else hostile)
+                        if hostile == 'link': member.type = tarfile.SYMTYPE; member.linkname = '/unrelated'
+                        tf.addfile(member)
+                p = root/'archive.tar.gz'; p.write_bytes(payload.getvalue()); dist = root/str(hostile)
+                with patch.object(recovery, 'PRIOR_ARCHIVE_SHA', recovery.digest(payload.getvalue())):
+                    if hostile is None:
+                        self.assertEqual(recovery.restore_bundle(p, dist), meta)
+                        self.assertEqual({n.name for n in dist.iterdir()}, set(names))
+                    else:
+                        with self.assertRaises((AssertionError, KeyError)): recovery.restore_bundle(p, dist)
+                        self.assertFalse(dist.exists())
+                with patch.object(recovery, 'PRIOR_ARCHIVE_SHA', '0'*64):
+                    with self.assertRaises(AssertionError): recovery.restore_bundle(p, root/'wrong-hash')
 
 
 if __name__ == '__main__': unittest.main()

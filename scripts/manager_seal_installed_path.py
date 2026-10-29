@@ -27,6 +27,7 @@ import manager_seal_installed_capacity as capacity
 from manager_seal_forward_guard import UnixHTTP
 from manager_seal_install_evidence import dependency_step, sanitize_line, capture_install, sanitize_log
 from manager_seal_bundle import validate_bundle
+import manager_seal_installed_recovery as recovery
 
 GIB = 2**30
 MIB = 2**20
@@ -136,8 +137,18 @@ def inside_build(args):
         dependency_step(checkout, Path('/work/logs'), pins['files']['bun.lock'], deps)
         assert deps['exit_code'] == 0 and deps['log_complete'] and deps['comparison_complete']
         step('common-build', ['bun', 'run', 'build'], cwd=checkout/'packages/common')
-        step('backend-bundle', ['bun', 'run', 'bundle'], cwd=checkout/'packages/backend')
+        inherited = None
+        if args.continue_saved:
+            # Dependencies/compiled CLIs were on deleted tmpfs, NOT retained.
+            # Rehydrate their frozen prerequisites; never rebuild the backend.
+            inherited = recovery.restore_bundle(Path('/saved/build-artifacts.tar.gz'), checkout/'packages/backend/dist')
+            result['inherited_backend'] = {'source': recovery.PRIOR_SOURCE, 'archive_sha256': recovery.PRIOR_ARCHIVE_SHA,
+                'original_steps': inherited['steps'], 'backend_rebuilt': False}
+        else:
+            step('backend-bundle', ['bun', 'run', 'bundle'], cwd=checkout/'packages/backend')
         result['bundle'] = validate_bundle(checkout/'packages/backend/dist', root, installed=checkout)
+        if inherited is not None:
+            assert result['bundle']['files'] == inherited['bundle']['files']
         source_map = json.loads((checkout/'packages/backend/dist/main.js.map').read_text())
         embedded = {}
         for rel in ('app.service.ts', 'main.ts', 'modules/app-lifecycle/handlers/install-app.handler.ts',
@@ -186,6 +197,8 @@ def inside_build(args):
             ('store-repack', ['git', 'repack', '-ad'], runtime/'store.git')]: step(label, cmd, cwd=cwd)
         result['recipe_sha256'] = sha(runtime/'recipe.json'); result['compiled_sha256'] = sha(runtime/'compiled.json')
         result['assets'] = {str(p.relative_to(runtime)): sha(p) for p in (runtime/'assets').rglob('*') if p.is_file()}
+        if inherited is not None:
+            assert result['assets'] == inherited['assets'], 'unchanged runtime assets drift'
         result['built'] = True
     finally:
         (Path('/work')/'build-result.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -395,6 +408,43 @@ class Rig:
         value = json.loads(self.cmd('owned-state', ['docker', 'inspect', '--format', '{{json .State}}', cid]))
         return {k: value[k] for k in ('Status', 'Running', 'ExitCode', 'OOMKilled', 'Dead')}
 
+    def broker_cli(self, cid, user, action):
+        self.receipt['operation'] = 'rabbit-'+action
+        outcome = recovery.bounded_cli(recovery.broker_argv(cid, user, action))
+        ok = outcome['exit_code'] == 0 and outcome['termination_reason'] is None
+        row = {'action': action, 'exit_code': outcome['exit_code'], 'termination_reason': outcome['termination_reason'],
+               'user': user, 'explicit_cli_env': recovery.CLI_ENV,
+               'rpc_timeout_seconds': None if action == 'cookie_metadata' else 10,
+               'stdout_bytes_captured': len(outcome['stdout']), 'stderr_bytes_captured': len(outcome['stderr']),
+               'stdout': recovery.sanitized_cli(outcome['stdout'], self.secrets),
+               'stderr': recovery.sanitized_cli(outcome['stderr'], self.secrets)}
+        # Keep first + latest failure per exact command, not 240 repeated copies.
+        evidence = self.receipt.setdefault('rabbit_cli', {})
+        slot = evidence.setdefault(action, {'attempts': 0, 'failures': 0})
+        slot['attempts'] += 1
+        if not ok:
+            slot['failures'] += 1
+            slot.setdefault('first_failure', row); slot['latest_failure'] = row
+        else: slot['success'] = {k: v for k, v in row.items() if k not in ('stdout', 'stderr')}
+        raw = (json.dumps(evidence, indent=2)+'\n').encode()
+        assert len(raw) <= 256*1024
+        (self.out/'rabbit-cli.sanitized.json').write_bytes(raw)
+        if not ok: raise RuntimeError('synthetic broker CLI failed; see bounded diagnostic')
+        return outcome['stdout'].decode().strip()
+
+    def rabbit_ready(self, cid, user):
+        if not self.state(cid)['Running']: raise RuntimeError('broker exited')
+        try:
+            # Fixed stat/test only: no cookie value or hash is ever read/exported.
+            metadata = self.broker_cli(cid, user, 'cookie_metadata')
+            values = metadata.split(); assert len(values) == 4 and all(v.isdigit() for v in values)
+            assert values[0] == user.split(':')[0]
+            self.receipt['rabbit_cookie_metadata'] = dict(zip(('uid', 'gid', 'mode', 'bytes'), values))
+            self.broker_cli(cid, user, 'ping')
+            self.broker_cli(cid, user, 'check_running')
+            return True
+        except RuntimeError: return False
+
     def wait(self, label, predicate, timeout=120):
         self.receipt['phase'] = label
         end = time.monotonic()+timeout
@@ -423,6 +473,20 @@ class Rig:
 
     def run(self):
         self.checkpoint()
+        if self.args.continue_saved:
+            prior_raw = (recovery.PRIOR_ROOT/'SOURCE.json').read_bytes()
+            self.receipt['backend_reuse'] = recovery.verify_reuse(prior_raw, json.loads((self.root/'SOURCE.json').read_bytes()))
+            prior_receipt = recovery.PRIOR_ROOT/'installed-results/receipt.json'
+            assert sha(prior_receipt) == recovery.PRIOR_RECEIPT_SHA
+            assert sha(recovery.PRIOR_ROOT/'installed-results/build-artifacts.tar.gz') == recovery.PRIOR_ARCHIVE_SHA
+            # Exercise compatibility under the actual cached controller Python,
+            # not only the staging machine's newer interpreter. Offline only.
+            preflight_log = self.out/'offline-recovery-preflight.log'
+            preflight = capture_install([sys.executable, '-B', '-m', 'unittest', 'discover', '-s',
+                'scripts/tests', '-p', 'test_manager_seal_installed_path.py', '-v'], self.root, preflight_log, 30)
+            preflight['sanitized'] = sanitize_log(preflight_log, self.out/'offline-recovery-preflight.sanitized.log')
+            self.receipt['offline_recovery_preflight'] = preflight
+            assert preflight['exit_code'] == 0 and preflight['log_complete']
         assert os.uname().machine == 'x86_64' and os.getuid() != 0
         assert sha(NODE) == NODE_SHA and sha('/usr/bin/docker') == DOCKER_SHA
         assert self.cmd('daemon-root', ['docker', 'info', '--format', '{{.DockerRootDir}}']) == '/var/lib/docker'
@@ -467,6 +531,19 @@ class Rig:
             identities[role] = (int(row[2]), int(row[3])); assert identities[role][0] != 0
             copy_owned_file(c, '/usr/local/bin/docker-entrypoint.sh', self.out/(role+'-entrypoint.sh'), MIB)
             self.receipt.setdefault('public_entrypoints', {})[role] = sha(self.out/(role+'-entrypoint.sh'))
+            if role == 'rabbitmq':
+                # Public pinned image PATH/HOME identifies this sbin directory.
+                # No new helper: copy static public source from existing donor.
+                copy_owned_file(c, '/opt/rabbitmq/sbin/rabbitmq-env', self.out/'rabbitmq-env', 65536)
+                env_source = (self.out/'rabbitmq-env').read_text()
+                assert env_source.count('run_escript() {') == 1
+                route = env_source.split('run_escript() {', 1)[1].split('\n}', 1)[0]
+                assert 'tmp_erl_flags="$RABBITMQ_CTL_ERL_ARGS $default_erl_flags ' in route
+                assert 'ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"' in route
+                self.receipt['rabbit_cli_source'] = {'public_image': RABBIT,
+                    'path': '/opt/rabbitmq/sbin/rabbitmq-env', 'sha256': sha(self.out/'rabbitmq-env'),
+                    'release_source_sha256': '4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af',
+                    'release': 'v4.4.0', 'ctl_args_route_verified': True, 'original_exit153_cause_proven': False}
             self.cmd('remove-metadata-donor', ['docker', 'rm', c]); self.ids.remove(c)
         self.cmd('remove-tool-donor', ['docker', 'rm', donor]); self.ids.remove(donor)
         volumes = {}
@@ -496,15 +573,19 @@ class Rig:
         early.prepare_bunx_tmp_alias(self.out, uid)
         cmd = build_command(early, self.root, self.out, self.owner, uid, gid, self.args.source,
                             self.args.manifest_sha256, work, fixturepath)
+        if self.args.continue_saved:
+            idx = cmd.index('--workdir')
+            cmd[idx:idx] = ['--mount', f'type=bind,src={recovery.PRIOR_ROOT}/installed-results/build-artifacts.tar.gz,dst=/saved/build-artifacts.tar.gz,readonly']
+            cmd.append('--continue-saved')
         self.creation_intent('container', self.owner+'-build')
         builder = self.cmd('build-create', cmd); self.record('container', builder)
         process = self.start(builder, 'build')
-        self.wait('new-backend-bundle-build', lambda: process.poll() is not None, 1000)
+        self.wait('saved-backend-runtime-assembly' if self.args.continue_saved else 'new-backend-bundle-build', lambda: process.poll() is not None, 1000)
         for name in ('build-result.json', 'build-artifacts.tar.gz'):
             copy_owned_file(builder, '/work/'+name, self.out/name, MIB if name.endswith('.json') else 128*MIB)
         result = json.loads((self.out/'build-result.json').read_text()); self.receipt['build'] = result
         assert (self.out/'build-artifacts.tar.gz').stat().st_size <= 128*MIB
-        self.receipt['new_bundle_archive_sha256'] = sha(self.out/'build-artifacts.tar.gz')
+        self.receipt['continuation_bundle_archive_sha256' if self.args.continue_saved else 'new_bundle_archive_sha256'] = sha(self.out/'build-artifacts.tar.gz')
         assert process.returncode == 0 and result['built']
         assert not self.state(builder)['OOMKilled']
         # Fixture initializer has no raw/proxy socket and no network.
@@ -587,16 +668,7 @@ class Rig:
                 return 'accepting connections' in self.exec(infra['postgres'], ['pg_isready', '-U', 'tipi', '-d', 'tipi'])
             except RuntimeError: return False
         self.wait('postgres-ready', dbready, 90)
-        def rabbitready():
-            if not self.state(infra['rabbit'])['Running']: raise RuntimeError('broker exited')
-            try:
-                # Service UID only; metadata gate never reads the Erlang cookie.
-                self.exec(infra['rabbit'], ['sh', '-c', 'test -s /var/lib/rabbitmq/.erlang.cookie && test "$(stat -c %u /var/lib/rabbitmq/.erlang.cookie)" = "$(id -u)"'])
-                self.exec(infra['rabbit'], ['rabbitmq-diagnostics', '-q', 'ping'], user=':'.join(map(str, identities['rabbitmq'])), timeout=15)
-                self.exec(infra['rabbit'], ['rabbitmq-diagnostics', '-q', 'check_running'], user=':'.join(map(str, identities['rabbitmq'])), timeout=15)
-                return True
-            except RuntimeError: return False
-        self.wait('rabbit-ready', rabbitready, 120)
+        self.wait('rabbit-ready', lambda: self.rabbit_ready(infra['rabbit'], ':'.join(map(str, identities['rabbitmq']))), 120)
         manager = self.create(self.owner+'-manager', BUILD, ['--user', f'{uid}:{gid}', '--network', net,
             '--memory', str(GIB), '--memory-swap', str(GIB),
             '--mount', f'type=volume,src={work},dst=/work,readonly,volume-nocopy',
@@ -626,8 +698,7 @@ class Rig:
         # Bootstrap catches errors itself: require its end-of-bootstrap files,
         # migrated DB, Git repository and real queue, not just an open HTTP port.
         self.exec(manager, ['sh', '-c', 'test -s /data/traefik/tls/cert.pem && test -s /data/traefik/tls/key.pem && test -f /data/traefik/tls/tipi.lan.txt && test -d /data/repos/migrated/.git && test -s /cache/cache.sqlite'])
-        queue_rows = self.exec(infra['rabbit'], ['rabbitmqctl', '-q', 'list_queues', 'name', 'consumers'],
-                               user=':'.join(map(str, identities['rabbitmq'])), timeout=20)
+        queue_rows = self.broker_cli(infra['rabbit'], ':'.join(map(str, identities['rabbitmq'])), 'list_queues')
         queue_counts = {line.split()[0]: int(line.split()[1]) for line in queue_rows.splitlines()
                         if len(line.split()) == 2 and line.split()[1].isdigit()}
         assert all(queue_counts.get(name, 0) > 0 for name in ('app-events-queue', 'repo-queue', 'system-events-queue'))
@@ -767,15 +838,16 @@ console.log(JSON.stringify({status:r.status,cookie:r.headers.get('set-cookie'),b
                 # A manager-removed historical ID is acceptable ONLY on exact
                 # inspect returning missing. Other errors remain cleanup failures.
                 r = subprocess.run(['docker', 'inspect', '--format', '{{.Id}}', cid], capture_output=True, timeout=10)
-                if r.returncode == 0 or b'No such object' not in r.stderr: self.errors.append('container_remove_failed')
+                if not recovery.exact_missing(r, 'container', cid): self.errors.append('container_remove_failed')
         for process, thread in self.processes:
             try: process.wait(timeout=15); thread.join(timeout=2); assert not thread.is_alive()
             except Exception: self.errors.append('attach_process_not_reaped')
         for kind, values in [('network', self.networks), ('volume', self.volumes)]:
             for ident in reversed(values):
                 r = subprocess.run(['docker', kind, 'rm', ident], capture_output=True, timeout=15)
-                if r.returncode and b'not found' not in r.stderr and b'No such' not in r.stderr:
-                    self.errors.append(kind+'_remove_failed')
+                # Removal stderr is not an absence proof. Read exact metadata.
+                check = subprocess.run(['docker', kind, 'inspect', ident], capture_output=True, timeout=10)
+                if not recovery.exact_missing(check, kind, ident): self.errors.append(kind+'_remove_failed')
         self.receipt['cleanup_errors'] = self.errors
         self.receipt['reserve_after_cleanup_bytes'] = shutil.disk_usage('/srv/work').free
         if self.receipt['reserve_after_cleanup_bytes'] < capacity.RESERVE: self.errors.append('reserve_breached')
@@ -817,6 +889,7 @@ def launch_controller(root, args):
                    'scripts/manager_seal_installed_path.py', '--inside-controller', '--source', args.source,
                    '--manifest-sha256', args.manifest_sha256]
         if args.producer_readiness_only: command.append('--producer-readiness-only')
+        if args.continue_saved: command.append('--continue-saved')
         result = subprocess.run(command, capture_output=True, timeout=30)
         assert result.returncode == 0
         cid = result.stdout.decode().strip(); assert len(cid) == 64
@@ -847,7 +920,7 @@ def launch_controller(root, args):
         if cid:
             subprocess.run(['docker', 'rm', '-f', cid], capture_output=True, timeout=30)
             r = subprocess.run(['docker', 'inspect', '--format', '{{.Id}}', cid], capture_output=True, timeout=10)
-            assert r.returncode and b'No such object' in r.stderr
+            assert recovery.exact_missing(r, 'container', cid)
         emergency_cleanup(root, args.source)
 
 
@@ -868,7 +941,7 @@ def emergency_cleanup(root, source):
     for ident in sorted(ids):
         subprocess.run(['docker', 'rm', '-f', ident], capture_output=True, timeout=30)
         check = subprocess.run(['docker', 'inspect', '--format', '{{.Id}}', ident], capture_output=True, timeout=10)
-        assert check.returncode and b'No such object' in check.stderr, 'creator fence failed'
+        assert recovery.exact_missing(check, 'container', ident), 'creator fence failed'
     networks = {r['id'] for r in rows if r['kind'] == 'network'}
     volumes = {r['id'] for r in rows if r['kind'] == 'volume'}
     guardrows = []
@@ -886,7 +959,7 @@ def emergency_cleanup(root, source):
             subprocess.run(['docker', *(['rm', '-f'] if kind == 'container' else [kind, 'rm']), ident], capture_output=True, timeout=30)
             argv = ['docker', *(['inspect'] if kind == 'container' else [kind, 'inspect']), ident]
             r = subprocess.run(argv, capture_output=True, timeout=10)
-            if r.returncode == 0 or not (b'No such' in r.stderr or b'not found' in r.stderr): residual.append({'kind': kind, 'id': ident})
+            if not recovery.exact_missing(r, kind, ident): residual.append({'kind': kind, 'id': ident})
     record = {'parent_cleanup_residual': residual, 'free_bytes': shutil.disk_usage('/srv/work').free,
               'reserve_bytes': capacity.RESERVE, 'old_stages_deleted': False}
     (root/'parent-cleanup.json').write_text(json.dumps(record, indent=2)+'\n')
@@ -898,6 +971,7 @@ def main():
     p.add_argument('--source', required=True); p.add_argument('--manifest-sha256', required=True)
     p.add_argument('--inside-build', action='store_true'); p.add_argument('--inside-controller', action='store_true'); p.add_argument('--fixture-root'); p.add_argument('--owner')
     p.add_argument('--producer-readiness-only', action='store_true')
+    p.add_argument('--continue-saved', action='store_true')
     args = p.parse_args()
     if args.inside_build: inside_build(args); return
     root = Path.cwd().resolve()
