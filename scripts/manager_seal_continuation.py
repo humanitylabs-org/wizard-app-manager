@@ -8,6 +8,7 @@ import sys
 import tarfile
 
 from manager_seal_bundle import SAVED_BUNDLE, validate_bundle, failure_record
+from manager_seal_baseline import FIXTURE
 
 
 BASELINE_BYTES = 64*1024**2
@@ -91,6 +92,10 @@ PINS = {
 QA_DELTA = {'scripts/manager-seal-docker.py', 'scripts/tests/test_manager_seal_docker.py',
             'scripts/manager_seal_bundle.py', 'scripts/manager_seal_continuation.py',
             'scripts/tests/test_manager_seal_bundle.py', 'docs/mandatory-manager-privacy.md'}
+QA_DELTA |= {'scripts/manager_seal_baseline.py', 'scripts/manager_seal_composite.py',
+             'scripts/tests/test_manager_seal_baseline.py',
+             'docs/manager-seal-classifier-composite.json', 'docs/manager-seal-classifier-recovery.md',
+             'docs/manager-seal-installed-acceptance-spec.md'}
 DIST = 'source/packages/backend/dist'
 TRACE = 'candidate-trace/agent-synthetic_seal3116f500f4d7-events.json'
 
@@ -250,7 +255,7 @@ def inside(args, runner):
         # remaining baseline path; local newer-Python tests cannot prove this.
         assert sys.version_info[:3] == (3, 11, 2), 'continuation requires pinned Python 3.11.2'
         result['baseline_python_version'] = '.'.join(map(str, sys.version_info[:3]))
-        step('continuation-focused-harness', ['python3', '-m', 'unittest', 'test_manager_seal_bundle', 'test_manager_seal_docker', '-v'], cwd=checkout/'scripts/tests')
+        step('continuation-focused-harness', ['python3', '-m', 'unittest', 'test_manager_seal_bundle', 'test_manager_seal_docker', 'test_manager_seal_baseline', '-v'], cwd=checkout/'scripts/tests')
         step('common-build', ['bun', 'run', 'build'], cwd=checkout/'packages/common')
         result['daemon_bind_preflight'] = runner.daemon_bind_preflight(fixture, args.owner)
         result['network_driver_preflight'] = runner.network_driver_preflight(args.owner)
@@ -273,7 +278,10 @@ def inside(args, runner):
         report = json.loads(Path('/work/baseline.json').read_text())
         result['baseline_counts'] = runner.report_counts(report)
         assert code != 0, 'original baseline unexpectedly passed'
-        runner.baseline_failure(report)
+        project = 'agent-synthetic_seal'+args.source[:12]
+        result['baseline_evidence'] = runner.baseline_failure(report,
+            json.loads(Path('/work/baseline-trace', project+'-events.json').read_text()),
+            (checkout/FIXTURE).read_bytes(), project)
         assert report['numFailedTests'] == 1 and report['numPassedTests'] == 1 and report['numPendingTests'] == 17 and report['numTotalTests'] == 19, 'original baseline active/filter inventory'
         result['baseline_bypass_reproduced'] = True
         for rel in runner.PRODUCT_DELTA: shutil.copy2(root/rel, checkout/rel)

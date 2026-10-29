@@ -163,12 +163,9 @@ class DockerStageHarness(unittest.TestCase):
                 root = Path(tmp); log = root/'wire.log'; log.write_text(text)
                 with self.assertRaises(AssertionError): runner.receive(log, root)
 
-    def test_baseline_requires_exact_original_public_network_failure(self):
-        def report(message, name='disabled, removed and malicious optional config'):
-            return {'testResults': [{'assertionResults': [{'status': 'failed', 'fullName': name, 'failureMessages': [message]}]}]}
-        runner.baseline_failure(report('unexpected synthetic_project_public_app attachment'))
-        for wrong in [report('module not found'), report('_public_app', 'other test'), {'testResults': []}]:
-            with self.assertRaises(AssertionError): runner.baseline_failure(wrong)
+    def test_baseline_refuses_unstructured_failure_without_captured_evidence(self):
+        with self.assertRaises(AssertionError):
+            runner.baseline_failure({'testResults': []})
 
     def test_no_baseline_dependency_reinstall_and_candidate_bundle_before_swap(self):
         text = (SCRIPTS/'manager-seal-docker.py').read_text()

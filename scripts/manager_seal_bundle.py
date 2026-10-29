@@ -91,7 +91,7 @@ def failure_record(exc, phase):
     kind = next((t for t in reasons if isinstance(exc, t)), None)
     frames = []
     tb = exc.__traceback__
-    trusted = {'manager-seal-docker.py', 'manager_seal_bundle.py', 'manager_seal_continuation.py'}
+    trusted = {'manager-seal-docker.py', 'manager_seal_bundle.py', 'manager_seal_continuation.py', 'manager_seal_baseline.py'}
     scripts = Path(__file__).resolve().parent
     while tb:
         file = Path(tb.tb_frame.f_code.co_filename).resolve()

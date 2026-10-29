@@ -30,6 +30,7 @@ early = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(early)
 from manager_seal_install_evidence import dependency_step, recover_artifacts
 from manager_seal_bundle import validate_bundle, failure_record
+from manager_seal_baseline import baseline_failure, FIXTURE
 import manager_seal_continuation as continuation
 
 GIB = 1024**3
@@ -227,11 +228,6 @@ def network_driver_preflight(owner):
     finally: run(['/tooling/docker', 'network', 'rm', network])
 
 
-def baseline_failure(report):
-    failed = [t for suite in report['testResults'] for t in suite['assertionResults'] if t['status'] == 'failed']
-    assert len(failed) == 1
-    assert 'disabled, removed' in failed[0]['fullName'] and '_public_app' in '\n'.join(failed[0]['failureMessages']), 'baseline failed outside original disabled-config public-network assertion'
-
 
 def export_bundle(paths):
     archive = Path('/work/docker-artifacts.tar.gz')
@@ -341,7 +337,11 @@ def inside(args):
         code = step('baseline-negative', [vitest, 'run', TARGET, '-t', 'real Docker', '--maxWorkers=1', '--reporter=json', '--outputFile=/work/baseline.json'], cwd=backend, allow_failure=True)
         result['phase'] = 'baseline-specific-failure-validation'
         report = json.loads(Path('/work/baseline.json').read_text()); result['baseline_counts'] = report_counts(report)
-        assert code != 0; baseline_failure(report)
+        assert code != 0
+        project = 'agent-synthetic_seal'+args.source[:12]
+        result['baseline_evidence'] = baseline_failure(report,
+            json.loads(Path('/work/baseline-trace', project+'-events.json').read_text()),
+            (checkout/FIXTURE).read_bytes(), project)
         result['baseline_bypass_reproduced'] = True
         for rel in PRODUCT_DELTA: shutil.copy2(root/rel, checkout/rel)
         assert all(sha(checkout/rel) == manifest['files'][rel] for rel in PRODUCT_DELTA)
