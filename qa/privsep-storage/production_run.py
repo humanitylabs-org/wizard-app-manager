@@ -279,7 +279,11 @@ def make_runner(base):
             self.copy(self.evidence/'service-image-id','/root/storage-production/service-image-id',True)
             service_image=(self.evidence/'service-image-id').read_text().strip();assert re.fullmatch('sha256:[0-9a-f]{64}',service_image)
             self.receipt['service_image']=service_image;self.save()
-            self.guest('preserve-service-image','docker save '+service_image+' | gzip -1 > /root/storage-production/service-image.tar.gz',300)
+            self.guest('preserve-service-image',
+                'test "$(docker image inspect --format \'{{.Size}}\' '+service_image+')" -le 2147483648\n'
+                'set -o pipefail\ndocker save '+service_image+' | gzip -1 > /root/storage-production/service-image.tar.gz\n'
+                'gzip -t /root/storage-production/service-image.tar.gz\n'
+                'test "$(stat -c %s /root/storage-production/service-image.tar.gz)" -le 2147483648',300)
             self.copy(self.evidence/'service-image.tar.gz','/root/storage-production/service-image.tar.gz',True)
             self.receipt['service_archive_sha256']=digest(self.evidence/'service-image.tar.gz');self.save()
             self.guest('normal-alongside-production-install','umask 022\nexport WAM_REF='+self.doc['revision']+' WAM_IMAGE=privsep-wam:595523fb WIZARD_RELEASE=none '
