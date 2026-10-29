@@ -253,8 +253,13 @@ def fresh(vm, d):
 def migration(vm, d):
     # Stock pinned host Hermes fixture; never change installed Hermes source or
     # point it at real credentials. The historical baseline needs a session bus.
-    slice4 = load_module('slice4_fixture', vm.stage / 'helpers/privsep-slice4/run.py')
-    vm.installer('stock-hermes-fixture', slice4.HERMES_SETUP.replace('__HERMES_SHA__', d['hermes_commit']), timeout=1800)
+    # Historical runner has top-level execution. Read only its literal fixture;
+    # importing it would execute an unrelated suite, not reuse a safe helper.
+    fixture_tree = ast.parse((vm.stage / 'helpers/privsep-slice4/run.py').read_bytes())
+    setup = next(ast.literal_eval(n.value) for n in fixture_tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == 'HERMES_SETUP' for t in n.targets))
+    assert isinstance(setup, str) and '__HERMES_SHA__' in setup
+    vm.installer('stock-hermes-fixture', setup.replace('__HERMES_SHA__', d['hermes_commit']), timeout=1800)
     vm.guest('baseline-bus-workaround', 'loginctl enable-linger hermes; uid=$(id -u hermes); systemctl start user@$uid.service; test -S /run/user/$uid/bus')
     vm.installer('legacy-install', 'set -euo pipefail\numask 022\n'
                  f'export WAM_REF={d["baseline_revision"]} WAM_IMAGE={d["baseline_image"]} WIZARD_RELEASE=none '
