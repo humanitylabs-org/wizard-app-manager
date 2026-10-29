@@ -55,10 +55,83 @@ def load_old(stage):
     return module
 
 
+# Audited effective inherited methods: ProductionRunner replaces execute,
+# capacity and diagnostics. In particular, base __init__ still consumes product
+# identity and focused_tests still consumes the complete pytest inventory.
+RUNNER_FIELDS = ('revision', 'product_sha256', 'service_revision',
+                 'expected_pytest_count', 'expected_pytest_cases')
+PRODUCT_PATH = 'scripts/protected-agent-storage.py'
+
+
+class ManifestContractError(ValueError):
+    """Fixed metadata-only refusal, safe to persist before any VM exists."""
+
+
+def runner_manifest_reads(base_source, production_source):
+    """Audit doc[...] reads in every effective method, plus super().__init__."""
+    inherited = next(n for n in ast.parse(base_source).body
+                     if isinstance(n, ast.ClassDef) and n.name == 'Runner')
+    derived = next(n for n in ast.walk(ast.parse(production_source))
+                   if isinstance(n, ast.ClassDef) and n.name == 'ProductionRunner')
+    methods = {n.name: ('base', n) for n in inherited.body if isinstance(n, ast.FunctionDef)}
+    methods.update({n.name: ('production', n) for n in derived.body if isinstance(n, ast.FunctionDef)})
+    selected = list(methods.values()) + [('base', next(n for n in inherited.body
+                       if isinstance(n, ast.FunctionDef) and n.name == '__init__'))]
+    reads = {}
+    for owner, method in selected:
+        keys = set()
+        for node in ast.walk(method):
+            if isinstance(node, ast.Subscript) and ast.unparse(node.value) in ('doc', 'self.doc'):
+                if not isinstance(node.slice, ast.Constant) or not isinstance(node.slice.value, str):
+                    raise ManifestContractError('dynamic runner manifest read requires explicit review')
+                keys.add(node.slice.value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and ast.unparse(node.func.value) in ('doc', 'self.doc'):
+                raise ManifestContractError('new runner manifest access requires explicit review')
+        if keys: reads[owner + '.' + method.name] = sorted(keys)
+    return reads
+
+
+def validate_runner_contract(stage, doc):
+    missing = sorted(set(RUNNER_FIELDS + ('product_path', 'source_members')) - set(doc))
+    if missing:
+        raise ManifestContractError('missing runner manifest fields: ' + ','.join(missing))
+    for field in ('revision', 'service_revision'):
+        if not isinstance(doc[field], str) or not re.fullmatch('[0-9a-f]{40}', doc[field]):
+            raise ManifestContractError('invalid runner revision: ' + field)
+    if doc['product_path'] != PRODUCT_PATH:
+        raise ManifestContractError('invalid product source path')
+    if not isinstance(doc['product_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', doc['product_sha256']):
+        raise ManifestContractError('invalid product SHA256')
+    cases = doc['expected_pytest_cases']
+    if (not isinstance(cases, list) or not cases or not all(isinstance(v, str) for v in cases)
+            or len(cases) != len(set(cases)) or type(doc['expected_pytest_count']) is not int
+            or doc['expected_pytest_count'] != len(cases)):
+        raise ManifestContractError('invalid exact pytest inventory')
+    if type(doc['source_members']) is not int or doc['source_members'] < 1:
+        raise ManifestContractError('invalid source member count')
+    reads = runner_manifest_reads((stage/'storage-runner.py').read_text(), (stage/'runner.py').read_text())
+    if set().union(*(set(v) for v in reads.values())) != set(RUNNER_FIELDS):
+        raise ManifestContractError('effective inherited runner fields changed; review contract')
+    rows = json.loads((stage/'source-members.json').read_text())
+    if len(rows) != doc['source_members'] or len({r['path'] for r in rows}) != len(rows):
+        raise ManifestContractError('source member inventory mismatch')
+    product = [r for r in rows if r['path'] == PRODUCT_PATH]
+    if len(product) != 1 or product[0]['kind'] != 'file' or product[0]['sha256'] != doc['product_sha256']:
+        raise ManifestContractError('product SHA256 differs from exact source inventory')
+    with tarfile.open(stage/'source.tar') as archive:
+        members = [m for m in archive if m.name == PRODUCT_PATH]
+        stream = archive.extractfile(members[0]) if len(members) == 1 and members[0].isfile() else None
+        if (len(members) != 1 or not members[0].isfile() or members[0].mode != product[0]['mode']
+                or stream is None or hashlib.sha256(stream.read()).hexdigest() != doc['product_sha256']):
+            raise ManifestContractError('product SHA256 differs from archived source')
+    return reads
+
+
 def validate(stage, manifest_hash, *, local=False):
     assert re.fullmatch('[0-9a-f]{64}',manifest_hash)
     assert digest(stage/'manifest.json')==manifest_hash
     doc=json.loads((stage/'manifest.json').read_text())
+    contract = validate_runner_contract(stage, doc)
     assert doc['schema']=='storage-production-v1' and doc['reserve_bytes']==RESERVE and doc['pending_bytes']==PENDING
     assert doc['expected_cases']==list(CASES) and len(CASES)==len(set(CASES))
     assert doc['expected_pytest_count']==len(doc['expected_pytest_cases'])
@@ -111,6 +184,7 @@ def validate(stage, manifest_hash, *, local=False):
             assert shutil.which(executable),executable
     free=shutil.disk_usage(stage).free
     return doc,old,{'static_source_integrity':True,'primitive_ast_unchanged_except_main':True,
+        'effective_runner_manifest_reads':contract,'product_sha256':doc['product_sha256'],
         'expected_runtime_cases':len(CASES),'expected_python_cases':len(doc['expected_pytest_cases']),
         'heavy_executed':False,'local_only':local,'forum_artifacts_checked':not local,
         'free_bytes':free,'required_bytes':RESERVE+PENDING,'capacity_admissible':None if local else free>=RESERVE+PENDING}
@@ -119,6 +193,8 @@ def validate(stage, manifest_hash, *, local=False):
 def make_runner(base):
     class ProductionRunner(base.Runner):
         def __init__(self,stage,doc):
+            # Shared with static preflight; refuse BEFORE base creates evidence.
+            validate_runner_contract(stage,doc)
             super().__init__(stage,doc)
             self.receipt.update(scope='real packaged cold maintenance + physical Service vertical slice only',
                 full_integration_acceptance=False,actual_cases=[],service_source_revision=doc['service_revision'])
@@ -323,6 +399,23 @@ def make_runner(base):
     return ProductionRunner
 
 
+def startup_failure(stage, phase, exc):
+    # Separate from evidence/receipt.json: even a half-constructed base object
+    # may not have a usable receipt. Never overwrite a prior attempt's record.
+    st = stage.lstat()
+    assert not stage.is_symlink() and st.st_uid == os.getuid() and not st.st_mode & 0o022
+    row = {'schema':'storage-production-startup-failure-v1','passed':False,
+        'full_integration_acceptance':False,'execution_started':False,'phase':phase,
+        'first_error':{'type':type(exc).__name__,
+            'reason':str(exc)[:512] if isinstance(exc,(ManifestContractError,AssertionError,TimeoutError)) else 'fixed setup exception',
+            'frames':[{'file':Path(f.filename).name,'function':f.name,'line':f.lineno}
+                      for f in traceback.extract_tb(exc.__traceback__)]}}
+    fd = os.open(stage/'startup-failure.json', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd,'w') as stream:
+        json.dump(row,stream,sort_keys=True,indent=2);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+    return row
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stage',type=Path,required=True);p.add_argument('--manifest-sha256',required=True)
@@ -330,12 +423,20 @@ def main():
     mode.add_argument('--preflight',action='store_true');mode.add_argument('--execute',action='store_true')
     p.add_argument('--local-static',action='store_true')
     args=p.parse_args();assert not args.local_static or args.preflight
-    stage=args.stage.absolute();doc,old,result=validate(stage,args.manifest_sha256,local=args.local_static)
-    if args.preflight: print(json.dumps(result,sort_keys=True));return 0
-    old.native_lock();assert result['capacity_admissible'],'floor plus honest pending peak not available'
-    os.umask(0o077);tmp=stage/'tmp';tmp.mkdir(mode=0o700);os.environ['TMPDIR']=str(tmp)
-    os.environ['PYTHONDONTWRITEBYTECODE']='1'
-    runner=make_runner(old)(stage,doc)
+    stage=args.stage.absolute();phase='validate-manifest-and-inherited-contract'
+    try:
+        doc,old,result=validate(stage,args.manifest_sha256,local=args.local_static)
+        if args.preflight: print(json.dumps(result,sort_keys=True));return 0
+        phase='native-admission-and-capacity'
+        old.native_lock();assert result['capacity_admissible'],'floor plus honest pending peak not available'
+        phase='private-temporary-directory'
+        os.umask(0o077);tmp=stage/'tmp';tmp.mkdir(mode=0o700);os.environ['TMPDIR']=str(tmp)
+        os.environ['PYTHONDONTWRITEBYTECODE']='1'
+        phase='genuine-production-runner-constructor'
+        runner=make_runner(old)(stage,doc)
+    except BaseException as exc:
+        if args.preflight:raise
+        print(json.dumps(startup_failure(stage,phase,exc),sort_keys=True));return 1
     def interrupt(sig,frame):raise TimeoutError('bounded native execution deadline')
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGALRM):signal.signal(sig,interrupt)
     signal.alarm(17400)
