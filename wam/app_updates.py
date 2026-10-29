@@ -161,6 +161,7 @@ def _selection_pinned(runtipi_root: Path, store: str, app_id: str) -> bool:
 def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: Path | None = None,
                release_managed: set[str] | None = None) -> list[dict]:
     """Every installed app of the Wizard store with a newer version, and why it would be skipped (None = due)."""
+    from .source_integrity import update_block
     managed = _release_managed() if release_managed is None else release_managed
     held, failed = set(holds(home)), _failed(home)
     out = []
@@ -185,6 +186,8 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
         elif (failed.get(app_id) or {}).get("to") == latest and \
                 time.time() - float(failed[app_id].get("at") or 0) < RETRY_DAYS * 86400:
             skip = "failed"            # failed lately; waits for a newer version (or RETRY_DAYS)
+        elif reason := update_block(runtipi_root, store, app_id):
+            skip = reason
         elif app.get("status") not in ("running", "stopped"):
             skip = f"busy:{app.get('status')}"
         out.append({"id": app_id, "from": have, "to": latest, "to_version": meta.get("latestDockerVersion"),
@@ -196,7 +199,7 @@ def status(c=None) -> dict:
     from . import cli
     c = c or cli.Config()
     rows = candidates(c.runtipi().installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
-    return {"app_mode": mode(c.home), "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
+    return {"app_mode": mode(c.home), "chosen": _state(c.home).get("mode") in MODES, "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
 
 
@@ -342,7 +345,8 @@ def _summary(done: list, rolled: list, failed: list, needs: list) -> tuple[str, 
     return title, " ".join(parts), "high" if failed else "default"
 
 
-def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True) -> dict:
+def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True,
+          automatic: bool = False) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -356,6 +360,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
     try:
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a Wizard OS update is running; next window"}
+        if automatic and mode(c.home) != "auto":
+            return {"app_mode": mode(c.home), "started": False}
         rt = c.runtipi()
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:
@@ -372,6 +378,9 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         done, rolled, failed, needs = [], [], [], []
         fails = _failed(c.home)
         for r in due:
+            # A running update finishes safely, but Manual stops the next one even in an admitted timer run.
+            if automatic and mode(c.home) != "auto":
+                break
             urn = f"{r['id']}:{cli.STORE}"
             states = _containers(urn)
             before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
@@ -430,7 +439,7 @@ def apply_if_auto(c=None, is_busy=None) -> dict:
         return {"app_mode": mode(c.home), "started": False}
     if (is_busy or (lambda: updates.busy(updates.service_origin(c.home))))():
         return {"started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(c)
+    return apply(c, automatic=True)
 
 
 def start_detached(runner=subprocess.run) -> dict:

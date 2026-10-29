@@ -1725,9 +1725,21 @@ class StoreHandler(BaseHTTPRequestHandler):
         POST {"channel": "stable"|"latest"} saves the channel;
         POST {"action": "apply"} starts the update (the installer's detached rerun). Never forced from a browser:
         an unpinned box refuses."""
-        from . import updates
+        from . import updates, app_updates
+
+        def status():
+            out = updates.status()
+            # Do not lose the system controls when an app-status read fails.
+            try:
+                out["apps"] = app_updates.status(self.cfg)
+            except Exception:  # noqa: BLE001 - unknown is not permission to update
+                out["apps"] = {"app_mode": app_updates.mode(self.cfg.home),
+                               "chosen": app_updates._state(self.cfg.home).get("mode") in app_updates.MODES,
+                               "error": "Could not check available app versions", "due": [], "skipped": []}
+            return out
+
         if method == "GET":
-            return self._json(200, updates.status())
+            return self._json(200, status())
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 1024:
@@ -1737,13 +1749,19 @@ class StoreHandler(BaseHTTPRequestHandler):
                 raise ValueError("expected an object")
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
+        if set(body) == {"app_mode"} and body["app_mode"] in app_updates.MODES:
+            app_updates.set_mode(body["app_mode"], self.cfg.home)
+            return self._json(200, status())
+        if body == {"action": "apply-apps"}:
+            res = app_updates.start_detached()
+            return self._json(200 if res.get("started") else 409, res)
         if body.get("action") == "apply" and set(body) == {"action"}:
             res = updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
-            return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
+            return self._json(200, {**updates.set_mode(body["mode"]), **status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
-            return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
+            return self._json(200, {**updates.set_channel(body["channel"]), **status()})
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
                                          '{"action": "apply"}'})
 
@@ -1804,6 +1822,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
     app, store = urn.split(":", 1)
+    if store == STORE:
+        from .source_integrity import update_block
+        if update_block(c.runtipi_root, store, app):
+            raise SystemExit(f"REFUSED: {app} has changed or unverified owner source. "
+                             "Keep or merge your changes before updating; nothing replaced.")
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]

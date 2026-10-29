@@ -36,6 +36,30 @@ chat run is active or a Wizard OS update is installing. The installer sets the t
 move with the release), apps prepared from an exact owner-local selection (`.wizard-selection`), and versions the owner
 ignored in the App Manager.
 
+**Visible owner choice.** Settings → About & updates exposes **App updates → Automatic / Manual**
+separately from the Wizard OS release choice. The existing Automatic default is labelled as a default,
+not recorded consent. Selecting Manual saves `ask`, disables the nightly timer and is checked again
+before every app in an automatic batch. An already running update finishes safely. **Update apps now**
+is one manual run and never enables Automatic. The shell uses the existing owner-only Store listener:
+`GET /_updates` includes `apps`; `POST {"app_mode":"auto"|"ask"}` saves policy and
+`POST {"action":"apply-apps"}` starts a manual run. Foreign origins/logins and extra force fields are refused.
+
+**Owner code.** Managed source/build copies get a sibling `<source-dir>.inventory.json` file when packaged.
+Changed files, additions, deletions and symlink changes hold the app for review; an older copy without an
+inventory is unverified and held too. Even a named manual update does not bypass this guard. Same-commit
+preparation compares against the fetched upstream before doing anything, and refuses different bytes;
+source cleanup removes only copies still matching their recorded inventory. Modified/unrecorded copies
+are retained. This is accidental-change protection, not a hostile-owner security attestation. Ignoring
+root `.git` matches packaging's existing copy contract; inventories include empty directories, links and
+file contents, not timestamps or permission bits. Container-layer changes in image apps are outside this
+host-source check: keep owner work in supported views or a pinned own package.
+
+For an older unrecorded copy, a same-commit store preparation can establish a baseline only after comparing
+it with the fetched upstream bytes. Nothing labels already-modified code as upstream. Until a reviewed
+export/diff/merge/replace flow exists, keep or merge the owner changes explicitly; the updater supplies no
+reset flag and never treats Automatic or Update now as permission to discard them. Retained source copies
+can consume space; deletion needs a separate owner-approved cleanup policy.
+
 **For publishers.** Merge to `main`, let the repo's publish workflow (or `POST /v1/publish`) list the new commit,
 and every box picks it up the next night. Apps must run on every Wizard: feature-detect newer shell capabilities
 (`wam check` warns on unguarded `WizardApp.nav.*` / `WizardApp.chat.*` calls) so one release fits old and new shells.
