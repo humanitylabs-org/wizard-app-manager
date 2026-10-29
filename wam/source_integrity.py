@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import yaml
 
 LIMIT = 256 * 1024 * 1024
 
@@ -73,7 +74,7 @@ def update_block(runtipi_root: Path, store: str, app: str) -> str | None:
             return "source-unverified"
         source = packaging.source_dir(packaging.app_data_root(runtipi_root), store, app, commit)
         return verify_installed(source, installed, commit)
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
         return "source-unverified"
 
 

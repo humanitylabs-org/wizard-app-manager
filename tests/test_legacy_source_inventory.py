@@ -64,6 +64,14 @@ def test_missing_upstream_is_cannot_confirm_not_owner_changed(tmp_path, monkeypa
     assert not si.record_path(source).exists()
 
 
+def test_malformed_installed_yaml_is_unverified_not_a_global_status_failure(tmp_path, monkeypatch):
+    root, live, source, _, calls = legacy(tmp_path, monkeypatch)
+    (live / 'wizard.md').write_text('---\nruntime: [\n---\n')
+    assert si.update_block(root, 'wizardapps', 'demo') == 'source-unverified'
+    assert calls == []
+    assert not si.record_path(source).exists()
+
+
 @pytest.mark.parametrize('same_commit', [False, True])
 @pytest.mark.parametrize('modified', [False, True])
 def test_installer_rerun_verifies_legacy_before_prepare_and_reports_hold_separately(tmp_path, monkeypatch, same_commit, modified):
