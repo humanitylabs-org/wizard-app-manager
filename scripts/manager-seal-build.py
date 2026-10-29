@@ -35,7 +35,7 @@ def main():
         p = root / name
         assert not p.is_symlink() and p.resolve().is_relative_to(root) and digest(p) == sha, name
     inventory = {str(p.relative_to(root)) for p in root.rglob('*')
-                 if p.is_file() and '.git' not in p.relative_to(root).parts and p.name != 'SOURCE.json'}
+                 if p.is_file() and '.git' not in p.relative_to(root).parts and p.relative_to(root) != Path('SOURCE.json')}
     assert inventory == set(manifest['files']), 'source inventory drift or an unbound file'
     assert shutil.disk_usage(root).free >= 80 * 1024**3, '80GiB scratch floor, do not delete siblings'
     qa = root / 'qa-manager-seal'; qa.mkdir()  # Never mix with an earlier attempt.
