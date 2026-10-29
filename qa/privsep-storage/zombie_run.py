@@ -92,6 +92,20 @@ def fence_delta(before,after):
     return True
 
 
+def validate_bundle_head(doc,heads):
+    branch=doc['branch']
+    assert isinstance(branch,str) and branch and not branch.startswith('-')
+    assert subprocess.run(['git','check-ref-format','refs/heads/'+branch],
+                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode==0
+    assert heads.splitlines().count(doc['revision']+' refs/heads/'+branch)==1, 'exact bundle branch/head missing'
+
+
+def bundle_clone_command(doc,root=ROOT):
+    # A named-branch bundle need not advertise HEAD; never use its default.
+    return shlex.join(['git','clone','--template='+root+'/template',
+                       '--branch',doc['branch'],'--',root+'/source.bundle',root+'/genuine'])
+
+
 def validate(stage,expected):
     assert stage==Path('/srv/work/privsep/storage-zombie-reap')/stage.name and Path.cwd()==stage
     assert digest(stage/'manifest.json')==expected
@@ -155,7 +169,7 @@ def validate(stage,expected):
     assert len(closure)==622 and all(b[v['path']]==v for v in closure)
     assert digest(production.BACKEND_ARCHIVE)==production.BACKEND_SHA
     heads=subprocess.check_output(['git','bundle','list-heads',str(stage/'source.bundle')],text=True,timeout=30)
-    assert d['revision']+' refs/heads/'+d['branch'] in heads
+    validate_bundle_head(d,heads)
     diagnostic.process_absence([ORIGIN,BASELINE,stage])
     free=shutil.disk_usage(stage).free
     return d,diagnostic,base,production,{'static_only':True,'heavy_executed':False,'exact_source_members':len(rows),
@@ -217,7 +231,7 @@ def make_runner(production,base):
             script+='/usr/bin/python3 -I -B -c '+shlex.quote(check)+'\n'
             script+='mv /root/storage-proof/source /root/storage-proof/source-a419-preserved\nmv '+ROOT+'/source /root/storage-proof/source\n'
             script+='mkdir -m700 '+ROOT+'/template\nif [ -s '+ROOT+'/shallow ]; then cp '+ROOT+'/shallow '+ROOT+'/template/shallow; fi\n'
-            script+='git clone --template='+ROOT+'/template '+ROOT+'/source.bundle '+ROOT+'/genuine\nmv '+ROOT+'/genuine/.git /root/storage-proof/source/.git\n'
+            script+=bundle_clone_command(self.doc)+'\nmv '+ROOT+'/genuine/.git /root/storage-proof/source/.git\n'
             script+='cd /root/storage-proof/source\ntest "$(git rev-parse HEAD)" = '+revision+'\ngit fsck --full\ntest -z "$(git status --porcelain)"\n'
             script+='/usr/bin/python3 -I -B scripts/install-storage-maintenance.py\ninstall -m644 '+ROOT+'/guest.py '+production.GUEST+'\nchmod 755 '+INIT+'\n'
             script+='/usr/bin/python3 -I -B -c '+shlex.quote("import hashlib;from pathlib import Path;assert hashlib.sha256(Path('/usr/local/lib/wizard-storage/protected-agent-storage.py').read_bytes()).hexdigest()=="+repr(self.receipt['product_sha256'])+";assert Path('/usr/local/lib/wizard-storage/maintenance-init').read_bytes()==Path('scripts/storage-maintenance-init.py').read_bytes()")+'\n'

@@ -3,6 +3,8 @@ import ast
 import importlib.util
 import json
 from pathlib import Path
+import shlex
+import subprocess
 
 import pytest
 
@@ -129,3 +131,48 @@ def test_refusal_negatives_pin_intended_reasons_not_any_failure():
     for reason in ('wrong bootstrap refusal reason','wrong request refusal reason','request guard never reached',
                    'readonly-root','another-userspace-process','unsafe control record'):
         assert reason in text
+
+
+def test_named_branch_bundle_without_head_clones_exact_clean_revision(tmp_path):
+    m=runner();repo=tmp_path/'repo';root=tmp_path/'clone inputs';root.mkdir()
+    branch="fix/bundle'quoted"
+    def git(*args,cwd=repo):
+        return subprocess.check_output(['git',*args],cwd=cwd,text=True,stderr=subprocess.STDOUT)
+    repo.mkdir();git('init','--initial-branch='+branch)
+    (repo/'tracked').write_text('exact bundle source\n')
+    git('add','tracked');git('-c','user.name=Bundle QA','-c','user.email=bundle@example.invalid','commit','-m','fixture')
+    revision=git('rev-parse','HEAD').strip();doc={'revision':revision,'branch':branch}
+    git('bundle','create',str(root/'source.bundle'),'refs/heads/'+branch)
+    heads=git('bundle','list-heads',str(root/'source.bundle'))
+    assert heads.splitlines()==[revision+' refs/heads/'+branch]  # deliberately no HEAD
+    m.validate_bundle_head(doc,heads);(root/'template').mkdir()
+    command=m.bundle_clone_command(doc,str(root))
+    assert shlex.split(command)==['git','clone','--template='+str(root/'template'),
+                                 '--branch',branch,'--',str(root/'source.bundle'),str(root/'genuine')]
+    subprocess.run(['bash','-se'],input=command,text=True,check=True,cwd=tmp_path)
+    assert git('rev-parse','HEAD',cwd=root/'genuine').strip()==revision
+    git('fsck','--full',cwd=root/'genuine')
+    assert git('status','--porcelain',cwd=root/'genuine')==''
+    # The actual guest setup consumes this command and retains every source proof.
+    tree=ast.parse((REPO/'qa/privsep-storage/zombie_run.py').read_text())
+    cls=next(n for n in ast.walk(tree) if isinstance(n,ast.ClassDef) and n.name=='ReapRunner')
+    execute=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='execute')
+    calls=[n for n in ast.walk(execute) if isinstance(n,ast.Call)
+           and isinstance(n.func,ast.Name) and n.func.id=='bundle_clone_command']
+    assert len(calls)==1 and ast.unparse(calls[0])=='bundle_clone_command(self.doc)'
+    strings=''.join(n.value for n in ast.walk(execute) if isinstance(n,ast.Constant) and isinstance(n.value,str))
+    assert 'test "$(git rev-parse HEAD)" = ' in strings
+    assert 'git fsck --full\ntest -z "$(git status --porcelain)"' in strings
+
+
+@pytest.mark.parametrize('kind',['wrong-branch','missing-ref','prefix-ref','wrong-revision','invalid-branch'])
+def test_bundle_branch_validation_refuses_unbound_source(kind):
+    m=runner();revision='a'*40;branch='fix/expected'
+    heads=revision+' refs/heads/'+branch+'\n'
+    doc={'revision':revision,'branch':branch}
+    if kind=='wrong-branch':doc['branch']='fix/other'
+    elif kind=='missing-ref':heads=''
+    elif kind=='prefix-ref':heads=revision+' refs/heads/'+branch+'-suffix\n'
+    elif kind=='wrong-revision':doc['revision']='b'*40
+    else:doc['branch']='fix/invalid branch'
+    with pytest.raises(AssertionError):m.validate_bundle_head(doc,heads)
