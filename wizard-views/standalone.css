@@ -162,3 +162,21 @@ html[data-embed="settings"] .wam-cl {
 html[data-embed="settings"] .wam-cl > .wam-cl-lead {
   margin-top: 0;
 }
+/* Settings rows are plain lines split by hairlines, so the list's groups drop their card here too: one surface. */
+html[data-embed="settings"] .wam-cl-card {
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html[data-embed="settings"] .wam .wam-cl-row {
+  padding-inline: 4px;
+}
+html[data-embed="settings"] .wam .wam-cl-row.has-act {
+  padding-inline: 0 4px;
+}
+html[data-embed="settings"] .wam .wam-cl-hit {
+  padding-left: 4px;
+}
