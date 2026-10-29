@@ -33,6 +33,20 @@ export type BindRun = (file: string, args: string[]) => Promise<{ stdout: string
 const clean = (p: string) => path.posix.normalize(p).replace(/\/+$/, '') || '/';
 const under = (p: string, root: string) => p === root || p.startsWith(`${root}/`);
 
+
+/** A rootful app can chmod/chown through a writable ancestor bind even when
+ * host ownership currently looks protected. Refuse overlapping layouts, including
+ * already-running deployments, rather than infer durable authority from UID alone. */
+export function assertNoWritableBindAncestors(model: any, existing: string[] = []) {
+  const mounts = (Object.values(model.services ?? {}) as any[]).flatMap((s) => (s.volumes ?? []).map(volumeOf)).filter(Boolean);
+  const writable = [...existing.map(clean), ...mounts.filter((v) => v!.type === 'bind' && !v!.readOnly).map((v) => clean(v!.source))];
+  for (const v of mounts) if (v!.type === 'bind') {
+    const source = clean(v!.source);
+    if (writable.some((ancestor) => ancestor !== source && under(source, ancestor)))
+      throw new HostAccessRefused('bind', ['writable bind ancestor overlap is unsupported']);
+  }
+}
+
 /** Stable path semantics, not check-realpath-then-use. Every HOST ancestor of
  * the bind endpoint must be owned by root/manager and not group/world writable.
  * The endpoint itself can remain app-owned/writable; its protected parent keeps
@@ -46,6 +60,7 @@ export async function verifyBindSources(
   run: BindRun,
   create?: (source: string) => Promise<void>,
 ): Promise<void> {
+  assertNoWritableBindAncestors(model);
   for (const service of Object.values(model.services ?? {}) as any[])
     for (const mount of service.volumes ?? []) {
       const v = volumeOf(mount);
@@ -61,8 +76,9 @@ export async function verifyBindSources(
       const check = async () => {
         try {
           const args = [
-            'run',
             '--rm',
+            '--restart=no',
+            '--stop-timeout=1',
             '--network',
             'none',
             '--read-only',
@@ -73,6 +89,10 @@ export async function verifyBindSources(
             '--mount',
             'type=bind,source=/,target=/host,readonly,bind-propagation=rprivate',
             BIND_CHECK_IMAGE,
+            'timeout',
+            '-s',
+            'KILL',
+            '12',
             'sh',
             '-c',
             BIND_ANCESTRY_SCRIPT,

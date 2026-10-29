@@ -32,9 +32,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`, async () => {
         deploymentUnchanged = false;
         logger.info(`Stopping app ${appUrn}`);
-        await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
-          logger.error(`Failed to stop app ${appUrn}:`, err);
-        });
+        await dockerService.composeApp(appUrn, 'down --remove-orphans');
       });
 
       logger.info(`App ${appUrn} restarted`);

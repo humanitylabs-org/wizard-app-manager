@@ -21,13 +21,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         await dockerService.composeApp(app.urn as AppUrn, 'down --remove-orphans');
         await dockerService.composeApp(app.urn as AppUrn, 'up --detach --force-recreate --remove-orphans');
       }
-      try {
-        // Never delete the legacy Docker volume: it is the owner's rollback copy.
-        await dockerService.composeApp(appUrn, 'down --remove-orphans --rmi all');
-        logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
-      } catch (err) {
-        logger.warn('Error taking down app', appUrn, err);
-      }
+      // Do not delete data/control records if daemon teardown is unacknowledged.
+      // Keep named volumes as the owner's rollback copy.
+      await dockerService.composeApp(appUrn, 'down --remove-orphans --rmi all');
 
       await appFilesManager.deleteAppFolder(appUrn);
       await appFilesManager.deleteAppDataDir(appUrn);

@@ -87,14 +87,7 @@ def execute(c, path: str, body: dict):
             host_policy.approve(c.home, app_id, str(body.get('sha256', '')))
             network.set_host_access_allowed(c.home, app_id, True)
         elif action == 'deny':
-            host_policy.revoke(c, app_id)
-            # Revocation has already fenced and removed final-consumer authority.
-            # Stop existing host-capable containers outside the cross-process lock
-            # (the backend stop itself takes that lock). Never claim success if it fails.
-            if cli.host_access_risks(c, app_id, 'installed') and app_id in cli.installed_ids(c.runtipi()):
-                stopped = cli.app_lifecycle(c, 'stop', app_id)
-                if stopped.get('error'):
-                    raise ValueError('Host authority revoked, but stopping the app failed')
+            host_policy.revoke_and_stop(c, app_id)
         else:
             network.set_enabled(c.home, action == 'on')
         return network.reconcile(c)

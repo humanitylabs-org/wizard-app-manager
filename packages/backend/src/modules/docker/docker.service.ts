@@ -1,8 +1,11 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
+import { teardownApp } from './app-teardown';
 import { withHostAuthority } from './host-policy-lock';
-import { verifyBindSources, executableModel } from './compose-consumption';
+import { verifyBindSources, executableModel, assertNoWritableBindAncestors } from './compose-consumption';
+import { runBindHelper, reapBindHelper, helperRun } from './bind-helper';
+import { constants } from 'node:fs';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
 import {
@@ -154,6 +157,13 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
 
   public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
     return withHostAuthority(this.config.get('directories').dataDir, async () => {
+      if (['down', 'stop'].includes(command.split(' ')[0] ?? '')) {
+        // Quarantine never prevents risk-reducing stop; cleanup errors still propagate.
+        const result = await teardownApp(appUrn, command);
+        await reapBindHelper(this.config.get('directories').dataDir);
+        return result;
+      }
+      await reapBindHelper(this.config.get('directories').dataDir);
       if (MUTATING.has(command.split(' ')[0] ?? '')) {
         let result!: { success: boolean; stdout: string; stderr: string };
         await this.prepareApp(appUrn, async (prepared, grantedBinds) => {
@@ -240,11 +250,23 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       const { model, ctx } = await this.assertHostPolicy(appUrn, args, grantedBinds);
       await this.assertVolumeIdentity(model, appUrn.replace(':', '_'));
       const managerUid = (await fs.stat(path.join(dataDir, '.env'))).uid;
+      const bindDeadline = AbortSignal.timeout(30_000);
+      if (Object.values(model.services ?? {}).some((s: any) => (s.volumes ?? []).some((v: any) => v.type === 'bind'))) {
+        const ids = (await helperRun(['ps', '-q', '--no-trunc'], bindDeadline)).stdout.trim().split(/\s+/).filter(Boolean);
+        const existing: string[] = [];
+        for (const id of ids) {
+          const info = JSON.parse((await helperRun(['inspect', '--type', 'container', id], bindDeadline)).stdout)[0];
+          // Our own root/manager mapping is trusted control-plane custody, not an app.
+          if (info.Config?.Hostname === os.hostname() && info.Id.startsWith(os.hostname())) continue;
+          for (const m of info.Mounts ?? []) if (m.Type === 'bind' && m.RW) existing.push(m.Source);
+        }
+        assertNoWritableBindAncestors(model, existing);
+      }
       await verifyBindSources(
         model,
         ctx,
         managerUid,
-        (file, argv) => execFileAsync(file, argv, { env: composeEnv() }),
+        (_file, argv) => runBindHelper(dataDir, argv, undefined, bindDeadline),
         async (source) => {
           // Missing ordinary data directories may be created only through an
           // attested backend mapping of the ancestry the daemon just checked.
@@ -254,8 +276,13 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
           if (!(self.Mounts ?? []).some((m: any) => m.Type === 'bind' && m.Source === ctx.appDataRoot && m.Destination === localRoot))
             throw new HostAccessRefused(appUrn, ['daemon/backend mount mapping is not attested']);
           const local = path.join(localRoot, path.posix.relative(ctx.appDataRoot!, source));
-          await fs.mkdir(local, { recursive: true, mode: 0o755 });
-          await fs.chmod(local, 0o777); // payload endpoint only, never control ancestors
+          // Only a missing direct child endpoint; never touch an existing payload
+          // or create through writable intermediate directories. fchmod pins the
+          // newly created directory inode and does not re-resolve a mutable path.
+          if (path.dirname(source) !== ctx.appDataDir) throw new HostAccessRefused(appUrn, ['nested data provisioning is unsupported']);
+          await fs.mkdir(local, { mode: 0o777 });
+          const endpoint = await fs.open(local, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          try { await endpoint.chmod(0o777); } finally { await endpoint.close(); }
         },
       );
       const input = JSON.stringify(executableModel(model));

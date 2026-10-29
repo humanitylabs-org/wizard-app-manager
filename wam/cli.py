@@ -2096,16 +2096,8 @@ def _main(argv: list[str] | None = None) -> int:
                         host_policy.require_app(c, args.app)
                     except host_policy.NeedsOwnerApproval:
                         raise  # print the exact wam approve command, never self-approve
-                else:
-                    host_policy.revoke(c, args.app, STORE)
+                stopped = host_policy.revoke_and_stop(c, args.app, STORE) if args.action == 'deny' else None
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
-                stopped = None
-                if args.action == "deny" and host_access_risks(c, args.app, "installed"):
-                    # the running containers still have the access the owner just took back: stop the app (its
-                    # next start is refused by the install/start gates until it is allowed again)
-                    rt = c.runtipi()
-                    if args.app in installed_ids(rt):
-                        stopped = app_lifecycle(c, "stop", args.app)
                 res = network.reconcile(c, restart=not args.no_restart,
                                         restart_fn=lambda a: app_lifecycle(c, "restart", a))
                 print(json.dumps({"app": args.app, "host_access_allowed": args.action == "allow",

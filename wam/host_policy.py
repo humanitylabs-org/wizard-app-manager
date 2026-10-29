@@ -545,6 +545,31 @@ def revoke(c, app_id, store='wizardapps'):
         network.set_host_access_allowed(c.home, app_id, False)
 
 
+def revoke_and_stop(c, app_id, store='wizardapps'):
+    """Risk-reducing owner action; recipe drift never suppresses installed teardown.
+
+    Revoke releases its fence before the backend takes the same lease. Even a
+    later bookkeeping failure cannot suppress the stop. Stop errors propagate;
+    no error path restores removed authority.
+    """
+    from . import cli
+    if not ID.fullmatch(app_id):
+        raise ValueError('invalid app id')
+    error = None
+    try:
+        revoke(c, app_id, store)
+    except Exception as exc:
+        error = exc
+    stopped = None
+    if app_id in cli.installed_ids(c.runtipi()):
+        stopped = cli.app_lifecycle(c, 'stop', app_id)
+        if stopped.get('error') or stopped.get('success') is False:
+            raise RuntimeError('Host access change failed: stopping the app failed') from error
+    if error:
+        raise error
+    return stopped
+
+
 def _require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):
     path_type = filesystem.Path if filesystem else Path
     root = path_type(c.runtipi_root)

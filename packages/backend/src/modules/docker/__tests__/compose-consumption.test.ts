@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DockerService } from '../docker.service';
-import { executableModel, verifyBindSources } from '../compose-consumption';
+import { assertNoWritableBindAncestors, executableModel, verifyBindSources } from '../compose-consumption';
 
 // These tests exercise real files and inherited kernel lock descriptors. The
 // normal backend setup's memfs mock cannot supply a descriptor to flock.
@@ -105,6 +105,14 @@ describe('final compose consumption', () => {
       ),
     ).rejects.toThrow(/unavailable or unsafe/);
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('refuses writable ancestor overlaps in candidate and already running layouts', () => {
+    const model = { services: { web: { volumes: [{ type: 'bind', source: '/safe/root/data', target: '/data' }] } } };
+    expect(() => assertNoWritableBindAncestors(model, ['/safe/root'])).toThrow('overlap');
+    expect(() => assertNoWritableBindAncestors(model, ['/safe/root/data'])).not.toThrow();
+    model.services.web.volumes.push({ type: 'bind', source: '/safe/root', target: '/root' });
+    expect(() => assertNoWritableBindAncestors(model)).toThrow('overlap');
   });
 
   it('escapes values, never mapping keys', () => {

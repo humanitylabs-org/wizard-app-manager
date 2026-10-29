@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { APP_GENERATED_COMPOSE_FILENAME, APP_REL_COMPOSE_FILENAME } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { execFileAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -193,38 +192,8 @@ export class AppFilesManager {
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     await this.protectAppControlDir(appUrn);
-    // Protect the manager-generated file FIRST, then keep upstream's payload
-    // compatibility (non-root app UIDs must write their data) while excluding
-    // app.env from the recursive widening. find -P never follows app links.
-    const { appDataDir } = this.getAppPaths(appUrn);
-    const env = await this.getAppEnv(appUrn);
-    if (env.content !== null && !(await this.filesystem.writePrivateTextFile(env.path, env.content, await this.managerOwner()))) {
-      throw new Error(`Failed to protect app environment for ${appUrn}`);
-    }
-    // chmod follows a symlink argument, so links are excluded (an app could
-    // otherwise plant one aimed at manager files inside this container).
-    // -mindepth 1: the app directory holding app.env stays manager-owned and
-    // not world-writable, so nobody else can swap app.env for a link.
-    await execFileAsync('find', [
-      '-P',
-      appDataDir,
-      '-mindepth',
-      '1',
-      '-path',
-      env.path,
-      '-prune',
-      '-o',
-      '!',
-      '-type',
-      'l',
-      '-exec',
-      'chmod',
-      'a+rwx',
-      '{}',
-      '+',
-    ]).catch(() => {
-      this.logger.error(`Error setting permissions for app ${appUrn}`);
-    });
+    // Existing payloads are app-owned: never enumerate, chmod or chown them.
+    // Missing fixed data endpoints are provisioned by the final bind consumer.
   }
 
   public async getAppEnv(appUrn: AppUrn) {
