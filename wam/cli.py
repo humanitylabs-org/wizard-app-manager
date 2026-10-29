@@ -1203,6 +1203,31 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
+def reconcile_update_form(c: Config, rt: Runtipi, app_id: str, uses: list[str] | None = None,
+                          current: dict | None = None) -> list[str]:
+    """Before updating an installed app, fill required inputs its NEW recipe added, by the same shared-secret and
+    generated-password rules as install, keeping every saved owner setting. Runtipi re-validates the saved form
+    against the new config.json, so a new required field otherwise fails the update ("Variable ... is required")
+    and rolls it back. Returns the inputs only the owner can give (nothing is changed then)."""
+    urn = f"{app_id}:{STORE}"
+    if current is None:
+        current = ((rt.app(urn) or {}).get("app") or {}).get("config") or {}
+    recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
+    info = json.loads((recipe / "config.json").read_text())
+    if uses is None:
+        try:
+            uses = list(registry._front((recipe / "wizard.md").read_text()).get("uses") or [])
+        except OSError:
+            uses = []
+    form, missing = build_form(c, app_id, info, current, uses=uses)
+    if missing:
+        return missing
+    form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
+    if form != current:
+        rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
+    return []
+
+
 def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
@@ -1252,13 +1277,9 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
             if row.get("index_version") and target_version != row["index_version"]:
                 raise RuntimeError("prepared recipe version does not match the release pin")
-            info = json.loads((recipe / "config.json").read_text())
-            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
+            missing = reconcile_update_form(c, rt, app_id, uses=rec.get("uses") or [], current=current)
             if missing:
                 raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
-            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
-            if form != current:
-                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
             res = app_update(c, app_id)
             if res.get("error"):
                 raise RuntimeError(res["error"])

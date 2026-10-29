@@ -1,6 +1,7 @@
 """Automatic app updates (wam/app_updates.py): what is due, how each update is verified, rollback, the timer."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from wam import app_updates as au
 
@@ -167,3 +168,46 @@ def test_manual_update_button_runs_in_the_background():
         returncode, stdout, stderr = 0, "", ""
     assert au.start_detached(lambda cmd, **k: seen.append(cmd) or P()) == {"started": True}
     assert seen[0][0] == "systemd-run" and seen[0][-2:] == ["app-updates", "--apply"]
+
+
+def _recipe(root, app, fields):
+    d = root / "repos" / "wizardapps" / "apps" / app
+    d.mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps({"id": app, "form_fields": fields}))
+    (d / "wizard.md").write_text(f"---\nid: {app}\nversion: 0.2.0\n---\n")
+
+
+class _RT:
+    def __init__(self, config):
+        self.config, self.calls = config, []
+
+    def app(self, urn):
+        return {"app": {"config": dict(self.config)}}
+
+    def req(self, method, path, body, timeout=0):
+        self.calls.append((method, path, body))
+
+
+def test_reconcile_fills_new_required_inputs_and_keeps_owner_settings(tmp_path):
+    """A new recipe's required password (here the shared dashboard login) is filled before the update, as at
+    install; saved settings win. Without it Runtipi fails 'Variable ... is required' and rolls back every night."""
+    from wam import cli
+    _recipe(tmp_path, "conn", [{"env_variable": "DASH_PASSWORD", "type": "password", "required": True},
+                               {"env_variable": "KEEP", "type": "text", "required": True}])
+    c = SimpleNamespace(runtipi_root=tmp_path, secrets=tmp_path / "secrets", home=None)
+    rt = _RT({"KEEP": "owner value", "openPort": True})
+    assert cli.reconcile_update_form(c, rt, "conn") == []
+    (method, path, body), = rt.calls
+    assert (method, path) == ("PATCH", "/app-lifecycle/conn:wizardapps/update-config")
+    assert body["KEEP"] == "owner value" and body["openPort"] is True and len(body["DASH_PASSWORD"]) >= 24
+    rt2 = _RT(body)                       # already reconciled: nothing to write
+    assert cli.reconcile_update_form(c, rt2, "conn") == [] and rt2.calls == []
+
+
+def test_reconcile_reports_inputs_only_the_owner_can_give(tmp_path):
+    from wam import cli
+    _recipe(tmp_path, "conn", [{"env_variable": "API_URL", "type": "url", "required": True, "label": "URL"}])
+    c = SimpleNamespace(runtipi_root=tmp_path, secrets=tmp_path / "secrets", home=None)
+    rt = _RT({})
+    missing = cli.reconcile_update_form(c, rt, "conn")
+    assert missing and missing[0].startswith("API_URL") and rt.calls == []
