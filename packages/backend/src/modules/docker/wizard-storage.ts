@@ -62,6 +62,28 @@ export const relativePath = (p: unknown): p is string =>
   ![...p].some((x) => x.charCodeAt(0) < 32 || x.charCodeAt(0) === 127);
 export const containerPath = (p: unknown): p is string => typeof p === 'string' && p.startsWith('/') && relativePath(p.slice(1));
 
+export function assertAppOwnedClaudeSource(app: App, doc: Compose) {
+  const share = app.manifest.shares?.find((s) => s.id === 'claude-login');
+  // Legacy packages keep their old explicit migration path. A source package that
+  // declares ownership must never keep writing the alongside host's login.
+  if (app.manifest.id !== 'wizard-claude' || !share) return;
+  const ownsLogin = Object.values(app.compose.services).some((service) =>
+    (service.volumes ?? []).some((mount: any) => {
+      const [source, target] = typeof mount === 'string' ? mount.split(':') : [mount.source, mount.target];
+      return source === `\${APP_DATA_DIR}/data/${share.path}` && target === '/claude';
+    }),
+  );
+  if (!ownsLogin) return;
+  const allowed = new Set([`\${APP_DATA_DIR}/data/${share.path}`, path.join(app.hostData, 'data', share.path)]);
+  for (const service of Object.values(doc.services)) {
+    for (const mount of service.volumes ?? []) {
+      const [source, target] = typeof mount === 'string' ? mount.split(':') : [mount.source, mount.target];
+      if (target === '/claude' && !allowed.has(source))
+        throw new Error('Claude sign-in still points outside this app. Stop the old credential owner and complete an explicit handover before updating; no credentials were copied.');
+    }
+  }
+}
+
 export function validateStorage(m: Manifest, compose: Compose, legacy = false) {
   for (const [field, keys] of [
     ['shares', ['id', 'path']],
@@ -654,6 +676,7 @@ rm -f ".$1.wizard-copy-ready"`;
       if (!doc['x-wizard-volumes'] || fresh.size) doc = rewriteVolumes(portable(doc), app.manifest.id);
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
+      assertAppOwnedClaudeSource(app, doc);
       const file = await this.readGrants();
       file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
       await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
