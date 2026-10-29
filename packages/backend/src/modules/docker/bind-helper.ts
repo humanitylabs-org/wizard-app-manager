@@ -110,7 +110,7 @@ export async function runBindHelper(dataDir: string, request: BindMetadataReques
   try { await fd.writeFile(JSON.stringify({ name, nonce, phase: 'creating' })); await fd.sync(); } finally { await fd.close(); }
   const dir = await fs.open(path.dirname(record), 'r');
   try { await dir.sync(); } finally { await dir.close(); }
-  let primary: Error | undefined;
+  let outcome: { result: { stdout: string } } | { primary: Error };
   let phase: 'create' | 'journal' | 'start' = 'create';
   try {
     // The helper also has a DAEMON-SIDE lifetime bound. Killing a docker client
@@ -130,19 +130,20 @@ export async function runBindHelper(dataDir: string, request: BindMetadataReques
       await journal.sync();
     } finally { await journal.close(); }
     phase = 'start';
-    return await run(['start', '--attach', id], AbortSignal.any([AbortSignal.timeout(18_000), ...(signal ? [signal] : [])]));
+    outcome = { result: await run(['start', '--attach', id], AbortSignal.any([AbortSignal.timeout(18_000), ...(signal ? [signal] : [])])) };
   } catch (error: any) {
     // Capture bounded safe phase/exit metadata BEFORE cleanup can also fail.
     // Never retain arbitrary child output/argv/path in the reported diagnostic.
     const exit = Number.isInteger(error?.code) ? String(error.code).slice(0, 12) : 'unknown';
-    primary = new Error(`Bind metadata execution failed (phase=${phase}, exit=${exit})`);
-    throw primary;
-  } finally {
-    // Fresh cleanup budget; never clear unknown intent or mask the first error.
-    try { await reapBindHelper(dataDir, run); }
-    catch (cleanup) {
-      if (primary) throw new AggregateError([primary, cleanup], 'Bind metadata execution and cleanup failed; mutations quarantined', { cause: primary });
-      throw cleanup;
-    }
+    outcome = { primary: new Error(`Bind metadata execution failed (phase=${phase}, exit=${exit})`) };
   }
+  // Both outcomes flow through cleanup with a fresh budget. Propagate only
+  // afterwards: no finally throw can overwrite a return or the primary error.
+  try { await reapBindHelper(dataDir, run); }
+  catch (cleanup) {
+    if ('primary' in outcome) throw new AggregateError([outcome.primary, cleanup], 'Bind metadata execution and cleanup failed; mutations quarantined', { cause: outcome.primary });
+    throw cleanup;
+  }
+  if ('primary' in outcome) throw outcome.primary;
+  return outcome.result;
 }

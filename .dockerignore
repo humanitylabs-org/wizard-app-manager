@@ -5,6 +5,8 @@
 !packages/**/public/**
 !packages/**/assets/**
 !packages/**/scripts/**
+# Only the fixed metadata helper source is needed by its native build stage.
+!packages/backend/native/bind-metadata.c
 !bun.lock
 !package.json
 !turbo.json

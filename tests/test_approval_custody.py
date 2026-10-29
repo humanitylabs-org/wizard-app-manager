@@ -83,7 +83,12 @@ def test_root_and_agent_uid_cannot_restart_protected_worker(system, monkeypatch,
 
 
 def test_no_root_staging_under_writable_ancestor(tmp_path):
-    p = tmp_path / 'unit'; p.write_text(ac.SOCKET_TEXT)
+    # The harness may use root-owned protected --basetemp. Make this negative's
+    # unsafe ancestor explicit without changing tmp_path or any shared directory.
+    writable = tmp_path / 'writable'
+    writable.mkdir()
+    writable.chmod(0o777)
+    p = writable / 'unit'; p.write_text(ac.SOCKET_TEXT)
     assert not ac._trusted_file(p, ac.SOCKET_TEXT)
 
 
