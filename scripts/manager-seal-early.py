@@ -17,6 +17,8 @@ import time
 import urllib.request
 import zipfile
 
+from manager_seal_install_evidence import dependency_step, recover_artifacts
+
 BASE = 'fead192e9fb2d560fd3b875d092819b32e7189b6'
 NODE = Path('/srv/work/heavy/incognito-20261027/tooling/node')
 NODE_SHA = 'e6ec2c188d83d813f81f2de8aea084d74dce603ac1abedd0a30ad941b10087b2'
@@ -31,7 +33,7 @@ MEMORY = 12 * GIB
 # read-only, swap disabled, daemon logs disabled. Reserve this extra GiB for
 # bounded exported evidence and Docker create/control metadata, not dependencies.
 HOST_ALLOWANCE = GIB
-LOG_CAP = 8 * 1024 ** 2
+LOG_CAP = 96 * 1024 ** 2
 RESULT_PREFIX = 'EARLY_RESULT='
 
 
@@ -108,17 +110,6 @@ def inside(args):
             proc = subprocess.run(list(map(str, argv)), cwd=cwd, stdout=f, stderr=subprocess.STDOUT, timeout=timeout)
         result['steps'][label] = {'exit_code': proc.returncode, 'log_sha256': digest(log), 'log_bytes': log.stat().st_size}
         if proc.returncode:
-            # Keep the package-specific error even when verbose success rows
-            # bury it outside the log tail. Public dependency logs only.
-            budget = 16384
-            with log.open('rb') as f:
-                for line in f:
-                    if any(token in line.lower() for token in (b'error', b'failed', b'enoent', b'eacces', b'enospc', b'not found')):
-                        chunk = line[:min(budget, 2048)]
-                        print(chunk.decode(errors='replace'), end='', flush=True)
-                        budget -= len(chunk)
-                        if budget <= 0:
-                            break
             with log.open('rb') as f:
                 f.seek(max(0, log.stat().st_size-16384))
                 print(f.read(16384).decode(errors='replace'), flush=True)
@@ -145,7 +136,13 @@ def inside(args):
         step('bun-version', ['bun', '--version'])
         assert Path('/work/logs/bun-version.log').read_text().strip() == '1.3.0'
         step('runner-regressions', ['python3', '-m', 'unittest', 'discover', '-s', 'scripts/tests', '-p', 'test_manager_seal_runners.py'])
-        step('dependencies', ['bun', 'install', '--frozen-lockfile', '--verbose'], timeout=660)
+        print('STEP dependencies', flush=True)
+        dependencies = {}
+        result['steps']['dependencies'] = dependencies
+        dependency_step(checkout, Path('/work/logs'), manifest['files']['bun.lock'], dependencies)
+        if dependencies['exit_code'] or not dependencies['log_complete']:
+            raise RuntimeError('dependencies failed: '+str(dependencies['exit_code'])+'; termination='+str(dependencies['termination_reason']))
+        assert dependencies['comparison_complete'], 'dependency comparison failed; inspect exported evidence'
         assert digest(checkout/'bun.lock') == manifest['files']['bun.lock'], 'frozen lock changed'
         step('common-build', ['bun', 'run', 'build'], cwd=checkout/'packages/common')
         step('backend-types', [checkout/'node_modules/.bin/tsgo', '--noEmit'], cwd=checkout/'packages/backend')
@@ -216,10 +213,13 @@ def main(args):
         state = json.loads(subprocess.check_output(['docker', 'inspect', '--format', '{{json .State}}', cid], text=True))
         receipt['container_exit'] = {k: state[k] for k in ('Running', 'OOMKilled', 'ExitCode')}
         lines = (output/'early.log').read_text().splitlines()
+        receipt['dependency_artifacts'] = recover_artifacts(output/'early.log', output)
         result_lines = [l[len(RESULT_PREFIX):] for l in lines if l.startswith(RESULT_PREFIX)]
         assert len(result_lines) == 1 and len(result_lines[0].encode()) <= 65536, 'missing/oversize early result; inspect capped log and OOM state'
         results = [json.loads(result_lines[0])]
         receipt['result'] = results[0]
+        if 'dependencies' in results[0]['steps']:
+            assert receipt['dependency_artifacts'] == results[0]['steps']['dependencies'].get('artifacts'), 'dependency export omitted/drifted'
         assert code == 0 and state['ExitCode'] == 0 and not state['OOMKilled'] and results[0]['early_pass'] is True
         assert results[0]['source_head'] == args.source and results[0]['source_manifest_sha256'] == args.manifest_sha256
         receipt['early_pass'] = True
