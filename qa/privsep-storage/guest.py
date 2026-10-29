@@ -121,7 +121,7 @@ def prepare():
     # A live service with real systemd automatic restart, not a JSON/PID receipt.
     Path('/usr/local/libexec').mkdir(mode=0o755,exist_ok=True)
     writer = Path('/usr/local/libexec/storage-proof-writer.py')
-    writer.write_text('import os,pathlib,sys,time\nf=open(sys.argv[1],"ab")\np=pathlib.Path(sys.argv[2])\nwith p.open("ab") as h: h.write(b"start\\n"); h.flush(); os.fsync(h.fileno())\ntime.sleep(0.5)\n')
+    writer.write_text('import os,pathlib,sys,time\nf=open(sys.argv[1],"ab")\np=pathlib.Path(sys.argv[2])\nwith p.open("ab") as h: h.write(b"start\\n"); h.flush(); os.fsync(h.fileno())\na=pathlib.Path(sys.argv[1]).with_name("active-writes")\nfor _ in range(10):\n with a.open("ab") as h: h.write(b"writer\\n"); h.flush(); os.fsync(h.fileno())\n time.sleep(0.05)\n')
     writer.chmod(0o644)
     def start(name):
         home = Path(pwd.getpwnam(name).pw_dir)
@@ -137,19 +137,34 @@ def prepare():
         raise AssertionError('real respawner did not restart')
     start('hermes')
     m = product(); source = Path('/home/hermes/.hermes')
-    before = m.fingerprint(source); inode = m.identity(source.lstat())
+    inode = m.identity(source.lstat())
+    def stable_bytes():
+        # An active writer's OWN append-only file must change; do not claim an
+        # impossible whole-tree freeze while it runs. Fixed sentinels, source
+        # identity, absent transaction controls and pairing attest no relocation
+        # mutation. Stopped-only refusal additionally compares the full tree.
+        values=[]
+        for path in ('held','nested/payload','hardlink'):
+            fd=os.open(source/path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NOATIME)
+            with os.fdopen(fd,'rb') as stream: values.append(hashlib.file_digest(stream,'sha256').hexdigest())
+        return values
+    before = stable_bytes()
     pairing = hashlib.sha256((ROOT/'pairing-sentinel.json').read_bytes()).hexdigest()
-    def attempt():
+    def attempt(active=False):
+        frozen = None if active else m.fingerprint(source)
         code = subprocess.run(['/usr/bin/python3','-I',str(PRODUCT),'relocate','hermes',str(source)], capture_output=True)
         assert code.returncode == 2 and b'maintenance-needed' in code.stderr
         assert not CONTROL.exists() and not ANCHOR.exists()
-        assert m.fingerprint(source) == before and m.identity(source.lstat()) == inode
+        assert stable_bytes() == before and m.identity(source.lstat()) == inode
+        if not active: assert m.fingerprint(source) == frozen
+        assert (source/'active-writes').stat().st_size > 0
         assert hashlib.sha256((ROOT/'pairing-sentinel.json').read_bytes()).hexdigest() == pairing
         return {'exit': code.returncode, 'automatic_restarts_observed': True,
-                'payload_and_pairing_unchanged': True}
-    receipt(NORMAL[0], attempt)
+                'payload_sentinels_and_pairing_unchanged': True, 'full_tree_compared': not active,
+                'real_payload_write_syscalls_observed': True}
+    receipt(NORMAL[0], lambda:attempt(True))
     (ROOT/'offline.json').write_text('{"stopped":true,"offline":true,"root_owned":true}\n')
-    receipt(NORMAL[1], attempt)
+    receipt(NORMAL[1], lambda:attempt(True))
     command(['systemctl','stop','storage-proof-writer.service'])
     receipt(NORMAL[2], attempt)
     def namespace():
@@ -163,11 +178,19 @@ def prepare():
     def removed_fence():
         start('storage35')
         mutable = product(); mutable.require_fence = lambda: {'UNSAFE_CONTROL': True}
-        result = mutable.Transaction('storage35','/home/storage35/.hermes').run()
-        assert result['phase'] == 'committed' and Path('/home/storage35/.hermes').is_symlink()
-        assert command(['systemctl','show','storage-proof-writer.service','--property=NRestarts','--value']).strip() != b'0'
-        command(['systemctl','stop','storage-proof-writer.service'])
-        return {'removed_fence_permitted_forbidden_move': True, 'detector': 'online mutation instead of pre-move refusal'}
+        txn=mutable.Transaction('storage35','/home/storage35/.hermes')
+        try:
+            try: txn.run()
+            except mutable.Refusal as exc:
+                assert 'maintenance-needed' not in str(exc)
+            # A later byte-drift refusal cannot substitute for the missing
+            # pre-mutation maintenance guard. The root transaction has started
+            # online while a real writer/respawner continues modifying payload.
+            assert (CONTROL/'1135/journal.json').is_file() and txn.doc['phase']
+            assert command(['systemctl','show','storage-proof-writer.service','--property=NRestarts','--value']).strip() != b'0'
+            return {'removed_fence_permitted_forbidden_transaction': True, 'observed_phase':txn.doc['phase'],
+                    'detector':'missing pre-mutation maintenance refusal; not a data-corruption claim'}
+        finally: command(['systemctl','stop','storage-proof-writer.service'])
     receipt(NORMAL[4], removed_fence)
     (ROOT/'init.sh').write_text('#!/bin/sh\nmount -t proc proc /proc 2>/dev/null || :\nmount -t sysfs sysfs /sys 2>/dev/null || :\nmount -o remount,rw /\nexec /usr/bin/python3 -I '+str(Path(__file__))+' init\n')
     (ROOT/'init.sh').chmod(0o755)

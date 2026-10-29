@@ -145,10 +145,15 @@ backend-build floor. There is no backend build or old-suite rerun.
 
 The queued guest starts in ordinary systemd with a real distinct user-owned
 `/home/hermes/.hermes`, a writer holding a file handle and a real automatically
-restarting systemd unit. It requires pre-move refusal with bytes, directory
-identity and pairing sentinel unchanged, plus stopped-only/root-receipt and
-nested-PID-1 refusals. Removing only the admission function is a negative control
-that must permit the otherwise-forbidden online move and be detected.
+restarting systemd unit that actually appends inside the selected payload. It
+requires pre-move refusal with frozen payload sentinels, directory identity and
+pairing unchanged and no transaction-control creation. The writer's own output
+must vary, so it does not dishonestly claim whole-tree immutability while that
+writer runs. After stopping the writer, the stopped-only refusal also compares
+the entire tree. Root-receipt and nested-PID-1 refusals are separate. Removing
+only the admission function must start the otherwise-forbidden root transaction
+online and be detected, even if a later source-drift check also refuses; this
+negative control is not relabelled as a demonstrated data-corruption incident.
 
 The same disposable disk then cold-boots a reviewed PID1 driver with no NIC.
 It exercises sole-init admission, surviving writer refusal, real samefs rename,

@@ -99,7 +99,8 @@ def test_samefs_rename_crossfs_opaque_stage_and_no_cleanup_delete():
 def test_runtime_inventory_binds_actual_power_cut_and_respawner_cases():
     guest=(REPO/'qa/privsep-storage/guest.py').read_text()
     host=(REPO/'qa/privsep-storage/run.py').read_text()
-    assert 'Restart=always' in guest and 'removed_fence_permitted_forbidden_move' in guest
+    assert 'Restart=always' in guest and 'removed_fence_permitted_forbidden_transaction' in guest
+    assert 'real_payload_write_syscalls_observed' in guest
     assert "os.getpid() == 1" in guest and "os.getpid() != 1" in guest
     assert "signal.SIGKILL if power_cut" in host
     assert 'set(names)==set(self.doc[\'expected_cases\'])' in host
