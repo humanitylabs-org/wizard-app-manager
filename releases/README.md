@@ -481,3 +481,9 @@ Channel: latest; the release train promotes after the upgrade test.
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/330. SHA256: `b8f6b93739180b6eb817e43a1d9899c8df98370bd3fe7f05e07a8352606165b2`.
 0.3.82 plus the Recommended fix App Manager #345 (a fresh install's agent gets the wizard gateway).
 Channel: latest; the release train promotes after the upgrade test.
+
+## 0.3.84 provenance
+
+Canonical: wizard-os releases/0.3.84.json (release train). SHA256: `24122c3310acdf25b9f0172763cad39d5180f872d683d52883e2be41c7dd90b9`.
+Latest 0.3.83 with Wizard UX 0a23c082 -> 53d209c5. Owner-approved same-day Stable (DECISIONS #93 feature fast-track): humanitylabs-org/wizard-ux#668 Home & Settings for everyone (owner-approved: Miguel, 29 Oct 2026, 'stable today'). Stable stays 0.3.83 until the installed upgrade test passes.
+Channel: on latest only.
