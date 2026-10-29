@@ -127,6 +127,77 @@ describe('owner share grants', () => {
     expect(yaml.parse(await store.prepare(urn, mounted)).services.main.volumes).toEqual([]);
     expect(await store.proposed()).toEqual([]); // denied, not silently reproposed
   });
+  it('mounts the share on the service whose recipe mounts that path (Hermes Agent engine), not the front', async () => {
+    // Fresh 0.3.83 box: the grant mounted the Claude login on hermes-agent (front proxy) while Claude Code runs in
+    // hermes-agent-engine, so every chat said Claude Code had no login (demo VPS, 30 Oct 2026).
+    const two = {
+      volumes: { 'claude-login': { name: LEGACY_CLAUDE } },
+      services: {
+        'hermes-agent': { image: 'front', 'x-runtipi': { is_main: true } },
+        'hermes-agent-engine': { image: 'engine', volumes: ['${APP_DATA_DIR}/data:/opt/data', 'claude-login:/claude'] },
+      },
+    };
+    await install(provider);
+    const urn = await install({ id: 'hermes-agent' }, two);
+    await store.change({ kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login' }, true);
+    const out = yaml.parse(await store.prepare(urn, yaml.stringify(two))).services;
+    const at = (svc: any) => (svc.volumes ?? []).filter((v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target) === '/claude');
+    expect(at(out['hermes-agent-engine'])).toEqual([
+      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+    ]);
+    expect(at(out['hermes-agent'])).toEqual([]);
+    // Revoke, then approve again on the persisted prepared file: still the engine, never the front.
+    const grant = { kind: 'share', from: 'hermes-agent', to: 'wizard-claude', share: 'claude-login' } as const;
+    const mounted = await store.prepare(urn, yaml.stringify(two));
+    await store.change(grant, false);
+    const revoked = await store.prepare(urn, mounted);
+    expect(at(yaml.parse(revoked).services['hermes-agent-engine'])).toEqual([]);
+    await store.change(grant, true);
+    const again = yaml.parse(await store.prepare(urn, revoked)).services;
+    expect(at(again['hermes-agent-engine'])).toEqual([
+      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+    ]);
+    expect(at(again['hermes-agent'])).toEqual([]);
+  });
+  it('replaces a sidecar placeholder mount for a non-Hermes consumer instead of reporting a conflict', async () => {
+    const reader = { id: 'claude-reader', mounts: [{ app: 'wizard-claude', share: 'claude-login', path: '/claude' }] };
+    const side = {
+      volumes: { placeholder: {} },
+      services: {
+        web: { image: 'front', 'x-runtipi': { is_main: true } },
+        worker: { image: 'worker', user: compose.services.main.user, volumes: ['placeholder:/claude', '${APP_DATA_DIR}/data:/data'] },
+      },
+    };
+    await install(provider);
+    const urn = await install(reader, side);
+    await store.change({ kind: 'share', from: 'claude-reader', to: 'wizard-claude', share: 'claude-login' }, true);
+    const out = yaml.parse(await store.prepare(urn, yaml.stringify(side))).services;
+    const at = (svc: any) => (svc.volumes ?? []).filter((v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target) === '/claude');
+    expect(at(out.worker)).toEqual([
+      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
+    ]);
+    expect(out.worker.volumes).toContain('${APP_DATA_DIR}/data:/data');
+    expect(at(out.web)).toEqual([]);
+  });
+  it('places the share by the generated (architecture-resolved) compose, not the unmerged source', async () => {
+    const reader = { id: 'claude-reader', mounts: [{ app: 'wizard-claude', share: 'claude-login', path: '/claude' }] };
+    const source = {
+      services: {
+        web: { image: 'front', 'x-runtipi': { is_main: true } },
+        worker: { image: 'worker' },
+      },
+    };
+    // An x-runtipi override for this architecture added the mount on the worker in the generated compose.
+    const generated = { services: { web: { image: 'front' }, worker: { image: 'worker', volumes: ['${APP_DATA_DIR}/volumes/p:/claude'] } } };
+    await install(provider);
+    const urn = await install(reader, source);
+    await store.change({ kind: 'share', from: 'claude-reader', to: 'wizard-claude', share: 'claude-login' }, true);
+    const out = yaml.parse(await store.prepare(urn, yaml.stringify(generated))).services;
+    const at = (svc: any) => (svc.volumes ?? []).filter((v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target) === '/claude');
+    expect(at(out.worker)).toEqual([expect.objectContaining({ target: '/claude' })]);
+    expect(at(out.worker)[0].source).toBe(`${root}/app-data/wizardapps/wizard-claude/data/claude`);
+    expect(at(out.web)).toEqual([]);
+  });
   it('proposes when provider installed later and keeps provider data on consumer uninstall', async () => {
     await install(consumer);
     expect(await store.proposed()).toEqual([]);

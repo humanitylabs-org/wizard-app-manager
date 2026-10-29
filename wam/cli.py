@@ -458,6 +458,11 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             agent_link(c, STORE)
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
             print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
+    if app_id in ("hermes-agent", "wizard-claude") and status == "running" and not alongside.load(c.home):
+        try:   # fresh mode: the agent reads the Claude app's sign-in (the shared Claude Code login) once both are in
+            approve_default_shares(c, rt)
+        except Exception as e:  # noqa: BLE001 - never fail the install for it; the owner can approve it in Connections
+            print(f"note: Claude sign-in not shared with the agent yet ({str(e)[:160]})", file=sys.stderr)
     if role == "shell" and status == "running":
         try:   # alongside and fresh: the Store data adapter follows the installed shell's commit
             store_data_cmd(c)
@@ -1023,6 +1028,30 @@ def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
         except (Exception, SystemExit) as e:  # noqa: BLE001 - reported per app; never fails the alongside run
             out[app_id] = f"error: {str(e)[:160] or type(e).__name__}"
     return out
+
+
+def approve_default_shares(c: Config, rt) -> list[dict]:
+    """Fresh mode: the owner's install is the consent for a folder share one default app declares on another (the
+    Hermes Agent app mounts the Claude app's `claude-login`, the Claude Code sign-in its subscription provider uses).
+    The App Manager never approves a new pair by itself (owner share grants), and nothing asked the owner, so on a fresh
+    box the agent ran without the sign-in and every chat said Claude Code had no login. Only default-app pairs, only
+    pending proposals, only running consumers: a share the owner denied or revoked stays that way, and a stopped app
+    stays stopped."""
+    default_ids = {d.get("app") for d in slots.load_defaults().values() if d.get("app")}
+    installed = set(installed_ids(rt))
+    done = []
+    for consumer in sorted(default_ids & installed):
+        # Approving recreates the consumer (compose down + up): never start an app the owner stopped.
+        if ((rt.app(f"{consumer}:{STORE}") or {}).get("app") or {}).get("status") != "running":
+            continue
+        for g in rt.req("GET", f"/apps/{consumer}:wizardapps/proposed-grants") or []:
+            if not isinstance(g, dict) or g.get("kind") != "share" or g.get("from") != consumer:
+                continue
+            if g.get("to") not in default_ids or g.get("to") not in installed:
+                continue
+            rt.req("POST", f"/apps/{consumer}:wizardapps/share-grants", {"to": g["to"], "share": g.get("share"), "approve": True})
+            done.append({"from": consumer, "to": g["to"], "share": g.get("share")})
+    return done
 
 
 def claude_login_cmd(c: Config, apps: dict[str, list]) -> dict:

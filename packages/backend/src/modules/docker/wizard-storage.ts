@@ -666,6 +666,19 @@ rm -f ".$1.wizard-copy-ready"`;
       if (!doc['x-wizard-volumes'] || fresh.size) doc = rewriteVolumes(portable(doc), app.manifest.id);
       // Never trust an app-supplied x-wizard-* migration instruction.
       doc['x-wizard-volumes'] = plans;
+      // Which generated services mount each consumer share path, read before any mount is removed below. The generated
+      // compose already has the architecture overrides applied, so an override that adds or moves the mount counts.
+      // The selection is kept in the prepared compose: once the share replaced the placeholder and a revoke removed it,
+      // a later approval of that persisted file still finds the same services.
+      const kept = (doc['x-wizard-share-carriers'] ?? {}) as Record<string, unknown>;
+      const carriers = new Map(
+        (app.manifest.mounts ?? []).map((m) => {
+          const found = Object.keys(doc.services ?? {}).filter((n) => (doc.services[n].volumes ?? []).some((v: any) => targetOf(v) === m.path));
+          const before = Array.isArray(kept[m.path]) ? (kept[m.path] as unknown[]).filter((n): n is string => typeof n === 'string') : [];
+          return [m.path, [...new Set([...found, ...before])].filter((n) => doc.services?.[n])] as const;
+        }),
+      );
+      doc['x-wizard-share-carriers'] = Object.fromEntries(carriers);
       const file = await this.readGrants();
       file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => id !== app.manifest.id);
       await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
@@ -723,10 +736,17 @@ rm -f ".$1.wizard-copy-ready"`;
         );
         const folder = await confined(p.data, `data/${share.path}`, true);
         if (p.manifest.id === 'wizard-claude' && share.id === 'claude-login') await this.migrate(this.legacyClaudeVolume, `data/${share.path}`, p);
+        // The services whose own recipe mounts this path get the share (Hermes Agent: Claude Code runs in its engine
+        // service, not the main front service); otherwise the main service.
+        const declared = carriers.get(m.path) ?? [];
         const main = Object.keys(app.compose.services).filter((n) => app.compose.services[n]['x-runtipi']?.is_main);
-        if (main.length !== 1 || !doc.services[main[0]!]) throw new Error('Share consumer requires exactly one main service');
-        const svc = doc.services[main[0]!];
-        if ((svc.volumes ?? []).some((v: any) => targetOf(v) === m.path)) throw new Error(`Share mount conflicts at ${m.path}`);
+        if (!declared.length && main.length !== 1) throw new Error('Share consumer requires exactly one main service');
+        const names = declared.length ? declared : main;
+        if (names.some((n) => !doc.services[n])) throw new Error('Share consumer service missing');
+        const targets = names.map((n) => doc.services[n]);
+        // The share replaces the recipe's own placeholder mount at that path in the selected services.
+        for (const svc of targets) if (declared.length) svc.volumes = (svc.volumes ?? []).filter((v: any) => targetOf(v) !== m.path);
+        if (targets.some((svc) => (svc.volumes ?? []).some((v: any) => targetOf(v) === m.path))) throw new Error(`Share mount conflicts at ${m.path}`);
         // New provider folders inherit the provider service uid, never consumer uid.
         const providerSvc =
           Object.values(p.compose.services).find((s) =>
@@ -737,8 +757,10 @@ rm -f ".$1.wizard-copy-ready"`;
         const [uid, gid] = user.split(':').map(Number);
         const stat = await fs.stat(folder);
         if (missing && (stat.uid !== uid || stat.gid !== (gid ?? uid))) await fs.chown(folder, uid!, gid ?? uid!);
-        svc.volumes ??= [];
-        svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
+        for (const svc of targets) {
+          svc.volumes ??= [];
+          svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
+        }
         doc['x-wizard-share-mounts'].push(m.path);
       }
       const prepared = yaml.stringify(doc);
