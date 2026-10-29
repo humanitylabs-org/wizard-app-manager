@@ -14,6 +14,12 @@ import json
 import os
 import posixpath
 import re
+import hashlib
+import fcntl
+import threading
+import stat
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 FILE = 'wizard-host-approvals.json'
@@ -34,6 +40,95 @@ FLAGGED = ('devices', 'device_cgroup_rules', 'sysctls', 'runtime', 'cgroup_paren
 BUILD_KEYS = {'context', 'dockerfile', 'dockerfile_inline', 'args', 'target', 'cache_from', 'cache_to', 'labels',
               'no_cache', 'pull', 'platforms', 'shm_size', 'tags'}
 SOCKET = re.compile(r'docker\.sock|containerd\.sock|podman\.sock|/run/docker|/run/containerd')
+
+
+def value_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+
+
+def bind_identity(service, mount):
+    return service + '|' + value_digest({'source': _clean(mount['source']), 'target': _clean(mount['target']),
+                                        'read_only': mount['read_only']})
+
+
+def unsupported_features(config):
+    """Unreviewed features are hard refusals, never authority the writer can mint."""
+    if not isinstance(config, dict):
+        return ['unsupported:compose']
+    out = []
+    for key in config:
+        if key not in TOP_KEYS and not str(key).startswith('x-'):
+            out.append(f'unsupported:top:{key}')
+    for kind in ('secrets', 'configs'):
+        if config.get(kind): out.append(f'unsupported:{kind}')
+    for name, v in (config.get('volumes') or {}).items():
+        if v and (v.get('external') or v.get('driver') not in (None, 'local') or v.get('driver_opts')):
+            out.append(f'unsupported:volume:{name}')
+        for k in v or {}:
+            if k not in ('name', 'driver', 'driver_opts', 'external', 'labels'):
+                out.append(f'unsupported:volume:{name}:{k}')
+    for name, v in (config.get('networks') or {}).items():
+        if v and (v.get('driver') not in (None, 'bridge') or v.get('driver_opts')):
+            out.append(f'unsupported:network:{name}')
+        for k in v or {}:
+            if k not in ('name', 'driver', 'driver_opts', 'external', 'labels', 'attachable', 'internal', 'enable_ipv6', 'enable_ipv4', 'ipam'):
+                out.append(f'unsupported:network:{name}:{k}')
+        ipam = (v or {}).get('ipam') or {}
+        if ipam.get('driver') not in (None, 'default') or ipam.get('options'):
+            out.append(f'unsupported:network:{name}:ipam')
+    for svc, s in (config.get('services') or {}).items():
+        if not isinstance(s, dict):
+            out.append(f'unsupported:{svc}:invalid'); continue
+        for k in s:
+            if k not in SERVICE_KEYS and not k.startswith('x-'):
+                out.append(f'unsupported:{svc}:{k}')
+        for k in ('build', 'post_start', 'pre_stop', 'secrets', 'configs', 'env_file', 'develop', 'annotations'):
+            if s.get(k): out.append(f'unsupported:{svc}:{k}')
+        logging = s.get('logging') or {}
+        if logging.get('driver') not in (None, 'json-file', 'local', 'none') or any(k not in ('max-size', 'max-file', 'compress', 'labels', 'labels-regex', 'env', 'env-regex', 'mode', 'max-buffer-size') for k in logging.get('options') or {}):
+            out.append(f'unsupported:{svc}:logging')
+        deploy = s.get('deploy') or {}
+        if (((deploy.get('resources') or {}).get('reservations') or {}).get('devices')):
+            out.append(f'unsupported:{svc}:deploy_devices')
+        if any(k not in ('replicas', 'resources', 'restart_policy', 'labels') for k in deploy):
+            out.append(f'unsupported:{svc}:deploy')
+        for raw in s.get('volumes') or []:
+            if not isinstance(raw, dict): continue
+            if raw.get('type') not in (None, 'bind', 'volume', 'tmpfs'): out.append(f'unsupported:{svc}:mount_type')
+            for k in raw:
+                if k not in ('type', 'source', 'target', 'read_only', 'bind', 'volume', 'tmpfs', 'consistency'):
+                    out.append(f'unsupported:{svc}:mount:{k}')
+            opts = raw.get('bind') or {}
+            if any(k not in ('create_host_path', 'propagation') for k in opts) or opts.get('propagation') not in (None, 'rprivate'):
+                out.append(f'unsupported:{svc}:bind_options')
+            if any(k != 'nocopy' for k in raw.get('volume') or {}): out.append(f'unsupported:{svc}:volume_options')
+            if any(k not in ('size', 'mode') for k in raw.get('tmpfs') or {}): out.append(f'unsupported:{svc}:tmpfs_options')
+    return sorted(out)
+
+
+_held = threading.local()
+_threads = threading.RLock()
+
+
+@contextmanager
+def authority_lock(c):
+    """Shared kernel lock with DockerService; always acquire before host_policy.LOCK."""
+    file = path_for(c).parent / '.wizard-host-authority.lock'
+    with _threads:
+        held = getattr(_held, 'paths', set())
+        if str(file) in held:
+            yield
+            return
+        file.parent.mkdir(parents=True, exist_ok=True)
+        _control_parent(c)
+        fd = os.open(file, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _held.paths = held | {str(file)}
+            yield
+        finally:
+            _held.paths = held
+            os.close(fd)
 
 
 def _clean(p: str) -> str:
@@ -75,7 +170,7 @@ def volume_of(v):
 def tokens(config, *, app_id, store, app_data_dir, files_root, source_root, env_dirs=(),
            app_data_root=None, injected=frozenset(), shared_network='runtipi_tipi_main_network'):
     """Same rules as finalHostTokens() in wizard-host-guard.ts."""
-    out = set()
+    out = set(unsupported_features(config))
     if not isinstance(config, dict):
         return ['compose:invalid']
     for key in config:
@@ -121,7 +216,7 @@ def tokens(config, *, app_id, store, app_data_dir, files_root, source_root, env_
                 out.add(f'{svc}|{key}:{v}')
         for key in FLAGGED:
             if _nonempty(s.get(key)):
-                out.add(f'{svc}|{key}')
+                out.add(f'{svc}|{key}:{value_digest(s[key])}')
         caps = s.get('cap_add')
         for cap in caps if isinstance(caps, list) else (['invalid'] if caps else []):
             c = str(cap).upper().removeprefix('CAP_')
@@ -157,7 +252,7 @@ def tokens(config, *, app_id, store, app_data_dir, files_root, source_root, env_
                 out.add(f'{svc}|volume:invalid')
                 continue
             if SOCKET.search(v['source']):
-                out.add(f'{svc}|socket:{v["source"]}')
+                out.add(f'{svc}|socket:{_clean(v["source"])}:{_clean(v["target"])}:{"ro" if v["read_only"] else "rw"}')
                 continue
             if v['type'] in ('volume', 'tmpfs'):
                 continue
@@ -172,7 +267,7 @@ def tokens(config, *, app_id, store, app_data_dir, files_root, source_root, env_
                 continue
             if v['read_only'] and source.startswith(src_prefix) and '..' not in source.split('/'):
                 continue
-            if app_data_root and _under(source, app_data_root) and f'{svc}|{v["target"]}' in injected:
+            if app_data_root and _under(source, app_data_root) and bind_identity(svc, v) in injected:
                 continue
             out.add(f'{svc}|bind:{source}:{v["target"]}:{mode}')
     return sorted(out)
@@ -238,6 +333,28 @@ def app_tokens(c, app_id, store='wizardapps', where='installed', given=None):
         raw = network.load_yaml(user.read_text()) or {}
         if isinstance(raw, dict):
             merged = _merge(merged, _expanded(raw, values))
+    if not isinstance(merged, dict):
+        return ['unsupported:compose']
+    services = merged.get('services') or {}
+    if not isinstance(services, dict):
+        return ['unsupported:services']
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        if isinstance(service.get('devices'), list):
+            devices = []
+            for item in service['devices']:
+                if isinstance(item, str) and item.startswith('/'):
+                    parts = item.split(':')
+                    devices.append({'source': parts[0], 'target': parts[1] if len(parts) > 1 else parts[0],
+                                    'permissions': parts[2] if len(parts) > 2 else 'rwm'})
+                else:
+                    devices.append(item)
+            service['devices'] = devices
+        if isinstance(service.get('sysctls'), list):
+            service['sysctls'] = dict(item.split('=', 1) for item in service['sysctls'])
+        if isinstance(service.get('sysctls'), dict):
+            service['sysctls'] = {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in service['sysctls'].items()}
     app_data_root = Path(ctx['app_data']).parent.parent
     return tokens(merged, app_id=app_id, store=store, app_data_dir=str(ctx['app_data']),
                   files_root=str(ctx['files_root']), source_root=str(app_data_root / '.wizard-source' / store),
@@ -260,34 +377,64 @@ def path_for(c) -> Path:
     return Path(c.runtipi_root) / 'user-config' / FILE
 
 
+def _control_parent(c):
+    p = path_for(c).parent
+    st = p.lstat()
+    manager = Path(c.runtipi_root).stat().st_uid
+    if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022 or st.st_uid not in (0, manager):
+        raise ValueError('unsafe host authority control directory')
+
+
 def _read(c):
     try:
-        doc = json.loads(path_for(c).read_text())
+        _control_parent(c)
+        fd = os.open(path_for(c), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_mode & 0o022:
+                return None
+            doc = json.load(f)
         return doc if isinstance(doc, dict) and doc.get('schema') == 1 and isinstance(doc.get('apps'), dict) else None
     except (OSError, ValueError):
         return None
 
 
 def write(c, apps: dict) -> bool:
+    with authority_lock(c):
+        return _write(c, apps)
+
+
+def _write(c, apps: dict) -> bool:
     body = json.dumps({'schema': 1, 'apps': {k: sorted(set(v)) for k, v in sorted(apps.items())}}, indent=2) + '\n'
     p = path_for(c)
-    if p.is_file() and p.read_text() == body:
+    if _read(c) == json.loads(body):
         return False
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + '.wam-tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, 'w') as f:
-        f.write(body)
-    os.chmod(tmp, 0o644)  # the backend container reads it; no secrets
-    tmp.replace(p)
+    _control_parent(c)
+    fd, name = tempfile.mkstemp(prefix=f'.{FILE}.', dir=p.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(body)
+            f.flush()
+            os.fchmod(f.fileno(), 0o644)  # backend reads it; no secrets
+            os.fsync(f.fileno())
+        tmp.replace(p)
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
 
 
 def record(c, app_id, store='wizardapps', found=None):
-    """After an accepted policy check, list this app's current tokens. A refused check changes nothing."""
+    with authority_lock(c):
+        return _record(c, app_id, store, found)
+
+
+def _record(c, app_id, store='wizardapps', found=None):
+    """Never retain stale authority on refusal or mint approvals for unsupported features."""
     found = app_tokens(c, app_id, store) if found is None else found
-    if found is None:
-        return False
+    if found is None or any(t.startswith('unsupported:') for t in found):
+        found = []
     apps = (_read(c) or {'apps': {}})['apps']
     key = f'{store}/{app_id}'
     if found:
@@ -298,12 +445,17 @@ def record(c, app_id, store='wizardapps', found=None):
 
 
 def sync(c):
+    with authority_lock(c):
+        return _sync(c)
+
+
+def _sync(c):
     """Recompute every installed app. A refused app keeps no stale acceptance."""
     root = Path(c.runtipi_root)
     apps = {}
     for recipe in sorted((root / 'apps').glob('*/*/docker-compose.yml')):
         app_id, store = recipe.parent.name, recipe.parent.parent.name
         found = accepted(c, app_id, store)
-        if found:
+        if found and not any(t.startswith('unsupported:') for t in found):
             apps[f'{store}/{app_id}'] = found
     return write(c, apps)

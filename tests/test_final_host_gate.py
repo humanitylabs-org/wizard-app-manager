@@ -25,7 +25,8 @@ def test_grant_injected_bind_needs_app_data_root():
                                             '/etc:/share2']}}}
     got = fht.tokens(cfg, app_id='demo', store='wizardapps', app_data_dir=ctx['app_data_dir'],
                      files_root=ctx['files_root'], source_root=ctx['source_root'],
-                     app_data_root=ctx['app_data_root'], injected={'web|/share', 'web|/share2'})
+                     app_data_root=ctx['app_data_root'], injected=frozenset((fht.bind_identity('web', fht.volume_of(cfg['services']['web']['volumes'][0])),
+                                                                           fht.bind_identity('web', fht.volume_of(cfg['services']['web']['volumes'][1])))))
     assert got == ['web|bind:/etc:/share2:rw']
 
 

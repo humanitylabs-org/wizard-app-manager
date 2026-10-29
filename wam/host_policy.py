@@ -180,7 +180,7 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
         for key in ('pid', 'ipc', 'userns_mode', 'uts', 'cgroup'):
             if svc.get(key) and str(svc[key]).lower() not in ('private', 'shareable'):
                 out.append(f'{name}: {key}: {svc[key]}')
-        for key in ('devices', 'device_cgroup_rules', 'sysctls', 'env_file', 'runtime', 'cgroup_parent', 'storage_opt'):
+        for key in ('devices', 'device_cgroup_rules', 'sysctls', 'env_file', 'runtime', 'cgroup_parent', 'storage_opt', 'isolation'):
             if svc.get(key):
                 out.append(f'{name}: {key} requires host access: {json.dumps(expand_value(svc[key]), sort_keys=True)}')
         caps = svc.get('cap_add') or []
@@ -226,6 +226,7 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
                 if isinstance(ref, dict) and ref.get('file') is not None:
                     out.append(f'{name}: {kind} reads a host file')
         for mount in svc.get('volumes') or []:
+            parts = []
             if isinstance(mount, str):
                 # Interpolation defaults can themselves contain ':': split AFTER expansion.
                 expanded = _expand(mount, values)
@@ -246,7 +247,9 @@ def _risks(compose: dict | str, app_id: str | None = None, store='wizardapps', *
                 out.append(f'{name}: invalid mount')
                 continue
             if any(x in source for x in ('docker.sock', 'containerd.sock', 'podman.sock', '/run/docker', '/run/containerd')):
-                out.append(f'{name}: mounts the container runtime socket {source}')
+                read_only = (len(parts) == 3 and parts[2] == 'ro') if isinstance(mount, str) else mount.get('read_only') is True
+                target = (parts[1] if len(parts) >= 2 else '') if isinstance(mount, str) else mount.get('target', mount.get('dst', ''))
+                out.append(f'{name}: mounts the container runtime socket {source} at {target} ({"ro" if read_only else "rw"})')
                 continue
             if not bind:
                 continue  # app-private Compose named volume
@@ -509,13 +512,37 @@ def normalized_override(c, app_id, store, text, *, offline=False):
 
 
 def require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):
-    sha = _require_app(c, app_id, store, where, filesystem, given)
-    if filesystem is None:
-        # The backend's final Compose gate (wizard-host-guard.ts) only honours what
-        # this policy accepted, for exactly this recipe and override.
-        from . import final_host_tokens
-        final_host_tokens.record(c, app_id, store, final_host_tokens.app_tokens(c, app_id, store, where, given))
-    return sha
+    if filesystem is not None:
+        return _require_app(c, app_id, store, where, filesystem, given)
+    from . import final_host_tokens
+    with final_host_tokens.authority_lock(c):
+        try:
+            sha = _require_app(c, app_id, store, where, filesystem, given)
+            if filesystem is None:
+                found = final_host_tokens.app_tokens(c, app_id, store, where, given)
+                final_host_tokens.record(c, app_id, store, found)
+                if found and any(t.startswith('unsupported:') for t in found):
+                    raise ValueError('Compose feature is not supported by the final host boundary')
+            return sha
+        except Exception:
+            if filesystem is None:
+                final_host_tokens.record(c, app_id, store, [])
+            raise
+
+
+def revoke(c, app_id, store='wizardapps'):
+    """One revoke path for browser and CLI, fenced against a final Docker consume."""
+    from . import final_host_tokens, network
+    if not ID.fullmatch(app_id):
+        raise ValueError('invalid app id')
+    with final_host_tokens.authority_lock(c):
+        # Clear the authority consumed by Docker FIRST, even if later reconciliation fails.
+        final_host_tokens.record(c, app_id, store, [])
+        with LOCK:
+            state = _read(c.home)
+            state.get('approvals', {}).pop(approval_key(app_id, store), None)
+            _write(c.home, state)
+        network.set_host_access_allowed(c.home, app_id, False)
 
 
 def _require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):

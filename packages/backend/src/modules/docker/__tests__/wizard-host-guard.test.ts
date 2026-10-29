@@ -48,4 +48,46 @@ describe('final host gate', () => {
     const env = composeEnv({ PATH: '/bin', POSTGRES_PASSWORD: 'sentinel', JWT_SECRET: 'sentinel', RABBITMQ_PASSWORD: 'sentinel' });
     expect(env).toEqual({ PATH: '/bin' });
   });
+
+  it('grant authority is bound to the exact source, target and read-only tuple', () => {
+    const mount = { type: 'bind', source: '/srv/rt/app-data/wizardapps/provider/data/shared', target: '/shared', read_only: true };
+    const generated = { services: { web: { volumes: [mount] } } };
+    const injected = injectedBinds(generated, { web: { volumes: [] } });
+    expect(finalHostTokens(generated, { ...ctx, injected })).toEqual([]);
+    for (const change of [{ source: '/srv/rt/app-data/wizardapps/other/data/shared' }, { target: '/elsewhere' }, { read_only: false }]) {
+      const changed = { services: { web: { volumes: [{ ...mount, ...change }] } } };
+      expect(() => assertFinalHostPolicy(changed, { ...ctx, injected }, {})).toThrow(HostAccessRefused);
+    }
+  });
+
+  for (const [key, a, b] of [
+    ['devices', ['/dev/example-a'], ['/dev/example-b']],
+    ['sysctls', { 'example.test': '1' }, { 'example.test': '2' }],
+    ['runtime', 'runc', 'synthetic-runtime'],
+  ] as const)
+    it(`authorization binds the whole ${key} value`, () => {
+      const original = { services: { web: { [key]: a } } };
+      const changed = { services: { web: { [key]: b } } };
+      const accepted = { 'wizardapps/demo': finalHostTokens(original, ctx) };
+      expect(() => assertFinalHostPolicy(original, ctx, accepted)).not.toThrow();
+      expect(() => assertFinalHostPolicy(changed, ctx, accepted)).toThrow(HostAccessRefused);
+    });
+
+  for (const unsupported of [
+    { future_host_feature: { path: '/example' } },
+    { build: { context: '.', cache_to: ['type=local,dest=example'] } },
+    { post_start: [{ command: 'true', privileged: true }] },
+    { deploy: { resources: { reservations: { devices: [{ capabilities: ['gpu'] }] } } } },
+    { env_file: '/example/app.env' },
+  ])
+    it('unsupported features cannot become authorized by recording their tokens', () => {
+      const model = { services: { web: unsupported } };
+      expect(() => assertFinalHostPolicy(model, ctx, { 'wizardapps/demo': finalHostTokens(model, ctx) })).toThrow(HostAccessRefused);
+    });
+
+  it('ordinary image and command changes do not widen an unchanged approved risk model', () => {
+    const original = { services: { web: { image: 'example:v1', command: ['old'], privileged: true } } };
+    const changed = { services: { web: { image: 'example:v2', command: ['new'], privileged: true } } };
+    expect(() => assertFinalHostPolicy(changed, ctx, { 'wizardapps/demo': finalHostTokens(original, ctx) })).not.toThrow();
+  });
 });

@@ -1,7 +1,19 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import os from 'node:os';
+import { withHostAuthority } from './host-policy-lock';
+import { verifyBindSources, executableModel } from './compose-consumption';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
-import { assertFinalHostPolicy, composeEnv, injectedBinds, MUTATING, readHostApprovals, type GuardContext } from './wizard-host-guard';
+import {
+  assertFinalHostPolicy,
+  composeEnv,
+  MUTATING,
+  readHostApprovals,
+  unsupportedFeatures,
+  HostAccessRefused,
+  type GuardContext,
+} from './wizard-host-guard';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import * as yaml from 'yaml';
 import { servicesForArchitecture } from './builders/compose.builder';
@@ -16,6 +28,9 @@ import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
+
+const execFileAsync = promisify(execFile);
+type ValidatedCompose = { args: string[]; input: string };
 
 @Injectable()
 export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -109,19 +124,23 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     return this.storageInstance;
   }
 
-  public async prepareApp(appUrn: AppUrn, apply?: () => Promise<void>) {
+  public async prepareApp(appUrn: AppUrn, apply?: (prepared: string, grantedBinds?: Set<string>) => Promise<void>) {
     const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
-    await this.storage.prepare(appUrn, generated.content, async (prepared) => {
+    await this.storage.prepare(appUrn, generated.content, async (prepared, grantedBinds) => {
       // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
-      const app = await Promise.resolve().then(() => this.appsRepository.getAppByUrn(appUrn)).catch(() => undefined);
+      const app = await Promise.resolve()
+        .then(() => this.appsRepository.getAppByUrn(appUrn))
+        .catch(() => undefined);
       let publishedServices: string[] = [];
       if (appUrn.endsWith(':wizardapps') && (app?.exposed === true || app?.exposedLocal === true)) {
         const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn);
         if (!source.content) throw new Error(`Missing source Compose for published ${appUrn}`);
         const services = servicesForArchitecture(source.content, this.config.get('architecture'));
         publishedServices = Object.entries(services)
-          .filter(([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined)
+          .filter(
+            ([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined,
+          )
           .map(([name]) => name);
       }
       const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices);
@@ -129,36 +148,40 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
         await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
       }
-      await apply?.();
+      await apply?.(enforced, grantedBinds);
     });
   }
 
   public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
-    if (command.split(' ')[0] === 'up') {
-      let result!: { success: boolean; stdout: string; stderr: string };
-      await this.prepareApp(appUrn, async () => {
-        // Validate storage/shares/bridge before a restart can stop anything,
-        // holding the grant lock continuously through down and up.
-        await beforeStart?.();
-        result = await this.runComposeApp(appUrn, command);
-      });
-      return result;
-    }
-    return this.runComposeApp(appUrn, command);
+    return withHostAuthority(this.config.get('directories').dataDir, async () => {
+      if (MUTATING.has(command.split(' ')[0] ?? '')) {
+        let result!: { success: boolean; stdout: string; stderr: string };
+        await this.prepareApp(appUrn, async (prepared, grantedBinds) => {
+          const validated = await this.validatedCompose(appUrn, prepared, grantedBinds);
+          // The final policy AND immutable executable model exist before down.
+          await beforeStart?.();
+          result = await this.runComposeApp(appUrn, command, validated);
+        });
+        return result;
+      }
+      return this.runComposeApp(appUrn, command);
+    });
   }
 
-  private async runComposeApp(appUrn: AppUrn, command: string) {
-    let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
-    // Final privileged consumer: Compose's own merged/interpolated model of THIS
-    // invocation (generated recipe, user override, every env file) must hold no
-    // host access the App Manager did not accept. Checked before Docker changes.
-    if (MUTATING.has(command.split(' ')[0] ?? '')) await this.assertHostPolicy(appUrn, args);
+  private async runComposeApp(appUrn: AppUrn, command: string, validated?: ValidatedCompose) {
+    if (!validated && MUTATING.has(command.split(' ')[0] ?? '')) throw new Error('Validated Compose model required');
+    const pinned = validated;
+    let { args, isCustomConfig } = pinned ? { args: [...pinned.args], isCustomConfig: true } : await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
 
     this.logger.info(`Running docker compose with args ${args.join(' ')}`);
 
     const cmd = spawn('docker-compose', args, { env: composeEnv() });
+    cmd.stdin.on('error', () => {
+      /* command exit/error below is authoritative */
+    });
+    if (pinned) cmd.stdin.end(pinned.input);
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -187,6 +210,86 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };
   }
 
+  /** Snapshot every command input under the authority lock, then execute only
+   * the checked in-memory Compose model on stdin. Never reread override/env. */
+  private async validatedCompose(appUrn: AppUrn, prepared?: string, grantedBinds = new Set<string>()): Promise<ValidatedCompose> {
+    const { args: original } = await this.getBaseComposeArgsApp(appUrn);
+    const { dataDir } = this.config.get('directories');
+    const temp = await fs.mkdtemp(path.join(dataDir, 'user-config', '.compose-guard-'));
+    await fs.chmod(temp, 0o700);
+
+    try {
+      const args = [...original];
+      let projectDir = '';
+      for (let i = 0; i < args.length - 1; i++) {
+        if (!['-f', '--file', '--env-file'].includes(args[i]!)) continue;
+        const compose = args[i] !== '--env-file';
+        const file = args[++i]!;
+        const content = compose && !projectDir && prepared !== undefined ? prepared : await fs.readFile(file, 'utf8');
+        if (Buffer.byteLength(content) > 8 * 1024 * 1024) throw new Error('Compose input exceeds policy limit');
+        if (compose) {
+          projectDir ||= path.dirname(file);
+          const unsupported = unsupportedFeatures(yaml.parse(content));
+          if (unsupported.length) throw new HostAccessRefused(appUrn, unsupported);
+        }
+        const snap = path.join(temp, String(i));
+        await fs.writeFile(snap, content, { mode: 0o600, flag: 'wx' });
+        args[i] = snap;
+      }
+      args.push('--project-directory', projectDir);
+      const { model, ctx } = await this.assertHostPolicy(appUrn, args, grantedBinds);
+      await this.assertVolumeIdentity(model, appUrn.replace(':', '_'));
+      const managerUid = (await fs.stat(path.join(dataDir, '.env'))).uid;
+      await verifyBindSources(
+        model,
+        ctx,
+        managerUid,
+        (file, argv) => execFileAsync(file, argv, { env: composeEnv() }),
+        async (source) => {
+          // Missing ordinary data directories may be created only through an
+          // attested backend mapping of the ancestry the daemon just checked.
+          const self = JSON.parse((await execFileAsync('docker', ['inspect', '--type', 'container', os.hostname()])).stdout)[0];
+          if (!self?.State?.Running || self.Config?.Hostname !== os.hostname()) throw new Error('Cannot attest backend namespace');
+          const localRoot = this.config.get('directories').appDataDir;
+          if (!(self.Mounts ?? []).some((m: any) => m.Type === 'bind' && m.Source === ctx.appDataRoot && m.Destination === localRoot))
+            throw new HostAccessRefused(appUrn, ['daemon/backend mount mapping is not attested']);
+          const local = path.join(localRoot, path.posix.relative(ctx.appDataRoot!, source));
+          await fs.mkdir(local, { recursive: true, mode: 0o755 });
+          await fs.chmod(local, 0o777); // payload endpoint only, never control ancestors
+        },
+      );
+      const input = JSON.stringify(executableModel(model));
+      return {
+        args: ['--env-file', '/dev/null', '--project-name', appUrn.replace(':', '_'), '--project-directory', projectDir, '--file', '-'],
+        input,
+      };
+    } finally {
+      await fs.rm(temp, { recursive: true, force: true });
+    }
+  }
+
+  private async assertVolumeIdentity(model: any, project: string) {
+    for (const [key, spec] of Object.entries(model.volumes ?? {}) as [string, any][]) {
+      const name = `${project}_${key}`;
+      if (spec?.name !== name || spec.external || (spec.driver && spec.driver !== 'local') || Object.keys(spec.driver_opts ?? {}).length)
+        throw new HostAccessRefused(project, ['named volume is not project-private']);
+      let existing: any;
+      try {
+        existing = JSON.parse((await execFileAsync('docker', ['volume', 'inspect', name])).stdout)[0];
+      } catch (e: any) {
+        if (/no such volume/i.test(String(e.stderr))) continue;
+        throw e;
+      }
+      if (
+        existing.Driver !== 'local' ||
+        Object.keys(existing.Options ?? {}).length ||
+        existing.Labels?.['com.docker.compose.project'] !== project ||
+        existing.Labels?.['com.docker.compose.volume'] !== key
+      )
+        throw new HostAccessRefused(project, ['existing named volume has foreign identity or host driver options']);
+    }
+  }
+
   private async composeConfig(args: string[]): Promise<unknown> {
     const cmd = spawn('docker-compose', [...args, 'config', '--format', 'json'], { env: composeEnv() });
     const stdout: Buffer[] = [];
@@ -206,14 +309,11 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     return JSON.parse(Buffer.concat(stdout).toString('utf8'));
   }
 
-  public async assertHostPolicy(appUrn: AppUrn, baseArgs: string[]) {
+  public async assertHostPolicy(appUrn: AppUrn, baseArgs: string[], grantedBinds = new Set<string>()) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { directories, rootFolderHost, userSettings } = this.config.getConfig();
     const appDataRoot = `${userSettings.appDataPath || rootFolderHost}/app-data`;
-    const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
-    const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn).catch(() => null);
-    // Without the installed recipe nothing counts as grant-injected (fail closed).
-    const recipe = source?.content ? servicesForArchitecture(source.content, this.config.get('architecture')) : null;
+
     const ctx: GuardContext = {
       appId: appName,
       store: appStoreId,
@@ -221,10 +321,17 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       filesRoot: path.posix.join(rootFolderHost, 'media'),
       sourceRoot: path.posix.join(appDataRoot, '.wizard-source', appStoreId),
       appDataRoot,
-      envDirs: [path.posix.join(directories.appDataDir, appStoreId, appName), path.posix.join(directories.dataDir, 'user-config', appStoreId, appName)],
-      injected: recipe && generated.content ? injectedBinds(yaml.parse(generated.content), recipe) : new Set(),
+      envDirs: [
+        path.posix.join(directories.appDataDir, appStoreId, appName),
+        path.posix.join(directories.dataDir, 'user-config', appStoreId, appName),
+      ],
+      // Only tuples freshly returned by WizardStorage under its grant lock.
+      // Never infer grant authority from generated files or app-supplied metadata.
+      injected: grantedBinds,
     };
-    assertFinalHostPolicy(await this.composeConfig(baseArgs), ctx, await readHostApprovals(directories.dataDir));
+    const model: any = await this.composeConfig(baseArgs);
+    assertFinalHostPolicy(model, ctx, await readHostApprovals(directories.dataDir));
+    return { model, ctx };
   }
 
   public getLogsStream = async (maxLines: number, appUrn?: AppUrn) => {

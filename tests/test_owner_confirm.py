@@ -19,6 +19,7 @@ SERVE = {'Web': {'box.example.ts.net:8446': {'Handlers': {'/': {'Proxy': f'http:
 def box(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(oc, '_serve_status', lambda: SERVE)
+    monkeypatch.setattr(oc, 'listener_owned', lambda home: True)  # identity/route tests; ownership has separate kernel-table fixtures
     monkeypatch.setattr(owner, 'execute', lambda c, path, body: calls.append((path, body)) or {'ok': path})
     (tmp_path / oc.CONFIG).write_text(json.dumps({'origin': ORIGIN}))
     return SimpleNamespace(home=tmp_path), calls
@@ -127,3 +128,26 @@ def test_approval_listener_exact_origin_and_human_confirm(box, monkeypatch):
     ok = _post(c, f'/confirm/{doc["id"]}', {'sha': doc['sha']})
     assert ok.status == 200 and calls == [('/api/developer/server-access', {'action': 'grant', 'seconds': 60})]
     assert _post(c, f'/confirm/{doc["id"]}', {'sha': doc['sha']}).status == 409  # single use
+
+
+def test_listener_source_requires_exact_manager_uid_and_loopback(tmp_path):
+    proc = tmp_path / 'tcp'
+    uid = tmp_path.stat().st_uid
+    def table(addr='0100007F', owner=uid):
+        proc.write_text('header\n' + f'0: {addr}:{oc.PORT:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 {owner} 0 123\n')
+    table()
+    assert oc.listener_owned(tmp_path, proc)
+    table(owner=uid + 1)
+    assert not oc.listener_owned(tmp_path, proc)
+    table(addr='00000000')
+    assert not oc.listener_owned(tmp_path, proc)
+    proc.unlink()
+    assert not oc.listener_owned(tmp_path, proc)
+
+
+def test_enable_never_publishes_a_route_to_an_unowned_listener(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(oc, 'listener_owned', lambda home: False)
+    with pytest.raises(ValueError, match='not manager-owned'):
+        oc.enable(tmp_path, 'box.example.ts.net', run=lambda argv: calls.append(argv))
+    assert calls == [] and not (tmp_path / oc.CONFIG).exists()

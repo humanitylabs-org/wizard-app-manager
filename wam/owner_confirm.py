@@ -106,6 +106,27 @@ def _serve_status():
     return links.serve_status()
 
 
+def listener_owned(home, proc=Path('/proc/net/tcp')) -> bool:
+    """A route string is not listener ownership. Require exactly one IPv4
+    loopback LISTEN socket owned by the protected manager account, not the agent.
+    Read the kernel table, never an HTTP response/header that another listener
+    can forge. Lack of proc visibility or ambiguity is a refusal.
+    """
+    try:
+        expected = Path(home).stat().st_uid
+        rows = []
+        for line in Path(proc).read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != '0A':
+                continue
+            addr, port = fields[1].split(':')
+            if int(port, 16) == PORT:
+                rows.append((addr, int(fields[7])))
+        return rows == [('0100007F', expected)]
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def configured(home) -> str | None:
     try:
         doc = json.loads((Path(home) / CONFIG).read_text())
@@ -120,7 +141,7 @@ def configured(home) -> str | None:
 def verified_origin(home, status=None) -> str | None:
     """The configured origin, only while its whole Serve site is the approval listener and nothing else."""
     origin = configured(home)
-    if not origin:
+    if not origin or not listener_owned(home):
         return None
     try:
         web = (status if status is not None else _serve_status()).get('Web', {})
@@ -137,6 +158,8 @@ def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> d
     """Publish the dedicated approval site on a port no shell or app uses, then record its origin."""
     import subprocess
     run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=30))
+    if not listener_owned(home):
+        raise ValueError('approval listener is absent or not manager-owned; start the protected manager service before publishing its route')
     authority = f'{host}:{https_port}'
     web = _serve_status().get('Web', {})
     if authority in web and verified_origin_for(web, authority) is None:
@@ -152,6 +175,8 @@ def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> d
     tmp.replace(path)
     origin = verified_origin(home)
     if not origin:
+        path.unlink(missing_ok=True)
+        run(['tailscale', 'serve', f'--https={https_port}', 'off'])
         raise ValueError('the approval site did not read back as the approval listener only')
     return {'origin': origin}
 

@@ -249,6 +249,10 @@ class Migration:
                 os.chown(current, system.pw_uid, system.pw_gid, follow_symlinks=False)
                 for file in files:
                     os.chown(Path(current)/file, system.pw_uid, system.pw_gid, follow_symlinks=False)
+        # Directories that contain app.env are control anchors, not app payload.
+        # Preserve every numeric owner BELOW each app directory.
+        from .control_paths import seal_app_controls
+        seal_app_controls(BASE/'runtipi', system.pw_uid, system.pw_gid)
         atomic(BASE/'.wizard-privsep', self.agent.pw_name+'\n', 0o644)
         os.chown(BASE/'.wizard-privsep', system.pw_uid, system.pw_gid)
 

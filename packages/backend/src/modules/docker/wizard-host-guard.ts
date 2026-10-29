@@ -13,6 +13,8 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 
 export const APPROVALS_FILE = 'wizard-host-approvals.json';
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -36,7 +38,21 @@ const SERVICE_KEYS = new Set(
   ).split(' '),
 );
 const FLAGGED_SERVICE_KEYS = ['devices', 'device_cgroup_rules', 'sysctls', 'runtime', 'cgroup_parent', 'storage_opt', 'isolation'];
-const BUILD_KEYS = new Set(['context', 'dockerfile', 'dockerfile_inline', 'args', 'target', 'cache_from', 'cache_to', 'labels', 'no_cache', 'pull', 'platforms', 'shm_size', 'tags']);
+const BUILD_KEYS = new Set([
+  'context',
+  'dockerfile',
+  'dockerfile_inline',
+  'args',
+  'target',
+  'cache_from',
+  'cache_to',
+  'labels',
+  'no_cache',
+  'pull',
+  'platforms',
+  'shm_size',
+  'tags',
+]);
 
 export type GuardContext = {
   appId: string;
@@ -51,7 +67,7 @@ export type GuardContext = {
   envDirs: string[];
   /** Host path of the whole app-data root (WizardStorage share binds stay inside it). */
   appDataRoot?: string;
-  /** `service|target` binds added by WizardStorage grants, not present in the recipe. */
+  /** Exact normalized mount tuples added under the current WizardStorage grant lock. */
   injected?: Set<string>;
   /** Runtipi's shared network Docker name. */
   sharedNetwork?: string;
@@ -65,6 +81,80 @@ const under = (p: string, root: string) => {
 };
 const truthy = (v: unknown) => v === true || String(v).toLowerCase() === 'true';
 const nonEmpty = (v: unknown) => (Array.isArray(v) ? v.length > 0 : v && typeof v === 'object' ? Object.keys(v).length > 0 : Boolean(v));
+
+function canonical(v: any): any {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === 'object')
+    return Object.fromEntries(
+      Object.keys(v)
+        .sort()
+        .map((k) => [k, canonical(v[k])]),
+    );
+  return v;
+}
+/** Complete values, excluding inert image/command/environment updates. */
+export const valueDigest = (v: unknown) =>
+  createHash('sha256')
+    .update(JSON.stringify(canonical(v)))
+    .digest('hex');
+export const bindIdentity = (service: string, v: NonNullable<ReturnType<typeof volumeOf>>) =>
+  `${service}|${valueDigest({ source: clean(v.source), target: clean(v.target), read_only: v.readOnly })}`;
+
+/** Unsupported means unreviewed, never owner-approvable. Check before secret-reading normalization too. */
+export function unsupportedFeatures(config: any): string[] {
+  const out: string[] = [];
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return ['unsupported:compose'];
+  for (const key of Object.keys(config)) if (!TOP_KEYS.has(key) && !key.startsWith('x-')) out.push(`unsupported:top:${key}`);
+  for (const kind of ['secrets', 'configs']) if (nonEmpty(config[kind])) out.push(`unsupported:${kind}`);
+  for (const [name, v] of Object.entries((config.volumes ?? {}) as Record<string, any>)) {
+    if (v && (v.external || (v.driver && v.driver !== 'local') || nonEmpty(v.driver_opts))) out.push(`unsupported:volume:${name}`);
+    for (const k of Object.keys(v ?? {}))
+      if (!['name', 'driver', 'driver_opts', 'external', 'labels'].includes(k)) out.push(`unsupported:volume:${name}:${k}`);
+  }
+  for (const [name, v] of Object.entries((config.networks ?? {}) as Record<string, any>)) {
+    if (v && ((v.driver && v.driver !== 'bridge') || nonEmpty(v.driver_opts))) out.push(`unsupported:network:${name}`);
+    for (const k of Object.keys(v ?? {}))
+      if (!['name', 'driver', 'driver_opts', 'external', 'labels', 'attachable', 'internal', 'enable_ipv6', 'enable_ipv4', 'ipam'].includes(k))
+        out.push(`unsupported:network:${name}:${k}`);
+    if (v?.ipam && ((v.ipam.driver && v.ipam.driver !== 'default') || nonEmpty(v.ipam.options))) out.push(`unsupported:network:${name}:ipam`);
+  }
+  for (const [svc, s] of Object.entries((config.services ?? {}) as Record<string, any>)) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) {
+      out.push(`unsupported:${svc}:invalid`);
+      continue;
+    }
+    for (const k of Object.keys(s)) if (!SERVICE_KEYS.has(k) && !k.startsWith('x-')) out.push(`unsupported:${svc}:${k}`);
+    for (const k of ['build', 'post_start', 'pre_stop', 'secrets', 'configs', 'env_file', 'develop', 'annotations'])
+      if (nonEmpty(s[k])) out.push(`unsupported:${svc}:${k}`);
+    if (
+      s.logging &&
+      ((s.logging.driver && !['json-file', 'local', 'none'].includes(s.logging.driver)) ||
+        Object.keys(s.logging.options ?? {}).some(
+          (k) => !['max-size', 'max-file', 'compress', 'labels', 'labels-regex', 'env', 'env-regex', 'mode', 'max-buffer-size'].includes(k),
+        ))
+    )
+      out.push(`unsupported:${svc}:logging`);
+    if (nonEmpty(s.deploy?.resources?.reservations?.devices)) out.push(`unsupported:${svc}:deploy_devices`);
+    if (s.deploy && Object.keys(s.deploy).some((k) => !['replicas', 'resources', 'restart_policy', 'labels'].includes(k)))
+      out.push(`unsupported:${svc}:deploy`);
+    for (const raw of Array.isArray(s.volumes) ? s.volumes : []) {
+      if (typeof raw !== 'object' || !raw) continue;
+      if (raw.type && !['bind', 'volume', 'tmpfs'].includes(raw.type)) out.push(`unsupported:${svc}:mount_type`);
+      for (const k of Object.keys(raw))
+        if (!['type', 'source', 'target', 'read_only', 'bind', 'volume', 'tmpfs', 'consistency'].includes(k))
+          out.push(`unsupported:${svc}:mount:${k}`);
+      if (
+        raw.bind &&
+        (Object.keys(raw.bind).some((k) => !['create_host_path', 'propagation'].includes(k)) ||
+          (raw.bind.propagation && raw.bind.propagation !== 'rprivate'))
+      )
+        out.push(`unsupported:${svc}:bind_options`);
+      if (raw.volume && Object.keys(raw.volume).some((k) => k !== 'nocopy')) out.push(`unsupported:${svc}:volume_options`);
+      if (raw.tmpfs && Object.keys(raw.tmpfs).some((k) => !['size', 'mode'].includes(k))) out.push(`unsupported:${svc}:tmpfs_options`);
+    }
+  }
+  return out.sort();
+}
 
 /** Normalize one service volume (long or short syntax) to {type, source, target, readOnly}. */
 export function volumeOf(v: any): { type: string; source: string; target: string; readOnly: boolean } | null {
@@ -85,7 +175,7 @@ export function volumeOf(v: any): { type: string; source: string; target: string
 }
 
 export function finalHostTokens(config: any, ctx: GuardContext): string[] {
-  const out = new Set<string>();
+  const out = new Set<string>(unsupportedFeatures(config));
   if (!config || typeof config !== 'object' || Array.isArray(config)) return ['compose:invalid'];
   for (const key of Object.keys(config)) if (!TOP_KEYS.has(key) && !key.startsWith('x-')) out.add(`top:${key}`);
   for (const [name, raw] of Object.entries((config.networks ?? {}) as Record<string, any>)) {
@@ -121,7 +211,7 @@ export function finalHostTokens(config: any, ctx: GuardContext): string[] {
       const v = s[key] == null ? '' : String(s[key]).toLowerCase();
       if (v && v !== 'private' && v !== 'shareable' && !v.startsWith('service:')) out.add(`${svc}|${key}:${v}`);
     }
-    for (const key of FLAGGED_SERVICE_KEYS) if (nonEmpty(s[key])) out.add(`${svc}|${key}`);
+    for (const key of FLAGGED_SERVICE_KEYS) if (nonEmpty(s[key])) out.add(`${svc}|${key}:${valueDigest(s[key])}`);
     for (const cap of Array.isArray(s.cap_add) ? s.cap_add : s.cap_add ? ['invalid'] : []) {
       const c = String(cap).toUpperCase().replace(/^CAP_/, '');
       if (!DEFAULT_CAPS.has(c)) out.add(`${svc}|cap:${c}`);
@@ -150,7 +240,7 @@ export function finalHostTokens(config: any, ctx: GuardContext): string[] {
         continue;
       }
       if (/docker\.sock|containerd\.sock|podman\.sock|\/run\/docker|\/run\/containerd/.test(v.source)) {
-        out.add(`${svc}|socket:${v.source}`);
+        out.add(`${svc}|socket:${clean(v.source)}:${clean(v.target)}:${v.readOnly ? 'ro' : 'rw'}`);
         continue;
       }
       if (v.type === 'volume' || v.type === 'tmpfs') continue; // app-private named volume (top level checked above)
@@ -167,7 +257,7 @@ export function finalHostTokens(config: any, ctx: GuardContext): string[] {
       if (v.readOnly && source.startsWith(`${clean(ctx.sourceRoot)}/${ctx.appId}@`) && !source.split('/').includes('..')) continue;
       // Grant shares are manager-generated binds between app-data trees, never
       // a recipe or user override path (a matching target outside fails).
-      if (ctx.appDataRoot && under(source, ctx.appDataRoot) && ctx.injected?.has(`${svc}|${v.target}`)) continue;
+      if (ctx.appDataRoot && under(source, ctx.appDataRoot) && ctx.injected?.has(bindIdentity(svc, v))) continue;
       out.add(`${svc}|bind:${source}:${v.target}:${v.readOnly ? 'ro' : 'rw'}`);
     }
   }
@@ -176,7 +266,19 @@ export function finalHostTokens(config: any, ctx: GuardContext): string[] {
 
 export async function readHostApprovals(dataDir: string): Promise<Record<string, string[]>> {
   try {
-    const doc = JSON.parse(await fs.readFile(path.join(dataDir, 'user-config', APPROVALS_FILE), 'utf8'));
+    const manager = (await fs.stat(path.join(dataDir, '.env'))).uid;
+    const parent = path.join(dataDir, 'user-config');
+    const st = await fs.lstat(parent);
+    if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 0o022 || ![0, manager].includes(st.uid)) return {};
+    const file = await fs.open(path.join(parent, APPROVALS_FILE), constants.O_RDONLY | constants.O_NOFOLLOW);
+    let doc: any;
+    try {
+      const st = await file.stat();
+      if (!st.isFile() || st.nlink !== 1 || st.mode & 0o022 || ![0, manager].includes(st.uid)) return {};
+      doc = JSON.parse(await file.readFile('utf8'));
+    } finally {
+      await file.close();
+    }
     if (doc?.schema !== 1 || !doc.apps || typeof doc.apps !== 'object') return {};
     const out: Record<string, string[]> = {};
     for (const [key, list] of Object.entries(doc.apps as Record<string, unknown>))
@@ -193,7 +295,7 @@ export class HostAccessRefused extends Error {
     readonly tokens: string[],
   ) {
     super(
-      `${app} refused before Docker changed anything: it asks for host access the owner has not approved (${tokens.join('; ')}). ` +
+      `${app} refused before container start: its host access is unapproved or unsupported (${tokens.join('; ')}). ` +
         'Retry through Wizard to get an owner approval link.',
     );
   }
@@ -202,7 +304,7 @@ export class HostAccessRefused extends Error {
 export function assertFinalHostPolicy(config: unknown, ctx: GuardContext, approvals: Record<string, string[]>) {
   if (!ID.test(ctx.appId) || !ID.test(ctx.store)) throw new HostAccessRefused(`${ctx.appId}:${ctx.store}`, ['invalid app id']);
   const accepted = new Set(approvals[`${ctx.store}/${ctx.appId}`] ?? []);
-  const missing = finalHostTokens(config, ctx).filter((t) => !accepted.has(t));
+  const missing = finalHostTokens(config, ctx).filter((t) => t.startsWith('unsupported:') || !accepted.has(t));
   if (missing.length) throw new HostAccessRefused(`${ctx.appId}:${ctx.store}`, missing);
 }
 
@@ -215,7 +317,7 @@ export function injectedBinds(generated: any, source: any): Set<string> {
     );
     for (const raw of Array.isArray(s?.volumes) ? s.volumes : []) {
       const v = volumeOf(raw);
-      if (v?.type === 'bind' && v.target && !recipe.has(v.target)) out.add(`${svc}|${v.target}`);
+      if (v?.type === 'bind' && v.target && !recipe.has(v.target)) out.add(bindIdentity(svc, v));
     }
   }
   return out;

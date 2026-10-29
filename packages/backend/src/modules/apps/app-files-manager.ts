@@ -192,6 +192,7 @@ export class AppFilesManager {
    * @param appUrn - The app id
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
+    await this.protectAppControlDir(appUrn);
     // Protect the manager-generated file FIRST, then keep upstream's payload
     // compatibility (non-root app UIDs must write their data) while excluding
     // app.env from the recursive widening. find -P never follows app links.
@@ -204,7 +205,24 @@ export class AppFilesManager {
     // otherwise plant one aimed at manager files inside this container).
     // -mindepth 1: the app directory holding app.env stays manager-owned and
     // not world-writable, so nobody else can swap app.env for a link.
-    await execFileAsync('find', ['-P', appDataDir, '-mindepth', '1', '-path', env.path, '-prune', '-o', '!', '-type', 'l', '-exec', 'chmod', 'a+rwx', '{}', '+']).catch(() => {
+    await execFileAsync('find', [
+      '-P',
+      appDataDir,
+      '-mindepth',
+      '1',
+      '-path',
+      env.path,
+      '-prune',
+      '-o',
+      '!',
+      '-type',
+      'l',
+      '-exec',
+      'chmod',
+      'a+rwx',
+      '{}',
+      '+',
+    ]).catch(() => {
       this.logger.error(`Error setting permissions for app ${appUrn}`);
     });
   }
@@ -226,6 +244,7 @@ export class AppFilesManager {
   }
 
   public async writeAppEnv(appUrn: AppUrn, env: string) {
+    await this.protectAppControlDir(appUrn);
     const { appDataDir } = this.getAppPaths(appUrn);
 
     const envPath = path.join(appDataDir, 'app.env');
@@ -235,9 +254,24 @@ export class AppFilesManager {
 
   /** The App Manager service account owns the app-data root on separated boxes; it reads app.env, agents do not. */
   private async managerOwner() {
-    const { appDataDir } = this.configuration.getConfig().directories;
-    const st = await fs.promises.stat(appDataDir);
+    const { envFilePath } = this.configuration.getConfig();
+    const st = await fs.promises.stat(envFilePath);
     return { uid: st.uid, gid: st.gid };
+  }
+
+  private async protectAppControlDir(appUrn: AppUrn) {
+    const root = this.configuration.getConfig().directories.appDataDir;
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const owner = await this.managerOwner();
+    // Never recurse into app-owned data. Protect only the exact store/app
+    // directories that allow app.env to be renamed, even when migration kept
+    // the old agent's numeric ownership on all actual payload files.
+    for (const dir of [root, path.dirname(appDataDir), appDataDir]) {
+      const st = await fs.promises.lstat(dir);
+      if (!st.isDirectory() || st.isSymbolicLink()) throw new Error('Unsafe app control directory');
+      await fs.promises.chown(dir, owner.uid, owner.gid);
+      await fs.promises.chmod(dir, 0o755);
+    }
   }
 
   /**

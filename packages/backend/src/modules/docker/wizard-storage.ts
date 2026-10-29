@@ -8,6 +8,8 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import * as yaml from 'yaml';
 import { appProposals, sameAppGrant, reconcileAppGrants } from './wizard-app-grants';
+import { withHostAuthority } from './host-policy-lock';
+import { bindIdentity, volumeOf } from './wizard-host-guard';
 
 export const COPY_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 export const LEGACY_CLAUDE = 'wizard-ai-accounts-claude';
@@ -145,11 +147,13 @@ export class WizardStorage {
     if (!VOLUME.test(legacyClaudeVolume)) throw new Error('Unsafe legacy Claude volume name');
   }
   serial<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(fn);
-    this.queue = next.catch(() => {
-      /* A failed operation must not poison subsequent independent operations. */
+    return withHostAuthority(this.dirs.dataDir, async () => {
+      const next = this.queue.then(fn);
+      this.queue = next.catch(() => {
+        /* A failed operation must not poison subsequent independent operations. */
+      });
+      return next;
     });
-    return next;
   }
   get grantsPath() {
     return path.join(this.dirs.dataDir, 'state', 'wizard-grants.json');
@@ -466,7 +470,7 @@ rm -f ".$1.wizard-copy-ready"`;
     ]);
   }
 
-  async prepare(urn: string, generated: string, apply?: (prepared: string) => Promise<void>): Promise<string> {
+  async prepare(urn: string, generated: string, apply?: (prepared: string, grantedBinds?: Set<string>) => Promise<void>): Promise<string> {
     return this.serial(async () => {
       const apps = await this.apps();
       const app = apps.find((a) => a.urn === urn);
@@ -534,6 +538,7 @@ rm -f ".$1.wizard-copy-ready"`;
       const previously = doc['x-wizard-share-mounts'] ?? [];
       for (const svc of Object.values(doc.services)) svc.volumes = (svc.volumes ?? []).filter((v: any) => !previously.includes(targetOf(v)));
       doc['x-wizard-share-mounts'] = [];
+      const grantedBinds = new Set<string>();
       for (const m of app.manifest.mounts ?? []) {
         if (!file.grants.some((g) => g.kind === 'share' && g.from === app.manifest.id && g.to === m.app && g.share === m.share)) continue;
         const p = apps.find((p) => p.manifest.id === m.app);
@@ -565,12 +570,13 @@ rm -f ".$1.wizard-copy-ready"`;
         if (missing && (stat.uid !== uid || stat.gid !== (gid ?? uid))) await fs.chown(folder, uid!, gid ?? uid!);
         svc.volumes ??= [];
         svc.volumes.push({ type: 'bind', source: `${p.hostData}/data/${share.path}`, target: m.path, bind: { create_host_path: false } });
+        grantedBinds.add(bindIdentity(main[0]!, volumeOf(svc.volumes[svc.volumes.length - 1])!));
         doc['x-wizard-share-mounts'].push(m.path);
       }
       const prepared = yaml.stringify(doc);
       // Hold the same grant lock through the actual create/start. Otherwise a
       // concurrent revoke can finish before a stale prepared mount is started.
-      await apply?.(prepared);
+      await apply?.(prepared, grantedBinds);
       return prepared;
     });
   }

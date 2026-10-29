@@ -2097,12 +2097,7 @@ def _main(argv: list[str] | None = None) -> int:
                     except host_policy.NeedsOwnerApproval:
                         raise  # print the exact wam approve command, never self-approve
                 else:
-                    with host_policy.LOCK:
-                        state = host_policy._read(c.home)
-                        state.get('approvals', {}).pop(args.app, None)
-                        host_policy._write(c.home, state)
-                    from . import final_host_tokens
-                    final_host_tokens.record(c, args.app, STORE, [])   # the final Docker gate refuses it too
+                    host_policy.revoke(c, args.app, STORE)
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
                 stopped = None
                 if args.action == "deny" and host_access_risks(c, args.app, "installed"):

@@ -6,6 +6,8 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { UpdateUserConfigDto } from './dto/user-config.dto';
+import path from 'node:path';
+import { withHostAuthority } from '../docker/host-policy-lock';
 
 @Injectable()
 export class UserConfigService {
@@ -32,33 +34,45 @@ export class UserConfigService {
 
   async updateUserConfig(appUrn: AppUrn, updateUserConfigDto: UpdateUserConfigDto) {
     const userComposeFile = await this.appFilesManager.getUserComposeFile(appUrn);
-    await this.filesystem.writeTextFile(userComposeFile.path, updateUserConfigDto.dockerCompose);
+    return withHostAuthority(this.dataDir(userComposeFile.path), async () => {
+      await this.filesystem.writeTextFile(userComposeFile.path, updateUserConfigDto.dockerCompose);
 
-    const userEnvFile = await this.appFilesManager.getUserEnv(appUrn);
-    await this.filesystem.writeTextFile(userEnvFile.path, updateUserConfigDto.appEnv);
+      const userEnvFile = await this.appFilesManager.getUserEnv(appUrn);
+      await this.filesystem.writeTextFile(userEnvFile.path, updateUserConfigDto.appEnv);
+    });
+  }
+
+  private dataDir(file: string) {
+    return path.dirname(path.dirname(path.dirname(path.dirname(file))));
   }
 
   async enableUserConfig(appUrn: AppUrn): Promise<void> {
-    const app = await this.appsRepository.getAppByUrn(appUrn);
+    const file = await this.appFilesManager.getUserComposeFile(appUrn);
+    return withHostAuthority(this.dataDir(file.path), async () => {
+      const app = await this.appsRepository.getAppByUrn(appUrn);
 
-    if (!app) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
-    }
+      if (!app) {
+        throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+      }
 
-    await this.appsRepository.updateAppById(app.id, {
-      userConfigEnabled: true,
+      await this.appsRepository.updateAppById(app.id, {
+        userConfigEnabled: true,
+      });
     });
   }
 
   async disableUserConfig(appUrn: AppUrn) {
-    const app = await this.appsRepository.getAppByUrn(appUrn);
+    const file = await this.appFilesManager.getUserComposeFile(appUrn);
+    return withHostAuthority(this.dataDir(file.path), async () => {
+      const app = await this.appsRepository.getAppByUrn(appUrn);
 
-    if (!app) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
-    }
+      if (!app) {
+        throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+      }
 
-    await this.appsRepository.updateAppById(app.id, {
-      userConfigEnabled: false,
+      await this.appsRepository.updateAppById(app.id, {
+        userConfigEnabled: false,
+      });
     });
   }
 }
