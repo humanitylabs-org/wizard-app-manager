@@ -380,3 +380,34 @@ describe('open mode (the owner choice): everything connected unless the owner di
     expect(Object.getOwnPropertyNames(WizardSharesController.prototype)).toContain('mode');
   });
 });
+
+describe('Restore defaults', () => {
+  it('turns cut declared links back on, removes owner-added links, keeps requests, sensitive marks and the mode', async () => {
+    await install('notes', { name: 'Notes' });
+    await store.reconcile();
+    await store.change({ kind: 'app', from: 'carlos-campaigns', to: 'twenty-crm' }, false); // a declared link cut
+    await store.change({ kind: 'app', from: 'notes', to: 'resend-connector' }, true); // a link the owner added
+    await store.change({ kind: 'app', from: 'resend-connector', to: 'notes' }, true);
+    await store.change({ kind: 'app', from: 'resend-connector', to: 'notes' }, false); // added, then cut
+    await store.setSensitive('resend-connector', true);
+    let s = await state();
+    expect(s.denied).toEqual(expect.arrayContaining([pair('carlos-campaigns', 'twenty-crm'), pair('resend-connector', 'notes')]));
+    const after = await store.resetConnections();
+    expect(after.denied).toEqual([]);
+    expect(after.grants).toEqual([expect.objectContaining({ from: 'carlos-campaigns', to: 'twenty-crm', approved: 'install' })]);
+    expect(after.sensitive).toEqual(['resend-connector']);
+    expect(after.mode).toBe('declared');
+    expect((await keys('carlos-campaigns')).outgoing['twenty-crm']).toMatch(/^[a-f0-9]{64}$/);
+    expect((await keys('notes')).outgoing).toEqual({});
+    s = await state();
+    expect(s.grants.some((g) => g.approved === 'owner')).toBe(false);
+  });
+
+  it('is an owner-only (AuthGuard) controller action', async () => {
+    const ctl = new WizardSharesController({ storage: store } as any);
+    expect(Reflect.getMetadata(GUARDS_METADATA, WizardSharesController)).toContain(AuthGuard);
+    await store.change({ kind: 'app', from: 'carlos-campaigns', to: 'twenty-crm' }, false);
+    expect((await ctl.reset()).grants).toEqual([expect.objectContaining({ from: 'carlos-campaigns', to: 'twenty-crm' })]);
+  });
+});
+

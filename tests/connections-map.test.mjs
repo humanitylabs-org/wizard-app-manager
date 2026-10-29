@@ -5,11 +5,15 @@ import test from 'node:test';
 
 import {
   BUILTIN,
+  agentList,
+  agentName,
+  agentNote,
   agentRows,
   agentsLine,
   bandOf,
   bands,
   canUse,
+  canUseLine,
   connectable,
   cutGroups,
   cutList,
@@ -20,12 +24,15 @@ import {
   reconnectRows,
   linkInfo,
   linkReason,
+  linkTag,
   linkedApps,
   list,
   listLayout,
+  listLead,
   mapModel,
   pairRow,
   pickFirst,
+  restoreWords,
   talksSentence,
   waitingLines,
 } from '../wizard-views/connections-map.js';
@@ -596,13 +603,34 @@ const phoneBox = () => {
   return d;
 };
 
-test('Phone list: one row per linked app, by name, each link with a plain reason', () => {
+test('Linked apps: one row per app, by name, each link with a plain reason; a cut link stays in its row, off', () => {
   const m = mapModel(phoneBox());
   const rows = linkedApps(m);
   assert.deepEqual(
     rows.map((r) => r.line),
-    ['Backup → Cloudflare and S3', 'Card Benefits → Transcriber', 'Money → Monarch, SimpleFIN', 'Music → YouTube Music'],
+    [
+      'Backup → Cloudflare and S3',
+      'Card Benefits → Transcriber',
+      'Messenger → Money (added by you, off)',
+      'Money → Monarch, SimpleFIN',
+      'Music → YouTube Music (added by you)',
+    ],
   );
+  // the cut link: in its app's row, off, with its own Turn on (the pair's Reconnect)
+  const messenger = rows.find((r) => r.id === 'messenger');
+  assert.deepEqual(
+    messenger.links.map((l) => [l.name, l.on, l.added, l.pair]),
+    [['Money', false, true, 'messenger|money']],
+  );
+  assert.equal(messenger.turnOn.pair, 'messenger|money');
+  assert.equal(rows.find((r) => r.id === 'money').turnOn, null);
+  assert.equal(linkTag({ on: true, added: false }), '');
+  // a link the app declares that the owner cut: off, not "added by you"
+  const cut = phoneBox();
+  cut.controls.find((r) => r.from === 'money' && r.to === 'wizard-monarch').status = 'disconnected';
+  const moneyRow = linkedApps(mapModel(cut)).find((r) => r.id === 'money');
+  assert.equal(moneyRow.line, 'Money → SimpleFIN, Monarch (off)');
+  assert.equal(moneyRow.turnOn.pair, 'money|wizard-monarch');
   const money = rows.find((r) => r.id === 'money');
   assert.deepEqual(
     money.links.map((l) => [l.name, l.why, l.pair]),
@@ -613,15 +641,19 @@ test('Phone list: one row per linked app, by name, each link with a plain reason
   );
   // no known job: who made the link instead
   assert.equal(rows.find((r) => r.id === 'card-benefits').links[0].why, 'declared by Card Benefits');
-  assert.equal(rows.find((r) => r.id === 'wizard-music').links[0].why, 'connected by you');
+  assert.equal(rows.find((r) => r.id === 'wizard-music').links[0].why, 'added by you');
   // a slot several apps provide is one link, disconnected as one, its reason from the slot
   const backup = rows.find((r) => r.id === 'backup').links;
   assert.equal(backup.length, 1);
   assert.deepEqual(backup[0].group, { from: 'backup', to: 'slot:backup-storage' });
   assert.equal(backup[0].why, 'to store backups');
   assert.equal(linkReason(m, { from: 'x', to: 'y', origin: 'requested' }, 'y'), 'allowed by you');
-  // nothing about links in Open mode: everything is connected there
-  assert.deepEqual(linkedApps({ ...m, mode: 'open' }), []);
+  // Open mode: everything is connected there, so only the pairs he cut are listed, off
+  assert.deepEqual(
+    linkedApps({ ...m, mode: 'open' }).map((r) => r.line),
+    ['Messenger → Money (off)'],
+  );
+  assert.deepEqual(linkedApps({ ...m, mode: 'off' }), []);
 });
 
 test('Phone list: the agent row, the pairs cut by you, the waiting card and the last line', () => {
@@ -677,15 +709,17 @@ test('Phone list: the agent row, the pairs cut by you, the waiting card and the 
 test('One list on every screen: the same sections in the same order; a wide pane only moves Linked apps aside', () => {
   const m = mapModel(phoneBox());
   const lay = listLayout(m);
+  assert.equal(lay.lead, 'Apps are kept apart by default: they can’t talk to each other. These are the links they have.');
+  // one Linked apps section: no separate list of cut pairs
   assert.deepEqual(
     lay.sections.map((s) => [s.key, s.title, s.count, s.side]),
     [
       ['wait', 'Waiting for your OK', null, 'main'],
-      ['agent', 'Your agent', null, 'main'],
-      ['linked', 'Linked apps', 4, 'aside'],
-      ['cut', 'Cut by you', null, 'main'],
+      ['agent', 'Agents', null, 'main'],
+      ['linked', 'Linked apps', 5, 'aside'],
     ],
   );
+  assert.equal(lay.restore, true);
   // the rows are the phone list's rows, word for word
   assert.deepEqual(
     lay.sections[0].rows.map((r) => r.text),
@@ -694,10 +728,6 @@ test('One list on every screen: the same sections in the same order; a wide pane
   assert.deepEqual(
     lay.sections[2].rows.map((r) => r.line),
     linkedApps(m).map((r) => r.line),
-  );
-  assert.deepEqual(
-    lay.sections[3].rows.map((r) => r.text),
-    cutList(m).map((r) => r.text),
   );
   assert.equal(lay.columns, 2);
   assert.equal(lay.footer, 'Everything else is kept apart.');
@@ -708,11 +738,26 @@ test('One list on every screen: the same sections in the same order; a wide pane
     listLayout(mapModel(d)).sections.map((s) => s.key),
     ['agent', 'linked'],
   );
-  // no links at all (Open mode): one column, Linked apps gone
+  // Open mode: the same sections; Linked apps holds the pairs he cut
   const open = listLayout({ ...m, mode: 'open' });
-  assert.equal(open.columns, 1);
-  assert.ok(!open.sections.some((s) => s.key === 'linked'));
+  assert.equal(open.lead, 'Your apps can all talk to each other. These are the pairs you cut.');
+  assert.deepEqual(
+    open.sections.find((s) => s.key === 'linked').rows.map((r) => r.line),
+    ['Messenger → Money (off)'],
+  );
   assert.equal(open.footer, 'Everything is connected unless you cut it.');
+  // isolation off: nothing is linked or cut, no Linked apps and no Restore defaults
+  const off = listLayout({ ...m, mode: 'off' });
+  assert.ok(!off.sections.some((s) => s.key === 'linked'));
+  assert.equal(off.columns, 1);
+  assert.equal(off.restore, false);
+  assert.equal(listLead('off'), 'All your apps can talk to each other. Keeping apps apart is turned off on this Wizard.');
+  // no links at all: the section says so instead of disappearing
+  const none = phoneBox();
+  none.controls = [];
+  const empty = listLayout(mapModel(none)).sections.find((s) => s.key === 'linked');
+  assert.equal(empty.rows.length, 0);
+  assert.equal(empty.empty, 'No links: every app is on its own.');
 });
 
 test('An app with no links can be connected from the list, without the map', () => {
@@ -720,10 +765,15 @@ test('An app with no links can be connected from the list, without the map', () 
   const pk = pickFirst(m);
   assert.equal(pk.label, 'Connect two apps');
   const ids = pk.apps.map((a) => a.id);
-  // Messenger and S3 have no links (Messenger's to Money was cut): both are offered
+  // Messenger and S3 have no working links (Messenger's to Money was cut): both are offered
   assert.ok(ids.includes('messenger'));
   assert.ok(ids.includes('s3'));
-  assert.ok(!linkedApps(m).some((r) => r.id === 'messenger' || r.id === 's3'));
+  assert.ok(!linkedApps(m).some((r) => r.id === 's3'));
+  assert.ok(
+    linkedApps(m)
+      .find((r) => r.id === 'messenger')
+      .links.every((l) => !l.on),
+  );
   // every app offered has someone to connect to, and the list is by name
   for (const a of pk.apps) assert.ok(connectable(m, a.id).length);
   assert.deepEqual(
@@ -750,4 +800,113 @@ test('The list is the main view at every width; the map only behind See map, dia
   assert.match(css, /@container \(min-width: 880px\)\s*\{\s*\.wam-cl\.is-two \{\s*display: grid;/);
   assert.match(js, /data-cm-choose/);
   assert.match(js, /window\.addEventListener\('keydown', el\._wamEsc, true\)/);
+});
+
+// The agents as the Agent Service has them (wam/agent_access.py → api/agents): one instance, Oscar on Hermes.
+const access = (on, extra = {}) => ({
+  service: true,
+  agents: [
+    {
+      id: 'hermes',
+      name: 'Oscar',
+      harness: 'Hermes',
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+      main: true,
+      private: false,
+      on,
+      known: [
+        'money',
+        'card-benefits',
+        'messenger',
+        'wizard-claude',
+        'wizard-simplefin',
+        'wizard-monarch',
+        'wizard-music',
+        'wizard-youtube-music',
+        'transcriber',
+        'backup',
+        'wizard-cloudflare',
+        's3',
+        'wizard-agent-service',
+      ],
+      ...extra,
+    },
+  ],
+});
+
+test('Agents: each instance as "Oscar · Hermes", what it can use by group, everything on by default', () => {
+  const d = phoneBox();
+  d.apps.find((a) => a.id === 'wizard-agent-service').kind = 'connector';
+  const m = mapModel(d);
+  const all = access([
+    'money',
+    'card-benefits',
+    'messenger',
+    'wizard-claude',
+    'wizard-simplefin',
+    'wizard-monarch',
+    'wizard-music',
+    'wizard-youtube-music',
+    'transcriber',
+    'backup',
+    'wizard-cloudflare',
+    's3',
+    'wizard-agent-service',
+  ]);
+  const [oscar] = agentList(m, all);
+  assert.equal(agentName(oscar), 'Oscar · Hermes');
+  assert.equal(oscar.line, 'Can use 5 apps, 1 agent app, 7 connectors');
+  assert.deepEqual(
+    oscar.groups.map((g) => [g.key, g.title, g.items.length, g.allOn]),
+    [
+      ['app', 'Apps', 5, true],
+      ['agent-app', 'Agent apps', 1, true],
+      ['connector', 'Connectors', 7, true],
+    ],
+  );
+  // Wizard's own Agent Service is an item the agent uses (badge), the shell isn't something it can be given
+  const conn = oscar.groups.find((g) => g.key === 'connector').items;
+  assert.ok(conn.find((x) => x.id === 'wizard-agent-service').builtin);
+  assert.ok(!oscar.groups.flatMap((g) => g.items).some((x) => x.id === 'wizard-ux'));
+  // one item off: its switch is off, the group can Turn all on, the line says so
+  const off = agentList(m, access(all.agents[0].on.filter((x) => x !== 'money')))[0];
+  assert.equal(off.line, 'Can use 4 apps, 1 agent app, 7 connectors · 1 turned off');
+  const apps = off.groups.find((g) => g.key === 'app');
+  assert.equal(apps.allOn, false);
+  assert.equal(apps.items.find((x) => x.id === 'money').on, false);
+  assert.equal(canUseLine([]), 'Nothing to use yet');
+  assert.match(agentNote(oscar), /^Everything is on unless you turn it off\./);
+  // the Agents section uses the same rows
+  assert.deepEqual(
+    listLayout(m, all)
+      .sections.find((s) => s.key === 'agent')
+      .rows.map(agentName),
+    ['Oscar · Hermes'],
+  );
+  for (const w of [oscar.line, off.line, agentNote(oscar)]) assert.doesNotMatch(w, /mesh|grant|drift|slot|network|gateway|harness/i);
+});
+
+test('Agents without the Agent Service: the report’s lists, read-only', () => {
+  const m = mapModel(phoneBox());
+  const [row] = agentList(m, null);
+  assert.equal(row.live, false);
+  assert.equal(row.line, 'Can use all 14 apps');
+  assert.ok(row.groups.flatMap((g) => g.items).every((x) => x.on));
+  assert.equal(agentList(m, { service: false, agents: [] })[0].live, false);
+});
+
+test('Restore defaults: the confirm dialog lists what changes, in plain words', () => {
+  const w = restoreWords({
+    changes: [
+      { change: 'on', text: 'Messenger → Money will be turned back on.' },
+      { change: 'remove', text: 'Movies → Shopping, which you added, will be removed.' },
+    ],
+  });
+  assert.equal(w.title, 'Restore defaults?');
+  assert.deepEqual(w.items, ['Messenger → Money will be turned back on.', 'Movies → Shopping, which you added, will be removed.']);
+  assert.equal(w.go, 'Restore defaults');
+  const none = restoreWords({ changes: [] });
+  assert.equal(none.go, '');
+  assert.match(none.says, /^Nothing to change/);
 });

@@ -38,6 +38,7 @@ EXIT = {
     "unreachable": 7, "http_error": 7, "protocol_error": 7, "timeout": 7,
     "auth_failed": 8, "auth_missing": 8,
     "tool_error": 9,
+    "not_allowed": 10,   # the owner turned this app off for the agent (Connections → Agents)
 }
 
 
@@ -101,7 +102,9 @@ def public_app(a: dict) -> dict:
         out["mcp"] = {"url": redact_url(mcp.get("url")), "internal": redact_url(mcp.get("internal")),
                       "transport": mcp.get("transport", "streamable-http"),
                       "auth": (mcp.get("auth") or {}).get("type") if isinstance(mcp.get("auth"), dict) else None}
-    out["callable"] = callable_reason(a) is None
+    allowed, _ = main_agent_access()
+    out["allowed"] = allowed is None or a.get("id") in allowed
+    out["callable"] = callable_reason(a) is None and out["allowed"]
     return out
 
 
@@ -128,6 +131,46 @@ def find_app(reg: dict, app_id: str) -> dict:
     raise Fail("app_not_found", f"no installed app '{app_id}'" + (f" (installed: {', '.join(known)})" if known
                                                                     else " (no apps installed)"),
                app=app_id, installed=known)
+
+
+# ------------------------------------------------------------------ the agent's access (Connections → Agents)
+# The owner turns apps on and off per agent; the Agent Service keeps the main agent's lists in .main-agent.json and its
+# gateway enforces them (wizard-agent-service docs/agent-app-access.md, wam docs/AGENT_ACCESS.md). This CLI is the
+# host agent's other way to an app, so it honours the same lists: an app turned off is refused here too.
+
+def agents_dir() -> Path | None:
+    """Where the Agent Service keeps its agents ($WIZARD_AGENTS_DIR, else its app data under Runtipi, else
+    $WIZARD_OS_HOME/agents): the first that exists."""
+    root = Path(os.environ.get("RUNTIPI_ROOT") or Path.home() / "runtipi").expanduser()
+    cands = [os.environ.get("WIZARD_AGENTS_DIR"),
+             root / "app-data" / "wizardapps" / "wizard-agent-service" / "data" / "wizard-os" / "agents",
+             os_home() / "agents", root / "app-data" / "wizard-os" / "agents"]
+    for d in cands:
+        if d and Path(d).is_dir():
+            return Path(d)
+    return None
+
+
+def main_agent_access() -> tuple[set | None, str]:
+    """(the app ids the main agent may use, or None for every app; its name). The name is the owner's for it
+    (alongside.json agent.label), else the Agent Service's default."""
+    label = ((alongside_state().get("agent") or {}).get("label") or "").strip()[:60] or "Hermes"
+    d = agents_dir()
+    try:
+        st = json.loads((d / ".main-agent.json").read_text(encoding="utf-8")) if d else None
+    except (OSError, ValueError):
+        st = None
+    if not isinstance(st, dict) or st.get("schema") != 1:
+        return None, label
+    return {x for k in ("wizard_apps", "agent_apps") for x in (st.get(k) or []) if isinstance(x, str)}, label
+
+
+def check_allowed(a: dict) -> None:
+    allowed, label = main_agent_access()
+    if allowed is not None and a.get("id") not in allowed:
+        name = a.get("name") or a.get("id")
+        raise Fail("not_allowed", f"{label} is not allowed to use {name}. The owner can turn it on in Connections.",
+                   app=a.get("id"))
 
 
 # ------------------------------------------------------------------ auth
@@ -286,6 +329,7 @@ class MCP:
 
 def connect(reg: dict, app_id: str, endpoint: str, timeout: float) -> MCP:
     a = find_app(reg, app_id)
+    check_allowed(a)
     why = callable_reason(a)
     if why:
         raise why

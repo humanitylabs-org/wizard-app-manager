@@ -229,6 +229,18 @@ export function applyConnectionPolicy(
       }
     }
 }
+/** Restore defaults (owner only): app-to-app links back to exactly what the apps declare. Drops the owner's own rows,
+ * every Disconnect / Deny (`denied`) and every owner grant (`approved: owner`); the reconcile that follows approves the
+ * declared links again (a link to a sensitive app waits for the owner again) and owner-added links are gone. Pending
+ * requests, sensitive marks, the mode and file shares are untouched. Returns the rows dropped. Same rule as wam's
+ * connections_reset.reset_state. */
+export function resetToDefaults(file: Grants): Grant[] {
+  const owned = (g: Grant) => appGrant(g) && g.approved === 'owner';
+  const dropped = [...file.grants.filter(owned), ...file.denied.filter(appGrant)];
+  file.grants = file.grants.filter((g) => !owned(g));
+  file.denied = file.denied.filter((g) => !appGrant(g));
+  return dropped;
+}
 /** Prefer an explicit advertised ingress; otherwise the main service's shared
  * network alias and internal port. Never use a public/owner URL from apps.json.
  */

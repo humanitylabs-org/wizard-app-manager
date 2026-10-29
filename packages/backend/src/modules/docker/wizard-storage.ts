@@ -21,6 +21,7 @@ import {
   providers,
   REQUESTS_DIR,
   REQUESTS_FILE,
+  resetToDefaults,
 } from './wizard-app-grants';
 
 const CORE_SLOTS = ['shell', 'agent-service', 'agent'];
@@ -426,6 +427,17 @@ export class WizardStorage {
       const apps = await this.apps();
       const file = await this.readGrants();
       file.mode = mode;
+      await this.writeGrants(file);
+      await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
+      return this.connectionState(file);
+    });
+  }
+  /** Owner only (AuthGuard'ed API / `wam grants reset`): Restore defaults, reconciled now (resetToDefaults). */
+  async resetConnections() {
+    return this.serial(async () => {
+      const apps = await this.apps();
+      const file = await this.readGrants();
+      resetToDefaults(file);
       await this.writeGrants(file);
       await reconcileAppGrants(apps, file, this.dirs.dataDir, (f) => this.writeGrants(f));
       return this.connectionState(file);

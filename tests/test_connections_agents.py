@@ -1,0 +1,283 @@
+"""Connections → Agents and Restore defaults (Miguel, 29 Oct 2026).
+
+- Restore defaults: the plan says what changes in plain words; the reset drops exactly the owner's own app-to-app rows
+  (his cuts and the links he added) and reconciles, through the App Manager's API or, on an older App Manager, its file.
+- Per-agent access: the owner's switch goes to the Agent Service's owner API for that agent only; the owner listener
+  takes it only from the owner's device (never the box itself or an app); `wizard call` refuses an app turned off.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+from wam import agent_access, alongside, connections_reset as cr
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# The box as Miguel has it: declared links, one he added (Music → YouTube Music), one he added and then cut
+# (Messenger → Money), one declared link he cut (Card Benefits → Monarch) and one declared link whose row is his own
+# (Backup → its storage, reconnected by him once).
+STATE = {
+    "schema": 1, "mode": "declared", "sensitive": [], "seeded": [], "notices": [],
+    "grants": [
+        {"kind": "app", "from": "money", "to": "wizard-monarch", "reason": "uses", "approved": "install"},
+        {"kind": "app", "from": "backup", "to": "slot:backup-storage", "reason": "owner", "approved": "owner"},
+        {"kind": "app", "from": "wizard-music", "to": "wizard-youtube-music", "reason": "owner", "approved": "owner"},
+        {"kind": "app", "from": "carlos", "to": "resend", "reason": "request", "approved": "request"},
+        {"kind": "share", "from": "hermes-agent", "to": "wizard-claude", "share": "claude-login", "approved": "owner"},
+    ],
+    "denied": [
+        {"kind": "app", "from": "messenger", "to": "money", "reason": "owner", "approved": "owner"},
+        {"kind": "app", "from": "card-benefits", "to": "wizard-monarch", "reason": "uses", "approved": "owner"},
+    ],
+    "pending": [{"kind": "app", "from": "wizard-claude", "to": "money", "reason": "request"}],
+}
+REPORT = {
+    "apps": [{"id": i, "name": n} for i, n in [
+        ("money", "Money"), ("wizard-monarch", "Monarch"), ("backup", "Backup"), ("wizard-cloudflare", "Cloudflare"),
+        ("wizard-music", "Music"), ("wizard-youtube-music", "YouTube Music"), ("messenger", "Messenger"),
+        ("card-benefits", "Card Benefits")]],
+    "controls": [
+        {"from": "backup", "to": "slot:backup-storage", "origin": "declared", "providers": ["wizard-cloudflare"],
+         "label": "Backup → Cloudflare"},
+        {"from": "messenger", "to": "money", "origin": "owner", "providers": ["money"], "label": "Messenger → Money"},
+        {"from": "card-benefits", "to": "wizard-monarch", "origin": "declared", "providers": ["wizard-monarch"],
+         "label": "Card Benefits → Monarch"},
+        {"from": "wizard-music", "to": "wizard-youtube-music", "origin": "owner", "providers": ["wizard-youtube-music"],
+         "label": "Music → YouTube Music"},
+    ],
+}
+
+
+def test_restore_plan_says_what_changes_in_plain_words():
+    plan = cr.plan(STATE, REPORT)
+    assert [p["text"] for p in plan] == [
+        "Card Benefits → Monarch will be turned back on.",
+        "Messenger → Money, which you added and turned off, will be removed.",
+        "Music → YouTube Music, which you added, will be removed.",
+    ]
+    assert [p["change"] for p in plan] == ["on", "remove", "remove"]
+    # a declared link to an app set to Ask me first comes back as a request
+    sens = {**STATE, "sensitive": ["wizard-monarch"]}
+    assert cr.plan(sens, REPORT)[0]["text"] == "Card Benefits → Monarch will wait for your OK again."
+    # nothing of his own: nothing to change
+    assert cr.plan({**STATE, "grants": STATE["grants"][:1], "denied": []}, REPORT) == []
+
+
+def test_reset_drops_only_the_owners_own_app_rows():
+    out = cr.reset_state(json.loads(json.dumps(STATE)))
+    assert [(g["from"], g["to"]) for g in out["grants"]] == [
+        ("money", "wizard-monarch"), ("carlos", "resend"), ("hermes-agent", "wizard-claude")]
+    assert out["denied"] == []
+    assert out["pending"] == STATE["pending"] and out["mode"] == "declared" and out["sensitive"] == []
+
+
+class FakeRT:
+    def __init__(self, reset_api=True):
+        self.calls, self.reset_api = [], reset_api
+
+    def req(self, method, path, body=None, timeout=60):
+        from wam.runtipi import RuntipiError
+        self.calls.append((method, path, body))
+        if path == cr.RESET_PATH and not self.reset_api:
+            raise RuntipiError(f"{method} {path} -> 404: b'not found'")
+        return {"mode": "declared", "grants": [], "denied": []}
+
+
+def _box(tmp_path, monkeypatch):
+    from wam import network
+    (tmp_path / "state").mkdir()
+    f = tmp_path / "state" / "wizard-grants.json"
+    f.write_text(json.dumps(STATE))
+    os.chmod(f, 0o600)
+    monkeypatch.setattr(network, "connection_state", lambda c, rt: json.loads(f.read_text()))
+    monkeypatch.setattr(network, "report", lambda c, rt=None: REPORT)
+
+    class C:
+        runtipi_root = tmp_path
+        home = tmp_path
+    return C(), f
+
+
+def test_restore_goes_through_the_app_managers_owner_api(tmp_path, monkeypatch):
+    c, f = _box(tmp_path, monkeypatch)
+    rt = FakeRT()
+    seen = []
+    out = cr.apply(c, rt, lambda: seen.append("reconciled"))
+    assert rt.calls == [("POST", cr.RESET_PATH, {})]
+    assert seen == ["reconciled"] and len(out["changed"]) == 3
+    assert json.loads(f.read_text()) == STATE   # the App Manager changed it, not wam
+
+
+def test_restore_on_an_older_app_manager_edits_its_file_then_reconciles_the_current_mode(tmp_path, monkeypatch):
+    c, f = _box(tmp_path, monkeypatch)
+    rt = FakeRT(reset_api=False)
+    cr.apply(c, rt)
+    doc = json.loads(f.read_text())
+    assert doc["denied"] == [] and not [g for g in doc["grants"] if g.get("kind", "app") == "app" and g["approved"] == "owner"]
+    assert oct(f.stat().st_mode & 0o777) == "0o600"
+    assert rt.calls[-1] == ("POST", "/apps/wizard/connection-mode", {"mode": "declared"})
+
+
+def test_restore_refuses_a_file_it_may_not_write(tmp_path, monkeypatch):
+    c, f = _box(tmp_path, monkeypatch)
+    monkeypatch.setattr(cr.os, "access", lambda p, m: False)
+    with pytest.raises(PermissionError):
+        cr.apply(c, FakeRT(reset_api=False))
+    assert json.loads(f.read_text()) == STATE
+
+
+# ---- per-agent access: a fake Agent Service with its owner API (PUT /wizard/v1/apps/<app>/agents) ----------------
+
+class Service:
+    def __init__(self):
+        self.lists = {"hermes": {"cinequeue", "money", "browser"}, "helper": {"money"}}
+        self.puts = []
+        svc = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, body):
+                raw = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                if self.path == "/wizard/v1/agents":
+                    return self._send(200, {"agents": [
+                        {"id": "hermes", "label": "Hermes", "harness": "hermes", "privacy": "standard",
+                         "model": {"provider": "host", "model": ""},
+                         "permissions": {"wizard_apps": sorted(svc.lists["hermes"] - {"browser"}),
+                                         "agent_apps": sorted(svc.lists["hermes"] & {"browser"})}},
+                        {"id": "helper", "label": "Helper", "harness": "hermes", "privacy": "standard",
+                         "model": {"provider": "anthropic", "model": "claude-opus-5-5"},
+                         "permissions": {"wizard_apps": sorted(svc.lists["helper"]), "agent_apps": []}}]})
+                if self.path == "/wizard/v1/agent-options":
+                    return self._send(200, {"wizard_apps": [{"id": "cinequeue"}, {"id": "money"}],
+                                            "agent_apps": [{"id": "browser"}]})
+                app = self.path.split("/")[4]
+                if app not in ("cinequeue", "money", "browser"):
+                    return self._send(404, {"error": "app_not_found"})
+                return self._send(200, {"app_id": app, "agents": [
+                    {"id": a, "enabled": app in apps} for a, apps in svc.lists.items()]})
+
+            def do_PUT(self):
+                app = self.path.split("/")[4]
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                svc.puts.append((app, body))
+                for a in svc.lists:
+                    (svc.lists[a].add if a in body["agents"] else svc.lists[a].discard)(app)
+                return self._send(200, {})
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.origin = f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+
+@pytest.fixture
+def service(monkeypatch, tmp_path):
+    s = Service()
+    monkeypatch.setattr(agent_access, "service_origin", lambda home: s.origin)
+    yield s
+    s.srv.shutdown()
+
+
+def _named(tmp_path, label="Oscar"):
+    hh = tmp_path / "hermes"
+    hh.mkdir(exist_ok=True)
+    (hh / "config.yaml").write_text("model:\n  default: claude-opus-5-5\n  provider: anthropic\n")
+    (tmp_path / "alongside.json").write_text(json.dumps({"mode": "alongside", "agent": {
+        "id": "host-hermes", "name": "host Hermes", "label": label, "hermes_home": str(hh), "origin": "http://127.0.0.1:8642"}}))
+    return tmp_path
+
+
+def test_agents_are_instances_with_name_harness_model_and_what_each_may_use(service, tmp_path):
+    got = agent_access.instances(_named(tmp_path))
+    oscar, helper = got["agents"]
+    assert (oscar["id"], oscar["name"], oscar["harness"], oscar["model"], oscar["provider"], oscar["main"]) == \
+        ("hermes", "Oscar", "Hermes", "claude-opus-5-5", "anthropic", True)
+    assert oscar["on"] == ["browser", "cinequeue", "money"] and oscar["known"] == ["browser", "cinequeue", "money"]
+    assert (helper["name"], helper["on"], helper["model"]) == ("Helper", ["money"], "claude-opus-5-5")
+
+
+def test_a_switch_changes_only_that_agent_through_the_agent_service(service, tmp_path):
+    got = agent_access.set_access(tmp_path, "hermes", ["cinequeue"], False)
+    assert service.puts == [("cinequeue", {"agents": []})]
+    assert "cinequeue" not in got["agents"][0]["on"]
+    # Turn all on for a group: only what is off is changed; the other agent keeps its own access
+    service.puts.clear()
+    agent_access.set_access(tmp_path, "hermes", ["cinequeue", "money"], True)
+    assert service.puts == [("cinequeue", {"agents": ["hermes"]})]
+    assert service.lists["helper"] == {"money"}
+    agent_access.set_access(tmp_path, "helper", ["money"], False)
+    assert service.lists["hermes"] >= {"money"} and service.lists["helper"] == set()
+
+
+def test_bad_switches_are_refused_before_the_agent_service(service, tmp_path):
+    for agent, apps, on in [("../x", ["money"], False), ("hermes", [], True), ("hermes", ["Money!"], True),
+                            ("hermes", ["money"], "yes"), ("nobody", ["money"], False)]:
+        with pytest.raises(ValueError):
+            agent_access.set_access(tmp_path, agent, apps, on)
+    assert service.puts == []
+    with pytest.raises(agent_access.AccessError) as e:
+        agent_access.set_access(tmp_path, "hermes", ["files"], False)   # not something the Agent Service gives agents
+    assert "refused" in str(e.value)
+
+
+def test_no_agent_service_is_said_plainly(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_access, "service_origin", lambda home: "http://127.0.0.1:9")
+    with pytest.raises(agent_access.AccessError) as e:
+        agent_access.instances(tmp_path)
+    assert e.value.status == 503
+
+
+def test_the_owners_name_for_his_agent_reaches_the_agent_service(tmp_path):
+    st = json.loads(_named(tmp_path).joinpath("alongside.json").read_text())
+    st["shell"] = {"port": 8796}
+    st["service"] = {"port": 8798}
+    text = alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
+    assert 'WIZARD_MAIN_AGENT_LABEL: "Oscar"' in text
+    st["agent"]["label"] = 'Os"car\n: x'
+    assert 'WIZARD_MAIN_AGENT_LABEL: "Oscar x"' in alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
+    del st["agent"]["label"]
+    assert "WIZARD_MAIN_AGENT_LABEL" not in alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
+
+
+# ---- `wizard call`: the host agent's other way to an app honours the same lists ---------------------------------
+
+def _cli(tmp_path, *args, allowed=("money",)):
+    home = _named(tmp_path)
+    (home / "apps.json").write_text(json.dumps({"schema": 1, "apps": [
+        {"id": "cinequeue", "name": "Movies", "status": "running", "mcp": {"url": "http://127.0.0.1:9/mcp"}},
+        {"id": "money", "name": "Money", "status": "running", "mcp": {"url": "http://127.0.0.1:9/mcp"}}]}))
+    agents = tmp_path / "agents"
+    agents.mkdir(exist_ok=True)
+    (agents / ".main-agent.json").write_text(json.dumps({"schema": 1, "wizard_apps": list(allowed), "agent_apps": []}))
+    env = {**os.environ, "WIZARD_OS_HOME": str(home), "WIZARD_AGENTS_DIR": str(agents), "HOME": str(tmp_path)}
+    return subprocess.run([sys.executable, str(ROOT / "wizard-cli" / "wizard"), *args], capture_output=True, text=True,
+                          env=env, timeout=30)
+
+
+def test_wizard_call_refuses_an_app_the_owner_turned_off_in_plain_words(tmp_path):
+    r = _cli(tmp_path, "call", "cinequeue.cinequeue_list", "{}", "--json")
+    assert r.returncode == 10
+    assert json.loads(r.stdout)["error"] == {"code": "not_allowed", "exit": 10, "app": "cinequeue", "message":
+                                             "Oscar is not allowed to use Movies. The owner can turn it on in Connections."}
+    assert "Oscar is not allowed to use Movies." in _cli(tmp_path, "call", "cinequeue.cinequeue_list", "{}").stderr
+    tools = _cli(tmp_path, "tools", "cinequeue", "--json")
+    assert tools.returncode == 10
+    listed = json.loads(_cli(tmp_path, "apps", "list", "--json").stdout)
+    assert {a["id"]: (a["allowed"], a["callable"]) for a in listed["apps"]}["cinequeue"] == (False, False)
+    # turned on again (or never chosen): it is only the app's own reachability that decides
+    r = _cli(tmp_path, "call", "cinequeue.cinequeue_list", "{}", "--json", allowed=("money", "cinequeue"))
+    assert r.returncode == 7   # unreachable: the test app isn't running, but the call was allowed

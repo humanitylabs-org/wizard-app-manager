@@ -11,11 +11,16 @@ origin, so the owner opens it from Wizard on his phone, and its API calls go to 
   POST api/apps/<id>:wizardapps/app-grants           {to, approve}: Reconnect/Approve (true), Disconnect/Deny (false)
   POST api/apps/<id>:wizardapps/sensitive            {sensitive}
   POST api/apps/wizard/connection-mode               {mode: open|declared}
+  GET  api/connections/restore                       what Restore defaults would change, in plain words
+  POST api/connections/restore                       {confirm: true}: Restore defaults (connections_reset.py), live
+  GET  api/agents                                    the agents and the apps each may use (agent_access.py)
+  POST api/agents/<agent>/access                     {apps: [ids], on: bool}: the owner's switch / Turn all on
 
 Every request passes the listener's owner gate first (tailscaled peer, the owner's Tailscale login); a POST also
 passes `check_request` (another tailnet device, the shell's origin, JSON with X-Wizard-Store: 1). A change is then made
-through Runtipi's owner API, exactly as `wam grants` does, and `wam serve` applies it to Docker within seconds.
-Nothing else of Runtipi's API is reachable here.
+through Runtipi's owner API, exactly as `wam grants` does, and `wam serve` applies it to Docker within seconds; an
+agent's access goes through the Agent Service's owner API on the box's loopback, which its gateway enforces on the
+agent's next call. Nothing else of Runtipi's or the Agent Service's API is reachable here.
 """
 from __future__ import annotations
 
@@ -95,3 +100,41 @@ def state(rt, writes_why: str | None) -> dict:
     if not isinstance(st, dict):
         raise ValueError("no connection state")
     return {**st, "owner_writes": writes_why is None, **({"owner_writes_why": writes_why} if writes_why else {})}
+
+
+AGENT_ACCESS = re.compile(r"api/agents/([a-z][a-z0-9-]{0,30})/access")
+
+
+def agents(home) -> dict:
+    """GET api/agents: the agents and what each may use; {"service": False, "why"} when the Agent Service can't say."""
+    from . import agent_access
+    try:
+        return agent_access.instances(home)
+    except agent_access.AccessError as e:
+        return {"service": False, "why": str(e)[:200], "agents": []}
+
+
+def agent_change(home, sub: str, raw: bytes) -> dict:
+    """POST api/agents/<agent>/access {apps, on}. ValueError: refused (400); AccessError: the Agent Service's answer."""
+    from . import agent_access
+    m = AGENT_ACCESS.fullmatch(sub)
+    if not m:
+        raise LookupError(sub)
+    body = _body(raw)
+    if set(body) != {"apps", "on"} or not isinstance(body["on"], bool) or not isinstance(body["apps"], list):
+        raise ValueError('send {"apps": ["<app id>", ...], "on": true|false}')
+    return agent_access.set_access(home, m[1], body["apps"], body["on"])
+
+
+def restore_plan(c, rt) -> dict:
+    """GET api/connections/restore: what Restore defaults would change ({changes: [{label, change, text}]})."""
+    from . import connections_reset, network
+    return {"changes": connections_reset.plan(network.connection_state(c, rt), network.report(c, rt))}
+
+
+def restore(c, rt, raw: bytes, reconcile=None) -> dict:
+    """POST api/connections/restore {confirm: true}: Restore defaults now (owner only, after the confirm dialog)."""
+    from . import connections_reset
+    if _body(raw) != {"confirm": True}:
+        raise ValueError('send {"confirm": true}')
+    return connections_reset.apply(c, rt, reconcile)
