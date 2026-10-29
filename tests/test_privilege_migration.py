@@ -50,7 +50,7 @@ def test_doctor_failure_keeps_docker_and_never_grants(migration,monkeypatch):
     calls=[]
     migration.doc['done']=list(m.STEPS[:m.STEPS.index('doctor')])
     monkeypatch.setattr(migration,'system',lambda *a,**k: (_ for _ in ()).throw(ValueError('doctor failed')))
-    for step in ('grant','remove_docker','complete'):
+    for step in ('remove_docker','complete'):
         monkeypatch.setattr(migration,step,lambda step=step:calls.append(step))
     with pytest.raises(ValueError,match='doctor failed'): migration.migrate()
     assert calls==[]
@@ -65,7 +65,8 @@ def test_docker_removal_is_last_and_revokes_live_process_groups(migration,monkey
     migration.doc['doctor_passed']=True; migration.remove_docker()
     assert commands[1][:3]==['gpasswd','-d','hermes']
     assert commands[2][:2]==['loginctl','terminate-user']
-    assert m.STEPS.index('doctor') < m.STEPS.index('grant') < m.STEPS.index('remove_docker') < m.STEPS.index('complete')
+    assert m.STEPS.index('doctor') < m.STEPS.index('remove_docker') < m.STEPS.index('complete')
+    assert 'grant' not in m.STEPS  # no automatic sudo handoff, including on resume
 
 
 def test_snapshot_is_opaque_copy_and_survives_partial_retry(migration,monkeypatch):
@@ -323,16 +324,29 @@ def test_prepare_uses_protected_source_and_opaque_main_agent_handoff(migration,m
     assert (migration.old/'.wizard-os/linked.json').read_bytes()==b'completed'
 
 
-def test_migration_grant_is_not_renewed_by_resume_or_rollback_marker(migration,monkeypatch):
+def test_migration_never_grants_and_resume_revokes_legacy_grant(migration,monkeypatch):
     calls=[]
-    monkeypatch.setattr(m,'run',lambda argv,**kw:calls.append((argv,kw)))
-    monkeypatch.setattr(migration,'system',lambda *a,**k:pytest.fail('root migration must not elevate through developer.helper'))
-    # Only this known root ledger is outside the test filesystem.
-    original=Path.exists
-    monkeypatch.setattr(Path,'exists',lambda p:False if str(p)=='/var/lib/wizard-os-server-access/migration-used' else original(p))
-    migration.grant(); migration.grant()
-    assert calls == [([m.HELPER, 'grant'], {'input': json.dumps({'seconds': 604800, 'migration': True}), 'capture_output': True})]
-    assert (m.CONTROL/'migration-used').is_file()
+    def run(argv,**kw):
+        calls.append(argv)
+        return SimpleNamespace(stdout=json.dumps({'active':True,'migration':True}) if argv[-1]=='status' else '',returncode=0)
+    monkeypatch.setattr(m,'run',run)
+    monkeypatch.setattr(m,'HELPER',str(migration.old/'server-access')); Path(m.HELPER).write_text('')
+    for step in m.STEPS:
+        monkeypatch.setattr(migration,'snapshot_step' if step=='snapshot' else step,lambda:None)
+    # A journal written by an older candidate that already ran its grant step.
+    migration.doc['done']=['inventory','quiesce','snapshot','relocate','wiring','prepare','units','start','doctor','grant']
+    migration.migrate()
+    assert [c[-1] for c in calls]==['status','revoke']
+    assert 'grant' not in migration.doc['done'] and migration.doc['done'][-1]=='complete'
+    assert not any(c[-1]=='grant' for c in calls)
+
+
+def test_resume_keeps_explicit_developer_grant(migration,monkeypatch):
+    calls=[]
+    monkeypatch.setattr(m,'run',lambda argv,**kw:calls.append(argv) or SimpleNamespace(stdout=json.dumps({'active':True,'migration':False})))
+    monkeypatch.setattr(m,'HELPER',str(migration.old/'server-access')); Path(m.HELPER).write_text('')
+    migration.revoke_legacy_migration_grant()
+    assert [c[-1] for c in calls]==['status']
 
 
 def test_start_requires_successful_lifecycle_and_preserved_links(migration,monkeypatch):
@@ -379,16 +393,6 @@ def test_inventory_policy_refusal_prevents_quiesce_or_snapshot(migration,monkeyp
     with pytest.raises(m.subprocess.CalledProcessError): migration.migrate()
     assert not migration.snapshot.exists() and not m.BASE.exists()
     assert migration.doc['done'] == []
-
-
-def test_failed_root_grant_never_consumes_control_marker(migration,monkeypatch):
-    original=Path.exists
-    monkeypatch.setattr(Path,'exists',lambda p:False if str(p)=='/var/lib/wizard-os-server-access/migration-used' else original(p))
-    def refuse(argv, **kw):
-        raise m.subprocess.CalledProcessError(2, argv)
-    monkeypatch.setattr(m,'run',refuse)
-    with pytest.raises(m.subprocess.CalledProcessError): migration.grant()
-    assert not (m.CONTROL/'migration-used').exists()
 
 
 def test_refuses_nonroot_owner_command(monkeypatch):

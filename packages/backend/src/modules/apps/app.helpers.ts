@@ -10,6 +10,12 @@ import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 
 @Injectable()
+/** The only base-environment keys an app's env receives (privilege separation). Manager credentials are absent. */
+export const APP_PUBLIC_ENV = new Set([
+  'TZ', 'DOMAIN', 'LOCAL_DOMAIN', 'INTERNAL_IP', 'DNS_IP', 'ARCHITECTURE', 'NGINX_PORT', 'NGINX_PORT_SSL',
+  'ROOT_FOLDER_HOST', 'RUNTIPI_APP_DATA_PATH', 'TIPI_VERSION', 'APPS_REPO_ID', 'APPS_REPO_URL',
+]);
+
 export class AppHelpers {
   constructor(
     private readonly appFilesManager: AppFilesManager,
@@ -40,7 +46,11 @@ export class AppHelpers {
     }
 
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
+    // Public app inputs only. Never inherit manager credentials (including future ones).
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
+    // Public, non-credential inputs recipes may interpolate. Allowlist (not a
+    // credential denylist) so a manager secret added later never reaches apps.
+    for (const key of [...envMap.keys()]) if (!APP_PUBLIC_ENV.has(key)) envMap.delete(key);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 

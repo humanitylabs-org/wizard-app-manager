@@ -1605,7 +1605,11 @@ class Handler(BaseHTTPRequestHandler):
                 why = owner.check(self, post=True)
                 if why:
                     return self._json(403, {'error': why})
-                return self._json(200, owner.execute(c, path, self._body()))
+                from . import owner_confirm, store_install as _si
+                try:
+                    return self._json(200, owner_confirm.gate(c, path, self._body(), _si.owner_login()))
+                except owner_confirm.NeedsConfirmation as exc:
+                    return self._json(409 if exc.payload['error'] == 'needs_owner_confirmation' else 403, exc.payload)
             if path in ('/api/backup/run', '/api/backup/snapshots', '/api/backup/restore', '/api/backup/undo'):
                 from .agent_actions import backup
                 return self._json(200, backup(c, path.rsplit('/', 1)[-1], self._body()))
@@ -1661,6 +1665,23 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+class ApprovalHandler(BaseHTTPRequestHandler):
+    """Owner approval site on loopback :7792: the WHOLE `tailscale serve` site of a dedicated HTTPS port, never the
+    shell origin. Only manager pages; no app or agent content (owner_confirm.py)."""
+    cfg: Config
+
+    def log_message(self, fmt, *args):  # noqa: D401
+        sys.stderr.write("wam approvals: " + (fmt % args) + "\n")
+
+    def do_GET(self):  # noqa: N802
+        from . import owner_confirm
+        owner_confirm.respond(self, 'GET')
+
+    def do_POST(self):  # noqa: N802
+        from . import owner_confirm
+        owner_confirm.respond(self, 'POST')
+
+
 class StoreHandler(BaseHTTPRequestHandler):
     """Store Get on loopback :7791, served only to tailscaled (peer socket owned by root). The path is the app id
     (Serve strips the /wizard-os-home/store-install mount). Authorised by the owner's Tailscale identity."""
@@ -1673,7 +1694,7 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _go(self, method: str) -> None:
         from . import store_install as si
-        from . import owner
+        from . import owner, owner_confirm
         why = owner.check(self, post=method == 'POST')
         if why:
             return self._json(403, {'error': why})
@@ -1687,7 +1708,9 @@ class StoreHandler(BaseHTTPRequestHandler):
                 path = '/api/' + app_id.removeprefix('_owner/')
                 if method != 'POST' or path not in owner.PATHS:
                     return self._json(404, {'error': 'not found'})
-                return self._json(200, owner.execute(c, path, Handler._body(self)))
+                return self._json(200, owner_confirm.gate(c, path, Handler._body(self), si.owner_login()))
+            except owner_confirm.NeedsConfirmation as exc:
+                return self._json(409 if exc.payload['error'] == 'needs_owner_confirmation' else 403, exc.payload)
             except (ValueError, RuntimeError, OSError) as exc:
                 from .host_policy import NeedsOwnerApproval
                 return self._json(409, exc.payload) if isinstance(exc, NeedsOwnerApproval) else self._json(400, {'error': str(exc)})
@@ -1999,6 +2022,11 @@ def _main(argv: list[str] | None = None) -> int:
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
+    ao = sub.add_parser("approval-origin", help="set up the separate owner approval address (needed for risk-raising owner actions)")
+    ao.add_argument("action", choices=["enable", "status"])
+    ao.add_argument("--port", type=int, default=8446)
+    ha = sub.add_parser("host-approvals", help="record which installed apps the policy accepts for the manager's final Docker gate")
+    ha.add_argument("action", choices=["sync"])
     rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
     rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
     ss = sub.add_parser("shell-split", help="move this box from the wizard-shell bundle to the split Agent Service + shell")
@@ -2073,6 +2101,8 @@ def _main(argv: list[str] | None = None) -> int:
                         state = host_policy._read(c.home)
                         state.get('approvals', {}).pop(args.app, None)
                         host_policy._write(c.home, state)
+                    from . import final_host_tokens
+                    final_host_tokens.record(c, args.app, STORE, [])   # the final Docker gate refuses it too
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
                 stopped = None
                 if args.action == "deny" and host_access_risks(c, args.app, "installed"):
@@ -2103,6 +2133,15 @@ def _main(argv: list[str] | None = None) -> int:
             print(json.dumps(rows, indent=2) if args.json else "\n".join(
                 f"{r['name']:<20} {(r['active'] or '-'):<20} {r['state']:<15} default {r['default_app'] or '(none yet)'}"
                 + ("  required" if r["required"] else "") for r in rows))
+        elif args.cmd == "approval-origin":
+            from . import links, owner_confirm
+            if args.action == "status":
+                print(json.dumps({"origin": owner_confirm.verified_origin(c.home)}))
+            else:
+                print(json.dumps(owner_confirm.enable(c.home, links.tailnet()["host"], args.port)))
+        elif args.cmd == "host-approvals":
+            from . import final_host_tokens
+            print(json.dumps({"changed": final_host_tokens.sync(c)}))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
         elif args.cmd == "prefetch":
@@ -2169,6 +2208,14 @@ def _main(argv: list[str] | None = None) -> int:
                 print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
+            try:
+                from . import owner_confirm
+                ApprovalHandler.cfg = c
+                asrv = ThreadingHTTPServer(("127.0.0.1", owner_confirm.PORT), ApprovalHandler)
+                threading.Thread(target=asrv.serve_forever, daemon=True).start()
+                print(f"owner approvals on 127.0.0.1:{owner_confirm.PORT} (its own tailscale serve origin only)", flush=True)
+            except OSError as e:
+                print(f"note: owner approval listener not started ({e}); risk-raising owner actions stay refused", file=sys.stderr)
             start_network_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)

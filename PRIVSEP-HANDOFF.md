@@ -23,9 +23,10 @@ The goal is **one** install configuration, fresh or alongside, in which no AI ag
   grandfathered once.
 - **Developer mode** (Decision #97) gives James, Miguel and Jan an owner-granted "full server access" sudo window. It
   lasts at most 7 days, is logged, expires through sudo, and is revoked by `developer off`. Health shows a red row
-  while it is on. It is alongside-only; fresh agent containers do not get it, and their owners keep SSH.
+  while it is on. It is alongside-only; fresh agent containers do not get it, and their owners keep SSH. It is the
+  only way the agent ever gets sudo: there is no automatic migration grant.
 - **Existing boxes** move over with an owner-run migration. The migration is journaled and resumable, has a full
-  rollback, and refuses ambiguous layouts rather than guessing.
+  rollback, and refuses ambiguous layouts rather than guessing. The agent loses Docker at the end and gets no sudo.
 
 Spec: wizard-os `spec/PRIVILEGE.md` and Decision #105 (PR humanitylabs-org/wizard-os#285).
 
@@ -42,6 +43,43 @@ Key files in wam: `wam/host_policy.py`, `wam/privilege_migration.py`, `scripts/r
 `scripts/prepare-privilege-migration.py`, `docs/PRIVILEGE_MIGRATION.md`, `docs/developer-mode.md`,
 `tests/test_fresh_privilege_audit.py`, and `qa/privsep-slice{1..6}/` (runner + RECEIPT per slice).
 
+## Security repair after the second audit (pending verification)
+
+A follow-up audit found three gaps. Fixes are pushed to the same do-not-merge branches; **none is proven on a VM
+yet**, and a second reviewer must check them before anyone calls them fixed.
+
+1. **Manager credentials could reach apps, and recipes could ask the backend for host access directly.**
+   - `app.env` now gets an allowlist of public base keys only (`APP_PUBLIC_ENV`), never a manager credential.
+   - `app.env` is written 0600, owned by the manager. The app-data widening skips `app.env`, the app directory itself
+     and symlinks.
+   - `docker-compose` runs with a minimal environment, so recipes cannot interpolate manager credentials.
+   - On upgrade, the backend deletes lines whose value is exactly a manager credential from existing `app.env`
+     files. Nothing else in app data changes.
+   - **Owner step after upgrade:** credentials an app already read cannot be un-read. Rotate the manager database,
+     queue and session-signing secrets on every existing box with installed apps. The copy is older manager
+     behaviour, not only this branch, so assume it happened until a box is checked.
+   - **Final gate** (`packages/backend/src/modules/docker/wizard-host-guard.ts`): before any Compose command that can
+     create or change a container, the backend reads Compose's own merged model of that exact command and refuses
+     host access not listed for the app in `user-config/wizard-host-approvals.json`. Only `wam` writes that file
+     (`wam/final_host_tokens.py`), for recipes its policy accepts; revoking clears it. `install.sh` runs
+     `wam host-approvals sync` before restarting the manager so approved apps keep working. A missing file accepts
+     nothing.
+2. **Owner approvals could be laundered by script on the shell origin.**
+   - The agent-service proxy now passes only JSON (and SSE on the events route) on every status, with a sandbox CSP.
+   - Risk-raising owner actions (host access, data grants, isolation off, developer mode on or source change, server
+     access, backup import) no longer run from the shell origin. They become a five-minute, single-use intent bound
+     to the exact action and owner, confirmed on a **separate approval origin**: its own `tailscale serve` HTTPS
+     port (default 8446) whose whole site is the manager's approval listener (127.0.0.1:7792).
+   - Backing out (revoke, developer off, deny, isolation on, updates) stays one click.
+   - **New setup step:** `wam approval-origin enable [--port N]` as the manager. Until it runs, risk-raising owner
+     actions are refused with that command (fail closed). Approved apps keep running.
+3. **Migration gave the agent a seven-day sudo window.** Removed, including on resume; resume also revokes a grant an
+   earlier candidate left. The `server-access` helper now grants only while developer mode is on, and refuses a
+   `migration` request.
+
+Focused acceptance is staged on forum but not run (see the private handoff path held by Archimedes). It builds the
+candidate backend image from source so an old image cannot pass for the fix.
+
 ## What is already proven (clean Debian 12 KVM guests)
 
 1. Sudo removed from wam code paths. A strict audit test allows only the fixed helper.
@@ -50,9 +88,11 @@ Key files in wam: `wam/host_policy.py`, `wam/privilege_migration.py`, `scripts/r
    wizard-system, and the thin client works end to end.
 4. Backup, restore and undo leave apps running. Source builds are refused for symlinks and `/:/host`. Agent update
    check works.
-5. The developer grant works and expires. The agent cannot grant itself.
+5. The developer grant works and expires. The agent cannot grant itself. (Proven before the repair above; the
+   approval route changed, so re-prove it.)
 6. A legacy box built from `main` migrates, rolls back and migrates again. All running apps come back with their data,
-   grandfathered mounts keep working, and doctor passes.
+   grandfathered mounts keep working, and doctor passes. (Proven with the old seven-day migration grant; re-prove
+   without it.)
 
 Full suite: 1721 tests; the only failure, `test_chats_views::test_typescript_public_index_path_has_identical_seal`, also
 fails on `main`. UI: 1344/1344, plus a browser matrix covering phone/desktop × dark/light.

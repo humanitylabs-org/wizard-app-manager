@@ -81,7 +81,7 @@ def status():
 
 
 def grant(config, request):
-    if set(request) - {'seconds', 'migration'}:
+    if set(request) - {'seconds'}:
         raise ValueError('unknown grant fields')
     seconds = request.get('seconds', MAX_SECONDS)
     if type(seconds) is not int or not 1 <= seconds <= MAX_SECONDS:
@@ -91,17 +91,10 @@ def grant(config, request):
         raise ValueError('Full server access is unsupported for fresh hermes-agent containers: host sudo is not available. Use your owner SSH login.')
     user = pwd.getpwnam(name)
     if not user.pw_uid or name == 'wizard-system': raise ValueError('invalid agent identity')
-    migration = request.get('migration', False)
-    if type(migration) is not bool: raise ValueError('migration must be boolean')
-    ledger = STATE / 'migration-used'
-    if migration:
-        groups = {grp.getgrgid(g).gr_name for g in os.getgrouplist(name, user.pw_gid)}
-        if ledger.exists() or 'docker' not in groups or seconds != MAX_SECONDS:
-            raise ValueError('one-time migration requires existing docker membership and an unused seven-day grant')
-    else:
-        dev = json.loads((Path(config['manager_home']) / 'developer.json').read_text())
-        if dev.get('enabled') is not True:
-            raise ValueError('developer mode must be on')
+    # No automatic or migration grant exists. Only explicit developer mode.
+    dev = json.loads((Path(config['manager_home']) / 'developer.json').read_text())
+    if dev.get('enabled') is not True:
+        raise ValueError('developer mode must be on')
     expires = time.time() + seconds
     text = (f'# Wizard agent full server access; expires {datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat()}\n'
             f'Defaults:{name} logfile="/var/log/wizard-os-agent-sudo.log"\n'
@@ -116,7 +109,6 @@ def grant(config, request):
         # Do not install a grant unless the persistent root expiry timer runs.
         subprocess.run(['/usr/bin/systemctl', 'is-active', '--quiet', 'wizard-agent-access-expiry.timer'], check=True)
         previous = read_state()
-        if migration: atomic(ledger, 'used\n')  # consume before granting; never reusable after partial failure
         atomic(SUDOERS / FILE, text, 0o440)
         subprocess.run(['/usr/sbin/visudo', '-c'], check=True, capture_output=True)
         baseline = previous.get('hashes') if previous and previous['expires_epoch'] > time.time() else None
@@ -126,13 +118,13 @@ def grant(config, request):
             baseline[str(SUDOERS / FILE)] = actual[str(SUDOERS / FILE)]
         doc = {'agent': name, 'expires_epoch': expires,
                'expires_at': datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat(),
-               'hashes': baseline or actual, 'migration': migration}
+               'hashes': baseline or actual, 'migration': False}
         atomic(STATE / 'grant.json', json.dumps(doc) + '\n')
     except Exception:
         revoke('grant failed'); raise
     finally:
         Path(candidate).unlink(missing_ok=True)
-    syslog.syslog(syslog.LOG_WARNING, f'Wizard agent {name} granted full server access until {doc["expires_at"]}; migration={migration}')
+    syslog.syslog(syslog.LOG_WARNING, f'Wizard agent {name} explicitly granted full server access until {doc["expires_at"]}')
     return status()
 
 

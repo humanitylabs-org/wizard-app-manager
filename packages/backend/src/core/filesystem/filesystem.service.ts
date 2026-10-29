@@ -117,12 +117,20 @@ export class FilesystemService {
     }
   }
 
-  async writePrivateTextFile(filePath: string, content: string) {
+  async writePrivateTextFile(filePath: string, content: string, owner?: { uid: number; gid: number }) {
     try {
       await fs.promises.mkdir(this.getSafeFilePath(filePath.split('/').slice(0, -1).join('/')), { recursive: true });
       const safeFilePath = this.getSafeFilePath(filePath);
-      await fs.promises.writeFile(safeFilePath, content, { encoding: 'utf8', mode: 0o600 });
-      await fs.promises.chmod(safeFilePath, 0o600);
+      // Atomic replacement resets legacy ownership/mode, and never follows a
+      // hostile final symlink. The parent must itself be manager-controlled.
+      const temporary = `${safeFilePath}.${crypto.randomUUID()}.private`;
+      try {
+        await fs.promises.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        if (owner) await fs.promises.chown(temporary, owner.uid, owner.gid);
+        await fs.promises.rename(temporary, safeFilePath);
+      } finally {
+        await fs.promises.unlink(temporary).catch(() => {});
+      }
       return true;
     } catch (error) {
       this.logger.error(`Error writing private file ${filePath}:`, error);

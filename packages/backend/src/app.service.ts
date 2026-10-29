@@ -16,6 +16,7 @@ import { DOCKERODE } from './modules/docker/docker.module';
 import Dockerode from 'dockerode';
 import { GithubService } from './utils/github/github.service';
 import YAML from 'yaml';
+import { scrubLeakedManagerCredentials } from './modules/apps/leaked-env-repair';
 
 @Injectable()
 export class AppService {
@@ -37,6 +38,17 @@ export class AppService {
   public async bootstrap() {
     try {
       await this.databaseService.migrate();
+      // Before any app restarts: drop manager credentials an older build copied into app.env.
+      const manager = this.configuration.getConfig();
+      const repaired = await scrubLeakedManagerCredentials(manager.directories.appDataDir, [
+        manager.database.password,
+        manager.queue.password,
+        manager.jwtSecret,
+      ]).catch((e) => {
+        this.logger.error('Could not repair app environments', e);
+        return [] as string[];
+      });
+      if (repaired.length) this.logger.warn(`Removed manager credentials from ${repaired.length} app environment(s): ${repaired.join(', ')}`);
       await this.docker.pruneNetworks();
 
       const { version, userSettings, __prod__ } = this.configuration.getConfig();

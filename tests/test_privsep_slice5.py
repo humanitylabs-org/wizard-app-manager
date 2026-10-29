@@ -81,25 +81,26 @@ def test_helper_defends_dev_off_and_fresh_container(root_helper):
     with pytest.raises(ValueError, match='unsupported for fresh'): mod.grant({**cfg, 'agent': None}, {})
 
 
-def test_one_time_migration_without_developer_then_no_extension(root_helper, monkeypatch):
+def test_migration_flag_is_refused_and_only_developer_mode_grants(root_helper, monkeypatch):
     mod, cfg, _ = root_helper
     developer.save(cfg['manager_home'], {'enabled': False})
     monkeypatch.setattr(mod.os, 'getgrouplist', lambda *a: [1000])
     monkeypatch.setattr(mod.grp, 'getgrgid', lambda *a: SimpleNamespace(gr_name='docker'))
-    assert mod.grant(cfg, {'migration': True})['migration']
-    mod.revoke('test')
-    with pytest.raises(ValueError, match='one-time'): mod.grant(cfg, {'migration': True})
+    # Old automatic seven-day migration handoff: refused even for a docker-group agent.
+    with pytest.raises(ValueError): mod.grant(cfg, {'seconds': 604800, 'migration': True})
     with pytest.raises(ValueError, match='developer mode'): mod.grant(cfg, {})
+    assert not (mod.SUDOERS / mod.FILE).exists()
     developer.save(cfg['manager_home'], {'enabled': True})
-    assert mod.grant(cfg, {})['active']
+    doc = mod.grant(cfg, {})
+    assert doc['active'] and doc['migration'] is False
 
 
-def test_manager_migration_hook(tmp_path, monkeypatch):
+def test_manager_migration_hook_never_grants(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(developer, 'helper', lambda *a: calls.append(a) or {'active': True})
-    assert not developer.migration_grant(tmp_path, False)['active'] and not calls
-    assert developer.migration_grant(tmp_path, True)['active']
-    assert calls == [('grant', {'seconds': 604800, 'migration': True})]
+    assert not developer.migration_grant(tmp_path, False)['active']
+    assert not developer.migration_grant(tmp_path, True)['active']
+    assert calls == []
 
 
 def test_developer_off_revokes_before_saving_and_restores_source(tmp_path, monkeypatch):
@@ -214,19 +215,28 @@ def test_developer_approve_page_requires_same_root_peer_owner_and_origin(tmp_pat
         r = c.getresponse(); data = r.read().decode(); code = r.status; c.close()
         return code, data
     try:
-        assert 'Give the agent full server access' in req('GET')[1]
+        # Shell origin: no approval site configured -> back-out-only page, risk-raising refused.
+        code, page = req('GET')
+        assert code == 200 and 'Revoke server access now' in page and 'Give the agent full server access' not in page
         assert req('POST', {'action': 'configure', 'enabled': True,
-                            'repo': developer.RELEASE_REPO, 'ref': 'my/branch'})[0] == 200
-        assert developer.read(tmp_path)['source']['ref'] == 'my/branch'
+                            'repo': developer.RELEASE_REPO, 'ref': 'my/branch'})[0] == 403
+        assert not developer.read(tmp_path).get('enabled')
+        from wam import owner_confirm
+        monkeypatch.setattr(owner_confirm, 'verified_origin', lambda *a, **k: 'https://box.test:8446')
+        # With one configured, the shell origin still only creates an intent (machine POSTs never execute).
+        code, data = req('POST', {'action': 'configure', 'enabled': True, 'repo': developer.RELEASE_REPO, 'ref': 'my/branch'})
+        assert code == 409 and json.loads(data)['confirm_url'].startswith('https://box.test:8446/confirm/')
+        assert not developer.read(tmp_path).get('enabled')
         assert req('POST', {'action': 'grant'}, {'Origin': 'https://evil.test'})[0] == 403
         monkeypatch.setattr(store_install, 'peer_uid', lambda *a: 1000)
         assert req('POST', {'action': 'grant'})[0] == 403
         assert req('GET')[0] == 403
         monkeypatch.setattr(store_install, 'peer_uid', lambda *a: 0)
+        # Backing out stays one click on the shell origin.
+        developer.save(tmp_path, {'enabled': True, 'source': {'repo': developer.RELEASE_REPO, 'ref': 'my/branch'}})
         assert req('POST', {'action': 'configure', 'enabled': False})[0] == 200
         assert not developer.read(tmp_path)['enabled']
-        # After switch-off, even an authenticated owner cannot enable sub-switch.
-        assert req('POST', {'action': 'grant'})[0] == 400
+        assert req('POST', {'action': 'revoke'})[0] == 200
     finally: server.shutdown(); thread.join(); server.server_close()
 
 

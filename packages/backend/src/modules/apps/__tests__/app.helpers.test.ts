@@ -109,6 +109,21 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/runtipi/app-data/test-store/test-app');
     });
 
+    it('never passes manager credentials or unlisted base keys to the app', async () => {
+      const envMap = new Map<string, string>([
+        ['TZ', 'UTC'], ['DOMAIN', 'example.test'],
+        ['POSTGRES_PASSWORD', 'sentinel-db'], ['RABBITMQ_PASSWORD', 'sentinel-queue'], ['JWT_SECRET', 'sentinel-jwt'],
+        ['SOME_FUTURE_MANAGER_TOKEN', 'sentinel-future'],
+      ]);
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('TZ')).toBe('UTC');
+      expect(envMap.get('DOMAIN')).toBe('example.test');
+      for (const key of ['POSTGRES_PASSWORD', 'RABBITMQ_PASSWORD', 'JWT_SECRET', 'SOME_FUTURE_MANAGER_TOKEN']) expect(envMap.has(key)).toBe(false);
+    });
+
     it('should handle form port override', async () => {
       // Arrange
       const envMap = new Map<string, string>();

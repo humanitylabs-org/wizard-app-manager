@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
+import { assertFinalHostPolicy, composeEnv, injectedBinds, MUTATING, readHostApprovals, type GuardContext } from './wizard-host-guard';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import * as yaml from 'yaml';
 import { servicesForArchitecture } from './builders/compose.builder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -146,12 +149,16 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async runComposeApp(appUrn: AppUrn, command: string) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
+    // Final privileged consumer: Compose's own merged/interpolated model of THIS
+    // invocation (generated recipe, user override, every env file) must hold no
+    // host access the App Manager did not accept. Checked before Docker changes.
+    if (MUTATING.has(command.split(' ')[0] ?? '')) await this.assertHostPolicy(appUrn, args);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
 
     this.logger.info(`Running docker compose with args ${args.join(' ')}`);
 
-    const cmd = spawn('docker-compose', args);
+    const cmd = spawn('docker-compose', args, { env: composeEnv() });
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -178,6 +185,46 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };
+  }
+
+  private async composeConfig(args: string[]): Promise<unknown> {
+    const cmd = spawn('docker-compose', [...args, 'config', '--format', 'json'], { env: composeEnv() });
+    const stdout: Buffer[] = [];
+    const stderr: string[] = [];
+    let size = 0;
+    const code = await new Promise((resolve, reject) => {
+      cmd.once('error', reject);
+      cmd.stdout.on('data', (d: Buffer) => {
+        size += d.length;
+        if (size > 8 * 1024 * 1024) cmd.kill('SIGKILL');
+        else stdout.push(d);
+      });
+      cmd.stderr.on('data', (d) => stderr.push(String(d)));
+      cmd.on('close', resolve);
+    });
+    if (code !== 0) throw new Error(`Compose model unavailable; refusing to start (${stderr.join('').trim().slice(-300)})`);
+    return JSON.parse(Buffer.concat(stdout).toString('utf8'));
+  }
+
+  public async assertHostPolicy(appUrn: AppUrn, baseArgs: string[]) {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const { directories, rootFolderHost, userSettings } = this.config.getConfig();
+    const appDataRoot = `${userSettings.appDataPath || rootFolderHost}/app-data`;
+    const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
+    const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn).catch(() => null);
+    // Without the installed recipe nothing counts as grant-injected (fail closed).
+    const recipe = source?.content ? servicesForArchitecture(source.content, this.config.get('architecture')) : null;
+    const ctx: GuardContext = {
+      appId: appName,
+      store: appStoreId,
+      appDataDir: path.posix.join(appDataRoot, appStoreId, appName),
+      filesRoot: path.posix.join(rootFolderHost, 'media'),
+      sourceRoot: path.posix.join(appDataRoot, '.wizard-source', appStoreId),
+      appDataRoot,
+      envDirs: [path.posix.join(directories.appDataDir, appStoreId, appName), path.posix.join(directories.dataDir, 'user-config', appStoreId, appName)],
+      injected: recipe && generated.content ? injectedBinds(yaml.parse(generated.content), recipe) : new Set(),
+    };
+    assertFinalHostPolicy(await this.composeConfig(baseArgs), ctx, await readHostApprovals(directories.dataDir));
   }
 
   public getLogsStream = async (maxLines: number, appUrn?: AppUrn) => {

@@ -23,13 +23,14 @@ The host Hermes home and Claude login share stay at the agent UID; Compose
 mounts for extra agents, builder and pointer skills follow the relocated trees.
 Python never parses app payloads, recordings or private agent homes.
 
-Only after doctor succeeds does the one-time seven-day migration grant run for
-an agent previously in Docker. Removing Docker membership is the final authority
-change. The grant is root-equivalent, logged, expires automatically, is revocable
-with the owner server-access control, and does not enable developer mode. A
-root-only consumed marker survives rollback; rollback cannot renew seven days.
-Health stays red while the explicit grant is on. This warning is not permission
-to bypass the thin client.
+There is no migration grant. After doctor succeeds, removing Docker membership is
+the final authority change, and the agent has no sudo and no Docker from then on,
+including after a resume. A server-access grant left by an earlier candidate's
+migration step is revoked on resume. A developer who needs root afterwards turns
+developer mode on and grants server access explicitly on the approval origin;
+that grant is root-equivalent, logged, expires and shows a red Health row. Keep a
+root SSH session open during migration: that, not an agent grant, is the escape
+hatch.
 
 ## Resume and rollback
 

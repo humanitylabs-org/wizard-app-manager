@@ -1,0 +1,309 @@
+"""Mirror of App Manager-accepted host access for the backend's final Compose gate.
+
+`packages/backend/src/modules/docker/wizard-host-guard.ts` refuses, immediately before Docker changes a
+container, every host-reaching setting in Compose's merged/interpolated model that is not listed here for that
+exact app. This module is the only writer. It lists an app's tokens only when the App Manager policy accepts
+the app's current recipe and override: no risks at all (for example manager-generated mounts that
+`managed_overrides.normalize` recognised exactly) or risks covered by an owner approval.
+
+Tokens use the same rules as the TypeScript gate. Shared vectors: tests/fixtures/final-host-tokens.json.
+"""
+from __future__ import annotations
+
+import json
+import os
+import posixpath
+import re
+from pathlib import Path
+
+FILE = 'wizard-host-approvals.json'
+OURS = re.compile(r'(?:wizard-(?:app|link|gw)-[a-z0-9-]+|wizard-core)')
+SAFE_SECURITY = {'no-new-privileges:true', 'no-new-privileges=true', 'no-new-privileges'}
+DEFAULT_CAPS = set('AUDIT_WRITE CHOWN DAC_OVERRIDE FOWNER FSETID KILL MKNOD NET_BIND_SERVICE '
+                   'NET_RAW SETFCAP SETGID SETPCAP SETUID SYS_CHROOT'.split())
+TOP_KEYS = {'name', 'version', 'services', 'volumes', 'networks', 'secrets', 'configs'}
+SERVICE_KEYS = set((
+    'image build command entrypoint user working_dir hostname domainname restart depends_on environment ports expose '
+    'volumes networks network_mode pid ipc userns_mode uts privileged devices device_cgroup_rules cap_add cap_drop '
+    'security_opt sysctls env_file secrets configs read_only init tmpfs shm_size pids_limit mem_limit memswap_limit '
+    'mem_reservation cpus cpu_count cpu_percent cpu_period cpu_quota cpu_shares cpuset healthcheck labels logging '
+    'stop_grace_period stop_signal stdin_open tty ulimits deploy platform pull_policy profiles group_add dns dns_search '
+    'dns_opt extra_hosts isolation runtime cgroup cgroup_parent oom_kill_disable oom_score_adj storage_opt '
+    'container_name scale attach annotations mac_address post_start pre_stop').split())
+FLAGGED = ('devices', 'device_cgroup_rules', 'sysctls', 'runtime', 'cgroup_parent', 'storage_opt', 'isolation')
+BUILD_KEYS = {'context', 'dockerfile', 'dockerfile_inline', 'args', 'target', 'cache_from', 'cache_to', 'labels',
+              'no_cache', 'pull', 'platforms', 'shm_size', 'tags'}
+SOCKET = re.compile(r'docker\.sock|containerd\.sock|podman\.sock|/run/docker|/run/containerd')
+
+
+def _clean(p: str) -> str:
+    out = posixpath.normpath(p) if p else '.'
+    if p.startswith('//'):
+        out = '/' + out.lstrip('/')
+    return out.rstrip('/') or '/'
+
+
+def _under(p, root):
+    a, b = _clean(p), _clean(root)
+    return '..' not in a.split('/') and (a == b or a.startswith(b + '/'))
+
+
+def _truthy(v):
+    return v is True or str(v).lower() == 'true'
+
+
+def _nonempty(v):
+    return bool(v) if not isinstance(v, (list, dict)) else len(v) > 0
+
+
+def volume_of(v):
+    if isinstance(v, str):
+        parts = v.split(':')
+        if len(parts) == 1:
+            return {'type': 'volume', 'source': '', 'target': parts[0], 'read_only': False}
+        source, target = parts[0], parts[1]
+        mode = parts[2] if len(parts) > 2 else ''
+        bind = source.startswith(('/', '.', '~')) or '/' in source or '$' in source
+        return {'type': 'bind' if bind else 'volume', 'source': source, 'target': target,
+                'read_only': 'ro' in mode.split(',')}
+    if not isinstance(v, dict):
+        return None
+    return {'type': str(v.get('type') or 'volume'), 'source': str(v.get('source', v.get('src', ''))),
+            'target': str(v.get('target', v.get('dst', ''))), 'read_only': v.get('read_only') is True}
+
+
+def tokens(config, *, app_id, store, app_data_dir, files_root, source_root, env_dirs=(),
+           app_data_root=None, injected=frozenset(), shared_network='runtipi_tipi_main_network'):
+    """Same rules as finalHostTokens() in wizard-host-guard.ts."""
+    out = set()
+    if not isinstance(config, dict):
+        return ['compose:invalid']
+    for key in config:
+        if key not in TOP_KEYS and not str(key).startswith('x-'):
+            out.add(f'top:{key}')
+    for name, raw in (config.get('networks') or {}).items():
+        spec = raw if isinstance(raw, dict) else {}
+        docker_name = str(spec.get('name') or name)
+        if spec.get('external'):
+            if not OURS.fullmatch(docker_name) and docker_name != shared_network:
+                out.add(f'network:external:{docker_name}')
+        elif (spec.get('driver') and spec['driver'] != 'bridge') or _nonempty(spec.get('driver_opts')):
+            out.add(f'network:driver:{name}')
+    for name, raw in (config.get('volumes') or {}).items():
+        spec = raw if isinstance(raw, dict) else {}
+        if spec.get('external'):
+            out.add(f'volume:external:{spec.get("name") or name}')
+        elif (spec.get('driver') and spec['driver'] != 'local') or _nonempty(spec.get('driver_opts')):
+            out.add(f'volume:driver:{name}')
+    for kind in ('secrets', 'configs'):
+        for name, raw in (config.get(kind) or {}).items():
+            if isinstance(raw, dict) and raw.get('file') is not None:
+                out.add(f'{kind}:file:{name}:{_clean(str(raw["file"]))}')
+    services = config.get('services') or {}
+    if not isinstance(services, dict):
+        return sorted(out | {'services:invalid'})
+    src_prefix = _clean(source_root) + '/' + app_id + '@'
+    for svc, s in services.items():
+        if not isinstance(s, dict):
+            out.add(f'{svc}|invalid')
+            continue
+        for key in s:
+            if key not in SERVICE_KEYS and not str(key).startswith('x-'):
+                out.add(f'{svc}|key:{key}')
+        if _truthy(s.get('privileged')):
+            out.add(f'{svc}|privileged')
+        nm = '' if s.get('network_mode') is None else str(s['network_mode'])
+        if nm and nm != 'none' and not nm.startswith('service:'):
+            out.add(f'{svc}|network_mode:{nm}')
+        for key in ('pid', 'ipc', 'userns_mode', 'uts', 'cgroup'):
+            v = '' if s.get(key) is None else str(s[key]).lower()
+            if v and v not in ('private', 'shareable') and not v.startswith('service:'):
+                out.add(f'{svc}|{key}:{v}')
+        for key in FLAGGED:
+            if _nonempty(s.get(key)):
+                out.add(f'{svc}|{key}')
+        caps = s.get('cap_add')
+        for cap in caps if isinstance(caps, list) else (['invalid'] if caps else []):
+            c = str(cap).upper().removeprefix('CAP_')
+            if c not in DEFAULT_CAPS:
+                out.add(f'{svc}|cap:{c}')
+        opts = s.get('security_opt')
+        for opt in opts if isinstance(opts, list) else (['invalid'] if opts else []):
+            if str(opt) not in SAFE_SECURITY:
+                out.add(f'{svc}|security_opt:{opt}')
+        if _nonempty((((s.get('deploy') or {}).get('resources') or {}).get('reservations') or {}).get('devices')):
+            out.add(f'{svc}|deploy_devices')
+        env_files = s.get('env_file')
+        for f in env_files if isinstance(env_files, list) else ([env_files] if env_files else []):
+            file = _clean(str(f.get('path', '') if isinstance(f, dict) else f))
+            if not any(_under(file, d) for d in env_dirs):
+                out.add(f'{svc}|env_file:{file}')
+        if s.get('build'):
+            b = s['build'] if isinstance(s['build'], dict) else {'context': s['build']}
+            context = str(b.get('context') or '.')
+            remote = re.match(r'^(?:https?://|git://|git@)', context)
+            pinned = context.startswith(src_prefix) and '..' not in context.split('/')
+            if not remote and not pinned and not _under(context, app_data_dir):
+                out.add(f'{svc}|build:context:{_clean(context)}')
+            for key in b:
+                if key not in BUILD_KEYS:
+                    out.add(f'{svc}|build:{key}')
+            if b.get('network') and b['network'] not in ('default', 'none'):
+                out.add(f'{svc}|build:network:{b["network"]}')
+        vols = s.get('volumes')
+        for raw in vols if isinstance(vols, list) else (['invalid'] if vols else []):
+            v = volume_of(raw)
+            if not v:
+                out.add(f'{svc}|volume:invalid')
+                continue
+            if SOCKET.search(v['source']):
+                out.add(f'{svc}|socket:{v["source"]}')
+                continue
+            if v['type'] in ('volume', 'tmpfs'):
+                continue
+            if v['type'] != 'bind':
+                out.add(f'{svc}|mount:{v["type"]}')
+                continue
+            source, mode = _clean(v['source']), 'ro' if v['read_only'] else 'rw'
+            if not source.startswith('/') or '$' in source:
+                out.add(f'{svc}|bind:{source}:{v["target"]}:{mode}')
+                continue
+            if _under(source, app_data_dir) or _under(source, files_root):
+                continue
+            if v['read_only'] and source.startswith(src_prefix) and '..' not in source.split('/'):
+                continue
+            if app_data_root and _under(source, app_data_root) and f'{svc}|{v["target"]}' in injected:
+                continue
+            out.add(f'{svc}|bind:{source}:{v["target"]}:{mode}')
+    return sorted(out)
+
+
+def _expanded(doc, values):
+    from .host_policy import _expand, _plain
+    doc = _plain(doc)
+
+    def walk(v):
+        if isinstance(v, str):
+            return _expand(v, values)
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        return v
+    return walk(doc)
+
+
+def _merge(base: dict, extra: dict) -> dict:
+    """Union view for acceptance only: every service key from either file is listed."""
+    out = json.loads(json.dumps(base))
+    for top, value in (extra or {}).items():
+        if top == 'services' and isinstance(value, dict):
+            services = out.setdefault('services', {})
+            for name, svc in value.items():
+                cur = services.setdefault(name, {})
+                if isinstance(svc, dict) and isinstance(cur, dict):
+                    for k, v in svc.items():
+                        if isinstance(v, list) and isinstance(cur.get(k), list):
+                            cur[k] = cur[k] + v
+                        else:
+                            cur[k] = v
+        elif isinstance(value, dict) and isinstance(out.get(top), dict):
+            out[top].update(value)
+        else:
+            out[top] = value
+    return out
+
+
+def app_tokens(c, app_id, store='wizardapps', where='installed', given=None):
+    """Tokens of the recipe + RAW override this box would start, expanded like the policy check."""
+    from . import host_policy, network
+    root = Path(c.runtipi_root)
+    candidates = [root / 'apps' / store / app_id / 'docker-compose.yml',
+                  root / 'repos' / store / 'apps' / app_id / 'docker-compose.yml']
+    if where != 'installed':
+        candidates.reverse()
+    recipe = next((p for p in candidates if p.is_file()), None)
+    if recipe is None:
+        return None
+    ctx = host_policy.context(c, app_id, store, given)
+    values = {'APP_DATA_DIR': str(ctx['app_data']), 'ROOT_FOLDER_HOST': str(ctx['root']), **ctx['variables']}
+    doc = network.load_yaml(recipe.read_text()) or {}
+    xr = doc.get('x-runtipi') if isinstance(doc, dict) else None
+    merged = _expanded(doc, values) if isinstance(doc, dict) else doc
+    for override in ((xr or {}).get('overrides') or []) if isinstance(xr, dict) else []:
+        if isinstance(override, dict):
+            merged = _merge(merged, {'services': _expanded(override.get('services') or {}, values)})
+    user = root / 'user-config' / store / app_id / 'docker-compose.yml'
+    if user.is_file():
+        raw = network.load_yaml(user.read_text()) or {}
+        if isinstance(raw, dict):
+            merged = _merge(merged, _expanded(raw, values))
+    app_data_root = Path(ctx['app_data']).parent.parent
+    return tokens(merged, app_id=app_id, store=store, app_data_dir=str(ctx['app_data']),
+                  files_root=str(ctx['files_root']), source_root=str(app_data_root / '.wizard-source' / store),
+                  app_data_root=str(app_data_root))
+
+
+def accepted(c, app_id, store='wizardapps'):
+    """The app's tokens if current policy accepts it with no new owner decision; otherwise None."""
+    from . import host_policy
+    try:
+        host_policy._require_app(c, app_id, store, where='installed')
+    except host_policy.NeedsOwnerApproval:
+        return None
+    except (RuntimeError, OSError, ValueError, SystemExit):
+        return None
+    return app_tokens(c, app_id, store)
+
+
+def path_for(c) -> Path:
+    return Path(c.runtipi_root) / 'user-config' / FILE
+
+
+def _read(c):
+    try:
+        doc = json.loads(path_for(c).read_text())
+        return doc if isinstance(doc, dict) and doc.get('schema') == 1 and isinstance(doc.get('apps'), dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write(c, apps: dict) -> bool:
+    body = json.dumps({'schema': 1, 'apps': {k: sorted(set(v)) for k, v in sorted(apps.items())}}, indent=2) + '\n'
+    p = path_for(c)
+    if p.is_file() and p.read_text() == body:
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + '.wam-tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w') as f:
+        f.write(body)
+    os.chmod(tmp, 0o644)  # the backend container reads it; no secrets
+    tmp.replace(p)
+    return True
+
+
+def record(c, app_id, store='wizardapps', found=None):
+    """After an accepted policy check, list this app's current tokens. A refused check changes nothing."""
+    found = app_tokens(c, app_id, store) if found is None else found
+    if found is None:
+        return False
+    apps = (_read(c) or {'apps': {}})['apps']
+    key = f'{store}/{app_id}'
+    if found:
+        apps[key] = found
+    else:
+        apps.pop(key, None)
+    return write(c, apps)
+
+
+def sync(c):
+    """Recompute every installed app. A refused app keeps no stale acceptance."""
+    root = Path(c.runtipi_root)
+    apps = {}
+    for recipe in sorted((root / 'apps').glob('*/*/docker-compose.yml')):
+        app_id, store = recipe.parent.name, recipe.parent.parent.name
+        found = accepted(c, app_id, store)
+        if found:
+            apps[f'{store}/{app_id}'] = found
+    return write(c, apps)

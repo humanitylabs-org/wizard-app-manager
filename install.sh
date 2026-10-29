@@ -102,6 +102,10 @@ fi
 # The manager writes Traefik's STATIC entrypoints during startup. Wait for its
 # internal health check before starting a missing proxy; otherwise Traefik keeps
 # its empty startup config and serves 404 even after the manager becomes healthy.
+# The manager's final Compose gate accepts only host access the App Manager policy accepted. Record that list for
+# every installed app BEFORE the new manager restarts apps, so approved apps keep running and refused ones stay off.
+(cd "$HERE" && "$PY" -m wam host-approvals sync >/dev/null) \
+  || echo "note: approved app host access was not recorded; apps that need it stay off until 'wam host-approvals sync' succeeds" >&2
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps --wait runtipi)
 # The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)

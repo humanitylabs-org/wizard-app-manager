@@ -171,17 +171,46 @@ def test_owner_approval_http_and_readback(tmp_path, monkeypatch):
         res = c.getresponse(); data = res.read(); c.close()
         return res.status, data
     try:
-        status, page = req('GET')
-        assert status == 200 and b'Approve this access' in page and sha.encode() in page
-        assert policy._read(tmp_path)['approvals'] == {}
-        assert req('POST', extra={'Origin': 'https://evil.test'})[0] == 403
-        assert req('POST')[0] == 200
-        record = policy._read(tmp_path)['approvals']['audit']
-        assert record['risks'] == policy.risks(text, 'audit') and record['source'] == 'owner approved'
-        assert record['timestamp']
-        assert policy.require(tmp_path, 'audit', [text]) == sha
-        monkeypatch.setattr(store_install, 'peer_uid', lambda *a: 1000)
+        # The shell origin carries app and agent content, so it never approves host access.
+        status, _ = req('GET')
+        assert status == 403  # fail closed: no verified approval origin on this box
         assert req('POST')[0] == 403
+        assert policy._read(tmp_path)['approvals'] == {}
+        from wam import owner_confirm
+        monkeypatch.setattr(owner_confirm, 'verified_origin', lambda *a, **k: 'https://box.test:8446')
+        status, _ = req('GET')
+        assert status == 303
+        assert req('POST')[0] == 403
+        assert policy._read(tmp_path)['approvals'] == {}
+        # The approval site: same owner identity, exact origin, single-use intent.
+        monkeypatch.setattr(cli.ApprovalHandler, 'cfg', SimpleNamespace(home=tmp_path), raising=False)
+        asrv = ThreadingHTTPServer(('127.0.0.1', 0), cli.ApprovalHandler)
+        threading.Thread(target=asrv.serve_forever, daemon=True).start()
+        def areq(method, path, body=None, extra=None):
+            c = HTTPConnection('127.0.0.1', asrv.server_port)
+            headers = {'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test:8446',
+                       'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'application/json', 'X-Wizard-Store': '1',
+                       **(extra or {})}
+            c.request(method, path, None if body is None else json.dumps(body), headers)
+            res = c.getresponse(); data = res.read(); c.close()
+            return res.status, data
+        try:
+            status, page = areq('GET', f'/approve/audit/{sha}')
+            assert status == 200 and b'Approve this access' in page and sha.encode() in page
+            import re as _re
+            intent, digest = _re.search(rb'data-intent="([^"]+)" data-sha="([a-f0-9]{64})"', page).groups()
+            assert areq('POST', '/confirm/' + intent.decode(), {'sha': digest.decode()}, {'Origin': 'https://box.test'})[0] == 403
+            assert policy._read(tmp_path)['approvals'] == {}
+            assert areq('POST', '/confirm/' + intent.decode(), {'sha': digest.decode()})[0] == 200
+            record = policy._read(tmp_path)['approvals']['audit']
+            assert record['risks'] == policy.risks(text, 'audit') and record['source'] == 'owner approved'
+            assert record['timestamp']
+            assert policy.require(tmp_path, 'audit', [text]) == sha
+            assert areq('POST', '/confirm/' + intent.decode(), {'sha': digest.decode()})[0] == 409
+            monkeypatch.setattr(store_install, 'peer_uid', lambda *a: 1000)
+            assert areq('GET', f'/approve/audit/{sha}')[0] == 403
+        finally:
+            asrv.shutdown(); asrv.server_close()
     finally:
         server.shutdown(); server.server_close()
 

@@ -80,12 +80,12 @@ there is no username, path, command or timer name input.
 - Host re-preparation revokes an existing grant; nightly/app updates never install
   or update this root package. Runtipi and the manager remain wizard-system-owned.
 
-Slice 6 calls `developer.migration_grant(home, agent_was_in_docker_group)` **before
-removing existing docker membership**. The helper independently checks that
-membership and its root-only, permanent `migration-used` ledger, grants exactly
-seven days without enabling developer mode, and refuses a second migration grant
-even after revoke/expiry/host re-preparation. Extension requires developer mode.
-No migration is performed by Slice 5.
+Migration never grants. `developer.migration_grant()` is a no-op kept for
+callers, the `server-access` helper refuses a `migration` request and grants only
+while developer mode is on, and resume revokes a migration grant left by an older
+candidate. Risk-raising developer changes (turn on, change source, install
+source, grant server access) are confirmed on the approval origin; turning off and
+revoking stay one click.
 
 ## API and shell follow-up
 

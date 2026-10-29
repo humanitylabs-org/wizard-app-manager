@@ -509,6 +509,16 @@ def normalized_override(c, app_id, store, text, *, offline=False):
 
 
 def require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):
+    sha = _require_app(c, app_id, store, where, filesystem, given)
+    if filesystem is None:
+        # The backend's final Compose gate (wizard-host-guard.ts) only honours what
+        # this policy accepted, for exactly this recipe and override.
+        from . import final_host_tokens
+        final_host_tokens.record(c, app_id, store, final_host_tokens.app_tokens(c, app_id, store, where, given))
+    return sha
+
+
+def _require_app(c, app_id, store='wizardapps', where='any', filesystem=None, given=None):
     path_type = filesystem.Path if filesystem else Path
     root = path_type(c.runtipi_root)
     candidates = [root / 'repos' / store / 'apps' / app_id / 'docker-compose.yml',

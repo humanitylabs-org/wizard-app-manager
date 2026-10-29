@@ -1,0 +1,22 @@
+{
+  "context": {
+    "app_id": "demo",
+    "store": "wizardapps",
+    "app_data_dir": "/srv/rt/app-data/wizardapps/demo",
+    "files_root": "/srv/rt/media",
+    "source_root": "/srv/rt/app-data/.wizard-source/wizardapps",
+    "app_data_root": "/srv/rt/app-data",
+    "env_dirs": ["/app-data/wizardapps/demo", "/data/user-config/wizardapps/demo"]
+  },
+  "cases": [
+    {"name": "benign app", "config": {"name": "demo", "services": {"web": {"image": "nginx", "user": "1000:1000", "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "volumes": [{"type": "bind", "source": "/srv/rt/app-data/wizardapps/demo/data", "target": "/data"}, "/srv/rt/media/Photos:/photos:ro", {"type": "volume", "source": "cache", "target": "/cache"}], "networks": {"wizard-app-demo": null}}}, "networks": {"wizard-app-demo": {"name": "wizard-app-demo", "external": true}, "tipi_main_network": {"name": "runtipi_tipi_main_network", "external": true}}, "volumes": {"cache": {}}}, "tokens": []},
+    {"name": "privileged host namespaces", "config": {"services": {"web": {"privileged": true, "network_mode": "host", "pid": "host"}}}, "tokens": ["web|network_mode:host", "web|pid:host", "web|privileged"]},
+    {"name": "host root bind and docker socket", "config": {"services": {"web": {"volumes": ["/:/host", {"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}]}}}, "tokens": ["web|bind:/:/host:rw", "web|socket:/var/run/docker.sock"]},
+    {"name": "traversal out of app data", "config": {"services": {"web": {"volumes": [{"type": "bind", "source": "/srv/rt/app-data/wizardapps/demo/../../../.env", "target": "/x", "read_only": true}]}}}, "tokens": ["web|bind:/srv/rt/.env:/x:ro"]},
+    {"name": "capabilities devices unknown key", "config": {"services": {"web": {"cap_add": ["NET_ADMIN", "CHOWN"], "devices": ["/dev/kmsg"], "use_api_socket": true, "security_opt": ["seccomp:unconfined"]}}}, "tokens": ["web|cap:NET_ADMIN", "web|devices", "web|key:use_api_socket", "web|security_opt:seccomp:unconfined"]},
+    {"name": "foreign external network and volume", "config": {"services": {"web": {"image": "x"}}, "networks": {"n": {"name": "runtipi_default", "external": true}}, "volumes": {"v": {"name": "other-app-data", "external": true}}}, "tokens": ["network:external:runtipi_default", "volume:external:other-app-data"]},
+    {"name": "secret file and build outside", "config": {"services": {"web": {"build": {"context": "/etc"}}}, "secrets": {"s": {"file": "/srv/rt/.env"}}}, "tokens": ["secrets:file:s:/srv/rt/.env", "web|build:context:/etc"]},
+    {"name": "pinned source ro allowed, rw refused", "config": {"services": {"web": {"volumes": [{"type": "bind", "source": "/srv/rt/app-data/.wizard-source/wizardapps/demo@0123456789ab", "target": "/src", "read_only": true}, {"type": "bind", "source": "/srv/rt/app-data/.wizard-source/wizardapps/demo@0123456789ab", "target": "/src2"}]}}}, "tokens": ["web|bind:/srv/rt/app-data/.wizard-source/wizardapps/demo@0123456789ab:/src2:rw"]},
+    {"name": "another app's data", "config": {"services": {"web": {"volumes": ["/srv/rt/app-data/wizardapps/other/data:/steal"]}}}, "tokens": ["web|bind:/srv/rt/app-data/wizardapps/other/data:/steal:rw"]}
+  ]
+}

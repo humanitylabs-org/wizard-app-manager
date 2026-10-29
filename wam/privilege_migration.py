@@ -26,7 +26,7 @@ BASE = Path('/var/lib/wizard-os')
 CONTROL = Path('/var/lib/wizard-os-migration')
 SYSTEMD = Path('/etc/systemd/system')
 STEPS = ('inventory', 'quiesce', 'snapshot', 'relocate', 'wiring', 'prepare',
-         'units', 'start', 'doctor', 'grant', 'remove_docker', 'complete')
+         'units', 'start', 'doctor', 'remove_docker', 'complete')
 # The host dashboard and stock Hermes gateway intentionally stay at the agent uid.
 USER_UNITS = ('wizard-app-manager-api.service', 'wizard-troubleshooter.service',
               'wizard-guardian.service', 'wizard-guardian.timer', 'wizard-backup.service',
@@ -439,25 +439,13 @@ print(json.dumps(out))
         self.check_links()
         self.doc['doctor_passed'] = True
 
-    def grant(self):
-        if 'docker' not in self.doc['groups']: return
-        # Consumed on the first migration, never renewed by resume or by another
-        # migration after rollback. A failed partial helper call is a hard stop.
-        ledger = Path('/var/lib/wizard-os-server-access/migration-used')
-        if (CONTROL/'migration-used').exists():
-            self.doc['grant_already_used'] = True
-            return
-        if ledger.exists():
-            status = json.loads(run([HELPER, 'status'], capture_output=True).stdout)
-            if not status.get('active') or not status.get('migration'):
-                raise ValueError('The one-time access handoff was interrupted; owner review is required before removing Docker access.')
-            atomic(CONTROL/'migration-used', 'used\n')
-            return
-        # Already root: call the fixed helper directly, not developer.helper's
-        # service-account elevation route. Its root ledger enforces one use.
-        run([HELPER, 'grant'], input=json.dumps({'seconds': 604800, 'migration': True}),
-            capture_output=True)
-        atomic(CONTROL/'migration-used', 'used\n')
+    def revoke_legacy_migration_grant(self):
+        """Candidate builds once had an automatic grant step. Remove only that
+        migration-marked grant; an explicit developer-mode grant stays the owner's."""
+        if not Path(HELPER).exists(): return
+        status = json.loads(run([HELPER, 'status'], capture_output=True).stdout or '{}')
+        if status.get('active') and status.get('migration'):
+            run([HELPER, 'revoke'], capture_output=True)
 
     def remove_docker(self):
         if not self.doc.get('doctor_passed'): raise ValueError('Doctor must pass before removing Docker access.')
@@ -477,6 +465,13 @@ print(json.dumps(out))
         self.doc['state'] = 'migrated'
 
     def migrate(self, stop_after=None):
+        # Repair old interrupted/completed candidate journals; never retain or
+        # renew their automatic root exception on resume.
+        if 'grant' in self.doc['done'] or self.doc.get('current') == 'grant':
+            self.revoke_legacy_migration_grant()
+            self.doc['done'] = [s for s in self.doc['done'] if s != 'grant']
+            if self.doc.get('current') == 'grant': self.doc['current'] = 'remove_docker'
+            self.save()
         if self.doc['state'] == 'rolling_back':
             raise ValueError('Finish the interrupted rollback before migrating again.')
         if self.doc['state'] == 'rolled_back' and 'snapshot' not in self.doc['done']:

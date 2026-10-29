@@ -138,14 +138,9 @@ def access(home, body):
 
 
 def migration_grant(home, agent_was_in_docker_group):
-    """Slice 6 calls BEFORE removing docker membership; root enforces one use.
-
-    This does not turn developer mode on. Extensions require it. Fresh container
-    agents cannot use host sudo and are explicitly unsupported.
-    """
-    if not agent_was_in_docker_group:
-        return {'active': False, 'skipped': 'agent was not in the docker group'}
-    return helper('grant', {'seconds': DEFAULT_SECONDS, 'migration': True})
+    """Compatibility shim: migration never grants sudo. Root access exists only
+    as an explicit developer-mode owner action."""
+    return {'active': False, 'skipped': 'automatic migration access is removed'}
 
 
 def health(home):
