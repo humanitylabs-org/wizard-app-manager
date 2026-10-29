@@ -48,6 +48,43 @@ def test_invalid_pin_stops_before_runtipi_or_files(pins, tmp_path, field, value)
     assert not (home / '.wizard-os').exists()
 
 
+def test_release_sandbox_uses_only_fixture_identity_and_commands(box):
+    p = subprocess.run(['bash', '-c', 'id -u; id -un; getent passwd sandbox'],
+                       env=box['env'], capture_output=True, text=True, timeout=5)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.splitlines() == ['1000', 'sandbox', f"sandbox:x:1000:1000::{box['home']}:/bin/bash"]
+    assert box['env']['PATH'] == str(box['bin'])  # no real privileged-command fallback
+    result, receipt = box['run']()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert receipt['status'] == 'pinned' and all(c['ok'] for c in receipt['checks'])
+    assert not box['denied'].exists()
+    assert 'Preparing the server' not in result.stdout
+
+
+def test_release_sandbox_denies_privileged_side_effects(box):
+    marker = box['home'] / 'must-not-exist'
+    commands = ['sudo', 'apt-get', 'apt', 'useradd', 'usermod', 'groupadd', 'chown', 'systemctl',
+                'systemd-run', 'loginctl', 'runuser', 'su', 'install', 'curl']
+    for command in commands:
+        p = subprocess.run([command, 'sh', '-c', 'printf escaped > "$HOME/must-not-exist"'],
+                           env=box['env'], capture_output=True, text=True, timeout=5)
+        assert p.returncode == 97, (command, p.stdout, p.stderr)
+        assert not marker.exists()
+    assert box['denied'].read_text().splitlines() == commands
+    assert not (box['home'] / '.wizard-os').exists()
+
+
+def test_release_sandbox_root_branch_is_denied_before_server_preparation(box):
+    # Model the observed uid0 runner regression without invoking real apt/useradd.
+    result, receipt = box['run'](SANDBOX_UID='0')
+    assert result.returncode == 97, result.stdout + result.stderr
+    assert 'Preparing the server' in result.stdout
+    assert box['denied'].read_text().splitlines() == ['apt-get']
+    assert receipt is None
+    assert not (box['home'] / 'wam').exists()
+    assert not (box['home'] / 'install-env').exists()
+
+
 def test_get_rejects_invalid_source_pin_before_checkout(box):
     p = box['rel'] / '9.9.9.json'
     doc = json.loads(p.read_text())

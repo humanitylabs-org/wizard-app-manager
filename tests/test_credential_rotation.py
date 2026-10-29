@@ -56,7 +56,8 @@ class SyntheticServices:
 
 @pytest.fixture
 def case(tmp_path):
-    # The acceptance runner supplies a private TMPDIR, including its mount root.
+    # The acceptance runner must pass --basetemp below a root-owned, nonwritable
+    # /opt ancestry: TMPDIR alone does not move pytest's cached/default temp base.
     # Do not chmod shared /tmp or relax the production ancestry check for tests.
     root = tmp_path / 'system/runtipi'; root.mkdir(parents=True, mode=0o700)
     (root / 'user-config').mkdir()

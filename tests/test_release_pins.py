@@ -2,8 +2,9 @@
 read-back of what actually runs. Runs get.sh as this user against a local App Manager repo, a file:// release base
 and a stand-in `docker`; nothing on the box is installed or contacted."""
 import json
-import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -72,10 +73,40 @@ def box(tmp_path):
     (rel / "stable").write_text("9.9.9\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "docker").write_text(FAKE_DOCKER)
-    (bin_dir / "docker").chmod(0o755)
-    (bin_dir / "sudo").write_text("#!/bin/sh\n# Authentication is out of scope for this release-only sandbox.\nexit 0\n")
-    (bin_dir / "sudo").chmod(0o755)
+    # Like test_install_docker.sandbox: no inherited PATH, even when pytest is
+    # root in a disposable guest. Release selection must not prepare the host.
+    for name in ("bash", "sh", "awk", "cat", "chmod", "cp", "cut", "dirname", "git", "grep",
+                 "head", "mkdir", "mktemp", "mv", "rm", "sed", "seq", "sleep", "sync", "tail",
+                 "timeout", "touch", "tr", "wc"):
+        binary = shutil.which(name)
+        assert binary, f"release sandbox prerequisite missing: {name}"
+        (bin_dir / name).symlink_to(binary)
+    (bin_dir / "python3").symlink_to(sys.executable)
+
+    def tool(name, body):
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + body)
+        path.chmod(0o755)
+
+    denied = tmp_path / "denied-commands"
+    deny = 'printf "%s\\n" "${0##*/}" >> "$SANDBOX_DENIED"; exit 97\n'
+    for name in ("apt-get", "apt", "useradd", "usermod", "groupadd", "chown", "systemctl",
+                 "systemd-run", "loginctl", "runuser", "su", "install"):
+        tool(name, deny)
+    # Only the read-only authentication probe is allowed, never exec "$@".
+    tool("sudo", '[ "$#" = 2 ] && [ "$1" = -n ] && [ "$2" = true ] && exit 0\n' + deny)
+    tool("id", 'case "${1:-}" in -un) echo sandbox;; -u|-g) echo "${SANDBOX_UID:-1000}";; '
+               '-nG) echo sandbox;; *) exit 97;; esac\n')
+    tool("getent", 'case "$*" in "passwd"|"passwd sandbox") '
+                   'printf "sandbox:x:1000:1000::%s:/bin/bash\\n" "$HOME";; *) exit 2;; esac\n')
+    tool("stat", '[ "$#" = 3 ] && [ "$1" = -c ] && [ "$2" = %U ] && '
+                 '[ "$3" = "$HERMES_HOME" ] && { echo sandbox; exit 0; }\n' + deny)
+    tool("ps", 'exit 0\n')  # do not discover the runner\'s real gateways/users
+    curl = shutil.which("curl")
+    assert curl, "release sandbox prerequisite missing: curl"
+    # Keep the real unreachable-loopback fetch test; never download host setup.
+    tool("curl", 'case "${@: -1}" in http://127.0.0.1:9/releases/*) exec "' + curl + '" "$@";; esac\n' + deny)
+    tool("docker", FAKE_DOCKER.removeprefix("#!/usr/bin/env bash\n"))
     home = tmp_path / "home"
     home.mkdir()
     # Alongside preflight needs an actual sandbox Hermes, not the developer's host install.
@@ -85,7 +116,11 @@ def box(tmp_path):
     hermes.write_text("#!/bin/sh\nexit 0\n"); hermes.chmod(0o755)
     apps = {"apps": [{"id": "wizard-shell", "version": "0.2.0"}, {"id": "files", "version": "2.63.23"},
                      {"id": "hermes-agent", "version": "1", "commit": lock['agent_recipe']['commit']}]}
-    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home), "WIZARD_MODE": "fresh",
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    env = {"PATH": str(bin_dir), "HOME": str(home), "USER": "sandbox", "WIZARD_MODE": "fresh",
+           "TMPDIR": str(tmp_path), "WIZARD_AGENT_SAFE": "0", "WIZARD_SYSTEMD_DIR": str(systemd),
+           "SANDBOX_DENIED": str(denied),
            "WAM_REPO": str(src), "WIZARD_RELEASE_BASE": f"file://{rel}", "WAM_DIR": str(home / "wam"),
            "RUNTIPI_DIGEST": WAM_DIGEST, "SHELL_DIGEST": SHELL_DIGEST, "APPS_JSON": json.dumps(apps),
            "GIT_CONFIG_NOSYSTEM": "1", "HERMES_HOME": str(hh), "WIZARD_HERMES_BIN": str(hermes)}
@@ -99,7 +134,8 @@ def box(tmp_path):
         out = home / ".wizard-os" / "release.json"
         return p, (json.loads(out.read_text()) if out.is_file() else None)
 
-    return {"run": run, "pinned": pinned, "home": home, "rel": rel, "apps": apps, "src": src}
+    return {"run": run, "pinned": pinned, "home": home, "rel": rel, "apps": apps, "src": src,
+            "env": env, "bin": bin_dir, "denied": denied}
 
 
 def test_stable_release_pins_commit_and_images_and_reads_back(box):
