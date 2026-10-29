@@ -75,9 +75,14 @@ def main():
     boot = os.getpid() == 1
     try:
         bootstrap()
-    except BaseException:
-        # Fixed output, no exception/request/path/byte echo. PID1 never exits.
-        print('{"entry":"wizard-storage-maintenance-v1","state":"refused"}', flush=True)
+    except BaseException as exc:
+        # Fixed output enums only, never exception/request/path/byte echo.
+        # Distinguish intended cold negatives from an earlier bootstrap failure.
+        codes = {'writable boot root required': 'readonly-root',
+                 'maintenance contains another userspace process': 'another-userspace-process',
+                 'nested PID namespace': 'nested-pid-namespace'}
+        code = codes.get(str(exc), 'bootstrap-failed') if isinstance(exc, ValueError) else 'bootstrap-failed'
+        print('{"entry":"wizard-storage-maintenance-v1","state":"refused","code":"'+code+'"}', flush=True)
     if not boot: return 2
     while True: time.sleep(3600)
 

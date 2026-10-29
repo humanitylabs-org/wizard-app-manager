@@ -169,7 +169,14 @@ def validate(stage, manifest_hash, *, local=False):
     before=ast.parse((stage/'inherited-product.py').read_text())
     def nodes(tree): return {n.name:ast.dump(n,include_attributes=False) for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
     a,b=nodes(before),nodes(after)
-    assert set(a)==set(b) and [n for n in a if a[n]!=b[n]]==['main']
+    assert set(b)==set(a)|{'reap_exited_children'}
+    assert {n for n in a if a[n]!=b[n]}=={'main','require_fence'}
+    old_fence=next(n for n in before.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')
+    new_fence=next(n for n in after.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')
+    calls=[n for n in new_fence.body if isinstance(n,ast.Expr) and ast.unparse(n)=='reap_exited_children()']
+    assert len(calls)==1
+    new_fence.body.remove(calls[0])
+    assert ast.dump(old_fence,include_attributes=False)==ast.dump(new_fence,include_attributes=False)
     assert digest(stage/'inherited-product.py')=='3ac25e1b2cbd79e452b3161920571ce2fd83b8d4084f363ead54a614812c47a7'
     assert digest(stage/'inherited-storage-receipt.json')=='bd498441bbbe7b156bd11a50cfbe852c3c1f8a5a6d6d85ea2fe3d9ef4754cc35'
     # No execution/collection/import of tests or guest actions in preflight.
@@ -183,7 +190,7 @@ def validate(stage, manifest_hash, *, local=False):
         for executable in ('qemu-system-x86_64','qemu-img','cloud-localds','ssh','scp','git','ssh-keygen'):
             assert shutil.which(executable),executable
     free=shutil.disk_usage(stage).free
-    return doc,old,{'static_source_integrity':True,'primitive_ast_unchanged_except_main':True,
+    return doc,old,{'static_source_integrity':True,'primitive_ast_delta':'main plus bounded reaper call; existing fence AST otherwise exact',
         'effective_runner_manifest_reads':contract,'product_sha256':doc['product_sha256'],
         'expected_runtime_cases':len(CASES),'expected_python_cases':len(doc['expected_pytest_cases']),
         'heavy_executed':False,'local_only':local,'forum_artifacts_checked':not local,
@@ -282,7 +289,22 @@ def make_runner(base):
                         outcome=outcomes[-1];break
                 else:
                     refused=[v for v in values if v.get('phase')=='refused' or v.get('state')=='refused']
-                    if refused:outcome=refused[-1];break
+                    if refused:
+                        candidate=refused[-1]
+                        expected = {
+                            'cold-invalid-json': ('JSONDecodeError', 'fixed maintenance exception'),
+                            'cold-wrong-field': ('Refusal', 'unknown maintenance request field'),
+                            'cold-wrong-type': ('Refusal', 'invalid maintenance request value'),
+                            'cold-invalid-action': ('Refusal', 'invalid maintenance request value'),
+                            'cold-symlink-request': ('OSError', 'fixed maintenance exception'),
+                            'cold-writable-request': ('Refusal', 'unsafe control record'),
+                            'retired-request-does-not-reapply': ('FileNotFoundError', 'fixed maintenance exception')}
+                        if name in ('cold-readonly-root', 'cold-foreign-writer'):
+                            assert candidate.get('code') == ('readonly-root' if name=='cold-readonly-root' else 'another-userspace-process'), 'wrong bootstrap refusal reason'
+                        else:
+                            assert (candidate.get('error_type'), candidate.get('reason')) == expected[name], 'wrong request refusal reason'
+                            assert any(v.get('state')=='admitted' for v in values), 'request guard never reached'
+                        outcome=candidate;break
                 time.sleep(0.25)
             assert outcome is not None,'cold entry outcome timeout'
             # Still maintenance after result, no auto systemd/services/writers.
@@ -340,6 +362,10 @@ def make_runner(base):
             self.boot=json.loads((self.evidence/'boot.json').read_text());assert re.fullmatch('[A-Fa-f0-9-]+',self.boot['root_uuid'])
             self.copy(self.evidence/'vmlinuz',self.boot['kernel'],True);self.copy(self.evidence/'initrd',self.boot['initrd'],True)
             self.receipt['boot_inputs']={k:digest(self.evidence/k) for k in ('vmlinuz','initrd')};self.save()
+            self.continue_production()
+
+        def continue_production(self):
+            """Resume only after fresh synthetic durable-state + source checks."""
             self.phase('actual-packaged-production-cold-entry')
             for name in COLD_NEGATIVE:
                 self.guest('request-'+name,'/usr/bin/python3 -I '+GUEST+' request '+name)

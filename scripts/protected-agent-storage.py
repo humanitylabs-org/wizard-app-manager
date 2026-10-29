@@ -227,6 +227,36 @@ def require_initial_pid_namespace():
         if fd is not None: os.close(fd)
 
 
+# At most 256 nonblocking kernel waits per fence invocation, including the
+# terminal ECHILD/zero probe. This comfortably covers a small initramfs handoff,
+# not an unbounded process backlog. Exhaustion refuses even if the last wait
+# happened to reap the final child; a second invocation never rescues that call.
+CHILD_REAP_CALL_LIMIT = 256
+
+
+def reap_exited_children():
+    """PID1 housekeeping only, called AFTER the host-init identity checks.
+
+    waitpid selects actual children in the kernel, never /proc paths or names.
+    A zero result does not wait for a live child: the unchanged full census below
+    must still reject it (and all nonchildren). No signals or SIGCHLD policy.
+    """
+    for _ in range(CHILD_REAP_CALL_LIMIT):
+        try:
+            result = os.waitpid(-1, os.WNOHANG)
+        except OSError as exc:
+            if exc.errno == errno.ECHILD: return
+            raise Refusal('child housekeeping unavailable') from None
+        if (type(result) is not tuple or len(result) != 2
+                or any(type(v) is not int for v in result)):
+            raise Refusal('unexpected child housekeeping result')
+        pid, status = result
+        if pid == 0 and status == 0: return
+        if pid <= 1 or not 0 <= status <= 0xffff or not (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+            raise Refusal('unexpected child housekeeping result')
+    raise Refusal('child housekeeping bound exceeded')
+
+
 def require_fence():
     """Prevention = sole host init; census alone is NEVER an online admission."""
     if os.getuid() != 0 or os.geteuid() != 0 or os.getpid() != 1:
@@ -247,6 +277,7 @@ def require_fence():
         st = os.stat(boot_init.name, dir_fd=parent.fd, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_mode & 0o022 or not st.st_mode & 0o111:
             raise Refusal('unprotected recovery boot init')
+    reap_exited_children()
     userspace = []
     for path in Path('/proc').iterdir():
         if not path.name.isdecimal() or path.name == '1': continue

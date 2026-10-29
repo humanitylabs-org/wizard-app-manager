@@ -199,7 +199,8 @@ def test_effective_inherited_manifest_reads_are_explicit(production_constructor)
         'base.__init__':['product_sha256', 'revision'],
         'base.focused_tests':['expected_pytest_cases', 'expected_pytest_count'],
         'production.__init__':['service_revision'],
-        'production.execute':['revision', 'service_revision']}
+        'production.execute':['revision'],
+        'production.continue_production':['revision', 'service_revision']}
     # The replaced base execute's tree/cut/intervention budgets are NOT consumed
     # by the production proof; do not invent dummy fields for those old oracles.
     original = (stage/'storage-runner.py').read_text()
