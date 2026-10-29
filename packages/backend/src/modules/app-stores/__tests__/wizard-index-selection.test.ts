@@ -17,6 +17,8 @@ describe('owner-local exact Store selections', () => {
     const configuration = {get:vi.fn().mockReturnValue({dataDir:DATA_DIR}),getConfig:vi.fn().mockReturnValue({directories:{dataDir:DATA_DIR}})} as unknown as ConfigurationService;
     manager = new WizardIndexStore(configuration, new FilesystemService(logger), logger, {slug:'wizardapps',url:'https://index.test'} as AppStore);
     await fs.promises.mkdir(folder,{recursive:true});
+    // Real selected image recipes carry a manifest; source/build verification has separate regressions.
+    await fs.promises.writeFile(path.join(folder, 'wizard.md'), '---\nid: demo\nruntime:\n  package: image\n---\n');
     await fs.promises.writeFile(path.join(folder,'.wizard-commit'),sha+'\n');
     await fs.promises.writeFile(path.join(folder,'.wizard-source'),JSON.stringify({repo:'org/demo'}));
     await fs.promises.writeFile(path.join(folder,'.wizard-selection'),JSON.stringify({repo:'org/demo',commit:sha}));
