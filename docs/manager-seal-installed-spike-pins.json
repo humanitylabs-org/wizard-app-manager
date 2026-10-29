@@ -1,0 +1,24 @@
+{
+  "production_source": "3116f500f4d7df959a9f4d586dec4f9a9b7564b5",
+  "schema": 1,
+  "source_sha256": {
+    "packages/backend/src/app.service.ts": "785fc560f6de97b36afdd74a567d3bac38c56d5425e9570be023e1a1877d2318",
+    "packages/backend/src/cli/enroll-mandatory-seal.ts": "1fc577924aa9002591d94e484f993e0d2f73ac90d3e4126c1ed3e77b81cab215",
+    "packages/backend/src/main.ts": "d796790fa9ca3b8e7b4a9c729e16504bd845d4f2dadd428d642bc7073bda55be",
+    "packages/backend/src/modules/app-lifecycle/app-lifecycle.controller.ts": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d",
+    "packages/backend/src/modules/app-lifecycle/app-lifecycle.service.ts": "9a2684bb9a95437d94cf7daac17ab745db9b067063209e8eb780fb2789e0be7c",
+    "packages/backend/src/modules/app-lifecycle/commands/update-app-command.ts": "945b69ca8eadfa6dedea90c440bccdcad9f55bbbda903217083865e998045f0c",
+    "packages/backend/src/modules/app-lifecycle/dto/app-lifecycle.dto.ts": "eac0d9327c45bc523661657a4828051f7e97de2a7ba86604cdf1ab4d6fdcd691",
+    "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts": "923ce5fc14ba89156a59ee998395dbd2f0e2ccf4684f4e48288517317abfd8c9",
+    "packages/backend/src/modules/app-lifecycle/handlers/update-app.handler.ts": "fa1923bd89eb9196775de72069086d304c423f241a25d9e3f258c404fdd2d884",
+    "packages/backend/src/modules/app-lifecycle/handlers/update-config.handler.ts": "9c320368a079d9298545878bec517c7985b74286b45140ce5127f15a36568603",
+    "packages/backend/src/modules/app-lifecycle/services/status-manager.service.ts": "f3e8837268a31360e1363a51b9842f728711c62155ab3bb3bc558d3011d04da3",
+    "packages/backend/src/modules/apps/apps.repository.ts": "0c96dc688addf3dc5750b1deb74da5c4fc01b5d5ddcd6f3f2963b8e5dc5eb140",
+    "packages/backend/src/modules/auth/dto/auth.dto.ts": "fae05cf8beebb40c41705c0c9bb769c1fa660443a05d4926c4af628ecc49d785",
+    "packages/backend/src/modules/docker/docker.module.ts": "2523b4b7e95face98dec57bee66f4e8c49d79c152bd0b61d4fa9a45a9bb20692",
+    "packages/backend/src/modules/docker/docker.service.ts": "04ef4e9742d601099e510f4f518b4a249f197054eaa2b29b4b5f66e789aa433c",
+    "packages/backend/src/modules/docker/mandatory-seal.ts": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc",
+    "packages/backend/src/modules/queue/queue.entity.ts": "80c777edad7bfaac6cde44ff9c88d7e841370f9f02b804d745f408531b66a573"
+  },
+  "staging_parent": "814c78ab24dad9cdf3ca251abd7b42af6c2ba7c9"
+}

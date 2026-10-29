@@ -1,0 +1,55 @@
+{
+  "aggregate_mem_cap_bytes": 12884901888,
+  "aggregate_tmpfs_cap_bytes": 8589934592,
+  "cached_image_sizes_are_not_new_host_writes": true,
+  "capacity_failure_claimed": false,
+  "db_broker_cached_image_size_sum_bytes": 465632981,
+  "fixture_cap_bytes": 67108864,
+  "free_above_reserve_bytes": 11518828544,
+  "free_bytes_observed": 226267193344,
+  "images": [
+    {
+      "architecture": "amd64",
+      "bytes": 290643404,
+      "declared_volumes": [
+        "/var/lib/postgresql/data"
+      ],
+      "id": "sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc",
+      "os": "linux",
+      "reference_observed": "postgres:14-alpine",
+      "repo_digest": "postgres@sha256:862ffc2556a2db763f0439c8323490000cd01975d2798a845e4a8dd3a905862f"
+    },
+    {
+      "architecture": "amd64",
+      "bytes": 174989577,
+      "declared_volumes": [
+        "/var/lib/rabbitmq"
+      ],
+      "id": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+      "os": "linux",
+      "reference_observed": "rabbitmq:4-alpine",
+      "repo_digest": "rabbitmq@sha256:21577d148f4f7563a87d761862fa353f59348a094833ca8b1b1a46a8102dffce"
+    },
+    {
+      "architecture": "amd64",
+      "bytes": 345216194,
+      "declared_volumes": [],
+      "id": "sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9",
+      "os": "linux",
+      "reference_observed": "prior runtime donor",
+      "repo_digest": null
+    }
+  ],
+  "kind": "bounded read-only forum image metadata; no container inspect/start",
+  "metadata_command_issue": "Initial docker image ls supplied two positional references (exit1); corrected to repeated reference filters. postgres:14 inspect exit1 because absent; cached14-alpine inspected separately.",
+  "new_images_downloaded_or_imported": 0,
+  "not_capacity_admission": true,
+  "prior_total_host_write_allowance_bytes": 1073741824,
+  "required_free_at_original_preflight_bytes": 215822106624,
+  "reserve_bytes": 214748364800,
+  "retained_stage_total_measured": false,
+  "runtime_peak_measured": false,
+  "schema": 1,
+  "shortfall_bytes_at_observation": 0,
+  "swap_bytes": 0
+}

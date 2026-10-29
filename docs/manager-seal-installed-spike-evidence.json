@@ -1,0 +1,53 @@
+{
+  "RUNTIPI_ADMITTED": false,
+  "archive_sha256": "168a63a43777a34a1bf3b5a3fa6b5daef6f52339828f9a761a3a36024754de44",
+  "blockers": [
+    {
+      "code": "UNSCOPED_BOOTSTRAP_NETWORK_PRUNE",
+      "effect": "Host daemon-wide unused-network mutation exceeds synthetic-only authority.",
+      "operation": "Dockerode.pruneNetworks()",
+      "ownership_filter": false,
+      "source": "packages/backend/src/app.service.ts:37-40"
+    },
+    {
+      "code": "HTTP_INSTALL_SKIPRUN_OVERWRITTEN",
+      "effect": "install-then-enroll sequence cannot suppress pre-enrollment up over HTTP.",
+      "source": "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts:81-89"
+    }
+  ],
+  "bundle_files_verified": [
+    "cpufeatures-e8x7s2f1.node",
+    "main.js",
+    "main.js.map",
+    "sshcrypto-a3khcfhj.node"
+  ],
+  "cleanup_required": false,
+  "docker_calls": 0,
+  "embedded_sources_verified": {
+    "../src/app.service.ts": "785fc560f6de97b36afdd74a567d3bac38c56d5425e9570be023e1a1877d2318",
+    "../src/modules/app-lifecycle/app-lifecycle.controller.ts": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d",
+    "../src/modules/app-lifecycle/handlers/install-app.handler.ts": "923ce5fc14ba89156a59ee998395dbd2f0e2ccf4684f4e48288517317abfd8c9",
+    "../src/modules/docker/docker.module.ts": "2523b4b7e95face98dec57bee66f4e8c49d79c152bd0b61d4fa9a45a9bb20692"
+  },
+  "full_docker_acceptance": false,
+  "heavy_submitted": false,
+  "installed_backend_http_transaction_pass": false,
+  "javascript_install_expression": {
+    "dto_skipRun": true,
+    "event_skipRun": false
+  },
+  "kind": "offline exact-source authority/interface blocker",
+  "native_load_tested": false,
+  "nest_bootstrap_tested": false,
+  "official_image_pass": false,
+  "production_source": "3116f500f4d7df959a9f4d586dec4f9a9b7564b5",
+  "resources_created": [],
+  "rollback_transaction_pass": false,
+  "runner_sha256": "fdaca8483e989820c03fe38ef2ffcd1f81b1087eb9d512088c721b155f532c6c",
+  "schema": 1,
+  "single_accepted_update_pass": false,
+  "source_files_verified": 17,
+  "source_manifest_sha256": "a5d930a57350507c50c1767a1afcac85a6288fddcd99560b8dbab1c3dd8bcc16",
+  "stopped_at": "source-bound authority/interface preflight; no installed rig staged",
+  "successive_accepted_updates_pass": false
+}

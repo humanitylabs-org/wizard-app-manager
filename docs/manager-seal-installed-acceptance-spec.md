@@ -2,9 +2,11 @@
 
 **Prepared only. No submission, Docker start, image build, migration or live change is authorized by this document.** This is the smallest additional installed-backend lane, NOT official-image/full-product admission. The offline source-handler composite is a prerequisite, not a replacement.
 
+**Bounded spike result:** the sequence below is not executable unchanged. Source-pinned probe demonstrates unfiltered daemon-wide bootstrap network pruning and HTTP `skipRun` overwrite. See [installed spike results](manager-seal-installed-spike-results.md), executable `scripts/manager_seal_installed_spike.py`, and [transaction design for controller review](manager-seal-update-transaction-design.md). No installed-runtime pass or heavy submission. Resolve the precise authority/interface seams before admitting this lane.
+
 ## Fixed inputs and reuse
 
-REUSE: exact existing production source and dependency/build closure from `3116f500f4d7964b3e2d8bb72a9893e86adef271`, hash-identical production in `3cfecc950ebbd91b2bbc0cd62ba0e834b572cd49`; original synthetic five-service fixture and network-event projection. EXTEND: a new disposable installed Nest/HTTP/DB/queue rig, not modifications to the production manager. NEW: no manager feature, no trusted installed-revision transition.
+REUSE: exact existing production source and dependency/build closure from `3116f500f4d7df959a9f4d586dec4f9a9b7564b5`, hash-identical production in `3cfecc950ebbd91b2bbc0cd62ba0e834b572cd49`; original synthetic five-service fixture and network-event projection. EXTEND: a new disposable installed Nest/HTTP/DB/queue rig, not modifications to the production manager. NEW: no manager feature, no trusted installed-revision transition.
 
 Use the four saved backend outputs, never rebundle just for this lane:
 
