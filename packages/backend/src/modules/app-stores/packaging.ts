@@ -1,5 +1,42 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+
+// Same inventory format as wam/source_integrity.py; links are data, never followed.
+export const sourceInventory = async (root: string) => {
+  const stat = await fs.promises.lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('source is not a regular directory');
+  const entries: Record<string, { link: string } | { directory: true } | { sha256: string }> = {};
+  let total = 0;
+  const walk = async (here: string) => {
+    for (const name of (await fs.promises.readdir(here)).sort()) {
+      if (here === root && name === '.git') continue;
+      const p = path.join(here, name), key = path.relative(root, p).split(path.sep).join('/');
+      const st = await fs.promises.lstat(p);
+      if (st.isSymbolicLink()) entries[key] = { link: await fs.promises.readlink(p) };
+      else if (st.isDirectory()) { entries[key] = { directory: true }; await walk(p); }
+      else if (st.isFile()) {
+        total += st.size;
+        if (total > SOURCE_LIMIT_BYTES) throw new Error('source inventory exceeds size limit');
+        const hash = createHash('sha256');
+        for await (const chunk of fs.createReadStream(p)) hash.update(chunk);
+        entries[key] = { sha256: hash.digest('hex') };
+      } else throw new Error('unsupported source file');
+    }
+  };
+  await walk(root);
+  return entries;
+};
+export const inventoryPath = (root: string) => `${root}.inventory.json`;
+export const pristineSource = async (root: string) => {
+  try {
+    const expected = JSON.parse(await fs.promises.readFile(inventoryPath(root), 'utf8'));
+    return isDeepStrictEqual(expected, await sourceInventory(root));
+  } catch { return false; }
+};
+const recordSource = async (root: string, expected?: Record<string, unknown>) =>
+  fs.promises.writeFile(inventoryPath(root), `${JSON.stringify(expected ?? await sourceInventory(root))}\n`);
 
 // spec/WIZARD_MD.md "Packaging" (DECISIONS #76): runtime.package is source | build | image.
 // source/build apps get their pinned commit (without .git) copied to
@@ -65,7 +102,10 @@ export const pruneSources = async (appDataRoot: string, storeId: string, appName
   const dir = path.join(appDataRoot, SOURCE_ROOT, storeId);
   const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
   for (const n of names) {
-    if (n.startsWith(`${appName}@`) && n !== keep && !n.includes('/')) await fs.promises.rm(path.join(dir, n), { recursive: true, force: true });
+    if (n.startsWith(`${appName}@`) && n !== keep && !n.includes('/') && await pristineSource(path.join(dir, n))) {
+      await fs.promises.rm(path.join(dir, n), { recursive: true, force: true });
+      await fs.promises.rm(inventoryPath(path.join(dir, n)), { force: true });
+    }
   }
 };
 
@@ -97,10 +137,22 @@ export const preparePackage = async (opts: {
     s.image = `wizard-local/${appName}-${name}:${commit.slice(0, 12)}`;
     s.pull_policy = 'build';
   }
+  const exists = await fs.promises.lstat(target).then(() => true, (e: NodeJS.ErrnoException) => {
+    if (e.code === 'ENOENT') return false;
+    throw e;
+  });
+  const expected = await sourceInventory(src);
+  if (exists) {
+    if (!isDeepStrictEqual(await sourceInventory(target), expected))
+      throw new Error('Owner source differs: keep or merge your changes before updating; nothing replaced');
+    await recordSource(target, expected);
+    return true;
+  }
   const tmp = `${target}.tmp-${process.pid}`;
   await fs.promises.rm(tmp, { recursive: true, force: true });
   await copySource(src, tmp);
-  await fs.promises.rm(target, { recursive: true, force: true });
+  // Never remove a destination which appeared while copying.
   await fs.promises.rename(tmp, target);
+  await recordSource(target, expected);
   return true;
 };
