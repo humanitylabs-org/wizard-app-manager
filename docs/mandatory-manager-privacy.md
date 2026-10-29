@@ -163,6 +163,67 @@ it does not repeat the unchanged full stock/gateway/backend suite. Baseline red
 must remain the public-network assertion, not an unrelated setup/dollar failure.
 No installed-API/image gate or successive-update limitation is removed.
 
+### Hostile optional-config rollback failure and remediation repair
+
+The saved `72792604532056b2d988adab47ed55785f6170bc` attempt ran 17 tests:
+16 passed, one failed, none skipped. Fourteen lifecycle checkpoints completed;
+the final complete event reconciliation did not. The literal-dollar fix and
+actual Compose roundtrip passed at that source, not at this unexecuted revision.
+Preserve failed job `heavy_5e7c927414c6485fa9b3057559823102`, parent-verified
+outer log SHA `6eee847cbcb13c0b94b330ea522a3be06a7ad7558e7cd69c3abc9a62ed578f99`
+and artifact SHA `f5799e76f8464d2f4e17c7d610843e56a4ae39a2392cf630b0b93668c7eeea98`.
+
+Root cause: the enclosing `up` had already produced a required-overlay-validated
+snapshot, but nested `composeApp(down)` returned through the early remediation
+branch without passing that snapshot. `runComposeApp` therefore rebuilt ordinary
+arguments, rereading the intentionally retained optional `network_mode: host` /
+`privileged: true` override. Compose rejected host network mode plus generated
+networks before down completed, masking the fixture's subsequent forced error.
+The saved assertion shows the truncated `service agent-synthetic declares mutu…`
+error; the source path establishes the conflicting inputs. No failure is
+reclassified as successful rollback or no-transient-network evidence.
+
+REUSE/EXTEND: carry the existing validated arguments through an async-local,
+same-URN, callback-lifetime remediation context. Nested down/stop/kill/rm do not
+relock the enclosing fence, reread optional files or alter snapshot bytes. The
+context expires in `finally`, including failure, and does not grant activation.
+Separate/concurrent calls and other URNs cannot inherit it. Standalone enrolled
+remediation (update down, backup/restore stop, explicit stop/reset/uninstall)
+uses existing generated Compose plus generated env only; optional env/Compose
+are not read. Sticky enrollment presence is checked without decoding policy, so
+missing/corrupt policy still permits non-activating cleanup. This fallback still
+requires a usable generated project; it is not recovery from arbitrary corrupt
+catalogue files. Ordinary apps keep their existing optional-input behavior.
+No new manager, persistent launch snapshot or alternate update transaction.
+
+Guarded pull, update preflight and recovery up remain unchanged and fail closed
+on invalid/unapproved runtime/policy. `prepareApp` does not export a cached launch
+capability; the actual recovery up revalidates current grants and retained prior
+runtime. The trusted first rollback anchor and third-distinct-revision refusal
+remain intact. Successive accepted updates still require the separately reviewed
+installed-state/anchor-retirement transition described above.
+
+Regressions retain the hostile optional file byte-for-byte, require the original
+forced exception, assert all project containers are actually gone before
+recovery, then inspect prior image/home/key and revoked grant after recovery.
+Additional real-Docker groups cover registered restart with hostile input and
+standalone stop/recovery. The expected trace inventory now includes these groups;
+the full create/connect reconciliation is not weakened. Small dependency-free
+method checks execute exact product methods with dependency facades, including
+corrupt-policy cleanup, ordinary apps, URN/concurrency/lifetime isolation, guarded
+pull and refusals. Their immediate-prior source negative must fail specifically
+because optional input reached nested remediation, not an import/setup error.
+They are not full-module or Compose execution.
+
+The next parent-owned bounded forum job reruns types, those method checks,
+the exact-prior rollback negative, existing app-lifecycle and restart-incident
+tests, the complete mandatory-seal file with real Docker and all checkpoints,
+then the original manager+storage disabled-config public-network negative. It
+keeps the same pinned Compose, frozen dependency/bootstrap closure and 200 GiB
+reserve plus 1 GiB bounded host allowance, 8 GiB tmpfs, 12 GiB memory/no swap and
+64 MiB synthetic fixture. Installed API/image gates stay separate. No heavy job
+is submitted by the child and no full unchanged backend/stock suite is repeated.
+
 ## Remaining acceptance gates — unchanged
 
 Direct `DockerService` with synthetic DB/file facades is not authenticated Nest API/queue/Postgres acceptance. A new manager object is not process-level daemon restart. Manual forced callback failure/prior generated-file recovery is not the actual update transaction. The next exact-image disposable API stage must prove install/start/restart/update, process restart, optional-config disabled/removed/changed, required-policy failure before destructive callbacks, real version update plus forced rollback retaining synthetic home/identity/bindings, socket grants/revocation and Incognito. Preserve full acceptance; do not reduce it to metadata-only updates or grant refusal.

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MandatorySeal } from './mandatory-seal';
@@ -48,7 +49,7 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
    * Get the base compose args for an app
    * @param {string} appUrn - App name
    */
-  public getBaseComposeArgsApp = async (appUrn: AppUrn) => {
+  public getBaseComposeArgsApp = async (appUrn: AppUrn, includeOptional = true) => {
     let isCustomConfig = false;
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
@@ -58,8 +59,8 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     const userConfigEnabled = app?.userConfigEnabled ?? true;
 
     // User custom env file
-    const userEnvFile = await this.appFilesManager.getUserEnv(appUrn);
-    if (userEnvFile.content && userConfigEnabled) {
+    const userEnvFile = includeOptional ? await this.appFilesManager.getUserEnv(appUrn) : undefined;
+    if (userEnvFile?.content && userConfigEnabled) {
       isCustomConfig = true;
       args.push('--env-file', userEnvFile.path);
     }
@@ -70,8 +71,8 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     args.push('-f', composeFile.path);
 
     // User defined overrides
-    const userComposeFile = await this.appFilesManager.getUserComposeFile(appUrn);
-    if (userComposeFile.content && userConfigEnabled) {
+    const userComposeFile = includeOptional ? await this.appFilesManager.getUserComposeFile(appUrn) : undefined;
+    if (userComposeFile?.content && userConfigEnabled) {
       isCustomConfig = true;
       args.push('--file', userComposeFile.path);
     }
@@ -139,19 +140,33 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     }, enrollment ? (doc, targets) => seal.select(enrollment, doc, targets) : undefined);
   }
 
+  private readonly remediationContext = new AsyncLocalStorage<{ urn: AppUrn; args: string[]; active: boolean }>();
+
   public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
     const argv = composeArgv(command);
     const action = argv[0] ?? '';
     // Remediation is non-activating and must work even for corrupt policies and
     // inside beforeStart while the enclosing launch owns the enrollment fence.
-    if (REMEDIATION.has(action)) return this.runComposeApp(appUrn, argv);
     const seal = new MandatorySeal(this.config.get('directories').dataDir);
+    if (REMEDIATION.has(action)) {
+      const context = this.remediationContext.getStore();
+      if (context?.active && context.urn === appUrn) return this.runComposeApp(appUrn, argv, context.args);
+      // Standalone stop/update/backup/removal must not reintroduce optional
+      // host-network overrides. The sticky marker, not valid policy contents,
+      // determines enrollment so corrupt-policy remediation stays available.
+      const args = await seal.exists(appUrn) ? (await this.getBaseComposeArgsApp(appUrn, false)).args : undefined;
+      return this.runComposeApp(appUrn, argv, args);
+    }
     return seal.exclusive(appUrn, async () => {
       if (action === 'pull' && !await seal.read(appUrn)) return this.runComposeApp(appUrn, argv);
       if (action === 'up' || action === 'pull') {
         let result!: { success: boolean; stdout: string; stderr: string };
         await this.prepareLocked(appUrn, seal, async (args) => {
-          await beforeStart?.();
+          if (args) {
+            const context = { urn: appUrn, args, active: true };
+            try { await this.remediationContext.run(context, async () => beforeStart?.()); }
+            finally { context.active = false; }
+          } else await beforeStart?.();
           result = await this.runComposeApp(appUrn, argv, args);
         });
         return result;

@@ -257,6 +257,34 @@ describe('reviewed manager admission regressions', () => {
     }
     expect(run).toHaveBeenCalledOnce();
   });
+  it('keeps nested rollback down on the validated snapshot without relocking or masking failure', async () => {
+    const f = await fixture();
+    await f.seal.enroll(f.urn, f.doc);
+    const { manager, run } = seamManager(f.root, f.doc);
+    await expect(manager.composeApp(f.urn, 'up --detach', async () => {
+      await manager.composeApp(f.urn, 'down --remove-orphans');
+      throw new Error('synthetic forced rollback');
+    })).rejects.toThrow('synthetic forced rollback');
+    expect(run).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledWith(f.urn, ['down', '--remove-orphans'], ['validated-snapshot']);
+    await manager.composeApp(f.urn, 'up --detach');
+    expect(run).toHaveBeenLastCalledWith(f.urn, ['up', '--detach'], ['validated-snapshot']);
+  });
+  it('remediates standalone with missing policy without optional input, but keeps activation fail-closed', async () => {
+    const f = await fixture();
+    await f.seal.enroll(f.urn, f.doc);
+    await fs.unlink(path.join(f.root, 'state/mandatory-seals', sealHash(f.urn), 'policy.json'));
+    const { manager, run } = seamManager(f.root, f.doc);
+    const base = vi.spyOn(manager, 'getBaseComposeArgsApp').mockResolvedValue({ args: ['generated-only'], isCustomConfig: false });
+    for (const action of ['stop', 'down', 'kill', 'rm']) {
+      await manager.composeApp(f.urn, action);
+      expect(run).toHaveBeenLastCalledWith(f.urn, [action], ['generated-only']);
+      expect(base).toHaveBeenLastCalledWith(f.urn, false);
+    }
+    run.mockClear();
+    await expect(manager.composeApp(f.urn, 'up --detach')).rejects.toThrow();
+    expect(run).not.toHaveBeenCalled();
+  });
   it('shares enrollment exclusion with a separate CLI process; no stale ordinary launch waits through enrollment', async () => {
     const f = await fixture();
     const modulePath = path.resolve('src/modules/docker/mandatory-seal.ts');
@@ -612,6 +640,16 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       await inspect();
       checks.push('malicious-optional-config-new-manager-object');
+      const hostileBytes = await fs.readFile(user, 'utf8');
+      expect(await registeredRestart()).toMatchObject({ success: true });
+      await inspect();
+      checks.push('malicious-optional-config-registered-restart-down-up');
+      await manager.composeApp(urn, 'stop');
+      expect((await exec('docker', ['ps', '-q', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim()).toBe('');
+      await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
+      await inspect();
+      expect(await fs.readFile(user, 'utf8')).toBe(hostileBytes);
+      checks.push('malicious-optional-config-standalone-stop-recovery');
       // Unsupported requested values refuse, not a silent metadata-only update.
       const changedEnv = structuredClone(baseline);
       changedEnv.services[main].environment = { LITERAL: 'downgraded' };
@@ -654,10 +692,13 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
         await manager.composeApp(urn, 'down --remove-orphans');
         throw new Error('synthetic forced rollback');
       })).rejects.toThrow('synthetic forced rollback');
+      expect((await exec('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim()).toBe('');
+      expect(await fs.readFile(user, 'utf8')).toBe(hostileBytes);
       await fs.writeFile(generated, JSON.stringify(baseline));
       await manager.composeApp(urn, 'up --detach --force-recreate --remove-orphans');
       expectedImage = doc.services[main].image;
       await inspect();
+      expect(await fs.readFile(user, 'utf8')).toBe(hostileBytes);
       checks.push('forced-down-failure-prior-revision-recovery-revoked-grant');
       const third = structuredClone(next); const thirdCatalogue = structuredClone(nextCatalogue);
       third.services[main].command = ['import time; time.sleep(3599)'];
@@ -681,6 +722,10 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
         await expect(manager.composeApp(urn, 'up --detach', async () => { stopped = true; })).rejects.toThrow();
         expect(stopped).toBe(false);
         await inspect();
+        await manager.composeApp(urn, 'stop');
+        expect((await exec('docker', ['ps', '-q', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim()).toBe('');
+        expect(await fs.readFile(user, 'utf8')).toBe(hostileBytes);
+        checks.push('missing-policy-remediation-still-available');
       }, async () => {
         await barrier();
         expect(traceError).toBeUndefined(); expect(streamClosed).toBe(false);

@@ -87,6 +87,11 @@ export class MandatorySeal {
     try { return await apply(); }
     finally { await fs.rmdir(lock); }
   }
+  async exists(urn: string): Promise<boolean> {
+    // Remediation needs only sticky presence, never a valid/decodable policy.
+    try { await fs.lstat(await this.enrollment(urn)); return true; }
+    catch (e: any) { if (e.code === 'ENOENT') return false; throw fail(); }
+  }
   async read(urn: string): Promise<SealRecord | null> {
     const dir = await this.enrollment(urn);
     const st = await fs.lstat(dir).catch((e) => { if (e.code === 'ENOENT') return null; throw fail(); });

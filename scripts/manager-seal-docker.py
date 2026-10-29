@@ -46,10 +46,13 @@ PYTHON_IMAGE = 'sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c
 PYTHON_DIGEST = 'python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159'
 DOCKER_SHA = '32b607f4bef9c7d0a5e717ed812590bfc5253a9dbabcd7210f03c5316dcfa44f'
 OLD_IMAGE = 'sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9'
+ROLLBACK_PRIOR_SOURCE = '72792604532056b2d988adab47ed55785f6170bc'
+ROLLBACK_PRIOR_SERVICE_SHA = 'a04e8d8e50c529d9ee257704a376b1eff2d0f438c705fe68500a81bf7e35f332'
 TARGET = 'src/modules/docker/__tests__/mandatory-seal.test.ts'
 PRODUCT_DELTA = ['packages/backend/src/modules/docker/docker.service.ts', 'packages/backend/src/modules/docker/wizard-storage.ts']
 ALLOWED_DELTA = {TARGET.replace('src/', 'packages/backend/src/', 1), 'packages/backend/src/modules/docker/mandatory-seal.ts',
                  'packages/backend/src/modules/docker/docker.service.ts', 'scripts/tests/test_manager_seal_dollars.mjs',
+                 'scripts/tests/test_manager_seal_remediation.mjs',
                  'scripts/manager-seal-docker.py', 'scripts/tests/test_manager_seal_docker.py', 'docs/mandatory-manager-privacy.md'}
 RESULT = 'DOCKER_RESULT='
 REQUIRED_CHECKS = frozenset({
@@ -58,9 +61,11 @@ REQUIRED_CHECKS = frozenset({
     'grant-revoked-no-resurrection', 'unapproved-runtime-before-destructive-callback',
     'factory-registered-restart-invalid-runtime-leaves-real-containers', 'optional-config-removed-revocation-sticky',
     'malicious-optional-config-new-manager-object', 'unsupported-request-refusal', 'noop-stage-byte-preservation',
+    'malicious-optional-config-registered-restart-down-up', 'malicious-optional-config-standalone-stop-recovery',
     'stale-cas-and-envelope-revision-negatives', 'distinct-pinned-image-real-update-revoked-grant',
     'forced-down-failure-prior-revision-recovery-revoked-grant', 'successive-distinct-revision-refused-anchor-preserved',
     'explicit-grant-reapproval-only', 'missing-policy-before-destructive-callback',
+    'missing-policy-remediation-still-available',
     'exact-live-create-connect-coverage-no-transient-public-network',
 })
 
@@ -89,6 +94,7 @@ def inherited(root, manifest):
     assert sha(old/'SOURCE.json') == EARLY_MANIFEST
     assert sha(old/'early-receipt.json') == EARLY_RECEIPT
     assert sha(old/'early.log') == EARLY_LOG
+    assert sha(old/'rollback-72792604-docker.service.ts') == ROLLBACK_PRIOR_SERVICE_SHA
     prior = json.loads((old/'SOURCE.json').read_text())
     receipt = json.loads((old/'early-receipt.json').read_text())
     assert receipt['early_pass'] and receipt['source_head'] == EARLY_SOURCE
@@ -101,7 +107,7 @@ def inherited(root, manifest):
     return {'receipt_sha256': EARLY_RECEIPT, 'log_sha256': EARLY_LOG, 'source': EARLY_SOURCE,
             'source_manifest_sha256': EARLY_MANIFEST, 'changed_files': sorted(changes),
             'unchanged_files': len(set(prior['files'])-changes), 'prior_unit_counts': receipt['result']['unit_counts'],
-            'invalidated_product_boundary': 'mandatory-seal snapshot serialization; rerun complete mandatory-seal test file',
+            'invalidated_product_boundary': 'mandatory-seal snapshot and remediation routing; rerun complete mandatory-seal file, remediation method and adjacent lifecycle tests',
             'classification': 'historical full-suite counts only; unchanged setup/source evidence retained, changed helper and fixture rerun, not fresh full-suite proof'}
 
 
@@ -165,6 +171,12 @@ def bootstrap(root, manifest, step):
 
 def report_counts(report):
     return {k: report[k] for k in ('numTotalTests', 'numPassedTests', 'numFailedTests', 'numPendingTests', 'success')}
+
+
+def rollback_negative(log):
+    assert 'not ok 1 - forced rollback: nested down receives exact snapshot' in log
+    assert 'optional input reached remediation' in log and 'synthetic forced rollback' in log
+    assert '# fail 1' in log.splitlines() and '# pass 0' in log.splitlines()
 
 
 def fixture_identity(fixture):
@@ -273,6 +285,20 @@ def inside(args):
         vitest = early.workspace_executable(checkout, 'backend', 'vitest')
         step('changed-fixture-types', [early.workspace_executable(checkout, 'backend', 'tsgo'), '--noEmit'], cwd=backend)
         step('literal-dollar-regression', ['node', '--test', 'scripts/tests/test_manager_seal_dollars.mjs'], cwd=checkout)
+        step('remediation-regression', ['node', '--test', 'scripts/tests/test_manager_seal_remediation.mjs'], cwd=checkout)
+        prior = root/'inherited/rollback-72792604-docker.service.ts'
+        assert sha(prior) == ROLLBACK_PRIOR_SERVICE_SHA
+        os.environ['MANAGER_SEAL_REMEDIATION_SOURCE'] = str(prior)
+        try:
+            code = step('remediation-prior-negative', ['node', '--test', '--test-name-pattern=^forced rollback:', 'scripts/tests/test_manager_seal_remediation.mjs'], cwd=checkout, allow_failure=True)
+            assert code != 0
+            rollback_negative(Path('/work/logs/remediation-prior-negative.log').read_text())
+            result['rollback_prior_negative'] = {'source': ROLLBACK_PRIOR_SOURCE, 'service_sha256': sha(prior), 'specific_failure': True}
+        finally: os.environ.pop('MANAGER_SEAL_REMEDIATION_SOURCE', None)
+        step('adjacent-lifecycle-regressions', [vitest, 'run', 'src/modules/app-lifecycle', 'src/modules/docker/__tests__/wizard-restart-incident.test.ts', '--maxWorkers=1', '--reporter=json', '--outputFile=/work/adjacent.json'], cwd=backend, timeout=180)
+        adjacent = json.loads(Path('/work/adjacent.json').read_text())
+        result['adjacent_counts'] = report_counts(adjacent)
+        assert adjacent['success'] and adjacent['numTotalTests'] > 0 and adjacent['numFailedTests'] == 0 and adjacent['numPendingTests'] == 0
         os.environ.update(RUN_MANAGER_SEAL_DOCKER='1', MANAGER_SEAL_BASELINE_NEGATIVE='0', TMPDIR=str(fixture),
                           MANAGER_SEAL_TEST_IMAGE=PYTHON_IMAGE, MANAGER_SEAL_TEST_IMAGE_V2=early.IMAGE,
                           MANAGER_SEAL_TRACE_DIR='/work/candidate-trace', MANAGER_SEAL_QA_OWNER=args.owner,
@@ -329,7 +355,7 @@ def inside(args):
     finally:
         result['tmpfs_used_bytes'] = (os.statvfs('/work').f_blocks-os.statvfs('/work').f_bfree)*os.statvfs('/work').f_frsize
         Path('/work/inside-result.json').write_text(json.dumps(result, indent=2)+'\n')
-        export_bundle([Path('/work/inside-result.json'), Path('/work/logs'), Path('/work/candidate.json'), Path('/work/baseline.json'),
+        export_bundle([Path('/work/inside-result.json'), Path('/work/logs'), Path('/work/candidate.json'), Path('/work/baseline.json'), Path('/work/adjacent.json'),
                        Path('/work/candidate-trace'), Path('/work/baseline-trace'), checkout/'packages/backend/dist'])
         print(RESULT+json.dumps(result, sort_keys=True), flush=True)
 

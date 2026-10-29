@@ -174,6 +174,24 @@ class DockerStageHarness(unittest.TestCase):
         self.assertIn("toBe('$DO_NOT_INTERPOLATE')", fixture)
         self.assertIn("LITERAL: '$DO_NOT_INTERPOLATE'", fixture)
 
+    def test_rollback_repair_keeps_hostile_bytes_down_failure_and_adjacent_paths(self):
+        text = (SCRIPTS/'manager-seal-docker.py').read_text()
+        self.assertIn('scripts/tests/test_manager_seal_remediation.mjs', runner.ALLOWED_DELTA)
+        self.assertIn("step('remediation-prior-negative'", text)
+        self.assertIn("assert sha(prior) == ROLLBACK_PRIOR_SERVICE_SHA", text)
+        self.assertIn("'src/modules/app-lifecycle'", text)
+        fixture = (SCRIPTS.parent/'packages/backend/src/modules/docker/__tests__/mandatory-seal.test.ts').read_text()
+        self.assertIn("rejects.toThrow('synthetic forced rollback')", fixture)
+        self.assertIn('toBe(hostileBytes)', fixture)
+        self.assertIn('malicious-optional-config-registered-restart-down-up', runner.REQUIRED_CHECKS)
+        self.assertIn('malicious-optional-config-standalone-stop-recovery', runner.REQUIRED_CHECKS)
+
+    def test_rollback_negative_requires_specific_routing_failure_not_arbitrary_red(self):
+        valid = 'not ok 1 - forced rollback: nested down receives exact snapshot\noptional input reached remediation\nsynthetic forced rollback\n# fail 1\n# pass 0'
+        runner.rollback_negative(valid)
+        for wrong in ['module not found', valid.replace('optional input reached remediation', 'ReferenceError'), valid.replace('# fail 1', '# fail 8'), valid.replace('# fail 1', '# fail 10')]:
+            with self.assertRaises(AssertionError): runner.rollback_negative(wrong)
+
     def test_checkpoints_match_every_actual_fixture_assertion_group(self):
         import re
         text = (SCRIPTS.parent/'packages/backend/src/modules/docker/__tests__/mandatory-seal.test.ts').read_text()
