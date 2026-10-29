@@ -1,5 +1,6 @@
 // The Connections map's plain words (wizard-views/connections-map.js): what the owner reads must match the report.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -21,8 +22,10 @@ import {
   linkReason,
   linkedApps,
   list,
+  listLayout,
   mapModel,
   pairRow,
+  pickFirst,
   talksSentence,
   waitingLines,
 } from '../wizard-views/connections-map.js';
@@ -669,4 +672,82 @@ test('Phone list: the agent row, the pairs cut by you, the waiting card and the 
   // and the words stay plain
   for (const w of [...linkedApps(m).flatMap((r) => [r.line, ...r.links.map((l) => l.why)]), hermes.line, footerLine('declared'), footerLine('open')])
     assert.doesNotMatch(w, /mesh|grant|drift|slot|network|gateway/i);
+});
+
+test('One list on every screen: the same sections in the same order; a wide pane only moves Linked apps aside', () => {
+  const m = mapModel(phoneBox());
+  const lay = listLayout(m);
+  assert.deepEqual(
+    lay.sections.map((s) => [s.key, s.title, s.count, s.side]),
+    [
+      ['wait', 'Waiting for your OK', null, 'main'],
+      ['agent', 'Your agent', null, 'main'],
+      ['linked', 'Linked apps', 4, 'aside'],
+      ['cut', 'Cut by you', null, 'main'],
+    ],
+  );
+  // the rows are the phone list's rows, word for word
+  assert.deepEqual(
+    lay.sections[0].rows.map((r) => r.text),
+    waitingLines(m).map((r) => r.text),
+  );
+  assert.deepEqual(
+    lay.sections[2].rows.map((r) => r.line),
+    linkedApps(m).map((r) => r.line),
+  );
+  assert.deepEqual(
+    lay.sections[3].rows.map((r) => r.text),
+    cutList(m).map((r) => r.text),
+  );
+  assert.equal(lay.columns, 2);
+  assert.equal(lay.footer, 'Everything else is kept apart.');
+  // nothing waiting, nothing cut: those sections are left out, not shown empty
+  const d = phoneBox();
+  d.controls = d.controls.filter((r) => r.status === 'connected');
+  assert.deepEqual(
+    listLayout(mapModel(d)).sections.map((s) => s.key),
+    ['agent', 'linked'],
+  );
+  // no links at all (Open mode): one column, Linked apps gone
+  const open = listLayout({ ...m, mode: 'open' });
+  assert.equal(open.columns, 1);
+  assert.ok(!open.sections.some((s) => s.key === 'linked'));
+  assert.equal(open.footer, 'Everything is connected unless you cut it.');
+});
+
+test('An app with no links can be connected from the list, without the map', () => {
+  const m = mapModel(phoneBox());
+  const pk = pickFirst(m);
+  assert.equal(pk.label, 'Connect two apps');
+  const ids = pk.apps.map((a) => a.id);
+  // Messenger and S3 have no links (Messenger's to Money was cut): both are offered
+  assert.ok(ids.includes('messenger'));
+  assert.ok(ids.includes('s3'));
+  assert.ok(!linkedApps(m).some((r) => r.id === 'messenger' || r.id === 's3'));
+  // every app offered has someone to connect to, and the list is by name
+  for (const a of pk.apps) assert.ok(connectable(m, a.id).length);
+  assert.deepEqual(
+    ids,
+    [...pk.apps].sort((x, y) => x.name.localeCompare(y.name)).map((a) => a.id),
+  );
+  assert.deepEqual(listLayout(m).pick, pk);
+  // Open mode cuts instead; isolation off has nothing to change
+  assert.equal(pickFirst({ ...m, mode: 'open' }).label, 'Cut two apps apart');
+  assert.equal(pickFirst({ ...m, mode: 'off' }), null);
+  assert.equal(listLayout({ ...m, mode: 'off' }).pick, null);
+  for (const w of [pk.label, pk.ask, pickFirst({ ...m, mode: 'open' }).ask]) assert.doesNotMatch(w, /mesh|grant|drift|slot|network|gateway/i);
+});
+
+test('The list is the main view at every width; the map only behind See map, dialogs close on Esc', () => {
+  const css = readFileSync(new URL('../wizard-views/wizard-apps.css', import.meta.url), 'utf8');
+  const js = readFileSync(new URL('../wizard-views/wizard-apps.js', import.meta.url), 'utf8');
+  // no width hides the list or shows the map without See map
+  assert.doesNotMatch(css, /\.wam-cl,\s*\n?\s*\.wam-cl-back\s*\{\s*display:\s*none/);
+  assert.match(css, /\.wam-cm:not\(\.is-map\) > \.wam-cm-full,\s*\.wam-cm\.is-map > \.wam-cl \{\s*display: none;/);
+  const topLevel = css.replace(/@container[^{]*\{(?:[^{}]*\{[^}]*\})*[^}]*\}/g, '');
+  assert.match(topLevel, /\.wam-cl \{\s*display: flex;/);
+  // the wide layout is the same sections placed in two columns
+  assert.match(css, /@container \(min-width: 880px\)\s*\{\s*\.wam-cl\.is-two \{\s*display: grid;/);
+  assert.match(js, /data-cm-choose/);
+  assert.match(js, /window\.addEventListener\('keydown', el\._wamEsc, true\)/);
 });

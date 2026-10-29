@@ -1126,6 +1126,9 @@
   cursor: pointer;
 }
 .wam-cm-chip:hover {
+  border-color: var(--cm-accent);
+}
+.wam-cm-chip:is([data-cm-cut], [data-cm-cutgroup]):hover {
   border-color: var(--cm-bad);
 }
 .wam-cm-chip .wam-cm-ic {
@@ -1236,37 +1239,61 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::befo
   background: radial-gradient(60% 50% at 50% 0%, color-mix(in srgb, var(--wz-text) 9%, transparent), transparent 80%);
 }
 
-/* Phone widths: Connections is a list (waiting, your agent, linked apps, cut by you); the map is one tap away. The
-   list is hidden on wider panes, where the map shows as before. Kit tokens only, through the map's --cm-* aliases. */
-.wam-cl,
+/* Connections is one list on every screen (waiting, your agent, linked apps, cut by you); the map is one tap away (See
+   map). A phone or a narrow window shows one column; a wide pane keeps the same sections, rows and words, with Linked
+   apps in a second column. Kit tokens only, through the map's --cm-* aliases. */
 .wam-cl-back {
   display: none;
 }
 .wam-cm-full {
   display: contents;
 }
-@container (max-width: 600px) {
-  .wam-cl {
-    display: flex;
-  }
-  .wam-cm:not(.is-map) > .wam-cm-full,
-  .wam-cm.is-map > .wam-cl {
-    display: none;
-  }
-  .wam-cm.is-map .wam-cl-back {
-    display: inline-flex;
-    align-self: flex-start;
-    margin-left: 8px;
-  }
+.wam-cm:not(.is-map) > .wam-cm-full,
+.wam-cm.is-map > .wam-cl {
+  display: none;
+}
+.wam-cm.is-map .wam-cl-back {
+  display: inline-flex;
+  align-self: flex-start;
+  margin-left: 8px;
 }
 .wam-cl {
+  display: flex;
   width: 100%;
-  max-width: 560px;
+  max-width: 640px;
   min-width: 0;
   flex-direction: column;
   gap: 18px;
   padding: 4px 12px 8px;
   box-sizing: border-box;
+}
+@container (min-width: 880px) {
+  .wam-cl.is-two {
+    display: grid;
+    max-width: 1180px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    grid-template-rows: auto auto auto auto auto 1fr auto;
+    grid-template-areas:
+      "title title"
+      "ro ro"
+      "wait linked"
+      "agent linked"
+      "cut linked"
+      ". linked"
+      "end end";
+    gap: 0 32px;
+    padding: 12px 24px 8px;
+  }
+  .wam-cl.is-two > * {
+    margin-bottom: 20px;
+  }
+  .wam-cl.is-two > .wam-cl-title { grid-area: title; }
+  .wam-cl.is-two > .wam-cm-ro { grid-area: ro; }
+  .wam-cl.is-two > .is-wait { grid-area: wait; }
+  .wam-cl.is-two > .is-agent { grid-area: agent; }
+  .wam-cl.is-two > .is-linked { grid-area: linked; }
+  .wam-cl.is-two > .is-cut { grid-area: cut; }
+  .wam-cl.is-two > .wam-cl-end { grid-area: end; margin-bottom: 0; }
 }
 .wam-cl-title {
   margin: 4px 4px 0;
@@ -1389,14 +1416,49 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::befo
 .wam-cl-ask .wam-cm-ask-acts .wam-btn {
   flex: 1 1 0;
 }
+.wam-cl-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .wam-cl-foot {
+  flex: 1 1 14em;
   margin: 0 4px;
   font-size: 14px;
   color: var(--ink-2);
 }
-.wam .wam-cl-mapbtn {
-  align-self: stretch;
+.wam-cl-acts {
+  flex: 1 1 18em;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.wam .wam-cl-acts .wam-btn {
+  flex: 1 1 0;
   min-height: 48px;
+  white-space: nowrap;
+}
+@container (min-width: 880px) {
+  .wam .wam-cl-acts .wam-btn {
+    flex: 0 0 auto;
+    min-width: 160px;
+  }
+}
+/* A mouse gets the same rows with a hover; the keyboard a ring on whatever has focus. */
+@media (hover: hover) {
+  .wam .wam-cl-row:not(.is-static):hover {
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+  }
+  .wam .wam-cl-row:not(.is-static):hover .wam-cm-go {
+    border-color: var(--ink-2);
+  }
+}
+.wam-cm :is(.wam-btn, .wam-cm-more):focus-visible,
+.wam-cm-sheet :is(.wam-btn, .wam-cm-chip):focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: 2px;
 }
 .wam-cm-use.is-off {
   opacity: 0.5;
@@ -1408,4 +1470,87 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::befo
 html:is([data-skin^="obsidian"], [data-skin="landscapes"]) :is(.wam-cl-card, .wam-cl-ask) {
   -webkit-backdrop-filter: blur(10px) saturate(1.2);
   backdrop-filter: blur(10px) saturate(1.2);
+}
+
+/* The agent's list and the first-app chooser: a wider dialog on a wide screen (the kit's bottom sheet on a phone),
+   its rows in two columns. */
+@media (min-width: 600px) {
+  .wz-sheet.wam-cm-sheet.is-wide,
+  .wam-cm-sheet.wam-cm-own.is-wide {
+    width: min(760px, calc(100% - 24px));
+  }
+}
+.wam-cm-sh {
+  container-type: inline-size;
+}
+@container (min-width: 600px) {
+  .wam-cm-uses {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 24px;
+  }
+  .wam-cm-uses h5 {
+    grid-column: 1 / -1;
+  }
+}
+.wam-cm-chips.is-all {
+  max-height: none;
+  overflow: visible;
+}
+/* See map: a group's caption and an app's name stay readable where a line passes behind them. */
+.wam-cm-map[data-mode="declared"] .wam-cm-bh {
+  padding: 3px 12px 4px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--wz-base, Canvas) 55%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.wam-cm-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+/* Obsidian Light: the list's and the sheets' small app icons as light pearls with dark glyphs, like the map's discs
+   (the stock sigil reads as a dark blob on the light glass). */
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) {
+  background: var(--cm-pearl) !important;
+  border: 0 !important;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--wz-text) 16%, transparent),
+    0 4px 10px -6px color-mix(in srgb, var(--wz-text) 45%, transparent) !important;
+  color: var(--cm-pearl-ink);
+}
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::before,
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic)::after {
+  display: none;
+}
+html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam-cm-ic, .wam-cm-ask-ics .wam-cm-ic, .wam-cm-srow > .wam-cm-ic, .wam-cm-chip .wam-cm-ic) .sgi {
+  width: 56%;
+  height: 56%;
+  background: var(--cm-pearl-ink) !important;
+  filter: none !important;
+}
+.wam-cm-says + .wam-cm-sh-acts {
+  border-top: 0;
+}
+/* Long app names wrap to a second line in the choosers instead of being cut. */
+.wam-cm-sheet .wam-cm-chip span:last-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  line-height: 1.2;
+  overflow-wrap: normal;
+}
+/* The choosers grow with the dialog (it scrolls as a whole: no second scroll box inside it). */
+.wam-cm-sheet .wam-cm-chips {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  max-height: none;
+  overflow: visible;
+}
+.wam .wam-cl-back {
+  align-items: center;
+  justify-content: center;
 }

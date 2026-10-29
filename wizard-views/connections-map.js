@@ -542,3 +542,50 @@ export function footerLine(mode) {
       ? 'All your apps can talk to each other.'
       : 'Everything else is kept apart.';
 }
+
+/**
+ * Connect two apps / Cut two apps apart, from the list (no map needed): the first app to pick, by name. Strict mode
+ * offers every app that can still be connected to something, so an app with no links yet is reachable too; Open mode
+ * every app that can still be cut off from something. Null when isolation is off (nothing to change).
+ */
+export function pickFirst(model) {
+  if (model.mode === 'declared')
+    return {
+      label: 'Connect two apps',
+      ask: 'Which app should talk to another one? Then you pick the other.',
+      apps: model.apps.filter((a) => connectable(model, a.id).length).sort((x, y) => x.name.localeCompare(y.name)),
+    };
+  if (model.mode === 'open')
+    return {
+      label: 'Cut two apps apart',
+      ask: 'Which app should stop talking to another one? Then you pick the other.',
+      apps: model.apps.filter((a) => cuttable(model, a.id).length).sort((x, y) => x.name.localeCompare(y.name)),
+    };
+  return null;
+}
+
+/**
+ * The one Connections list, the same model on every screen. Sections in reading order: a phone (or a narrow window)
+ * shows them in this order in one column; a wide pane keeps the same sections and words, with `side: 'aside'` ones
+ * (Linked apps) in a second column. `columns` is 2 only when there is something for that column.
+ * Returns { columns, sections: [{ key, title, count, side, rows }], pick (pickFirst), footer }.
+ */
+export function listLayout(model) {
+  const waits = waitingLines(model);
+  const agents = agentRows(model);
+  const linked = linkedApps(model);
+  const cuts = cutList(model);
+  const sections = [
+    waits.length && { key: 'wait', title: 'Waiting for your OK', count: null, side: 'main', rows: waits },
+    { key: 'agent', title: agents.length > 1 ? 'Your agents' : 'Your agent', count: null, side: 'main', rows: agents },
+    linked.length && { key: 'linked', title: 'Linked apps', count: linked.length, side: 'aside', rows: linked },
+    cuts.length && { key: 'cut', title: 'Cut by you', count: null, side: 'main', rows: cuts },
+  ].filter(Boolean);
+  const pick = pickFirst(model);
+  return {
+    columns: sections.some((s) => s.side === 'aside') ? 2 : 1,
+    sections,
+    pick: pick && pick.apps.length ? pick : null,
+    footer: footerLine(model.mode),
+  };
+}

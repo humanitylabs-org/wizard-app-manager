@@ -233,8 +233,18 @@ the app leaving the mesh joins its new links first, then leaves the mesh, so oth
 `wam connections` shows the mode in the first line ("Open: everything is connected unless you disconnect it") and, per
 app, "can reach: every other app except ..." with the reason (you disconnected it, waiting for your approval, sensitive
 and not connected) and whether it is on the mesh or on how many links. The live check compares Docker with this plan the
-same way as in declared mode. The Connections view draws this as one picture (`renderConnections`, model in `wizard-views/connections-map.js`):
-the agents on top ("Your agent can use everything"), wired into one frame that holds the Apps, the Agent apps and the
+same way as in declared mode.
+
+The Connections view is one list on every screen (`renderConnections`, model `listLayout` in
+`wizard-views/connections-map.js`): the title; "Waiting for your OK" only when a request waits; "Your agent" (one row
+per agent, "Hermes · can use all 32 apps", its sheet grouped Apps / Agent apps / Connectors); "Linked apps N" (one row
+per app that uses others, "Money → Monarch, SimpleFIN", its sheet with a plain reason per link, Disconnect and Connect
+to…); "Cut by you" with Reconnect inline; then "Everything else is kept apart.", Connect two apps (pick any app, even
+one with no links, then what it should talk to) and See map. A phone or a narrow window shows the sections in one
+column; a pane 880 px or wider keeps the same sections, rows and words, with Linked apps in a second column. Sheets are
+the kit's bottom sheet on a phone and a centred dialog on a wider screen; Esc closes them.
+
+See map draws the same thing as one picture: the agents on top ("Your agent can use everything"), wired into one frame that holds the Apps, the Agent apps and the
 Connectors; each group has a plain title and one line saying what it is (see "Groups on the map" below).
 
 - **Declared (the default):** the top line is "Apps can't talk to each other unless connected." Only the real
