@@ -10,11 +10,49 @@ def enabled(home):
     return (Path(home) / 'privsep.json').is_file()
 
 
+def storage_source(st):
+    """Public protected mapping + passwd identity only; never read agent config.
+
+    A changed logical symlink is an inconsistency, never a source to adopt.
+    The unchanged final daemon verifier independently checks this physical bind.
+    """
+    import pwd
+    import runpy
+    try:
+        a = st['agent']
+        if type(a['uid']) is not int or type(a['gid']) is not int or a['uid'] <= 0:
+            raise ValueError('invalid runtime identity')
+        if not isinstance(a['hermes_home'], str) or not re.fullmatch(r'/[A-Za-z0-9._/-]+', a['hermes_home']):
+            raise ValueError('invalid logical home')
+        account = pwd.getpwuid(a['uid'])
+        if account.pw_gid != a['gid']:
+            raise ValueError('runtime identity mismatch')
+        storage = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/protected-agent-storage.py'))
+        mapping = storage['require_mapping'](account.pw_name, a['hermes_home'])
+        if (type(mapping) is not dict or set(mapping) != {'schema', 'state', 'uid', 'gid', 'logical', 'physical', 'identity'}
+                or any(type(mapping[k]) is not int for k in ('schema', 'uid', 'gid'))
+                or type(mapping['identity']) is not list or len(mapping['identity']) != 2
+                or any(type(v) is not int or v < 0 for v in mapping['identity'])):
+            raise ValueError('invalid public mapping')
+        return mapping['physical']
+    except (KeyError, TypeError, ValueError, OSError):
+        raise ValueError('maintenance-needed: protected Hermes storage mapping is unavailable or stale') from None
+
+
+def preflight(home, app_id):
+    """Call before install/update/restart can touch Service state or tear it down."""
+    if app_id.split(':', 1)[0] == 'wizard-agent-service' and enabled(home):
+        from .alongside import load
+        return storage_source(load(home))
+
+
 def service_override(st, wizard_home, stt_origin=None):
     # Identity and paths were selected once by root, not discovered from agent config.
     a = st['agent']
     uid, gid = int(a['uid']), int(a['gid'])
     hh = a['hermes_home']
+    physical = storage_source(st)
+    artifact_roots = ':'.join(str(Path(hh) / rel) for rel in ('cache/images', 'media/images', 'workspace')) + ':/hermes/cache/images:/media'
     state = f'/var/lib/wizard-agent/{uid}'
     stt_origin = stt_origin or 'http://127.0.0.1:9'
     if (not re.fullmatch(r'http://127\.0\.0\.1:\d{1,5}', stt_origin)
@@ -51,16 +89,18 @@ def service_override(st, wizard_home, stt_origin=None):
       WIZARD_SETUP_MODE: alongside
       WIZARD_APPS_JSON_PATH: /registry/apps.json
       WIZARD_OS_HOME: /state
-      HERMES_HOME: /hermes
+      HERMES_HOME: {hh}
       HERMES_ORIGIN: {a['origin']}
       WIZARD_STT_ORIGIN: {stt_origin}
       WIZARD_APPS_MCP_ADDRESS: url
       WIZARD_MEDIA_AGENT_ROOT: {BASE}/runtipi/media
       WIZARD_HERMES_STATE_PATH: /hermes/state.db
+      WIZARD_AGENT_ARTIFACT_ROOTS: "{artifact_roots}"
       WIZARD_PRIVSEP_LINK: /state/link.json
     volumes: !override
       - {state}:/state{agent_mounts}
-      - {hh}:/hermes
+      - {physical}:/hermes
+      - {physical}:{hh}
       - {BASE}/runtipi/app-data/wizard-os:/registry:ro
       - {checkout}/scripts/agent-service-start.mjs:/privsep/agent-service-start.mjs:ro
       - {BASE}/runtipi/media:/media

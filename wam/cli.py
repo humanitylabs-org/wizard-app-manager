@@ -338,6 +338,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     rt = c.runtipi()
     rec = _record if _record is not None else resolve_any(c, app_id)
     app_id = rec["id"]
+    privsep.preflight(c.home, app_id)
     ensure_store(c, rt)
     have = installed_ids(rt)
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
@@ -713,6 +714,7 @@ def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> di
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     if verb in ("start", "restart"):
+        privsep.preflight(c.home, app_id)
         host_policy.require_app(c, urn.split(":")[0], where="installed")
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
@@ -1855,6 +1857,7 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    privsep.preflight(c.home, app_id)
     if app_id.split(':', 1)[0] == 'hermes-agent':
         from .hermes_lock import authorize
         try:

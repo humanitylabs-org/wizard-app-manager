@@ -270,8 +270,9 @@ def test_doctor_marks_success_only_after_all_rows_and_links(migration,monkeypatc
     assert calls[-1]=='links' and migration.doc['doctor_passed']
 
 
-def test_service_preserves_extra_agent_registry_at_agent_uid_without_host_symlinks():
+def test_service_preserves_extra_agent_registry_at_agent_uid_without_host_symlinks(monkeypatch):
     from wam.privsep import service_override
+    monkeypatch.setattr('wam.privsep.storage_source', lambda st: '/var/lib/wizard-agent-homes/1000')
     st={'agent':{'uid':1000,'gid':1000,'hermes_home':'/home/hermes/.hermes','origin':'http://127.0.0.1:8642'},
         'shell':{'port':8080},'migration':{'legacy_home':'/home/hermes'}}
     text=service_override(st,Path('/var/lib/wizard-os/.wizard-os'))

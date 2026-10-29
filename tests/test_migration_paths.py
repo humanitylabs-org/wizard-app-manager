@@ -105,6 +105,7 @@ def test_renderer_moves_saved_path_inputs_but_keeps_other_settings_and_secrets()
 
 def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_path, monkeypatch):
     from wam import alongside, managed_overrides, privsep, network
+    monkeypatch.setattr(privsep, 'storage_source', lambda st: '/var/lib/wizard-agent-homes/1000')
     root=tmp_path/'runtipi'; home=tmp_path/'state'; home.mkdir(); root.mkdir()
     st={'mode':'alongside','agent':{'uid':1000,'gid':1000,'hermes_home':'/home/legacy/.hermes','origin':'http://127.0.0.1:8642'},
         'shell':{'port':8080},'migration':{'legacy_home':'/home/legacy'},'migration_metadata_only':True}
@@ -118,6 +119,7 @@ def test_protected_service_wiring_retains_provenance_without_opening_hermes(tmp_
 
 def test_old_service_container_alias_is_not_old_host_access_and_cannot_hide_a_changed_source(tmp_path,monkeypatch):
     from wam import alongside,privsep
+    monkeypatch.setattr(privsep, 'storage_source', lambda st: '/var/lib/wizard-agent-homes/1000')
     base=tmp_path/'system';rt=base/'runtipi';state=base/'.wizard-os';state.mkdir(parents=True);rt.mkdir()
     monkeypatch.setattr(privsep,'BASE',base)
     st={'mode':'alongside','agent':{'uid':1000,'gid':1000,'hermes_home':'/home/legacy/.hermes','origin':'http://127.0.0.1:8642'},
@@ -147,8 +149,10 @@ def test_renderer_omits_unset_nullable_db_fields_but_preserves_false_and_zero():
     assert 'domain' in form and form['domain'] is None
 
 
-def test_saved_service_environment_never_replaces_the_root_or_agent_execution_environment(tmp_path):
+def test_saved_service_environment_never_replaces_the_root_or_agent_execution_environment(tmp_path, monkeypatch):
     import ast
+    from wam import privsep
+    monkeypatch.setattr(privsep, 'storage_source', lambda st: '/var/lib/wizard-agent-homes/1000')
     script=Path(__file__).parents[1]/'scripts/prepare-alongside.py'
     main=next(n for n in ast.parse(script.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='main')
     block=next(n for n in main.body if isinstance(n,ast.If) and isinstance(n.test,ast.Name)

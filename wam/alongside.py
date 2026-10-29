@@ -619,6 +619,8 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     st = load(wizard_home)
     if not st:
         return None
+    from .privsep import preflight
+    preflight(wizard_home, app_id)
     if app_id in PIN_VARS:
         reconcile_images(st, [app_id])
         save(wizard_home, st)

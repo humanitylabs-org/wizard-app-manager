@@ -901,8 +901,20 @@ def main(argv=None):
         try:
             require_fence()
             request = protected_json(REQUEST, private=True)
-            if set(request) != {'action', 'agent', 'logical'}: raise Refusal('unknown maintenance request field')
-            value = Transaction(request['agent'], request['logical']).run(request['action'])
+            if type(request) is not dict or set(request) != {'action', 'agent', 'logical'}:
+                raise Refusal('unknown maintenance request field')
+            if (any(type(request[k]) is not str for k in request)
+                    or request['action'] not in ('relocate', 'rollback')
+                    or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', request['agent'])):
+                raise Refusal('invalid maintenance request value')
+            # A completed request is retired, never silently overwritten/replayed.
+            # A crash before retirement resumes the SAME idempotent transaction.
+            with Pinned(REQUEST.parent) as parent:
+                if os.path.lexists(REQUEST.parent/'completed.json'):
+                    raise Refusal('previous maintenance completion requires administrator acknowledgement')
+                value = Transaction(request['agent'], request['logical']).run(request['action'])
+                require_fence()
+                rename_new(parent, REQUEST.name, parent, 'completed.json')
             print(json.dumps(value), flush=True)
         except BaseException as exc:
             # Do not expose private names/bytes through arbitrary exception text.
