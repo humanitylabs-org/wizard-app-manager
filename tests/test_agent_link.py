@@ -87,6 +87,24 @@ def test_skills_mount_is_additive_and_idempotent(tmp_path):
     assert agent_link.add_skills_mount(c) is False and ov.read_bytes() == before
 
 
+def test_skills_mount_keeps_compose_merge_tags(tmp_path):
+    """A fresh install's override already has `networks: !override` (wam network). 0.3.82 on a bare VPS printed
+    "agent not linked to the app gateway (could not determine a constructor for the tag '!override')" and the
+    agent never got the `wizard` gateway (demo VPS, 29 Oct 2026)."""
+    c = _cfg(tmp_path)
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    ov.parent.mkdir(parents=True)
+    (c.runtipi_root / 'app-data/wizardapps/wizard-agent-service/data/wizard-os/skills').mkdir(parents=True, exist_ok=True)
+    ov.write_text('services:\n  hermes-agent-engine:\n    networks: !override\n      wizard-app-hermes-agent:\n        gw_priority: 1\n'
+                  'networks:\n  wizard-app-hermes-agent:\n    name: wizard-app-hermes-agent\n    external: true\n')
+    assert agent_link.add_skills_mount(c) is True
+    text = ov.read_text()
+    assert 'networks: !override' in text
+    from wam.network import load_yaml
+    vols = load_yaml(text)['services']['hermes-agent-engine']['volumes']
+    assert any(isinstance(v, dict) and v.get('target') == '/opt/wizard-os/skills' for v in vols)
+
+
 def test_skills_mount_collision_is_refused(tmp_path):
     c = _cfg(tmp_path)
     ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
