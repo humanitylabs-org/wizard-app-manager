@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MandatorySeal, type SealRecord } from './mandatory-seal';
+import { MandatorySeal } from './mandatory-seal';
 import { confined } from './wizard-storage';
 import * as yaml from 'yaml';
 const execFileStrict = promisify(execFile);
@@ -16,6 +16,12 @@ import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
+
+// One representation is used for both classification and spawn. Enrolled apps
+// fail closed on global prefixes/unknown actions; this is not a shell parser.
+export const composeArgv = (command: string) => command.trim().split(/\s+/).filter(Boolean);
+const REMEDIATION = new Set(['stop', 'down', 'kill', 'rm']);
+const PASSIVE = new Set(['logs', 'ps', 'images', 'top', 'version', 'config']);
 
 @Injectable()
 export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -111,58 +117,64 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
 
   public async prepareApp(appUrn: AppUrn, apply?: () => Promise<void>) {
     const seal = new MandatorySeal(this.config.get('directories').dataDir);
+    return seal.exclusive(appUrn, () => this.prepareLocked(appUrn, seal, async (args) => {
+      // Keep this public preflight's existing callback contract.
+      void args;
+      await apply?.();
+    }));
+  }
+
+  private async prepareLocked(appUrn: AppUrn, seal: MandatorySeal, apply: (args?: string[]) => Promise<void>) {
+    // No enrollment decision is captured before the cross-process fence.
     const enrollment = await seal.read(appUrn);
     const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
-      if (prepared !== generated.content) {
+      if (!enrollment && prepared !== generated.content) {
         await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
       }
-      // Update's standalone preflight must validate the seal before backup/down.
-      if (enrollment && !apply) await this.sealedLaunch(appUrn, seal, enrollment, async () => {});
-      await apply?.();
-    });
+      if (enrollment) await this.sealedLaunch(appUrn, seal, yaml.parse(prepared), apply);
+      else await apply();
+    }, enrollment ? (doc, targets) => seal.select(enrollment, doc, targets) : undefined);
   }
 
   public async composeApp(appUrn: AppUrn, command: string, beforeStart?: () => Promise<void>) {
-    const action = command.split(' ')[0];
-    if (['start', 'restart', 'create', 'run', 'watch'].includes(action ?? '')) {
-      // All supported lifecycle activation uses up. Never allow a future direct
-      // Compose shortcut to skip the validated launch boundary for an enrollment.
-      if (await new MandatorySeal(this.config.get('directories').dataDir).read(appUrn))
-        throw new Error('Sealed activation requires the validated manager up lifecycle');
-    }
-    if (action === 'up') {
-      // A trusted, sticky enrollment is independent of app/user-config state.
-      // Check it before storage preparation or a restart's destructive callback.
-      const seal = new MandatorySeal(this.config.get('directories').dataDir);
-      const enrollment = await seal.read(appUrn);
-      let result!: { success: boolean; stdout: string; stderr: string };
-      await this.prepareApp(appUrn, async () => {
-        const launch = async (args?: string[]) => {
+    const argv = composeArgv(command);
+    const action = argv[0] ?? '';
+    // Remediation is non-activating and must work even for corrupt policies and
+    // inside beforeStart while the enclosing launch owns the enrollment fence.
+    if (REMEDIATION.has(action)) return this.runComposeApp(appUrn, argv);
+    const seal = new MandatorySeal(this.config.get('directories').dataDir);
+    return seal.exclusive(appUrn, async () => {
+      if (action === 'pull' && !await seal.read(appUrn)) return this.runComposeApp(appUrn, argv);
+      if (action === 'up' || action === 'pull') {
+        let result!: { success: boolean; stdout: string; stderr: string };
+        await this.prepareLocked(appUrn, seal, async (args) => {
           await beforeStart?.();
-          result = await this.runComposeApp(appUrn, command, args);
-        };
-        if (enrollment) await this.sealedLaunch(appUrn, seal, enrollment, launch);
-        else await launch();
-      });
-      return result;
-    }
-    return this.runComposeApp(appUrn, command);
+          result = await this.runComposeApp(appUrn, argv, args);
+        });
+        return result;
+      }
+      if (await seal.read(appUrn) && !PASSIVE.has(action))
+        throw new Error('Sealed command requires the validated manager lifecycle');
+      return this.runComposeApp(appUrn, argv);
+    });
   }
 
-  private async sealedLaunch(appUrn: AppUrn, seal: MandatorySeal, enrollment: SealRecord, launch: (args: string[]) => Promise<void>) {
+  private async sealedLaunch(appUrn: AppUrn, seal: MandatorySeal, prepared: import('./wizard-storage').Compose, launch: (args: string[]) => Promise<void>) {
     const { args } = await this.getBaseComposeArgsApp(appUrn);
     const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
-    seal.validateCatalogue(enrollment, yaml.parse(generated.content ?? ''));
+
     const state = await confined(seal.dataDir, 'state/mandatory-seal-launches', true);
     const dir = await fs.mkdtemp(path.join(state, 'launch-'));
     const project = ['--project-name', appUrn.replace(':', '_'), '--project-directory', path.dirname(generated.path)];
     const required = path.join(dir, 'required.yml');
     const snapshot = path.join(dir, 'effective.json');
     try {
-      await fs.writeFile(required, seal.overlay(enrollment), { mode: 0o600 });
+      // Storage has already projected current grants into this trusted security
+      // base. Never replace it with an older enrollment after reconciliation.
+      await fs.writeFile(required, seal.overlay(appUrn, prepared), { mode: 0o600 });
       const resolve = async (input: string[]) => {
         try {
           // Dry config only: no container/network create, start, stop or pull.
@@ -184,12 +196,11 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     }
   }
 
-  private async runComposeApp(appUrn: AppUrn, command: string, sealedArgs?: string[]) {
+  private async runComposeApp(appUrn: AppUrn, argv: string[], sealedArgs?: string[]) {
     let { args, isCustomConfig } = sealedArgs
       ? { args: [...sealedArgs], isCustomConfig: false }
       : await this.getBaseComposeArgsApp(appUrn);
-    args.push(...command.split(' '));
-    args = args.filter(Boolean);
+    args.push(...argv);
 
     this.logger.info(`Running docker compose with args ${args.join(' ')}`);
 

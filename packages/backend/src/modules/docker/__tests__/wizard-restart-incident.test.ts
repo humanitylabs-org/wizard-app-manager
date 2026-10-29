@@ -80,9 +80,10 @@ beforeEach(async () => {
   calls = [];
   // No Docker daemon calls: emulate down/up and track real command ordering.
   vi.spyOn(
-    service as unknown as { runComposeApp: (urn: AppUrn, command: string) => Promise<{ success: boolean; stdout: string; stderr: string }> },
+    service as unknown as { runComposeApp: (urn: AppUrn, argv: string[]) => Promise<{ success: boolean; stdout: string; stderr: string }> },
     'runComposeApp',
-  ).mockImplementation(async (urn, command) => {
+  ).mockImplementation(async (urn, argv) => {
+    const command = argv.join(' ');
     calls.push([urn, command]);
     if (/^(down|stop)/.test(command)) running.delete(urn);
     if (command.startsWith('up')) running.add(urn);

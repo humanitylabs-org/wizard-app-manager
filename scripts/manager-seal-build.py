@@ -1,169 +1,208 @@
 #!/usr/bin/env python3
-"""Parent-admitted forum build/regression stage ONLY. No API/live admission."""
+"""Parent-admitted forum stages. Focused verification never builds an image.
+
+No execution on VPS, pruning, capacity changes, real Private data or deployment.
+"""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import shutil
 import subprocess
-import tarfile
+import sys
+import time
 
 BASE = 'fead192e9fb2d560fd3b875d092819b32e7189b6'
+NODE = Path('/srv/work/heavy/incognito-20261027/tooling/node')
 NODE_SHA = 'e6ec2c188d83d813f81f2de8aea084d74dce603ac1abedd0a30ad941b10087b2'
 OLD_IMAGE = 'wizard-app-manager:grants-fix-fead192e9fb2-amd64'
 OLD_ID = 'sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9'
-TEST = 'src/modules/docker/__tests__/mandatory-seal.test.ts'
+GIB = 1024 ** 3
+RESERVE = 200 * GIB
+# Conservative peak incremental working sets: two dependency closures, compiler
+# output, tests/trace/second Python image; separately BuildKit + image export.
+FOOTPRINT = {'focused': 16 * GIB, 'image': 40 * GIB}
 
 
 def digest(p):
     h = hashlib.sha256()
-    with p.open('rb') as f:
+    with Path(p).open('rb') as f:
         for block in iter(lambda: f.read(1024 * 1024), b''): h.update(block)
     return h.hexdigest()
 
 
+def capacity(path, footprint):
+    free = shutil.disk_usage(path).free
+    needed = RESERVE + footprint
+    print(json.dumps({'free_bytes': free, 'reserve_bytes': RESERVE,
+                      'additional_footprint_bytes': footprint, 'required_bytes': needed}), flush=True)
+    assert free >= needed, f'capacity blocked: {free} < reserve {RESERVE} + footprint {footprint}; no cleanup authorized'
+    return free
+
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--source', required=True); args = ap.parse_args()
-    root = Path(__file__).resolve().parents[1]
-    assert platform.machine() == 'x86_64' and str(root).startswith('/srv/work/manager-seal-')
+    p = argparse.ArgumentParser()
+    p.add_argument('--source', required=True)
+    p.add_argument('--phase', choices=FOOTPRINT, required=True)
+    args = p.parse_args()
+    root = Path.cwd().resolve()
+    assert str(root).startswith('/srv/work/manager-seal-'), root
+    assert os.uname().machine == 'x86_64', 'forum native amd64 only'
     assert os.getuid() != 0, 'synthetic worker must be nonroot'
+    assert NODE.is_file() and digest(NODE) == NODE_SHA, 'node toolchain drift'
     manifest = json.loads((root / 'SOURCE.json').read_text())
-    assert manifest['source_head'] == args.source and manifest['baseline'] == BASE
-    for name, sha in manifest['files'].items():
-        p = root / name
-        assert not p.is_symlink() and p.resolve().is_relative_to(root) and digest(p) == sha, name
-    inventory = {str(p.relative_to(root)) for p in root.rglob('*')
-                 if p.is_file() and '.git' not in p.relative_to(root).parts and p.relative_to(root) != Path('SOURCE.json')}
-    assert inventory == set(manifest['files']), 'source inventory drift or an unbound file'
-    assert shutil.disk_usage(root).free >= 80 * 1024**3, '80GiB scratch floor, do not delete siblings'
-    qa = root / 'qa-manager-seal'; qa.mkdir()  # Never mix with an earlier attempt.
-    tools = qa / 'tooling'; tools.mkdir()
-    env = dict(os.environ)
-    env['TMPDIR'] = str(qa / 'tmp'); Path(env['TMPDIR']).mkdir(mode=0o700)
-    env['PATH'] = str(tools) + ':' + env['PATH']
-    env['NODE_OPTIONS'] = '--experimental-sqlite'
+    assert manifest['head'] == args.source and manifest['baseline'] == BASE
+    for name, expected in manifest['files'].items():
+        file = root / name
+        assert file.is_file() and not file.is_symlink() and digest(file) == expected, f'source drift: {name}'
+    baseline_archive = root / 'baseline.tar'
+    assert digest(baseline_archive) == manifest['baseline_tar_sha256']
+    # Initial closure must contain only the source artifact. Subsequent image
+    # stage reuses the verified focused workspace's installed dependencies.
+    if args.phase == 'focused':
+        inventory = {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()}
+        assert inventory == set(manifest['files']) | {'SOURCE.json', 'baseline.tar'}, 'unexpected staged files'
+    free = capacity(root, FOOTPRINT[args.phase])
+    qa = root / 'qa'
+    qa.mkdir(exist_ok=args.phase == 'image')
+    os.environ['TMPDIR'] = str(qa / 'tmp')
+    Path(os.environ['TMPDIR']).mkdir(exist_ok=True)
+    owner = f'manager-seal-{args.source[:12]}'
     receipt = {'source_head': args.source, 'baseline': BASE, 'source_manifest_sha256': digest(root/'SOURCE.json'),
-               'runner_sha256': digest(Path(__file__)), 'synthetic_only': True, 'live_touched': False,
-               'RUNTIPI_ADMITTED': False, 'api_acceptance': False, 'phases': {}, 'image': None}
-    def save(): (qa/'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True)+'\n')
-    def call(argv, cwd=root, timeout=600):
-        return subprocess.run([str(x) for x in argv], cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout, check=True).stdout.strip()
-    def phase(name, argv, cwd=root, timeout=600, extra=None):
-        log = qa / (name+'.log')
-        try:
-            with log.open('w') as out:
-                p = subprocess.run([str(x) for x in argv], cwd=cwd, env={**env, **(extra or {})}, stdout=out, stderr=subprocess.STDOUT, timeout=timeout)
-            code = p.returncode
-        except subprocess.TimeoutExpired: code = 124
-        receipt['phases'][name] = {'exit_code': code, 'log_sha256': digest(log)}; save()
-        return code
+               'runner_sha256': digest(Path(__file__)),
+               'phase': args.phase, 'node_sha256': NODE_SHA, 'disk_free_before': free,
+               'reserve_bytes': RESERVE, 'footprint_bytes': FOOTPRINT[args.phase],
+               'RUNTIPI_ADMITTED': False, 'started': int(time.time()), 'steps': {}}
+    tools = qa / 'bin'
+    tools.mkdir(exist_ok=True)
+    node_link = tools / 'node'
+    if not node_link.exists(): node_link.symlink_to(NODE)
+    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}', DOCKER_BUILDKIT='1', NODE_OPTIONS='--experimental-sqlite')
+
+    def run(label, command, cwd=root, timeout=900, allow_failure=False):
+        print(label + ': ' + ' '.join(map(str, command)), flush=True)
+        with (qa / f'{label}.log').open('w') as log:
+            proc = subprocess.run(list(map(str, command)), cwd=cwd, env=env, stdout=log,
+                                  stderr=subprocess.STDOUT, timeout=timeout)
+        receipt['steps'][label] = proc.returncode
+        (qa/f'{args.phase}-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+        if proc.returncode and not allow_failure:
+            raise RuntimeError(f'{label} failed: {proc.returncode}; see {qa/label}.log')
+        return proc.returncode
+
+    target = 'src/modules/docker/__tests__/mandatory-seal.test.ts'
     owned = False
-    owner = 'wizard.qa.manager-seal='+args.source
-    def resources(kind):
-        return call(['docker', 'ps' if kind == 'containers' else 'network', '-aq' if kind == 'containers' else 'ls', *([] if kind == 'containers' else ['-q']), '--filter', 'label='+owner]).split()
     try:
-        node = Path('/srv/work/heavy/incognito-20261027/tooling/node')
-        assert digest(node) == NODE_SHA
-        (tools/'node').symlink_to(node)
-        receipt['node'] = {'sha256': NODE_SHA, 'version': call([node, '--version'])}
-        assert call(['docker', 'image', 'inspect', '--format', '{{.Id}}', OLD_IMAGE]) == OLD_ID
-        # Copy only public binaries from the exact existing daemon and pinned Bun
-        # image. Never inspect Config.Env or access running service containers.
-        call(['docker', 'pull', 'oven/bun:1.3.0'], timeout=300)
-        receipt['bun_image_id'] = call(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'oven/bun:1.3.0'])
-        for image, member, target in [(OLD_IMAGE, '/usr/local/bin/docker-compose', tools/'docker-compose'),
-                                      ('oven/bun:1.3.0', '/usr/local/bin/bun', tools/'bun')]:
-            cid = call(['docker', 'create', image])
-            try: call(['docker', 'cp', cid+':'+member, target])
-            finally: call(['docker', 'rm', cid])
-            target.chmod(0o755)
-        receipt['compose'] = {'sha256': digest(tools/'docker-compose'), 'version': call([tools/'docker-compose', 'version', '--short'])}
-        assert receipt['compose']['version'].lstrip('v') == '2.40.0'
-        assert call([tools/'bun', '--version']) == '1.3.0'
-        save()
-        assert phase('dependencies', [tools/'bun', 'install', '--frozen-lockfile'], timeout=600) == 0, 'frozen dependency installation failed'
-        assert phase('common-build', [tools/'bun', 'run', 'build'], cwd=root/'packages/common', timeout=180) == 0, 'common build prerequisite failed'
-        backend = root/'packages/backend'
-        vitest = root/'node_modules/.bin/vitest'
-        full_json = qa/'backend.json'
-        phase('backend-normal', [vitest, 'run', '--reporter=json', '--outputFile='+str(full_json)], cwd=backend, timeout=900)
-        if full_json.exists():
-            report = json.loads(full_json.read_text())
-            receipt['backend_totals'] = {k:report.get(k) for k in ['success','numTotalTests','numPassedTests','numFailedTests','numPendingTests']}; save()
-        # Use the exact already-present synthetic Python image ID, not an
-        # invented digest or a mutable tag during the two regression runs.
-        image_id = call(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'python:3.12-slim'])
-        receipt['regression_fixture_image_id'] = image_id; save()
-        assert not resources('containers') and not resources('networks'), 'refuse resources from an earlier attempt'
-        owned = True
-        test_env = {'RUN_MANAGER_SEAL_DOCKER':'1', 'MANAGER_SEAL_TEST_IMAGE': image_id, 'MANAGER_SEAL_QA_OWNER': args.source}
-        baseline = qa/'baseline'; baseline.mkdir()
-        with tarfile.open(root/'BASELINE.tar') as tar: tar.extractall(baseline, filter='data')
-        for rel in ['packages/backend/src/modules/docker/mandatory-seal.ts', 'packages/backend/'+TEST]:
-            target = baseline/rel; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(root/rel, target)
-        # Helper and test are injected unchanged; baseline DockerService is not
-        # changed. Red must be the original extra-public-network assertion.
-        (baseline/'node_modules').symlink_to(root/'node_modules')
-        shutil.copytree(root/'packages/common/dist', baseline/'packages/common/dist')
-        for rel in ['packages/backend/node_modules', 'packages/common/node_modules']:
-            if (root/rel).exists(): (baseline/rel).symlink_to(root/rel)
-        baseline_report = qa/'baseline.json'
-        code = phase('baseline-disabled-config-red', [vitest, 'run', TEST, '-t', 'disabled, removed', '--reporter=json', '--outputFile='+str(baseline_report)],
-                     cwd=baseline/'packages/backend', timeout=240, extra=test_env)
-        if baseline_report.exists():
-            report = json.loads(baseline_report.read_text())
+        if args.phase == 'focused':
+            for command in [['docker', 'ps', '-aq'], ['docker', 'network', 'ls', '-q']]:
+                assert not subprocess.check_output(command+['--filter', f'label=wizard.qa.manager-seal={owner}'], text=True).strip(), 'refuse pre-existing job resources'
+            owned = True
+            assert subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', OLD_IMAGE], text=True).strip() == OLD_ID
+            run('bun-image', ['docker', 'pull', 'oven/bun:1.3.0'], timeout=300)
+            receipt['bun_image_id'] = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'oven/bun:1.3.0'], text=True).strip()
+            # Public tool binaries from disposable, never-started image creates;
+            # no running service/container env or owner state is inspected.
+            for image, member, name in [(OLD_IMAGE, '/usr/local/bin/docker-compose', 'docker-compose'),
+                                         ('oven/bun:1.3.0', '/usr/local/bin/bun', 'bun')]:
+                cid = subprocess.check_output(['docker', 'create', '--label', f'wizard.qa.manager-seal={owner}', image], text=True).strip()
+                try: subprocess.run(['docker', 'cp', cid+':'+member, str(tools/name)], check=True, timeout=60)
+                finally: subprocess.run(['docker', 'rm', cid], check=True, timeout=60)
+                (tools/name).chmod(0o755)
+                receipt[name+'_sha256'] = digest(tools/name)
+            run('bun-version', ['bun', '--version'])
+            assert (qa/'bun-version.log').read_text().strip() == '1.3.0'
+            run('compose-version', ['docker-compose', 'version', '--short'])
+            assert (qa/'compose-version.log').read_text().strip().lstrip('v') == '2.40.0'
+            run('dependencies', ['bun', 'install', '--frozen-lockfile'], timeout=660)
+            run('common-build', ['bun', 'run', 'build'], cwd=root/'packages/common', timeout=300)
+            # First diagnostic gate: no Docker/image work before types + units.
+            run('backend-types', [root/'node_modules/.bin/tsgo', '--noEmit'], cwd=root/'packages/backend', timeout=300)
+            run('backend-unit', [root/'node_modules/.bin/vitest', 'run', '--reporter=json', '--outputFile='+str(qa/'backend-unit.json')], cwd=root/'packages/backend')
+            capacity(root, 8 * GIB)
+            for version in ('3.12', '3.13'):
+                run(f'fixture-pull-{version}', ['docker', 'pull', f'python:{version}-slim'], timeout=300)
+            for key, version in [('MANAGER_SEAL_TEST_IMAGE', '3.12'), ('MANAGER_SEAL_TEST_IMAGE_V2', '3.13')]:
+                env[key] = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', f'python:{version}-slim'], text=True).strip()
+                receipt[key.lower()] = env[key]
+            env.update(RUN_MANAGER_SEAL_DOCKER='1', MANAGER_SEAL_QA_OWNER=owner,
+                       MANAGER_SEAL_TRACE_DIR=str(qa/'candidate-trace'))
+            run('candidate-real-manager', [root/'node_modules/.bin/vitest', 'run', target,
+                '-t', 'real Docker', '--reporter=json', '--outputFile='+str(qa/'candidate.json')], cwd=root/'packages/backend', timeout=300)
+            # Unchanged tested DockerService/Storage, only helper+fixture injected.
+            baseline = qa/'baseline'
+            capacity(root, 4 * GIB)
+            baseline.mkdir()
+            run('baseline-extract', ['tar', '-xf', baseline_archive, '-C', baseline], timeout=120)
+            for relative in [target, 'src/modules/docker/mandatory-seal.ts']:
+                dst = baseline/'packages/backend'/relative
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root/'packages/backend'/relative, dst)
+            run('baseline-dependencies', ['bun', 'install', '--frozen-lockfile'], cwd=baseline, timeout=660)
+            run('baseline-common-build', ['bun', 'run', 'build'], cwd=baseline/'packages/common', timeout=300)
+            env['MANAGER_SEAL_TRACE_DIR'] = str(qa/'baseline-trace')
+            code = run('baseline-negative', [baseline/'node_modules/.bin/vitest', 'run', target,
+                '-t', 'real Docker', '--reporter=json', '--outputFile='+str(qa/'baseline.json')], cwd=baseline/'packages/backend', timeout=300, allow_failure=True)
+            assert code != 0, 'baseline unexpectedly passed'
+            report = json.loads((qa/'baseline.json').read_text())
             failed = [t for suite in report['testResults'] for t in suite['assertionResults'] if t['status'] == 'failed']
-            reproduced = code != 0 and len(failed) == 1 and 'disabled, removed' in failed[0]['fullName'] and '_public' in '\n'.join(failed[0]['failureMessages'])
-        else: reproduced = False
-        receipt['baseline_bypass_reproduced'] = reproduced; save()
-        candidate_report = qa/'candidate.json'
-        phase('candidate-disabled-config', [vitest, 'run', TEST, '--reporter=json', '--outputFile='+str(candidate_report)], cwd=backend, timeout=300, extra=test_env)
-        if candidate_report.exists():
-            report = json.loads(candidate_report.read_text())
-            receipt['candidate_totals'] = {k:report.get(k) for k in ['success','numTotalTests','numPassedTests','numFailedTests','numPendingTests']}; save()
-        phase('backend-types', [root/'node_modules/.bin/tsgo', '--noEmit'], cwd=backend, timeout=180)
-        # Image build is independent evidence. A regression failure never turns
-        # into green merely because the image packages successfully.
-        tag = 'wizard-app-manager:mandatory-seal-'+args.source[:12]+'-amd64'
-        code = phase('candidate-image', ['docker','build','--platform','linux/amd64','--build-arg','LOCAL=true',
-                     '--label','org.opencontainers.image.revision='+args.source,
-                     '--label','org.opencontainers.image.source=https://github.com/humanitylabs-org/wizard-app-manager',
-                     '-t',tag,'.'], timeout=2400)
-        if code == 0:
-            actual = call(['docker','image','inspect','--format','{{.Id}}',tag])
-            revision = call(['docker','image','inspect','--format','{{index .Config.Labels "org.opencontainers.image.revision"}}',tag])
-            assert revision == args.source
-            archive = qa/'candidate-image.tar'
-            phase('candidate-image-save', ['docker','save','-o',archive,tag], timeout=300)
-            if archive.exists(): receipt['image'] = {'tag':tag,'id':actual,'source_revision':revision,'archive':str(archive),'archive_sha256':digest(archive)}
-        ordinary = all(v['exit_code'] == 0 for k,v in receipt['phases'].items() if k != 'baseline-disabled-config-red')
-        receipt['build_regressions_pass'] = ordinary and receipt.get('baseline_bypass_reproduced') is True
-        save()
-    except Exception as e:
-        # All fixture commands are synthetic. Keep a useful fixed error type,
-        # never argv/environment/config dumps; phase log keeps exact tool result.
-        receipt['blocked'] = {'class': type(e).__name__, 'reason': str(e) if isinstance(e, AssertionError) else 'runner command/prerequisite failed',
-                              'returncode': getattr(e, 'returncode', None)}
-        receipt['build_regressions_pass'] = False; save()
+            assert len(failed) == 1 and 'disabled, removed' in failed[0]['fullName'] and '_public_app' in '\n'.join(failed[0]['failureMessages']), 'baseline red was not the original network bypass'
+            receipt['baseline_bypass_reproduced'] = True
+            # No active test resources may survive; no global prune or deletion.
+            leftovers = subprocess.check_output(['docker', 'ps', '-aq', '--filter', f'label=wizard.qa.manager-seal={owner}'], text=True).strip()
+            assert not leftovers, 'synthetic containers leaked'
+            assert not subprocess.check_output(['docker', 'network', 'ls', '-q', '--filter', f'label=wizard.qa.manager-seal={owner}'], text=True).strip(), 'synthetic networks leaked'
+            receipt['focused_pass'] = True
+            receipt['image_built'] = False
+            receipt['api_acceptance'] = 'PENDING: separately admitted image-bound disposable API lifecycle and rollback'
+        else:
+            focused_path = qa/'focused-receipt.json'
+            focused = json.loads(focused_path.read_text())
+            assert focused['source_head'] == args.source and focused['source_manifest_sha256'] == receipt['source_manifest_sha256']
+            assert focused.get('focused_pass') is True, 'focused tests must pass before image packaging'
+            receipt['focused_receipt_sha256'] = digest(focused_path)
+            image = f'wizard-manager-seal:{args.source[:12]}'
+            run('image-build', ['docker', 'build', '--platform', 'linux/amd64', '--build-arg', 'LOCAL=true',
+                '--build-arg', 'TIPI_VERSION=manager-seal-stage', '--build-arg', 'DOCKER_COMPOSE_VERSION=v2.40.0',
+                '--label', 'org.opencontainers.image.revision='+args.source,
+                '--label', 'org.opencontainers.image.source=https://github.com/humanitylabs-org/wizard-app-manager',
+                '-t', image, '.'], timeout=3600)
+            run('image-inspect', ['docker', 'image', 'inspect', '--format', '{{.Id}}', image], timeout=60)
+            receipt['image_id'] = (qa/'image-inspect.log').read_text().strip()
+            assert subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{index .Config.Labels "org.opencontainers.image.revision"}}', image], text=True).strip() == args.source
+            capacity(root, 10 * GIB)
+            artifact = qa/'manager-image.tar.gz'
+            with artifact.open('wb') as output:
+                docker = subprocess.Popen(['docker', 'save', image], stdout=subprocess.PIPE)
+                assert docker.stdout is not None
+                gzip = subprocess.Popen(['gzip', '-1'], stdin=docker.stdout, stdout=output)
+                docker.stdout.close()
+                assert gzip.wait(timeout=600) == 0 and docker.wait(timeout=60) == 0
+            receipt['image_archive_sha256'] = digest(artifact)
+            receipt['image_built'] = True
+            receipt['api_acceptance'] = 'PENDING, no aggregate admission'
+    except Exception as exc:
+        receipt['error'] = str(exc)
+        raise
     finally:
         if owned:
-            try:
-                containers, networks = resources('containers'), resources('networks')
-                if containers: call(['docker','rm','-f',*containers])
-                if networks: call(['docker','network','rm',*networks])
-                remaining_containers, remaining_networks = resources('containers'), resources('networks')
-                receipt['cleanup'] = {'removed_containers': len(containers), 'removed_networks': len(networks),
-                                      'remaining_containers': len(remaining_containers), 'remaining_networks': len(remaining_networks)}
-                if containers or networks or remaining_containers or remaining_networks:
-                    receipt['build_regressions_pass'] = False
-            except Exception:
-                receipt['cleanup'] = {'verified': False}
-                receipt['build_regressions_pass'] = False
-            save()
-    print(json.dumps(receipt, sort_keys=True))
-    return 0 if receipt.get('build_regressions_pass') else 2
+            # Aborted/failed fixtures get exact job-owned fallback cleanup only.
+            # Leaks never become a green run merely because cleanup succeeded.
+            for command, remove, kind in [(['docker', 'ps', '-aq'], ['docker', 'rm', '-f'], 'containers'),
+                                          (['docker', 'network', 'ls', '-q'], ['docker', 'network', 'rm'], 'networks')]:
+                ids = subprocess.check_output(command+['--filter', f'label=wizard.qa.manager-seal={owner}'], text=True).split()
+                if ids:
+                    receipt['focused_pass'] = False
+                    subprocess.run(remove+ids, check=True, timeout=60)
+                remaining = subprocess.check_output(command+['--filter', f'label=wizard.qa.manager-seal={owner}'], text=True).split()
+                receipt['cleanup_'+kind] = {'fallback_removed': len(ids), 'remaining': len(remaining)}
+                assert not remaining, 'job-owned resource cleanup failed'
+        receipt['finished'] = int(time.time())
+        receipt['disk_free_after'] = shutil.disk_usage(root).free
+        (qa/f'{args.phase}-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+        print(json.dumps(receipt, indent=2), flush=True)
+    if args.phase == 'focused': assert receipt.get('focused_pass') is True
 
 
-if __name__ == '__main__': raise SystemExit(main())
+if __name__ == '__main__':
+    main()

@@ -466,13 +466,20 @@ rm -f ".$1.wizard-copy-ready"`;
     ]);
   }
 
-  async prepare(urn: string, generated: string, apply?: (prepared: string) => Promise<void>): Promise<string> {
+  async prepare(urn: string, generated: string, apply?: (prepared: string) => Promise<void>, sealedSource?: (generated: Compose, managedTargets: string[]) => Compose): Promise<string> {
     return this.serial(async () => {
       const apps = await this.apps();
       const app = apps.find((a) => a.urn === urn);
       if (!app) {
-        await apply?.(generated);
-        return generated;
+        const doc = sealedSource?.(yaml.parse(generated), []);
+        if (doc) {
+          const targets = doc['x-wizard-share-mounts'] ?? [];
+          for (const svc of Object.values(doc.services)) svc.volumes = (svc.volumes ?? []).filter((v: any) => !targets.includes(targetOf(v)));
+          doc['x-wizard-share-mounts'] = [];
+        }
+        const prepared = doc ? yaml.stringify(doc) : generated;
+        await apply?.(prepared);
+        return prepared;
       }
       // apps() returns installed recipes only; candidates still fail rule 15.
       validateStorage(app.manifest, app.compose, true);
@@ -485,7 +492,9 @@ rm -f ".$1.wizard-copy-ready"`;
         await confined(provider.data, 'data/claude');
         if (!(await this.isClaudeAlias(provider))) throw new Error('Legacy Claude volume must be a bind alias to the provider folder');
       }
-      let doc: Compose = yaml.parse(generated);
+      let doc: Compose = sealedSource
+        ? sealedSource(yaml.parse(generated), (app.manifest.mounts ?? []).map((m) => m.path))
+        : yaml.parse(generated);
       // Builder metadata persists the original names; a restarted/revoked consumer is
       // always reconstructed from its source, never from previously injected mounts.
       const plans = rewriteVolumes(app.compose, app.manifest.id)['x-wizard-volumes'];
@@ -531,7 +540,10 @@ rm -f ".$1.wizard-copy-ready"`;
       }
       // A modern provider already uses data/claude and has no named-volume declaration.
       if (app.manifest.id === 'wizard-claude') await this.migrate(this.legacyClaudeVolume, 'data/claude', app);
-      const previously = doc['x-wizard-share-mounts'] ?? [];
+      // A trusted seal is a security base, not authorization to retain an old
+      // share. Strip every declared/previous managed target before re-projecting
+      // exactly the current grants, under this same lock through launch.
+      const previously = [...(doc['x-wizard-share-mounts'] ?? []), ...(sealedSource ? (app.manifest.mounts ?? []).map((m) => m.path) : [])];
       for (const svc of Object.values(doc.services)) svc.volumes = (svc.volumes ?? []).filter((v: any) => !previously.includes(targetOf(v)));
       doc['x-wizard-share-mounts'] = [];
       for (const m of app.manifest.mounts ?? []) {
