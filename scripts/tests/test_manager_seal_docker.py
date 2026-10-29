@@ -44,6 +44,23 @@ class DockerStageHarness(unittest.TestCase):
         self.assertNotIn('src=/work', ' '.join(mounts))
         self.assertLessEqual(len(('/var/lib/docker/volumes/m12345678/_data'+'/bind-probe.sock').encode()), 107)
 
+    def test_saved_continuation_flag_is_explicit_and_preserves_all_worker_caps(self):
+        default = self.command()
+        continued = runner.create_command(Path('/srv/work/manager-seal-synthetic'), 'manager-test', 'm12345678',
+            '/var/lib/docker/volumes/m12345678/_data', 1000, 1000, 104, 'a'*40, 'b'*64, True)
+        self.assertNotIn('--continue-saved', default)
+        self.assertEqual(continued, default+['--continue-saved'])
+
+    def test_assertion_and_cleanup_receipts_use_trusted_phase_reason_not_empty_exception_string(self):
+        text = (SCRIPTS/'manager-seal-docker.py').read_text()
+        self.assertIn("result['error'] = failure_record(e, result['phase'])", text)
+        self.assertIn("receipt['error'] = failure_record(e, receipt['phase'])", text)
+        self.assertIn("receipt['cleanup_error'] = failure_record(cleanup_error, receipt['phase'])", text)
+        self.assertNotIn("['error'] = str(e)", text)
+        self.assertIn("'candidate-bundle-inventory'", text)
+        self.assertIn("'baseline-specific-failure-validation'", text)
+        self.assertIn("'worker-result-acceptance'", text)
+
     def test_socket_authority_explicit_no_privilege_or_unbounded_disk_cache(self):
         cmd = self.command()
         self.assertEqual(cmd[cmd.index('--user')+1], '1000:1000')

@@ -224,6 +224,68 @@ reserve plus 1 GiB bounded host allowance, 8 GiB tmpfs, 12 GiB memory/no swap an
 64 MiB synthetic fixture. Installed API/image gates stay separate. No heavy job
 is submitted by the child and no full unchanged backend/stock suite is repeated.
 
+### QA-only saved-bundle continuation
+
+The `3116f500f4d7df959a9f4d586dec4f9a9b7564b5` source-handler attempt
+(`heavy_5fba1cbd6d8d44029e02f9bb6e5282da`) genuinely passed the complete
+19/19 candidate file with zero skips and 22/22 unique checkpoints, including
+hostile optional configuration, forced down failure/prior rollback, revoked
+grants, missing-policy remediation and complete live create/connect reconciliation.
+Adjacent lifecycle tests passed 60/60; type checking, 7/7 dollar checks, 8/8
+remediation checks and the exact-prior specific negative also passed. These are
+source-handler fixture results, not installed API proof. The backend bundle
+command exited zero. The job then failed only at the harness's two-file `dist`
+inventory assertion, before node syntax validation and the original baseline.
+
+Preserve its original failed receipt SHA
+`76bee4c997f2c176838c0e90a348b9fb2b1250005dca045e0db97d9639c3e6cf`,
+artifact SHA `168a63a43777a34a1bf3b5a3fa6b5daef6f52339828f9a761a3a36024754de44`,
+wire-log SHA `d3a0ac71040441040291e2bf3dc6f6c5c3b2e5bdd3f38422c39c465ec58e9cbd`
+and independently retained outer-log SHA
+`0ec5131f927f1f007a329c2895f9e9adf27c01640537b26f766c31d9f0ab2f6c`.
+No file or pass flag in that receipt is rewritten.
+
+`scripts/manager-seal-docker.py --continue-saved` is a **separate** bounded,
+parent-admitted continuation. Its full previous/new source inventories may
+differ only in the explicit QA scripts/tests and this document. Any product,
+candidate-fixture, lock, baseline or dependency drift refuses inheritance; a
+different product needs fresh affected proof. It verifies the prior manifest,
+receipt, archive, wire log, machine reports, phase log hashes, all 22 checkpoints
+and cleanup. The original candidate Docker suite, adjacent tests, types, dollar,
+remediation and rollback negatives are not run again. Historical 389/390 early
+counts remain historical, never a fresh full-suite claim.
+
+The saved output is exactly `main.js` (6,855,279 bytes), `main.js.map`
+(20,939,273), `cpufeatures-e8x7s2f1.node` (60,552) and
+`sshcrypto-a3khcfhj.node` (83,264). `manager_seal_bundle.py` rejects any missing,
+extra, linked, special, oversize or changed saved file. It hashes bounded regular
+single-link files, requires exactly the two corresponding local JS references,
+checks ELF64/x86-64/shared-object headers and connects each emitted filename to
+the saved sourcemap's exact original require, Bun build configuration, lock
+version/integrity and frozen-installed package source (`cpu-features@0.0.10`,
+`ssh2@1.17.0`). No `*.node` exemption is introduced. A tiny SHA-pinned Bun 1.3.0
+build with only the two saved native bytes must independently reproduce their
+exact emitted filenames and hashes; it is not a backend rebuild.
+
+The continuation syntax-checks the actual saved JS with pinned Node, reconstructs
+only the destroyed RAM-only dependency/bootstrap prerequisites, runs focused QA
+oracle regressions and the required common build, then runs **only the unfinished
+original baseline negative**, swapping both original DockerService/storage
+files from the pinned baseline. The specific disabled-config public-network
+failure, exact active/filter counts, restoration and cleanup are required. Only
+a successful continuation can write a new composite source-handler pass; the
+original failed receipt stays false. Installed lifecycle/update transaction,
+process restart, successive accepted update transition, provider and image
+acceptance remain unfinished. No child submits or runs sustained tests.
+
+Failures record a trusted phase, fixed reason, exception class and bounded
+runner filename/function/line frames even for a message-less assertion. No
+exception payload/source/local variables enter those fields. Worker and cleanup
+errors are separate so cleanup cannot erase the primary failure receipt. The
+200 GiB floor plus 1 GiB bounded host allowance, 8 GiB scratch, 12 GiB memory,
+zero swap, 64 MiB fixture, no pulls/builds of container images and synthetic-only
+data restrictions remain unchanged.
+
 ## Remaining acceptance gates — unchanged
 
 Direct `DockerService` with synthetic DB/file facades is not authenticated Nest API/queue/Postgres acceptance. A new manager object is not process-level daemon restart. Manual forced callback failure/prior generated-file recovery is not the actual update transaction. The next exact-image disposable API stage must prove install/start/restart/update, process restart, optional-config disabled/removed/changed, required-policy failure before destructive callbacks, real version update plus forced rollback retaining synthetic home/identity/bindings, socket grants/revocation and Incognito. Preserve full acceptance; do not reduce it to metadata-only updates or grant refusal.

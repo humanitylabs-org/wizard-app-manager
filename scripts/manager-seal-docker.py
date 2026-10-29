@@ -29,6 +29,8 @@ assert spec is not None and spec.loader is not None
 early = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(early)
 from manager_seal_install_evidence import dependency_step, recover_artifacts
+from manager_seal_bundle import validate_bundle, failure_record
+import manager_seal_continuation as continuation
 
 GIB = 1024**3
 MIB = 1024**2
@@ -54,6 +56,7 @@ ALLOWED_DELTA = {TARGET.replace('src/', 'packages/backend/src/', 1), 'packages/b
                  'packages/backend/src/modules/docker/docker.service.ts', 'scripts/tests/test_manager_seal_dollars.mjs',
                  'scripts/tests/test_manager_seal_remediation.mjs',
                  'scripts/manager-seal-docker.py', 'scripts/tests/test_manager_seal_docker.py', 'docs/mandatory-manager-privacy.md'}
+ALLOWED_DELTA |= continuation.QA_DELTA
 RESULT = 'DOCKER_RESULT='
 REQUIRED_CHECKS = frozenset({
     'cross-process-enrollment-exclusion', 'disabled-config-original-bypass', 'launch-excludes-enrollment',
@@ -251,9 +254,10 @@ def inside(args):
     Path('/work/logs').mkdir(exist_ok=True)
     result = {'source': args.source, 'manifest_sha256': args.manifest_sha256, 'steps': {}, 'inherited': inheritance,
               'source_handler_real_docker_pass': False, 'packaged_api_pass': False,
-              'image_built': False, 'full_docker_acceptance': False, 'RUNTIPI_ADMITTED': False}
+              'image_built': False, 'full_docker_acceptance': False, 'RUNTIPI_ADMITTED': False, 'phase': 'inside-preflight'}
     checkout = Path('/work/source')
     def step(label, argv, cwd=checkout, timeout=300, allow_failure=False):
+        result['phase'] = label
         print('STEP '+label, flush=True)
         log = Path('/work/logs', label+'.log')
         with log.open('wb') as f:
@@ -314,11 +318,12 @@ def inside(args):
         # Bundle exact candidate BEFORE replacing baseline product files. This
         # prepares a backend artifact, NOT an official Dockerfile/API proof.
         step('candidate-backend-bundle', ['bun', 'run', 'bundle'], cwd=backend)
-        bundle = backend/'dist/main.js'; assert bundle.is_file() and bundle.stat().st_size > 1024
-        assert {p.name for p in (backend/'dist').iterdir()} <= {'main.js', 'main.js.map'}
-        assert sum(p.stat().st_size for p in (backend/'dist').iterdir()) <= 512*MIB
+        result['phase'] = 'candidate-bundle-inventory'
+        result['candidate_bundle_inventory'] = validate_bundle(backend/'dist', root, installed=checkout)
+        bundle = backend/'dist/main.js'
         step('candidate-bundle-node-syntax', ['node', '--check', bundle], cwd=backend)
         result['candidate_backend_bundle_sha256'] = sha(bundle)
+        result['phase'] = 'baseline-source-closure'
         baseline = Path('/work/baseline'); baseline.mkdir()
         total = 0
         with tarfile.open(root/'baseline.tar') as tf:
@@ -343,6 +348,7 @@ def inside(args):
         # DockerService AND storage bytes, candidate policy helper/fixture only.
         os.environ.update(MANAGER_SEAL_BASELINE_NEGATIVE='1', MANAGER_SEAL_TRACE_DIR='/work/baseline-trace')
         code = step('baseline-negative', [vitest, 'run', TARGET, '-t', 'real Docker', '--maxWorkers=1', '--reporter=json', '--outputFile=/work/baseline.json'], cwd=backend, allow_failure=True)
+        result['phase'] = 'baseline-specific-failure-validation'
         report = json.loads(Path('/work/baseline.json').read_text()); result['baseline_counts'] = report_counts(report)
         assert code != 0; baseline_failure(report)
         result['baseline_bypass_reproduced'] = True
@@ -350,7 +356,7 @@ def inside(args):
         assert all(sha(checkout/rel) == manifest['files'][rel] for rel in PRODUCT_DELTA)
         result['source_handler_real_docker_pass'] = True
     except Exception as e:
-        result['error'] = str(e)
+        result['error'] = failure_record(e, result['phase'])
         raise
     finally:
         result['tmpfs_used_bytes'] = (os.statvfs('/work').f_blocks-os.statvfs('/work').f_bfree)*os.statvfs('/work').f_frsize
@@ -360,7 +366,7 @@ def inside(args):
         print(RESULT+json.dumps(result, sort_keys=True), flush=True)
 
 
-def create_command(root, name, volume, mountpoint, uid, gid, sock_gid, source, manifest):
+def create_command(root, name, volume, mountpoint, uid, gid, sock_gid, source, manifest, continue_saved=False):
     cmd = early.create_command(root, name, uid, gid, source, manifest)
     cmd[cmd.index('wizard.qa.manager-seal.early='+source)] = 'wizard.qa.manager-seal='+name
     pos = cmd.index('--workdir')
@@ -373,6 +379,7 @@ def create_command(root, name, volume, mountpoint, uid, gid, sock_gid, source, m
     i = cmd.index('/source/scripts/manager-seal-early.py')
     cmd[i:] = ['/source/scripts/manager-seal-docker.py', '--inside', '--source', source, '--manifest-sha256', manifest,
                '--fixture-root', mountpoint, '--owner', name]
+    if continue_saved: cmd.append('--continue-saved')
     return cmd
 
 
@@ -400,6 +407,7 @@ def main(args):
     assert str(root).startswith('/srv/work/manager-seal-') and os.uname().machine == 'x86_64' and os.getuid() != 0
     manifest = early.verify_source(root, args.source, args.manifest_sha256)
     inherit = inherited(root, manifest)
+    saved = continuation.verify_saved(root, manifest, sys.modules[__name__]) if args.continue_saved else None
     admission = capacity(root)
     assert sha(early.NODE) == early.NODE_SHA and sha('/usr/bin/docker') == DOCKER_SHA
     available = int(next(l.split()[1] for l in Path('/proc/meminfo').read_text().splitlines() if l.startswith('MemAvailable:')))*1024
@@ -422,12 +430,13 @@ def main(args):
     if args.preflight:
         print(json.dumps({'preflight': True, 'inherited': inherit, 'capacity': admission, 'memory_available_bytes': available,
                           'fixture_images': [PYTHON_IMAGE, early.IMAGE], 'docker_group': Path('/var/run/docker.sock').stat().st_gid,
-                          'execution_pending': True, 'RUNTIPI_ADMITTED': False}, indent=2)); return
+                          'inherited_candidate': saved, 'execution_pending': True, 'RUNTIPI_ADMITTED': False}, indent=2)); return
     output = root/'manager-seal-early-results'; output.mkdir(exist_ok=False)
     early.prepare_bunx_tmp_alias(output, os.getuid())
     receipt = {'source': args.source, 'manifest_sha256': args.manifest_sha256, 'runner_sha256': sha(__file__), 'inherited': inherit,
                'capacity': admission, 'source_handler_real_docker_pass': False, 'packaged_api_pass': False,
-               'full_docker_acceptance': False, 'image_built': False, 'RUNTIPI_ADMITTED': False}
+               'full_docker_acceptance': False, 'image_built': False, 'RUNTIPI_ADMITTED': False,
+               'phase': 'tool-donor', 'inherited_candidate': saved}
     cid = None; donor = None; attached = None; owned_volume = False
     try:
         # Cached PUBLIC tool donor, never started. No old product runtime reused.
@@ -439,17 +448,20 @@ def main(args):
         run(['docker', 'rm', donor]); donor = None
         # One hard-capped RAM volume visible at the SAME canonical daemon path
         # inside the worker. /work is never used as a daemon bind source.
+        receipt['phase'] = 'fixture-volume-create'
         run(['docker', 'volume', 'create', '--driver=local', '--label', 'wizard.qa.manager-seal='+name,
              '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', f'o=size={FIXTURE_BYTES},uid={os.getuid()},gid={os.getgid()},mode=0700,nosuid,nodev', volume])
         owned_volume = True
         mountpoint = run(['docker', 'volume', 'inspect', '--format', '{{.Mountpoint}}', volume])
         assert mountpoint == '/var/lib/docker/volumes/'+volume+'/_data' and len(os.fsencode(mountpoint+'/bind-probe.sock')) <= 107
-        cmd = create_command(root, name, volume, mountpoint, os.getuid(), os.getgid(), Path('/var/run/docker.sock').stat().st_gid, args.source, args.manifest_sha256)
+        cmd = create_command(root, name, volume, mountpoint, os.getuid(), os.getgid(), Path('/var/run/docker.sock').stat().st_gid, args.source, args.manifest_sha256, args.continue_saved)
         capacity(root)
+        receipt['phase'] = 'worker-create'
         cid = run(cmd)
         config = json.loads(run(['docker', 'inspect', '--format', '{{json .HostConfig}}', cid]))
         assert config['ReadonlyRootfs'] and config['Memory'] == early.MEMORY and config['MemorySwap'] == early.MEMORY
         assert config['PidsLimit'] == 256 and config['LogConfig']['Type'] == 'none'
+        receipt['phase'] = 'worker-execution'
         attached = subprocess.Popen(['docker', 'start', '--attach', cid], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         assert attached.stdout is not None
         sel = selectors.DefaultSelector(); sel.register(attached.stdout, selectors.EVENT_READ)
@@ -465,39 +477,49 @@ def main(args):
                     log.write(block)
         code = attached.wait(timeout=10)
         receipt['container_state'] = json.loads(run(['docker', 'inspect', '--format', '{{json .State}}', cid]))
+        receipt['phase'] = 'worker-result-transport'
         results = [json.loads(l[len(RESULT):]) for l in (output/'docker.log').read_text().splitlines() if l.startswith(RESULT)]
         assert len(results) == 1; receipt['result'] = results[0]
         receipt['artifacts'] = receive(output/'docker.log', output)
         receipt['dependencies'] = recover_artifacts(output/'docker.log', output)
+        receipt['phase'] = 'worker-result-acceptance'
         assert code == 0 and receipt['container_state']['ExitCode'] == 0 and not receipt['container_state']['OOMKilled']
         assert results[0]['source_handler_real_docker_pass'] and results[0]['source'] == args.source and results[0]['manifest_sha256'] == args.manifest_sha256
         receipt['source_handler_real_docker_pass'] = True
     except Exception as e:
-        receipt['error'] = str(e)
+        receipt['error'] = failure_record(e, receipt['phase'])
         raise
     finally:
         # Worker/donor are expected here; fixture resources surviving their own
         # teardown FAIL acceptance even if exact-label fallback cleanup works.
-        if cid: run(['docker', 'rm', '-f', cid])
-        if donor: run(['docker', 'rm', '-f', donor])
-        if attached is not None: attached.wait(timeout=15)
-        for command, remove, kind in [(['docker', 'ps', '-aq'], ['docker', 'rm', '-f'], 'containers'),
-                                       (['docker', 'network', 'ls', '-q'], ['docker', 'network', 'rm'], 'networks')]:
-            ids = sorted(set(run(command+['--filter', 'label=wizard.qa.manager-seal='+name]).split()) |
-                         set(run(command+['--filter', 'label=com.docker.compose.project='+project]).split()))
-            receipt['leaked_'+kind] = ids
-            if ids:
-                receipt['source_handler_real_docker_pass'] = False
-                run(remove+ids)
-            assert not run(command+['--filter', 'label=wizard.qa.manager-seal='+name])
-            assert not run(command+['--filter', 'label=com.docker.compose.project='+project])
-        if owned_volume: run(['docker', 'volume', 'rm', volume])
-        receipt['cleanup_volume_absent'] = not run(['docker', 'volume', 'ls', '-q', '--filter', 'name=^'+volume+'$'])
-        receipt['disk_free_after'] = shutil.disk_usage(root).free
-        receipt['reserve_preserved'] = receipt['disk_free_after'] >= RESERVE
-        if not receipt['reserve_preserved']: receipt['source_handler_real_docker_pass'] = False
-        (output/'docker-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
-        print(json.dumps(receipt, indent=2), flush=True)
+        try:
+            receipt['phase'] = 'owned-resource-cleanup'
+            if cid: run(['docker', 'rm', '-f', cid])
+            if donor: run(['docker', 'rm', '-f', donor])
+            if attached is not None: attached.wait(timeout=15)
+            for command, remove, kind in [(['docker', 'ps', '-aq'], ['docker', 'rm', '-f'], 'containers'),
+                                           (['docker', 'network', 'ls', '-q'], ['docker', 'network', 'rm'], 'networks')]:
+                ids = sorted(set(run(command+['--filter', 'label=wizard.qa.manager-seal='+name]).split()) |
+                             set(run(command+['--filter', 'label=com.docker.compose.project='+project]).split()))
+                receipt['leaked_'+kind] = ids
+                if ids:
+                    receipt['source_handler_real_docker_pass'] = False
+                    run(remove+ids)
+                assert not run(command+['--filter', 'label=wizard.qa.manager-seal='+name])
+                assert not run(command+['--filter', 'label=com.docker.compose.project='+project])
+            if owned_volume: run(['docker', 'volume', 'rm', volume])
+            receipt['cleanup_volume_absent'] = not run(['docker', 'volume', 'ls', '-q', '--filter', 'name=^'+volume+'$'])
+            receipt['disk_free_after'] = shutil.disk_usage(root).free
+            receipt['reserve_preserved'] = receipt['disk_free_after'] >= RESERVE
+            assert receipt['cleanup_volume_absent'] and receipt['reserve_preserved'], 'cleanup final bounds'
+            assert not receipt['leaked_containers'] and not receipt['leaked_networks'], 'fixture leaked owned resources'
+        except Exception as cleanup_error:
+            receipt['source_handler_real_docker_pass'] = False
+            receipt['cleanup_error'] = failure_record(cleanup_error, receipt['phase'])
+            raise
+        finally:
+            (output/'docker-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+            print(json.dumps(receipt, indent=2), flush=True)
     assert receipt['source_handler_real_docker_pass'] and receipt['cleanup_volume_absent']
 
 
@@ -505,7 +527,13 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--source', required=True); p.add_argument('--manifest-sha256', required=True)
     p.add_argument('--inside', action='store_true'); p.add_argument('--preflight', action='store_true')
+    p.add_argument('--continue-saved', action='store_true', help='reuse source-bound saved candidate proof; run baseline/bundle validation only')
     p.add_argument('--fixture-root'); p.add_argument('--owner')
     args = p.parse_args()
-    if args.inside: inside(args)
-    else: main(args)
+    try:
+        if args.inside and args.continue_saved: continuation.inside(args, sys.modules[__name__])
+        elif args.inside: inside(args)
+        else: main(args)
+    except Exception as exc:
+        print('DOCKER_TRUSTED_FAILURE='+json.dumps(failure_record(exc, 'entrypoint-or-propagated-failure'), sort_keys=True), flush=True)
+        raise
