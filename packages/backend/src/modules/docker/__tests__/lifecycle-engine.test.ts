@@ -4,6 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as yaml from 'yaml';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import { DockerService } from '../docker.service';
 import { StopAppCommand } from '@/modules/app-lifecycle/commands/stop-app-command';
 import { RestartAppCommand } from '@/modules/app-lifecycle/commands/restart-app-command';
@@ -44,7 +45,7 @@ async function fixture() {
   if (!(await fs.readFile('/run/wizard-lifecycle-disposable', 'utf8')).startsWith('synthetic')) throw new Error('Disposable VM required');
   const root = await fs.mkdtemp('/opt/lifecycle/case-');
   const id = path.basename(root).toLowerCase();
-  const urn = `${id}:wizardapps` as const;
+  const urn = createAppUrn(id, 'wizardapps');
   const project = `${id}_wizardapps`;
   const volume = `${project}_canary`;
   const appDataRoot = '/opt/lifecycle/app-data';

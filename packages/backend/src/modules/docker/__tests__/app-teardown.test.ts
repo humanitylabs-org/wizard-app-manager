@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import { appProject, teardownApp } from '../app-teardown';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { DockerService } from '../docker.service';
@@ -69,7 +70,7 @@ describe('daemon-owned teardown', () => {
     const service = { composeApp: vi.fn(async () => { calls.push('stop'); }), storage: { apps: async () => { calls.push('inventory'); throw new Error('unreadable recipe'); } } };
     const files = { deleteAppFolder: vi.fn(), deleteAppDataDir: vi.fn() };
     const ref: any = { get: (token: any) => new Map<any, any>([[DockerService, service], [AppFilesManager, files], [LoggerService, { info: vi.fn() }]]).get(token) };
-    expect(await new UninstallAppCommand(ref, {} as any).execute('demo:wizardapps')).toMatchObject({ success: false });
+    expect(await new UninstallAppCommand(ref, {} as any).execute(createAppUrn('demo', 'wizardapps'))).toMatchObject({ success: false });
     expect(calls).toEqual(['stop', 'inventory']);
     expect(files.deleteAppFolder).not.toHaveBeenCalled();
     expect(files.deleteAppDataDir).not.toHaveBeenCalled();
