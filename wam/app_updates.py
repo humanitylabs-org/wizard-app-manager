@@ -307,6 +307,29 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
 
 # ---------------------------------------------------------------- apply
 
+def reconcile_settings(c, rt, app_id: str) -> list[str]:
+    """Fill settings the new version newly requires, with the same rules as install (shared secrets from the apps
+    it uses, generated passwords, owner origins), keeping every saved value. Runtipi refuses an update whose
+    required variable is unset ("Variable ... is required"), so this runs first. Returns what only the owner can
+    give (then nothing is changed)."""
+    from . import cli
+    urn = f"{app_id}:{cli.STORE}"
+    recipe = Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id
+    try:
+        info = json.loads((recipe / "config.json").read_text())
+        uses = (cli.registry._front((recipe / "wizard.md").read_text()) or {}).get("uses") or []
+    except (OSError, ValueError):
+        return []   # no prepared recipe to read: let the update itself decide
+    current = (((rt.app(urn) or {}).get("app") or {}).get("config")) or {}
+    form, missing = cli.build_form(c, app_id, info, current, uses=uses if isinstance(uses, list) else [])
+    if missing:
+        return missing
+    form = {**form, **current}   # ports, exposure, credentials and unknown saved fields stay as they are
+    if form != current:
+        rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
+    return []
+
+
 def _notify(c, title: str, message: str, priority: str = "default") -> None:
     """Best effort: one line in the owner's Notifications inbox when that app is installed."""
     try:
@@ -378,6 +401,10 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
+                missing = reconcile_settings(c, rt, r["id"])
+                if missing:   # the new version needs a setting only the owner can give: nothing changed
+                    needs.append({"id": r["id"], "reason": "the new version needs " + "; ".join(missing)[:200]})
+                    continue
                 res = cli.app_update(c, r["id"])
             except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})

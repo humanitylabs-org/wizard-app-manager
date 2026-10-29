@@ -167,3 +167,40 @@ def test_manual_update_button_runs_in_the_background():
         returncode, stdout, stderr = 0, "", ""
     assert au.start_detached(lambda cmd, **k: seen.append(cmd) or P()) == {"started": True}
     assert seen[0][0] == "systemd-run" and seen[0][-2:] == ["app-updates", "--apply"]
+
+
+def test_new_required_settings_are_filled_before_the_update(tmp_path, monkeypatch):
+    """wizard-claude 0.2.x added a required shared password; Runtipi refused the update ("Variable ... is required")."""
+    from wam import cli
+    recipe = tmp_path / "repos/wizardapps/apps/wizard-claude"
+    recipe.mkdir(parents=True)
+    (recipe / "config.json").write_text(json.dumps({"form_fields": [
+        {"env_variable": "OLD", "required": True, "type": "text"},
+        {"env_variable": "DASH_PW", "required": True, "type": "password"}]}))
+    (recipe / "wizard.md").write_text("---\nid: wizard-claude\nuses: [hermes-agent]\n---\n")
+
+    class C:
+        runtipi_root = tmp_path
+        secrets = tmp_path / "secrets"
+
+    class Rt:
+        patched = []
+
+        def app(self, urn):
+            return {"app": {"config": {"OLD": "kept", "port": 1}}}
+
+        def req(self, method, path, body, timeout=0):
+            self.patched.append((path, body))
+
+    monkeypatch.setattr(cli, "shared_value", lambda c, var, uses: "shared-pw" if var == "DASH_PW" else None)
+    rt = Rt()
+    assert au.reconcile_settings(C(), rt, "wizard-claude") == []
+    path, body = rt.patched[0]
+    assert path.endswith("wizard-claude:wizardapps/update-config")
+    assert body["DASH_PW"] == "shared-pw" and body["OLD"] == "kept" and body["port"] == 1
+    # nothing the box can fill: the owner is asked and nothing is patched
+    (recipe / "config.json").write_text(json.dumps({"form_fields": [
+        {"env_variable": "API_KEY", "required": True, "type": "text", "label": "API key"}]}))
+    rt.patched.clear()
+    assert au.reconcile_settings(C(), rt, "wizard-claude")[0].startswith("API_KEY")
+    assert rt.patched == []
