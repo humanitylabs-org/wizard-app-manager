@@ -177,7 +177,10 @@ export class WizardStorage {
     await fs.rename(tmp, this.grantsPath);
     // Preserve the registry's other fields and do not publish keys.
     const mirrors = new Set([
-      path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json'),
+      // WIZARD_OS_HOME adds an owner projection; it must not replace the
+      // installed state projection consumed by older shells and restore paths.
+      path.join(this.dirs.dataDir, 'state', 'wizard-os', 'apps.json'),
+      ...(process.env.WIZARD_OS_HOME ? [path.join(process.env.WIZARD_OS_HOME, 'apps.json')] : []),
       path.join(this.dirs.appDataDir, 'wizard-os', 'apps.json'),
     ]);
     for (const mirror of mirrors) {

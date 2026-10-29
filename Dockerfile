@@ -36,7 +36,7 @@ RUN chmod +x docker-binary
 FROM node_base AS runner_base
 
 # WizardStorage drives copy-once migrations and volume aliases through the docker CLI.
-RUN apk add --no-cache curl openssl git docker-cli && docker --version
+RUN apk add --no-cache curl openssl git docker-cli util-linux && docker --version && command -v flock
 
 # ---- BUILDER ----
 FROM builder_base AS builder

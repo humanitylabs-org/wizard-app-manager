@@ -190,6 +190,44 @@ describe('owner share grants', () => {
     expect(events).toEqual(['started', 'revoked']);
     expect((await store.readGrants()).grants).toEqual([]);
   });
+  it('preserves every registry projection and grant metadata with a distinct WIZARD_OS_HOME', async () => {
+    const oldHome = process.env.WIZARD_OS_HOME;
+    const home = path.join(root, 'owner-wizard');
+    process.env.WIZARD_OS_HOME = home;
+    const mirrors = [path.join(root, 'state/wizard-os/apps.json'), path.join(root, 'app-data/wizard-os/apps.json'), path.join(home, 'apps.json')];
+    const original = { schema: 2, apps: [{ id: 'kept-app', custom: true }], slots: { primary: 'kept-app' }, custom: { keep: true } };
+    try {
+      await install(provider);
+      await install(consumer);
+      for (const mirror of mirrors) {
+        await fs.mkdir(path.dirname(mirror), { recursive: true });
+        await fs.writeFile(mirror, JSON.stringify(original));
+      }
+      const base = await store.readGrants();
+      base.grants.push({ kind: 'mcp', from: 'hermes-agent', to: 'other' });
+      base.seeded = ['hermes-agent'];
+      await store.writeGrants(base);
+      const grant = (await store.proposed())[0]!;
+      await store.change(grant, true);
+      for (const mirror of mirrors) {
+        const saved = JSON.parse(await fs.readFile(mirror, 'utf8'));
+        expect(saved).toMatchObject(original);
+        expect(saved.grants).toEqual((await store.readGrants()).grants);
+        expect(saved.grants).toHaveLength(2);
+      }
+      await store.change(grant, false);
+      expect((await store.readGrants()).seeded).toEqual(['hermes-agent']);
+      expect((await store.readGrants()).denies).toEqual([grant]);
+      for (const mirror of mirrors) {
+        const saved = JSON.parse(await fs.readFile(mirror, 'utf8'));
+        expect(saved).toMatchObject(original);
+        expect(saved.grants).toEqual([{ kind: 'mcp', from: 'hermes-agent', to: 'other' }]);
+      }
+    } finally {
+      if (oldHome === undefined) delete process.env.WIZARD_OS_HOME;
+      else process.env.WIZARD_OS_HOME = oldHome;
+    }
+  });
   it('serializes concurrent approvals without losing rows', async () => {
     await install({ ...provider, shares: [...provider.shares, { id: 'second', path: 'second' }] });
     await install({ ...consumer, mounts: [...consumer.mounts, { app: 'wizard-claude', share: 'second', path: '/second' }] });

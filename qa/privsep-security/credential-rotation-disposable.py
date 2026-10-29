@@ -74,7 +74,14 @@ def fixture(folder, images):
     os.chown(app, LEGACY, LEGACY); app.chmod(0o640)
     os.chown(appenv, MANAGER, MANAGER); appenv.chmod(0o600)
     env = dict(OLD, ROOT_FOLDER_HOST=str(root), INTERNAL_IP='127.0.0.1',
-               RABBITMQ_USERNAME='tipi', RABBITMQ_HOST='runtipi-queue')
+               RABBITMQ_USERNAME='tipi', RABBITMQ_HOST='runtipi-queue',
+               POSTGRES_HOST='runtipi-db', POSTGRES_DBNAME='tipi', POSTGRES_USERNAME='tipi', POSTGRES_PORT='5432',
+               TIPI_VERSION='disposable-privsep', APPS_REPO_ID='disposable-fixture',
+               APPS_REPO_URL='https://example.invalid/no-catalog', DOMAIN='rotation.invalid', LOCAL_DOMAIN='rotation.lan',
+               RUNTIPI_APP_DATA_PATH=str(root), RUNTIPI_FORWARD_AUTH_URL='http://runtipi:3000/api/auth/traefik',
+               TZ='UTC', DEMO_MODE='false', GUEST_DASHBOARD='false', ALLOW_ERROR_MONITORING='false',
+               ALLOW_AUTO_THEMES='false', PERSIST_TRAEFIK_CONFIG='false', ADVANCED_SETTINGS='false',
+               EXPERIMENTAL_INSECURE_COOKIE='true', THEME_BASE='gray', THEME_COLOR='blue')
     (root / '.env').write_text('\n'.join(f'{k}={v}' for k, v in env.items()))
     (root / '.env').chmod(0o600)
     services = {
@@ -102,18 +109,30 @@ def fixture(folder, images):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--authorize-disposable', action='store_true')
+    parser.add_argument('--source-revision', required=True)
     for name in ('backend', 'db', 'queue'): parser.add_argument('--' + name + '-image', required=True)
     args = parser.parse_args()
     if os.getuid() != 0 or not args.authorize_disposable:
         raise RuntimeError('Root + explicit disposable authorization required')
     images = {name: getattr(args, name + '_image') for name in ('backend', 'db', 'queue')}
-    if any(not re.fullmatch(r'[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}', v) for v in images.values()):
-        raise RuntimeError('All three images must be digest-pinned; preloading belongs to parent admission')
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', images['backend']) or any(
+            not re.fullmatch(r'[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}', images[k]) for k in ('db', 'queue')):
+        raise RuntimeError('Backend must be an actual local image ID; database and queue must be repository-digest pinned')
+    if not re.fullmatch(r'[0-9a-f]{40}', args.source_revision):
+        raise RuntimeError('Exact backend source revision required')
+    marker = Path('/run/wizard-disposable-rotation')
+    if (not marker.is_file() or marker.is_symlink() or marker.stat().st_uid != 0
+            or marker.stat().st_mode & 0o777 != 0o600 or marker.read_text().strip() != args.source_revision):
+        raise RuntimeError('Fresh guest admission marker bound to this source is required')
     if command(['docker', 'ps', '-aq']).strip() or BASE.exists():
         raise RuntimeError('Refusing nonempty Docker daemon or reused acceptance directory')
     for image in images.values(): command(['docker', 'image', 'inspect', image])
+    inspected = json.loads(command(['docker', 'image', 'inspect', images['backend']]))
+    assert len(inspected) == 1 and inspected[0]['Id'] == images['backend']
+    assert inspected[0]['Config']['Labels']['org.opencontainers.image.revision'] == args.source_revision
     BASE.mkdir(mode=0o755)
-    receipt = {'schema': 1, 'images': images, 'cases': [], 'runtime': 'real-disposable-docker'}
+    receipt = {'schema': 1, 'images': images, 'source_revision': args.source_revision,
+               'cases': [], 'runtime': 'real-disposable-docker'}
     for index, point in enumerate(CASES):
         folder = BASE / str(index); folder.mkdir(mode=0o755)
         root, control, app, appenv = fixture(folder, images)

@@ -75,7 +75,7 @@ step backend-typecheck-and-tests dock "$WORK/wam" \
   cd packages/backend
   # Resolve the workspace-local pinned compiler/test packages via normal scripts.
   bun run tsc
-  bun run test --maxWorkers=2 src/modules/docker/__tests__/wizard-host-guard.test.ts \
+  bun run test --maxWorkers=2 --reporter=default --reporter=junit --outputFile.junit=/src/qa-backend-results.xml src/modules/docker/__tests__/wizard-host-guard.test.ts \
     src/modules/docker/__tests__/compose-consumption.test.ts src/modules/docker/__tests__/host-policy-lock.test.ts \
     src/modules/apps/__tests__/leaked-env-repair.test.ts src/modules/apps/__tests__/app.helpers.test.ts \
     src/modules/docker/__tests__/docker.service.test.ts src/modules/docker/__tests__/wizard-storage.test.ts
@@ -117,7 +117,9 @@ if [[ $STEP_RC == 0 && -s $EVIDENCE/backend-image.id ]]; then
   # This only reads the built bundle in a network-less container; no service or host socket.
   step backend-image-bundle timeout 60 docker run --rm --network=none \
     --label "wizard.privsep.security=$RUN_ID" --entrypoint sh "$IMAGE_ID" -ec \
-    'test -s /app/main.mjs; sha256sum /app/main.mjs; grep -q wizard-host-approvals /app/main.mjs'
+    'test -s /app/main.mjs; sha256sum /app/main.mjs; grep -q wizard-host-approvals /app/main.mjs;
+     d=$(mktemp -d); cd "$d"; exec 3<>authority; flock -x 3;
+     if flock -n -x authority true; then exit 1; fi; test ! -e 3'
   step backend-image-retain bash -o pipefail -c 'docker image save "$1" | gzip -1 > "$2"' \
     _ "$IMAGE_ID" "$EVIDENCE/backend-image.tar.gz"
 else
@@ -130,10 +132,11 @@ step wam-python-focused dock "$WORK/wam" ghcr.io/astral-sh/uv:python3.12-bookwor
   mkdir -m 700 -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
   python -c "import os, stat; assert stat.S_IMODE(os.stat(\"/case\").st_mode) == 0o700; assert stat.S_IMODE(os.stat(os.environ[\"TMPDIR\"]).st_mode) == 0o700"
   uv run --no-project --with pytest --with pyyaml python -m pytest -q -p no:anyio \
-    tests/test_credential_rotation.py tests/test_migration_authority.py \
-    tests/test_privilege_migration.py::test_inventory_rejects_root_before_authority_or_state_changes \
-    tests/test_privilege_migration.py::test_inventory_is_metadata_only_and_captures_original_authority \
-    tests/test_privilege_migration.py::test_inventory_policy_refusal_prevents_quiesce_or_snapshot'
+    --junitxml=/src/qa-python-results.xml \
+    tests/test_final_host_gate.py tests/test_privsep_review_repair.py tests/test_owner_confirm.py tests/test_privilege_migration.py \
+    tests/test_credential_rotation.py tests/test_migration_paths.py tests/test_migration_authority.py \
+    tests/test_privsep_slice5.py tests/test_privsep_host_policy.py tests/test_fresh_privilege_audit.py \
+    tests/test_network.py tests/test_store_install.py tests/test_portable_paths.py'
 
 if [[ -f $PRIVATE/prior-evidence.json ]]; then
   # The private wrapper hash-binds prior manifests, exact unchanged heads, passed
@@ -152,6 +155,11 @@ step wux-privileges dock "$WORK/wux" node:22-bookworm sh -ec '
 fi
 
 # Hostile proof pages stay in the private staging area, never in the public repository.
+if [[ -f $PRIVATE/previous-browser-receipt.json ]]; then
+  # Private wrapper verifies the prior artifacts and every Python/view dependency.
+  step approval-browser cp "$PRIVATE/previous-browser.log" "$EVIDENCE/approval-browser-inherited.log"
+  cp "$PRIVATE/previous-browser-receipt.json" "$EVIDENCE/receipt.json"
+else
 step approval-browser timeout --signal=TERM --kill-after=30 1200 docker run --rm --add-host box.test:127.0.0.1 \
   --label "wizard.privsep.security=$RUN_ID" --memory=3g --cpus=2 --shm-size=1g \
   -v "$WAM":/src:ro -v "$PRIVATE":/private:ro -v "$EVIDENCE":/evidence \
@@ -163,6 +171,12 @@ step approval-browser timeout --signal=TERM --kill-after=30 1200 docker run --rm
     python -m virtualenv /case/venv
     /case/venv/bin/pip install --disable-pip-version-check playwright==1.56.0 pyyaml
     /case/venv/bin/python /private/approval_harness.py /src /evidence /private/hostile.html'
+fi
+# Copy machine-readable exact executed-case accounting out of mutable work copies.
+for pair in qa-backend-results.xml:backend-results.xml qa-python-results.xml:wam-python-results.xml; do
+  src=${pair%%:*}; dest=${pair#*:}
+  if [[ -f $WORK/wam/$src ]]; then cp "$WORK/wam/$src" "$EVIDENCE/$dest"; fi
+done
 
 step container-cleanup cleanup
 printf 'overall: %s\n' "$([[ $fail == 0 ]] && printf PASS || printf FAIL)" | tee -a "$EVIDENCE/summary.txt"
