@@ -1659,6 +1659,18 @@ html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam
 .wam .wam-cl-sec-acts .wam-btn {
   min-height: 44px;
 }
+/* Restore defaults: under Linked apps in one column; in the end row (with Connect two apps, See map) in two. */
+.wam .wam-cl-acts .wam-cl-restore {
+  display: none;
+}
+@container (min-width: 880px) {
+  .wam-cl.is-two .is-linked > .wam-cl-sec-acts {
+    display: none;
+  }
+  .wam .wam-cl.is-two .wam-cl-acts .wam-cl-restore {
+    display: inline-block;
+  }
+}
 /* An agent's page: three groups, each with Turn all on, one switch per item. */
 .wam-cm-uses-h {
   display: flex;

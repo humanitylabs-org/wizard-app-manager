@@ -803,6 +803,11 @@ export async function renderConnections(el, ctx = {}) {
         <p><b>Your agent</b> uses apps through Wizard itself, not the app networks: keeping apps apart never cuts it off.</p>
         ${d.gateway?.detail ? `<p><b>Your agent</b> reaches apps through the Wizard gateway: ${esc(d.gateway.detail)}.</p>` : ''}
         ${m.mode === 'open' ? `<p><b>Mode</b> Open: ${meshCount} apps share one app network (the mesh)${linked.length ? `; ${linked.map((a) => nm(a.id)).join(', ')} use${linked.length === 1 ? 's' : ''} direct links instead` : ''}.</p>` : m.mode === 'declared' ? '<p><b>Mode</b> Declared: one network per connection an app declares or you approve.</p>' : '<p><b>Mode</b> Isolation is off: apps share Runtipi’s network.</p>'}
+        ${
+          (m.idleCuts || []).length
+            ? `<p><b>Cuts kept for later</b> ${esc(list(m.idleCuts.map((x) => x.text)))}. No app is designed to link ${m.idleCuts.length === 1 ? 'these two' : 'them'}, so while apps are kept apart ${m.idleCuts.length === 1 ? 'this cut changes' : 'these cuts change'} nothing; ${m.idleCuts.length === 1 ? 'it applies' : 'they apply'} if you turn Keep apps apart off. Connect two apps links them again.</p>`
+            : ''
+        }
         ${odd.map((a) => `<p class="wam-cm-warn"><b>${esc(a.name || a.id)}</b> ${esc(a.why || STATE_WORDS[a.state] || a.state || '')}${(a.host_access || []).length ? ` Host access: ${esc(a.host_access.join(', '))}.` : ''}</p>`).join('')}
         ${unenforced.map((t) => `<p class="wam-cm-warn">${esc(t)}</p>`).join('')}
         ${d.apps.flatMap((a) => (a.drift || []).map((x) => `<p class="wam-cm-warn"><b>${esc(a.name || a.id)}</b> ${esc(x)}</p>`)).join('')}
@@ -818,6 +823,10 @@ export async function renderConnections(el, ctx = {}) {
     // one tap away (See map).
     const chev = '<i class="wam-cm-go" aria-hidden="true"></i>';
     const lay = listLayout(m, access);
+    const restoreBtn =
+      lay.restore && el._wamConn?.owner_state
+        ? `<button type="button" class="wam-btn" data-cm-restore aria-haspopup="dialog"${canAct ? '' : ' disabled'}>Restore defaults</button>`
+        : '';
     const sec = (s, body) =>
       `<section class="wam-cl-sec is-${s.key}" aria-label="${esc(s.title)}"><h3>${esc(s.title)}${s.count == null ? '' : ` <span>${s.count}</span>`}</h3><div class="wam-cl-card">${body}</div></section>`;
     const sectionHtml = (s) => {
@@ -844,7 +853,7 @@ export async function renderConnections(el, ctx = {}) {
           r.links
             .map(
               (l) =>
-                `<span class="wam-cl-link${l.on ? '' : ' is-off'}">${esc(l.name)}${l.added || !l.on ? `<small>${esc(linkTag(l).trim())}</small>` : ''}</span>`,
+                `<span class="wam-cl-link${l.on ? '' : ' is-off'}">${esc(l.name)}${!l.on ? `<small>${esc(linkTag(l).trim())}</small>` : ''}</span>`,
             )
             .join('<span class="wam-cl-sep">, </span>');
         const turnOn = (r) => {
@@ -861,11 +870,9 @@ export async function renderConnections(el, ctx = {}) {
               )
               .join('')
           : `<p class="wam-cl-empty">${esc(s.empty)}</p>`;
-        return `${sec(s, body).replace(/<\/section>$/, '')}${
-          lay.restore && el._wamConn?.owner_state
-            ? `<div class="wam-cl-sec-acts"><button type="button" class="wam-btn" data-cm-restore aria-haspopup="dialog"${canAct ? '' : ' disabled'}>Restore defaults</button></div>`
-            : ''
-        }</section>`;
+        // One column: Restore defaults sits under the links it restores; a pane wide enough for two columns shows
+        // the copy in the end row instead (CSS), so the page's last row isn't pushed below a short window.
+        return `${sec(s, body).replace(/<\/section>$/, '')}${restoreBtn ? `<div class="wam-cl-sec-acts">${restoreBtn}</div>` : ''}</section>`;
       }
       return sec(
         s,
@@ -885,7 +892,7 @@ export async function renderConnections(el, ctx = {}) {
         ${lay.sections.map(sectionHtml).join('')}
         <div class="wam-cl-end">
           <p class="wam-cl-foot">${esc(lay.footer)}</p>
-          <div class="wam-cl-acts">${
+          <div class="wam-cl-acts">${restoreBtn ? restoreBtn.replace('class="wam-btn"', 'class="wam-btn wam-cl-restore"') : ''}${
             lay.pick
               ? `<button type="button" class="wam-btn" data-cm-choose aria-haspopup="dialog"${canAct ? '' : ' disabled'}>${esc(lay.pick.label)}</button>`
               : ''
@@ -1099,7 +1106,7 @@ export async function renderConnections(el, ctx = {}) {
       const runs = [row.harness && `Runs on ${row.harness}`, row.model && `${row.model}${row.provider ? ` (${row.provider})` : ''}`]
         .filter(Boolean)
         .join(' · ');
-      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: row.main ? 'wizard' : row.id, name: row.title })}</span><h2 id="wamCmTitle">${esc(row.title)}</h2></div>
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: row.main ? 'wizard' : row.id, name: row.title })}</span><h2 id="wamCmTitle">${esc(`${row.title} · what it can use`)}</h2></div>
         ${runs ? `<p class="wam-cm-runs">${esc(runs)}</p>` : where('agent')}
         <p class="wam-cm-says">${esc(row.line)}</p>
         <p class="wam-cm-sh-note">${esc(row.live ? agentNote(row) : 'What it can use comes from the Agent Service, which can’t be reached from here right now.')}</p>
@@ -1126,7 +1133,7 @@ export async function renderConnections(el, ctx = {}) {
             : l.pair
               ? `data-cm-recut="${esc(l.pair)}"`
               : `data-cm-regrant="${esc(id)}"`;
-          const why = [...new Set([l.on ? '' : 'Off', l.added ? 'added by you' : '', l.why].filter(Boolean))].join(' · ');
+          const why = [...new Set([l.on ? '' : 'Off', l.added ? 'connected with your OK' : '', l.why].filter(Boolean))].join(' · ');
           return `<div class="wam-cm-srow${l.on ? '' : ' is-off'}">${cmGlyph({ id: l.id, name: l.name })}<span class="wam-cm-tx"><b>${esc(l.name)}</b><small>${esc(why)}</small></span><button type="button" class="wam-btn${l.on ? '' : ' primary'}" ${at}${dis(key)}>${l.on ? 'Disconnect' : 'Turn on'}</button></div>`;
         })
         .join('');
@@ -1275,7 +1282,14 @@ export async function renderConnections(el, ctx = {}) {
     ensureSheet();
     paintSheet();
     sheetOpen(dlg);
-    dlg.scrollTop = 0;
+    // A sheet opens at its top, its title and intro in view, whatever the last one scrolled to (or focus scrolled to).
+    const top = () => {
+      dlg.scrollTop = 0;
+      const sh = dlg.querySelector('.wam-cm-sh');
+      if (sh) sh.scrollTop = 0;
+    };
+    top();
+    requestAnimationFrame(top);
   };
 
   // ---- data and changes ----

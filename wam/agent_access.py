@@ -207,6 +207,40 @@ def resolve(home: Path | None, agent: str) -> str:
     return agent
 
 
+NOUNS = {"app": ("app", "apps"), "agent-app": ("agent app", "agent apps"), "connector": ("connector", "connectors")}
+
+
+def _groups(c) -> dict[str, str] | None:
+    """Each installed app's group, as Connections shows it (wam/kinds.py): app | agent-app | connector | agent. None
+    when the apps can't be read (the line then counts without groups)."""
+    try:
+        from . import kinds, network
+        p, _ = network.build(c)
+        box, core = kinds.box_kinds(getattr(c, "home", None)), set(p["gateway"]["core"])
+        return {a["id"]: kinds.kind_of(a.get("wizard"), a["id"] in core, box.get(a["id"])) for a in p["apps"]}
+    except Exception:   # noqa: BLE001 - a read-only listing still prints, without groups
+        return None
+
+
+def can_use_line(agent: dict, groups: dict[str, str] | None) -> str:
+    """What one agent may use, counted like Connections: only what the Agent Service can give an agent (`known`),
+    by group, "can use 15 apps, 5 agent apps, 11 connectors", then "; off: cinequeue" for what the owner turned
+    off. An app in the agent's own list that the Agent Service no longer offers (removed, or not an app) isn't counted."""
+    known = [k for k in agent.get("known") or [] if groups is None or groups.get(k, "agent") != "agent"]
+    on = set(agent.get("on") or [])
+    off = [k for k in known if k not in on]
+    if not known:
+        return "nothing to use yet"
+    if groups is None:
+        words = f"can use {len(known) - len(off)} of {len(known)} apps"
+    else:
+        words = "can use " + ", ".join(
+            f"{n} {NOUNS[g][n != 1]}" for g in NOUNS
+            if any(groups.get(k) == g for k in known)
+            for n in [sum(1 for k in known if groups.get(k) == g and k in on)])
+    return words + (f"; off: {', '.join(off)}" if off else "")
+
+
 def main(argv: list[str]) -> int:
     """wam agents [list] | wam agents access <agent> <app> on|off"""
     import argparse
@@ -228,11 +262,10 @@ def main(argv: list[str]) -> int:
             me = next((x for x in got["agents"] if x["id"] == agent), None)
             print(json.dumps({"agent": agent, "app": a.app, "on": bool(me and a.app in me["on"])}, indent=2))
             return 0
+        groups = _groups(Config())
         for x in instances(home)["agents"]:
-            off = [k for k in x["known"] if k not in x["on"]]
             model = f" ({x['model']})" if x["model"] else ""
-            print(f"{x['name']} · {x['harness']}{model}  [{x['id']}]  can use {len(x['on'])} of {len(x['known'])}"
-                  + (f"; off: {', '.join(off)}" if off else ""))
+            print(f"{x['name']} · {x['harness']}{model}  [{x['id']}]  {can_use_line(x, groups)}")
         return 0
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)

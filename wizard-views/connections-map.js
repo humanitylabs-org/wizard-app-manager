@@ -99,9 +99,15 @@ export function mapModel(d) {
   const offRows = new Map(); // Strict mode: the rows behind each pair the owner cut (Linked apps shows them as off)
   const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
   const groups = []; // connections to a slot several apps provide: cut as one
+  // Strict mode: a cut the owner made on a pair no app is designed to link (no uses:, no request: cut in Open mode, or
+  // a link he made and then turned off, which the App Manager records the same way) changes nothing while apps are
+  // kept apart. It is kept (Open mode honours it
+  // again) but it is not a link: not in Linked apps, not on the map, not a Reconnect. Details says it once.
+  const idle = (r) => mode === 'declared' && r.status === 'disconnected' && r.origin === 'owner';
+  const idleCuts = mode === 'declared' ? controls.filter((r) => idle(r) && ids.has(r.from)) : [];
   if (mode === 'declared')
     for (const r of controls)
-      if (['connected', 'disconnected'].includes(r.status) && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
+      if (!idle(r) && ['connected', 'disconnected'].includes(r.status) && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
         groups.push({
           from: r.from,
           to: r.to,
@@ -110,7 +116,7 @@ export function mapModel(d) {
           names: list(r.providers.filter((x) => ids.has(x)).map(nm)),
         });
   if (mode === 'declared') {
-    for (const r of controls)
+    for (const r of controls.filter((x) => !idle(x)))
       for (const p of (r.providers || []).length ? r.providers : [slotName(r.to)]) {
         if (!ids.has(r.from) || !ids.has(p) || p === r.from) continue;
         if (r.status === 'connected') {
@@ -287,6 +293,11 @@ export function mapModel(d) {
     links: [...links.values()],
     linkRows: Object.fromEntries([...linkRows].map(([k, v]) => [k, v])),
     offRows: Object.fromEntries([...offRows].map(([k, v]) => [k, v])),
+    idleCuts: idleCuts.map((r) => ({
+      from: r.from,
+      to: r.to,
+      text: `${nm(r.from)} ✕ ${list(((r.providers || []).length ? r.providers : [slotName(r.to)]).map(nm))}`,
+    })),
     comp,
     hint,
     single: [...single],
@@ -331,7 +342,7 @@ export function linkInfo(model, a, b) {
   const why = rows.map((r) => {
     const to = (r.providers || []).length > 1 ? list(r.providers.map(nm)) : nm((r.providers || [])[0] || slotName(r.to));
     return r.origin === 'owner'
-      ? 'You connected them.'
+      ? 'They were connected with your OK.'
       : r.origin === 'requested'
         ? `${nm(r.from)} asked to talk to ${to}, and it was allowed.`
         : `${nm(r.from)} says it needs ${to} to work.`;
@@ -486,19 +497,23 @@ export function linkReason(model, row, provider) {
   const p = model.apps.find((x) => x.id === provider);
   const job = [slot, ...(p?.provides || [])].find((s) => s && JOB_WORDS[s]);
   if (job) return JOB_WORDS[job];
-  return row?.origin === 'owner' ? 'added by you' : row?.origin === 'requested' ? 'allowed by you' : `declared by ${nm(row?.from)}`;
+  return row?.origin === 'owner' ? 'connected with your OK' : row?.origin === 'requested' ? 'allowed by you' : `declared by ${nm(row?.from)}`;
 }
 
-/** A link's words after its name: "(added by you)", "(off)", "(added by you, off)". */
+/**
+ * A link's words after its name: "(off)" for one he cut, else nothing. Who made a link (an app's declaration, its
+ * request, his OK) is said on the row's page, not in the list: a link a helper connected for him with his OK isn't
+ * one he "added", and a plain link reads the same either way.
+ */
 export const linkTag = (l) => {
-  const parts = [l.added ? 'added by you' : '', l.on === false ? 'off' : ''].filter(Boolean);
+  const parts = [l.on === false ? 'off' : ''].filter(Boolean);
   return parts.length ? ` (${parts.join(', ')})` : '';
 };
 
 /**
  * Linked apps: one row per app that uses others, by name, with every link it has: the ones that work and, in the
  * same row, the ones the owner cut (off, with Turn on), "Money → Monarch, SimpleFIN", "Messenger → Money (off)". A
- * link the owner added himself says "added by you". Each link: { id, name, why, on, added, pair: "a|b" } or, for a
+ * link made with his OK rather than declared says so on its page. Each link: { id, name, why, on, added, pair: "a|b" } or, for a
  * slot several apps provide, { group: { from, to } } (cut and turned on as one). `turnOn`: the row's one off link,
  * for its inline Turn on. Open mode (everything talks to everything) lists only the pairs he cut.
  */

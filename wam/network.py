@@ -1581,7 +1581,14 @@ def describe(rep: dict) -> str:
         lines += ["", "Waiting for your approval (wam grants approve|deny <app> <to>):"]
         lines += [f"  {r['from']} -> {r['to']}" for r in waiting]
     off = [r for r in rep.get("controls") or [] if r["status"] == "disconnected"]
+    # Declared mode: a cut on a pair no app declares (made while every app could talk) changes nothing; it is kept
+    # for Open mode, and Connections leaves it out of the links (Details says it).
+    idle = [r for r in off if rep.get("mode") == "declared" and r.get("origin") == "owner"]
+    off = [r for r in off if r not in idle]
     if off:
         lines += ["", "Disconnected by you (wam grants grant <app> <to> reconnects):"]
         lines += [f"  {r['from']} -> {r['to']}" for r in off]
+    if idle:
+        lines += ["", "Cut by you while all apps could talk (no effect while apps are kept apart; kept for open mode):"]
+        lines += [f"  {r['from']} -x {r['to']}" for r in idle]
     return "\n".join(lines)
