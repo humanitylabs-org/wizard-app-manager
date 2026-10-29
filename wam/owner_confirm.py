@@ -106,25 +106,10 @@ def _serve_status():
     return links.serve_status()
 
 
-def listener_owned(home, proc=Path('/proc/net/tcp')) -> bool:
-    """A route string is not listener ownership. Require exactly one IPv4
-    loopback LISTEN socket owned by the protected manager account, not the agent.
-    Read the kernel table, never an HTTP response/header that another listener
-    can forge. Lack of proc visibility or ambiguity is a refusal.
-    """
-    try:
-        expected = Path(home).stat().st_uid
-        rows = []
-        for line in Path(proc).read_text().splitlines()[1:]:
-            fields = line.split()
-            if len(fields) < 10 or fields[3] != '0A':
-                continue
-            addr, port = fields[1].split(':')
-            if int(port, 16) == PORT:
-                rows.append((addr, int(fields[7])))
-        return rows == [('0100007F', expected)]
-    except (OSError, ValueError, IndexError):
-        return False
+def listener_owned(home) -> bool:
+    """Custody is structural: the system manager retains the listener across outages."""
+    from . import approval_custody
+    return approval_custody.owned(home)
 
 
 def configured(home) -> str | None:
@@ -132,7 +117,7 @@ def configured(home) -> str | None:
         doc = json.loads((Path(home) / CONFIG).read_text())
     except (OSError, ValueError):
         return None
-    origin = doc.get('origin') if isinstance(doc, dict) else None
+    origin = doc.get('origin') if isinstance(doc, dict) and doc.get('custody') == 1 else None
     if not isinstance(origin, str) or not re.fullmatch(r'https://[a-z0-9.-]+:\d{2,5}', origin):
         return None
     return origin
@@ -154,31 +139,98 @@ def verified_origin(home, status=None) -> str | None:
     return origin
 
 
-def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> dict:
-    """Publish the dedicated approval site on a port no shell or app uses, then record its origin."""
+def _save(home, doc):
+    path = Path(home) / CONFIG
+    tmp = path.with_name(path.name + '.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(json.dumps(doc) + '\n')
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _run(argv):
     import subprocess
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=30))
+    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+
+
+def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> dict:
+    from .approval_custody import publication_lock
+    with publication_lock(home):
+        return _enable(home, host, https_port, run)
+
+
+def _enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> dict:
+    """Publish only after persistent PID 1 custody. Existing unattested sites refuse.
+
+    Removing a route cannot evict an already-open same-origin hostile page.
+    Recovery therefore requires a NEW HTTPS port, not just a worker restart.
+    """
+    run = run or _run
+    if not re.fullmatch(r'[a-z0-9.-]+', host) or not 1024 <= https_port <= 65535:
+        raise ValueError('invalid dedicated approval host or port')
     if not listener_owned(home):
-        raise ValueError('approval listener is absent or not manager-owned; start the protected manager service before publishing its route')
+        raise ValueError('approval listener is absent or not manager-owned by secure system socket custody; ask the administrator for host preparation')
     authority = f'{host}:{https_port}'
+    origin = f'https://{authority}'
+    path = Path(home) / CONFIG
+    doc = json.loads(path.read_text()) if path.exists() else {}
+    if doc.get('origin') and doc.get('origin') != origin:
+        raise ValueError('disable the old approval origin before choosing a new port')
+    if doc.get('origin') and doc.get('custody') != 1:
+        raise ValueError('legacy approval origin is not trusted; disable it and choose a NEW HTTPS port')
+    if origin in doc.get('retired', []):
+        raise ValueError('this approval origin is retired; choose a NEW HTTPS port')
     web = _serve_status().get('Web', {})
-    if authority in web and verified_origin_for(web, authority) is None:
-        raise ValueError(f'port {https_port} already serves something else; choose another with --port')
-    if authority not in web:
+    if authority in web:
+        if doc.get('origin') != origin or doc.get('custody') != 1 or not verified_origin_for(web, authority):
+            raise ValueError('existing approval site has no continuous custody proof; administrator must remove it and choose a NEW HTTPS port')
+    else:
+        # Persist provenance before publishing; a crash is safe to retry because
+        # the system socket was already continuously held.
+        _save(home, {'origin': origin, 'custody': 1, 'retired': doc.get('retired', [])})
         r = run(['tailscale', 'serve', '--bg', f'--https={https_port}', f'http://127.0.0.1:{PORT}'])
         if getattr(r, 'returncode', 1) != 0:
             raise ValueError(((r.stderr or r.stdout) or 'tailscale serve failed').strip()[:300])
-    path = Path(home) / CONFIG
-    tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(json.dumps({'origin': f'https://{authority}'}) + '\n')
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
-    origin = verified_origin(home)
-    if not origin:
-        path.unlink(missing_ok=True)
-        run(['tailscale', 'serve', f'--https={https_port}', 'off'])
-        raise ValueError('the approval site did not read back as the approval listener only')
+    if verified_origin(home) != origin:
+        # Keep custody and recovery metadata on a failed readback.
+        raise ValueError('approval publication did not read back exactly; custody retained, administrator review required')
     return {'origin': origin}
+
+
+def disable(home, run=None) -> dict:
+    from .approval_custody import publication_lock
+    with publication_lock(home):
+        return _disable(home, run)
+
+
+def _disable(home, run=None) -> dict:
+    """Withdraw and acknowledge the persistent route; NEVER release the socket."""
+    run = run or _run
+    path = Path(home) / CONFIG
+    doc = json.loads(path.read_text()) if path.exists() else {}
+    origin = doc.get('origin')
+    if not origin:
+        return {'disabled': True, 'custody_retained': True}
+    if not isinstance(origin, str) or not re.fullmatch(r'https://[a-z0-9.-]+:\d{2,5}', origin):
+        raise ValueError('invalid saved approval origin; administrator review required')
+    authority = origin.removeprefix('https://')
+    port = authority.rsplit(':', 1)[1]
+    r = run(['tailscale', 'serve', f'--https={port}', 'off'])
+    if getattr(r, 'returncode', 1) != 0 or authority in _serve_status().get('Web', {}):
+        raise ValueError('approval route removal is not acknowledged; custody and recovery state retained')
+    _save(home, {'custody': 1, 'retired': sorted(set([*doc.get('retired', []), origin]))})
+    import shutil
+    if (Path(home) / INTENTS).exists():
+        shutil.rmtree(Path(home) / INTENTS)
+    return {'disabled': True, 'custody_retained': True}
 
 
 def verified_origin_for(web, authority):

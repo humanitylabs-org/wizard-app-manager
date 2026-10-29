@@ -168,21 +168,14 @@ def main():
         # publish new links. Operator reassignment above is a separate root step.
         sysenv['WIZARD_PRIVATE_ACCESS'] = 'none'
     run(['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'], cwd=BASE)
-    unit_env = f'Environment=HOME={BASE}\nEnvironment=WIZARD_OS_HOME={state}\nEnvironment=RUNTIPI_ROOT={BASE}/runtipi\n'
-    write(Path('/etc/systemd/system/wizard-app-manager-api.service'), f'''[Unit]
-Description=Wizard App Manager (privilege-separated)
-After=docker.service network-online.target
-Requires=docker.service
-[Service]
-User=wizard-system
-Group=wizard-system
-{unit_env}WorkingDirectory={tree}
-ExecStart=/usr/bin/python3 -m wam serve
-Restart=on-failure
-UMask=0077
-[Install]
-WantedBy=multi-user.target
-''')
+    # Root installs the same persistent socket contract used by fresh boxes.
+    # Worker restarts never release this address. No agent systemd authority.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='wizard-approval-', dir='/root') as staging:
+        module = Path(staging) / 'approval_custody.py'
+        shutil.copyfile(tree / 'wam/approval_custody.py', module)
+        run(['/usr/bin/python3', '-I', tree / 'scripts/install-approval-custody.py',
+             'install', 'wizard-system', state, tree, module], env=env)
     write(Path('/etc/systemd/system/wizard-runtipi.service'), f'''[Unit]
 Description=Wizard Runtipi base
 Requires=docker.service

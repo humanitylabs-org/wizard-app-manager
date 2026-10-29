@@ -2023,7 +2023,7 @@ def _main(argv: list[str] | None = None) -> int:
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
     ao = sub.add_parser("approval-origin", help="set up the separate owner approval address (needed for risk-raising owner actions)")
-    ao.add_argument("action", choices=["enable", "status"])
+    ao.add_argument("action", choices=["enable", "disable", "status"])
     ao.add_argument("--port", type=int, default=8446)
     ha = sub.add_parser("host-approvals", help="record which installed apps the policy accepts for the manager's final Docker gate")
     ha.add_argument("action", choices=["sync"])
@@ -2124,6 +2124,8 @@ def _main(argv: list[str] | None = None) -> int:
             from . import links, owner_confirm
             if args.action == "status":
                 print(json.dumps({"origin": owner_confirm.verified_origin(c.home)}))
+            elif args.action == "disable":
+                print(json.dumps(owner_confirm.disable(c.home)))
             else:
                 print(json.dumps(owner_confirm.enable(c.home, links.tailnet()["host"], args.port)))
         elif args.cmd == "host-approvals":
@@ -2179,6 +2181,11 @@ def _main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
+            from . import approval_custody
+            ApprovalHandler.cfg = c
+            # No generic manager route starts if approval activation is invalid.
+            # PID 1, not this worker, keeps the listening address across restarts.
+            asrv = approval_custody.http_server(ApprovalHandler)
             from . import owner, store_install
             owner.pin_login(c.home, store_install.owner_login())
             from . import recommended
@@ -2187,22 +2194,16 @@ def _main(argv: list[str] | None = None) -> int:
             agent_token = c.home / "agent-token"
             Handler.agent_token = agent_token.read_text().strip() if agent_token.is_file() else ""
             StoreHandler.cfg = c
+            import threading
             try:
-                import threading
                 from . import store_install
                 ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
                 threading.Thread(target=ssrv.serve_forever, daemon=True).start()
                 print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
-            try:
-                from . import owner_confirm
-                ApprovalHandler.cfg = c
-                asrv = ThreadingHTTPServer(("127.0.0.1", owner_confirm.PORT), ApprovalHandler)
-                threading.Thread(target=asrv.serve_forever, daemon=True).start()
-                print(f"owner approvals on 127.0.0.1:{owner_confirm.PORT} (its own tailscale serve origin only)", flush=True)
-            except OSError as e:
-                print(f"note: owner approval listener not started ({e}); risk-raising owner actions stay refused", file=sys.stderr)
+            threading.Thread(target=asrv.serve_forever, daemon=True).start()
+            print("owner approvals on inherited system socket (separate approval origin only)", flush=True)
             start_network_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)

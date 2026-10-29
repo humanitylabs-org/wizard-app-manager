@@ -225,7 +225,7 @@ def test_store_listener_updates_route(tmp_path, monkeypatch):
 def test_installer_enables_the_timer_on_every_install_and_rerun():
     from pathlib import Path
     text = (Path(__file__).resolve().parent.parent / "install.sh").read_text()
-    api = text.index("systemctl --user restart wizard-app-manager-api.service")
+    api = text.index("from wam.approval_custody import restart_worker; restart_worker()")
     assert text.index('"$HOME/.local/bin/wam" updates --ensure-timer') > api
 
 
