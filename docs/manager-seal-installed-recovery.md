@@ -30,8 +30,13 @@ image metadata confirms version 4.4.0, HOME `/var/lib/rabbitmq`, and sbin path
 `/opt/rabbitmq/sbin`. The next admitted run additionally copies the public static
 `rabbitmq-env` from its already-required unstarted metadata donor and verifies
 the same exact `run_escript` CTL-args-to-ERL_FLAGS route before proceeding,
-recording both the actual source hash and release-source reference hash (packaging
-comments need not be byte-identical). No new helper is introduced.
+recording both the actual source hash and release-source reference hash. The
+**entire 7117-byte source must equal the pinned SHA256 above**, including comments.
+One shared recovery validator also requires the exact newline-before-brace
+`run_escript()` function and its full function body: `-boot $CLEAN_BOOT_FILE`
+precedes `$RABBITMQ_CTL_ERL_ARGS`, with both distribution port bounds, the optional
+`-noinput` branch, and the unchanged `ERL_FLAGS` escript callback. No whitespace
+normalization, guessed prefix, or substring-only acceptance is used.
 
 All three Erlang CLI commands now explicitly receive
 `RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4`, the service UID:GID, and a
@@ -50,6 +55,23 @@ reads a cookie value or hash. There is no environment dump. Readiness still
 requires metadata **and real `ping` and `check_running`**. The later real
 `list_queues name consumers` gate still requires positive consumers for all
 three shipped queues; it uses the same CLI budget. No TCP-only fallback exists.
+
+## Exact public-source preflight repair (failed continuation retained)
+
+Continuation `5269821a0714087b8f9105c93858cc73368af433` failed before build or
+resource services: its inline check guessed `run_escript() {` and a
+`$RABBITMQ_CTL_ERL_ARGS $default_erl_flags` prefix, neither of which exists in the
+actual retained public bytes. Independent AST execution reproduces that rejection;
+the original pinned-image bytes are identical to the retained upstream file.
+The shared validator now accepts those exact bytes. Four added offline tests
+carry the complete compressed public source inside the existing QA test file,
+execute the original rejection and corrected installed-path AST, and reject
+changed/missing CTL routing, callback changes, function/boot/noinput changes,
+duplicate definitions and unrelated full-file drift. Body/definition negatives
+are independently exercised with a test-only repin; production never repins.
+`QA_DELTA` remains exactly the same four paths, preserving the full non-QA closure.
+No source/runtime success here proves broker scheduler readiness or the original
+exit-153 cause. Failed receipts, saved backend and earlier evidence stay immutable.
 
 ## Exact cleanup classification and supplemental absence proof
 

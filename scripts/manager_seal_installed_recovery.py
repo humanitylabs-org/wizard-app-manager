@@ -24,10 +24,43 @@ QA_DELTA = frozenset({
 CLI_ERL_ARGS = '+S 2:2 +SDcpu 1 +SDio 1 +A 4'
 CLI_ENV = 'RABBITMQ_CTL_ERL_ARGS='+CLI_ERL_ARGS
 CLI_OUTPUT_CAP = 8192  # each stream, not an unbounded communicate() buffer
+RABBIT_ENV_SHA = '4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af'
+# Exact function body from the retained pinned-image public source, NOT a
+# whitespace-tolerant shell guess. Full-file identity is checked independently.
+RABBIT_ESCRIPT_BODY = b'''    escript="${1:?escript must be defined}"
+    shift
+
+    maybe_noinput="${1:?maybe_noinput must be defined}"
+    shift
+
+    _rmq_env_set_erl_libs
+
+    tmp_erl_flags="-boot $CLEAN_BOOT_FILE $RABBITMQ_CTL_ERL_ARGS -kernel inet_dist_listen_min $RABBITMQ_CTL_DIST_PORT_MIN -kernel inet_dist_listen_max $RABBITMQ_CTL_DIST_PORT_MAX"
+
+    if [ "$maybe_noinput" = 'noinput' ]
+    then
+        tmp_erl_flags="-noinput $tmp_erl_flags"
+    fi
+
+    ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"
+
+    unset tmp_erl_flags'''
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def validate_rabbit_cli_source(raw):
+    """Pinned public bytes and the exact CTL -> escript callback, offline only."""
+    assert isinstance(raw, bytes) and digest(raw) == RABBIT_ENV_SHA, 'Rabbit public source hash drift'
+    marker = b'\nrun_escript()\n{\n'
+    assert raw.count(marker) == 1, 'Rabbit run_escript definition drift'
+    body, close, _ = raw.split(marker, 1)[1].partition(b'\n}\n')
+    assert close and body == RABBIT_ESCRIPT_BODY, 'Rabbit CTL/escript route drift'
+    return {'sha256': digest(raw), 'release_source_sha256': RABBIT_ENV_SHA,
+            'release': 'v4.4.0', 'ctl_args_route_verified': True,
+            'full_source_pin_verified': True, 'run_escript_body_sha256': digest(body)}
 
 
 def exact_missing(result, kind, ident):

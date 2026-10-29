@@ -535,15 +535,10 @@ class Rig:
                 # Public pinned image PATH/HOME identifies this sbin directory.
                 # No new helper: copy static public source from existing donor.
                 copy_owned_file(c, '/opt/rabbitmq/sbin/rabbitmq-env', self.out/'rabbitmq-env', 65536)
-                env_source = (self.out/'rabbitmq-env').read_text()
-                assert env_source.count('run_escript() {') == 1
-                route = env_source.split('run_escript() {', 1)[1].split('\n}', 1)[0]
-                assert 'tmp_erl_flags="$RABBITMQ_CTL_ERL_ARGS $default_erl_flags ' in route
-                assert 'ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"' in route
+                validated = recovery.validate_rabbit_cli_source((self.out/'rabbitmq-env').read_bytes())
                 self.receipt['rabbit_cli_source'] = {'public_image': RABBIT,
-                    'path': '/opt/rabbitmq/sbin/rabbitmq-env', 'sha256': sha(self.out/'rabbitmq-env'),
-                    'release_source_sha256': '4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af',
-                    'release': 'v4.4.0', 'ctl_args_route_verified': True, 'original_exit153_cause_proven': False}
+                    'path': '/opt/rabbitmq/sbin/rabbitmq-env', **validated,
+                    'original_exit153_cause_proven': False}
             self.cmd('remove-metadata-donor', ['docker', 'rm', c]); self.ids.remove(c)
         self.cmd('remove-tool-donor', ['docker', 'rm', donor]); self.ids.remove(donor)
         volumes = {}

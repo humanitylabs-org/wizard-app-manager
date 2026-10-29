@@ -1,5 +1,6 @@
 """Fast offline runner/payload tests. No Docker, Nest or queue acceptance claim."""
 import ast
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -12,6 +13,7 @@ import tarfile
 import tempfile
 import types
 import unittest
+import zlib
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -150,6 +152,116 @@ class ArtifactCopy(unittest.TestCase):
                 with patch.object(rig.subprocess, 'Popen', return_value=FakeProcess(payload)):
                     with self.assertRaises(AssertionError): rig.copy_owned_file('owned', '/work/file', target, cap)
                 self.assertFalse(target.exists())
+
+
+# Full, unmodified public rabbitmq-env copied from the retained pinned image:
+# /srv/work/manager-seal-installed-5269821a0714/installed-results/rabbitmq-env.
+# The identical upstream v4.4.0 file was independently retained before the run.
+# MPL-2.0; Copyright (c) 2007-2026 Broadcom. See the decoded source header.
+# Compression is storage only; tests check all 7117 original bytes, not a facsimile.
+RABBIT_PUBLIC_ENV = zlib.decompress(base64.b85decode(
+    'c-pO5{c_tz4*#D|fzom)pCi$78>i!((vvJX){JcFB)Ls4?a=&KS$m;KbxB(JsAu{hy_f5g9I&MLA(3+KrkYGl?gGCBu)r<=9(<!)'
+    '+|z>vG?;R505Dtd0H%H<Yz7y;!{E{vOTe)pvi{BN5JDfq1%r@@WdQzMzFhmCx$BxRjx3kk5@*P5<^}9IJT&37dD4Wz989qN)u)tc'
+    'JcP9wfaizc@E{c2ibCeVnuiM{;DN-Ma~DD0`4QNr2fh`W9RGL>%n%k~xC+j7eHky`^u@i7s5-8vH<4QcT;P&|-!DR_+edJEa`Liq'
+    'dUAROUE!OK?Jt|qab1`YMF0~PF!8{gCfXs^5&r!Bj}7UczyAjWn==uR6*i+V@a!g-o}>E$cqlCuaEF_MvmiznF}m2GlWYo~!+TI`'
+    'lTNogm|g$V=->Qk3`d<_zo$YQTJXy&GLxqO{sapn;lar(WzG}M#^*fq^kOm?&!$FiFi{Jf2k;YvfQ4|(V8H}FbI;!VkK2q&1|iH*'
+    'bX73Zak=*a8gmsa=K5>!7;{M31j<6QTP`E*=O%ZXaySN0D0+;H#&Lhvay8mV2yDSuAvqB);kuu|^=*^3y3XfY6bTIX9{dkTFc)ZF'
+    '6FmgM5~AlZ2mT``l1SY5Hcn+DJ`+b0Cbo$&?#!;*YVAaogX;x46q#><=F3r_)!-F4v8LO)pqM%1#L=)?`GRynKg2cBVMe_X*e*ja'
+    'l>$bqW{P!rI~>Mx+~sld>%-}5-C+;97rE|T%9!}b4=Q}q2KA)4wefG#-+|8K-sMOUjeT4R@|%Q7g>%sK=HE1U4e9bbOKh7m<<8MC'
+    'H(=E)cMcbxxnx^5ztc;x(8nua^PsiVs>&9lgXcr)ns~0s=dw^~r*aidMnPtX<*x?w9t_W4*N>DhF*3R>Xvc@|8i&iqp#z6k=ZDwl'
+    'hf_^?%yFy)_rjDX9S)Z(G+s;H88uwy;mntV{NQ6u7cBTZlur_M4%%S=^54&%hUTp2<vdbxBo9LGEfrd?pPg=@6@@j>Z&+K?ic{Qk'
+    'm=~gC_4>BBa15udqoY_xIz3A8Fp6>cf2hfxq`Q<Tq8`@1Y%TQ|kXkBepyd_GAakmun;dzx%_YQTv++7*Gl^mqQ^oydLhNp@To|<X'
+    'IO&UDv{>~5+u9UfH6P7#?>@&#6m(*)%y3aZf|!p^JQrxFU2Daz9p48I^3m|_Az^1z&z`|*?I>|*#eDPqeDy4JCDoAxVfMm@S{<>D'
+    '^jh6A16H6>c4AjDB-2U~tEgfcl~<$dK6zSRXQcm97PgOivx#yj{Um59lJlg5^{BJ>zEBlP1E#p24x5{i8wN@fs&IvASv*|++DK`Y'
+    '_yRQ_SbV=kLZAb|gXu<$E}iTO9uIoP<zUz+x3|$Cm<!1KhFr<|ggAIJa1RG#xnxFEyBOVE%9~$u`VZ(l++hLnn)jIMJcl)dWrSBW'
+    'zxRBBIhvgEFik>tks?KyR5TTm&@py|X{);e#uj;lV%feo=l79_uh0j~Sm=5W;%ir`n-DNSPvye*mZUu8WD4F(A1P5$KV~Zww4oan'
+    'J*9jS<th>@nKM?x<=nF{WsI*n(|$YMJd{-uHTQu1_8WvEV)CdzfNr#0L4P)dQ06x-Uvio0zBs{OF5l`;hQ@X0t%0P*tkWI#r$w>w'
+    'dc~{&cFEc?QoLF(b}q^z(9iIsa%5_Dj#HbI_8ybq$ZBGGsWai4-o5UJE8TK^OJAA+<|Q~B20B|tt{M75x0op@4O+jsC=q!)n#}e~'
+    'D=FG%FJ63mCIv+RF9GO}uX}Pn+0-0oI<-UJ>GdZ4>9m3+nN^ft|FUyCoM9kd^?SF&{>11GZhFS--59;ZvD6K2$vi>hMwW8c_TZ+N'
+    'xl^DDd>=`>T&hf`-e5YL47#_o!RW^5-d<iJ-E{D;e!F%0J^4c-Mip5iLM2M3WF^9mrcbQ(Bwc%txS8VQPdB&MU7Q(R8so|60{0rj'
+    'pmp-y_b*<aZKSFoOJu16$<(gm-_d&iLQj#kt0k>cxicGGCsCj6a|ubQsxfnwnlaxKD(1oWk+jRDDh<oq={w`6&R}NDt}t}3M#Em)'
+    'qbzJUKzAv3L$w60G-yk(_Jwcd(qBj1eo7B{d0zO-CEl2_oEKSQG3`%&L^e9(I+HhO+vAmu$t1U_k#anSC;btQL)g2ca2$kIo~Gpd'
+    'f#c7PWx4Ql%p;n$u0Y#WJ*IZ-RrEh{aQ|x=q;(sOhRoOUDF@~zLAHZ`$5(?A&ewEFZ_H15Fg24f;Zn-eli4uco1N?=H%G}yp0pB-'
+    '>?-d*<9cvYhFBm-V2ey&gWY-i1a{}`E;cg#RdQ?JzBqe%s{M7M*6VxZ!P2sILZxNtdRrm3z1nsJ*1l|wJnloC&N?W=9^8x|L(azb'
+    'Vq?BDp!n+ypAx==GFz==a__Piqh3F4aFr~U&Sy)cL*>AOH#eh6AJ30BgPYklYGJaiQi>hBp?vzkk&Me>=M5gGUEu1b|4A1>Mb(pF'
+    '{VcQG_xtFmtyU}JSJEuGSigg|TkuhpXS&pW`;=6BvUtiBdw5KpYl%Gc+apm%q)`t#E;I=h%gTI()1=yrN{F~HbiiV^86{<>AGtVy'
+    '5`EZ~q^WJS!*Z2kl}t%Bu<Hul(Fj9!M92B|_T{F~vvO~bn<KuDMJyK3NzLmp4|2zPT8rlTCujtNN*tG4LE1*ie1XDYIOtMT$(cec'
+    'BUgP8O};FqZh^jXqkHZJ=NU>#3*+lB^6d=~c}CKQNF`3*sbkSP{~>vcYkZ4s3c^D7Pd+ZqPZl#gpL?rl!(1498lu#a@f3BxXk_l1'
+    '_d#22SUz5)wTofDa}#f+boBD86dE6x@R*BkhPd=82Z6Ch^^7I@?7ow}n$i3S`|g-r-%G6(tUxZRCC^%!Cv0oFv0kk(k#3^=OPbON'
+    'M0;K&!{s-9rnqgF>mL><3(c<VQ%}1^4S}ir8nebYk3YQ04+!LY@*~P~>UC-%n6}NSdnrGm1fjn|k7Ra4y&FaLGX4uEeKsQ'
+))
+
+
+class RabbitPublicSource(unittest.TestCase):
+    def test_actual_complete_public_bytes_accept_and_original_assertions_reject(self):
+        self.assertEqual(len(RABBIT_PUBLIC_ENV), 7117)
+        self.assertEqual(hashlib.sha256(RABBIT_PUBLIC_ENV).hexdigest(),
+                         '4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af')
+        original = """assert env_source.count('run_escript() {') == 1
+route = env_source.split('run_escript() {', 1)[1].split('\\n}', 1)[0]
+assert 'tmp_erl_flags="$RABBITMQ_CTL_ERL_ARGS $default_erl_flags ' in route
+assert 'ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"' in route"""
+        # Execute the exact old assertions; do not merely assert their text exists.
+        with self.assertRaises(AssertionError):
+            exec(compile(original, 'original-public-source-preflight', 'exec'),
+                 {'env_source': RABBIT_PUBLIC_ENV.decode()})
+        route = RABBIT_PUBLIC_ENV.split(b'run_escript()\n{', 1)[1].split(b'\n}', 1)[0]
+        self.assertNotIn(b'tmp_erl_flags="$RABBITMQ_CTL_ERL_ARGS $default_erl_flags ', route)
+        result = recovery.validate_rabbit_cli_source(RABBIT_PUBLIC_ENV)
+        self.assertTrue(result['full_source_pin_verified'])
+        self.assertTrue(result['ctl_args_route_verified'])
+
+    def test_changed_missing_ctl_callback_and_function_reject(self):
+        mutations = {
+            'changed_ctl': (b'$RABBITMQ_CTL_ERL_ARGS -kernel', b'$RABBITMQ_SERVER_ERL_ARGS -kernel'),
+            'missing_ctl': (b'$RABBITMQ_CTL_ERL_ARGS -kernel', b'-kernel'),
+            'changed_callback': (b'ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"',
+                                 b'ERL_FLAGS="$tmp_erl_flags" "$escript"'),
+            'missing_callback': (b'ERL_FLAGS="$tmp_erl_flags" "$escript" "$@"', b'true'),
+            'changed_function': (b'run_escript()\n{', b'run_escript() {'),
+            'changed_boot': (b'-boot $CLEAN_BOOT_FILE ', b''),
+            'changed_noinput': (b'-noinput $tmp_erl_flags', b'$tmp_erl_flags'),
+        }
+        for name, (old, new) in mutations.items():
+            with self.subTest(name=name):
+                self.assertEqual(RABBIT_PUBLIC_ENV.count(old), 1)
+                changed = RABBIT_PUBLIC_ENV.replace(old, new)
+                with self.assertRaisesRegex(AssertionError, 'source hash drift'):
+                    recovery.validate_rabbit_cli_source(changed)
+                # Also prove exact semantic-body checks independently of the pin.
+                # This test-only repin is never an acceptance route in the runner.
+                with patch.object(recovery, 'RABBIT_ENV_SHA', recovery.digest(changed)):
+                    with self.assertRaisesRegex(AssertionError, '(definition|route) drift'):
+                        recovery.validate_rabbit_cli_source(changed)
+
+    def test_full_source_pin_refuses_unrelated_byte_and_duplicate_definition(self):
+        for changed in (RABBIT_PUBLIC_ENV + b'\n',
+                        RABBIT_PUBLIC_ENV.replace(b'## Set defaults', b'## Set defaultX'),
+                        RABBIT_PUBLIC_ENV + b'\nrun_escript()\n{\ntrue\n}\n'):
+            with self.assertRaisesRegex(AssertionError, 'source hash drift'):
+                recovery.validate_rabbit_cli_source(changed)
+        duplicated = RABBIT_PUBLIC_ENV + b'\nrun_escript()\n{\ntrue\n}\n'
+        with patch.object(recovery, 'RABBIT_ENV_SHA', recovery.digest(duplicated)):
+            with self.assertRaisesRegex(AssertionError, 'definition drift'):
+                recovery.validate_rabbit_cli_source(duplicated)
+
+    def test_installed_path_executes_shared_validator_on_copied_bytes(self):
+        source = Path(rig.__file__).read_text()
+        tree = ast.parse(source)
+        run = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'run')
+        call = next(n for n in ast.walk(run) if isinstance(n, ast.Assign)
+                    and isinstance(n.value, ast.Call)
+                    and ast.unparse(n.value.func) == 'recovery.validate_rabbit_cli_source')
+        parent = next(n for n in ast.walk(run) if isinstance(n, ast.If) and call in n.body)
+        block = parent.body[parent.body.index(call):]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            r = types.SimpleNamespace(out=Path(tmp), receipt={})
+            (r.out/'rabbitmq-env').write_bytes(RABBIT_PUBLIC_ENV)
+            exec(compile(ast.Module(body=block, type_ignores=[]), 'actual-installed-source-preflight', 'exec'),
+                 {'self':r, 'recovery':recovery, 'RABBIT':rig.RABBIT})
+            self.assertTrue(r.receipt['rabbit_cli_source']['ctl_args_route_verified'])
+            self.assertFalse(r.receipt['rabbit_cli_source']['original_exit153_cause_proven'])
+            self.assertEqual(r.receipt['rabbit_cli_source']['sha256'], recovery.RABBIT_ENV_SHA)
 
 
 class Recovery(unittest.TestCase):
