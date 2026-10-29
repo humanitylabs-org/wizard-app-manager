@@ -1,5 +1,8 @@
 """Focused runner regressions; invoked by the parent-admitted early worker."""
+import ast
 import importlib.util
+import inspect
+import tarfile
 import contextlib
 import io
 import json
@@ -99,6 +102,106 @@ class ManagerSealRunners(unittest.TestCase):
             link.symlink_to(root, target_is_directory=True)
             with self.assertRaises(AssertionError):
                 early.verify_bunx_tmp_alias(alias, target_parent, 1234)
+
+    def test_workspace_bins_resolve_locally_without_root_hoist_and_refuse_missing_or_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'source'
+            bins = root/'packages/backend/node_modules/.bin'
+            bins.mkdir(parents=True)
+            store = root/'node_modules/.bun/tool@1/node_modules/tool'
+            store.mkdir(parents=True)
+            target = store/'cli.js'
+            target.write_text('#!/usr/bin/env node\n')
+            target.chmod(0o755)
+            for name in ('tsgo', 'vitest'):
+                (bins/name).symlink_to(target)
+                self.assertEqual(early.workspace_executable(root, 'backend', name), bins/name)
+            self.assertFalse((root/'node_modules/.bin').exists())
+            (bins/'tsgo').unlink()
+            with self.assertRaisesRegex(RuntimeError, 'workspace-executable-missing'):
+                early.workspace_executable(root, 'backend', 'tsgo')
+            outside = Path(tmp)/'external-tool'
+            outside.write_text('synthetic')
+            outside.chmod(0o755)
+            (bins/'tsgo').symlink_to(outside)
+            with self.assertRaisesRegex(RuntimeError, 'workspace-executable-escape'):
+                early.workspace_executable(root, 'backend', 'tsgo')
+            target.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'workspace-executable-missing'):
+                early.workspace_executable(root, 'backend', 'vitest')
+
+    def test_toolchain_required_files_pinned_and_environment_cannot_use_latest_gyp(self):
+        cmd = early.create_command(Path('/srv/work/manager-seal-synthetic'), 'synthetic', 1000, 1000, 'a'*40, 'b'*64)
+        env = [cmd[i+1] for i, value in enumerate(cmd) if value == '--env']
+        for setting in ('CC=/usr/bin/gcc', 'CXX=/usr/bin/g++', 'MAKE=/usr/bin/make',
+                        'npm_config_node_gyp=/work/bin/node-gyp', 'npm_config_python=/usr/bin/python3',
+                        'npm_config_nodedir=/work/tooling/node-v22.22.3', 'npm_config_jobs=2', 'MAKEFLAGS=-j2'):
+            self.assertIn(setting, env)
+        self.assertIn(early.IMAGE, cmd)
+        self.assertEqual(set(early.TOOL_SHA), {'/usr/bin/gcc', '/usr/bin/g++', '/usr/bin/ld',
+                                            '/usr/bin/make', '/usr/bin/python3', early.NODE_GYP})
+        self.assertTrue(all(len(value) == 64 for value in early.TOOL_SHA.values()))
+        self.assertEqual(early.NODE_SHA, 'e6ec2c188d83d813f81f2de8aea084d74dce603ac1abedd0a30ad941b10087b2')
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp)/'node-gyp/bin/node-gyp.js'
+            tool.parent.mkdir(parents=True)
+            tool.write_text('synthetic')
+            package = tool.parents[1]/'package.json'
+            package.write_text('{"version":"11.5.0"}')
+            with patch.object(early, 'TOOL_SHA', {str(tool): early.digest(tool)}), patch.object(early, 'NODE_GYP', str(tool)):
+                with self.assertRaisesRegex(RuntimeError, 'toolchain-missing-executable'):
+                    early.verify_tool_files()
+                tool.chmod(0o755)
+                self.assertEqual(early.verify_tool_files(), {str(tool): early.digest(tool)})
+                tool.write_text('changed')
+                with self.assertRaisesRegex(RuntimeError, 'toolchain-executable-hash'):
+                    early.verify_tool_files()
+
+    def test_toolchain_compile_link_load_is_before_full_install_and_propagates_failure(self):
+        tree = ast.parse(inspect.getsource(early.inside))
+        calls = {n.func.id: n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id in ('toolchain_preflight', 'dependency_step')}
+        self.assertLess(calls['toolchain_preflight'], calls['dependency_step'])
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work/'logs').mkdir()
+            calls = []
+            def download(url, path, sha, cap): path.touch()
+            def headers(archive, target):
+                p = target/('node-'+early.NODE_VERSION+'/include/node/node_version.h')
+                p.parent.mkdir(parents=True)
+                p.write_text('#define NODE_MAJOR_VERSION 22\n#define NODE_MINOR_VERSION 22\n#define NODE_PATCH_VERSION 3\n')
+                return {'synthetic': True}
+            def step(label, argv, cwd):
+                calls.append((label, argv, cwd))
+                if label == 'toolchain-node-version':
+                    (work/'logs/toolchain-node-version.log').write_text(early.NODE_VERSION+'\n')
+                if label == 'toolchain-node-gyp-build':
+                    raise RuntimeError(label+' failed: 23')
+            with patch.object(early, 'verify_tool_files', return_value={}), \
+                 patch.object(early, 'download_public', side_effect=download), \
+                 patch.object(early, 'extract_node_headers', side_effect=headers):
+                with self.assertRaisesRegex(RuntimeError, 'toolchain-node-gyp-build failed: 23'):
+                    early.toolchain_preflight(work, step)
+            self.assertIn(('toolchain-compile-link-make', ['make', '-j2'], work/'toolchain-probe'), calls)
+            self.assertNotIn('toolchain-node-gyp-load', [row[0] for row in calls])
+            self.assertIn('napi_create_int32', (work/'toolchain-probe/addon.cc').read_text())
+
+    def test_headers_reject_escape_links_and_inflated_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for i, (name, kind, size) in enumerate([
+                    ('../escape', tarfile.REGTYPE, 0),
+                    ('node-'+early.NODE_VERSION+'/link', tarfile.SYMTYPE, 0),
+                    ('node-'+early.NODE_VERSION+'/huge', tarfile.REGTYPE, 256*1024**2+1)]):
+                archive = root/f'{i}.tgz'
+                with tarfile.open(archive, 'w:gz') as tf:
+                    m = tarfile.TarInfo(name)
+                    m.type, m.size, m.linkname = kind, size, '/outside'
+                    tf.addfile(m)
+                with self.assertRaisesRegex(RuntimeError, 'toolchain-headers-'):
+                    early.extract_node_headers(archive, root/f'out-{i}')
 
     def test_error_filenames_cannot_exhaust_or_match_real_error_index(self):
         with tempfile.TemporaryDirectory() as tmp:
