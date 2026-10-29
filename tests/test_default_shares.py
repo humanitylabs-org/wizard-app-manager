@@ -5,9 +5,13 @@ from wam import cli
 
 
 class FakeRuntipi:
-    def __init__(self, proposals):
+    def __init__(self, proposals, stopped=()):
         self.proposals = proposals
+        self.stopped = set(stopped)
         self.posts = []
+
+    def app(self, urn):
+        return {"app": {"status": "stopped" if urn.split(":")[0] in self.stopped else "running"}}
 
     def req(self, method, path, body=None):
         if method == "GET":
@@ -17,8 +21,8 @@ class FakeRuntipi:
         return {"grants": []}
 
 
-def run(monkeypatch, proposals, installed):
-    rt = FakeRuntipi(proposals)
+def run(monkeypatch, proposals, installed, stopped=()):
+    rt = FakeRuntipi(proposals, stopped)
     monkeypatch.setattr(cli, "installed_ids", lambda _rt: set(installed))
     return rt, cli.approve_default_shares(None, rt)
 
@@ -43,4 +47,11 @@ def test_a_non_default_app_or_app_grant_is_never_approved(monkeypatch):
 def test_nothing_before_both_apps_are_installed(monkeypatch):
     share = {"kind": "share", "from": "hermes-agent", "to": "wizard-claude", "share": "claude-login"}
     rt, done = run(monkeypatch, [share], {"hermes-agent"})
+    assert done == [] and rt.posts == []
+
+
+def test_a_stopped_consumer_is_left_stopped(monkeypatch):
+    # Approving recreates the consumer (compose down + up --force-recreate); an app the owner stopped must not start.
+    share = {"kind": "share", "from": "hermes-agent", "to": "wizard-claude", "share": "claude-login"}
+    rt, done = run(monkeypatch, [share], {"hermes-agent", "wizard-claude"}, stopped={"hermes-agent"})
     assert done == [] and rt.posts == []

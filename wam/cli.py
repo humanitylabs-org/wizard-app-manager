@@ -1035,11 +1035,15 @@ def approve_default_shares(c: Config, rt) -> list[dict]:
     Hermes Agent app mounts the Claude app's `claude-login`, the Claude Code sign-in its subscription provider uses).
     The App Manager never approves a new pair by itself (owner share grants), and nothing asked the owner, so on a fresh
     box the agent ran without the sign-in and every chat said Claude Code had no login. Only default-app pairs, only
-    pending proposals: a share the owner denied or revoked stays that way."""
+    pending proposals, only running consumers: a share the owner denied or revoked stays that way, and a stopped app
+    stays stopped."""
     default_ids = {d.get("app") for d in slots.load_defaults().values() if d.get("app")}
     installed = set(installed_ids(rt))
     done = []
     for consumer in sorted(default_ids & installed):
+        # Approving recreates the consumer (compose down + up): never start an app the owner stopped.
+        if ((rt.app(f"{consumer}:{STORE}") or {}).get("app") or {}).get("status") != "running":
+            continue
         for g in rt.req("GET", f"/apps/{consumer}:wizardapps/proposed-grants") or []:
             if not isinstance(g, dict) or g.get("kind") != "share" or g.get("from") != consumer:
                 continue
