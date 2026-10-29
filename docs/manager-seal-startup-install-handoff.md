@@ -1,4 +1,14 @@
-# Installed manager first-path handoff — PARENT-BLOCKED
+# Installed manager first-path handoff — historical blockers below
+
+## Current correction and executable handoff
+
+**The earlier “unchanged cumulative/lifetime 1GiB owner quota” interpretation was our controller error, not James's constraint.** The original 200GiB reserve and honest additional-footprint accounting remain unchanged. Historical usage, evidence JSON, old receipts and their original caps are retained without deletion or relabeling. The old blocked conclusions below describe that earlier controller state; they are not the current admission rule.
+
+Current next-job admission is **at most 1GiB additional host allocation**, including stage, logs, artifacts, tool copies and Docker metadata/overlay estimate, with **retained plus next peak at most 3GiB**. Retained stages already reduce live free space: do not deduct them twice. Fresh free must cover 200GiB plus only the not-yet-allocated footprint. `manager_seal_installed_capacity.admission()` and its regressions implement this reconciliation. An accounting pass alone is not execution readiness.
+
+The executable task-owned real-Docker forwarding boundary, adversarial local protocol tests, new-bundle builder and first real installed synthetic path are now in `scripts/manager_seal_{forward_guard,installed_path,installed_review,store_http}.*`. See **[manager-seal-installed-first-path.md](manager-seal-installed-first-path.md)** for confinement, resource envelope, exact source-pinned staging and PARENT-SUBMIT contract. No further production changes were made; bootstrap and background tasks are not stubbed or suppressed. Only the parent may submit the forum job. New Nest/auth/DB/Rabbit/Docker success must come from that job's receipts, not local protocol or historical privacy counts.
+
+## Historical handoff (retained for provenance)
 
 ## Outcome and product diff
 

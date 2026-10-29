@@ -13,6 +13,25 @@ spec.loader.exec_module(capacity)
 
 
 class RetainedStageAccounting(unittest.TestCase):
+    def test_reconciliation_does_not_promote_per_run_cap_to_lifetime_quota(self):
+        decision = capacity.admission(1433038848, 225618149376)
+        self.assertTrue(decision['admitted'])
+        self.assertEqual(decision['retained_plus_next_peak_bytes'], 2506780672)
+        self.assertEqual(decision['free_required_bytes'], 215822106624)
+
+    def test_retained_is_not_double_counted_against_free(self):
+        self.assertTrue(capacity.admission(2*2**30, capacity.RESERVE+2**30)['admitted'])
+        self.assertFalse(capacity.admission(2*2**30+1, capacity.RESERVE+2**30)['admitted'])
+        self.assertFalse(capacity.admission(0, capacity.RESERVE+2**30-1)['admitted'])
+
+    def test_newstage_already_deducted_and_retained_is_not_reset(self):
+        decision = capacity.admission(2*2**30+100, capacity.RESERVE+2**30-100, already_allocated=100)
+        self.assertTrue(decision['admitted'])
+        self.assertEqual(decision['retained_plus_next_peak_bytes'], 3*2**30)
+        self.assertEqual(decision['not_yet_allocated_bytes'], 2**30-100)
+        with self.assertRaises(AssertionError):
+            capacity.admission(0, capacity.RESERVE, next_peak=2**30+1)
+
     def test_scoped_inode_dedup_and_no_symlink_follow(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

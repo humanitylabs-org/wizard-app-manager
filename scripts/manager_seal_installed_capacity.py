@@ -15,7 +15,8 @@ import subprocess
 import time
 
 RESERVE = 200 * 2**30
-ALLOWANCE = 2**30
+ALLOWANCE = 2**30  # Per-next-run additional host allocation, NOT a lifetime quota.
+RETAINED_PEAK = 3 * 2**30
 ROOT = Path('/srv/work')
 IMAGES = [
     'sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc',
@@ -55,6 +56,27 @@ def inventory(root, deadline):
     return rows
 
 
+def admission(retained, free, *, already_allocated=0, next_peak=ALLOWANCE):
+    """All values are allocated bytes. Retained is already deducted from free.
+
+    next_peak includes stage, logs, artifacts, tool copies and overlay metadata.
+    already_allocated is this invocation's footprint already present in retained.
+    Never relabel old receipts or reconstruct/reset historical write totals.
+    """
+    assert 0 <= already_allocated <= next_peak <= ALLOWANCE
+    pending = next_peak - already_allocated
+    blockers = []
+    if retained + pending > RETAINED_PEAK:
+        blockers.append('retained allocation plus next unallocated peak exceeds 3GiB')
+    if free < RESERVE + pending:
+        blockers.append('free below 200GiB reserve plus not-yet-allocated footprint')
+    return {'next_run_additional_peak_bytes': next_peak, 'next_run_already_allocated_bytes': already_allocated,
+            'not_yet_allocated_bytes': pending, 'retained_plus_next_peak_bytes': retained+pending,
+            'retained_plus_next_peak_limit_bytes': RETAINED_PEAK,
+            'free_required_bytes': RESERVE+pending, 'blockers': blockers, 'admitted': not blockers,
+            'accounting': 'per-run additional allocation; no lifetime quota; existing retained already deducted from free'}
+
+
 def probe(root=ROOT):
     start = time.monotonic()
     rows = inventory(root, start + 12)
@@ -76,18 +98,15 @@ def probe(root=ROOT):
         })
     retained = sum(row['allocated_bytes'] for row in rows)
     logical_files = sum(row['regular_file_bytes'] for row in rows)
-    blockers = []
-    if retained > ALLOWANCE:
-        blockers.append('retained task stages alone exceed unchanged cumulative host-write allowance')
-    if free < RESERVE + ALLOWANCE:
-        blockers.append('free bytes below reserve plus maximum remaining write allowance')
+    decision = admission(retained, free)
     return {
-        'schema': 1, 'kind': 'read-only exact task namespace admission; no runtime started',
+        'schema': 2, 'kind': 'read-only exact task namespace admission; no runtime started',
         'observed_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'root': str(root), 'namespace': 'manager-seal-*', 'rows': rows,
         'task_stage_count': len(rows), 'unique_entries': sum(row['entries'] for row in rows),
         'retained_allocated_bytes': retained, 'retained_regular_file_bytes': logical_files,
-        'unchanged_total_write_allowance_bytes': ALLOWANCE, 'retained_excess_bytes': max(0, retained-ALLOWANCE),
+        **decision,
+        'reconciliation': 'Earlier cumulative-owner-quota interpretation was our controller error; historical receipts remain unchanged.',
         'free_bytes': free, 'reserve_bytes': RESERVE, 'free_above_reserve_bytes': free-RESERVE,
         'deduplication': '(st_dev, st_ino); st_blocks*512; includes directory allocation; no symlink traversal',
         'cumulative_writes_complete': False,
@@ -95,7 +114,7 @@ def probe(root=ROOT):
         'cached_images': images, 'cached_image_sizes_counted_as_new_writes': False,
         'new_remote_host_writes': 0, 'remote_resources_created': [], 'cleanup_required': [],
         'images_acquired': 0, 'containers_inspected': 0,
-        'blockers': blockers, 'admitted': not blockers,
+        'blockers': decision['blockers'], 'admitted': decision['admitted'],
         'installed_path_pass': False, 'RUNTIPI_ADMITTED': False,
         'elapsed_seconds': round(time.monotonic()-start, 3),
     }
