@@ -86,7 +86,8 @@ def validate_bundle(dist, source, *, saved=False, installed=None):
 def failure_record(exc, phase):
     """Trusted code locations and fixed reason codes, never exception payloads."""
     reasons = {AssertionError: 'assertion_failed', RuntimeError: 'runtime_failed',
-               OSError: 'os_failed', ValueError: 'invalid_data', KeyError: 'missing_field'}
+               OSError: 'os_failed', ValueError: 'invalid_data', KeyError: 'missing_field',
+               TypeError: 'invalid_type'}
     kind = next((t for t in reasons if isinstance(exc, t)), None)
     frames = []
     tb = exc.__traceback__

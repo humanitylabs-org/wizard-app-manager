@@ -286,6 +286,46 @@ errors are separate so cleanup cannot erase the primary failure receipt. The
 zero swap, 64 MiB fixture, no pulls/builds of container images and synthetic-only
 data restrictions remain unchanged.
 
+### Pinned Python 3.11.2 baseline extraction repair
+
+The `00675f85839665c1b853b30b0cf3380fad003f10` continuation
+(`heavy_f455858068214db984727a1c1c1159f3`) passed saved bundle/native provenance,
+pinned Node syntax, pinned Bun native-filename reproduction, 33 focused harness
+tests, frozen prerequisites and common build. Its original baseline test never
+started: Python **3.11.2**, not 3.11.8, rejects `extractall(filter='data')`.
+Preserve that failed receipt and artifact archive SHA
+`d0cdd9eba71cd253da471c07c7c2f1ba117bed618c0bafe0b037ab7d677531d7`;
+do not rewrite it as a pass or invalidate the saved candidate/backend evidence.
+
+Both continuation and full runner now reuse `extract_baseline`. It prevalidates
+a nonempty inventory of at most 9,999 members and 64 MiB total/per-file bytes;
+rejects absolute, traversal, ambiguous, duplicate, file-ancestor, linked,
+sparse, special and malformed-size members; and extracts only exact regular
+payload bytes. The destination must be an empty owner-owned 0700 directory.
+Descriptor-relative traversal uses `O_DIRECTORY|O_NOFOLLOW` from `/` through
+every ancestor, and exclusive no-follow file creation. Ownership, timestamps,
+setuid/setgid/sticky and group/other bits are never restored: directories and
+executables become 0700, other files 0600. Neither extraction convenience API
+nor the newer tar filter interface is used. This is not an unfiltered fallback.
+
+New focused synthetic regressions cover those refusals, mid-extraction symlink
+insertion, truncation, bytes/modes and both runner call sites. The parent-only
+continuation explicitly requires the actual SHA-pinned Python 3.11.2 interpreter
+before running the focused harness, including these regressions. Newer local
+Python results are bounded unit checks only, not pinned-runtime acceptance.
+Trusted failure diagnostics now recognize builtin `TypeError` as `invalid_type`
+without exception messages, custom class names or arbitrary payload export.
+
+Remaining baseline-path audit: `Path.rglob/relative_to/is_file/read_text`,
+hashlib reads, `shutil.copy2`, environment updates, bounded `subprocess.run`,
+JSON report/count validation, source restoration, `statvfs`, tar archive creation
+and base64 result export use no post-3.11.2 API arguments. The new helper uses
+Linux directory-FD APIs already available in that runtime; `extractfile`,
+`TarInfo.sparse/pax_headers` and `fdopen` need no extraction-filter backport.
+Python 3.11 grammar parsing and focused units are local checks; actual execution
+of the remaining baseline and pinned-interpreter regressions still belongs to
+the parent-admitted worker. No candidate/adjacent/full suite replay is added.
+
 ## Remaining acceptance gates — unchanged
 
 Direct `DockerService` with synthetic DB/file facades is not authenticated Nest API/queue/Postgres acceptance. A new manager object is not process-level daemon restart. Manual forced callback failure/prior generated-file recovery is not the actual update transaction. The next exact-image disposable API stage must prove install/start/restart/update, process restart, optional-config disabled/removed/changed, required-policy failure before destructive callbacks, real version update plus forced rollback retaining synthetic home/identity/bindings, socket grants/revocation and Incognito. Preserve full acceptance; do not reduce it to metadata-only updates or grant refusal.

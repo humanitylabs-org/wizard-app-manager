@@ -4,9 +4,81 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import sys
 import tarfile
 
 from manager_seal_bundle import SAVED_BUNDLE, validate_bundle, failure_record
+
+
+BASELINE_BYTES = 64*1024**2
+BASELINE_MEMBERS = 9999
+
+
+def extract_baseline(archive, destination):
+    """Python 3.11.2-safe extraction; never delegate trust to tarfile filters.
+
+    Prevalidate the complete bounded inventory before writes. All destination
+    traversal uses directory descriptors and O_NOFOLLOW, including ancestors
+    above the private empty root. Ignore archive ownership/timestamps/modes;
+    normalize directories/executables to 0700 and other files to 0600.
+    """
+    destination = Path(destination).absolute()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    root = os.open('/', flags)
+    try:
+        for part in destination.parts[1:]:
+            child = os.open(part, flags, dir_fd=root)
+            os.close(root); root = child
+        metadata = os.fstat(root)
+        assert metadata.st_uid == os.getuid() and stat.S_IMODE(metadata.st_mode) == 0o700, 'baseline private root'
+        assert not os.listdir(root), 'baseline root must be empty'
+        with tarfile.open(archive) as tf:
+            members = []; seen = {}; total = 0
+            for member in tf:
+                name = member.name; parts = name.split('/')
+                assert name and len(os.fsencode(name)) <= 4096 and '\\' not in name and '\x00' not in name, 'baseline path'
+                assert all(p not in ('', '.', '..') for p in parts), 'baseline path'
+                assert str(PurePosixPath(name)) == name and not name.startswith('/'), 'baseline path'
+                assert name not in seen, 'baseline duplicate'
+                assert member.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE) and not member.linkname, 'baseline unexpected link/type'
+                assert member.sparse is None and not any(k.startswith('GNU.sparse') for k in member.pax_headers), 'baseline sparse member'
+                assert 0 <= member.size <= BASELINE_BYTES and (not member.isdir() or member.size == 0), 'baseline member budget'
+                total += member.size
+                assert total <= BASELINE_BYTES and len(members) < BASELINE_MEMBERS, 'baseline extraction budget'
+                seen[name] = member.isdir(); members.append(member)
+            assert members, 'baseline empty archive'
+            for member in members:
+                parts = member.name.split('/')
+                assert all(seen.get('/'.join(parts[:n]), True) for n in range(1, len(parts))), 'baseline ancestor is a file'
+            for member in members:
+                parts = member.name.split('/')
+                parent = os.dup(root)
+                try:
+                    for part in parts if member.isdir() else parts[:-1]:
+                        try: os.mkdir(part, mode=0o700, dir_fd=parent)
+                        except FileExistsError: pass
+                        child = os.open(part, flags, dir_fd=parent)
+                        os.close(parent); parent = child
+                        os.fchmod(parent, 0o700)
+                    if member.isdir(): continue
+                    fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=parent)
+                    with os.fdopen(fd, 'wb') as out:
+                        os.fchmod(out.fileno(), 0o700 if member.mode & 0o111 else 0o600)
+                        src = tf.extractfile(member)
+                        assert src is not None, 'baseline regular payload missing'
+                        with src:
+                            remaining = member.size
+                            while remaining:
+                                block = src.read(min(65536, remaining))
+                                assert block, 'baseline truncated payload'
+                                out.write(block); remaining -= len(block)
+                            assert src.read(1) == b'', 'baseline extraction length'
+                        out.flush()
+                        assert os.fstat(out.fileno()).st_size == member.size, 'baseline extraction length'
+                finally: os.close(parent)
+        return total
+    finally: os.close(root)
 
 SOURCE = '3116f500f4d7df959a9f4d586dec4f9a9b7564b5'
 PINS = {
@@ -173,20 +245,18 @@ def inside(args, runner):
         assert runner.sha(checkout/'bun.lock') == manifest['files']['bun.lock'], 'frozen lock drift'
         result['phase'] = 'saved-native-package-provenance'
         result['saved_bundle'] = validate_bundle(dist, root, saved=True, installed=checkout)
+        # The worker is the cached SHA-pinned Python 3.11.2 image, not 3.11.8.
+        # Run the archive regressions under that actual interpreter before the
+        # remaining baseline path; local newer-Python tests cannot prove this.
+        assert sys.version_info[:3] == (3, 11, 2), 'continuation requires pinned Python 3.11.2'
+        result['baseline_python_version'] = '.'.join(map(str, sys.version_info[:3]))
         step('continuation-focused-harness', ['python3', '-m', 'unittest', 'test_manager_seal_bundle', 'test_manager_seal_docker', '-v'], cwd=checkout/'scripts/tests')
         step('common-build', ['bun', 'run', 'build'], cwd=checkout/'packages/common')
         result['daemon_bind_preflight'] = runner.daemon_bind_preflight(fixture, args.owner)
         result['network_driver_preflight'] = runner.network_driver_preflight(args.owner)
         result['phase'] = 'baseline-source-closure'
-        baseline = Path('/work/baseline'); baseline.mkdir()
-        with tarfile.open(root/'baseline.tar') as tf:
-            members = tf.getmembers(); total = 0; seen = set()
-            for m in members:
-                assert m.isfile() or m.isdir(), 'baseline unexpected link/type'
-                assert not Path(m.name).is_absolute() and '..' not in Path(m.name).parts and m.name not in seen, 'baseline path/duplicate'
-                seen.add(m.name); total += m.size
-            assert total <= 64*runner.MIB and len(members) < 10000, 'baseline extraction budget'
-            tf.extractall(baseline, filter='data')
+        baseline = Path('/work/baseline'); baseline.mkdir(mode=0o700)
+        result['baseline_source_bytes'] = extract_baseline(root/'baseline.tar', baseline)
         permitted = set(runner.PRODUCT_DELTA+['packages/backend/src/modules/docker/__tests__/wizard-restart-incident.test.ts'])
         for p in baseline.rglob('*'):
             if p.is_file():

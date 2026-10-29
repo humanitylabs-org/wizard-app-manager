@@ -324,17 +324,8 @@ def inside(args):
         step('candidate-bundle-node-syntax', ['node', '--check', bundle], cwd=backend)
         result['candidate_backend_bundle_sha256'] = sha(bundle)
         result['phase'] = 'baseline-source-closure'
-        baseline = Path('/work/baseline'); baseline.mkdir()
-        total = 0
-        with tarfile.open(root/'baseline.tar') as tf:
-            members = tf.getmembers()
-            for m in members:
-                assert m.isfile() or m.isdir(), 'baseline unexpected link/type'
-                assert not Path(m.name).is_absolute() and '..' not in Path(m.name).parts
-                total += m.size
-            assert total <= 64*MIB and len(members) < 10000, 'baseline extraction budget'
-            tf.extractall(baseline, filter='data')
-        result['baseline_source_bytes'] = total
+        baseline = Path('/work/baseline'); baseline.mkdir(mode=0o700)
+        result['baseline_source_bytes'] = continuation.extract_baseline(root/'baseline.tar', baseline)
         # Every preexisting base file is identical except the two intentional
         # runtime changes and one unrelated test adaptation. Added helper/fixture
         # is the deliberate injection; package/lock/common/config are exact.
