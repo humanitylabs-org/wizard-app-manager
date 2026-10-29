@@ -72,7 +72,22 @@ def test_exact_original_mutant_delta_and_no_other_guard_change():
     fence.body=[n for n in fence.body if not (isinstance(n,ast.Expr) and ast.unparse(n)=='reap_exited_children()')]
     original=ast.unparse(tree)
     assert m.fence_delta(original,current)
-    with pytest.raises(AssertionError):m.fence_delta(original,current.replace('len(threads) != 1','len(threads) != 2'))
+    # Mutate the actual single-thread comparison, not a guessed source token.
+    mutant_tree=ast.parse(current)
+    mutant_fence=next(n for n in mutant_tree.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')
+    single_thread=ast.parse("len(list(Path('/proc/self/task').iterdir())) != 1",mode='eval').body
+    targets=[n for n in ast.walk(mutant_fence) if isinstance(n,ast.Compare) and ast.dump(n)==ast.dump(single_thread)]
+    assert len(targets)==1, 'expected exactly one actual single-thread guard'
+    limit=targets[0].comparators[0]
+    assert isinstance(limit,ast.Constant) and type(limit.value) is int and limit.value==1
+    before=ast.dump(mutant_tree)
+    limit.value=2
+    mutant=ast.unparse(mutant_tree)
+    assert mutant!=current and ast.dump(ast.parse(mutant))!=before
+    # Reversing this one literal must restore the complete original AST.
+    limit.value=1
+    assert ast.dump(mutant_tree)==before
+    with pytest.raises(AssertionError):m.fence_delta(original,mutant)
 
 
 def test_real_kernel_fixture_uses_wnowait_and_scoped_children():
@@ -87,7 +102,7 @@ def test_real_kernel_fixture_uses_wnowait_and_scoped_children():
 
 def test_real_constructor_manifest_complete_before_vm(tmp_path):
     fixtures=load('production_fixtures_for_reap',REPO/'tests/test_storage_production_integration.py')
-    production,base,stage,doc=fixtures.constructor_fixture(tmp_path)
+    production,base,stage,doc=fixtures.build_production_constructor(tmp_path)
     (stage/'zombie-runner.py').write_bytes((REPO/'qa/privsep-storage/zombie_run.py').read_bytes())
     cls=runner().make_runner(production,base);r=cls(stage,doc)
     assert r.receipt['revision']==doc['revision'] and r.proc is None

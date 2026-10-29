@@ -110,8 +110,7 @@ def test_pid1_completion_retirement_is_after_transaction_and_fence():
     assert "'fixed maintenance exception'" in body
 
 
-@pytest.fixture
-def production_constructor(tmp_path):
+def build_production_constructor(tmp_path):
     """Genuine inherited constructor, real current product bytes; no VM calls.
 
     This is the complete constructor contract, not a full deployable stage.
@@ -138,6 +137,11 @@ def production_constructor(tmp_path):
            'expected_pytest_cases':['tests/synthetic_constructor.py::test_complete']}
     (stage/'manifest.json').write_text(json.dumps(doc))
     return runner, base, stage, doc
+
+
+@pytest.fixture
+def production_constructor(tmp_path):
+    return build_production_constructor(tmp_path)
 
 
 def test_genuine_production_constructor_persists_current_product_identity(production_constructor):
