@@ -45,6 +45,9 @@ export class InstallAppHandler implements ILifecycleHandler<InstallAppParams> {
       return this.startAppHandler.execute(appUrn);
     }
 
+    // Trusted callers may explicitly override the validated HTTP form. An
+    // omitted override must not turn a requested install-only into a launch.
+    const shouldSkipRun = skipRun ?? parsedForm.skipRun ?? false;
     const { isVisibleOnGuestDashboard } = parsedForm;
 
     const appInfo = await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn);
@@ -79,14 +82,14 @@ export class InstallAppHandler implements ILifecycleHandler<InstallAppParams> {
     const requestId = generateRequestId();
 
     this.appEventsQueue
-      .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun: skipRun ?? false } })
+      .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun: shouldSkipRun } })
       .then(async ({ success, message }) => {
         if (success) {
           await this.statusManager.emitSuccess({
             appId: createdApp.id,
             appUrn,
             event: 'install_success',
-            status: skipRun ? 'stopped' : 'running',
+            status: shouldSkipRun ? 'stopped' : 'running',
           });
         } else {
           await this.statusManager.deleteApp(createdApp.id);

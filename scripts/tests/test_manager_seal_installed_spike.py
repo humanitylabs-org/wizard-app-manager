@@ -3,6 +3,8 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import hashlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,12 +20,19 @@ class InstalledSpikeRefusals(unittest.TestCase):
     def stage(self, root):
         import json
         manifest = REPO/'docs/manager-seal-installed-spike-pins.json'
-        rels = list(json.loads(manifest.read_text())['source_sha256'])
-        rels.append('docs/manager-seal-installed-spike-pins.json')
-        for rel in rels:
+        # This is a historical archive refusal test, not a claim that the new
+        # product sources still match the old bundle's source pin.
+        pins = json.loads(manifest.read_text())['source_sha256']
+        baseline = '118608e135ffa1d7f5114a2e9b7a059c50c04cf2'
+        for rel, expected in pins.items():
             dst = root/rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(REPO/rel, dst)
+            data = subprocess.check_output(['git', 'show', f'{baseline}:{rel}'], cwd=REPO, timeout=5)
+            self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
+            dst.write_bytes(data)
+        dst = root/'docs/manager-seal-installed-spike-pins.json'
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(manifest, dst)
 
     def test_source_drift_refuses_before_archive_or_node(self):
         with tempfile.TemporaryDirectory() as tmp:

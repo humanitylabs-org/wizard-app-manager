@@ -1,0 +1,278 @@
+{
+  "schema": 1,
+  "kind": "read-only exact task namespace admission; no runtime started",
+  "observed_at_utc": "2026-10-29T15:20:52.520049+00:00",
+  "root": "/srv/work",
+  "namespace": "manager-seal-*",
+  "rows": [
+    {
+      "path": "/srv/work/manager-seal-00675f85-bundle-continuation",
+      "entries": 1306,
+      "regular_file_bytes": 141384268,
+      "allocated_bytes": 145047552
+    },
+    {
+      "path": "/srv/work/manager-seal-00675f85-bundle-continuation-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 30177280,
+      "allocated_bytes": 30179328
+    },
+    {
+      "path": "/srv/work/manager-seal-00675f85-bundle-continuation-static-proof",
+      "entries": 47,
+      "regular_file_bytes": 33655442,
+      "allocated_bytes": 33796096
+    },
+    {
+      "path": "/srv/work/manager-seal-04aa0cc9-bundle-continuation",
+      "entries": 1296,
+      "regular_file_bytes": 51180330,
+      "allocated_bytes": 54816768
+    },
+    {
+      "path": "/srv/work/manager-seal-04aa0cc9-bundle-continuation-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 30177280,
+      "allocated_bytes": 30179328
+    },
+    {
+      "path": "/srv/work/manager-seal-04aa0cc9-bundle-continuation-static-proof",
+      "entries": 42,
+      "regular_file_bytes": 33640714,
+      "allocated_bytes": 33767424
+    },
+    {
+      "path": "/srv/work/manager-seal-08068fc6-real-docker",
+      "entries": 1291,
+      "regular_file_bytes": 103951532,
+      "allocated_bytes": 107581440
+    },
+    {
+      "path": "/srv/work/manager-seal-08068fc6-real-docker-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 29880320,
+      "allocated_bytes": 29880320
+    },
+    {
+      "path": "/srv/work/manager-seal-09424bc7-toolchain-early",
+      "entries": 1280,
+      "regular_file_bytes": 15207849,
+      "allocated_bytes": 18808832
+    },
+    {
+      "path": "/srv/work/manager-seal-0c89dac6-install-diagnostic-early",
+      "entries": 1280,
+      "regular_file_bytes": 25757337,
+      "allocated_bytes": 29351936
+    },
+    {
+      "path": "/srv/work/manager-seal-2082f683-erofs-repair-early",
+      "entries": 1275,
+      "regular_file_bytes": 15178496,
+      "allocated_bytes": 18763776
+    },
+    {
+      "path": "/srv/work/manager-seal-3116f500-real-docker",
+      "entries": 1298,
+      "regular_file_bytes": 132496931,
+      "allocated_bytes": 136142848
+    },
+    {
+      "path": "/srv/work/manager-seal-3116f500-real-docker-stage-readback.json",
+      "entries": 1,
+      "regular_file_bytes": 682,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "/srv/work/manager-seal-3116f500-real-docker-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 29941760,
+      "allocated_bytes": 29941760
+    },
+    {
+      "path": "/srv/work/manager-seal-3cfecc95-baseline-compat",
+      "entries": 1306,
+      "regular_file_bytes": 141414432,
+      "allocated_bytes": 145076224
+    },
+    {
+      "path": "/srv/work/manager-seal-3cfecc95-baseline-compat-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 30197760,
+      "allocated_bytes": 30199808
+    },
+    {
+      "path": "/srv/work/manager-seal-3cfecc95-baseline-compat-static-proof",
+      "entries": 17,
+      "regular_file_bytes": 9069175,
+      "allocated_bytes": 9109504
+    },
+    {
+      "path": "/srv/work/manager-seal-623f8505-repair",
+      "entries": 1270,
+      "regular_file_bytes": 15112682,
+      "allocated_bytes": 18685952
+    },
+    {
+      "path": "/srv/work/manager-seal-72792604-real-docker",
+      "entries": 1296,
+      "regular_file_bytes": 117663483,
+      "allocated_bytes": 121303040
+    },
+    {
+      "path": "/srv/work/manager-seal-72792604-real-docker-stage-readback.json",
+      "entries": 1,
+      "regular_file_bytes": 682,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "/srv/work/manager-seal-72792604-real-docker-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 29911040,
+      "allocated_bytes": 29913088
+    },
+    {
+      "path": "/srv/work/manager-seal-7827b8b0-repair",
+      "entries": 1270,
+      "regular_file_bytes": 15109995,
+      "allocated_bytes": 18685952
+    },
+    {
+      "path": "/srv/work/manager-seal-8771bcab-real-docker",
+      "entries": 1295,
+      "regular_file_bytes": 117634241,
+      "allocated_bytes": 121270272
+    },
+    {
+      "path": "/srv/work/manager-seal-8771bcab-real-docker-stage-readback.json",
+      "entries": 1,
+      "regular_file_bytes": 732,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "/srv/work/manager-seal-8771bcab-real-docker-stage.tar",
+      "entries": 1,
+      "regular_file_bytes": 29900800,
+      "allocated_bytes": 29900800
+    },
+    {
+      "path": "/srv/work/manager-seal-886e6ed2",
+      "entries": 2819,
+      "regular_file_bytes": 19901762,
+      "allocated_bytes": 28606464
+    },
+    {
+      "path": "/srv/work/manager-seal-9d6c64ff",
+      "entries": 2819,
+      "regular_file_bytes": 19903838,
+      "allocated_bytes": 28610560
+    },
+    {
+      "path": "/srv/work/manager-seal-bd729840-final-early",
+      "entries": 1276,
+      "regular_file_bytes": 15142824,
+      "allocated_bytes": 18731008
+    },
+    {
+      "path": "/srv/work/manager-seal-bd729840-final-focused",
+      "entries": 1273,
+      "regular_file_bytes": 15138885,
+      "allocated_bytes": 18718720
+    },
+    {
+      "path": "/srv/work/manager-seal-c535a5cf-final-early",
+      "entries": 1283,
+      "regular_file_bytes": 27470694,
+      "allocated_bytes": 31080448
+    },
+    {
+      "path": "/srv/work/manager-seal-c535a5cf-final-focused",
+      "entries": 1275,
+      "regular_file_bytes": 15196458,
+      "allocated_bytes": 18784256
+    },
+    {
+      "path": "/srv/work/manager-seal-cb68aaf6-final-early",
+      "entries": 1276,
+      "regular_file_bytes": 15175899,
+      "allocated_bytes": 18763776
+    },
+    {
+      "path": "/srv/work/manager-seal-cb68aaf6-final-focused",
+      "entries": 1273,
+      "regular_file_bytes": 15139535,
+      "allocated_bytes": 18718720
+    },
+    {
+      "path": "/srv/work/manager-seal-e1d762a6",
+      "entries": 2819,
+      "regular_file_bytes": 19906975,
+      "allocated_bytes": 28610560
+    }
+  ],
+  "task_stage_count": 34,
+  "unique_entries": 31692,
+  "retained_allocated_bytes": 1433038848,
+  "retained_regular_file_bytes": 1341622113,
+  "unchanged_total_write_allowance_bytes": 1073741824,
+  "retained_excess_bytes": 359297024,
+  "free_bytes": 225785044992,
+  "reserve_bytes": 214748364800,
+  "free_above_reserve_bytes": 11036680192,
+  "deduplication": "(st_dev, st_ino); st_blocks*512; includes directory allocation; no symlink traversal",
+  "cumulative_writes_complete": false,
+  "scope_note": "retained allocation is a lower bound, not a cumulative-write reset; no historical deleted writes or image layers included",
+  "cached_images": [
+    {
+      "id": "sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc",
+      "bytes": 290643404,
+      "architecture": "amd64",
+      "os": "linux",
+      "digests": [
+        "postgres@sha256:862ffc2556a2db763f0439c8323490000cd01975d2798a845e4a8dd3a905862f"
+      ],
+      "declared_volumes": [
+        "/var/lib/postgresql/data"
+      ],
+      "source_revision_label": null
+    },
+    {
+      "id": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+      "bytes": 174989577,
+      "architecture": "amd64",
+      "os": "linux",
+      "digests": [
+        "rabbitmq@sha256:21577d148f4f7563a87d761862fa353f59348a094833ca8b1b1a46a8102dffce"
+      ],
+      "declared_volumes": [
+        "/var/lib/rabbitmq"
+      ],
+      "source_revision_label": null
+    },
+    {
+      "id": "sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9",
+      "bytes": 345216194,
+      "architecture": "amd64",
+      "os": "linux",
+      "digests": [],
+      "declared_volumes": [],
+      "source_revision_label": "fead192e9fb2d560fd3b875d092819b32e7189b6"
+    }
+  ],
+  "cached_image_sizes_counted_as_new_writes": false,
+  "new_remote_host_writes": 0,
+  "remote_resources_created": [],
+  "cleanup_required": [],
+  "images_acquired": 0,
+  "containers_inspected": 0,
+  "blockers": [
+    "retained task stages alone exceed unchanged cumulative host-write allowance"
+  ],
+  "admitted": false,
+  "installed_path_pass": false,
+  "RUNTIPI_ADMITTED": false,
+  "elapsed_seconds": 0.296,
+  "probe_sha256": "aa0f478d67694b6ac66213caa2e46256d4708ec7db500dc73045f3588681dd52",
+  "probe_exit": 2,
+  "stderr": ""
+}

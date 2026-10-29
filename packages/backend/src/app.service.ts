@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { execFileAsync } from './common/helpers/exec-helpers';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
@@ -12,8 +12,6 @@ import { AppStoreService } from './modules/app-stores/app-store.service';
 import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
-import { DOCKERODE } from './modules/docker/docker.module';
-import Dockerode from 'dockerode';
 import { GithubService } from './utils/github/github.service';
 import YAML from 'yaml';
 
@@ -31,13 +29,13 @@ export class AppService {
     private readonly databaseService: DatabaseService,
     private readonly appLifecycleService: AppLifecycleService,
     private readonly githubService: GithubService,
-    @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
   public async bootstrap() {
     try {
       await this.databaseService.migrate();
-      await this.docker.pruneNetworks();
+      // Startup owns no daemon-wide maintenance authority. Unused networks may
+      // belong to other stacks; leave cleanup to explicit maintenance actions.
 
       const { version, userSettings, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();

@@ -1,0 +1,762 @@
+{
+  "schema": 1,
+  "kind": "static source and asset inventory, not a runtime/image closure",
+  "source_pins": [
+    {
+      "source": "bun.lock",
+      "bytes": 422933,
+      "sha256": "07dd09dc0a77f4ac2476869d86c7cc6901082270648facfd7cb49e43d8cd35a4"
+    },
+    {
+      "source": "package.json",
+      "bytes": 1530,
+      "sha256": "fe153e5cf4e616c52e4a5e42205833f1520eac5e0749d383aa2d49708dd30e1d"
+    },
+    {
+      "source": "packages/backend/package.json",
+      "bytes": 3565,
+      "sha256": "ae17b79f384cf1797988da336fb1a2921df293c11e23926703258328a4586ac3"
+    },
+    {
+      "source": "packages/common/package.json",
+      "bytes": 1419,
+      "sha256": "0911a38240f2bbc95e492000424d97aef4329ed85aee790344ef7b90920d25af"
+    },
+    {
+      "source": "Dockerfile",
+      "bytes": 3079,
+      "sha256": "c291e99a18a388f6b87787374ae2c6ed46cd2c4aef48b7ab4ee07a2045179186"
+    },
+    {
+      "source": "packages/backend/build.ts",
+      "bytes": 480,
+      "sha256": "70441708edc4e06c843583637d937a2d97ab4db648674ae8de7d6a2e66d11b41"
+    },
+    {
+      "source": "packages/backend/tsconfig.json",
+      "bytes": 675,
+      "sha256": "5e10c530e80b036d49fe3edcb02eabfbf09fd2f902e92089af4e3a59638583c3"
+    },
+    {
+      "source": "packages/backend/src/main.ts",
+      "bytes": 1902,
+      "sha256": "d796790fa9ca3b8e7b4a9c729e16504bd845d4f2dadd428d642bc7073bda55be"
+    },
+    {
+      "source": "packages/backend/src/app.module.ts",
+      "bytes": 3923,
+      "sha256": "7f9eac3349ca518775e0de10e9e99b16957fe14da4f593db9f6cc477521f6eda"
+    },
+    {
+      "source": "packages/backend/src/app.service.ts",
+      "bytes": 10559,
+      "sha256": "531d1d12d37a04a5ece7ff504f6f06376acc8e7a881baaab9941cacf1ffe084e"
+    },
+    {
+      "source": "packages/backend/src/common/constants.ts",
+      "bytes": 538,
+      "sha256": "c003d91a1f349637a3686f1b457654a17722f6ebe9bda9c09857c7203a7a5203"
+    },
+    {
+      "source": "packages/backend/src/common/helpers/env-helpers.ts",
+      "bytes": 6712,
+      "sha256": "85dd5ce4ad1c4cf5625a9f4ceae3c0e03364639109d1b56cd8884992dc1360e6"
+    },
+    {
+      "source": "packages/backend/src/core/config/configuration.module.ts",
+      "bytes": 350,
+      "sha256": "cefb96deea7d01075a1b5cd2e06a5fb752c39bb82d6bf7d7b121f62bd8848021"
+    },
+    {
+      "source": "packages/backend/src/core/config/configuration.service.ts",
+      "bytes": 8157,
+      "sha256": "b346e74968b84922432b22e1f5e2c4b666221936d02dcdc285161c78d81e28e1"
+    },
+    {
+      "source": "packages/backend/src/core/database/database.module.ts",
+      "bytes": 522,
+      "sha256": "28d70a6ab0ac77fad487b7f0922fbe1cb81fde3ec4b9f3b1c0b8bf73f1e3be92"
+    },
+    {
+      "source": "packages/backend/src/core/database/database.service.ts",
+      "bytes": 1377,
+      "sha256": "d16f9a82da37666bb61c6c516791d2b5965c39828379b94725c09bd482a4f8f4"
+    },
+    {
+      "source": "packages/backend/src/core/cache/cache.service.ts",
+      "bytes": 1794,
+      "sha256": "ce3df7613c53e054b640206b5638edbf1325561c5ca334df3c7a05e1f6e86b51"
+    },
+    {
+      "source": "packages/backend/src/core/password/password.service.ts",
+      "bytes": 744,
+      "sha256": "def4592a0fb4d5a38d81fbabbc970ee6604c9334ca35092381af31f8ecfab0d1"
+    },
+    {
+      "source": "packages/backend/src/modules/auth/auth.module.ts",
+      "bytes": 563,
+      "sha256": "a3ba30fd42566c37430c74b23cfee2efcfc2c2805813cbce07f6e1b92e1f5d9f"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/app-lifecycle.module.ts",
+      "bytes": 2175,
+      "sha256": "9e88d63d7598063502beb6f8823de1582dffab44b10a42c5a771722e8b8f5d58"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/app-lifecycle.controller.ts",
+      "bytes": 3426,
+      "sha256": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/app-lifecycle.service.ts",
+      "bytes": 7408,
+      "sha256": "9a2684bb9a95437d94cf7daac17ab745db9b067063209e8eb780fb2789e0be7c"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/app-lifecycle-command.factory.ts",
+      "bytes": 2277,
+      "sha256": "05332d2e4c4ec0d71b4b6f3444da960ae7cdcff163a24dda938e52dc5f140bf1"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/app-status-sync.service.ts",
+      "bytes": 5109,
+      "sha256": "e15edb12f98246ae4d26f15c33dd933e105646b8338e0a096bc4a4e22dd8dd93"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts",
+      "bytes": 4059,
+      "sha256": "1b4705533f76480513b39293c4123da953e80af40ee7212ea4e96001b4b2b2d3"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/commands/command.ts",
+      "bytes": 3795,
+      "sha256": "faccba3fcef05fe90166e163662cd603e634fe03076c8190d5b27519ea2d561d"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/commands/install-app-command.ts",
+      "bytes": 3829,
+      "sha256": "d4b8dd048b5d4a829a0d79fd02322ad67150ef7ecf4b718118b4719aa71902a5"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/dto/app-lifecycle.dto.ts",
+      "bytes": 1229,
+      "sha256": "eac0d9327c45bc523661657a4828051f7e97de2a7ba86604cdf1ab4d6fdcd691"
+    },
+    {
+      "source": "packages/backend/src/modules/app-lifecycle/services/status-manager.service.ts",
+      "bytes": 2645,
+      "sha256": "f3e8837268a31360e1363a51b9842f728711c62155ab3bb3bc558d3011d04da3"
+    },
+    {
+      "source": "packages/backend/src/modules/apps/apps.module.ts",
+      "bytes": 830,
+      "sha256": "59dd9fc1b77883919b3fb87b1457f7b02e10065e829cd17dfae56e507656c282"
+    },
+    {
+      "source": "packages/backend/src/modules/marketplace/marketplace.module.ts",
+      "bytes": 417,
+      "sha256": "4e66f4221d6cd0b1782343a98d54af078105c9c9a9a50305daba658862b8b78e"
+    },
+    {
+      "source": "packages/backend/src/modules/docker/docker.module.ts",
+      "bytes": 670,
+      "sha256": "2523b4b7e95face98dec57bee66f4e8c49d79c152bd0b61d4fa9a45a9bb20692"
+    },
+    {
+      "source": "packages/backend/src/modules/docker/docker.service.ts",
+      "bytes": 12032,
+      "sha256": "04ef4e9742d601099e510f4f518b4a249f197054eaa2b29b4b5f66e789aa433c"
+    },
+    {
+      "source": "packages/backend/src/modules/docker/mandatory-seal.ts",
+      "bytes": 11872,
+      "sha256": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc"
+    },
+    {
+      "source": "packages/backend/src/modules/docker/wizard-storage.ts",
+      "bytes": 30940,
+      "sha256": "dab3f7bb925bf0247f31d6b60a2cc8977424ea4b7a9b2c9d368715760dae7d09"
+    },
+    {
+      "source": "packages/backend/src/modules/network/network.module.ts",
+      "bytes": 386,
+      "sha256": "23113cc825abf5ad7a434844707c9c1c6b277a1e867c81516131bf2d9626d069"
+    },
+    {
+      "source": "packages/backend/src/modules/network/subnet-manager.service.ts",
+      "bytes": 3753,
+      "sha256": "b58a8e2503a44b7129efc8829d7fca7ee7c623392580f89176f0844c3a0235a0"
+    },
+    {
+      "source": "packages/backend/src/modules/queue/queue.module.ts",
+      "bytes": 2120,
+      "sha256": "bad690f101fb4a476ce8683f078278fce82c956cc77ce210b80ec1cc212a39bb"
+    },
+    {
+      "source": "packages/backend/src/modules/queue/queue.factory.ts",
+      "bytes": 3929,
+      "sha256": "9c68a4c7a8bfdc127638bf0fefa3db76634a7757b8a31580c941ae23b193ff40"
+    },
+    {
+      "source": "packages/backend/src/modules/queue/queue.entity.ts",
+      "bytes": 4560,
+      "sha256": "80c777edad7bfaac6cde44ff9c88d7e841370f9f02b804d745f408531b66a573"
+    },
+    {
+      "source": "packages/backend/src/cli/enroll-mandatory-seal.ts",
+      "bytes": 1188,
+      "sha256": "1fc577924aa9002591d94e484f993e0d2f73ac90d3e4126c1ed3e77b81cab215"
+    }
+  ],
+  "asset_groups": {
+    "/app/assets": {
+      "source": "packages/backend/assets",
+      "exists": true,
+      "files": [
+        {
+          "source": "packages/backend/assets/app-not-found.jpg",
+          "bytes": 6905,
+          "sha256": "004fbc01db0bd6ffb029ef3d87854fdf7c1750d8dd2bfe15a33b644565cd04e1"
+        },
+        {
+          "source": "packages/backend/assets/default-app-logo.jpg",
+          "bytes": 73298,
+          "sha256": "41191af41f7a8e159a11abde437db1ad1f8776fd5388ef806cde74dbef1b9a7e"
+        },
+        {
+          "source": "packages/backend/assets/traefik/dynamic/dynamic.yml",
+          "bytes": 320,
+          "sha256": "68cb5bec7944ff2950ec321d80f14c7b613457f7b04d46621d41292c6661ba9d"
+        },
+        {
+          "source": "packages/backend/assets/traefik/traefik.yml",
+          "bytes": 516,
+          "sha256": "23b6b09c887389793f9dca76751194aea802459540a5e8fdeff9dd500c43edea"
+        }
+      ],
+      "file_count": 4,
+      "bytes": 81039
+    },
+    "/app/assets/migrations": {
+      "source": "packages/backend/src/core/database/drizzle",
+      "exists": true,
+      "files": [
+        {
+          "source": "packages/backend/src/core/database/drizzle/0000_sleepy_earthquake.sql",
+          "bytes": 2521,
+          "sha256": "75e3e6f62e40334f98d824ae5a39cdb17a862770bfb6fd4fbf740dfbc3dda1d3"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0001_crazy_vanisher.sql",
+          "bytes": 95,
+          "sha256": "4d0a3c187bd68d08947229499682528f672cec570d78e5f9cc4989c675d69822"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0002_add-app-version.sql",
+          "bytes": 722,
+          "sha256": "7cab8f859574a3cc4b426f9fce447dc397845ff419ff63c8304a38f25302aeb3"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0003_add-status-updating.sql",
+          "bytes": 307,
+          "sha256": "7f0b9b4c7bee2970231070cb2b3b59156c9b24755118fadeb02ec428477ca3d9"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0004_add-exposed-domain-fields.sql",
+          "bytes": 586,
+          "sha256": "16aead902a4de00893e2b9e37d587c4932ee9b07d511cef21b706d563adbccd6"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0005_add-user-operator.sql",
+          "bytes": 418,
+          "sha256": "5fd2978db449dbbe0d9de49cca4a9862922126296b293aeedc84500da213353b"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0006_add-totp-user-fields.sql",
+          "bytes": 618,
+          "sha256": "1b8264308e9be138783fd85807cd3a87ab91ef566d71a29028dbf355677ce227"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0007_merge-config-with-domain-and-exposed.sql",
+          "bytes": 328,
+          "sha256": "5acf49254cfa183a8f32e418393a3e61a3df80fd6b6abf52590c37c3dd6fa071"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0008_add-guest-dashboard.sql",
+          "bytes": 466,
+          "sha256": "910d7bac560b6899ae3797c484d1dd30898322cf8c738bc8c735bf158bf61465"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0009_add-status-resetting.sql",
+          "bytes": 309,
+          "sha256": "c04b8db84d22a6b00eb679fa774e1836d4990cc1d2e7e84fa32e62345c1f05f5"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0010_link-table-description.sql",
+          "bytes": 86,
+          "sha256": "13227d488386c6e5ecc83a474e0931f5916e74637077fa50410a71fc856d5b97"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0011_app-local-exposed.sql",
+          "bytes": 798,
+          "sha256": "380311c71c1a9cae098b82ddcd279c37f2ca5e23f4657e1eeb6132e81e862ab5"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0012_restarting-state.sql",
+          "bytes": 311,
+          "sha256": "67d707ef8b4f201b91090c16f72d445a496e44c894873d7f10f61236fa7d80e6"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0013_backingup-state.sql",
+          "bytes": 619,
+          "sha256": "3829b253e577b090c8f3f134e8cc6caa79c4408a46dda1bfd22c4604dd097a67"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0014_curly_jigsaw.sql",
+          "bytes": 340,
+          "sha256": "5035e0ab62b8bf3915e1fd5a63a7713aae074c73ad10f43c58f87ee2bd5a7aeb"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0015_first_gabe_jones.sql",
+          "bytes": 3227,
+          "sha256": "528875b7e018d9e8a399a8db558250fbbc3ad72ae51bb7e4a293d6ebfae9c57a"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0016_closed_enchantress.sql",
+          "bytes": 157,
+          "sha256": "d279b2e236bf86fa926757541c8f408293ac7761375295acd8042d98182dd174"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0017_stale_maverick.sql",
+          "bytes": 60,
+          "sha256": "28d4de712d0c81478cc0f751dc7576890351da0a7895b738bf5d7ba3b7fe1f70"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0018_low_sentinels.sql",
+          "bytes": 2,
+          "sha256": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0019_slow_loa.sql",
+          "bytes": 46,
+          "sha256": "da641cff3b89d7a56a947e3f620afd556eebd708084d924128c80233d11b2d9f"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0020_flimsy_orphan.sql",
+          "bytes": 70,
+          "sha256": "3f5e84cce8fdc30fe310f2f32e15df6b208ea3fefbb1056da6278af29aa47db5"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0021_mighty_molecule_man.sql",
+          "bytes": 65,
+          "sha256": "c2e9cb27b539caea5abb5bef2c16afd92814b960950f6609ab926070019ceb40"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0022_unusual_redwing.sql",
+          "bytes": 55,
+          "sha256": "6444766d3cb59a63aa7181fc155ab4b1acc0f38d9630fb62529fe4ffe83d9d49"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0023_petite_marauders.sql",
+          "bytes": 321,
+          "sha256": "9f6433bf479ba269839642ce0ff9d166508f36c40478337b26845d382fc40d60"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0024_lovely_wolfsbane.sql",
+          "bytes": 261,
+          "sha256": "07fb7a3dcf858bb77a5fd2e4070c48ea87995d0b7029c2e68af77bea7dbab239"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0025_stiff_devos.sql",
+          "bytes": 82,
+          "sha256": "6fe7db96f15bda853dda46572c87bc23e387e0a1988a7e1172933a61ef25a19c"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0026_fair_lord_hawal.sql",
+          "bytes": 423,
+          "sha256": "d9ba83144db8649b09da686310b3ff82280b8e3df83f57cb6c3ba9e5f964fbf2"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0027_petite_dexter_bennett.sql",
+          "bytes": 74,
+          "sha256": "347761bac42777b62ae258520cb977a958904fa87409fd4b0f150a9579801eb9"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0028_eminent_tony_stark.sql",
+          "bytes": 141,
+          "sha256": "64088260e80276a110776dd016785c5612295c7b061e51094048c9535e3812b8"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0029_lumpy_zeigeist.sql",
+          "bytes": 55,
+          "sha256": "568916809c419d295f98510d36237ae468401f976b736059b2575e8a931f20ba"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0030_redundant_bloodaxe.sql",
+          "bytes": 1487,
+          "sha256": "59e4afee1ffadb1eaadd7eb03af6ed1ace67ca764febf60675c45d96331ba650"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/0031_editable_apps.sql",
+          "bytes": 430,
+          "sha256": "1046541efd229ebb0a0f8f81bad544f8e553101463533983925811bc76b8368d"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0000_snapshot.json",
+          "bytes": 9968,
+          "sha256": "9ed5cf31116fa3be549646a747538e17904d2a6a11badd93d28ed8754433c1ed"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0001_snapshot.json",
+          "bytes": 10127,
+          "sha256": "689c5b4bc52a7f7067eb66f18a084e75100e7cb262ae835d254ecd07fc7e413a"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0002_snapshot.json",
+          "bytes": 10127,
+          "sha256": "664df0d0e09f55f771ba21dcc8f88df93ecd3c584ddcbb48902d9639dae6c10e"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0003_snapshot.json",
+          "bytes": 10127,
+          "sha256": "c6341f582d47903a0dd48fd5bb47a5b74b39a4940fcd62e1051d803ad801061a"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0004_snapshot.json",
+          "bytes": 10127,
+          "sha256": "979c65863a61f2729630988e992012ff7abb1d619eb7f1c4b25b111ad2bc7277"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0005_snapshot.json",
+          "bytes": 10127,
+          "sha256": "d0423a599ace6e953789ce8199f30602b0453457def428c9ee018a0a47ae132e"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0006_snapshot.json",
+          "bytes": 10127,
+          "sha256": "cf18144a582c9cf78e882d9dc8261ab1b6a1a05c84ed545d4d525ede5bdb2a65"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0007_snapshot.json",
+          "bytes": 10127,
+          "sha256": "bd537e0d919ffcb34dca2f9429274e092c93c435243fd022aa65f1c572c36dd8"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0008_snapshot.json",
+          "bytes": 10127,
+          "sha256": "88ee49058b7e7a9b8e1d0f875661f49c26a9b62748440e20620735aa5ccecf7f"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0009_snapshot.json",
+          "bytes": 10127,
+          "sha256": "d142322cddeafc0128b9fc10562749193a973f45c8fc264ed611e154c306adf5"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0010_snapshot.json",
+          "bytes": 10127,
+          "sha256": "5e42b4866193d8d27a744545b9b36da99f0ebfbcd52d9ade179f3fa5c7b46001"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0011_snapshot.json",
+          "bytes": 10127,
+          "sha256": "a5718d257b3fe8e7fd330404ef22eec44244cb7e64632029f8d04bbe7077d1af"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0012_snapshot.json",
+          "bytes": 10127,
+          "sha256": "db86d9ea9aa0747c2642fa641dc5bf8a6e282349865a638028e305d1d5a672c3"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0013_snapshot.json",
+          "bytes": 10127,
+          "sha256": "3f0971f77b1c4da3c73464638fe16430d4ae0dc41801347f2edfbf3a6d4adea9"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0014_snapshot.json",
+          "bytes": 10310,
+          "sha256": "f969219d66906f14a58d59cd178942e2180b4497559308adcbafe7c28a22958b"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0015_snapshot.json",
+          "bytes": 10310,
+          "sha256": "1632a2867c278b6349adc36722d0b79eb1be78c4ad2232d35adf7fddfdcc7eb8"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0016_snapshot.json",
+          "bytes": 10310,
+          "sha256": "9691c71a6838ed1b263286c289fecb6075a938853dfb98add21796d18391708f"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0017_snapshot.json",
+          "bytes": 10310,
+          "sha256": "48104b95d5a66dc2995705ad4bc7b2fdfa84692604cedcb405569676da9c3b6c"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0018_snapshot.json",
+          "bytes": 9729,
+          "sha256": "3633a260fc2061138787353be76d0183ad19675e0c4997e211a4cc35a8454a43"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0019_snapshot.json",
+          "bytes": 9875,
+          "sha256": "93054e0562a170ead911017f0f8a23c38093c826227b396f889660f397d3a3dd"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0020_snapshot.json",
+          "bytes": 10031,
+          "sha256": "44f98525be8083bcaa7e3f6063a6e73c4ee128b02064e7efc3d790301c47fc31"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0021_snapshot.json",
+          "bytes": 9875,
+          "sha256": "fdf8f53fce394aa64c09c294c27088b3cd57903cb4828712368ab60c942a1ab7"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0022_snapshot.json",
+          "bytes": 10039,
+          "sha256": "9ba19850f32f1a1a2bbcf52bd5f65adaf42b2a048d1923f91cbe461d739770cf"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0023_snapshot.json",
+          "bytes": 10258,
+          "sha256": "ea72c85dda885b1e9f83db2d28ade5b312597437fbdf90cd67f287267a32e7a5"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0024_snapshot.json",
+          "bytes": 10449,
+          "sha256": "80159a1b3f5b3f155c448a2aa8315acd3c01dfaf042d74909361809ac2537f5e"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0025_snapshot.json",
+          "bytes": 10791,
+          "sha256": "dbafcc8be6a4d0f0622400f7314b66164197f8dedc6e7c711dae5f9a3637172a"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0026_snapshot.json",
+          "bytes": 10970,
+          "sha256": "6342bb27d31fcc8de2e6c4f83b2608f2af113468b57ad1665ff02632267baaaf"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0027_snapshot.json",
+          "bytes": 10468,
+          "sha256": "1ea3167dc91b5a275c8c4f923fea0f7f284bed5bd8c601e01f91fa4a6e876299"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0028_snapshot.json",
+          "bytes": 10743,
+          "sha256": "2a6fd8769eacee4f78a2c95290e693eedb04ae905b9c13a1fd9667b4dd698692"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0029_snapshot.json",
+          "bytes": 10907,
+          "sha256": "372587391d62e60a891aa10ecd191aa5c55da5533b141ff314e5cd7247479a54"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/0030_snapshot.json",
+          "bytes": 11067,
+          "sha256": "d6ebe1e162ee5842a0129e5a972453497d2e57c9b0e402055ea143206b32d3ae"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/meta/_journal.json",
+          "bytes": 4726,
+          "sha256": "b2930949cd2d8de463f85ef88147e1fc5336c5a6cb227e85ce93fb39bb5abf25"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/relations.ts",
+          "bytes": 326,
+          "sha256": "80c9beee566670293695d0381027443f1c5288af762e9ca6fbfcc195b4ab0b25"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/schema.ts",
+          "bytes": 3814,
+          "sha256": "47af1dce702c7af5b2a75a4797e3776309ca33bf40c263d477554fb110aebc5a"
+        },
+        {
+          "source": "packages/backend/src/core/database/drizzle/types.ts",
+          "bytes": 564,
+          "sha256": "9c897c9d575cb7859f2be57e5b28c1a696fa54773b17629dce8ae3469ea95f28"
+        }
+      ],
+      "file_count": 67,
+      "bytes": 342971
+    },
+    "/app/assets/translations": {
+      "source": "packages/backend/src/modules/i18n/translations",
+      "exists": true,
+      "files": [
+        {
+          "source": "packages/backend/src/modules/i18n/translations/af-ZA.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ar-SA.json",
+          "bytes": 45491,
+          "sha256": "c24c74041e8fdb330e0d2b99ff132674d96093c3f18d6a3da89f0bd825c6844d"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ca-ES.json",
+          "bytes": 45838,
+          "sha256": "f9e6d2b6e13cde5ad6cc2c88dd34801dc3de2f64dcb97a56e22201766a0957ba"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/cs-CZ.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/da-DK.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/de-DE.json",
+          "bytes": 47759,
+          "sha256": "e4d0fab109cd8b248f6c3dd5aad61541bc160752553cb010800f3e1bdff27a33"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/el-GR.json",
+          "bytes": 60103,
+          "sha256": "1dd02b89ee138824b664cc759eb408be18f999a3ef786668e84dbb571b2cc821"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/en-US.json",
+          "bytes": 44406,
+          "sha256": "985d977b0937677f62b9e729ab3e3e47aa1eba47f91ca92bb333af77583fdb36"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/en.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/es-ES.json",
+          "bytes": 47430,
+          "sha256": "c5e3f5bc69e4ab577feb05a20ab34f07b266de39ec849679654c06acbb75834a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/fi-FI.json",
+          "bytes": 44283,
+          "sha256": "cfeeb09256ea54857d84ba4dadd90b5851ae830f0f1a9505e0f7ce62a8d7e8bf"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/fr-FR.json",
+          "bytes": 51948,
+          "sha256": "6aee31150ce8b9824d7354161f66062f73fbaa58056809531cfe8d2cc78e4efd"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/he-IL.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/hu-HU.json",
+          "bytes": 52638,
+          "sha256": "04563d44993f1dda40ebd33f020f20b6184dea196d8e6edb881dee4ca5263864"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/it-IT.json",
+          "bytes": 48940,
+          "sha256": "759ba21412e94dccd86fd917ce455e7c03c24e2a9beb2f289090efb49efef1c6"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ja-JP.json",
+          "bytes": 47269,
+          "sha256": "8d1593ee494b9ab316d9af14929739d194c97bdc73be402e5c32e52ae1ca1006"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ko-KR.json",
+          "bytes": 45053,
+          "sha256": "cb570ff6021449fe648e4d1dfac3c1e4e03529edd1fe3687bab4d7a606439c2c"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/nl-NL.json",
+          "bytes": 45370,
+          "sha256": "502a84903fd9d281f26e0be1c947a47a54515a832acabac47c0da34cd1bcb14f"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/no-NO.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/pl-PL.json",
+          "bytes": 49308,
+          "sha256": "c7a6d67bb208935ba16beacbec480efbdc7be9be48e5b6d0cbe03a2faae1751a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/pt-BR.json",
+          "bytes": 48091,
+          "sha256": "08f20249287a0f061130d888b2e7aa594ba8770827dcdb668c8f00fc42628458"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/pt-PT.json",
+          "bytes": 45858,
+          "sha256": "b06df35aacccb6271ee01b1a3a60e2c0b57bdc5e27e08fb78906076e02d656b6"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ro-RO.json",
+          "bytes": 45556,
+          "sha256": "052edc9a929c57293bc6af51685f71b415a99a164cc2524ec7b1aeb19bb526e9"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/ru-RU.json",
+          "bytes": 65411,
+          "sha256": "5de91b81ab64274931f1dc8bda94e4d64ee113ffbb546a3d68f07b8bdba11209"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/sr-SP.json",
+          "bytes": 44294,
+          "sha256": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/sv-SE.json",
+          "bytes": 45919,
+          "sha256": "92e0cfc7e94c87e10809ea2815f8b5d6e245392854df7676c2b682bc9635a0d6"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/tr-TR.json",
+          "bytes": 50225,
+          "sha256": "e26bcb18f0dccf2a3a108ecdfcea2a8672d31d69388f4d07ecc2fa7cad712abc"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/uk-UA.json",
+          "bytes": 66186,
+          "sha256": "1300175760f5c243b450acd40b54d88ea40eefb960c7adf46c522ea274db2478"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/vi-VN.json",
+          "bytes": 48238,
+          "sha256": "1dcd2f8f40ca19ef71114d4c910e07cb16712161d5a55d94188e02f4bd641a94"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/zh-CN.json",
+          "bytes": 43637,
+          "sha256": "4b7dfa9c1a153bee9a06d8c05118c4d961852abad899e3854758181303fa67b2"
+        },
+        {
+          "source": "packages/backend/src/modules/i18n/translations/zh-TW.json",
+          "bytes": 44261,
+          "sha256": "7c7e7f2b9c204f3c9b18cc221920485d1195f13df43d07947cf39b8fe17336c5"
+        }
+      ],
+      "file_count": 31,
+      "bytes": 1489276
+    },
+    "/app/assets/frontend": {
+      "source": "packages/frontend/dist/client",
+      "exists": false,
+      "files": [],
+      "file_count": 0,
+      "bytes": 0
+    }
+  },
+  "not_measured": [
+    "new backend bundle and native outputs",
+    "donor runtime external module closure",
+    "dynamic loader/ABI compatibility",
+    "real root Nest DI and HTTP readiness"
+  ],
+  "installed_path_pass": false,
+  "RUNTIPI_ADMITTED": false
+}

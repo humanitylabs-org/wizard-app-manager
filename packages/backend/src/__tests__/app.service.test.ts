@@ -13,6 +13,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import YAML from 'yaml';
+import { DatabaseService } from '@/core/database/database.service';
+import { CacheService } from '@/core/cache/cache.service';
+import { AppStoreService } from '@/modules/app-stores/app-store.service';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
+import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { LoggerService } from '@/core/logger/logger.service';
 
 const TRAEFIK_CONFIG = `api:
   dashboard: true
@@ -149,6 +157,45 @@ describe('AppService', () => {
       expect(result.latest).toBe(version); // Should fall back to current version when github returns empty string
       expect(result.body).toBe('');
     });
+  });
+
+  it('bootstrap completes without daemon-wide network pruning', async () => {
+    const docker = { pruneNetworks: vi.fn().mockResolvedValue({}) };
+    const database = mock<DatabaseService>();
+    const cache = mock<CacheService>();
+    cache.get.mockReturnValue('synthetic');
+    const stores = mock<AppStoreService>();
+    const marketplace = mock<MarketplaceService>();
+    const repos = mock<RepoEventsQueue>();
+    const system = mock<SystemEventsQueue>();
+    const lifecycle = mock<AppLifecycleService>();
+    const logger = mock<LoggerService>();
+    configurationService.getConfig.mockReturnValue(fromPartial({ version: 'synthetic', userSettings: {}, __prod__: true }));
+    const moduleRef = await Test.createTestingModule({
+      providers: [AppService,
+        { provide: DOCKERODE, useValue: docker },
+        { provide: ConfigurationService, useValue: configurationService },
+        { provide: DatabaseService, useValue: database },
+        { provide: CacheService, useValue: cache },
+        { provide: AppStoreService, useValue: stores },
+        { provide: MarketplaceService, useValue: marketplace },
+        { provide: RepoEventsQueue, useValue: repos },
+        { provide: SystemEventsQueue, useValue: system },
+        { provide: AppLifecycleService, useValue: lifecycle },
+        { provide: LoggerService, useValue: logger }],
+    }).useMocker(mock).compile();
+    const subject = moduleRef.get(AppService);
+    const assets = vi.spyOn(subject, 'copyAssets').mockResolvedValue();
+    const tls = vi.spyOn(subject, 'generateTlsCertificates').mockResolvedValue();
+    await subject.bootstrap();
+    expect(docker.pruneNetworks).not.toHaveBeenCalled();
+    expect(database.migrate).toHaveBeenCalledOnce();
+    expect(stores.migrateLegacyRepo).toHaveBeenCalledOnce();
+    expect(marketplace.initialize).toHaveBeenCalledOnce();
+    expect(assets).toHaveBeenCalledOnce();
+    expect(tls).toHaveBeenCalledOnce();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(lifecycle.restartRunningApps).not.toHaveBeenCalled();
   });
 
   describe('copyAssets', () => {

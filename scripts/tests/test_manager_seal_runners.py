@@ -199,7 +199,10 @@ class ManagerSealRunners(unittest.TestCase):
                 with tarfile.open(archive, 'w:gz') as tf:
                     m = tarfile.TarInfo(name)
                     m.type, m.size, m.linkname = kind, size, '/outside'
-                    tf.addfile(m)
+                    # Deliberately header-only malformed archive. Python 3.14
+                    # rejects addfile(nonzero-size, fileobj=None) before the
+                    # extraction preflight under test can inspect the header.
+                    tf.fileobj.write(m.tobuf())
                 with self.assertRaisesRegex(RuntimeError, 'toolchain-headers-'):
                     early.extract_node_headers(archive, root/f'out-{i}')
 

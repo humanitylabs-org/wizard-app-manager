@@ -1,0 +1,60 @@
+{
+  "kind": "actual tiny local source/static regressions; not installed runtime",
+  "python_tests": 80,
+  "node_source_method_tests": 22,
+  "vitest_run": false,
+  "backend_built": false,
+  "installed_path_run": false,
+  "remote_runtime_created": false,
+  "RUNTIPI_ADMITTED": false,
+  "unchanged_since_baseline": {
+    "docs/manager-seal-installed-spike-evidence.json": "8f02b0fd7a5768a0bd23fda84be81604fb58363d39a58417fc483da24121ef2b",
+    "docs/manager-seal-installed-spike-pins.json": "a5d930a57350507c50c1767a1afcac85a6288fddcd99560b8dbab1c3dd8bcc16",
+    "docs/manager-seal-update-transaction-design.md": "e73cd61579c88a280188893d6e359d6a37e6f4a7b55227b4d5d642b644966ff5",
+    "packages/backend/src/modules/docker/docker.service.ts": "04ef4e9742d601099e510f4f518b4a249f197054eaa2b29b4b5f66e789aa433c",
+    "packages/backend/src/modules/docker/mandatory-seal.ts": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc",
+    "packages/backend/src/modules/docker/wizard-storage.ts": "dab3f7bb925bf0247f31d6b60a2cc8977424ea4b7a9b2c9d368715760dae7d09",
+    "bun.lock": "07dd09dc0a77f4ac2476869d86c7cc6901082270648facfd7cb49e43d8cd35a4",
+    "packages/backend/build.ts": "70441708edc4e06c843583637d937a2d97ab4db648674ae8de7d6a2e66d11b41",
+    "Dockerfile": "c291e99a18a388f6b87787374ae2c6ed46cd2c4aef48b7ab4ee07a2045179186"
+  },
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_manager_seal_*.py"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "................................................................................\n----------------------------------------------------------------------\nRan 80 tests in 0.643s\n\nOK\n"
+    },
+    {
+      "argv": [
+        "node",
+        "--test",
+        "scripts/tests/test_manager_seal_remediation.mjs",
+        "scripts/tests/test_manager_seal_dollars.mjs",
+        "scripts/tests/test_manager_seal_startup_install.mjs"
+      ],
+      "exit": 0,
+      "stdout": "TAP version 13\n# Subtest: rendered dollar bytes stay exact: \"$$DO_NOT_INTERPOLATE\"\nok 1 - rendered dollar bytes stay exact: \"$$DO_NOT_INTERPOLATE\"\n  ---\n  duration_ms: 4.545479\n  type: 'test'\n  ...\n# Subtest: rendered dollar bytes stay exact: \"$${DO_NOT_INTERPOLATE}\"\nok 2 - rendered dollar bytes stay exact: \"$${DO_NOT_INTERPOLATE}\"\n  ---\n  duration_ms: 0.400282\n  type: 'test'\n  ...\n# Subtest: rendered dollar bytes stay exact: \"$$$$\"\nok 3 - rendered dollar bytes stay exact: \"$$$$\"\n  ---\n  duration_ms: 0.183171\n  type: 'test'\n  ...\n# Subtest: rendered dollar bytes stay exact: \"$$\"\nok 4 - rendered dollar bytes stay exact: \"$$\"\n  ---\n  duration_ms: 0.181251\n  type: 'test'\n  ...\n# Subtest: rendered dollar bytes stay exact: \"$$$$DO_NOT_INTERPOLATE\"\nok 5 - rendered dollar bytes stay exact: \"$$$$DO_NOT_INTERPOLATE\"\n  ---\n  duration_ms: 0.242631\n  type: 'test'\n  ...\n# Subtest: rendered dollar bytes stay exact: \"quote\\\\\"\\\\\\\\unicode-\u03bb$$\"\nok 6 - rendered dollar bytes stay exact: \"quote\\\\\"\\\\\\\\unicode-\u03bb$$\"\n  ---\n  duration_ms: 0.133401\n  type: 'test'\n  ...\n# Subtest: only launch sections survive and every selected section retains exact bytes\nok 7 - only launch sections survive and every selected section retains exact bytes\n  ---\n  duration_ms: 0.376972\n  type: 'test'\n  ...\n# (node:2498530) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\n# (Use `node --trace-warnings ...` to show where the warning was created)\n# Subtest: forced rollback: nested down receives exact snapshot; original failure survives; recovery uses fresh snapshot\nok 8 - forced rollback: nested down receives exact snapshot; original failure survives; recovery uses fresh snapshot\n  ---\n  duration_ms: 3.985397\n  type: 'test'\n  ...\n# Subtest: standalone stop: sticky enrollment excludes optional files even with corrupt policy\nok 9 - standalone stop: sticky enrollment excludes optional files even with corrupt policy\n  ---\n  duration_ms: 1.227066\n  type: 'test'\n  ...\n# Subtest: standalone down --remove-orphans: sticky enrollment excludes optional files even with corrupt policy\nok 10 - standalone down --remove-orphans: sticky enrollment excludes optional files even with corrupt policy\n  ---\n  duration_ms: 0.887794\n  type: 'test'\n  ...\n# Subtest: standalone kill: sticky enrollment excludes optional files even with corrupt policy\nok 11 - standalone kill: sticky enrollment excludes optional files even with corrupt policy\n  ---\n  duration_ms: 2.243219\n  type: 'test'\n  ...\n# Subtest: standalone rm --force: sticky enrollment excludes optional files even with corrupt policy\nok 12 - standalone rm --force: sticky enrollment excludes optional files even with corrupt policy\n  ---\n  duration_ms: 1.242615\n  type: 'test'\n  ...\n# Subtest: ordinary app remediation retains optional env/compose inputs\nok 13 - ordinary app remediation retains optional env/compose inputs\n  ---\n  duration_ms: 0.940165\n  type: 'test'\n  ...\n# Subtest: callback context is URN-bound, expires after callback and is not shared with concurrent callers\nok 14 - callback context is URN-bound, expires after callback and is not shared with concurrent callers\n  ---\n  duration_ms: 1.196335\n  type: 'test'\n  ...\n# Subtest: unknown/activation shortcuts remain refused; pull remains guarded\nok 15 - unknown/activation shortcuts remain refused; pull remains guarded\n  ---\n  duration_ms: 1.342595\n  type: 'test'\n  ...\n# (node:2498536) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\n# (Use `node --trace-warnings ...` to show where the warning was created)\n# Subtest: bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\nok 16 - bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\n  ---\n  duration_ms: 49.123103\n  type: 'test'\n  ...\n# Subtest: install: HTTP form true survives omitted override; queue and final status agree\nok 17 - install: HTTP form true survives omitted override; queue and final status agree\n  ---\n  duration_ms: 6.665607\n  type: 'test'\n  ...\n# Subtest: install: HTTP form false remains false; queue and final status agree\nok 18 - install: HTTP form false remains false; queue and final status agree\n  ---\n  duration_ms: 1.777707\n  type: 'test'\n  ...\n# Subtest: install: ordinary omission defaults false; queue and final status agree\nok 19 - install: ordinary omission defaults false; queue and final status agree\n  ---\n  duration_ms: 1.577206\n  type: 'test'\n  ...\n# Subtest: install: trusted false overrides form true; queue and final status agree\nok 20 - install: trusted false overrides form true; queue and final status agree\n  ---\n  duration_ms: 3.429844\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides form false; queue and final status agree\nok 21 - install: trusted true overrides form false; queue and final status agree\n  ---\n  duration_ms: 1.222565\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides omission; queue and final status agree\nok 22 - install: trusted true overrides omission; queue and final status agree\n  ---\n  duration_ms: 1.112456\n  type: 'test'\n  ...\n1..22\n# tests 22\n# suites 0\n# pass 22\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 158.903198\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ]
+}

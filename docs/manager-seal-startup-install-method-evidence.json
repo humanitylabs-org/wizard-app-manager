@@ -1,0 +1,33 @@
+{
+  "kind": "offline exact-source methods with dependency facades; NOT installed acceptance",
+  "baseline": "118608e135ffa1d7f5114a2e9b7a059c50c04cf2",
+  "node": "v22.22.3",
+  "source_sha256": {
+    "packages/backend/src/app.service.ts": "531d1d12d37a04a5ece7ff504f6f06376acc8e7a881baaab9941cacf1ffe084e",
+    "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts": "1b4705533f76480513b39293c4123da953e80af40ee7212ea4e96001b4b2b2d3"
+  },
+  "baseline_source_sha256": {
+    "packages/backend/src/app.service.ts": "785fc560f6de97b36afdd74a567d3bac38c56d5425e9570be023e1a1877d2318",
+    "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts": "923ce5fc14ba89156a59ee998395dbd2f0e2ccf4684f4e48288517317abfd8c9"
+  },
+  "test_sha256": "d59a0a73f7cf5bdb20561a273df61f40415cd7b2c6c6b7ff8c16fffd35e80839",
+  "runner_sha256": "e44f8a54d4d58fd19ff59c82b79c45071325bf38abba90b28bb8e1ffb0b7df4f",
+  "candidate": {
+    "exit": 0,
+    "pass": 7,
+    "fail": 0,
+    "tap": "TAP version 13\n# (node:2468410) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\n# (Use `node --trace-warnings ...` to show where the warning was created)\n# Subtest: bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\nok 1 - bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\n  ---\n  duration_ms: 49.516846\n  type: 'test'\n  ...\n# Subtest: install: HTTP form true survives omitted override; queue and final status agree\nok 2 - install: HTTP form true survives omitted override; queue and final status agree\n  ---\n  duration_ms: 4.9374\n  type: 'test'\n  ...\n# Subtest: install: HTTP form false remains false; queue and final status agree\nok 3 - install: HTTP form false remains false; queue and final status agree\n  ---\n  duration_ms: 1.657868\n  type: 'test'\n  ...\n# Subtest: install: ordinary omission defaults false; queue and final status agree\nok 4 - install: ordinary omission defaults false; queue and final status agree\n  ---\n  duration_ms: 1.949418\n  type: 'test'\n  ...\n# Subtest: install: trusted false overrides form true; queue and final status agree\nok 5 - install: trusted false overrides form true; queue and final status agree\n  ---\n  duration_ms: 3.014763\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides form false; queue and final status agree\nok 6 - install: trusted true overrides form false; queue and final status agree\n  ---\n  duration_ms: 1.696096\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides omission; queue and final status agree\nok 7 - install: trusted true overrides omission; queue and final status agree\n  ---\n  duration_ms: 1.493096\n  type: 'test'\n  ...\n1..7\n# tests 7\n# suites 0\n# pass 7\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 150.480634\n"
+  },
+  "baseline_negative": {
+    "exit": 1,
+    "pass": 5,
+    "fail": 2,
+    "specific_failures": [
+      "bootstrap: no daemon-wide mutation; migration, assets and TLS still complete",
+      "install: HTTP form true survives omitted override; queue and final status agree"
+    ],
+    "tap": "TAP version 13\n# (node:2468468) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\n# (Use `node --trace-warnings ...` to show where the warning was created)\n# Subtest: bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\nnot ok 1 - bootstrap: no daemon-wide mutation; migration, assets and TLS still complete\n  ---\n  duration_ms: 47.943859\n  type: 'test'\n  location: '/home/telos/.hermes/cache/scratch/incognito/manager-seal/scripts/tests/test_manager_seal_startup_install.mjs:24:1'\n  failureType: 'testCodeFailure'\n  error: 'bootstrap invoked daemon-wide network prune'\n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: true\n  actual: false\n  operator: '=='\n  stack: |-\n    TestContext.<anonymous> (file:///home/telos/.hermes/cache/scratch/incognito/manager-seal/scripts/tests/test_manager_seal_startup_install.mjs:46:10)\n    async Test.run (node:internal/test_runner/test:1054:7)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: install: HTTP form true survives omitted override; queue and final status agree\nnot ok 2 - install: HTTP form true survives omitted override; queue and final status agree\n  ---\n  duration_ms: 3.986226\n  type: 'test'\n  location: '/home/telos/.hermes/cache/scratch/incognito/manager-seal/scripts/tests/test_manager_seal_startup_install.mjs:85:3'\n  failureType: 'testCodeFailure'\n  error: |-\n    validated form skipRun lost before queue\n    \n    false !== true\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: true\n  actual: false\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///home/telos/.hermes/cache/scratch/incognito/manager-seal/scripts/tests/test_manager_seal_startup_install.mjs:87:12)\n    async Test.run (node:internal/test_runner/test:1054:7)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: install: HTTP form false remains false; queue and final status agree\nok 3 - install: HTTP form false remains false; queue and final status agree\n  ---\n  duration_ms: 1.303145\n  type: 'test'\n  ...\n# Subtest: install: ordinary omission defaults false; queue and final status agree\nok 4 - install: ordinary omission defaults false; queue and final status agree\n  ---\n  duration_ms: 1.245876\n  type: 'test'\n  ...\n# Subtest: install: trusted false overrides form true; queue and final status agree\nok 5 - install: trusted false overrides form true; queue and final status agree\n  ---\n  duration_ms: 2.057758\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides form false; queue and final status agree\nok 6 - install: trusted true overrides form false; queue and final status agree\n  ---\n  duration_ms: 1.066875\n  type: 'test'\n  ...\n# Subtest: install: trusted true overrides omission; queue and final status agree\nok 7 - install: trusted true overrides omission; queue and final status agree\n  ---\n  duration_ms: 1.090255\n  type: 'test'\n  ...\n1..7\n# tests 7\n# suites 0\n# pass 5\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 132.821471\n"
+  },
+  "installed_pass": false,
+  "RUNTIPI_ADMITTED": false
+}
