@@ -80,7 +80,6 @@ def test_source_inventory_format_and_link_are_portable(tmp_path):
 
 def test_manual_choice_survives_reconciliation_and_no_default_is_consent(tmp_path, monkeypatch):
     home, units = tmp_path / 'home', tmp_path / 'units'
-    monkeypatch.setattr(au, '_units_dir', lambda: units)
     au.set_mode('ask', home, units, systemctl=False)
     assert au.ensure_timer(home, units, systemctl=False)['app_timer'] is False
     assert au.mode(home) == 'ask' and not (units / f'{au.UNIT}.timer').exists()
@@ -110,7 +109,7 @@ def test_manual_stops_next_app_in_already_running_batch(tmp_path, monkeypatch):
     home.mkdir()
     units = tmp_path / 'units'
     calls = []
-    rows = [{'id': a, 'from': 1, 'to': 2, 'status': 'running', 'skip': None} for a in ['first', 'second']]
+    rows = [{'id': a, 'from': 1, 'to': 2, 'status': 'running', 'skip': None, 'to_version': '2'} for a in ['first', 'second']]
     c = SimpleNamespace(home=home, runtipi_root=tmp_path / 'rt', runtipi=lambda: SimpleNamespace(installed=lambda: []))
     monkeypatch.setattr(updates, 'installing', lambda h: False)
     monkeypatch.setattr(au, 'candidates', lambda *a, **kw: rows)
