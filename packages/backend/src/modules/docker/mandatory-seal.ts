@@ -11,7 +11,9 @@ export const sealHash = (value: string) => createHash('sha256').update(value).di
 const canonical = (v: any): string => JSON.stringify(v, (_key, value) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, value[k]])) : value);
-const literal = (v: unknown) => JSON.stringify(v).replaceAll('$', '$$');
+// Same literal-dollar rule as the existing staged compose-consumption helper:
+// replacement STRING '$$' means one dollar in JavaScript; use a callback.
+const literal = (v: unknown) => JSON.stringify(v).replaceAll('$', () => '$$');
 
 /** Trusted compiler output only. Never infer enrollment from catalogue/user-config. */
 export function validateSeal(doc: Compose, urn: string) {

@@ -43,6 +43,11 @@ async function fixture() {
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
 describe('sticky mandatory enrollment', () => {
+  it('escapes literal dollars before Compose reconsumes resolved snapshot values', async () => {
+    const { seal } = await fixture();
+    const snapshot = JSON.parse(seal.snapshot({ services: { main: { environment: { TOKEN: '$LITERAL${also_literal}' } } } }));
+    expect(snapshot.services.main.environment.TOKEN).toBe('$$LITERAL$${also_literal}');
+  });
   it('is independent of optional configuration and survives a new manager instance', async () => {
     const { root, urn, doc, seal } = await fixture();
     expect(await seal.read(urn)).toBeNull();
@@ -128,6 +133,11 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       }));
       expect(rows).toHaveLength(Object.keys(doc.services).length);
       for (const row of rows) expect(row.networks.sort()).toEqual(Object.keys(doc.services[row.service].networks).map((n) => `${project}_${n}`).sort());
+      const client = rows.find((row) => row.service === main)!;
+      // Read only this explicitly synthetic value, never Config.Env or any
+      // provider/owner credential. It detects snapshot double interpolation.
+      const literalValue = await exec('docker', ['exec', client.id, 'python3', '-c', 'import os; print(os.environ["LITERAL"])']);
+      expect(literalValue.stdout.trim()).toBe('$DO_NOT_INTERPOLATE');
     };
     try {
       // Original confirmed bypass: optional config disabled, direct manager up.
