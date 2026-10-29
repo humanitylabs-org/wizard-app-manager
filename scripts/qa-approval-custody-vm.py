@@ -154,6 +154,10 @@ else: raise SystemExit(2)
     CHILDREN.append(hostile)
     check('occupied_probe_ready', hostile.stdout.readline().strip() == 'READY')
     check('occupied_before_enable_refused', run(*args, ok=False).returncode != 0 and not route())
+    denied = run('/usr/bin/python3', '-c',
+                 "from wam.owner_confirm import enable; from pathlib import Path; enable(Path('" + str(STATE) + "'), 'fixture.example.ts.net')",
+                 user='wizard-system', ok=False)
+    check('occupied_address_publication_refused', denied.returncode != 0 and not route() and hostile.poll() is None)
     os.killpg(hostile.pid, signal.SIGKILL); hostile.wait(timeout=5)
     run('systemctl', 'reset-failed', SOCKET)
     run(*args)
