@@ -164,6 +164,69 @@ def rename_new(old_parent, old, new_parent, new):
     old_parent.check(); new_parent.check()
 
 
+# Linux namespace identity compatibility contract, NOT a readlink convention.
+# Source proof and supported-kernel policy: docs/storage-initial-pid-namespace.md.
+# PROC_PID_INIT_INO in 6.1/6.8/6.12/6.17; PID_NS_INIT_INO is UAPI in 6.18/7.3.
+# Dynamic ns inodes come only from [0xF0000000, 0xFFFFFFFF], never this value.
+PID_NS_INIT_INO = 0xEFFFFFFC
+NSFS_MAGIC = 0x6E736673
+NS_GET_NSTYPE = 0xB703
+CLONE_NEWPID = 0x20000000
+AUDITED_PID_KERNEL_LINES = {(6, 1), (6, 8), (6, 12), (6, 17), (6, 18), (7, 3)}
+
+
+class _StatFS(ctypes.Structure):
+    # Linux LP64 statfs ABI on x86_64/aarch64; other ABIs refuse before libc.
+    _fields_ = [('f_type', ctypes.c_long), ('f_bsize', ctypes.c_long),
+                ('f_blocks', ctypes.c_ulong), ('f_bfree', ctypes.c_ulong),
+                ('f_bavail', ctypes.c_ulong), ('f_files', ctypes.c_ulong),
+                ('f_ffree', ctypes.c_ulong), ('f_fsid', ctypes.c_int * 2),
+                ('f_namelen', ctypes.c_long), ('f_frsize', ctypes.c_long),
+                ('f_flags', ctypes.c_long), ('f_spare', ctypes.c_long * 4)]
+
+
+def namespace_fs_type(fd):
+    """Read the superblock of the SAME opened namespace FD, never path text."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    call = libc.fstatfs
+    call.argtypes = [ctypes.c_int, ctypes.POINTER(_StatFS)]
+    call.restype = ctypes.c_int
+    value = _StatFS()
+    if call(fd, ctypes.byref(value)):
+        e = ctypes.get_errno(); raise OSError(e, os.strerror(e))
+    return value.f_type
+
+
+def require_initial_pid_namespace():
+    """Read-only identity proof for audited Linux kernels; all unknowns refuse.
+
+    NS_GET_PARENT EPERM is ambiguous even with initial-user capabilities.
+    Instead attest nsfs + PID type + the kernel-reserved initial inode on one
+    live FD. Kernel/root/runtime/procfs remain trusted, as for the whole fence.
+    """
+    kernel = os.uname()
+    release = re.fullmatch(r'(\d+)\.(\d+)\.\d+(?:[-+._][A-Za-z0-9+._-]+)?', kernel.release)
+    if (kernel.sysname != 'Linux' or kernel.machine not in ('x86_64', 'aarch64')
+            or ctypes.sizeof(ctypes.c_void_p) != 8 or ctypes.sizeof(ctypes.c_long) != 8
+            or release is None or tuple(map(int, release.group(1, 2))) not in AUDITED_PID_KERNEL_LINES):
+        raise Refusal('unsupported initial PID namespace identity contract')
+    fd = None
+    try:
+        # Follow the kernel procfs magic link intentionally; O_PATH cannot ioctl.
+        fd = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
+        st = os.fstat(fd)
+        if (namespace_fs_type(fd) != NSFS_MAGIC or not stat.S_ISREG(st.st_mode)
+                or fcntl.ioctl(fd, NS_GET_NSTYPE) != CLONE_NEWPID):
+            raise Refusal('unattested PID namespace descriptor')
+        if st.st_ino != PID_NS_INIT_INO:
+            raise Refusal('nested PID namespace')
+        return {'device': st.st_dev, 'inode': st.st_ino, 'type': CLONE_NEWPID}
+    except (OSError, AttributeError) as exc:
+        raise Refusal('initial PID namespace identity unavailable') from None
+    finally:
+        if fd is not None: os.close(fd)
+
+
 def require_fence():
     """Prevention = sole host init; census alone is NEVER an online admission."""
     if os.getuid() != 0 or os.geteuid() != 0 or os.getpid() != 1:
@@ -174,17 +237,7 @@ def require_fence():
     caps = int(fields['CapEff'].strip(), 16)
     if caps & ((1 << 21) | (1 << 22)) != ((1 << 21) | (1 << 22)):
         raise Refusal('host init capabilities unavailable')
-    # In the initial user namespace CAP_SYS_ADMIN allows opening a nested PID
-    # namespace's parent. Initial PID namespace has no parent and returns EPERM.
-    # A rootless user namespace cannot pass the complete uid mapping above.
-    fd = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
-    try:
-        try: parent = fcntl.ioctl(fd, 0xb702)  # NS_GET_PARENT
-        except OSError as exc:
-            if exc.errno != errno.EPERM: raise Refusal('unknown PID namespace') from None
-        else:
-            os.close(parent); raise Refusal('nested PID namespace')
-    finally: os.close(fd)
+    pid_namespace = require_initial_pid_namespace()
     boot_inits = [token.removeprefix('init=') for token in Path('/proc/cmdline').read_text().split()
                   if token.startswith('init=')]
     if len(boot_inits) != 1 or boot_inits[0] in ('/sbin/init', '/usr/lib/systemd/systemd'):
@@ -212,7 +265,8 @@ def require_fence():
         st = os.stat(code.name, dir_fd=parent.fd, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise Refusal('maintenance code is not protected')
-    return {'mechanism': 'sole-host-init-v1', 'userspace_tasks': 1}
+    return {'mechanism': 'sole-host-init-v2', 'userspace_tasks': 1,
+            'pid_namespace': pid_namespace}
 
 
 def rollback_guard():

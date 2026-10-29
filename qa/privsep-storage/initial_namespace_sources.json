@@ -1,0 +1,375 @@
+{
+  "audited_kernel_lines": [
+    "6.1",
+    "6.8",
+    "6.12",
+    "6.17",
+    "6.18",
+    "7.3"
+  ],
+  "debian_package": {
+    "dsc_sha256": "30c921025c1c3f26a102e1d52c9ef23516a8362803d0bdfe738c7a841081ca82",
+    "dsc_sha256_matches_archive": true,
+    "dsc_url": "https://security.debian.org/debian-security/pool/updates/main/l/linux/linux_6.1.190-1.dsc",
+    "patch_archive_sha256": "4923f2b60c4417b08c498fa1dfc529ff827a75dfd49f81153efb38243d9c53d5",
+    "patch_archive_url": "https://security.debian.org/debian-security/pool/updates/main/l/linux/linux_6.1.190-1.debian.tar.xz",
+    "patch_tree_files_scanned": 169,
+    "signature_verified": false,
+    "source_version": "6.1.190-1",
+    "target_files": [
+      "include/linux/proc_ns.h",
+      "fs/nsfs.c",
+      "kernel/pid_namespace.c",
+      "kernel/pid.c",
+      "fs/proc/generic.c"
+    ],
+    "target_patch_headers": []
+  },
+  "dynamic_inode_range_hex": [
+    "0xF0000000",
+    "0xFFFFFFFF"
+  ],
+  "identity_rule": "nsfs+CLONE_NEWPID+PID_NS_INIT_INO",
+  "pid_initial_inode_hex": "0xEFFFFFFC",
+  "runtime_verified": false,
+  "schema": "initial-pid-kernel-source-proof-v1",
+  "source_only": true,
+  "sources": [
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "82e8cff665bf46b4228790a33b728f5d70fe046100e42ae447502d568f2ed1ea",
+      "tag": "v6.1.190",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.1.190/include/linux/proc_ns.h"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "32335adbc9224c02152e7b6da0ef0eee4045e7c022a161d6a6f503287c795394",
+      "tag": "v6.1.190",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.1.190/fs/nsfs.c"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "6f24d776b96f614745cf25edb2049711c0f00f1f8afe3fd12d1b100ce52caa38",
+      "tag": "v6.1.190",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.1.190/kernel/pid_namespace.c"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "c7beec5a14d234a00b1cfdc13c32660a9ac4aab70b6fee4b6ca0bd21a65b5d94",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "ac95721119ff3c359676a1a8cc14a9ea81b68364fd5c956caac48a61f2ccaa3f",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "aa22375d5ee83d406c20891f7fe6a5baeeab4cd965548df6320f1c8f9b1c49ca",
+      "tag": "v6.1.190",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.1.190/include/uapi/linux/nsfs.h"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "c2495216fdc3b3c809025b108f06124800ad46a58876fb6254ffc4c4a925363f",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "6c301a7a9efc1df69b85c56dcb729de1fa09b44993796bfd81619cf20a0f1c97",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "7ceec48f47189210ca30b205ef19813677622b6134ce2b4732e7524637599d1e",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "261bbb52e255743535c1712133995be1ce28c56a7d5f909f9b680d2f73036792",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "b0fa137e20740163864206a921421b3a9f17e0d53790d3a3472677257813515f",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "aa22375d5ee83d406c20891f7fe6a5baeeab4cd965548df6320f1c8f9b1c49ca",
+      "tag": "v6.8",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.8/include/uapi/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "b27a47ca4350373b24987a660eb4e59d63527936815a59a24fac060fae4cdc51",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "00352d816aada15622fae9da72b7c749abc26539534cbe649ef4f4a172784080",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "ab9b08d1e50c5a221ae9ae2f75932ba9498b20a2d22e9496f481324cc5881061",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "e378af582e74ef681034228273507368717e57c88df9076a67be66368a44a130",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "3a9065c03bf74805a58ce3a372a69f911b3382db769237414aa2034fe218e60c",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "d6bcc5f490e33130c45858988d60a14fe2d50a2195c45b750084ee7c5ce0ff25",
+      "tag": "v6.12",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/include/uapi/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "1d6159be62335305c50733f94bfd173cf4e68899c84c1b4fc25237f5216671a0",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "47206cd29476b2c5bdcd16afd35d1fc257cac84f73fd10292be595b7fa06ca53",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "d5f0f5f1a2b3f563ef6565fbbbf81ab2006ae76de320ee6ae319aa9cb7d2627d",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "ff4c73e785054c39669eae3488d9150647bf729b03c9ac02ea13dcbd9e8078c6",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "41413019a1b602a534d0144d25cfab4e0b57ff5b4a1b16229e3aa4f05b5397f9",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "8d7c3b3932e2bcaf37c5d95093d6ae64d8db1b8e86c8d93b92fc2feeaad0eb67",
+      "tag": "v6.17",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.17/include/uapi/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "63376480b58e72b13c36b69daf536a089a2af558544863e9e2f1fe37e7ffd537",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "fb1366d38c672d0fdfa0925fb6f89a5f25c31e3bc3b84e5b558643c46174829f",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "74406bc27f3094e0b7723ff9694359cd4d04216563a80fc2ffd08a537353d26d",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "c04b399c4f199a963d6da713933548e675091ea012881dc9bee2c314be61e3e6",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "16abe335d109989d0e7b37dd48d1b5fb931ef15c4f7bae6230a69ab43adb352a",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/linux/ns_common.h",
+      "sha256": "d245e45a582fdf471c966b5e6d23ef97a21033f01ef4e33fd7a8db0626ee568c",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/include/linux/ns_common.h?format=TEXT"
+    },
+    {
+      "path": "kernel/nscommon.c",
+      "sha256": "be31f7b2c321fd9c07415f0955f3c4ff2de751c3eaed74d8c926784236e68c1c",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/kernel/nscommon.c?format=TEXT"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "63376480b58e72b13c36b69daf536a089a2af558544863e9e2f1fe37e7ffd537",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "0091df2155de56218f2565800a06aadca4e115d53ef5d77249b12107377a8f3b",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "44d1fec6de6e37b4d576d108486bcdcc347a914a2370895f95c8fca245c05bd2",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "fe5f948913f874b8b07442dfec997b56fd658094d0ba50b6e850be177f7a6b8a",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "b4e1eae7f1bb6aaa7ca90cbf6dd8898eee042985d58e8eb92fa4d622e312998a",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/linux/ns_common.h",
+      "sha256": "b844817d3473a9a05ff548748e7ad9785284814f7c5c9b6cd75921c9cfa93a94",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/linux/ns_common.h?format=TEXT"
+    },
+    {
+      "path": "kernel/nscommon.c",
+      "sha256": "9a8a916567d67501e89b7e4744369f57f7f556196016b0832feb98c2b97a5137",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/kernel/nscommon.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "b9e98fbcaabd0573a38b794c4da5deb349721dd4676e56501938b312ca361483",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/include/uapi/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/nsfs.h",
+      "sha256": "37f27614264c495371a984c6d128485faab4b884005ec3c83fdbe647fb3a99e7",
+      "tag": "v6.18.59",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.18.59/include/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/nsfs.h",
+      "sha256": "937ec30ce0e5bab53b4ee277437f8df7349ba3035a50c83b7414190a8abadeab",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/uapi/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/nsfs.h",
+      "sha256": "2598d309932ba35ff7fbab90d96cb0d4b7e48a3020ea5e41b362a01c4667448c",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/linux/nsfs.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/proc_ns.h",
+      "sha256": "b27a47ca4350373b24987a660eb4e59d63527936815a59a24fac060fae4cdc51",
+      "tag": "v6.12.114",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.12.114/include/linux/proc_ns.h?format=TEXT"
+    },
+    {
+      "path": "fs/nsfs.c",
+      "sha256": "449de3f590317d4f6486d0630fbca34930e2de1c592bf90827c27981011f79f9",
+      "tag": "v6.12.114",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.12.114/fs/nsfs.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid_namespace.c",
+      "sha256": "ab9b08d1e50c5a221ae9ae2f75932ba9498b20a2d22e9496f481324cc5881061",
+      "tag": "v6.12.114",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.12.114/kernel/pid_namespace.c?format=TEXT"
+    },
+    {
+      "path": "fs/proc/generic.c",
+      "sha256": "aed7c375f9b5fa0caa326beaa420514dfcddc3ffc78de8402c346444343bca64",
+      "tag": "v6.12.114",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.12.114/fs/proc/generic.c?format=TEXT"
+    },
+    {
+      "path": "kernel/pid.c",
+      "sha256": "c6fc014785996084c52df570b21bb4770e8fa90865140d049bf0bf3baabb6427",
+      "tag": "v6.12.114",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.12.114/kernel/pid.c?format=TEXT"
+    },
+    {
+      "path": "include/uapi/asm-generic/statfs.h",
+      "sha256": "1ea2ff2d3576a20f87dadca8b45de4b29c812d39caca1a2498e207bcd39ebe0b",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/include/uapi/asm-generic/statfs.h?format=TEXT"
+    },
+    {
+      "path": "arch/x86/include/uapi/asm/statfs.h",
+      "sha256": "c4e7415dc58cd4e35581fcf3874ae0f50b0f9dbbbb2f7ea3044ce2e1bca741a6",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/arch/x86/include/uapi/asm/statfs.h?format=TEXT"
+    },
+    {
+      "path": "arch/arm64/include/uapi/asm/unistd.h",
+      "sha256": "a1d29b1442eab1f7fc50184df7ad7271c9d48fa1dabd0e413e88017a26a245cc",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/arch/arm64/include/uapi/asm/unistd.h?format=TEXT"
+    },
+    {
+      "path": "include/uapi/linux/sched.h",
+      "sha256": "1a4a3cef927a5b620add2879da2d469df4ebce135e033d8fff5264c010de535c",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/include/uapi/linux/sched.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/ns/ns_common_types.h",
+      "sha256": "b34237945a161ecded4cd4d954e6804504a62a015014b90d347db2c563b00c27",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/linux/ns/ns_common_types.h?format=TEXT"
+    },
+    {
+      "path": "include/linux/idr.h",
+      "sha256": "485060f431354181579bbf8b9e92f276834192f94c604c69a3688dbf12c2bad9",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/include/linux/idr.h?format=TEXT"
+    },
+    {
+      "path": "lib/idr.c",
+      "sha256": "a5f5799202aebdcfad0d266c241a18da3f43a04cf04bdd63f37c7536087cc4b8",
+      "tag": "v6.1.190",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+/refs/tags/v6.1.190/lib/idr.c?format=TEXT"
+    },
+    {
+      "path": "include/linux/idr.h",
+      "sha256": "8f4de38006634e185c936a8844c49c1e2b75d43305783bcb8bc4000298d9b6ef",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/include/linux/idr.h?format=TEXT"
+    },
+    {
+      "path": "lib/idr.c",
+      "sha256": "1a173b7c0c4a0526073337d9e564f42126fe9809563389f47de1911e285763c4",
+      "tag": "v7.3",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v7.3/lib/idr.c?format=TEXT"
+    }
+  ]
+}
