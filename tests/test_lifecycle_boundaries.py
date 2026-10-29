@@ -42,3 +42,21 @@ def test_deny_stops_after_revocation_without_reading_recipe_risks(tmp_path, monk
     assert calls == [('stop', 'demo')] + ([] if failure else ['reconcile'])
     assert json.loads(fht.path_for(c).read_text())['apps'] == {}
     assert network.host_access_allowed(home) == set()
+
+
+def test_bookkeeping_failure_does_not_suppress_safe_stop(tmp_path, monkeypatch):
+    from wam import host_policy
+    c = SimpleNamespace(home=tmp_path / 'home', runtipi_root=tmp_path / 'runtipi', runtipi=lambda: object())
+    fht.record(c, 'demo', found=['web|privileged'])
+    monkeypatch.setattr(cli, 'installed_ids', lambda rt: {'demo'})
+    calls = []
+    def stop(*args):
+        assert json.loads(fht.path_for(c).read_text())['apps'] == {}
+        calls.append('stop')
+        return {'success': True}
+    monkeypatch.setattr(cli, 'app_lifecycle', stop)
+    monkeypatch.setattr(network, 'set_host_access_allowed', lambda *a: (_ for _ in ()).throw(ValueError('bookkeeping failed')))
+    with pytest.raises(ValueError, match='bookkeeping failed'):
+        host_policy.revoke_and_stop(c, 'demo')
+    assert calls == ['stop']
+    assert json.loads(fht.path_for(c).read_text())['apps'] == {}

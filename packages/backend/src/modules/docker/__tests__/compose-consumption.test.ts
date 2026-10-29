@@ -60,6 +60,13 @@ describe('final compose consumption', () => {
     expect(JSON.parse(executable.input).services.web.environment.APP_SECRET).toBe('synthetic$$VALUE');
   });
 
+  it('refuses a raw Compose restart rather than resolving new teardown input', async () => {
+    const { service } = await fixture();
+    service.getBaseComposeArgsApp.mockClear();
+    await expect(service.composeApp('demo:wizardapps', 'restart')).rejects.toThrow('Unsupported app lifecycle command');
+    expect(service.getBaseComposeArgsApp).not.toHaveBeenCalled();
+  });
+
   it('a final-policy refusal happens before restart down', async () => {
     const { service } = await fixture();
     service.prepareApp = vi.fn(async (_urn, apply) => apply('synthetic'));
@@ -112,6 +119,8 @@ describe('final compose consumption', () => {
     expect(() => assertNoWritableBindAncestors(model, ['/safe/root'])).toThrow('overlap');
     expect(() => assertNoWritableBindAncestors(model, ['/'])).toThrow('overlap');
     expect(() => assertNoWritableBindAncestors(model, ['/safe/root/data'])).not.toThrow();
+    expect(() => assertNoWritableBindAncestors(model, [], ['/safe/root/data/nested'])).toThrow('overlap');
+    expect(() => assertNoWritableBindAncestors(model, [], ['/safe/root/data'])).not.toThrow();
     model.services.web.volumes.push({ type: 'bind', source: '/safe/root', target: '/root' });
     expect(() => assertNoWritableBindAncestors(model)).toThrow('overlap');
   });

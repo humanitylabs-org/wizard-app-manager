@@ -37,9 +37,15 @@ const under = (p: string, root: string) => root === '/' || p === root || p.start
 /** A rootful app can chmod/chown through a writable ancestor bind even when
  * host ownership currently looks protected. Refuse overlapping layouts, including
  * already-running deployments, rather than infer durable authority from UID alone. */
-export function assertNoWritableBindAncestors(model: any, existing: string[] = []) {
+export function assertNoWritableBindAncestors(model: any, existing: string[] = [], existingSources: string[] = []) {
   const mounts = (Object.values(model.services ?? {}) as any[]).flatMap((s) => (s.volumes ?? []).map(volumeOf)).filter(Boolean);
-  const writable = [...existing.map(clean), ...mounts.filter((v) => v!.type === 'bind' && !v!.readOnly).map((v) => clean(v!.source))];
+  const candidateWritable = mounts.filter((v) => v!.type === 'bind' && !v!.readOnly).map((v) => clean(v!.source));
+  const writable = [...existing.map(clean), ...candidateWritable];
+  // A new broad writable parent must not invalidate another running app's
+  // checked ancestry either. Exact shared endpoints remain supported.
+  for (const current of existingSources.map(clean))
+    if (candidateWritable.some((ancestor) => ancestor !== current && under(current, ancestor)))
+      throw new HostAccessRefused('bind', ['writable bind ancestor overlap is unsupported']);
   for (const v of mounts) if (v!.type === 'bind') {
     const source = clean(v!.source);
     if (writable.some((ancestor) => ancestor !== source && under(source, ancestor)))

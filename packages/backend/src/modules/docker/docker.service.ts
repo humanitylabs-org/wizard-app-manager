@@ -1,5 +1,4 @@
-import { spawn, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { teardownApp } from './app-teardown';
 import { withHostAuthority } from './host-policy-lock';
@@ -32,7 +31,6 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
 
-const execFileAsync = promisify(execFile);
 type ValidatedCompose = { args: string[]; input: string };
 
 @Injectable()
@@ -163,6 +161,8 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
         await reapBindHelper(this.config.get('directories').dataDir);
         return result;
       }
+      if (!MUTATING.has(command.split(' ')[0] ?? '') && command.split(' ')[0] !== 'pull')
+        throw new Error('Unsupported app lifecycle command');
       await reapBindHelper(this.config.get('directories').dataDir);
       if (MUTATING.has(command.split(' ')[0] ?? '')) {
         let result!: { success: boolean; stdout: string; stderr: string };
@@ -248,19 +248,23 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       }
       args.push('--project-directory', projectDir);
       const { model, ctx } = await this.assertHostPolicy(appUrn, args, grantedBinds);
-      await this.assertVolumeIdentity(model, appUrn.replace(':', '_'));
-      const managerUid = (await fs.stat(path.join(dataDir, '.env'))).uid;
       const bindDeadline = AbortSignal.timeout(30_000);
+      await this.assertVolumeIdentity(model, appUrn.replace(':', '_'), bindDeadline);
+      const managerUid = (await fs.stat(path.join(dataDir, '.env'))).uid;
       if (Object.values(model.services ?? {}).some((s: any) => (s.volumes ?? []).some((v: any) => v.type === 'bind'))) {
         const ids = (await helperRun(['ps', '-q', '--no-trunc'], bindDeadline)).stdout.trim().split(/\s+/).filter(Boolean);
         const existing: string[] = [];
+        const existingSources: string[] = [];
         for (const id of ids) {
           const info = JSON.parse((await helperRun(['inspect', '--type', 'container', id], bindDeadline)).stdout)[0];
           // Our own root/manager mapping is trusted control-plane custody, not an app.
           if (info.Config?.Hostname === os.hostname() && info.Id.startsWith(os.hostname())) continue;
-          for (const m of info.Mounts ?? []) if (m.Type === 'bind' && m.RW) existing.push(m.Source);
+          for (const m of info.Mounts ?? []) if (m.Type === 'bind') {
+            existingSources.push(m.Source);
+            if (m.RW) existing.push(m.Source);
+          }
         }
-        assertNoWritableBindAncestors(model, existing);
+        assertNoWritableBindAncestors(model, existing, existingSources);
       }
       await verifyBindSources(
         model,
@@ -270,7 +274,7 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
         async (source) => {
           // Missing ordinary data directories may be created only through an
           // attested backend mapping of the ancestry the daemon just checked.
-          const self = JSON.parse((await execFileAsync('docker', ['inspect', '--type', 'container', os.hostname()])).stdout)[0];
+          const self = JSON.parse((await helperRun(['inspect', '--type', 'container', os.hostname()], bindDeadline)).stdout)[0];
           if (!self?.State?.Running || self.Config?.Hostname !== os.hostname()) throw new Error('Cannot attest backend namespace');
           const localRoot = this.config.get('directories').appDataDir;
           if (!(self.Mounts ?? []).some((m: any) => m.Type === 'bind' && m.Source === ctx.appDataRoot && m.Destination === localRoot))
@@ -295,14 +299,14 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     }
   }
 
-  private async assertVolumeIdentity(model: any, project: string) {
+  private async assertVolumeIdentity(model: any, project: string, signal = AbortSignal.timeout(30_000)) {
     for (const [key, spec] of Object.entries(model.volumes ?? {}) as [string, any][]) {
       const name = `${project}_${key}`;
       if (spec?.name !== name || spec.external || (spec.driver && spec.driver !== 'local') || Object.keys(spec.driver_opts ?? {}).length)
         throw new HostAccessRefused(project, ['named volume is not project-private']);
       let existing: any;
       try {
-        existing = JSON.parse((await execFileAsync('docker', ['volume', 'inspect', name])).stdout)[0];
+        existing = JSON.parse((await helperRun(['volume', 'inspect', name], signal)).stdout)[0];
       } catch (e: any) {
         if (/no such volume/i.test(String(e.stderr))) continue;
         throw e;
@@ -322,16 +326,20 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     const stdout: Buffer[] = [];
     const stderr: string[] = [];
     let size = 0;
-    const code = await new Promise((resolve, reject) => {
-      cmd.once('error', reject);
-      cmd.stdout.on('data', (d: Buffer) => {
-        size += d.length;
-        if (size > 8 * 1024 * 1024) cmd.kill('SIGKILL');
-        else stdout.push(d);
+    let code: unknown;
+    const timer = setTimeout(() => cmd.kill('SIGKILL'), 20_000);
+    try {
+      code = await new Promise((resolve, reject) => {
+        cmd.once('error', reject);
+        cmd.stdout.on('data', (d: Buffer) => {
+          size += d.length;
+          if (size > 8 * 1024 * 1024) cmd.kill('SIGKILL');
+          else stdout.push(d);
+        });
+        cmd.stderr.on('data', (d) => stderr.push(String(d)));
+        cmd.on('close', resolve);
       });
-      cmd.stderr.on('data', (d) => stderr.push(String(d)));
-      cmd.on('close', resolve);
-    });
+    } finally { clearTimeout(timer); }
     if (code !== 0) throw new Error(`Compose model unavailable; refusing to start (${stderr.join('').trim().slice(-300)})`);
     return JSON.parse(Buffer.concat(stdout).toString('utf8'));
   }
