@@ -26,6 +26,16 @@ step() {
   if "$@" >"$EVIDENCE/$name.log" 2>&1; then rc=0; else rc=$?; fail=1; fi
   printf '%s\t%s\n' "$name" "$rc" >>"$EVIDENCE/exits.tsv"
   printf '%s %s (exit %s)\n' "$([[ $rc == 0 ]] && printf PASS || printf FAIL)" "$name" "$rc" | tee -a "$EVIDENCE/summary.txt"
+  STEP_RC=$rc
+}
+skip_dependency() {
+  local name=$1 reason=$2
+  # 77 is an explicit dependency skip, never a passing exit.
+  printf '%s\t77\n' "$name" >>"$EVIDENCE/exits.tsv"
+  printf '%s\t%s\n' "$name" "$reason" >>"$EVIDENCE/skipped.tsv"
+  printf '%s\n' "$reason" >"$EVIDENCE/$name.log"
+  printf 'SKIPPED %s: %s\n' "$name" "$reason" | tee -a "$EVIDENCE/summary.txt"
+  fail=1
 }
 dock() {
   local src=$1; shift
@@ -34,6 +44,7 @@ dock() {
     -v "$src":/src -w /src \
     -e HOME=/case/home -e HERMES_HOME=/case/hermes -e WIZARD_OS_HOME=/case/wizard \
     -e TMPDIR=/case/tmp -e XDG_CONFIG_HOME=/case/config -e XDG_CACHE_HOME=/case/cache \
+    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
     --tmpfs /case:rw,exec,size=2g "$@"
 }
 # Preserve immutable source; package managers and tests write only these throwaway copies.
@@ -42,7 +53,7 @@ for name in wam was wux; do
   cp -a "$source" "$WORK/$name"; chmod -R u+w "$WORK/$name"
   # Tracked-file guards require Git. This is export bookkeeping, not candidate provenance.
   git -C "$WORK/$name" init -q
-  git -C "$WORK/$name" add -A
+  git -C "$WORK/$name" add -f -A
   git -C "$WORK/$name" -c user.name=Acceptance -c user.email=acceptance@example.invalid commit -qm 'Synthetic export inventory'
 done
 
@@ -52,8 +63,9 @@ step backend-typecheck-and-tests dock "$WORK/wam" node:22-bookworm sh -ec '
   timeout 900 bun install --frozen-lockfile
   bun run --cwd packages/common build
   cd packages/backend
-  ../../node_modules/.bin/tsgo --noEmit
-  ../../node_modules/.bin/vitest run --watch=false --maxWorkers=2 src/modules/docker/__tests__/wizard-host-guard.test.ts \
+  # Resolve the workspace-local pinned compiler/test packages via normal scripts.
+  bun run tsc
+  bun run test --maxWorkers=2 src/modules/docker/__tests__/wizard-host-guard.test.ts \
     src/modules/apps/__tests__/leaked-env-repair.test.ts src/modules/apps/__tests__/app.helpers.test.ts \
     src/modules/docker/__tests__/docker.service.test.ts src/modules/docker/__tests__/wizard-storage.test.ts
   cd /src
@@ -68,7 +80,7 @@ step backend-image-build timeout --signal=TERM --kill-after=30 3600 docker build
   --build-arg LOCAL=true --build-arg TIPI_VERSION=4.5.0 \
   --label "org.opencontainers.image.revision=$REVISION" \
   --iidfile "$EVIDENCE/backend-image.id" -t "$IMAGE" "$WAM"
-if [[ -s $EVIDENCE/backend-image.id ]]; then
+if [[ $STEP_RC == 0 && -s $EVIDENCE/backend-image.id ]]; then
   IMAGE_ID=$(<"$EVIDENCE/backend-image.id")
   step backend-image-inspect docker image inspect "$IMAGE_ID"
   # This only reads the built bundle in a network-less container; no service or host socket.
@@ -78,8 +90,9 @@ if [[ -s $EVIDENCE/backend-image.id ]]; then
   step backend-image-retain bash -o pipefail -c 'docker image save "$1" | gzip -1 > "$2"' \
     _ "$IMAGE_ID" "$EVIDENCE/backend-image.tar.gz"
 else
-  printf 'backend image missing; no older image substituted\n' | tee -a "$EVIDENCE/summary.txt"
-  fail=1
+  for name in backend-image-inspect backend-image-bundle backend-image-retain; do
+    skip_dependency "$name" 'candidate image build failed or image ID missing; no older image substituted'
+  done
 fi
 
 step wam-python-focused dock "$WORK/wam" ghcr.io/astral-sh/uv:python3.12-bookworm sh -ec '
@@ -104,10 +117,11 @@ step approval-browser timeout --signal=TERM --kill-after=30 1200 docker run --rm
   -v "$WAM":/src:ro -v "$PRIVATE":/private:ro -v "$EVIDENCE":/evidence \
   -w /src -e HOME=/case/home -e HERMES_HOME=/case/hermes -e WIZARD_OS_HOME=/case/wizard \
   -e TMPDIR=/case/tmp -e PYTHONDONTWRITEBYTECODE=1 --tmpfs /case:rw,exec,size=1g \
-  mcr.microsoft.com/playwright/python:v1.56.1-noble sh -ec '
+  mcr.microsoft.com/playwright/python:v1.56.0-noble@sha256:a7f6cf3ae520c9d670ad956572c13747ed5abdbba5123a01526f873ed1662528 sh -ec '
     mkdir -p "$HOME" "$HERMES_HOME" "$WIZARD_OS_HOME" "$TMPDIR"
-    python -m venv /case/venv
-    /case/venv/bin/pip install --disable-pip-version-check playwright==1.56.1 pyyaml
+    # Official image installs virtualenv; distro ensurepip/venv is not guaranteed.
+    python -m virtualenv /case/venv
+    /case/venv/bin/pip install --disable-pip-version-check playwright==1.56.0 pyyaml
     /case/venv/bin/python /private/approval_harness.py /src /evidence /private/hostile.html'
 
 step container-cleanup cleanup

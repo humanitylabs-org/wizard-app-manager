@@ -64,9 +64,11 @@ RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"
 RUN echo "LOCAL: ${LOCAL}"
 
 RUN bun run bundle
-RUN --mount=type=secret,id=sentry_token,env=SENTRY_AUTH_TOKEN if [ "${LOCAL}" != "true" ]; then \
+# File-backed secret mounts work on older BuildKit frontends too. Never persist the token.
+RUN --mount=type=secret,id=sentry_token if [ "${LOCAL}" != "true" ]; then \
   cd ./packages/backend && \
-  bun run sentry:sourcemaps; \
+  test -s /run/secrets/sentry_token && \
+  SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_token)" bun run sentry:sourcemaps; \
   fi
 
 # ---- RUNNER ----

@@ -13,7 +13,9 @@ def migration(tmp_path, monkeypatch):
     base = tmp_path/'system'
     old = tmp_path/'hermes'; old.mkdir()
     (old/'.wizard-os').mkdir(); (old/'runtipi').mkdir()
-    agent = SimpleNamespace(pw_name='hermes',pw_dir=str(old),pw_uid=os.getuid(),pw_gid=os.getgid())
+    # The selected agent is non-root even when pytest runs as container root.
+    # Retain the real primary gid for the filesystem-only fixture operations.
+    agent = SimpleNamespace(pw_name='hermes',pw_dir=str(old),pw_uid=os.getuid() or 1000,pw_gid=os.getgid())
     monkeypatch.setattr(m,'BASE',base); monkeypatch.setattr(m,'CONTROL',control)
     monkeypatch.setattr(m,'SYSTEMD',tmp_path/'systemd')
     monkeypatch.setattr(m.pwd,'getpwnam',lambda name: agent if name=='hermes' else SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid(),pw_dir=str(base)))
@@ -357,6 +359,16 @@ def test_start_requires_successful_lifecycle_and_preserved_links(migration,monke
     migration.start()
     assert 'regenerate' in calls[0]
     assert 'assert not r["failed"]' in calls[1] and calls[-1]=='links'
+
+
+def test_inventory_rejects_root_before_authority_or_state_changes(migration,monkeypatch):
+    migration.agent.pw_uid = 0
+    monkeypatch.setattr(m,'run',lambda *a,**k:pytest.fail('root must be refused before authority commands'))
+    monkeypatch.setattr(migration,'quiesce',lambda:pytest.fail('root must be refused before quiesce'))
+    with pytest.raises(ValueError,match='Cannot migrate a root agent'):
+        migration.migrate()
+    assert migration.doc['done'] == []
+    assert not migration.snapshot.exists() and not m.BASE.exists()
 
 
 def test_inventory_is_metadata_only_and_captures_original_authority(migration,monkeypatch):
