@@ -413,3 +413,8 @@ Fast-tracked as **feature**. Installed upgrade 0.3.72 → 0.3.73 passed: wizard-
 Canonical: wizard-os releases/0.3.74.json (wizard-os #299, merge b2c7858d). SHA256: `dea8615dcf89453cc9c0b25fcfa144c2994dc0f464ab5f8397babce1651cbe21`.
 0.3.73 with App Manager main `79272034` (#304 quick interface updates; #311/#312/#320 fixes; everything merged on main since 0.3.67's line, including #305/#307 automatic app updates, app connections, #184, #214); image `v4.10.2-wizard.778-d9e1644` (`sha256:53007625…`, run 40672973160, image inputs unchanged d9e16446..79272034). Everything else exactly 0.3.73.
 Channel: on latest only.
+
+## stable 0.3.74
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/313 (promotion), cut in wizard-os #299. `releases/stable` → 0.3.74; `promotions/0.3.74.json` sha256 `1ca71a372fc2148a22837b02adf224bf951ab034e9924160436472e83b361c10`.
+Fast-tracked as **feature** (DECISIONS #93): App Manager main 79272034 (quick interface updates #304, fixes #311/#312/#320, App Manager main features ride along). Installed upgrade 0.3.73 → 0.3.74 passed: wizard-os docs/acceptance/promote-0.3.74.md.
