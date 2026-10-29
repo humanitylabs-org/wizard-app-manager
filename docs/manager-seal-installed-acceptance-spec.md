@@ -4,6 +4,17 @@
 
 **Bounded spike result:** the sequence below is not executable unchanged. Source-pinned probe demonstrates unfiltered daemon-wide bootstrap network pruning and HTTP `skipRun` overwrite. See [installed spike results](manager-seal-installed-spike-results.md), executable `scripts/manager_seal_installed_spike.py`, and [transaction design for controller review](manager-seal-update-transaction-design.md). No installed-runtime pass or heavy submission. Resolve the precise authority/interface seams before admitting this lane.
 
+## Guard/producer repair admission addendum
+
+The independent c92d review's three blockers and their narrow repair are specified in
+[guard/producer repair](manager-seal-c92d-guard-producer-repair.md). That addendum
+requires the SHA-pinned **actual Compose producer** readiness trace before Manager
+bootstrap and independently exact discovery/refusal accounting; replayed JSON is
+not the binary witness. The separately staged `--producer-readiness-only` job
+cannot emit installed proof. The full installed job remains unexecuted until the
+owning parent reviews the producer-only output and admits its exact source.
+Historical spike/synthetic evidence below remains historical, not newly passed.
+
 ## Fixed inputs and reuse
 
 REUSE: exact existing production source and dependency/build closure from `3116f500f4d7df959a9f4d586dec4f9a9b7564b5`, hash-identical production in `3cfecc950ebbd91b2bbc0cd62ba0e834b572cd49`; original synthetic five-service fixture and network-event projection. EXTEND: a new disposable installed Nest/HTTP/DB/queue rig, not modifications to the production manager. NEW: no manager feature, no trusted installed-revision transition.

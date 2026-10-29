@@ -275,6 +275,33 @@ def reconcile_creation_intents(rows, owner):
     return found
 
 
+def reconcile_guard_accounting(rows, expected_denials, network_names, expected_cycles=1):
+    """Refusals remain exact; discovery must pair once with a later creation.
+
+    No blanket exclusion of 403/404 or arbitrary names. Each fresh/recreated
+    network needs one typed local miss, then its creation intent and real ID.
+    """
+    assert len([r for r in rows if r['operation'] == 'deny']) == expected_denials, 'unexpected guard refusal'
+    assert type(expected_cycles) is int and expected_cycles > 0
+    pending = {}; misses = 0; created = 0; counts = dict.fromkeys(network_names, 0)
+    for row in rows:
+        op = row['operation']
+        if op == 'discovery-miss':
+            name = row['name']
+            assert row.get('kind') == 'network' and type(row.get('status')) is int and row['status'] == 404
+            assert name in network_names and name not in pending, 'unexpected/duplicate discovery'
+            pending[name] = 'miss'; misses += 1
+        elif op == 'creation-intent' and row.get('kind') == 'network':
+            name = row['name']; assert pending.get(name) == 'miss', 'network creation without discovery'
+            pending[name] = 'intent'
+        elif op == 'created' and row.get('kind') == 'network':
+            name = row['name']; assert pending.pop(name, None) == 'intent', 'unpaired network creation'
+            created += 1; counts[name] += 1
+    assert not pending and misses == created and created > 0, 'incomplete discovery accounting'
+    assert all(count == expected_cycles for count in counts.values()), 'unexpected discovery/create count'
+    return {'expected_refusals': expected_denials, 'network_discovery_misses': misses, 'paired_network_creations': created}
+
+
 class Rig:
     def __init__(self, root, args):
         self.root = root; self.args = args; self.owner = 'msi-'+args.source[:12]
@@ -417,6 +444,18 @@ class Rig:
         copy_owned_file(donor, '/usr/local/bin/docker-compose', self.out/'compose', 100*MIB)
         assert (self.out/'compose').stat().st_size <= 100*MIB and sha(self.out/'compose') == COMPOSE_SHA
         (self.out/'compose').chmod(0o755)
+        # Actual pinned producer -> unchanged forwarding code -> counting Unix
+        # protocol peer. NO real daemon in this phase; fail before build/Nest.
+        self.receipt['phase'] = 'producer-protocol-prebootstrap'
+        self.cmd('producer-protocol', [sys.executable, '-B', self.root/'scripts/manager_seal_producer_witness.py',
+            '--compose', self.out/'compose', '--output', self.out/'producer-witness.json'], timeout=90)
+        witness = json.loads((self.out/'producer-witness.json').read_text())
+        assert witness['protocol_pass'] is True and witness['installed_proof'] is False
+        self.receipt['producer_protocol_witness'] = {'sha256': sha(self.out/'producer-witness.json'), **witness['summary']}
+        if self.args.producer_readiness_only:
+            self.receipt['producer_readiness_pass'] = True
+            self.receipt['phase'] = 'producer-protocol-only-complete-not-installed-proof'
+            return
         identities = {}
         for image, role in ((PG, 'postgres'), (RABBIT, 'rabbitmq')):
             c = self.create(self.owner+'-'+role+'-metadata', image,
@@ -619,7 +658,7 @@ class Rig:
         self.transaction('restart', None, 'running'); second = self.runtime()
         events = self.events(runtime_since, int(time.time())+1)
         creation_rows = [json.loads(l) for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines()]
-        assert len([r for r in creation_rows if r['operation'] == 'deny']) == len(probes), 'guard refusal during actual manager path'
+        self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'], expected_cycles=2)
         assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 10
         self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second), self.owner)
         (self.out/'runtime-events.json').write_text(json.dumps(events, indent=2)+'\n')
@@ -754,7 +793,7 @@ def launch_controller(root, args):
     decision = capacity.admission(sum(r['allocated_bytes'] for r in rows), shutil.disk_usage('/srv/work').free, already_allocated=own)
     assert decision['admitted'] and own <= 64*MIB
     assert sha('/usr/bin/docker') == DOCKER_SHA
-    name = 'msi-'+args.source[:12]+'-controller'
+    name = 'msi-'+args.source[:12]+('-producer' if args.producer_readiness_only else '')+'-controller'
     label = 'wizard.qa.manager-seal.controller='+args.source
     # Cached only. A missing image is a blocker, never an implicit acquisition.
     probe = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', BUILD], capture_output=True, timeout=10)
@@ -777,6 +816,7 @@ def launch_controller(root, args):
                    '--env', 'DOCKER_CONFIG=/tmp/docker-config', '--workdir', str(root), '--entrypoint=python3', BUILD,
                    'scripts/manager_seal_installed_path.py', '--inside-controller', '--source', args.source,
                    '--manifest-sha256', args.manifest_sha256]
+        if args.producer_readiness_only: command.append('--producer-readiness-only')
         result = subprocess.run(command, capture_output=True, timeout=30)
         assert result.returncode == 0
         cid = result.stdout.decode().strip(); assert len(cid) == 64
@@ -857,10 +897,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', required=True); p.add_argument('--manifest-sha256', required=True)
     p.add_argument('--inside-build', action='store_true'); p.add_argument('--inside-controller', action='store_true'); p.add_argument('--fixture-root'); p.add_argument('--owner')
+    p.add_argument('--producer-readiness-only', action='store_true')
     args = p.parse_args()
     if args.inside_build: inside_build(args); return
     root = Path.cwd().resolve()
-    assert root.parent == Path('/srv/work') and root.name == 'manager-seal-installed-'+args.source[:12]
+    assert root.parent == Path('/srv/work') and root.name == 'manager-seal-installed-'+args.source[:12]+('-producer' if args.producer_readiness_only else '')
     manifest(root, args.source, args.manifest_sha256)
     if not args.inside_controller:
         raise SystemExit(launch_controller(root, args))
@@ -884,7 +925,8 @@ def main():
         rig.cleanup()
     print(json.dumps({'receipt': str(rig.out/'receipt.json'), 'sha256': sha(rig.out/'receipt.json'),
                       'first_installed_synthetic_path_pass': rig.receipt['first_installed_synthetic_path_pass'], 'full_acceptance': False}))
-    raise SystemExit(0 if rig.receipt['first_installed_synthetic_path_pass'] and not rig.errors else 1)
+    passed = rig.receipt.get('producer_readiness_pass') if args.producer_readiness_only else rig.receipt['first_installed_synthetic_path_pass']
+    raise SystemExit(0 if passed and 'failure' not in rig.receipt and not rig.errors else 1)
 
 
 if __name__ == '__main__': main()

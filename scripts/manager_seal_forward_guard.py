@@ -45,6 +45,66 @@ def decode(data):
     return json.loads(data, object_pairs_hook=unique_object)
 
 
+# Wire schemas are closed at EVERY Go-struct boundary. Map keys (labels,
+# network names, tmpfs paths) are deliberately not case-folded. Python bool is
+# an int subclass; exact types are mandatory before semantic comparisons.
+def shape(value, fields):
+    require(type(value) is dict and set(value) <= set(fields))
+    for key, item in value.items():
+        spec = fields[key]
+        if isinstance(spec, dict):
+            if item is not None: shape(item, spec)
+        else:
+            require(item is None or type(item) is spec)
+
+
+def fields(kind, names):
+    return dict.fromkeys(names.split(), kind)
+
+
+RESTART = {'Name': str, 'MaximumRetryCount': int}
+LOG = {'Type': str, 'Config': dict}
+BIND = dict(Propagation=str, **fields(bool, 'NonRecursive CreateMountpoint ReadOnlyNonRecursive ReadOnlyForceRecursive'))
+MOUNT = dict(Type=str, Source=str, Target=str, ReadOnly=bool, Consistency=str, BindOptions=BIND)
+HEALTH = dict(Test=list, **fields(int, 'Interval Timeout StartPeriod StartInterval Retries'))
+ENDPOINT = dict(**fields(str, 'MacAddress NetworkID EndpointID Gateway IPAddress IPv6Gateway GlobalIPv6Address'),
+                **fields(int, 'GwPriority IPPrefixLen GlobalIPv6PrefixLen'),
+                IPAMConfig=dict, Links=list, Aliases=list, DriverOpts=dict, DNSNames=list)
+IPAM = dict(Driver=str, Config=list, Options=dict)
+NETWORK = dict(**fields(str, 'Name Driver'),
+               **fields(bool, 'CheckDuplicate Internal Attachable Ingress EnableIPv6 EnableIPv4'),
+               IPAM=IPAM, Options=dict, Labels=dict)
+HOST = dict(**fields(str, 'ContainerIDFile NetworkMode VolumeDriver CgroupnsMode IpcMode Cgroup PidMode UTSMode UsernsMode Runtime Isolation CgroupParent CpusetCpus CpusetMems'),
+            **fields(bool, 'AutoRemove Privileged PublishAllPorts ReadonlyRootfs OomKillDisable Init'),
+            **fields(int, 'OomScoreAdj ShmSize CpuShares Memory NanoCpus BlkioWeight CpuPeriod CpuQuota CpuRealtimePeriod CpuRealtimeRuntime MemoryReservation MemorySwap MemorySwappiness PidsLimit CpuCount CpuPercent IOMaximumIOps IOMaximumBandwidth'),
+            **fields(list, 'Binds VolumesFrom ConsoleSize CapAdd CapDrop Dns DnsOptions DnsSearch ExtraHosts GroupAdd Links SecurityOpt BlkioWeightDevice BlkioDeviceReadBps BlkioDeviceWriteBps BlkioDeviceReadIOps BlkioDeviceWriteIOps Devices DeviceCgroupRules DeviceRequests Ulimits MaskedPaths ReadonlyPaths Mounts'),
+            **fields(dict, 'PortBindings Sysctls Tmpfs'), LogConfig=LOG, RestartPolicy=RESTART)
+CONTAINER = dict(**fields(str, 'Hostname Domainname User Image WorkingDir StopSignal'),
+                 **fields(bool, 'AttachStdin AttachStdout AttachStderr Tty OpenStdin StdinOnce NetworkDisabled'),
+                 **fields(list, 'Env Cmd Entrypoint'), **fields(dict, 'Volumes Labels ExposedPorts'),
+                 StopTimeout=int, Healthcheck=HEALTH, HostConfig=HOST,
+                 NetworkingConfig={'EndpointsConfig': dict})
+
+
+def strings(value):
+    require(value is None or (type(value) is list and all(type(v) is str for v in value)))
+
+
+def string_map(value):
+    require(value is None or (type(value) is dict and all(type(v) is str for v in value.values())))
+
+
+def endpoint_shape(endpoint):
+    shape(endpoint, ENDPOINT)
+    strings(endpoint.get('Aliases'))
+    # Only producer zero values; no supplied identity/address/routing state.
+    for key, kind in ENDPOINT.items():
+        if key == 'Aliases': continue
+        value = endpoint.get(key)
+        zero = {str: '', int: 0, list: [], dict: {}}[kind]
+        require(value is None or (type(value) is kind and value == zero))
+
+
 class UnixHTTP(http.client.HTTPConnection):
     def __init__(self, path, timeout=15):
         super().__init__('localhost', timeout=timeout)
@@ -111,6 +171,7 @@ class Policy:
             require(len(parts) == 3 and parts[2] in ('rw', 'ro'))
             bindings.append(parts)
         for mount in host.get('Mounts') or []:
+            shape(mount, MOUNT)
             require(set(mount) <= {'Type', 'Source', 'Target', 'ReadOnly', 'Consistency', 'BindOptions'})
             require(mount.get('Type') == 'bind' and mount.get('ReadOnly') in (None, True, False))
             require(mount.get('Consistency') in (None, '', 'consistent'))
@@ -133,6 +194,15 @@ class Policy:
             require(p.exists())
 
     def create_container(self, body, query):
+        shape(body, CONTAINER)
+        string_map(body.get('Labels'))
+        for key in ('Env', 'Cmd', 'Entrypoint'):
+            strings(body.get(key))
+        if body.get('Healthcheck') is not None:
+            strings(body['Healthcheck'].get('Test'))
+            for key in HEALTH.keys() - {'Test'}:
+                value = body['Healthcheck'].get(key)
+                require(value is None or 0 <= value <= 2**63-1)
         require(not self.activated or len(self.containers) < 5)
         require(set(query) <= {'name'} and query.get('name') in self.cfg['container_names'])
         require(query['name'] not in self.containers.values())
@@ -172,7 +242,9 @@ class Policy:
         require(host.get('MemorySwap') == host['Memory'])
         require(0 < host.get('PidsLimit', 0) <= 32)
         require(0 < host.get('NanoCpus', 0) <= 500000000)
-        require(host.get('ShmSize', 0) <= 64*MIB)
+        require(0 <= host.get('ShmSize', 0) <= 64*MIB)
+        console = host.get('ConsoleSize')
+        require(console is None or (type(console) is list and len(console) == 2 and all(type(v) is int and v == 0 for v in console)))
         log = host.get('LogConfig') or {}
         require(set(log) <= {'Type', 'Config'} and log.get('Type') == 'none' and log.get('Config') in (None, {}))
         require((host.get('RestartPolicy') or {}).get('Name') in ('no', ''))
@@ -183,10 +255,10 @@ class Policy:
         self.lookup('networks', host.get('NetworkMode'))
         networking = body.get('NetworkingConfig') or {}
         require(set(networking) <= {'EndpointsConfig'})
+        require(type(networking.get('EndpointsConfig', {})) is dict)
         for network, endpoint in networking.get('EndpointsConfig', {}).items():
             self.lookup('networks', network)
-            require(set(endpoint) <= {'Aliases', 'IPAMConfig', 'Links', 'MacAddress', 'DriverOpts', 'GwPriority'})
-            require(not any(endpoint.get(k) for k in ('IPAMConfig', 'Links', 'MacAddress', 'DriverOpts')))
+            endpoint_shape(endpoint)
 
     def authorize(self, method, target, data=b''):
         path, query = self.path(target)
@@ -226,6 +298,9 @@ class Policy:
         elif method == 'POST' and path == '/containers/create':
             self.create_container(body, query); op = 'create-container'
         elif method == 'POST' and path == '/networks/create':
+            shape(body, NETWORK)
+            string_map(body.get('Labels'))
+            string_map(body.get('Options'))
             require(self.activated and not query and len(self.networks) < 6)
             require(set(body) <= {'Name', 'CheckDuplicate', 'Driver', 'Internal', 'Attachable', 'Ingress', 'IPAM', 'EnableIPv6', 'Options', 'Labels', 'EnableIPv4'})
             require(body.get('Name') in self.cfg['network_names'] and body['Name'] not in self.networks.values())
@@ -241,6 +316,12 @@ class Policy:
             match = re.fullmatch(r'/(containers|networks)/([^/]+)(?:/(json|start|stop|kill|wait|logs|top|connect|disconnect))?', path)
             if match:
                 kind, token, action = match.groups()
+                if (method == 'GET' and kind == 'networks' and action is None
+                        and token in self.cfg['network_names'] and token not in self.networks.values()):
+                    # Deliberate local absence, NEVER a daemon lookup. This is
+                    # typed separately from refusal, with exact ledger accounting.
+                    require(self.activated and not query and not data and not ID.fullmatch(token))
+                    return 'discovery-miss', path, data, body
                 owned = self.lookup(kind, token)
                 # Rewrite names to the exact owned full ID: never prefix/name TOCTOU.
                 path = '/'+kind+'/'+owned+('/'+action if action else '')
@@ -257,11 +338,11 @@ class Policy:
                     require(action != 'start' or self.activated)
                     op = 'owned-mutate'
                 elif method == 'POST' and kind == 'networks' and action in ('connect', 'disconnect'):
+                    shape(body, {'Container': str, 'EndpointConfig': ENDPOINT, 'Force': bool})
                     require(not query and set(body) <= {'Container', 'EndpointConfig', 'Force'})
                     body['Container'] = self.lookup('containers', body.get('Container'))
                     endpoint = body.get('EndpointConfig') or {}
-                    require(set(endpoint) <= {'Aliases', 'IPAMConfig', 'Links', 'DriverOpts', 'GwPriority'})
-                    require(not any(endpoint.get(k) for k in ('IPAMConfig', 'Links', 'DriverOpts')))
+                    endpoint_shape(endpoint)
                     require(not body.get('Force')); data = json.dumps(body).encode(); op = 'owned-mutate'
             elif method == 'GET' and path.startswith('/images/') and path.endswith('/json'):
                 image = path[len('/images/'):-len('/json')]
@@ -370,6 +451,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with p.lock:
                 op, target, data, body = p.authorize(self.command, self.path, data)
                 _, query = p.path(target)
+                if op == 'discovery-miss':
+                    p.audit('discovery-miss', kind='network', name=target.split('/')[-1], status=404)
+                    self.reply(404, b'{"message":"task network not created"}')
+                    return
                 if op in ('create-container', 'create-network'):
                     p.audit('creation-intent', kind='container' if op == 'create-container' else 'network',
                             name=query['name'] if op == 'create-container' else body['Name'])
