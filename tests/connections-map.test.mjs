@@ -594,7 +594,9 @@ const phoneBox = () => {
         { from: 'card-benefits', to: 'transcriber', providers: ['transcriber'], status: 'connected', origin: 'declared' },
         { from: 'wizard-music', to: 'wizard-youtube-music', providers: ['wizard-youtube-music'], status: 'connected', origin: 'owner' },
         { from: 'backup', to: 'slot:backup-storage', providers: ['wizard-cloudflare', 's3'], status: 'connected', origin: 'declared' },
-        { from: 'messenger', to: 'money', providers: ['money'], status: 'disconnected', origin: 'owner' },
+        { from: 'messenger', to: 'money', providers: ['money'], status: 'disconnected', origin: 'declared' },
+        // cut while every app could talk: no app is designed to link them, so it changes nothing in Strict mode
+        { from: 'backup', to: 'money', providers: ['money'], status: 'disconnected', origin: 'owner' },
         { from: 'wizard-claude', to: 'money', providers: ['money'], status: 'pending', origin: 'requested' },
       ],
     },
@@ -611,7 +613,7 @@ test('Linked apps: one row per app, by name, each link with a plain reason; a cu
     [
       'Backup → Cloudflare and S3',
       'Card Benefits → Transcriber',
-      'Messenger → Money (added by you, off)',
+      'Messenger → Money (off)',
       'Money → Monarch, SimpleFIN',
       'Music → YouTube Music (added by you)',
     ],
@@ -620,9 +622,19 @@ test('Linked apps: one row per app, by name, each link with a plain reason; a cu
   const messenger = rows.find((r) => r.id === 'messenger');
   assert.deepEqual(
     messenger.links.map((l) => [l.name, l.on, l.added, l.pair]),
-    [['Money', false, true, 'messenger|money']],
+    [['Money', false, false, 'messenger|money']],
   );
   assert.equal(messenger.turnOn.pair, 'messenger|money');
+  // a cut on a pair no app is designed to link (made in Open mode) is not a link here: not listed, not a Reconnect,
+  // not drawn; Details names it, and the pair can still be connected
+  assert.equal(rows.find((r) => r.id === 'backup').line, 'Backup → Cloudflare and S3');
+  assert.deepEqual(
+    m.idleCuts.map((x) => x.text),
+    ['Backup ✕ Money'],
+  );
+  assert.ok(!m.cuts.some((p) => p.includes('backup')));
+  assert.ok(connectable(m, 'backup').some((a) => a.id === 'money'));
+  assert.deepEqual(mapModel({ ...phoneBox(), mode: 'open' }).idleCuts, []);
   assert.equal(rows.find((r) => r.id === 'money').turnOn, null);
   assert.equal(linkTag({ on: true, added: false }), '');
   // a link the app declares that the owner cut: off, not "added by you"

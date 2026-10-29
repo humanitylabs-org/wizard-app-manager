@@ -99,9 +99,14 @@ export function mapModel(d) {
   const offRows = new Map(); // Strict mode: the rows behind each pair the owner cut (Linked apps shows them as off)
   const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
   const groups = []; // connections to a slot several apps provide: cut as one
+  // Strict mode: a cut the owner made on a pair no app is designed to link (no uses:, no request: he cut it while
+  // every app could talk to every other) changes nothing while apps are kept apart. It is kept (Open mode honours it
+  // again) but it is not a link: not in Linked apps, not on the map, not a Reconnect. Details says it once.
+  const idle = (r) => mode === 'declared' && r.status === 'disconnected' && r.origin === 'owner';
+  const idleCuts = mode === 'declared' ? controls.filter((r) => idle(r) && ids.has(r.from)) : [];
   if (mode === 'declared')
     for (const r of controls)
-      if (['connected', 'disconnected'].includes(r.status) && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
+      if (!idle(r) && ['connected', 'disconnected'].includes(r.status) && (r.providers || []).filter((x) => ids.has(x)).length > 1 && ids.has(r.from))
         groups.push({
           from: r.from,
           to: r.to,
@@ -110,7 +115,7 @@ export function mapModel(d) {
           names: list(r.providers.filter((x) => ids.has(x)).map(nm)),
         });
   if (mode === 'declared') {
-    for (const r of controls)
+    for (const r of controls.filter((x) => !idle(x)))
       for (const p of (r.providers || []).length ? r.providers : [slotName(r.to)]) {
         if (!ids.has(r.from) || !ids.has(p) || p === r.from) continue;
         if (r.status === 'connected') {
@@ -287,6 +292,11 @@ export function mapModel(d) {
     links: [...links.values()],
     linkRows: Object.fromEntries([...linkRows].map(([k, v]) => [k, v])),
     offRows: Object.fromEntries([...offRows].map(([k, v]) => [k, v])),
+    idleCuts: idleCuts.map((r) => ({
+      from: r.from,
+      to: r.to,
+      text: `${nm(r.from)} ✕ ${list(((r.providers || []).length ? r.providers : [slotName(r.to)]).map(nm))}`,
+    })),
     comp,
     hint,
     single: [...single],

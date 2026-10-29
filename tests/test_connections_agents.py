@@ -58,13 +58,18 @@ def test_restore_plan_says_what_changes_in_plain_words():
     plan = cr.plan(STATE, REPORT)
     assert [p["text"] for p in plan] == [
         "Card Benefits → Monarch will be turned back on.",
-        "Messenger → Money, which you added and turned off, will be removed.",
+        "Your old cut between Messenger and Money will be cleared (it changes nothing while apps are kept apart).",
         "Music → YouTube Music, which you added, will be removed.",
     ]
     assert [p["change"] for p in plan] == ["on", "remove", "remove"]
     # a declared link to an app set to Ask me first comes back as a request
     sens = {**STATE, "sensitive": ["wizard-monarch"]}
     assert cr.plan(sens, REPORT)[0]["text"] == "Card Benefits → Monarch will wait for your OK again."
+    # the same cut in Open mode keeps them apart, so clearing it lets them talk again
+    assert cr.plan(STATE, {**REPORT, "mode": "open"})[1]["text"] == "Messenger and Money will be able to talk again (you cut them apart)."
+    # a link he added and then turned off is still his link
+    added_off = {**STATE, "grants": [*STATE["grants"], {"kind": "app", "from": "messenger", "to": "money", "approved": "owner", "reason": "owner"}]}
+    assert cr.plan(added_off, REPORT)[1]["text"] == "Messenger → Money, which you added and turned off, will be removed."
     # nothing of his own: nothing to change
     assert cr.plan({**STATE, "grants": STATE["grants"][:1], "denied": []}, REPORT) == []
 
@@ -332,3 +337,19 @@ def test_wizard_call_refuses_an_app_the_owner_turned_off_in_plain_words(tmp_path
     # a lists file that can't be read allows nothing: the owner's Off never turns into On
     assert _cli(tmp_path, "call", "money.x", "{}", "--json", allowed=None).returncode == 10
 
+
+
+def test_cli_line_counts_like_connections():
+    """`wam agents` counts what the Agent Service can give an agent, by group, like the Connections page: an app left
+    in the agent's own list that isn't offered any more (or isn't installed) doesn't inflate it ("34 of 31")."""
+    from wam import agent_access as aa
+    groups = {"money": "app", "files": "app", "transcriber": "agent-app", "wizard-claude": "connector",
+              "wizard-monarch": "connector", "hermes-agent": "agent"}
+    agent = {"known": ["files", "money", "transcriber", "wizard-claude", "wizard-monarch", "gone"],
+             "on": ["files", "money", "transcriber", "wizard-claude", "wizard-monarch", "home-assistant", "wizard-teller"]}
+    assert aa.can_use_line(agent, groups) == "can use 2 apps, 1 agent app, 2 connectors"
+    agent["on"].remove("money")
+    assert aa.can_use_line(agent, groups) == "can use 1 app, 1 agent app, 2 connectors; off: money"
+    # without the groups: counted against what it is offered, never more than that
+    assert aa.can_use_line(agent, None) == "can use 4 of 6 apps; off: money, gone"
+    assert aa.can_use_line({"known": [], "on": ["x"]}, groups) == "nothing to use yet"

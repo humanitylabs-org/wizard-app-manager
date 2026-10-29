@@ -50,6 +50,8 @@ def plan(state: dict | None, report: dict | None) -> list[dict]:
     names = {a.get("id"): a.get("name") or a.get("id") for a in (report or {}).get("apps") or [] if isinstance(a, dict)}
     sensitive = set((state or {}).get("sensitive") or [])
     grants, denied = owner_rows(state)
+    granted = {(g["from"], g["to"]) for g in grants}
+    open_mode = (report or {}).get("mode") == "open"
 
     def designed(g: dict) -> bool:
         r = controls.get((g["from"], g["to"]))
@@ -77,6 +79,12 @@ def plan(state: dict | None, report: dict | None) -> list[dict]:
             elif cut:
                 out.append({"from": k[0], "to": k[1], "label": label, "change": "on",
                             "text": f"{label} will be turned back on."})
+        elif cut and k not in granted:
+            # a cut on a pair no app is designed to link: Open mode keeps them apart; kept apart already otherwise
+            pair = label.replace(" → ", " and ", 1)
+            out.append({"from": k[0], "to": k[1], "label": label, "change": "remove", "off": True,
+                        "text": f"{pair} will be able to talk again (you cut them apart)." if open_mode
+                        else f"Your old cut between {pair} will be cleared (it changes nothing while apps are kept apart)."})
         else:
             out.append({"from": k[0], "to": k[1], "label": label, "change": "remove", **({"off": True} if cut else {}),
                         "text": f"{label}, which you added and turned off, will be removed." if cut
