@@ -1606,7 +1606,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
         if app_id == "_connections" or app_id.startswith("_connections/"):   # the Connections view (connections_view.py)
-            return self._connections(method, urlparse(self.path).path)
+            return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
         if app_id.startswith('_views/'):
@@ -1640,7 +1640,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             code, body = si.status(app_id)
         return self._json(code, body)
 
-    def _connections(self, method: str, path: str) -> None:
+    def _connections(self, method: str, path: str, query: dict | None = None) -> None:
         """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
         (and, for a POST, check_request: another device, the shell's origin, JSON with X-Wizard-Store)."""
         from . import connections_view as cv, network, store_install as si
@@ -1663,7 +1663,7 @@ class StoreHandler(BaseHTTPRequestHandler):
                     return self._json(200, cv.agents(self.cfg.home))
                 if sub == "api/connections/restore":
                     return self._json(200, cv.restore_plan(self.cfg, self.cfg.runtipi()))
-                got = cv.asset(sub or "index.html")
+                got = cv.asset(sub or "index.html", ((query or {}).get("embed") or [""])[0])
                 if not got:
                     return self._json(404, {"error": "not found"})
                 b, ctype = got

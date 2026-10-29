@@ -119,3 +119,46 @@ html[data-wz-hosted] body.wux[data-only] .wux-sheet {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+
+/* Inside the shell's Settings (?embed=settings: Settings › Connections). The Settings page already names it and is the
+   surface, so the page flows straight into it: no canvas, no sheet card, no second "Connections" title, and the shell's
+   skin tokens (Appearance v1) colour it, Light skins included. "light dark" lets the frame take the shell's scheme before
+   the first Appearance push, so it never paints an opaque canvas of the other scheme. The standalone page is unchanged. */
+html[data-embed="settings"] {
+  color-scheme: light dark;
+  background: transparent;
+}
+html[data-embed="settings"] body.wux {
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+}
+html[data-embed="settings"] body.wux .wux-sheet {
+  --wux-top: 0px;
+  max-width: none;
+  height: 100dvh;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html[data-embed="settings"] .wux-sheet .sheet-grip,
+html[data-embed="settings"] .wam-cl-title {
+  display: none;
+}
+html[data-embed="settings"] .wux-body,
+html[data-embed="settings"] .wux-body.top {
+  padding: 0 0 16px;
+}
+html[data-embed="settings"] .wam-cl {
+  padding: 0;
+}
+/* The lead tucks under the view's own title; with that title gone it starts the page. */
+html[data-embed="settings"] .wam-cl > .wam-cl-lead {
+  margin-top: 0;
+}

@@ -15,6 +15,9 @@ const menu = $('#adminMenu');
 let store = null;
 // Served by `wam serve` (127.0.0.1:7790/views/): only the Connections data is there, so only that view is offered.
 const only = document.body.dataset.only || '';
+// ?embed=settings: the shell's Settings tab hosts the page (no title, sheet or canvas of its own; standalone.css). The
+// owner listener marks <html> before the first paint; this covers the same page served anywhere else.
+if (new URLSearchParams(location.search).get('embed') === 'settings') document.documentElement.dataset.embed = 'settings';
 // On the shell's origin (wam's owner listener, /wizard-os-home/store-install/_connections/) the page names its own
 // owner API: relative paths, and the header every owner POST there must carry.
 const ds = document.body.dataset;

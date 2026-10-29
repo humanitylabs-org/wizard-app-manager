@@ -41,26 +41,32 @@ SHARED = (b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-tokens.css" 
           b'<link rel="stylesheet" href="/wizard-os-home/core/sigils.css">\n  '
           b'<script defer src="/wizard-os-home/kit/wizard-sheet.js"></script>\n  '
           b'<script defer src="/wizard-os-home/core/sigils.js"></script>\n  ')
+# Where the page may be embedded without its own frame: only the shell's Settings tab today. Anything else is ignored.
+EMBEDS = ("settings",)
 APP = r"([a-z0-9][a-z0-9-]{1,40})"
 TO = re.compile(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}")
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'; "
        "base-uri 'none'; form-action 'none'")
 
 
-def page() -> bytes:
-    """index.html showing only Connections, wired to this listener (standalone.js reads the data- attributes)."""
+def page(embed: str = "") -> bytes:
+    """index.html showing only Connections, wired to this listener (standalone.js reads the data- attributes).
+    embed="settings" (?embed=settings, the shell's Settings › Connections tab): marked on <html> before the first paint,
+    so the page drops its own title, sheet and canvas and flows in the Settings pane (standalone.css)."""
     b = (VIEWS / "index.html").read_bytes().replace(b'<link rel="stylesheet" href="wux.css">', SHARED + b'<link rel="stylesheet" href="wux.css">', 1)
+    if embed in EMBEDS:
+        b = b.replace(b'<html lang="en">', b'<html lang="en" data-embed="' + embed.encode() + b'">', 1)
     return b.replace(b'<body class="wux">', b'<body class="wux" data-only="connections" data-api="api" '
                      b'data-connections="api/connections" data-owner-header="X-Wizard-Store">', 1)
 
 
-def asset(name: str) -> tuple[bytes, str] | None:
+def asset(name: str, embed: str = "") -> tuple[bytes, str] | None:
     if name not in FILES:
         return None
     f = VIEWS / name
     if not f.is_file():
         return None
-    return (page() if name == "index.html" else f.read_bytes()), TYPES[f.suffix]
+    return (page(embed) if name == "index.html" else f.read_bytes()), TYPES[f.suffix]
 
 
 def _body(raw: bytes) -> dict:

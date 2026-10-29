@@ -5,6 +5,7 @@ import http.client
 import json
 import threading
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -74,6 +75,22 @@ def test_page_and_assets_are_served_with_the_owner_api_wired(listener):
     assert code == 200 and b"export function mapModel" in b and hd["Content-Type"].startswith("text/javascript")
     for bad in ("/_connections/../wam/cli.py", "/_connections/README.md", "/_connections/x.js", "/_connectionsx"):
         assert call("GET", bad)[0] in (403, 404), bad
+
+
+def test_settings_embed_mode_is_marked_before_first_paint_and_only_on_request(listener):
+    """?embed=settings (the shell's Settings › Connections tab) marks <html> so the page drops its own title, sheet and
+    canvas (standalone.css); the standalone page and any other embed value stay exactly as they were."""
+    call, _ = listener
+    plain = call("GET", "/_connections/")[2]
+    code, _, b = call("GET", "/_connections/?embed=settings")
+    assert code == 200 and b'<html lang="en" data-embed="settings">' in b
+    assert b.replace(b' data-embed="settings"', b"", 1) == plain
+    assert b"data-embed" not in plain
+    for other in ("?embed=", "?embed=window", "?embed=settings%22%20onload%3D", "?x=settings"):
+        assert call("GET", "/_connections/" + other)[2] == plain, other
+    css = (Path(__file__).resolve().parent.parent / "wizard-views" / "standalone.css").read_text()
+    for rule in ('html[data-embed="settings"] .wam-cl-title', 'html[data-embed="settings"] body.wux .wux-sheet'):
+        assert rule in css, rule
 
 
 def test_the_page_reuses_the_shells_kit_sheet_and_app_glyphs(listener):
