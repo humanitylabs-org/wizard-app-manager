@@ -1180,6 +1180,7 @@ def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
     rt = c.runtipi()
+    mode = settle_connection_mode(c, rt)   # before anything is installed: a new box has only Wizard's own apps
     reg = write_registry(c, rt)
     done, failed = [], {}
     for app_id in slots.to_install(reg):
@@ -1200,7 +1201,25 @@ def bootstrap(c: Config) -> dict:
     updated = release_updates(c, rt, failed)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
-    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
+    out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
+    if mode:
+        out["connection_mode"] = mode
+    return out
+
+
+def settle_connection_mode(c: Config, rt) -> dict | None:
+    """Upgrade safety for app isolation (network.settle_mode): once per box, an existing box whose owner never chose
+    keeps its apps connected (open), a new box starts with apps kept apart (declared). Never fails the installer."""
+    from . import network, app_updates
+    try:
+        installed = installed_ids(rt)
+        defaults = {(v or {}).get("app") for v in slots.load_defaults().values()} - {None}
+        return network.settle_mode(c, rt, installed, defaults,
+                                   notify=lambda title, msg: app_updates._notify(c, title, msg))
+    except Exception as e:  # noqa: BLE001
+        print(f"note: connection mode not settled ({str(e)[:160]}); it is tried again on the next installer run",
+              file=sys.stderr)
+        return None
 
 
 def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:

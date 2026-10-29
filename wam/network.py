@@ -1068,6 +1068,66 @@ def connection_state(c, rt) -> dict | None:
     return None
 
 
+SETTLED = "connection_mode_settled"   # app-manager.json: the upgrade settled this box's mode once (settle_mode)
+UPGRADE_NOTICE = ("Your apps stay connected",
+                  "Wizard OS can now keep apps apart. Your apps stay connected as before, so nothing you use stops "
+                  "working. To keep apps apart, open Settings › Connections, tap Details and turn on Keep apps apart.")
+
+
+def _recorded_mode(runtipi_root: Path) -> tuple[bool, str | None]:
+    """(readable, mode) of the App Manager's grants file. A missing file is readable with no mode; a file wam may not
+    read (root-owned backend state) is (False, None). The App Manager's API can't say whether a mode was chosen: it
+    reports `declared` for both an explicit choice and no choice."""
+    p = Path(runtipi_root) / "state" / "wizard-grants.json"
+    try:
+        doc = json.loads(p.read_text())
+    except FileNotFoundError:
+        return True, None
+    except (OSError, ValueError):
+        return False, None
+    m = doc.get("mode") if isinstance(doc, dict) else None
+    return True, (m if m in MODES else None)
+
+
+def settle_mode(c, rt, installed: set[str], defaults: set[str], notify=None) -> dict | None:
+    """Upgrade safety, once per box (every installer run calls it from `wam bootstrap`, before anything is installed).
+
+    Declared mode keeps apps apart unless a connection is declared or granted. An app installed before isolation that
+    calls another app without a `uses:` (e.g. an older Music → YouTube Music, Search → Tinfoil) would lose that link
+    on upgrade. So a box whose owner never chose a mode and that already runs apps the owner installed (anything that
+    isn't a Wizard default) is settled to **open** (every app reaches every other, like before isolation; sensitive
+    apps and the owner's Disconnects still hold) and the owner is told how to choose Declared. A new box, or one with
+    only Wizard's own defaults (released together, their connections declared), is settled to **declared**. An owner's
+    recorded choice is never changed, and the decision is made once (`connection_mode_settled` in app-manager.json).
+    Where wam can't read the grants file it can't see a recorded choice, so the same rule applies (the safe side: a
+    choice of declared made since isolation shipped would become open; the owner is told and can turn it back on)."""
+    cfg = _cfg(c.home)
+    if cfg.get(SETTLED):
+        return None
+    readable, mode = _recorded_mode(c.runtipi_root)
+    owner_apps = sorted(set(installed) - set(defaults))
+    if readable and mode:
+        target, why = mode, "owner choice kept"
+    elif owner_apps:
+        target, why = "open", "existing box: apps installed before isolation keep their connections"
+    else:
+        target, why = "declared", "new box (only Wizard's own apps)"
+    if not (readable and mode):
+        try:
+            rt.req("POST", "/apps/wizard/connection-mode", {"mode": target})
+        except Exception as e:  # noqa: BLE001 - an App Manager without modes: nothing to settle; try again next run
+            return {"mode": None, "error": str(e)[:160]}
+    cfg = _cfg(c.home)
+    cfg[SETTLED] = {"mode": target, "why": why, "at": int(time.time())}
+    _save_cfg(c.home, cfg)
+    if target == "open" and not (readable and mode) and notify:
+        try:
+            notify(*UPGRADE_NOTICE)
+        except Exception:  # noqa: BLE001 - telling the owner never fails the run
+            pass
+    return {"mode": target, "why": why, "owner_apps": owner_apps}
+
+
 def connection_mode(state: dict | None) -> str:
     """Declared (the default: apps can't talk to each other unless connected) or open: the owner's choice, kept by the
     App Manager with the other connection decisions. An App Manager without connection state has no mode: declared."""
