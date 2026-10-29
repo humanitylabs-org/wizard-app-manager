@@ -217,7 +217,13 @@ describe('owner share grants', () => {
       }
       await store.change(grant, false);
       expect((await store.readGrants()).seeded).toEqual(['hermes-agent']);
-      expect((await store.readGrants()).denies).toEqual([grant]);
+      expect((await store.readGrants()).denied).toEqual([{
+        kind: 'share', from: grant.from, to: grant.to, share: grant.share,
+        reason: 'mounts', approved: 'owner', created_at: expect.any(Number),
+      }]);
+      const denied = (await store.readGrants()).denied[0]!;
+      expect(Number.isInteger(denied.created_at)).toBe(true);
+      expect(denied.created_at).toBeGreaterThan(0);
       for (const mirror of mirrors) {
         const saved = JSON.parse(await fs.readFile(mirror, 'utf8'));
         expect(saved).toMatchObject(original);

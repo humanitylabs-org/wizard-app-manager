@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
@@ -31,6 +32,7 @@ with open(sys.argv[1], 'r') as f:
 }
 
 async function acquisitionChild(file: string): Promise<number> {
+  const lock = await fs.stat(file);
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     for (const entry of await fs.readdir('/proc')) {
@@ -38,7 +40,12 @@ async function acquisitionChild(file: string): Promise<number> {
       try {
         const status = await fs.readFile(`/proc/${entry}/status`, 'utf8');
         if (!new RegExp(`^PPid:\\s+${process.pid}$`, 'm').test(status)) continue;
-        if (await fs.readlink(`/proc/${entry}/fd/3`) === file) return Number(entry);
+        // Python's holder also opens this inode on fd 3. Identify flock itself.
+        const executable = await fs.readlink(`/proc/${entry}/exe`);
+        const argv = (await fs.readFile(`/proc/${entry}/cmdline`, 'utf8')).split('\0').filter(Boolean);
+        if (path.basename(executable) !== 'flock' || argv.length !== 3 || argv[1] !== '-x' || argv[2] !== '3') continue;
+        const inherited = await fs.stat(`/proc/${entry}/fd/3`);
+        if (inherited.dev === lock.dev && inherited.ino === lock.ino) return Number(entry);
       } catch { /* unrelated process exited */ }
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -49,6 +56,35 @@ async function acquisitionChild(file: string): Promise<number> {
 async function stop(proc: ChildProcess, closed: Promise<unknown>) {
   if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
   await closed;
+}
+
+function waitForLease(proc: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      proc.stdout!.off('data', output);
+      proc.stderr!.off('data', diagnostic);
+      proc.off('error', failed);
+      proc.off('close', earlyClose);
+      if (error) reject(error);
+      else resolve();
+    };
+    const output = (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.split(/\r?\n/).includes('locked')) finish();
+    };
+    const diagnostic = (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8192); };
+    const failed = (error: Error) => finish(error);
+    const earlyClose = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(new Error(`lease child exited before ready (${code ?? signal}): ${stderr}`));
+    const timer = setTimeout(() => finish(new Error(`lease child never became ready: ${stderr}`)), 5000);
+    proc.stdout!.on('data', output);
+    proc.stderr!.on('data', diagnostic);
+    proc.once('error', failed);
+    proc.once('close', earlyClose);
+  });
 }
 
 // Keep both fs APIs on the real isolated filesystem: flock inherits this fd.
@@ -138,10 +174,17 @@ with open(sys.argv[1], 'r') as f:
     const rejected = expect(writer).rejects.toThrow();
     try {
       const pid = await acquisitionChild(holder.file);
+      expect(pid).not.toBe(holder.proc.pid);
+      expect(holder.proc.exitCode).toBeNull();
+      expect(holder.proc.signalCode).toBeNull();
       if (mode === 'cancel') controller.abort(new Error('cancelled'));
       else process.kill(pid, 'SIGKILL');
       await rejected;
       expect(entered).toBe(false);
+      // Acquisition failure must leave the independent Python lease intact.
+      expect(holder.proc.exitCode).toBeNull();
+      expect(holder.proc.signalCode).toBeNull();
+      expect((await exec('python3', ['-c', probe, holder.file])).stdout.trim()).toBe('blocked');
       holder.proc.stdin!.end();
       await holder.closed;
       expect((await exec('python3', ['-c', probe, holder.file])).stdout.trim()).toBe('acquired');
@@ -178,14 +221,20 @@ with open(sys.argv[1], 'r') as f:
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-authority-'));
     const file = path.join(root, 'user-config', '.wizard-host-authority.lock');
     const module = pathToFileURL(fileURLToPath(new URL('../host-policy-lock.ts', import.meta.url))).href;
-    const code = `import {withHostAuthority} from ${JSON.stringify(module)};
+    const loader = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
+    const code = `const authority = await import(${JSON.stringify(module)});
+      const withHostAuthority = authority.withHostAuthority ?? authority.default?.withHostAuthority;
+      if (typeof withHostAuthority !== 'function') throw new Error('missing real withHostAuthority export');
       await withHostAuthority(${JSON.stringify(root)}, async () => {
         console.log('locked'); await new Promise(() => { setInterval(() => {}, 1000); });
       });`;
-    const proc = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Vitest may run under Bun; tsx's Node loader needs the Node executable
+    // and the exact workspace loader, not Vitest's ambient runtime/lookup.
+    const proc = spawn('node', ['--import', loader, '--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
     const closed = once(proc, 'close');
+    void closed.catch(() => {});
     try {
-      await once(proc.stdout!, 'data');
+      await waitForLease(proc);
       expect((await exec('python3', ['-c', probe, file])).stdout.trim()).toBe('blocked');
       await stop(proc, closed);
       expect((await exec('python3', ['-c', probe, file])).stdout.trim()).toBe('acquired');
