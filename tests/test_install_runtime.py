@@ -2,6 +2,7 @@
 import json
 from types import SimpleNamespace
 import pytest
+import yaml
 from wam import cli, private, links, store_install, store_selection, test_catalog
 
 PIN = 'a' * 40
@@ -38,6 +39,50 @@ def test_private_recipe_source_is_bound_to_repository(tmp_path, monkeypatch):
     private.prepare(tmp_path,'wizardapps','org/sample',tok='test',source_pin={'id':'sample','repo':'org/sample','commit':PIN})
     cfg=json.loads((tmp_path/'repos/wizardapps/apps/sample/config.json').read_text())
     assert cfg['source']=='https://github.com/org/sample'
+
+
+def test_private_build_recipe_uses_manager_visible_context_and_host_source_copy(tmp_path, monkeypatch):
+    def fetch(repo, commit, dst, tok):
+        (dst/'runtipi').mkdir(parents=True)
+        (dst/'app').mkdir()
+        (dst/'app'/'Dockerfile').write_text('FROM scratch\n')
+        (dst/'wizard.md').write_text('''---
+wizard: 0.2
+id: sample
+name: Sample
+version: 1.0.0
+type: service
+category: system
+summary: Build context fixture.
+license: MIT
+source: https://github.com/org/sample
+runtime:
+  package: build
+  config: runtipi/config.json
+  compose: runtipi/docker-compose.yml
+provides: []
+needs: []
+---
+Sample.
+''')
+        (dst/'runtipi'/'config.json').write_text(json.dumps({'id':'sample','port':9000,'version':'1.0.0'}))
+        (dst/'runtipi'/'docker-compose.yml').write_text('''services:
+  sample:
+    build:
+      context: app
+      dockerfile: Dockerfile
+    x-runtipi:
+      is_main: true
+      internal_port: 9000
+''')
+    monkeypatch.setattr(private,'fetch',fetch)
+    private.prepare(tmp_path,'wizardapps','org/sample',tok='test',
+                    source_pin={'id':'sample','repo':'org/sample','commit':PIN})
+    recipe = yaml.safe_load((tmp_path/'repos/wizardapps/apps/sample/docker-compose.yml').read_text())
+    expected = f'/app-data/.wizard-source/wizardapps/sample@{PIN[:12]}/app'
+    assert recipe['services']['sample']['build']['context'] == expected
+    host_copy = tmp_path/'app-data/.wizard-source/wizardapps'/f'sample@{PIN[:12]}'/'app/Dockerfile'
+    assert host_copy.read_text() == 'FROM scratch\n'
 
 
 def test_incompatible_release_rejected_before_any_fetch(tmp_path, monkeypatch):

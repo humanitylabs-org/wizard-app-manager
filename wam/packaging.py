@@ -1,8 +1,9 @@
 """runtime.package (spec/WIZARD_MD.md "Packaging", DECISIONS #76): source | build | image.
 
 Same contract as packages/backend/src/modules/app-stores/packaging.ts: source/build apps get their pinned
-commit (without .git) copied to <app-data>/.wizard-source/<store>/<app>@<commit12>; the App Manager sets
-${APP_SOURCE_DIR} to that host path at install. build services build from that copy as
+commit (without .git) copied to <app-data>/.wizard-source/<store>/<app>@<commit12>. Source mounts use
+the host path from APP_SOURCE_DIR, while build contexts use the same copy at App Manager's /app-data
+mount because Compose reads build contexts inside that container. Build services become
 wizard-local/<app>-<service>:<commit12>.
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 PACKAGES = {"source", "build", "image"}
 SOURCE_ROOT = ".wizard-source"
 SOURCE_LIMIT_BYTES = 256 * 1024 * 1024
+MANAGER_APP_DATA_ROOT = Path("/app-data")
 
 
 class PackagingError(ValueError):
@@ -23,6 +25,11 @@ class PackagingError(ValueError):
 
 def source_dir(app_data_root: Path, store: str, app: str, commit: str) -> Path:
     return Path(app_data_root) / SOURCE_ROOT / store / f"{app}@{commit[:12]}"
+
+
+def manager_source_dir(store: str, app: str, commit: str) -> Path:
+    """Source path as mounted inside App Manager for Compose build contexts."""
+    return source_dir(MANAGER_APP_DATA_ROOT, store, app, commit)
 
 
 def app_data_root(runtipi_root: Path) -> Path:
@@ -88,8 +95,14 @@ def prune(app_data: Path, store: str, app: str, keep: str) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str) -> bool:
-    """Validate the compose shape for `pkg`, rewrite build services, copy the source. True when source was copied."""
+def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str,
+                    build_target: Path | None = None) -> bool:
+    """Validate/rewrite a package and copy source to ``target``.
+
+    ``build_target`` is the same copy as visible to the App Manager Compose
+    client. On a live box that is under /app-data even when the host copy uses
+    a different absolute root.
+    """
     if pkg is None:
         return False
     kind = str(pkg)
@@ -111,7 +124,8 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         df = repo_path(posixpath.join(ctx or ".", str(b.get("dockerfile") or "Dockerfile")))
         if df is None or (ctx and not df.startswith(ctx + "/")):
             raise PackagingError(f"{name}: build.dockerfile must stay inside the context")
-        b["context"] = str(Path(target) / ctx) if ctx else str(target)
+        runtime_target = Path(build_target) if build_target is not None else Path(target)
+        b["context"] = str(runtime_target / ctx) if ctx else str(runtime_target)
         s["build"] = b
         s["image"] = f"wizard-local/{app}-{name}:{commit[:12]}"
         s["pull_policy"] = "build"

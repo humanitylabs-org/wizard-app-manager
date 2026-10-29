@@ -47,6 +47,16 @@ def test_build_points_at_copy_with_commit_image(tmp_path, checkout):
                                     "image": f"wizard-local/demo-web:{SHA[:12]}", "pull_policy": "build"}
 
 
+def test_build_can_use_app_manager_visible_copy_while_writing_host_copy(tmp_path, checkout):
+    c = {"services": {"web": {"build": {"context": "app"}}}}
+    host_target = target(tmp_path)
+    manager_target = packaging.manager_source_dir("wizardapps", "demo", SHA)
+    packaging.prepare_package("build", c, checkout, host_target, "demo", SHA,
+                              build_target=manager_target)
+    assert c["services"]["web"]["build"] == {"context": str(manager_target / "app")}
+    assert (host_target / "app" / "server.py").read_text() == "print(1)"
+
+
 @pytest.mark.parametrize("pkg,compose,msg", [
     ("source", {"services": {"d": {"image": "x", "build": "."}}}, "remove build:"),
     ("image", {"services": {"d": {"image": "x", "build": "."}}}, "remove build:"),
