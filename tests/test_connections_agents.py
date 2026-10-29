@@ -59,7 +59,7 @@ def test_restore_plan_says_what_changes_in_plain_words():
     assert [p["text"] for p in plan] == [
         "Card Benefits → Monarch will be turned back on.",
         "Your old cut between Messenger and Money will be cleared (it changes nothing while apps are kept apart).",
-        "Music → YouTube Music, which you added, will be removed.",
+        "Music → YouTube Music, connected with your OK, will be removed.",
     ]
     assert [p["change"] for p in plan] == ["on", "remove", "remove"]
     # a declared link to an app set to Ask me first comes back as a request
@@ -69,7 +69,7 @@ def test_restore_plan_says_what_changes_in_plain_words():
     assert cr.plan(STATE, {**REPORT, "mode": "open"})[1]["text"] == "Messenger and Money will be able to talk again (you cut them apart)."
     # a link he added and then turned off is still his link
     added_off = {**STATE, "grants": [*STATE["grants"], {"kind": "app", "from": "messenger", "to": "money", "approved": "owner", "reason": "owner"}]}
-    assert cr.plan(added_off, REPORT)[1]["text"] == "Messenger → Money, which you added and turned off, will be removed."
+    assert cr.plan(added_off, REPORT)[1]["text"] == "Messenger → Money, connected with your OK and then turned off, will be removed."
     # nothing of his own: nothing to change
     assert cr.plan({**STATE, "grants": STATE["grants"][:1], "denied": []}, REPORT) == []
 

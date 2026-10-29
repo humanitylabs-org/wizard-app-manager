@@ -393,7 +393,7 @@ test('Strict mode is the default: only real connections are lines, each with its
   assert.deepEqual(money.groups, []);
   assert.deepEqual(money.rows, [{ from: 'money', to: 'wizard-simplefin' }]);
   const music = linkInfo(m, 'wizard-music', 'wizard-youtube-music');
-  assert.deepEqual(music.why, ['You connected them.']);
+  assert.deepEqual(music.why, ['They were connected with your OK.']);
   assert.equal(music.warn, '');
   // Disconnect denies the row that links them
   assert.deepEqual(cutRows('declared', d.controls, 'wizard-simplefin', 'money'), [{ from: 'money', to: 'wizard-simplefin' }]);
@@ -610,13 +610,7 @@ test('Linked apps: one row per app, by name, each link with a plain reason; a cu
   const rows = linkedApps(m);
   assert.deepEqual(
     rows.map((r) => r.line),
-    [
-      'Backup → Cloudflare and S3',
-      'Card Benefits → Transcriber',
-      'Messenger → Money (off)',
-      'Money → Monarch, SimpleFIN',
-      'Music → YouTube Music (added by you)',
-    ],
+    ['Backup → Cloudflare and S3', 'Card Benefits → Transcriber', 'Messenger → Money (off)', 'Money → Monarch, SimpleFIN', 'Music → YouTube Music'],
   );
   // the cut link: in its app's row, off, with its own Turn on (the pair's Reconnect)
   const messenger = rows.find((r) => r.id === 'messenger');
@@ -653,7 +647,7 @@ test('Linked apps: one row per app, by name, each link with a plain reason; a cu
   );
   // no known job: who made the link instead
   assert.equal(rows.find((r) => r.id === 'card-benefits').links[0].why, 'declared by Card Benefits');
-  assert.equal(rows.find((r) => r.id === 'wizard-music').links[0].why, 'added by you');
+  assert.equal(rows.find((r) => r.id === 'wizard-music').links[0].why, 'connected with your OK');
   // a slot several apps provide is one link, disconnected as one, its reason from the slot
   const backup = rows.find((r) => r.id === 'backup').links;
   assert.equal(backup.length, 1);

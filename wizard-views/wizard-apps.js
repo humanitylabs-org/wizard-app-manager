@@ -853,7 +853,7 @@ export async function renderConnections(el, ctx = {}) {
           r.links
             .map(
               (l) =>
-                `<span class="wam-cl-link${l.on ? '' : ' is-off'}">${esc(l.name)}${l.added || !l.on ? `<small>${esc(linkTag(l).trim())}</small>` : ''}</span>`,
+                `<span class="wam-cl-link${l.on ? '' : ' is-off'}">${esc(l.name)}${!l.on ? `<small>${esc(linkTag(l).trim())}</small>` : ''}</span>`,
             )
             .join('<span class="wam-cl-sep">, </span>');
         const turnOn = (r) => {
@@ -1133,7 +1133,7 @@ export async function renderConnections(el, ctx = {}) {
             : l.pair
               ? `data-cm-recut="${esc(l.pair)}"`
               : `data-cm-regrant="${esc(id)}"`;
-          const why = [...new Set([l.on ? '' : 'Off', l.added ? 'added by you' : '', l.why].filter(Boolean))].join(' · ');
+          const why = [...new Set([l.on ? '' : 'Off', l.added ? 'connected with your OK' : '', l.why].filter(Boolean))].join(' · ');
           return `<div class="wam-cm-srow${l.on ? '' : ' is-off'}">${cmGlyph({ id: l.id, name: l.name })}<span class="wam-cm-tx"><b>${esc(l.name)}</b><small>${esc(why)}</small></span><button type="button" class="wam-btn${l.on ? '' : ' primary'}" ${at}${dis(key)}>${l.on ? 'Disconnect' : 'Turn on'}</button></div>`;
         })
         .join('');

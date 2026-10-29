@@ -87,8 +87,8 @@ def plan(state: dict | None, report: dict | None) -> list[dict]:
                         else f"Your old cut between {pair} will be cleared (it changes nothing while apps are kept apart)."})
         else:
             out.append({"from": k[0], "to": k[1], "label": label, "change": "remove", **({"off": True} if cut else {}),
-                        "text": f"{label}, which you added and turned off, will be removed." if cut
-                        else f"{label}, which you added, will be removed."})
+                        "text": f"{label}, connected with your OK and then turned off, will be removed." if cut
+                        else f"{label}, connected with your OK, will be removed."})
     return sorted(out, key=lambda x: ({"on": 0, "ask": 1, "remove": 2}[x["change"]], x["label"]))
 
 
