@@ -44,6 +44,11 @@ export class WizardSharesController {
     if (body?.mode !== 'open' && body?.mode !== 'declared') throw new BadRequestException('mode must be open or declared');
     return this.docker.storage.setMode(body.mode);
   }
+  // Restore defaults: app-to-app links back to what the apps declare (owner's cuts and own links dropped), live.
+  @Post('wizard/connections-reset')
+  async reset() {
+    return this.docker.storage.resetConnections();
+  }
   @Post('wizard/connection-notices')
   async notices(@Body() body: { delivered: string[] }) {
     if (!Array.isArray(body?.delivered)) throw new BadRequestException('delivered must be a list of notice ids');

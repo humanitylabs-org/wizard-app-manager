@@ -1275,10 +1275,10 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::befo
     grid-template-rows: auto auto auto auto auto 1fr auto;
     grid-template-areas:
       "title title"
+      "lead lead"
       "ro ro"
       "wait linked"
       "agent linked"
-      "cut linked"
       ". linked"
       "end end";
     gap: 0 32px;
@@ -1288,11 +1288,11 @@ html:is([data-skin^="obsidian"], [data-skin="landscapes"]) .wam-cm-cluster::befo
     margin-bottom: 20px;
   }
   .wam-cl.is-two > .wam-cl-title { grid-area: title; }
+  .wam-cl.is-two > .wam-cl-lead { grid-area: lead; }
   .wam-cl.is-two > .wam-cm-ro { grid-area: ro; }
   .wam-cl.is-two > .is-wait { grid-area: wait; }
   .wam-cl.is-two > .is-agent { grid-area: agent; }
   .wam-cl.is-two > .is-linked { grid-area: linked; }
-  .wam-cl.is-two > .is-cut { grid-area: cut; }
   .wam-cl.is-two > .wam-cl-end { grid-area: end; margin-bottom: 0; }
 }
 .wam-cl-title {
@@ -1553,4 +1553,143 @@ html[data-skin="obsidian-light"] :is(.wam-cl-row > .wam-cm-ic, .wam-cm-pair .wam
 .wam .wam-cl-back {
   align-items: center;
   justify-content: center;
+}
+
+/* The words under the title: apps are kept apart by default; the lists say what is linked. */
+.wam-cl-lead {
+  margin: -8px 4px 0;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+@container (min-width: 880px) {
+  .wam-cl.is-two > .wam-cl-lead {
+    margin-top: 6px;
+  }
+}
+/* Agents: "Oscar · Hermes" with what it can use under it. */
+.wam-cl-row.is-agent .wam-cl-tx > small {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+/* Linked apps: one row per app; a link the owner cut stays in its row, off, with Turn on. */
+.wam .wam-cl-row.has-act {
+  padding: 0 14px 0 0;
+  cursor: default;
+}
+.wam .wam-cl-row.has-act:hover {
+  background: none;
+}
+.wam .wam-cl-hit {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 8px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wam .wam-cl-row.has-act > .wam-cl-hit:only-child {
+  padding-right: 0;
+}
+.wam-cl-hit > .wam-cm-ic {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.wam-cl-hit:focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .wam .wam-cl-row.has-act:hover {
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+  }
+}
+.wam-cl-link {
+  white-space: nowrap;
+}
+.wam-cl-link small {
+  margin-left: 4px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.wam-cm-runs {
+  margin: 2px 0 6px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.wam-cl-link.is-off {
+  color: var(--ink-3);
+}
+.wam-cl-row.is-off .wam-cl-hit > .wam-cm-ic {
+  opacity: 0.55;
+}
+.wam .wam-cl-on {
+  flex: none;
+  min-height: 40px;
+  margin-left: 8px;
+}
+.wam-cl-empty {
+  margin: 0;
+  padding: 16px;
+  font-size: 15px;
+  color: var(--ink-2);
+}
+.wam-cl-sec-acts {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.wam .wam-cl-sec-acts .wam-btn {
+  min-height: 44px;
+}
+/* An agent's page: three groups, each with Turn all on, one switch per item. */
+.wam-cm-uses-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  grid-column: 1 / -1;
+  margin: 14px 0 4px;
+}
+.wam-cm-uses-h h5 {
+  margin: 0;
+}
+.wam .wam-cm-allon {
+  min-height: 36px;
+  padding-inline: 14px;
+  font-size: 14px;
+}
+.wam-cm-sheet .wam-cm-use .wam-cm-switch {
+  margin-left: auto;
+}
+.wam-cm-use.is-off {
+  opacity: 1;
+}
+.wam-cm-use.is-off .wam-cm-ic,
+.wam-cm-use.is-off .wam-cm-tx b {
+  opacity: 0.5;
+}
+.wam-cm-list {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.wam-cm-list li + li {
+  margin-top: 4px;
+}
+.wam-cm-srow.is-off .wam-cm-ic {
+  opacity: 0.55;
 }

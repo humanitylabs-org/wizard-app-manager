@@ -96,6 +96,7 @@ export function mapModel(d) {
   // be reconnected from either app.
   const declaredCut = new Map();
   const linkRows = new Map(); // Strict mode: the decision rows behind each connected pair (for the line's sheet)
+  const offRows = new Map(); // Strict mode: the rows behind each pair the owner cut (Linked apps shows them as off)
   const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
   const groups = []; // connections to a slot several apps provide: cut as one
   if (mode === 'declared')
@@ -119,6 +120,7 @@ export function mapModel(d) {
         }
         if (r.status === 'disconnected') {
           cuts.set(pairKey(r.from, p), [r.from, p].sort());
+          offRows.set(pairKey(r.from, p), [...(offRows.get(pairKey(r.from, p)) || []), r]);
           if ((r.providers || []).filter((x) => ids.has(x)).length > 1) continue; // a slot cut as one: cutGroups
           for (const [x, y] of [
             [r.from, p],
@@ -284,6 +286,7 @@ export function mapModel(d) {
     waits: [...waits.values()],
     links: [...links.values()],
     linkRows: Object.fromEntries([...linkRows].map(([k, v]) => [k, v])),
+    offRows: Object.fromEntries([...offRows].map(([k, v]) => [k, v])),
     comp,
     hint,
     single: [...single],
@@ -483,16 +486,24 @@ export function linkReason(model, row, provider) {
   const p = model.apps.find((x) => x.id === provider);
   const job = [slot, ...(p?.provides || [])].find((s) => s && JOB_WORDS[s]);
   if (job) return JOB_WORDS[job];
-  return row?.origin === 'owner' ? 'connected by you' : row?.origin === 'requested' ? 'allowed by you' : `declared by ${nm(row?.from)}`;
+  return row?.origin === 'owner' ? 'added by you' : row?.origin === 'requested' ? 'allowed by you' : `declared by ${nm(row?.from)}`;
 }
 
+/** A link's words after its name: "(added by you)", "(off)", "(added by you, off)". */
+export const linkTag = (l) => {
+  const parts = [l.added ? 'added by you' : '', l.on === false ? 'off' : ''].filter(Boolean);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+};
+
 /**
- * Strict mode: one row per app that uses others, "Money → SimpleFIN, Monarch", by name. Each link: { id, name, why,
- * pair: "a|b" (Disconnect the pair) } or, for a slot several apps provide, { group: { from, to } } (disconnected as
- * one).
+ * Linked apps: one row per app that uses others, by name, with every link it has: the ones that work and, in the
+ * same row, the ones the owner cut (off, with Turn on), "Money → Monarch, SimpleFIN", "Messenger → Money (off)". A
+ * link the owner added himself says "added by you". Each link: { id, name, why, on, added, pair: "a|b" } or, for a
+ * slot several apps provide, { group: { from, to } } (cut and turned on as one). `turnOn`: the row's one off link,
+ * for its inline Turn on. Open mode (everything talks to everything) lists only the pairs he cut.
  */
 export function linkedApps(model) {
-  if (model.mode !== 'declared') return [];
+  if (model.mode === 'off') return [];
   const ids = new Set(model.apps.map((a) => a.id));
   const nm = (id) => model.apps.find((x) => x.id === id)?.name || slotName(id);
   const by = new Map();
@@ -501,20 +512,33 @@ export function linkedApps(model) {
     if (!row.links.some((l) => (l.pair && l.pair === item.pair) || (l.group && item.group && l.group.to === item.group.to))) row.links.push(item);
     by.set(from, row);
   };
-  for (const rows of Object.values(model.linkRows || {}))
-    for (const r of rows) {
-      if (r.status !== 'connected' || !ids.has(r.from)) continue;
-      const prov = (r.providers || []).filter((x) => ids.has(x) && x !== r.from);
-      if (prov.length > 1) {
-        add(r.from, { id: prov[0], name: list(prov.map(nm)), why: linkReason(model, r, prov[0]), group: { from: r.from, to: r.to } });
-        continue;
-      }
-      const p = prov[0] || slotName(r.to);
-      if (!ids.has(p)) continue;
-      add(r.from, { id: p, name: nm(p), why: linkReason(model, r, p), pair: [r.from, p].sort().join('|') });
-    }
+  if (model.mode === 'declared') {
+    for (const [rowsBy, on] of [
+      [model.linkRows, true],
+      [model.offRows, false],
+    ])
+      for (const rows of Object.values(rowsBy || {}))
+        for (const r of rows) {
+          if (r.status !== (on ? 'connected' : 'disconnected') || !ids.has(r.from)) continue;
+          const added = r.origin === 'owner';
+          const prov = (r.providers || []).filter((x) => ids.has(x) && x !== r.from);
+          if (prov.length > 1) {
+            add(r.from, { id: prov[0], name: list(prov.map(nm)), why: linkReason(model, r, prov[0]), group: { from: r.from, to: r.to }, on, added });
+            continue;
+          }
+          const p = prov[0] || slotName(r.to);
+          if (!ids.has(p) || p === r.from) continue;
+          add(r.from, { id: p, name: nm(p), why: linkReason(model, r, p), pair: [r.from, p].sort().join('|'), on, added });
+        }
+  } else
+    for (const [a, b] of model.cuts || [])
+      if (ids.has(a) && ids.has(b)) add(a, { id: b, name: nm(b), why: '', pair: `${a}|${b}`, on: false, added: false });
   return [...by.values()]
-    .map((r) => ({ ...r, links: r.links.sort((x, y) => x.name.localeCompare(y.name)), line: `${r.name} → ${r.links.map((l) => l.name).join(', ')}` }))
+    .map((r) => {
+      const links = r.links.sort((x, y) => Number(y.on) - Number(x.on) || x.name.localeCompare(y.name));
+      const off = links.filter((l) => !l.on);
+      return { ...r, links, line: `${r.name} → ${links.map((l) => `${l.name}${linkTag(l)}`).join(', ')}`, turnOn: off.length === 1 ? off[0] : null };
+    })
     .sort((x, y) => x.name.localeCompare(y.name));
 }
 
@@ -564,28 +588,126 @@ export function pickFirst(model) {
   return null;
 }
 
+/** The words under the title: what is true of every app before the lists say what is linked. */
+export function listLead(mode) {
+  return mode === 'open'
+    ? 'Your apps can all talk to each other. These are the pairs you cut.'
+    : mode === 'off'
+      ? 'All your apps can talk to each other. Keeping apps apart is turned off on this Wizard.'
+      : 'Apps are kept apart by default: they can’t talk to each other. These are the links they have.';
+}
+
+const NOUNS = { app: ['app', 'apps'], 'agent-app': ['agent app', 'agent apps'], connector: ['connector', 'connectors'] };
+const count = (n, key) => `${n} ${NOUNS[key][n === 1 ? 0 : 1]}`;
+
+/** An agent's line: "Can use 15 apps, 5 agent apps, 11 connectors" (· "1 turned off" when he turned any off). */
+export function canUseLine(groups) {
+  const all = groups.flatMap((g) => g.items);
+  const off = all.filter((x) => !x.on).length;
+  if (!all.length) return 'Nothing to use yet';
+  return `Can use ${groups.map((g) => count(g.items.filter((x) => x.on).length, g.key)).join(', ')}${off ? ` · ${off} turned off` : ''}`;
+}
+
 /**
- * The one Connections list, the same model on every screen. Sections in reading order: a phone (or a narrow window)
- * shows them in this order in one column; a wide pane keeps the same sections and words, with `side: 'aside'` ones
- * (Linked apps) in a second column. `columns` is 2 only when there is something for that column.
- * Returns { columns, sections: [{ key, title, count, side, rows }], pick (pickFirst), footer }.
+ * The agents, each a configured instance (its name, the harness it runs on, its model), with what it may use, from
+ * the Agent Service (`access`: the owner listener's api/agents, wam/agent_access.py): [{ index, id, title, harness,
+ * model, line, main, live, groups: [{ key, title, allOn, items: [{ id, name, on, builtin }] }] }]. Only what the Agent
+ * Service can give an agent is listed (its `known` apps), by group, each with its switch. Without the Agent Service's
+ * answer the rows come from the report, read-only (`live: false`).
  */
-export function listLayout(model) {
+export function agentList(model, access) {
+  const live = !!(access && access.service && Array.isArray(access.agents) && access.agents.length);
+  if (!live)
+    return agentRows(model).map((r) => ({
+      ...r,
+      id: model.agents[r.index]?.id || '',
+      harness: '',
+      model: '',
+      live: false,
+      line: `${r.line[0].toUpperCase()}${r.line.slice(1)}`,
+      groups: r.groups.map((g) => ({ ...g, items: g.items.map((x) => ({ ...x, on: !x.off })) })),
+    }));
+  const pool = (key) => [...model.apps.filter((a) => a.kind === key), ...(model.builtin || []).filter((s) => s.kind === key)];
+  return access.agents.map((g, index) => {
+    const known = new Set(g.known || []);
+    const on = new Set(g.on || []);
+    const groups = BANDS.filter((b) => b.key !== 'agent')
+      .map((b) => {
+        const items = pool(b.key)
+          .filter((x) => known.has(x.id))
+          .sort((x, y) => x.name.localeCompare(y.name))
+          .map((x) => ({ id: x.id, name: x.name, builtin: !!x.builtin, on: on.has(x.id) }));
+        return { key: b.key, title: b.title, items, allOn: items.every((x) => x.on) };
+      })
+      .filter((b) => b.items.length);
+    return {
+      index,
+      id: g.id,
+      title: g.name || g.id,
+      harness: g.harness || '',
+      model: g.model || '',
+      provider: g.provider || '',
+      main: !!g.main,
+      private: !!g.private,
+      live: true,
+      groups,
+      line: canUseLine(groups),
+    };
+  });
+}
+
+/** "Oscar · Hermes": the agent's name and the harness it runs on. */
+export const agentName = (a) => (a.harness && a.harness !== a.title ? `${a.title} · ${a.harness}` : a.title);
+
+/** What an agent page says about turning things off, in plain words. */
+export const agentNote = (a) =>
+  `Everything is on unless you turn it off. An item you turn off is taken out of ${a.title}’s tools at once, and ${a.title} is told it isn’t allowed if it tries.`;
+
+/**
+ * The one Connections list, the same model on every screen. Sections in reading order: requests waiting for the
+ * owner's OK, the Agents (who does the work, and what each may use) and Linked apps (the links apps have, the ones he
+ * cut shown off in the same rows). A phone (or a narrow window) shows them in one column; a wide pane keeps the same
+ * sections and words, with `side: 'aside'` ones (Linked apps) in a second column.
+ * Returns { lead, columns, sections: [{ key, title, count, side, rows }], pick (pickFirst), footer, restore }.
+ */
+export function listLayout(model, access = null) {
   const waits = waitingLines(model);
-  const agents = agentRows(model);
+  const agents = agentList(model, access);
   const linked = linkedApps(model);
-  const cuts = cutList(model);
   const sections = [
     waits.length && { key: 'wait', title: 'Waiting for your OK', count: null, side: 'main', rows: waits },
-    { key: 'agent', title: agents.length > 1 ? 'Your agents' : 'Your agent', count: null, side: 'main', rows: agents },
-    linked.length && { key: 'linked', title: 'Linked apps', count: linked.length, side: 'aside', rows: linked },
-    cuts.length && { key: 'cut', title: 'Cut by you', count: null, side: 'main', rows: cuts },
+    { key: 'agent', title: 'Agents', count: null, side: 'main', rows: agents },
+    model.mode !== 'off' && {
+      key: 'linked',
+      title: 'Linked apps',
+      count: linked.length || null,
+      side: 'aside',
+      rows: linked,
+      empty: model.mode === 'open' ? 'Nothing is cut: every app can talk to every other.' : 'No links: every app is on its own.',
+    },
   ].filter(Boolean);
   const pick = pickFirst(model);
   return {
+    lead: listLead(model.mode),
     columns: sections.some((s) => s.side === 'aside') ? 2 : 1,
     sections,
     pick: pick && pick.apps.length ? pick : null,
     footer: footerLine(model.mode),
+    restore: model.mode !== 'off',
+  };
+}
+
+/** Restore defaults' confirm dialog, from the owner listener's plan (wam/connections_reset.py). */
+export function restoreWords(plan) {
+  const items = (plan?.changes || []).map((c) => c.text).filter(Boolean);
+  return {
+    title: 'Restore defaults?',
+    says: items.length
+      ? 'Links go back to what your apps are designed to have:'
+      : 'Nothing to change: the links are what your apps are designed to have.',
+    items,
+    keep: 'Your agents’ access, Ask me first and requests waiting for your OK stay as they are.',
+    go: items.length ? 'Restore defaults' : '',
+    done: 'Links are back to what your apps are designed to have.',
   };
 }

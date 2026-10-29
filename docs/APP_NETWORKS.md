@@ -74,6 +74,18 @@ connections; the owner can overrule any of them. Nothing asks the owner except c
   `pending`, and the owner gets a notification; Approve makes an owner grant, Deny a sticky `denied` row. Marking an app
   sensitive keeps its existing connections; turning it off approves what was waiting.
 
+- **Restore defaults:** the owner's one action to put app-to-app links back to exactly what the apps are designed to
+  have. It drops his own rows (every `denied` app row and every `approved: owner` app grant) and reconciles: a declared
+  link he cut is turned back on (or waits for his OK again if its app is set to Ask me first), a link he added goes, one
+  he added and then cut disappears. Requests waiting for his OK, Ask me first, the mode, file shares and agents' access
+  stay. Connections shows what will change first, in plain words ("Messenger → Money will be turned back on.",
+  "Movies → Shopping, which you added, will be removed."), and changes nothing until he confirms. API:
+  `POST /api/apps/wizard/connections-reset` (owner, `resetToDefaults` in wizard-app-grants.ts); `wam grants reset`
+  (shows the plan, `--yes` applies); the owner listener's `GET|POST api/connections/restore` (the POST carries the `plan` id the dialog showed; if the
+  links changed meanwhile, nothing is restored and the owner is asked to look again). On an App Manager that
+  predates the API, wam applies the same rule to `wizard-grants.json` when it may write it, then re-sends the box's
+  current mode so the App Manager reconciles (`wam/connections_reset.py`).
+
 State lives in `wizard-grants.json` beside the grants: `pending`, `sensitive` and the last 50 `notices`. The owner acts in
 the Connections view or with `wam grants approve|deny|grant|revoke <app> <to>`, `wam grants sensitive <app> on|off` and
 `wam grants pending`. These go to the App Manager's owner-authenticated API (`POST /api/apps/<id>:wizardapps/app-grants`,
@@ -159,7 +171,8 @@ unless the owner allows it, and stops before the update when its networks can't 
 
 ## Commands
 
-- `wam grants pending|sensitive|approve|deny|grant|revoke`: the owner's connection decisions (see above).
+- `wam grants pending|sensitive|approve|deny|grant|revoke|reset`: the owner's connection decisions (see above).
+- `wam agents [list]`, `wam agents access <agent> <app> on|off`: which apps each agent may use (docs/AGENT_ACCESS.md).
 - `wam connections [--json]`: what each app can reach and who reaches it, how the gateway reaches it, internet access,
   host access, and the live check of Docker membership against the declarations. It exits 1 on drift. `wam doctor`
   reports the same check.
@@ -236,11 +249,14 @@ and not connected) and whether it is on the mesh or on how many links. The live 
 same way as in declared mode.
 
 The Connections view is one list on every screen (`renderConnections`, model `listLayout` in
-`wizard-views/connections-map.js`): the title; "Waiting for your OK" only when a request waits; "Your agent" (one row
-per agent, "Hermes · can use all 32 apps", its sheet grouped Apps / Agent apps / Connectors); "Linked apps N" (one row
-per app that uses others, "Money → Monarch, SimpleFIN", its sheet with a plain reason per link, Disconnect and Connect
-to…); "Cut by you" with Reconnect inline; then "Everything else is kept apart.", Connect two apps (pick any app, even
-one with no links, then what it should talk to) and See map. A phone or a narrow window shows the sections in one
+`wizard-views/connections-map.js`): the title and one plain line ("Apps are kept apart by default: they can’t talk to
+each other. These are the links they have."); "Waiting for your OK" only when a request waits; "Agents" (one row per
+agent instance, "Oscar · Hermes", "Can use 15 apps, 5 agent apps, 11 connectors"; its page lists Apps / Agent apps /
+Connectors, each item with an on/off switch and Turn all on per group, docs/AGENT_ACCESS.md); "Linked apps N" (one row
+per app that uses others, "Money → Monarch, SimpleFIN"; a link the owner cut stays in its row as off, "Messenger → Money
+(off)", with Turn on; a link he added says "added by you"; its sheet with a plain reason per link, Disconnect / Turn on
+and Connect to…) with Restore defaults under it; then "Everything else is kept apart.", Connect two apps (pick any app,
+even one with no links, then what it should talk to) and See map. There is no separate list of cut pairs. A phone or a narrow window shows the sections in one
 column; a pane 880 px or wider keeps the same sections, rows and words, with Linked apps in a second column. Sheets are
 the kit's bottom sheet on a phone and a centred dialog on a wider screen; Esc closes them.
 

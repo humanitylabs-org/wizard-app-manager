@@ -137,3 +137,64 @@ def test_apps_and_bad_requests_never_reach_runtipi(listener):
                  "/_connections/api/apps/wizard/connection-notices"):
         assert call("POST", path, {"x": 1})[0] == 404, path
     assert [c for c in rt.calls if c[0] == "POST"] == []
+
+
+def test_agents_access_goes_to_the_agent_service_only_from_the_owners_device(listener, monkeypatch):
+    """Connections → Agents: the list and the owner's switches. An app container (through Serve, as the owner's
+    login) or a request without the Store header never changes an agent's access."""
+    from wam import agent_access
+    call, rt = listener
+    seen = []
+    monkeypatch.setattr(agent_access, "instances", lambda home: {"service": True, "agents": [{"id": "hermes", "name": "Oscar"}]})
+    monkeypatch.setattr(agent_access, "set_access", lambda home, a, apps, on: seen.append((a, apps, on)) or {"service": True, "agents": []})
+    code, _, b = call("GET", "/_connections/api/agents")
+    assert code == 200 and json.loads(b)["agents"][0]["name"] == "Oscar"
+    sw = ("/_connections/api/agents/hermes/access", {"apps": ["cinequeue"], "on": False})
+    assert call("POST", *sw, headers=BOX)[0] == 403
+    assert call("POST", *sw, headers={k: v for k, v in PHONE.items() if k != "X-Wizard-Store"})[0] == 403
+    assert call("POST", *sw, headers={**PHONE, "Tailscale-User-Login": "guest@x.com"})[0] == 403
+    assert seen == []
+    assert call("POST", *sw)[0] == 200
+    assert seen == [("hermes", ["cinequeue"], False)]
+    for path, body in [("/_connections/api/agents/hermes/access", {"apps": ["cinequeue"]}),
+                       ("/_connections/api/agents/hermes/access", {"apps": "cinequeue", "on": True}),
+                       ("/_connections/api/agents/hermes/access", {"apps": ["cinequeue"], "on": "no"})]:
+        assert call("POST", path, body)[0] == 400, body
+    assert call("POST", "/_connections/api/agents/../x/access", {"apps": ["a"], "on": True})[0] in (400, 404)
+    assert len(seen) == 1 and [c for c in rt.calls if c[0] == "POST"] == []
+
+
+def test_agents_say_plainly_when_the_agent_service_cannot_answer(listener, monkeypatch):
+    from wam import agent_access
+    call, _ = listener
+
+    def down(*a, **k):
+        raise agent_access.AccessError("can't reach the Agent Service (refused)", 503)
+    monkeypatch.setattr(agent_access, "instances", down)
+    monkeypatch.setattr(agent_access, "set_access", down)
+    code, _, b = call("GET", "/_connections/api/agents")
+    assert code == 200 and json.loads(b) == {"service": False, "why": "can't reach the Agent Service (refused)", "agents": []}
+    code, _, b = call("POST", "/_connections/api/agents/hermes/access", {"apps": ["money"], "on": True})
+    assert code == 503 and json.loads(b)["error"].startswith("Not changed: can't reach the Agent Service")
+
+
+def test_restore_defaults_shows_its_plan_and_needs_the_owners_confirm(listener, monkeypatch):
+    from wam import connections_reset, network
+    call, rt = listener
+    monkeypatch.setattr(network, "connection_state", lambda c, r: {"grants": [], "denied": [
+        {"from": "messenger", "to": "money", "approved": "owner", "reason": "uses"}]})
+    monkeypatch.setattr(network, "report", lambda c, r=None: {"apps": [], "controls": []})
+    applied = []
+    monkeypatch.setattr(connections_reset, "apply", lambda c, r, reconcile=None, expect=None: applied.append(expect) or {"changed": []})
+    code, _, b = call("GET", "/_connections/api/connections/restore")
+    got = json.loads(b)
+    assert code == 200 and got["changes"][0]["text"] == "messenger → money will be turned back on."
+    assert got["plan"] == connections_reset.plan_id(got["changes"])
+    ok = {"confirm": True, "plan": got["plan"]}
+    assert call("POST", "/_connections/api/connections/restore", ok, headers=BOX)[0] == 403
+    assert call("POST", "/_connections/api/connections/restore", {"confirm": False, "plan": got["plan"]})[0] == 400
+    assert call("POST", "/_connections/api/connections/restore", {"confirm": True})[0] == 400   # no plan: not applied
+    assert call("POST", "/_connections/api/connections/restore", {})[0] == 400
+    assert applied == []
+    assert call("POST", "/_connections/api/connections/restore", ok)[0] == 200
+    assert applied == [got["plan"]]

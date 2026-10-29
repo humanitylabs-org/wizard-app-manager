@@ -1659,6 +1659,10 @@ class StoreHandler(BaseHTTPRequestHandler):
                 if sub == "api/apps/wizard/connections":
                     why = si.FROM_BOX if si.from_box(self.headers, si.own_ips()) else None
                     return self._json(200, cv.state(self.cfg.runtipi(), why))
+                if sub == "api/agents":
+                    return self._json(200, cv.agents(self.cfg.home))
+                if sub == "api/connections/restore":
+                    return self._json(200, cv.restore_plan(self.cfg, self.cfg.runtipi()))
                 got = cv.asset(sub or "index.html")
                 if not got:
                     return self._json(404, {"error": "not found"})
@@ -1673,15 +1677,27 @@ class StoreHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b)
                 return
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 1024:
+            if not 0 < size <= (8192 if sub.startswith("api/agents/") else 1024):
                 return self._json(400, {"error": "invalid body size"})
-            return self._json(200, cv.change(self.cfg.runtipi(), sub, self.rfile.read(size)))
+            raw = self.rfile.read(size)
+            if sub.startswith("api/agents/"):   # an agent's access: the Agent Service's owner API (agent_access.py)
+                return self._json(200, cv.agent_change(self.cfg.home, sub, raw))
+            if sub == "api/connections/restore":
+                c = self.cfg
+                return self._json(200, cv.restore(c, c.runtipi(), raw,
+                                                  lambda: (_net_brief(network_step(c, c.runtipi())), write_registry(c))))
+            return self._json(200, cv.change(self.cfg.runtipi(), sub, raw))
         except LookupError:
             return self._json(404, {"error": "not found"})
-        except ValueError as e:
+        except (ValueError, PermissionError) as e:
             return self._json(400, {"error": str(e)[:200]})
         except RuntipiError as e:
             return self._json(502, {"error": f"The App Manager couldn't make this change: {str(e)[:240]}"})
+        except Exception as e:  # noqa: BLE001 - agent_access.AccessError and friends: say why, never a bare 502
+            from . import agent_access
+            if isinstance(e, agent_access.AccessError):
+                return self._json(e.status, {"error": f"Not changed: {str(e)[:240]}"})
+            raise
 
     def _chats_default(self, method: str) -> None:
         from . import chats_views
@@ -1888,10 +1904,29 @@ def main(argv: list[str] | None = None) -> int:
         for action in ("grant", "revoke", "approve", "deny"):
             p = gs.add_parser(action); p.add_argument("app"); p.add_argument("to")
         sens = gs.add_parser("sensitive"); sens.add_argument("app"); sens.add_argument("on", choices=("on", "off"))
+        # Restore defaults: app-to-app links back to what the apps declare (the owner's cuts and own links dropped)
+        rs = gs.add_parser("reset", help="Restore defaults: show what changes, then apply with --yes")
+        rs.add_argument("--yes", action="store_true", help="apply without asking")
         ga = gp.parse_args(argv[1:])
         if any(not re.fullmatch(r"(?:slot:)?[a-z0-9][a-z0-9-]{1,40}", value) for value in (getattr(ga, "app", "valid"), getattr(ga, "to", "valid"))):
             gp.error("invalid app or slot id")
         c = Config(); rt = c.runtipi()
+        if ga.action == "reset":
+            from . import connections_reset, network as nw
+            changes = connections_reset.plan(nw.connection_state(c, rt), nw.report(c, rt))
+            print("Restore defaults: app-to-app links go back to what the apps are designed to have.")
+            print("\n".join(f"  - {x['text']}" for x in changes) if changes else "  Nothing to change: the links are the defaults.")
+            if not changes:
+                return 0
+            if not ga.yes:
+                if not sys.stdin.isatty() or input("Restore defaults? [y/N] ").strip().lower() not in ("y", "yes"):
+                    print("Not changed.")
+                    return 1
+            out = connections_reset.apply(c, rt, lambda: _net_brief(network_step(c, rt)),
+                                          expect=connections_reset.plan_id(changes))
+            write_registry(c)
+            print(json.dumps({"restored": len(out["changed"]), "mode": (out.get("state") or {}).get("mode")}, indent=2))
+            return 0
         if ga.action == "list": result = rt.req("GET", "/apps/wizard/grants")
         elif ga.action == "pending":
             st = rt.req("GET", "/apps/wizard/connections")
@@ -1913,6 +1948,9 @@ def main(argv: list[str] | None = None) -> int:
             write_registry(c)
         print(json.dumps(result, indent=2))
         return 0
+    if argv and argv[0] == "agents":   # the agents and the apps each may use (Connections → Agents)
+        from .agent_access import main as agents_main
+        return agents_main(argv[1:])
     if argv and argv[0] == "hermes":
         from .hermes_update import main as hermes_main
         return hermes_main(argv[1:])
