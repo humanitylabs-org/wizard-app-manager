@@ -213,8 +213,28 @@ def make_runner(base):
             self.guest('prepare-directory', 'umask 077\ninstall -d -m700 '+ROOT)
             self.copy(self.stage/'source.tar', ROOT+'/source.tar')
             self.copy(self.stage/'diagnostic-init.py', ROOT+'/diagnostic-init')
-            self.guest('new-source-regressions', 'umask 022\ntar --no-same-permissions -xf '+ROOT+'/source.tar -C '+ROOT+'\n'
-                'cd '+ROOT+'\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q tests/test_storage_cold_process.py --junitxml='+ROOT+'/subset.xml', 180)
+            try:
+                self.guest('new-source-regressions', 'umask 022\ntar --no-same-permissions -xf '+ROOT+'/source.tar -C '+ROOT+'\n'
+                    'cd '+ROOT+'\nPYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q tests/test_storage_cold_process.py --junitxml='+ROOT+'/subset.xml', 180)
+            except BaseException:
+                # Preserve actual failing JUnit before teardown without replacing
+                # the original guest error, even if collection itself fails.
+                try:
+                    self.copy(self.evidence/'subset.xml', ROOT+'/subset.xml', True)
+                    failed_tree = ET.parse(self.evidence/'subset.xml')
+                    self.receipt['failed_new_regressions'] = {
+                        'actual_cases': sorted(c.attrib['classname'].replace('.', '/')+'.py::'+c.attrib['name'] for c in failed_tree.findall('.//testcase')),
+                        'xml_sha256': digest(self.evidence/'subset.xml'),
+                        'failures': len(failed_tree.findall('.//failure')),
+                        'errors': len(failed_tree.findall('.//error')),
+                        'skipped': len(failed_tree.findall('.//skipped'))}
+                    self.save()
+                except BaseException as collection_error:
+                    self.receipt['diagnostic_errors'].append({'operation': 'failed-subset-collection',
+                        'location': failure_location(collection_error)})
+                    try: self.save()
+                    except BaseException: pass
+                raise
             self.copy(self.evidence/'subset.xml', ROOT+'/subset.xml', True)
             tree = ET.parse(self.evidence/'subset.xml')
             ids = sorted(c.get('classname').replace('.', '/')+'.py::'+c.get('name') for c in tree.findall('.//testcase'))

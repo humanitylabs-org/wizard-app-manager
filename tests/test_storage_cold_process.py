@@ -1,5 +1,6 @@
 """New finite process diagnostic only; no real host census or product invocation."""
 import ast
+import copy
 import hashlib
 import importlib.util
 import json
@@ -214,11 +215,50 @@ def test_executable_inode_changes_prevent_stable_hash(monkeypatch, tmp_path):
     assert row['hash_status'] == 'inode-changed' and 'sha256' not in row
 
 
+def assert_no_forbidden_process_operations(fn):
+    # Only the leading string expression is documentation. Keep all runtime
+    # literals, including later/nested string expressions, in the safety scan.
+    fn = copy.deepcopy(fn)
+    if fn.body and isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) and isinstance(fn.body[0].value.value, str):
+        fn.body = fn.body[1:]
+    text = ast.unparse(fn)
+    assert not any(s in text for s in ('cmdline', 'environ', 'kill(', 'waitpid', 'sleep(', 'iterdir(', 'listdir('))
+
+
+def test_process_safety_scan_ignores_only_true_leading_docstring():
+    fn = ast.parse('def probe():\n """No cmdline, environ, kill(, waitpid, sleep(, iterdir(, listdir(."""\n return 42\n').body[0]
+    before = ast.dump(fn, include_attributes=True)
+    assert_no_forbidden_process_operations(fn)
+    assert ast.dump(fn, include_attributes=True) == before
+
+
+def test_process_safety_scan_rejects_forbidden_calls_and_reads():
+    for operation in ('p.read_text("cmdline")', 'os.environ', 'os.kill(42, 0)',
+                      'os.waitpid(42, 0)', 'time.sleep(1)', 'p.iterdir()', 'os.listdir(p)'):
+        fn = ast.parse('def probe():\n """Harmless documentation."""\n '+operation+'\n').body[0]
+        with pytest.raises(AssertionError):
+            assert_no_forbidden_process_operations(fn)
+
+
+def test_process_safety_scan_retains_runtime_and_non_docstring_literals():
+    for token in ('cmdline', 'environ', 'kill(', 'waitpid', 'sleep(', 'iterdir(', 'listdir('):
+        for body in ('value = '+repr(token), 'return '+repr(token),
+                     'pass\n '+repr(token), 'if True:\n  '+repr(token),
+                     'def nested():\n  '+repr(token)):
+            fn = ast.parse('def probe():\n """Harmless documentation."""\n '+body+'\n').body[0]
+            with pytest.raises(AssertionError):
+                assert_no_forbidden_process_operations(fn)
+        for source in ('def probe(value='+repr(token)+'):\n pass\n',
+                       'def probe() -> '+repr(token)+':\n pass\n',
+                       '@decorate('+repr(token)+')\ndef probe():\n pass\n'):
+            with pytest.raises(AssertionError):
+                assert_no_forbidden_process_operations(ast.parse(source).body[0])
+
+
 def test_no_argument_environ_kill_wait_or_process_enumeration_in_probe():
     for name in ('process_error', 'process_stat', 'process_executable', 'process_snapshot'):
         fn = next(n for n in ast.parse(generated()).body if isinstance(n, ast.FunctionDef) and n.name == name)
-        text = ast.unparse(fn)
-        assert not any(s in text for s in ('cmdline', 'environ', 'kill(', 'waitpid', 'sleep(', 'iterdir(', 'listdir('))
+        assert_no_forbidden_process_operations(fn)
     ns = support()
     fn = next(n for n in ast.parse(generated()).body if isinstance(n, ast.FunctionDef) and n.name == '_diagnostic_trace')
     accesses = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Subscript) and ast.unparse(n.value) == 'frame.f_locals']
