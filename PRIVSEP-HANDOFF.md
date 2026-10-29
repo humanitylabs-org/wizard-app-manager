@@ -1,8 +1,11 @@
 # Agent privilege separation: audit and test handoff
 
-**Owners while James travels:** Miguel (audit) and Oscar (testing). **Status:** built and passing on clean VMs, on
-do-not-merge branches. **Merge rule:** nothing merges to `main`, ships in a release, or touches James's box until James
-confirms. Open findings as PR comments or issues; push fixes to the same branches.
+**Owners while James travels:** Miguel (audit) and Oscar (testing). **Status:** the isolated credential-invalidation
+milestone is verified; the repaired candidate is **not release/security green**. Fresh-install and existing-box
+compatibility are staged, not run. All four PRs remain draft / **DO NOT MERGE** / `do-not-merge`.
+**Owner gate:** nothing merges to `main`, ships, or touches James's box until James explicitly confirms 100%.
+Open findings here or on the linked PRs; push fixes to the same named branches. This file and WAM #282 are the central
+Miguel/Oscar handoff; no separate direct-message delivery is implied.
 
 ## What it is and why
 
@@ -25,8 +28,9 @@ The goal is **one** install configuration, fresh or alongside, in which no AI ag
   lasts at most 7 days, is logged, expires through sudo, and is revoked by `developer off`. Health shows a red row
   while it is on. It is alongside-only; fresh agent containers do not get it, and their owners keep SSH. It is the
   only way the agent ever gets sudo: there is no automatic migration grant.
-- **Existing boxes** move over with an owner-run migration. The migration is journaled and resumable, has a full
-  rollback, and refuses ambiguous layouts rather than guessing. The agent loses Docker at the end and gets no sudo.
+- **Existing boxes** move over with an owner-run, journaled migration. Snapshot rollback is available **only before
+  credential password-change intent**; at or after that boundary recovery is forward-only. It must never restore
+  compromised credentials. The agent loses Docker before invalidation and gets no automatic sudo grant.
 
 Spec: wizard-os `spec/PRIVILEGE.md` and Decision #105 (PR humanitylabs-org/wizard-os#285).
 
@@ -43,10 +47,10 @@ Key files in wam: `wam/host_policy.py`, `wam/privilege_migration.py`, `scripts/r
 `scripts/prepare-privilege-migration.py`, `docs/PRIVILEGE_MIGRATION.md`, `docs/developer-mode.md`,
 `tests/test_fresh_privilege_audit.py`, and `qa/privsep-slice{1..6}/` (runner + RECEIPT per slice).
 
-## Security repair after the second audit (pending verification)
+## Security repair after the second audit (partly verified)
 
-A follow-up audit found three gaps. Fixes are pushed to the same do-not-merge branches; **none is proven on a VM
-yet**, and a second reviewer must check them before anyone calls them fixed.
+A follow-up audit found three gaps. Fixes are pushed to the same do-not-merge branches. The bounded credential proof
+below is now verified; it is not a substitute for independent review, real owner identity or installer compatibility.
 
 1. **Manager credentials could reach apps, and recipes could ask the backend for host access directly.**
    - `app.env` now gets an allowlist of public base keys only (`APP_PUBLIC_ENV`), never a manager credential.
@@ -78,13 +82,37 @@ yet**, and a second reviewer must check them before anyone calls them fixed.
    earlier candidate left. The `server-access` helper now grants only while developer mode is on, and refuses a
    `migration` request.
 
-Focused acceptance is prepared for private staging on forum, not run (see the private handoff held by Archimedes).
-It builds and retains the exact candidate backend image; no old `latest` image is substituted. It runs only focused
-regressions and a synthetic two-origin approval browser check. It does not prove real tailscaled identity, the full
-installed-app lifecycle, or the fresh/migrate/rollback VM path. The separate Slice 6 assertions now require no migration
-grant immediately after migration and remigration, but that VM runner is not part of this focused job.
+### Verified credential milestone — 29 October 2026
 
-## What is already proven (clean Debian 12 KVM guests)
+At host-Python candidate `9b2e2acaa8437a010dfa513bb7bb0e2c403254a1`, a disposable Debian/KVM guest passed **103 focused
+Python cases, zero skips**, and **seven distinct ordered real-service interruption/resume cases**. Every case rejected
+the old database and queue passwords and old bearer (401), accepted the new bearer (200), preserved synthetic app
+bytes/UID/GID/mode, and denied the legacy UID access to protected credential state. The VM stopped and private guest
+artifacts were removed. Proof SHA256: `db226c83bd75315ee8fd3cc948bffdc224259b3323066252186de2bdc5e512e5`.
+
+The retained backend image was built from `8b401fc892a28e0718cb9f42330adee3369bb266`, not from `9b2e2aca` and not an
+older published `latest`. The accepted source-closure chain keeps that image build separate from the repaired host
+Python. Later docs/harness-only commits do not change that production candidate or relabel inherited tests as fresh.
+Focused backend/type/lint evidence is inherited, not a new whole-repository run.
+
+### Small remaining compatibility acceptance — staged, NOT run
+
+`qa/privsep-compat/` reuses the retained security image and leaves production source unchanged during independent
+review. It stages exactly one full fresh installation and one synthetic existing-box move in sequential disposable
+VMs. Required ordinary apps are the real catalog **Calendar (`wizard-calendar`) and Files (`files`)**. It checks
+app-scoped stop/start, Calendar import/export and data preservation under the unchanged strict bind-ancestry rules.
+
+The existing-box case checks stopped relocation, **pre-invalidation** rollback and remigration, **post-invalidation**
+rollback refusal, forward resume, credential readback, preserved running apps, and real thin-client/no-Docker/no-sudo
+identity. The seven credential-interruption cases are retained rather than rerun. No personal host, real credentials,
+private/sealed data, authenticated tailnet or core Hermes update is part of this staged job. Execution belongs to the
+parent's forum heavy-worker admission; staging/preflight is not acceptance.
+
+## Historical clean-VM evidence — not current repaired-candidate acceptance
+
+These earlier results predate the security repairs. In particular the Slice 6 pass at `ec4ae3b7` is **superseded as a
+current compatibility claim**, not deleted. Its migrate/rollback/remigrate sequence used the former migration grant
+and predates the credential invalidation boundary. Do not run its unconditional post-invalidation rollback recipe.
 
 1. Sudo removed from wam code paths. A strict audit test allows only the fixed helper.
 2. Host policy and owner approval work. Grandfathering blocks 0 of the 32 apps on a real box.
@@ -96,7 +124,7 @@ grant immediately after migration and remigration, but that VM runner is not par
    approval route changed, so re-prove it.)
 6. A legacy box built from `main` migrates, rolls back and migrates again. All running apps come back with their data,
    grandfathered mounts keep working, and doctor passes. (Proven with the old seven-day migration grant; re-prove
-   without it.)
+   without it, using the new pre/post-invalidation semantics.)
 
 Full suite: 1721 tests; the only failure, `test_chats_views::test_typescript_public_index_path_has_identical_seal`, also
 fails on `main`. UI: 1344/1344, plus a browser matrix covering phone/desktop × dark/light.
@@ -120,14 +148,20 @@ fails on `main`. UI: 1344/1344, plus a browser matrix covering phone/desktop × 
    agent cannot approve it, and that the owner can approve it from a tailnet device. Also turn developer mode on and
    off, and confirm the grant expires.
 3. **Migration on a real used box (Oscar).** Use a spare box running today's release, never James's. Follow
-   `docs/PRIVILEGE_MIGRATION.md`, keeping a root SSH session open, then run rollback and migrate again. Report anything
-   the migration refuses.
+   `docs/PRIVILEGE_MIGRATION.md`, keeping a root SSH session open. Rehearse rollback only before credential mutation;
+   afterwards prove refusal and forward resume, never restore the old secrets. Report anything the migration refuses.
 4. **James's box goes last.** `qa/privsep-slice6/JAMES-BOX-DRYRUN.md` lists three blockers to fix by hand first:
    `.wizard-os/alongside.json` is missing, some extra user services point at legacy paths, and the app-manager checkout
    is in a nondefault location.
 
 ## Gotchas
 
+- **Independent audit remains open.** In particular, authenticated tailscaled owner identity and the approval
+  listener's ownership/lifetime still need review and real signed-in testing. Synthetic headers/origins do not prove
+  either. The staged compatibility job deliberately cannot make this gate green.
+- Cross-repo approval UI/Service changes, real tailnet link resolution, developer-window expiry/revocation and a
+  representative genuinely used spare box remain separate gates. The compatibility runner uses published stock apps;
+  it is not a fresh image build or acceptance of the current UX/Service PR heads.
 - `wam stop <app>` on `main` stops Runtipi globally and still exits 0. Use `wam app stop|start|restart <app>`.
 - Heavy and VM tests run on Linux/amd64 hardware with KVM. The VM runners (`qa/privsep-slice*/run.py`) take an
   evidence dir, a source dir and a commit, and need about 30 to 60 minutes each.
