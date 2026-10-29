@@ -1199,6 +1199,8 @@ def bootstrap(c: Config) -> dict:
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
     updated = release_updates(c, rt, failed)
+    if mode and mode.get("notice") == "pending":   # Notifications may have been installed just now
+        settle_connection_mode(c, rt)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
     out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
@@ -1215,7 +1217,7 @@ def settle_connection_mode(c: Config, rt) -> dict | None:
         installed = installed_ids(rt)
         defaults = {(v or {}).get("app") for v in slots.load_defaults().values()} - {None}
         return network.settle_mode(c, rt, installed, defaults,
-                                   notify=lambda title, msg: app_updates._notify(c, title, msg))
+                                   notify=lambda title, msg: app_updates._notify(c, title, msg, required=True))
     except Exception as e:  # noqa: BLE001
         print(f"note: connection mode not settled ({str(e)[:160]}); it is tried again on the next installer run",
               file=sys.stderr)

@@ -1103,6 +1103,10 @@ def settle_mode(c, rt, installed: set[str], defaults: set[str], notify=None) -> 
     choice of declared made since isolation shipped would become open; the owner is told and can turn it back on)."""
     cfg = _cfg(c.home)
     if cfg.get(SETTLED):
+        done = cfg[SETTLED]
+        if isinstance(done, dict) and done.get("notice") == "pending" and notify and _told(notify):
+            done["notice"] = "sent"
+            _save_cfg(c.home, {**_cfg(c.home), SETTLED: done})
         return None
     readable, mode = _recorded_mode(c.runtipi_root)
     owner_apps = sorted(set(installed) - set(defaults))
@@ -1117,15 +1121,20 @@ def settle_mode(c, rt, installed: set[str], defaults: set[str], notify=None) -> 
             rt.req("POST", "/apps/wizard/connection-mode", {"mode": target})
         except Exception as e:  # noqa: BLE001 - an App Manager without modes: nothing to settle; try again next run
             return {"mode": None, "error": str(e)[:160]}
-    cfg = _cfg(c.home)
-    cfg[SETTLED] = {"mode": target, "why": why, "at": int(time.time())}
-    _save_cfg(c.home, cfg)
-    if target == "open" and not (readable and mode) and notify:
-        try:
-            notify(*UPGRADE_NOTICE)
-        except Exception:  # noqa: BLE001 - telling the owner never fails the run
-            pass
-    return {"mode": target, "why": why, "owner_apps": owner_apps}
+    done = {"mode": target, "why": why, "at": int(time.time())}
+    if target == "open" and not (readable and mode):
+        # The owner must hear about it: until a Notifications app takes the notice, every later run (and the end of
+        # this one, after the defaults are installed) tries again.
+        done["notice"] = "sent" if notify and _told(notify) else "pending"
+    _save_cfg(c.home, {**_cfg(c.home), SETTLED: done})
+    return {"mode": target, "why": why, "owner_apps": owner_apps, **({"notice": done["notice"]} if "notice" in done else {})}
+
+
+def _told(notify) -> bool:
+    try:
+        return bool(notify(*UPGRADE_NOTICE))
+    except Exception:  # noqa: BLE001 - telling the owner never fails the run
+        return False
 
 
 def connection_mode(state: dict | None) -> str:
