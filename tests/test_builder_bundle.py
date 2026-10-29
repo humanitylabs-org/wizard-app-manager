@@ -140,6 +140,27 @@ def test_fresh_merges_mounts_preserves_terminal_and_is_idempotent(homes, tmp_pat
     assert all(r[1] for r in bb.health(osh, data, bb.RUNTIME + '/current/system-skills'))
 
 
+def test_fresh_keeps_compose_merge_tags_in_the_override(homes, tmp_path):
+    """A fresh install's Hermes override already has `networks: !override` from `wam network`; 0.3.81 failed with
+    "could not determine a constructor for the tag '!override'" and the install stopped (demo VPS, 29 Oct 2026)."""
+    osh, hh = homes
+    c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
+    data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+    data.mkdir(parents=True)
+    shutil.copy(hh / 'config.yaml', data / 'config.yaml')
+    override = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    override.parent.mkdir(parents=True)
+    override.write_text('services:\n  hermes-agent-engine:\n    networks: !override\n      wizard-app-hermes-agent:\n        gw_priority: 1\n'
+                        'networks:\n  wizard-app-hermes-agent:\n    name: wizard-app-hermes-agent\n    external: true\n')
+    bb.fresh(c)
+    text = override.read_text()
+    assert 'networks: !override' in text
+    from wam.network import load_yaml
+    service = load_yaml(text)['services']['hermes-agent-engine']
+    assert service['environment']['WIZARD_BUILDER_ROOT'] == bb.RUNTIME
+    assert any(isinstance(v, dict) and v.get('target') == bb.RUNTIME for v in service['volumes'])
+
+
 @pytest.fixture
 def wizard(homes, monkeypatch):
     loader = importlib.machinery.SourceFileLoader('wizard_test_bundle', str(bb.SOURCE / 'wizard-cli/wizard'))
