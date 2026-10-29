@@ -7,18 +7,20 @@ and an explicit acknowledgement. No image build, pull or credential discovery.
 """
 import argparse
 import hashlib
+import io as bytes_io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from wam.credential_rotation import DockerServices, Rotation, parse_env, SAFE_ENV
 from wam.runtipi import cli_token
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rotation_diagnostics import Diagnostics, assert_no_credentials, teardown
+from rotation_diagnostics import Diagnostics, assert_no_credentials, teardown, queue_health_contract
 
 DIAG = Diagnostics()
 
@@ -73,7 +75,40 @@ def assert_legacy_denied(paths):
         assert result.returncode != 0, 'Legacy UID could read protected credential state'
 
 
-def fixture(folder, images):
+def queue_contract(image):
+    DIAG.checkpoint('queue-public-image-contract')
+    raw = command(['docker', 'image', 'inspect', '--format',
+                   '{{json .Config.User}}\n{{json .Config.Entrypoint}}', image]).decode().splitlines()
+    assert len(raw) == 2
+    user, entrypoints = (json.loads(line) for line in raw)
+    cid = command(['docker', 'create', '--name', 'rotation-queue-contract', '--network', 'none',
+                   '--entrypoint', '/bin/true', image]).decode().strip()
+    primary = None
+    try:
+        public = {}
+        for filename in ('/etc/passwd', '/usr/local/bin/docker-entrypoint.sh'):
+            raw = command(['docker', 'cp', cid + ':' + filename, '-'])
+            with tarfile.open(fileobj=bytes_io.BytesIO(raw)) as archive:
+                members = archive.getmembers()
+                assert len(members) == 1 and members[0].isfile() and members[0].size <= 131072
+                public[filename] = archive.extractfile(members[0]).read().decode()
+        contract = queue_health_contract(user, entrypoints, public['/etc/passwd'],
+                                         public['/usr/local/bin/docker-entrypoint.sh'])
+        DIAG.emit('queue-public-image-contract', service_uid=contract['uid'], service_gid=contract['gid'],
+                  default_root=contract['default_root'], health_uses_service_user=True)
+        return contract
+    except BaseException as error:
+        primary = error
+        DIAG.failure(error)
+        raise
+    finally:
+        try: command(['docker', 'rm', '--volumes', cid])
+        except Exception as error:
+            DIAG.failure(error, cleanup=True)
+            if primary is None: raise
+
+
+def fixture(folder, images, queue):
     root = folder / 'runtipi'; root.mkdir()
     (root / 'user-config').mkdir()
     root.chmod(0o750)
@@ -100,7 +135,7 @@ def fixture(folder, images):
                        'healthcheck': {'test': ['CMD-SHELL', 'pg_isready -U tipi -d tipi'], 'interval': '2s', 'timeout': '2s', 'retries': 60}},
         'runtipi-queue': {'image': images['queue'], 'environment': {'RABBITMQ_DEFAULT_USER': 'tipi', 'RABBITMQ_DEFAULT_PASS': '${RABBITMQ_PASSWORD}'},
                          'volumes': [str(root / 'data/rabbitmq') + ':/var/lib/rabbitmq'],
-                         'healthcheck': {'test': ['CMD', 'rabbitmq-diagnostics', '-q', 'ping'], 'interval': '3s', 'timeout': '10s', 'retries': 60}},
+                         'healthcheck': {'test': queue['health_test'], 'interval': '3s', 'timeout': '10s', 'retries': 60}},
         'runtipi': {'image': images['backend'], 'env_file': ['.env'], 'environment': {'NODE_ENV': 'production'},
                     'depends_on': {'runtipi-db': {'condition': 'service_healthy'}, 'runtipi-queue': {'condition': 'service_healthy'}},
                     'volumes': [str(root) + ':/data', str(root / '.env') + ':/data/.env', str(root / 'cache') + ':/cache',
@@ -143,6 +178,7 @@ def main():
     inspected = json.loads(command(['docker', 'image', 'inspect', images['backend']]))
     assert len(inspected) == 1 and inspected[0]['Id'] == images['backend']
     assert inspected[0]['Config']['Labels']['org.opencontainers.image.revision'] == args.source_revision
+    queue = queue_contract(images['queue'])
     BASE.mkdir(mode=0o755)
     receipt = {'schema': 1, 'images': images, 'source_revision': args.source_revision,
                'cases': [], 'runtime': 'real-disposable-docker'}
@@ -154,7 +190,7 @@ def main():
         io = DiagnosticServices(folder / 'runtipi')
         primary = None
         try:
-            root, control, app, appenv = fixture(folder, images)
+            root, control, app, appenv = fixture(folder, images, queue)
             DIAG.checkpoint('initial-service-readiness')
             io.command([*io.compose, 'up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '240'])
             DIAG.checkpoint('register-synthetic-operator')

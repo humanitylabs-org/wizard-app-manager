@@ -2,6 +2,7 @@
 import ast
 import builtins
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -13,7 +14,7 @@ SOURCES = ('qa/privsep-security/rotation_diagnostics.py',
 OPERATIONS = ('compose-up', 'compose-down', 'compose-config', 'compose-ps', 'compose-stop',
               'compose-logs', 'container-inspect', 'container-exec', 'docker-ps', 'image-inspect',
               'db-password', 'db-auth', 'queue-password', 'queue-revoke', 'queue-auth',
-              'http-request', 'other-service-command')
+              'http-request', 'container-create', 'container-remove', 'public-image-file-copy', 'other-service-command')
 STATUSES = ('created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead')
 HEALTH = ('starting', 'healthy', 'unhealthy', 'none')
 
@@ -61,6 +62,9 @@ def operation(args, compose=()):
         action = args[len(compose)] if len(args) > len(compose) else ''
         return 'compose-' + action if 'compose-' + action in OPERATIONS else 'other-service-command'
     if args[:2] == ['docker', 'inspect']: return 'container-inspect'
+    if args[:2] == ['docker', 'create']: return 'container-create'
+    if args[:2] == ['docker', 'rm']: return 'container-remove'
+    if args[:2] == ['docker', 'cp']: return 'public-image-file-copy'
     if args[:2] == ['docker', 'ps']: return 'docker-ps'
     if args[:3] == ['docker', 'image', 'inspect']: return 'image-inspect'
     if args[:2] == ['docker', 'exec']:
@@ -171,3 +175,25 @@ def assert_no_credentials(logs, old, new):
     # parse_env already returns ONLY KEYS. Keep all three old AND new secrets.
     assert set(old) == set(new) == set(KEYS)
     assert all(values[key].encode() not in logs for values in (old, new) for key in KEYS)
+
+
+def queue_health_contract(user, entrypoints, passwd, entrypoint):
+    """Public exact-image metadata only; refuse unknown privilege-drop contracts."""
+    assert entrypoints in (['docker-entrypoint.sh'], ['/usr/local/bin/docker-entrypoint.sh'])
+    matches = [line.split(':') for line in passwd.splitlines() if line.startswith('rabbitmq:')]
+    assert len(matches) == 1 and len(matches[0]) == 7
+    uid, gid = int(matches[0][2]), int(matches[0][3])
+    assert uid > 0 and gid > 0
+    launcher = ''
+    if user in ('', '0', 'root', '0:0', 'root:root'):
+        drops = re.findall(r'\bexec (gosu|su-exec) rabbitmq\b', entrypoint)
+        assert len(set(drops)) == 1
+        launcher = drops[0] + ' rabbitmq '
+    else:
+        assert user in ('rabbitmq', 'rabbitmq:rabbitmq', str(uid), f'{uid}:{gid}')
+    script = ('set -eu; cookie=/var/lib/rabbitmq/.erlang.cookie; test -s "$cookie"; '
+              'meta="$(stat -c %u:%g:%a "$cookie")"; '
+              f'case "$meta" in {uid}:{gid}:400|{uid}:{gid}:600) ;; *) exit 1 ;; esac; '
+              'exec ' + launcher + 'rabbitmq-diagnostics -q ping')
+    return {'uid': uid, 'gid': gid, 'default_root': bool(launcher),
+            'health_test': ['CMD-SHELL', script.replace('$', '$$')]}

@@ -140,6 +140,32 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("full_acceptance=False", text)
         self.assertIn("CASES[:1] if args.diagnostic_first_case else CASES", text)
 
+    def test_exact_public_image_contract_requires_known_privilege_drop(self):
+        passwd = 'rabbitmq:x:999:998:RabbitMQ:/var/lib/rabbitmq:/bin/sh\n'
+        for launcher in ('su-exec', 'gosu'):
+            contract = d.queue_health_contract('', ['docker-entrypoint.sh'], passwd,
+                                               'exec ' + launcher + ' rabbitmq "$BASH_SOURCE" "$@"')
+            test = contract['health_test'][1]
+            self.assertTrue(contract['default_root'])
+            self.assertIn('exec ' + launcher + ' rabbitmq rabbitmq-diagnostics -q ping', test)
+            self.assertIn('999:998:400|999:998:600', test)
+            self.assertIn('$$cookie', test)  # Compose must not consume shell variables.
+            self.assertIn('$$(stat', test)
+            self.assertNotIn('cat ', test)
+            subprocess.run(['sh', '-n', '-c', test.replace('$$', '$')], check=True)
+        with self.assertRaises(AssertionError):
+            d.queue_health_contract('', ['docker-entrypoint.sh'], passwd, 'unknown wrapper')
+
+    def test_rootless_queue_contract_and_malformed_uid_refuse(self):
+        passwd = 'rabbitmq:x:999:998:RabbitMQ:/var/lib/rabbitmq:/bin/sh\n'
+        contract = d.queue_health_contract('rabbitmq', ['docker-entrypoint.sh'], passwd, '')
+        self.assertFalse(contract['default_root'])
+        self.assertIn('exec rabbitmq-diagnostics -q ping', contract['health_test'][1])
+        with self.assertRaises(AssertionError):
+            d.queue_health_contract('unknown', ['docker-entrypoint.sh'], passwd, '')
+        with self.assertRaises(AssertionError):
+            d.queue_health_contract('rabbitmq', ['docker-entrypoint.sh'], passwd.replace(':999:', ':0:'), '')
+
 
 if __name__ == '__main__':
     unittest.main()
