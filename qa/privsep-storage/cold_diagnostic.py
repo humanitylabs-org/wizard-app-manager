@@ -229,10 +229,10 @@ def make_runner(base):
                         'errors': len(failed_tree.findall('.//error')),
                         'skipped': len(failed_tree.findall('.//skipped'))}
                     self.save()
-                except BaseException as collection_error:
-                    self.receipt['diagnostic_errors'].append({'operation': 'failed-subset-collection',
-                        'location': failure_location(collection_error)})
-                    try: self.save()
+                except BaseException:
+                    try:
+                        self.receipt['diagnostic_errors'].append({'operation': 'failed-subset-collection'})
+                        self.save()
                     except BaseException: pass
                 raise
             self.copy(self.evidence/'subset.xml', ROOT+'/subset.xml', True)
