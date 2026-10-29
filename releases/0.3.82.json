@@ -178,5 +178,5 @@
     "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
     "rollback": null
   },
-  "notes": "Latest and Stable (Recommended fixes, fast-tracked after the upgrade test). Exactly 0.3.81 except Wizard UX bc3c1408 -> 0a23c082, App Manager c52f260f -> 5a802723, Claude 0.2.10 -> 0.2.11, ChatGPT 0.2.8 -> 0.2.9."
+  "notes": "Latest. Exactly 0.3.81 except Wizard UX bc3c1408 -> 0a23c082, App Manager c52f260f -> 5a802723, Claude 0.2.10 -> 0.2.11, ChatGPT 0.2.8 -> 0.2.9. Recommended fixes: the release train promotes it to Stable only after the installed upgrade test passes (promotions/0.3.82.json)."
 }
