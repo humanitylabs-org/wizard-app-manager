@@ -16,6 +16,14 @@ Agents are the other way round: an agent can use every app by default. It reache
 never through the app networks, so keeping apps apart never cuts it off (the Agent Service's app lists are what narrow
 it).
 
+**Upgrading boxes (`network.settle_mode`, once per box at the start of `wam bootstrap`):** a box whose owner never
+chose a mode and that already runs apps the owner installed (anything that isn't a Wizard default) is settled to
+**open**, so an app installed before isolation that calls another without a `uses:` keeps working, and the owner gets
+one notification saying how to turn Keep apps apart on (Settings › Connections › Details). A new box, or one with only
+Wizard's own defaults, is settled to **declared**. A recorded choice is never changed; the decision is kept as
+`connection_mode_settled` in `~/.wizard-os/app-manager.json`. Where wam can't read `wizard-grants.json` it can't see a
+recorded choice and applies the same rule, except that an API-reported open is always kept (open is never a default).
+
 **Before switching a box from open to declared,** check that every app-to-app call it relies on is declared or granted:
 an app that calls another without a `uses:` loses it. Look for other apps' hostnames in each app's compose, env and code
 (`http://<app id>:<port>`), and sample live traffic on the app networks; then add `uses:` to the app's wizard.md, or

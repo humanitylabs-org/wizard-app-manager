@@ -330,20 +330,25 @@ def reconcile_settings(c, rt, app_id: str) -> list[str]:
     return []
 
 
-def _notify(c, title: str, message: str, priority: str = "default") -> None:
-    """Best effort: one line in the owner's Notifications inbox when that app is installed."""
+def _notify(c, title: str, message: str, priority: str = "default", required: bool = False) -> bool:
+    """Best effort: one line in the owner's Notifications inbox when that app is installed. True when it was taken
+    (`required`: a JSON-RPC error counts as not delivered, so the caller can try again later)."""
     try:
         reg = json.loads((Path(c.home) / "apps.json").read_text())
         url = next((a["mcp"]["url"] for a in reg.get("apps") or []
                     if a.get("id") == "notifications" and (a.get("mcp") or {}).get("url")), None)
         if not url:
-            return
+            return False
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "notify", "arguments": {"title": title, "message": message, "priority": priority}}}).encode()
-        urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers={
+        got = urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers={
             "content-type": "application/json", "accept": "application/json, text/event-stream"}), timeout=15).read()
+        if required:
+            text = got.decode("utf-8", "replace")
+            return '"result"' in text and '"isError":true' not in text.replace(" ", "")
+        return True
     except Exception:  # noqa: BLE001 - telling the owner never fails the run
-        pass
+        return False
 
 
 def _summary(done: list, rolled: list, failed: list, needs: list) -> tuple[str, str, str] | None:
