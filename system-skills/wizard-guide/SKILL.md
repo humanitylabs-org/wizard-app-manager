@@ -1,12 +1,12 @@
 ---
 name: wizard-guide
-description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
+description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips, a reminder or to be told when something happens, when you must alert them (a job finished, a watcher found something), wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
 version: 1.2.0
 author: Wizard OS
 license: MIT
 metadata:
   hermes:
-    tags: [wizard-os, onboarding, tips, reminders, help]
+    tags: [wizard-os, onboarding, tips, reminders, notifications, alerts, help]
 ---
 
 # Wizard guide
@@ -44,6 +44,13 @@ The five topics: building an app by voice, changing the skin with My skin, remin
 - "Cancel the … reminder": list, then `action: cancel` with that id.
 - Confirm the returned time back to them in their own time zone.
 - If the tool says the scheduler is switched off, say reminders aren't available on this box yet. Never promise a reminder you could not save. On a box where the `wizard_schedule` tool is offered instead, use that (`kind: remind`).
+
+## Alerts and notifications
+
+- Chats are conversations. A one-way alert is a notification: a long job finished or failed, "tell me when…", something that needs their decision, a watcher or health check that found something.
+- Send it with the Notifications app's `notify` tool (`wizard_apps` lists it): a short `title`, one or two plain sentences, `priority: high` only when it needs them soon. It shows in the bell beside Chats search and on their phone. Never open a new chat just to deliver an alert.
+- A recurring watcher or check: create the schedule with `deliver: notification`. A report they read and reply to keeps its thread.
+- If no app fills the notifications slot, or `notify` fails, tell them in the chat they are in instead. Never put passwords, keys or codes in a notification.
 
 ## Skins and My skin
 
