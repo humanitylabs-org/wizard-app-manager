@@ -38,3 +38,21 @@ def test_no_sg_or_root_leaves_wam_alone(monkeypatch):
     assert not dg.reexec_with_docker_group(["serve"], env={}, execvp=lambda f, a: (_ for _ in ()).throw(AssertionError))
     monkeypatch.setattr(dg.os, "getuid", lambda: 0)
     assert not dg.reexec_with_docker_group(["serve"], env={}, execvp=lambda f, a: (_ for _ in ()).throw(AssertionError))
+
+
+def test_cli_entry_point_runs_the_bootstrap(monkeypatch):
+    import wam.cli as cli
+    seen = []
+    monkeypatch.setattr(dg, "reexec_with_docker_group", lambda *a, **k: seen.append(1) or False)
+    monkeypatch.setattr(cli.sys, "argv", ["wam", "--help"])
+    try:
+        cli.main()
+    except SystemExit:
+        pass
+    assert seen == [1]
+    seen.clear()
+    try:
+        cli.main(["--help"])
+    except SystemExit:
+        pass
+    assert seen == [], "programmatic calls never re-exec"

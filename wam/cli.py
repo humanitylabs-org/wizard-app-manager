@@ -1876,6 +1876,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:  # a real command line (python -m wam or the console script), never a programmatic call
+        from .docker_group import reexec_with_docker_group
+        reexec_with_docker_group()
     argv = sys.argv[1:] if argv is None else argv
     # Builder lives in its own module; lifecycle/global registry remains separate.
     if argv and argv[0] == "grants":
