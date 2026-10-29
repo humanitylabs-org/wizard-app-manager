@@ -176,6 +176,10 @@ def test_timer_keeps_owner_schedule_but_never_promotes_an_arbitrary_target():
 
 
 def test_relocate_never_remaps_container_data_owners(migration,monkeypatch):
+    for suffix, data in (('runtipi/.env', 'JWT_SECRET=synthetic\n'),
+                         ('runtipi/docker-compose.yml', 'services: {}\n'),
+                         ('runtipi/user-config/tipi-compose.yml', 'services: {}\n')):
+        p=migration.snapshot/suffix; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(data)
     for suffix in ('runtipi/app-data/wizardapps/files/data','runtipi/data/db','runtipi/media','state/agents/private/home'):
         p=migration.snapshot/suffix; p.mkdir(parents=True); (p/'opaque').write_bytes(b'unchanged')
     (m.CONTROL/'source').mkdir(); (m.CONTROL/'source/known.py').write_text('print(1)')
@@ -187,6 +191,7 @@ def test_relocate_never_remaps_container_data_owners(migration,monkeypatch):
     assert (m.BASE/'runtipi/app-data/wizardapps/files/data/opaque').read_bytes()==b'unchanged'
     assert (m.BASE/'.wizard-os/agents/private/home/opaque').read_bytes()==b'unchanged'
     assert str(m.BASE/'wizard-app-manager/known.py') in calls
+    assert (m.BASE/'runtipi/.env').stat().st_mode & 0o777 == 0o600
 
 
 def test_full_snapshot_rollback_restores_data_tokens_units_and_groups_after_interruption(migration,monkeypatch,tmp_path):

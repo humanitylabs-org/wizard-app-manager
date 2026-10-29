@@ -26,7 +26,7 @@ BASE = Path('/var/lib/wizard-os')
 CONTROL = Path('/var/lib/wizard-os-migration')
 SYSTEMD = Path('/etc/systemd/system')
 STEPS = ('inventory', 'quiesce', 'snapshot', 'relocate', 'wiring', 'prepare',
-         'units', 'start', 'doctor', 'remove_docker', 'complete')
+         'units', 'start', 'doctor', 'remove_docker', 'credentials', 'complete')
 # The host dashboard and stock Hermes gateway intentionally stay at the agent uid.
 USER_UNITS = ('wizard-app-manager-api.service', 'wizard-troubleshooter.service',
               'wizard-guardian.service', 'wizard-guardian.timer', 'wizard-backup.service',
@@ -94,6 +94,8 @@ def timer_template(text):
 
 
 class Migration:
+    authorize_invalidation = False
+
     def __init__(self, agent=None, hermes_home=None, ref=None):
         self.path = CONTROL / 'journal.json'
         self.doc = json.loads(self.path.read_text()) if self.path.exists() else {
@@ -253,6 +255,20 @@ class Migration:
         # Preserve every numeric owner BELOW each app directory.
         from .control_paths import seal_app_controls
         seal_app_controls(BASE/'runtipi', system.pw_uid, system.pw_gid)
+        # Upstream's first dotenv can be 0644. Protect the manager control file
+        # before any separated runtime starts, without entering app payloads.
+        import stat
+        env_file = BASE/'runtipi/.env'
+        st = env_file.lstat()
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != system.pw_uid:
+            raise ValueError('Unsafe relocated manager dotenv')
+        env_file.chmod(0o600)
+        for p in (BASE, BASE/'runtipi', BASE/'runtipi/user-config',
+                  BASE/'runtipi/docker-compose.yml', BASE/'runtipi/user-config/tipi-compose.yml'):
+            st = p.lstat()
+            if p.is_symlink() or st.st_uid != system.pw_uid:
+                raise ValueError('Unsafe relocated manager control anchor')
+            p.chmod(stat.S_IMODE(st.st_mode) & ~0o022)
         atomic(BASE/'.wizard-privsep', self.agent.pw_name+'\n', 0o644)
         os.chown(BASE/'.wizard-privsep', system.pw_uid, system.pw_gid)
 
@@ -466,7 +482,20 @@ print(json.dumps(out))
         run(['systemctl','start',f'user@{self.agent.pw_uid}.service'])
 
     def complete(self):
+        if not self.doc.get('credentials_verified'):
+            raise ValueError('Legacy credential invalidation must verify before cutover completes')
         self.doc['state'] = 'migrated'
+
+    def credentials(self):
+        from .credential_rotation import Rotation, require_revocation
+        require_revocation()
+        rotation = Rotation(BASE/'runtipi', CONTROL/'credentials')
+        rotation.check_paths()
+        receipt = rotation.load()
+        if not getattr(self, 'authorize_invalidation', False) and receipt.get('phase') != 'verified':
+            raise ValueError('Cutover paused: owner must authorize invalidation of leaked JWT/database/queue credentials with --authorize-invalidation; backend sessions will sign out. Snapshot rollback is forbidden after mutation starts.')
+        rotation.rotate()  # also rechecks old rejection on a completed receipt
+        self.doc['credentials_verified'] = True
 
     def migrate(self, stop_after=None):
         # Repair old interrupted/completed candidate journals; never retain or
@@ -495,6 +524,8 @@ print(json.dumps(out))
         return self.doc
 
     def rollback(self):
+        from .credential_rotation import rollback_allowed
+        rollback_allowed(CONTROL/'credentials')
         if self.doc['state'] == 'rolled_back': return self.doc
         if 'inventory' not in self.doc['done']:
             raise ValueError('Inventory did not finish; no changes have been authorized to restore.')
@@ -573,6 +604,7 @@ def main(argv=None):
     parser.add_argument('action', choices=('migrate','rollback','status'))
     parser.add_argument('--agent'); parser.add_argument('--hermes-home'); parser.add_argument('--ref')
     parser.add_argument('--stop-after', choices=STEPS, help='Owner checkpoint: resume with the same migrate command')
+    parser.add_argument('--authorize-invalidation', action='store_true', help='Owner consent to invalidate leaked manager credentials after live Docker access is revoked; signs out backend sessions')
     args = parser.parse_args(argv)
     if os.getuid() != 0:
         raise ValueError('Ask the owner to run the explicit root host-preparation migration; use the thin wam client for app actions.')
@@ -582,6 +614,7 @@ def main(argv=None):
     with (CONTROL/'lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         m = Migration(args.agent,args.hermes_home,args.ref)
+        m.authorize_invalidation = args.authorize_invalidation
         value = m.doc if args.action == 'status' else (m.migrate(args.stop_after) if args.action == 'migrate' else m.rollback())
         print(json.dumps(value,indent=2))
     return 0
