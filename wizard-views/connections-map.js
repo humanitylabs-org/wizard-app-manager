@@ -99,8 +99,9 @@ export function mapModel(d) {
   const offRows = new Map(); // Strict mode: the rows behind each pair the owner cut (Linked apps shows them as off)
   const single = new Set(); // pairs joined by a connection of their own (not one slot shared by several providers)
   const groups = []; // connections to a slot several apps provide: cut as one
-  // Strict mode: a cut the owner made on a pair no app is designed to link (no uses:, no request: he cut it while
-  // every app could talk to every other) changes nothing while apps are kept apart. It is kept (Open mode honours it
+  // Strict mode: a cut the owner made on a pair no app is designed to link (no uses:, no request: cut in Open mode, or
+  // a link he made and then turned off, which the App Manager records the same way) changes nothing while apps are
+  // kept apart. It is kept (Open mode honours it
   // again) but it is not a link: not in Linked apps, not on the map, not a Reconnect. Details says it once.
   const idle = (r) => mode === 'declared' && r.status === 'disconnected' && r.origin === 'owner';
   const idleCuts = mode === 'declared' ? controls.filter((r) => idle(r) && ids.has(r.from)) : [];

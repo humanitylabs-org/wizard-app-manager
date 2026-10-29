@@ -80,11 +80,13 @@ def plan(state: dict | None, report: dict | None) -> list[dict]:
                 out.append({"from": k[0], "to": k[1], "label": label, "change": "on",
                             "text": f"{label} will be turned back on."})
         elif cut and k not in granted:
-            # a cut on a pair no app is designed to link: Open mode keeps them apart; kept apart already otherwise
+            # a cut on a pair no app is designed to link (cut in Open mode, or a link he made and then turned off: the
+            # App Manager drops his grant on Disconnect, so the two look alike): Open mode keeps them apart by it;
+            # Declared mode keeps them apart anyway
             pair = label.replace(" → ", " and ", 1)
             out.append({"from": k[0], "to": k[1], "label": label, "change": "remove", "off": True,
                         "text": f"{pair} will be able to talk again (you cut them apart)." if open_mode
-                        else f"Your old cut between {pair} will be cleared (it changes nothing while apps are kept apart)."})
+                        else f"Your cut between {pair} will be cleared (it changes nothing while apps are kept apart)."})
         else:
             out.append({"from": k[0], "to": k[1], "label": label, "change": "remove", **({"off": True} if cut else {}),
                         "text": f"{label}, connected with your OK and then turned off, will be removed." if cut

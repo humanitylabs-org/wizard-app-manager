@@ -805,7 +805,7 @@ export async function renderConnections(el, ctx = {}) {
         ${m.mode === 'open' ? `<p><b>Mode</b> Open: ${meshCount} apps share one app network (the mesh)${linked.length ? `; ${linked.map((a) => nm(a.id)).join(', ')} use${linked.length === 1 ? 's' : ''} direct links instead` : ''}.</p>` : m.mode === 'declared' ? '<p><b>Mode</b> Declared: one network per connection an app declares or you approve.</p>' : '<p><b>Mode</b> Isolation is off: apps share Runtipi’s network.</p>'}
         ${
           (m.idleCuts || []).length
-            ? `<p><b>Cuts kept for later</b> You cut ${esc(list(m.idleCuts.map((x) => x.text)))} while all your apps could talk to each other. Apps are kept apart now, so ${m.idleCuts.length === 1 ? 'this cut changes' : 'these cuts change'} nothing; ${m.idleCuts.length === 1 ? 'it applies' : 'they apply'} again if you turn Keep apps apart off.</p>`
+            ? `<p><b>Cuts kept for later</b> ${esc(list(m.idleCuts.map((x) => x.text)))}. No app is designed to link ${m.idleCuts.length === 1 ? 'these two' : 'them'}, so while apps are kept apart ${m.idleCuts.length === 1 ? 'this cut changes' : 'these cuts change'} nothing; ${m.idleCuts.length === 1 ? 'it applies' : 'they apply'} if you turn Keep apps apart off. Connect two apps links them again.</p>`
             : ''
         }
         ${odd.map((a) => `<p class="wam-cm-warn"><b>${esc(a.name || a.id)}</b> ${esc(a.why || STATE_WORDS[a.state] || a.state || '')}${(a.host_access || []).length ? ` Host access: ${esc(a.host_access.join(', '))}.` : ''}</p>`).join('')}
