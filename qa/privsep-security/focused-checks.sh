@@ -134,7 +134,7 @@ step wam-python-focused dock "$WORK/wam" ghcr.io/astral-sh/uv:python3.12-bookwor
   uv run --no-project --with pytest --with pyyaml python -m pytest -q -p no:anyio \
     --junitxml=/src/qa-python-results.xml \
     tests/test_final_host_gate.py tests/test_privsep_review_repair.py tests/test_owner_confirm.py tests/test_privilege_migration.py \
-    tests/test_credential_rotation.py tests/test_rotation_diagnostics.py tests/test_migration_paths.py tests/test_migration_authority.py \
+    tests/test_credential_rotation.py tests/test_rotation_password_path.py tests/test_rotation_diagnostics.py tests/test_migration_paths.py tests/test_migration_authority.py \
     tests/test_privsep_slice5.py tests/test_privsep_host_policy.py tests/test_fresh_privilege_audit.py \
     tests/test_network.py tests/test_store_install.py tests/test_portable_paths.py'
 

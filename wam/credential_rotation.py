@@ -11,6 +11,7 @@ import base64
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -125,6 +126,7 @@ class DockerServices:
                         '-f', str(root / 'docker-compose.yml'),
                         '-f', str(root / 'user-config/tipi-compose.yml')]
         self.ids = {}
+        self.db_target = None
 
     def command(self, args, data=None, *, ok=(0,)):
         try:
@@ -156,6 +158,7 @@ class DockerServices:
                    'RABBITMQ_HOST': 'runtipi-queue', 'RABBITMQ_USERNAME': 'tipi'}
         if any(str(backend.get(k, '')) != v for k, v in targets.items()):
             raise Refusal('Backend credential targets differ from local stock services; owner mapping required')
+        infos = {}
         for service in ('runtipi', 'runtipi-db', 'runtipi-queue'):
             ids = self.command([*self.compose, 'ps', '-aq', service]).stdout.decode().split()
             if len(ids) != 1 or not re.fullmatch('[0-9a-f]{12,64}', ids[0]):
@@ -172,6 +175,12 @@ class DockerServices:
             if service == 'runtipi' and not any(m.get('Type') == 'bind' and m.get('Source') == str(self.root / '.env') and m.get('Destination') == '/data/.env' for m in info['Mounts']):
                 raise Refusal('Backend is not using the protected installed dotenv')
             self.ids[service] = ids[0]
+            infos[service] = info
+        self.resolve_db_target(model, infos)
+        # Also on forward resume: do not assume either stored password still works.
+        # This read-only negative control precedes stop, backups and every journal
+        # write. Connection errors are inconclusive, never evidence of rejection.
+        self.assert_db_password_required()
         # Actual authentication, not merely a config/health/readiness check.
         if authenticate: self.assert_passwords(old, valid=True)
         if authenticate and self.bearer(old['JWT_SECRET']) != 200:
@@ -192,6 +201,82 @@ class DockerServices:
             if any(svc[s]['environment'].get(k) != values[v] for s, k, v in expected):
                 raise Refusal('Compose overrides manager secrets; owner mapping required')
         except (KeyError, TypeError): raise Refusal('Incomplete installed credential environment') from None
+
+    def resolve_db_target(self, model, infos):
+        """Pin the installed service network, not DB loopback's different HBA path.
+
+        A short-lived client uses the DB's exact image on the backend's single
+        shared Compose bridge. Only stock, source-independent password HBA rules
+        are supported, so a helper's IP cannot select weaker rules than backend.
+        Stopped backend containers retain network names; resume needs no backend
+        process or old credentials, and never recreates DB/queue containers.
+        """
+        self.db_target = None
+        try:
+            services = model['services']
+            names = []
+            for service in ('runtipi', 'runtipi-db'):
+                config = services[service]
+                if config.get('network_mode') or config.get('extra_hosts'):
+                    raise ValueError
+                declared = config.get('networks', {})
+                if len(declared) != 1: raise ValueError
+                names.append(next(iter(declared)))
+            if names[0] != names[1]: raise ValueError
+            name = model['networks'][names[0]]['name']
+            db = infos['runtipi-db']
+            if set(db['NetworkSettings']['Networks']) != {name} or set(infos['runtipi']['NetworkSettings']['Networks']) != {name}:
+                raise ValueError
+            endpoint = db['NetworkSettings']['Networks'][name]
+            address = ipaddress.ip_address(endpoint['IPAddress'])
+            if address.version != 4 or address.is_loopback or address.is_unspecified: raise ValueError
+            if 'runtipi-db' not in endpoint.get('Aliases', []): raise ValueError
+            network = json.loads(self.command(['docker', 'network', 'inspect', name]).stdout)[0]
+            if (network['Name'] != name or network['Id'] != endpoint['NetworkID'] or
+                    network['Driver'] != 'bridge' or
+                    network['Labels'].get('com.docker.compose.project') != 'runtipi' or
+                    network['Labels'].get('com.docker.compose.network') != names[0] or
+                    self.ids['runtipi-db'] not in network['Containers']): raise ValueError
+            if not re.fullmatch('[0-9a-f]{64}', network['Id']): raise ValueError
+            image = db['Image']
+            if not re.fullmatch('sha256:[0-9a-f]{64}', image): raise ValueError
+            self.db_target = (network['Id'], image, str(address))
+        except (KeyError, TypeError, ValueError, IndexError):
+            raise Refusal('Unsupported database service network; owner mapping required') from None
+        raw = self.command(['docker', 'exec', self.ids['runtipi-db'], 'psql', '-X', '-U', 'tipi', '-d', 'tipi',
+                            '-w', '-Atqc', 'SELECT coalesce(json_agg(r),\'[]\') FROM '
+                            '(SELECT type,database,user_name,address,netmask,auth_method,error FROM pg_hba_file_rules ORDER BY line_number) r']).stdout
+        try: self.password_hba(json.loads(raw))
+        except (ValueError, TypeError):
+            raise Refusal('Database authentication rules inconclusive') from None
+
+    @staticmethod
+    def password_hba(rules):
+        """Refuse source/user/db-specific nonloopback rules rather than guessing.
+
+        initdb's local/loopback trust is administrative access, not password
+        evidence. The single remote rule must require SCRAM/MD5 for all clients.
+        No config changes are made, even on installations using remote trust.
+        """
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise Refusal('Database authentication rules inconclusive')
+        remote = []
+        for rule in rules:
+            if rule.get('error'): raise Refusal('Database authentication rules inconclusive')
+            if rule.get('type') == 'local': continue
+            if (rule.get('address'), rule.get('netmask')) in (
+                    ('127.0.0.1', '255.255.255.255'), ('::1', 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff')):
+                continue
+            remote.append(rule)
+        if (len(remote) != 1 or remote[0].get('type') != 'host' or
+                remote[0].get('database') != ['all'] or remote[0].get('user_name') != ['all'] or
+                remote[0].get('address') != 'all' or remote[0].get('netmask') is not None or
+                remote[0].get('auth_method') not in ('scram-sha-256', 'md5')):
+            raise Refusal('Nonstock remote database authentication rules; owner mapping required')
+
+    def assert_db_password_required(self):
+        if self.db_auth(secrets.token_hex(48)):
+            raise Refusal('Database accepted an invalid password; no credential mutation admitted')
 
     def discover(self):
         # Resume uses labels again; preflight auth cannot assume the old passwords.
@@ -216,25 +301,36 @@ class DockerServices:
                       '-U', 'tipi', '-d', 'tipi', '-v', 'ON_ERROR_STOP=1'], sql.encode())
 
     def queue_password(self, password):
-        self.command(['docker', 'exec', '-i', self.ids['runtipi-queue'], 'rabbitmqctl',
-                      '-q', 'change_password', 'tipi'], (password + '\n').encode())
+        self.command(['docker', 'exec', '-i', '--user', 'rabbitmq', self.ids['runtipi-queue'], 'rabbitmqctl',
+                      'change_password', 'tipi'], (password + '\n').encode())
         # Revoke preauthenticated AMQP connections, not just future logins.
-        self.command(['docker', 'exec', self.ids['runtipi-queue'], 'rabbitmqctl',
+        self.command(['docker', 'exec', '--user', 'rabbitmq', self.ids['runtipi-queue'], 'rabbitmqctl',
                       '-q', 'close_all_user_connections', 'tipi', 'Owner credential invalidation'])
 
     def db_auth(self, password):
-        # A shell builtin reads stdin: no password appears in exec argv/environment
-        # on the host, shell history, command diagnostics, or SQL statement logs.
-        script = 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -h 127.0.0.1 -U tipi -d tipi -w -Atqc "SELECT 1"'
-        r = self.command(['docker', 'exec', '-i', self.ids['runtipi-db'], 'sh', '-c', script],
+        # Fresh client on the actual backend service network; DB loopback trust
+        # cannot authenticate this connection. Only stdin carries the password.
+        if self.db_target is None:
+            raise Refusal('Database authentication target was not validated')
+        network, image, address = self.db_target
+        script = ('IFS= read -r PGPASSWORD; export PGPASSWORD; '
+                  f'export PGHOSTADDR={address}; '
+                  'export LC_ALL=C PGCONNECT_TIMEOUT=5 PGOPTIONS="-c statement_timeout=10000"; '
+                  'exec psql -X -h runtipi-db -p 5432 -U tipi -d tipi -w -Atqc '
+                  '"SELECT current_user, current_database(), inet_server_addr()"')
+        r = self.command(['docker', 'run', '--rm', '-i', '--pull=never', '--network', network,
+                          '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                          '--user', 'postgres', '--entrypoint', 'sh', image, '-c', script],
                          (password + '\n').encode(), ok=(0, 2))
-        if r.returncode == 0 and r.stdout.strip() == b'1': return True
-        if r.returncode == 2 and b'password authentication failed' in r.stderr: return False
+        if r.returncode == 0 and r.stdout.strip() == ('tipi|tipi|' + address).encode(): return True
+        if r.returncode == 2 and re.search(rb'FATAL:  password authentication failed for user "tipi"(?:\r?\n|$)', r.stderr): return False
         raise Refusal('Database authentication probe inconclusive')
 
     def queue_auth(self, password):
-        r = self.command(['docker', 'exec', '-i', self.ids['runtipi-queue'], 'rabbitmqctl',
-                          '-q', 'authenticate_user', 'tipi'], (password + '\n').encode(), ok=(0, 65))
+        # rabbitmqctl's wrapper selects stdin mode from argument count. A quiet
+        # flag is an extra argument and can disable stdin; keep exactly two.
+        r = self.command(['docker', 'exec', '-i', '--user', 'rabbitmq', self.ids['runtipi-queue'], 'rabbitmqctl',
+                          'authenticate_user', 'tipi'], (password + '\n').encode(), ok=(0, 65))
         if r.returncode == 0: return True
         if r.returncode == 65 and b'failed to authenticate user' in r.stderr: return False
         raise Refusal('Queue authentication probe inconclusive')
@@ -386,6 +482,8 @@ class Rotation:
             before, _, old, _ = self.values()
             if digest((self.root / '.env').read_bytes()) != digest(before):
                 raise Refusal('Cannot abort a changed live dotenv')
+            if self.io.preflight(old, authenticate=False) != self.doc['model']:
+                raise Refusal('Effective Compose drift; owner review required before abort')
             self.io.discover(); self.io.assert_passwords(old, valid=True)
             self.io.restart(old)
             self.save('aborted')

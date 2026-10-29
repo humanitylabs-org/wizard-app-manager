@@ -67,6 +67,8 @@ def operation(args, compose=()):
     if args[:2] == ['docker', 'cp']: return 'public-image-file-copy'
     if args[:2] == ['docker', 'ps']: return 'docker-ps'
     if args[:3] == ['docker', 'image', 'inspect']: return 'image-inspect'
+    if args[:2] == ['docker', 'run'] and '--user' in args and args[args.index('--user') + 1] == 'postgres': return 'db-auth'
+    if args[:3] == ['docker', 'network', 'inspect']: return 'container-inspect'
     if args[:2] == ['docker', 'exec']:
         for token, label in (('change_password', 'queue-password'), ('authenticate_user', 'queue-auth'),
                              ('close_all_user_connections', 'queue-revoke'), ('psql', 'db-password'),

@@ -12,12 +12,13 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from wam.credential_rotation import DockerServices, Rotation, parse_env, SAFE_ENV
+from wam.credential_rotation import DockerServices, Rotation, Refusal, parse_env, SAFE_ENV
 from wam.runtipi import cli_token
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rotation_diagnostics import Diagnostics, assert_no_credentials, teardown, queue_health_contract
@@ -28,7 +29,24 @@ DIAG = Diagnostics()
 class DiagnosticServices(DockerServices):
     """Test-only subprocess seam; production Rotation and adapter remain unchanged."""
     def command(self, args, data=None, *, ok=(0,)):
-        return DIAG.run(args, data=data, env=SAFE_ENV, cwd=self.root, ok=ok, compose=self.compose)
+        result = DIAG.run(args, data=data, env=SAFE_ENV, cwd=self.root, ok=ok, compose=self.compose)
+        if args and 'pg_hba_file_rules' in args[-1]:
+            rows = json.loads(result.stdout)
+            DIAG.emit('db-auth-rules', rules=[{
+                'type': row['type'] if row['type'] in ('local', 'host', 'hostssl', 'hostnossl') else 'other',
+                'method': row['auth_method'] if row['auth_method'] in ('trust', 'scram-sha-256', 'md5', 'peer', 'reject') else 'other',
+                'address_class': 'all' if row['address'] == 'all' else 'loopback' if row['address'] in ('127.0.0.1', '::1') else 'local' if row['type'] == 'local' else 'other',
+                'parse_error': row['error'] is not None} for row in rows])
+        return result
+
+    def resolve_db_target(self, model, infos):
+        super().resolve_db_target(model, infos)
+        DIAG.emit('db-auth-target', backend_service_network=True, server_nonloopback=True,
+                  remote_source_independent_password_rule=True)
+
+    def assert_db_password_required(self):
+        super().assert_db_password_required()
+        DIAG.emit('db-negative-control', invalid_password='rejected')
 
 BASE = Path('/var/lib/wizard-rotation-acceptance')
 MANAGER, LEGACY = 1992, 1993
@@ -86,7 +104,7 @@ def queue_contract(image):
     primary = None
     try:
         public = {}
-        for filename in ('/etc/passwd', '/usr/local/bin/docker-entrypoint.sh'):
+        for filename in ('/etc/passwd', '/usr/local/bin/docker-entrypoint.sh', '/opt/rabbitmq/sbin/rabbitmqctl'):
             raw = command(['docker', 'cp', cid + ':' + filename, '-'])
             with tarfile.open(fileobj=bytes_io.BytesIO(raw)) as archive:
                 members = archive.getmembers()
@@ -94,6 +112,12 @@ def queue_contract(image):
                 public[filename] = archive.extractfile(members[0]).read().decode()
         contract = queue_health_contract(user, entrypoints, public['/etc/passwd'],
                                          public['/usr/local/bin/docker-entrypoint.sh'])
+        cli = public['/opt/rabbitmq/sbin/rabbitmqctl']
+        assert '*authenticate_user*)' in cli and '*change_password*)' in cli
+        assert 'if [ "$#" -eq 2 ]' in cli and 'maybe_noinput=\'input\'' in cli
+        DIAG.emit('queue-cli-public-contract', cli_sha256=hashlib.sha256(cli.encode()).hexdigest(),
+                  entrypoint_sha256=hashlib.sha256(public['/usr/local/bin/docker-entrypoint.sh'].encode()).hexdigest(),
+                  stdin_arity_two=True, cli_uses_service_user=True)
         DIAG.emit('queue-public-image-contract', service_uid=contract['uid'], service_gid=contract['gid'],
                   default_root=contract['default_root'], health_uses_service_user=True)
         return contract
@@ -106,6 +130,68 @@ def queue_contract(image):
         except Exception as error:
             DIAG.failure(error, cleanup=True)
             if primary is None: raise
+
+
+def db_public_contract(image):
+    """Read public source from this exact image, not a moving upstream branch."""
+    cid = command(['docker', 'create', '--network', 'none', '--entrypoint', '/bin/true', image]).decode().strip()
+    primary = None
+    try:
+        raw = command(['docker', 'cp', cid + ':/usr/local/bin/docker-entrypoint.sh', '-'])
+        with tarfile.open(fileobj=bytes_io.BytesIO(raw)) as archive:
+            entries = archive.getmembers()
+            assert len(entries) == 1 and entries[0].isfile() and entries[0].size < 131072
+            source = archive.extractfile(entries[0]).read()
+        assert b'initdb --username=' in source and b'pg_setup_hba_conf' in source
+        assert b'POSTGRES_INITDB_ARGS' in source and b'POSTGRES_HOST_AUTH_METHOD' in source
+        DIAG.emit('db-public-image-contract', entrypoint_sha256=hashlib.sha256(source).hexdigest(),
+                  initdb_defaults_preserved=True, host_auth_rule_appended=True)
+    except BaseException as error:
+        primary = error
+        DIAG.failure(error)
+        raise
+    finally:
+        try: command(['docker', 'rm', '--volumes', cid])
+        except Exception as error:
+            DIAG.failure(error, cleanup=True)
+            if primary is None: raise
+
+
+def pre_mutation_counterexample(io, kwargs):
+    """Exercise real old-loopback path without changing fixture authentication.
+
+    If the exact stock image accepts a random loopback password, deliberately
+    feed that old adapter path to the new control and require pre-write refusal.
+    The normal rotation always uses the separate real service-network client.
+    """
+    DIAG.checkpoint('pre-mutation-negative-control-counterexample')
+    io.preflight(OLD)  # establishes real remote password requirement and bearer
+    script = ('IFS= read -r PGPASSWORD; export PGPASSWORD LC_ALL=C; '
+              'exec psql -X -h 127.0.0.1 -U tipi -d tipi -w -Atqc "SELECT 1"')
+    def old_loopback(password):
+        result = io.command(['docker', 'exec', '-i', io.ids['runtipi-db'], 'sh', '-c', script],
+                            (password + '\n').encode(), ok=(0, 2))
+        if result.returncode == 0 and result.stdout.strip() == b'1': return True
+        if result.returncode == 2 and b'password authentication failed' in result.stderr: return False
+        raise Refusal('Old-path counterexample inconclusive')
+    allowed = old_loopback(secrets.token_hex(48))
+    DIAG.emit('old-loopback-negative-control', invalid_password='accepted' if allowed else 'rejected')
+    if allowed:
+        probe = DiagnosticServices(io.root)
+        probe.db_auth = old_loopback  # test-only exact legacy defect; no config edit
+        obj = Rotation(**{**kwargs, 'io': probe})
+        before = (io.root / '.env').read_bytes()
+        try: obj.rotate()
+        except Refusal as error:
+            assert str(error) == 'Database accepted an invalid password; no credential mutation admitted'
+        else: raise AssertionError('Invalid control must refuse')
+        assert not obj.path.exists()
+        assert not (obj.control / 'before.env').exists() and not (obj.control / 'after.env').exists()
+        assert (io.root / '.env').read_bytes() == before
+        assert io.command([*io.compose, 'ps', '-q', 'runtipi']).stdout.strip()
+        assert request(io, '/api/marketplace/all', token=cli_token(OLD['JWT_SECRET'])) == 200
+        DIAG.emit('invalid-control-pre-mutation-refusal', journal_absent=True, backups_absent=True,
+                  backend_running=True, original_bearer=200, dotenv_unchanged=True)
 
 
 def fixture(folder, images, queue):
@@ -156,6 +242,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--authorize-disposable', action='store_true')
     parser.add_argument('--source-revision', required=True)
+    parser.add_argument('--image-source-revision', required=True,
+                        help='Original backend image revision, separate from host Python source')
     parser.add_argument('--diagnostic-first-case', action='store_true',
                         help='Only no-crash; emits review_required, never full acceptance')
     for name in ('backend', 'db', 'queue'): parser.add_argument('--' + name + '-image', required=True)
@@ -166,8 +254,8 @@ def main():
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', images['backend']) or any(
             not re.fullmatch(r'[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}', images[k]) for k in ('db', 'queue')):
         raise RuntimeError('Backend must be an actual local image ID; database and queue must be repository-digest pinned')
-    if not re.fullmatch(r'[0-9a-f]{40}', args.source_revision):
-        raise RuntimeError('Exact backend source revision required')
+    if not all(re.fullmatch(r'[0-9a-f]{40}', revision) for revision in (args.source_revision, args.image_source_revision)):
+        raise RuntimeError('Exact host and backend source revisions required')
     marker = Path('/run/wizard-disposable-rotation')
     if (not marker.is_file() or marker.is_symlink() or marker.stat().st_uid != 0
             or marker.stat().st_mode & 0o777 != 0o600 or marker.read_text().strip() != args.source_revision):
@@ -177,10 +265,12 @@ def main():
     for image in images.values(): command(['docker', 'image', 'inspect', image])
     inspected = json.loads(command(['docker', 'image', 'inspect', images['backend']]))
     assert len(inspected) == 1 and inspected[0]['Id'] == images['backend']
-    assert inspected[0]['Config']['Labels']['org.opencontainers.image.revision'] == args.source_revision
+    assert inspected[0]['Config']['Labels']['org.opencontainers.image.revision'] == args.image_source_revision
+    db_public_contract(images['db'])
     queue = queue_contract(images['queue'])
     BASE.mkdir(mode=0o755)
     receipt = {'schema': 1, 'images': images, 'source_revision': args.source_revision,
+               'image_source_revision': args.image_source_revision,
                'cases': [], 'runtime': 'real-disposable-docker'}
     points = CASES[:1] if args.diagnostic_first_case else CASES
     for index, point in enumerate(points):
@@ -209,6 +299,7 @@ def main():
                 DIAG.emit('rotation-checkpoint', checkpoint=where)
                 if where == point: raise InterruptedError('injected disposable crash')
             kwargs = dict(root=root, control=control / 'credentials', uid=MANAGER, gid=MANAGER, io=io)
+            if point == 'no-crash': pre_mutation_counterexample(io, kwargs)
             DIAG.checkpoint('rotate')
             try: Rotation(**kwargs, crash=crash).rotate()
             except InterruptedError:

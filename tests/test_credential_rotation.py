@@ -243,6 +243,7 @@ def test_cutover_sequence_rotates_only_after_docker_revocation():
 
 def test_real_docker_adapter_rejects_old_password_auth_inconclusive(monkeypatch, case):
     io = r.DockerServices(case.root); io.ids = {'runtipi-db': 'a' * 64, 'runtipi-queue': 'b' * 64}
+    io.db_target = ('c' * 64, 'sha256:' + 'd' * 64, '172.30.0.2')
     monkeypatch.setattr(io, 'command', lambda *a, **kw: SimpleNamespace(returncode=2, stdout=b'', stderr=b'connection refused'))
     with pytest.raises(r.Refusal, match='inconclusive'): io.db_auth('synthetic')
     monkeypatch.setattr(io, 'command', lambda *a, **kw: SimpleNamespace(returncode=65, stdout=b'', stderr=b'node down'))
