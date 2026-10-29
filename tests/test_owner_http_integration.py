@@ -10,6 +10,11 @@ from wam import app_updates as au, cli, owner, updates
 
 def test_real_store_http_authority_local_status_manual_and_one_shot(tmp_path, monkeypatch):
     home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('WIZARD_OS_HOME', str(home / '.wizard-os'))
+    monkeypatch.setenv('HERMES_HOME', str(home / '.hermes'))
+    monkeypatch.setenv('RUNTIPI_ROOT', str(tmp_path / 'rt'))
+    monkeypatch.delenv('WIZARD_RELEASE_PINS', raising=False)
     cfg = SimpleNamespace(home=home, runtipi_root=tmp_path / 'rt',
                           runtipi=lambda: SimpleNamespace(installed=lambda: []))
     allowed = False
@@ -23,7 +28,15 @@ def test_real_store_http_authority_local_status_manual_and_one_shot(tmp_path, mo
     timer = au.ensure_timer
     monkeypatch.setattr(au, 'ensure_timer', lambda h, *a, **kw: timer(h, tmp_path / 'units', False))
     starts = []
-    monkeypatch.setattr(au, 'start_detached', lambda c: starts.append(c) or {'started': True})
+    real_start_detached = au.start_detached
+    def record_start(argv, **kwargs):
+        starts.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+    def start_detached():
+        # The HTTP adapter passes no Config. Exercise the real HOME-based command builder,
+        # replacing only its injected runner so no systemd job or process can start.
+        return real_start_detached(runner=record_start)
+    monkeypatch.setattr(au, 'start_detached', start_detached)
     class Handler(cli.StoreHandler):
         pass
     Handler.cfg = cfg
@@ -53,7 +66,12 @@ def test_real_store_http_authority_local_status_manual_and_one_shot(tmp_path, mo
         after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in tmp_path.rglob('*') if p.is_file()}
         assert before == after
         assert request({'action': 'apply-apps'}) == (200, {'started': True})
-        assert starts == [cfg]
+        assert len(starts) == 1
+        argv, kwargs = starts[0]
+        assert argv[:3] == ['systemd-run', '--user', '--collect']
+        assert argv[3].startswith(f'--unit={au.UNIT}-now-')
+        assert argv[4:] == [str(home / '.local/bin/wam'), 'app-updates', '--apply']
+        assert kwargs == {'capture_output': True, 'text': True, 'timeout': 30}
         assert au.mode(home) == 'ask'
         assert not list((tmp_path / 'units').glob('*.timer'))
         assert checks == [('/_updates', False), ('/_updates', False), ('/_updates', True), ('/_updates', False), ('/_updates', True)]
