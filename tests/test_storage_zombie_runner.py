@@ -66,7 +66,7 @@ def test_namespace_control_needs_unreaped_subject_and_no_reaper():
 
 def test_exact_original_mutant_delta_and_no_other_guard_change():
     m=runner();current=(REPO/'scripts/protected-agent-storage.py').read_text();tree=ast.parse(current)
-    tree.body=[n for n in tree.body if not (isinstance(n,ast.FunctionDef) and n.name=='reap_exited_children')
+    tree.body=[n for n in tree.body if not (isinstance(n,ast.FunctionDef) and n.name in ('wait_exited_child','reap_exited_children'))
         and not (isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='CHILD_REAP_CALL_LIMIT' for t in n.targets))]
     fence=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')
     fence.body=[n for n in fence.body if not (isinstance(n,ast.Expr) and ast.unparse(n)=='reap_exited_children()')]

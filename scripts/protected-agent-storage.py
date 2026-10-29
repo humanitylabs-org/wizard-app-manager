@@ -234,6 +234,19 @@ def require_initial_pid_namespace():
 CHILD_REAP_CALL_LIMIT = 256
 
 
+def wait_exited_child():
+    # A direct libc call has no CPython/PEP475 EINTR retry loop. Even an
+    # interrupted inspection consumes ONE bounded attempt and refuses.
+    waitpid = ctypes.CDLL(None, use_errno=True).waitpid
+    waitpid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    waitpid.restype = ctypes.c_int
+    status = ctypes.c_int()
+    pid = waitpid(-1, ctypes.byref(status), os.WNOHANG)
+    if pid == -1:
+        raise OSError(ctypes.get_errno(), 'child wait unavailable')
+    return pid, status.value
+
+
 def reap_exited_children():
     """PID1 housekeeping only, called AFTER the host-init identity checks.
 
@@ -243,7 +256,7 @@ def reap_exited_children():
     """
     for _ in range(CHILD_REAP_CALL_LIMIT):
         try:
-            result = os.waitpid(-1, os.WNOHANG)
+            result = wait_exited_child()
         except OSError as exc:
             if exc.errno == errno.ECHILD: return
             raise Refusal('child housekeeping unavailable') from None

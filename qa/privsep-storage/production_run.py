@@ -169,7 +169,7 @@ def validate(stage, manifest_hash, *, local=False):
     before=ast.parse((stage/'inherited-product.py').read_text())
     def nodes(tree): return {n.name:ast.dump(n,include_attributes=False) for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
     a,b=nodes(before),nodes(after)
-    assert set(b)==set(a)|{'reap_exited_children'}
+    assert set(b)==set(a)|{'wait_exited_child','reap_exited_children'}
     assert {n for n in a if a[n]!=b[n]}=={'main','require_fence'}
     old_fence=next(n for n in before.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')
     new_fence=next(n for n in after.body if isinstance(n,ast.FunctionDef) and n.name=='require_fence')

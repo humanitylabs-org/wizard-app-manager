@@ -78,7 +78,7 @@ def fence_delta(before,after):
     a,b=ast.parse(before),ast.parse(after)
     defs=lambda tree:{n.name:n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
     x,y=defs(a),defs(b)
-    assert set(y)==set(x)|{'reap_exited_children'}
+    assert set(y)==set(x)|{'wait_exited_child','reap_exited_children'}
     changed={k for k in x if ast.dump(x[k])!=ast.dump(y[k])}
     assert changed=={'require_fence'}
     f=copy.deepcopy(y['require_fence'])

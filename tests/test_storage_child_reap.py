@@ -21,36 +21,36 @@ def load():
 
 def waits(monkeypatch, results):
     m = load(); calls = []; values = iter(results)
-    def wait(pid, flags):
-        calls.append((pid, flags)); value = next(values)
+    def wait():
+        calls.append('nonblocking-wait'); value = next(values)
         if isinstance(value, BaseException): raise value
         return value
     proxy = SimpleNamespace(**{k:getattr(os,k) for k in dir(os)})
-    proxy.waitpid = wait; monkeypatch.setattr(m, 'os', proxy)
+    monkeypatch.setattr(m, 'wait_exited_child', wait); monkeypatch.setattr(m, 'os', proxy)
     return m, calls
 
 
 def test_echild_done_and_repeated_fence_housekeeping_safe(monkeypatch):
     m, calls = waits(monkeypatch, [ChildProcessError(errno.ECHILD, 'synthetic')]*2)
     m.reap_exited_children(); m.reap_exited_children()
-    assert calls == [(-1, os.WNOHANG)]*2
+    assert calls == ['nonblocking-wait']*2
 
 
 def test_exited_and_signaled_children_reaped_then_echild(monkeypatch):
     m, calls = waits(monkeypatch, [(42, 0), (43, 9), OSError(errno.ECHILD, 'synthetic')])
-    m.reap_exited_children(); assert calls == [(-1, os.WNOHANG)]*3
+    m.reap_exited_children(); assert calls == ['nonblocking-wait']*3
 
 
 def test_zero_returns_without_another_wait(monkeypatch):
     m, calls = waits(monkeypatch, [(0, 0)])
-    m.reap_exited_children(); assert calls == [(-1, os.WNOHANG)]
+    m.reap_exited_children(); assert calls == ['nonblocking-wait']
 
 
 def test_finite_bound_refuses_even_if_last_child_was_final(monkeypatch):
     m, calls = waits(monkeypatch, [(42, 0)]*256)
     assert m.CHILD_REAP_CALL_LIMIT == 256
     with pytest.raises(m.Refusal, match='^child housekeeping bound exceeded$'): m.reap_exited_children()
-    assert calls == [(-1, os.WNOHANG)]*256
+    assert calls == ['nonblocking-wait']*256
 
 
 @pytest.mark.parametrize('error', [4, 5, 1])
@@ -122,13 +122,13 @@ def test_unprotected_init_refuses_before_any_reap(monkeypatch):
 
 def test_zero_live_child_still_reaches_full_census_and_refuses(monkeypatch):
     m, events = fence_fixture(monkeypatch, foreign=True)
-    calls = []; m.os.waitpid = lambda pid, flags:(calls.append((pid,flags)) or (0,0))
+    calls = []; m.wait_exited_child = lambda:(calls.append('nonblocking-wait') or (0,0))
     m.reap_exited_children = load().reap_exited_children
     # Bind the original function to this isolated fixture's globals, not host os.
     import types
     m.reap_exited_children = types.FunctionType(m.reap_exited_children.__code__, m.__dict__)
     with pytest.raises(m.Refusal, match='^maintenance contains another userspace process$'): m.require_fence()
-    assert calls == [(-1, os.WNOHANG)] and '/proc' in events
+    assert calls == ['nonblocking-wait'] and '/proc' in events
 
 
 def test_repeated_fence_keeps_census_and_singlethread_checks(monkeypatch):
@@ -144,7 +144,32 @@ def test_only_reap_call_added_to_existing_fence():
     assert text.index('require_initial_pid_namespace()') < text.index('Pinned(boot_init.parent)') < text.index('reap_exited_children()') < text.index("Path('/proc').iterdir()") < text.index("Path('/proc/self/task')")
     helper = ast.unparse(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name=='reap_exited_children'))
     for forbidden in ('kill(', 'sleep(', 'signal(', 'waitid(', 'Path(', 'while '): assert forbidden not in helper
-    assert 'os.waitpid(-1, os.WNOHANG)' in helper
+    assert 'wait_exited_child()' in helper
+
+
+def test_direct_wait_abi_fixed_any_child_nonblocking_status_pointer(monkeypatch):
+    import ctypes
+    m=load();calls=[]
+    class Wait:
+        def __call__(self,pid,address,flags):
+            calls.append((pid,flags))
+            assert self.argtypes==[ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.c_int]
+            assert self.restype is ctypes.c_int
+            ctypes.cast(address,ctypes.POINTER(ctypes.c_int)).contents.value=9
+            return 42
+    monkeypatch.setattr(m.ctypes,'CDLL',lambda library,**kw:SimpleNamespace(waitpid=Wait()) if library is None and kw=={'use_errno':True} else None)
+    assert m.wait_exited_child()==(42,9)
+    assert calls==[(-1,os.WNOHANG)]
+
+
+def test_direct_libc_eintr_is_one_attempt_then_fail_closed(monkeypatch):
+    m=load();calls=[]
+    class Wait:
+        def __call__(self,pid,address,flags):calls.append((pid,flags));return -1
+    monkeypatch.setattr(m.ctypes,'CDLL',lambda *a,**kw:SimpleNamespace(waitpid=Wait()))
+    monkeypatch.setattr(m.ctypes,'get_errno',lambda:errno.EINTR)
+    with pytest.raises(m.Refusal,match='^child housekeeping unavailable$'):m.reap_exited_children()
+    assert calls==[(-1,os.WNOHANG)]
 
 
 def test_bootstrap_refusal_codes_are_finite_no_exception_echo():

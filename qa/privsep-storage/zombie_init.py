@@ -34,12 +34,12 @@ def snapshot():
     # environment or arbitrary exception payload can reach serial.
     paths = ['/etc/wizard-agent-storage/request.json', '/etc/wizard-agent-storage/completed.json',
              '/var/lib/wizard-agent-homes', '/var/lib/wizard-agent-storage',
-             '/home/storageqa/.hermes/sentinel', '/home/hermes/.hermes/storage-production-sentinel']
+             '/home/hermes/.hermes', '/home/hermes/.hermes/storage-production-sentinel']
     rows = []
     for value in paths:
         try:
             st = Path(value).lstat()
-            rows.append([st.st_dev,st.st_ino,st.st_mode,st.st_uid,st.st_gid,st.st_size,st.st_mtime_ns,st.st_ctime_ns])
+            rows.append([st.st_dev,st.st_ino,st.st_mode,st.st_uid,st.st_gid,st.st_size,st.st_atime_ns,st.st_mtime_ns,st.st_ctime_ns])
         except FileNotFoundError: rows.append(None)
     return rows
 
