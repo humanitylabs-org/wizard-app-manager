@@ -164,6 +164,16 @@ class DockerStageHarness(unittest.TestCase):
         text = (SCRIPTS/'manager-seal-docker.py').read_text()
         self.assertIn("None if m.name == 'logs/dependencies.log' else m", text)
 
+    def test_dollar_repair_runs_method_and_real_compose_without_weakening_runtime_assertion(self):
+        text = (SCRIPTS/'manager-seal-docker.py').read_text()
+        self.assertIn('scripts/tests/test_manager_seal_dollars.mjs', runner.ALLOWED_DELTA)
+        self.assertIn('packages/backend/src/modules/docker/mandatory-seal.ts', runner.ALLOWED_DELTA)
+        self.assertIn("step('literal-dollar-regression'", text)
+        fixture = (SCRIPTS.parent/'packages/backend/src/modules/docker/__tests__/mandatory-seal.test.ts').read_text()
+        self.assertIn('round-trips raw overlay through pinned Compose config', fixture)
+        self.assertIn("toBe('$DO_NOT_INTERPOLATE')", fixture)
+        self.assertIn("LITERAL: '$DO_NOT_INTERPOLATE'", fixture)
+
     def test_checkpoints_match_every_actual_fixture_assertion_group(self):
         import re
         text = (SCRIPTS.parent/'packages/backend/src/modules/docker/__tests__/mandatory-seal.test.ts').read_text()

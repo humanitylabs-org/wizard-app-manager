@@ -316,9 +316,11 @@ describe('reviewed manager admission regressions', () => {
 });
 
 describe('sticky mandatory enrollment', () => {
-  it('escapes literal dollars before Compose reconsumes resolved snapshot values', async () => {
+  it('preserves already escaped Compose config dollars in snapshot reinput', async () => {
     const { seal } = await fixture();
-    const snapshot = JSON.parse(seal.snapshot({ services: { main: { environment: { TOKEN: '$LITERAL${also_literal}' } } } }));
+    // Pinned Compose 2.40.0 config.go: runConfig calls escapeDollarSign for
+    // JSON as well as YAML. This boundary receives rendered, not raw values.
+    const snapshot = JSON.parse(seal.snapshot({ services: { main: { environment: { TOKEN: '$$LITERAL$${also_literal}' } } } }));
     expect(snapshot.services.main.environment.TOKEN).toBe('$$LITERAL$${also_literal}');
   });
   it('is independent of optional configuration and survives a new manager instance', async () => {
@@ -366,6 +368,24 @@ describe('sticky mandatory enrollment', () => {
 // Full authenticated disposable API acceptance is a separate, still-required gate.
 const dockerDescribe = process.env.RUN_MANAGER_SEAL_DOCKER === '1' ? describe : describe.skip;
 dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
+  it('round-trips raw overlay through pinned Compose config and snapshot without extra escaping', async () => {
+    const { root, urn, main, doc, seal } = await fixture();
+    const values = ['$DO_NOT_INTERPOLATE', '${DO_NOT_INTERPOLATE}', '$$', '$', '$$DO_NOT_INTERPOLATE', 'quote"\\unicode-λ$'];
+    doc.services[main].environment = Object.fromEntries(values.map((v, i) => [`LITERAL_${i}`, v]));
+    const required = path.join(root, 'required.yml');
+    const snapshot = path.join(root, 'effective.json');
+    await fs.writeFile(required, seal.overlay(urn, doc), { mode: 0o600 });
+    const resolve = async (file: string) => JSON.parse((await exec('docker-compose', [
+      '--project-name', urn.replace(':', '_'), '-f', file, 'config', '--format', 'json',
+    ], { env: { ...process.env, DO_NOT_INTERPOLATE: 'synthetic-must-not-substitute' } })).stdout);
+    const rendered = await resolve(required);
+    expect(rendered.services[main].environment).toEqual(Object.fromEntries(values.map((v, i) => [`LITERAL_${i}`, v.replaceAll('$', () => '$$')])));
+    await fs.writeFile(snapshot, seal.snapshot(rendered), { mode: 0o600 });
+    seal.validateEffective(await resolve(snapshot), rendered);
+    // A second serialization/reinput must also be stable, not compound dollars.
+    await fs.writeFile(snapshot, seal.snapshot(await resolve(snapshot)), { mode: 0o600 });
+    seal.validateEffective(await resolve(snapshot), rendered);
+  });
   it('disabled, removed and malicious optional config cannot attach a transient public network', async () => {
     const f = await fixture();
     const { root, urn, doc, seal, main, qaLabel } = f;

@@ -182,6 +182,9 @@ export class MandatorySeal {
       if (canonical(actual[key] ?? {}) !== canonical(approved[key] ?? {})) throw fail();
   }
   snapshot(effective: Compose) {
-    return literal(Object.fromEntries(SECTIONS.filter((key) => effective[key]).map((key) => [key, effective[key]])));
+    // Compose config (including --format json) already escapes every dollar for
+    // reinput. Unlike overlay's trusted raw values, this is rendered Compose,
+    // not the in-memory resolved model. Escaping again changes runtime bytes.
+    return JSON.stringify(Object.fromEntries(SECTIONS.filter((key) => effective[key]).map((key) => [key, effective[key]])));
   }
 }

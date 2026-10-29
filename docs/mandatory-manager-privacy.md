@@ -128,6 +128,41 @@ insufficient capacity/RAM or changed closure fails before package installation.
 No deletion is authorized. This source-only bounded phase is not the old full
 focused/image admission and does not unlock that image phase.
 
+### Literal-dollar failure and focused repair
+
+The exact `8771bcab` real-Docker job reached actual containers and failed with
+`$$DO_NOT_INTERPOLATE` instead of `$DO_NOT_INTERPOLATE`. This is a product
+snapshot-serialization bug, not an incorrect synthetic runtime expectation.
+Pinned Docker Compose `v2.40.0/cmd/compose/config.go` applies
+`escapeDollarSign(content)` after rendering **both JSON and YAML** in
+`runConfig`, unless `--no-interpolate`. `DockerService` consumes that rendered
+JSON, not the raw in-memory resolved project. Escaping it again doubles runtime
+dollars. `snapshot` must preserve rendered section values; `overlay` still must
+escape the trusted raw compiler values. Do not unescape the config output or
+weaken the exact runtime assertion.
+
+The focused repair changes only that serialization and its boundary comment.
+The raw fixture remains unchanged. The corrected unit models rendered input;
+the new actual-Compose config/reinput test checks dollar/braced/repeated-dollar
+and quoted/Unicode values with a hostile synthetic interpolation environment,
+then checks a second reinput. The existing lifecycle test still asserts exactly
+`$DO_NOT_INTERPOLATE` in the actual running container. A dependency-free Node
+method regression exercises the exact snapshot body from candidate or prior
+source; it is a bounded method check, not full-module/Compose/Docker proof.
+
+Preserve the failed receipt `413d2601a71e9e25e873cfbab2e064212dc88283eaf5f959e36cde097c61f2cf`
+and archive `69f7619097c0e6140264701354fc8939de7a27f08ffb51e8e612119ad4efe052`
+unchanged. Its actual report is 16 tests, 15 pass, 1 fail, 0 skip; only the
+cross-process enrollment checkpoint completed. Valid UID/bind, toolchain,
+dependency/native/common-build and type evidence remains source-bound setup
+evidence, not privacy proof. The earlier 389 pass / 1 pending full-suite counts
+are historical: the changed snapshot/helper boundary must be re-exercised.
+The next exact-source forum job runs the changed mandatory-seal file, Node and
+small runner regressions, then the original manager/storage baseline negative;
+it does not repeat the unchanged full stock/gateway/backend suite. Baseline red
+must remain the public-network assertion, not an unrelated setup/dollar failure.
+No installed-API/image gate or successive-update limitation is removed.
+
 ## Remaining acceptance gates — unchanged
 
 Direct `DockerService` with synthetic DB/file facades is not authenticated Nest API/queue/Postgres acceptance. A new manager object is not process-level daemon restart. Manual forced callback failure/prior generated-file recovery is not the actual update transaction. The next exact-image disposable API stage must prove install/start/restart/update, process restart, optional-config disabled/removed/changed, required-policy failure before destructive callbacks, real version update plus forced rollback retaining synthetic home/identity/bindings, socket grants/revocation and Incognito. Preserve full acceptance; do not reduce it to metadata-only updates or grant refusal.

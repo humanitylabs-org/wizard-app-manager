@@ -187,8 +187,8 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       const approved = await resolve([...project, '-f', required]);
       const effective = await resolve([...args, '--project-directory', path.dirname(generated.path), '-f', required]);
       seal.validateEffective(effective, approved);
-      // Execute only these validated, fully resolved bytes. Optional files/env
-      // cannot race a later re-read; escape literal dollars for Compose reinput.
+      // Execute only these validated rendered bytes. Optional files/env cannot
+      // race a later re-read; Compose config already escaped dollars for reinput.
       await fs.writeFile(snapshot, seal.snapshot(effective), { mode: 0o600 });
       await launch([...project, '-f', snapshot]);
     } finally {

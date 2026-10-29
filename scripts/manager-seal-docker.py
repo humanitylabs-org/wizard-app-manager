@@ -48,7 +48,9 @@ DOCKER_SHA = '32b607f4bef9c7d0a5e717ed812590bfc5253a9dbabcd7210f03c5316dcfa44f'
 OLD_IMAGE = 'sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9'
 TARGET = 'src/modules/docker/__tests__/mandatory-seal.test.ts'
 PRODUCT_DELTA = ['packages/backend/src/modules/docker/docker.service.ts', 'packages/backend/src/modules/docker/wizard-storage.ts']
-ALLOWED_DELTA = {TARGET.replace('src/', 'packages/backend/src/', 1), 'scripts/manager-seal-docker.py', 'scripts/tests/test_manager_seal_docker.py', 'docs/mandatory-manager-privacy.md'}
+ALLOWED_DELTA = {TARGET.replace('src/', 'packages/backend/src/', 1), 'packages/backend/src/modules/docker/mandatory-seal.ts',
+                 'packages/backend/src/modules/docker/docker.service.ts', 'scripts/tests/test_manager_seal_dollars.mjs',
+                 'scripts/manager-seal-docker.py', 'scripts/tests/test_manager_seal_docker.py', 'docs/mandatory-manager-privacy.md'}
 RESULT = 'DOCKER_RESULT='
 REQUIRED_CHECKS = frozenset({
     'cross-process-enrollment-exclusion', 'disabled-config-original-bypass', 'launch-excludes-enrollment',
@@ -99,7 +101,8 @@ def inherited(root, manifest):
     return {'receipt_sha256': EARLY_RECEIPT, 'log_sha256': EARLY_LOG, 'source': EARLY_SOURCE,
             'source_manifest_sha256': EARLY_MANIFEST, 'changed_files': sorted(changes),
             'unchanged_files': len(set(prior['files'])-changes), 'prior_unit_counts': receipt['result']['unit_counts'],
-            'classification': 'inherited; changed fixture rerun, not fresh full-suite proof'}
+            'invalidated_product_boundary': 'mandatory-seal snapshot serialization; rerun complete mandatory-seal test file',
+            'classification': 'historical full-suite counts only; unchanged setup/source evidence retained, changed helper and fixture rerun, not fresh full-suite proof'}
 
 
 def inside_limits(fixture):
@@ -269,6 +272,7 @@ def inside(args):
         backend = checkout/'packages/backend'
         vitest = early.workspace_executable(checkout, 'backend', 'vitest')
         step('changed-fixture-types', [early.workspace_executable(checkout, 'backend', 'tsgo'), '--noEmit'], cwd=backend)
+        step('literal-dollar-regression', ['node', '--test', 'scripts/tests/test_manager_seal_dollars.mjs'], cwd=checkout)
         os.environ.update(RUN_MANAGER_SEAL_DOCKER='1', MANAGER_SEAL_BASELINE_NEGATIVE='0', TMPDIR=str(fixture),
                           MANAGER_SEAL_TEST_IMAGE=PYTHON_IMAGE, MANAGER_SEAL_TEST_IMAGE_V2=early.IMAGE,
                           MANAGER_SEAL_TRACE_DIR='/work/candidate-trace', MANAGER_SEAL_QA_OWNER=args.owner,
