@@ -30,6 +30,9 @@ Wizard additions:
   wam network allow|deny <app>  let one app keep host access / networks it does not own (the owner's call), or stop
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
+  wam maintain [run|setup|remove|history] [--os-security off|check|patch]
+                                nightly system maintenance: OS security patches for any Linux (check by default;
+                                patch installs fixes while quiet, never restarts or reboots), history in Health
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
                 [--share-sessions|--no-share-sessions]
                                 run next to this box's existing Hermes: it fills the agent spot (never migrated).
@@ -1916,6 +1919,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "hermes":
         from .hermes_update import main as hermes_main
         return hermes_main(argv[1:])
+    if argv and argv[0] == "maintain":
+        from .maintain import main as maintain_main
+        return maintain_main(argv[1:])
     if argv and argv[0] == "agent-link":
         from .agent_link import main as agent_link_main
         return agent_link_main(argv[1:])
