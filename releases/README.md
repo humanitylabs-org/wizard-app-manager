@@ -407,3 +407,9 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/303 (release train). `releases/stable` → 0.3.73; `promotions/0.3.73.json` sha256 `915e97a34a50a70d4e6d1e3fb38dfedcf3d751a40c02a86eb487b14a2e58747b`.
 Fast-tracked as **feature**. Installed upgrade 0.3.72 → 0.3.73 passed: wizard-os docs/acceptance/promote-0.3.73.md.
+
+## 0.3.74 provenance
+
+Canonical: wizard-os releases/0.3.74.json (wizard-os #299, merge b2c7858d). SHA256: `dea8615dcf89453cc9c0b25fcfa144c2994dc0f464ab5f8397babce1651cbe21`.
+0.3.73 with App Manager main `79272034` (#304 quick interface updates; #311/#312/#320 fixes; everything merged on main since 0.3.67's line, including #305/#307 automatic app updates, app connections, #184, #214); image `v4.10.2-wizard.778-d9e1644` (`sha256:53007625…`, run 40672973160, image inputs unchanged d9e16446..79272034). Everything else exactly 0.3.73.
+Channel: on latest only.
