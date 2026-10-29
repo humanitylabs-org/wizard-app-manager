@@ -487,3 +487,8 @@ Channel: latest; the release train promotes after the upgrade test.
 Canonical: wizard-os releases/0.3.84.json (release train). SHA256: `24122c3310acdf25b9f0172763cad39d5180f872d683d52883e2be41c7dd90b9`.
 Latest 0.3.83 with Wizard UX 0a23c082 -> 53d209c5. Owner-approved same-day Stable (DECISIONS #93 feature fast-track): humanitylabs-org/wizard-ux#668 Home & Settings for everyone (owner-approved: Miguel, 29 Oct 2026, 'stable today'). Stable stays 0.3.83 until the installed upgrade test passes.
 Channel: on latest only.
+
+## stable 0.3.84
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/334. `releases/stable` → 0.3.84; `promotions/0.3.84.json` sha256 `48eece5b9a407d3cddb5a185913ea06e4714c8ca79bed111a364f6635328eabc`.
+Fast-tracked as **feature** (owner-approved). Installed upgrade 0.3.83 → 0.3.84 passed: wizard-os docs/acceptance/promote-0.3.84.md.
