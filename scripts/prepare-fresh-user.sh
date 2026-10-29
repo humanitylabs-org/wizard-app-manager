@@ -57,4 +57,12 @@ fi
 curl -fsSL "$repo/raw/$ref/scripts/root-helpers/server-access" -o "$work/server-access"
 curl -fsSL "$repo/raw/$ref/scripts/install-server-access.py" -o "$work/install-server-access.py"
 /usr/bin/python3 -I "$work/install-server-access.py" "$work/server-access" --fresh "$(getent passwd "$owner" | cut -d: -f6)/.wizard-os"
-printf 'Fresh host prepared: fixed os-patch helper; no blanket sudo grant; Tailscale operator set during host preparation.\n'
+# Approval custody is always a root system socket, never a user-unit bind.
+# Stage trusted-ref source under root-owned ancestors for this host phase.
+custody_stage="$(mktemp -d /root/wizard-approval.XXXXXX)"
+curl -fsSL "$repo/raw/$ref/scripts/install-approval-custody.py" -o "$custody_stage/install.py"
+curl -fsSL "$repo/raw/$ref/wam/approval_custody.py" -o "$custody_stage/approval_custody.py"
+manager_home="$(getent passwd "$owner" | cut -d: -f6)"
+/usr/bin/python3 -I "$custody_stage/install.py" install "$owner" "$manager_home/.wizard-os" "${WAM_DIR:-$manager_home/wizard-app-manager}" "$custody_stage/approval_custody.py"
+rm -rf "$custody_stage"
+printf 'Fresh host prepared: fixed helpers, persistent approval custody; no blanket sudo grant.\n'

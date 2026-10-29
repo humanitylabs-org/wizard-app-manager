@@ -185,6 +185,14 @@ class Migration:
         self.doc['created_at'] = time.time()
 
     def quiesce(self):
+        # Do not free a legacy approval address while its persistent Serve site
+        # still exists. Setup must refuse before stopping any old worker. Only
+        # already-established PID 1 custody makes worker quiescence safe.
+        web = json.loads(run(['tailscale', 'serve', 'status', '--json'], capture_output=True).stdout or '{}').get('Web', {})
+        if any(':7792' in str((h or {}).get('Proxy', ''))
+               for site in web.values() for h in (site.get('Handlers') or {}).values()):
+            from . import approval_custody
+            approval_custody.require_custody()
         for unit in USER_UNITS:
             self.user('systemctl', '--user', 'disable', '--now', unit, check=False, capture_output=True)
             if self.user('systemctl', '--user', 'is-active', '--quiet', unit, check=False).returncode == 0:

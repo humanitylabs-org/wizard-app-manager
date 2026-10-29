@@ -123,32 +123,25 @@ cd "$HERE" && exec "$PY" -m wam "\$@"
 EOF
 chmod +x "$HOME/.local/bin/wam"
 
-cat > "$HOME/.config/systemd/user/wizard-app-manager-api.service" <<EOF
-[Unit]
-Description=wam API (127.0.0.1:7790; changes need ~/.wizard-os/api-token)
-After=network-online.target
-
-[Service]
-Environment=RUNTIPI_ROOT=$RUNTIPI_ROOT
-Environment=WIZARD_RELEASE_PINS=${WIZARD_RELEASE_PINS:-}
-WorkingDirectory=$HERE
-ExecStart=$PY -m wam serve
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-EOF
-
-# Retire pieces the index-backed store replaced: per-box sync timer, local git store server, skin proxy.
+# One approval lifetime contract for fresh and alongside: the owner-approved
+# host phase installed the system service/socket. Never create a user listener
+# as a fallback, and never try to install root units or elevate from here.
+(cd "$HERE" && "$PY" -c 'from wam.approval_custody import require_custody; require_custody()')
+systemctl --user disable --now wizard-app-manager-api.service 2>/dev/null || true
+rm -f "$HOME/.config/systemd/user/wizard-app-manager-api.service"
+# The protected service reads release pins from protected manager state. Keep
+# deployment inputs outside model/session homes and never copy auth environment.
+(umask 077; printf 'WIZARD_RELEASE_PINS=%s\n' "${WIZARD_RELEASE_PINS:-}" > "$HOME/.wizard-os/manager-service.env")
+(cd "$HERE" && "$PY" -c 'from wam.approval_custody import restart_worker; restart_worker()')
+# A plain loopback connect asks PID 1 to activate the exact protected worker;
+# it grants no authority and sends no identity. No systemctl mutation right.
+"$PY" -c 'import socket; socket.create_connection(("127.0.0.1",7792),timeout=5).close()'
+# Retire pieces the index-backed store replaced.
 systemctl --user disable --now wizard-app-manager-sync.timer wizard-app-manager.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/wizard-app-manager-sync."{service,timer} "$HOME/.config/systemd/user/wizard-app-manager.service"
 "${DOCKER[@]}" rm -f wizard-store wizard-skin >/dev/null 2>&1 || true
 rm -f "$RUNTIPI_ROOT/traefik/dynamic/wizard-skin.yml"
 
-loginctl enable-linger "$USER" 2>/dev/null || true
-systemctl --user daemon-reload
-systemctl --user enable --now wizard-app-manager-api.service
-systemctl --user restart wizard-app-manager-api.service
 # Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
 # update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"

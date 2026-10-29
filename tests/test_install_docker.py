@@ -72,7 +72,17 @@ case "$*" in *setup.runtipi.io*)
     tool("git", "exit 0\n")
     tool("sleep", "exit 0\n")
     # The stand-in `wam`: logs the call; `bootstrap` prints $BOOTSTRAP_OUT (default: every app installed).
-    tool("python3", '''if [ "${1:-}" = -m ] && [ "${2:-}" = wam ]; then
+    tool("python3", '''if [ "${1:-}" = -c ]; then
+  case "${2:-}" in
+    'from wam.approval_custody import require_custody; require_custody()')
+      printf 'custody require\\n' >> "$CALLS"; exit "${CUSTODY_RC:-0}";;
+    'from wam.approval_custody import restart_worker; restart_worker()')
+      printf 'custody restart\\n' >> "$CALLS"; exit 0;;
+    'import socket; socket.create_connection(("127.0.0.1",7792),timeout=5).close()')
+      printf 'custody activate\\n' >> "$CALLS"; exit 0;;
+  esac
+fi
+if [ "${1:-}" = -m ] && [ "${2:-}" = wam ]; then
   printf "wam %s\\n" "$*" >> "$CALLS"
   if [ "${3:-}" = bootstrap ]; then
     if [ -n "${BOOTSTRAP_OUT:-}" ]; then printf '%s\\n' "$BOOTSTRAP_OUT"; else echo '{"installed": [], "failed": {}}'; fi
@@ -94,6 +104,17 @@ exec "PYEXE" "$@"
     outcome_file = home / ".wizard-os/install-outcome.json"
     outcome = json.loads(outcome_file.read_text()) if outcome_file.is_file() else None
     return p, home, root, calls, outcome
+
+
+def test_missing_custody_never_stops_old_listener_or_links_agent(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, CUSTODY_RC="1")
+    assert p.returncode != 0
+    log = calls.read_text()
+    assert 'custody require' in log
+    assert 'disable --now wizard-app-manager-api.service' not in log
+    assert 'custody restart' not in log and 'custody activate' not in log
+    assert 'wam -m wam bootstrap' not in log
+    assert not (home / '.config/systemd/user/wizard-app-manager-api.service').exists()
 
 
 @pytest.mark.parametrize("docker_access", [True, False])
@@ -249,8 +270,8 @@ def test_a_python3_without_yaml_first_on_path_is_skipped(tmp_path):
     assert "agent-python -m wam " not in log            # no wam work ran under the yaml-less python
     assert "wam " in log
     assert f'exec "{system}" -m wam' in (home / ".local/bin/wam").read_text()
-    unit = (home / ".config/systemd/user/wizard-app-manager-api.service").read_text()
-    assert f"ExecStart={system} -m wam serve" in unit
+    assert not (home / ".config/systemd/user/wizard-app-manager-api.service").exists()
+    assert 'custody require' in log and 'custody activate' in log
     assert (home / ".local/bin/wizard").read_text().splitlines()[0] == f"#!{system}"
 
 

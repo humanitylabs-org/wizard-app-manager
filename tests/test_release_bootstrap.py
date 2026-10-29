@@ -199,7 +199,7 @@ def test_installer_keeps_manager_digest_and_starts_pin_view_first(pins, tmp_path
     log = calls.read_text()
     assert log.index('up -d --force-recreate --wait wizard-release-index') < log.index('up -d --force-recreate --no-deps --wait runtipi')
     assert log.index('up -d --force-recreate --no-deps --wait runtipi') < log.index('--no-deps runtipi-reverse-proxy') < log.index('wam -m wam bootstrap')
-    assert f'WIZARD_RELEASE_PINS={pins}' in (home / '.config/systemd/user/wizard-app-manager-api.service').read_text()
+    assert f'WIZARD_RELEASE_PINS={pins}' in (home / '.wizard-os/manager-service.env').read_text()
 
 
 def test_compose_roundtrip_preserves_tags_owner_settings_and_unpinned_mode(pins, tmp_path):
