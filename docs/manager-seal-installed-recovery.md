@@ -1,5 +1,56 @@
 # Installed synthetic continuation: Rabbit CLI and cleanup recovery
 
+## File-size-limit candidate: paired canary before setup
+
+The retained `7aea845141a5` receipt records UID/GID `100:101`, 116 successful
+cookie-owner metadata calls, and 116 ping failures: exit **153**, empty stdout,
+exactly `File size limit exceeded`, no timeout/output-cap termination; the
+broker was running without OOM. Existing scheduler flags did not repair this.
+The original receipts and backend remain immutable.
+
+The universal 33,554,432-byte soft/hard file-size limit is now raised **only for
+the Rabbit role**, to a finite **67,108,864 bytes**. All other service roles
+remain at 33,554,432; build policy is unchanged. Memory/no-swap, CPU/pids/shmem,
+read-only root, capabilities, tmpfs and aggregate footprint budgets do not grow.
+
+Static audit of the exact cached image found each public CLI escript is
+7,414,174 bytes, SHA256
+`863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0`.
+The 677 ZIP entries total 10,116,184 uncompressed bytes, largest 1,004,188 bytes.
+A >32MiB extracted escript/cache file is **not supported by these sizes**.
+OTP 29.1.2 public source chooses a 32MiB JIT base (`beam_jit_main.cpp:216`),
+doubles the first ideal block to 64MiB (`jitallocator.cpp:589–613`, maximum at
+line 39), and sizes anonymous backing with `ftruncate` (`virtmem.cpp:691–695`).
+This supports a file-backed JIT hypothesis; it does **not** identify the actual
+failed file/FD. No exact filename or syscall trace is claimed.
+
+Before ephemeral dependency reconstruction, the same parent-admitted queued
+job acquires a one-use exclusive holder and runs two fresh brokers sequentially.
+The common option producer is also used by the installed broker: same pinned
+cached image, UID, internal network, env, mounts, and container policy. Actual
+allowlisted inspect projections compare the pair excluding only `fsize`, and
+compare the positive contract exactly with the installed broker. Cookie values
+and hashes and environment values are never retained by these diagnostics.
+
+* 32MiB negative: actual pinned startup marker, cookie-owner success, exactly
+  one ping failure with the precise exit-153/file-size diagnostic. Arbitrary
+  nonzero, timeout, output cap, scheduler failure or TCP is not sufficient.
+* 64MiB positive: real `ping` **and** `check_running` as the same service user,
+  running/non-OOM state, exec/PID1 max-file-size metadata, and fixed public
+  escript sizes/hashes. No generic TCP acceptance.
+* Each canary is removed and exact-ID absence verified before the next. The
+  durable ownership ledger remains available to outer cleanup on all failures.
+  The exclusive holder lasts through installed acceptance and closes on cleanup.
+* Only a paired pass continues expensive setup and unchanged installed
+  acceptance. `rabbit-limit-canary.json` retains bounded synthetic evidence.
+  The precise signature raises `FatalBrokerCLI` immediately; transient
+  readiness handling remains, without repeating a deterministic failure 116 times.
+
+Source-only tests and static preflight do **not** establish real positive RPC.
+Only the parent may submit this job. The exact backend archive and `main.js`
+remain reused; prior privacy evidence is frozen, not rerun or reinterpreted.
+
+
 This is a **QA-only candidate correction**, not installed acceptance. No production
 source or build input changes. Full acceptance and `RUNTIPI_ADMITTED` remain false.
 Only the parent may submit the exact staged `PARENT-SUBMIT.json`; no child job,

@@ -23,6 +23,43 @@ QA_DELTA = frozenset({
 })
 CLI_ERL_ARGS = '+S 2:2 +SDcpu 1 +SDio 1 +A 4'
 CLI_ENV = 'RABBITMQ_CTL_ERL_ARGS='+CLI_ERL_ARGS
+DEFAULT_FSIZE = 32*2**20
+RABBIT_FSIZE = 64*2**20  # finite broker-role bound; all other roles remain 32MiB
+RABBIT_ESCRIPT_SHA = '863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0'
+RABBIT_ESCRIPT_BYTES = 7414174
+
+
+class FatalBrokerCLI(RuntimeError):
+    """Deterministic local resource failure, never a readiness retry."""
+
+
+def cli_classification(outcome):
+    if (outcome['termination_reason'] is None and outcome['exit_code'] == 153
+            and outcome['stdout'] == b'' and outcome['stderr'].strip() == b'File size limit exceeded'):
+        return 'fatal_file_size_limit'
+    if outcome['exit_code'] == 0 and outcome['termination_reason'] is None:
+        return 'success'
+    return 'transient_or_unclassified'
+
+
+def role_fsize(role):
+    assert role in ('default', 'rabbit')
+    return RABBIT_FSIZE if role == 'rabbit' else DEFAULT_FSIZE
+
+
+def rabbit_options(net, user, password):
+    """One shared exact option producer: canary and installed broker."""
+    uid, gid = map(int, user.split(':'))
+    options = ['--user', user, '--network', net, '--network-alias', 'runtipi-rabbitmq',
+               '--memory', str(2**30), '--memory-swap', str(2**30)]
+    for env in ('RABBITMQ_DEFAULT_USER=synthetic', 'RABBITMQ_DEFAULT_PASS='+password,
+                'RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=+S 2:2', 'RABBITMQ_LOGS=-'):
+        options += ['--env', env]
+    for path, size in (('/var/lib/rabbitmq', 512*2**20), ('/var/log/rabbitmq', 16*2**20), ('/tmp', 16*2**20)):
+        options += ['--tmpfs', f'{path}:size={size},uid={uid},gid={gid},mode=0700']
+    return options
+
+
 CLI_OUTPUT_CAP = 8192  # each stream, not an unbounded communicate() buffer
 RABBIT_ENV_SHA = '4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af'
 # Exact function body from the retained pinned-image public source, NOT a
@@ -85,6 +122,8 @@ def broker_argv(cid, user, action):
     assert re.fullmatch(r'[0-9]+:[0-9]+', user)
     commands = {
         'cookie_metadata': ['sh', '-c', 'test -s /var/lib/rabbitmq/.erlang.cookie && test "$(stat -c %u /var/lib/rabbitmq/.erlang.cookie)" = "$(id -u)" && stat -c "%u %g %a %s" /var/lib/rabbitmq/.erlang.cookie'],
+        'limit_metadata': ['sh', '-c', 'id -u; id -g; for p in /proc/self/limits /proc/1/limits; do while IFS= read -r line; do case "$line" in "Max file size"*) printf "%s\\n" "$line";; esac; done < "$p"; done'],
+        'public_files': ['sh', '-c', 'stat -c %s /opt/rabbitmq/escript/rabbitmqctl /opt/rabbitmq/escript/rabbitmq-diagnostics; sha256sum /opt/rabbitmq/escript/rabbitmqctl /opt/rabbitmq/escript/rabbitmq-diagnostics'],
         'ping': ['rabbitmq-diagnostics', '--timeout', '10', '-q', 'ping'],
         'check_running': ['rabbitmq-diagnostics', '--timeout', '10', '-q', 'check_running'],
         'list_queues': ['rabbitmqctl', '--timeout', '10', '-q', 'list_queues', 'name', 'consumers'],
@@ -194,3 +233,21 @@ def restore_bundle(archive, dist):
     for name, blob in blobs.items():
         with (dist/name).open('xb') as out: out.write(blob)
     return metadata
+
+
+def validate_limit_metadata(text, user, bound):
+    rows = text.splitlines()
+    assert len(rows) == 4 and rows[:2] == user.split(':')
+    for row in rows[2:]:
+        assert row.split() == ['Max', 'file', 'size', str(bound), str(bound), 'bytes']
+    return {'uid': int(rows[0]), 'gid': int(rows[1]), 'exec_soft_bytes': bound,
+            'exec_hard_bytes': bound, 'pid1_soft_bytes': bound, 'pid1_hard_bytes': bound}
+
+
+def validate_public_files(text):
+    rows = text.splitlines()
+    assert rows[:2] == [str(RABBIT_ESCRIPT_BYTES)]*2 and len(rows) == 4
+    paths = ['/opt/rabbitmq/escript/rabbitmqctl', '/opt/rabbitmq/escript/rabbitmq-diagnostics']
+    for row, path in zip(rows[2:], paths):
+        assert row.split() == [RABBIT_ESCRIPT_SHA, path]
+    return {path: {'bytes': RABBIT_ESCRIPT_BYTES, 'sha256': RABBIT_ESCRIPT_SHA} for path in paths}

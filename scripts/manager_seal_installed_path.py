@@ -365,16 +365,19 @@ class Rig:
             raise RuntimeError('command failed')
         return result.stdout.decode().strip()
 
-    def create(self, name, image, options, command):
+    def create(self, name, image, options, command, role='default', baseline=False):
         self.checkpoint()
         assert len(self.ids) < 24
         # Write intent first. On ambiguity there is no retry; cleanup reconciles
         # only these exact fresh names plus the unique ownership label.
         with self.ledger.open('a') as out: out.write(json.dumps({'kind': 'intent', 'name': name})+'\n')
+        assert not baseline or (role == 'rabbit' and image == RABBIT and name.endswith('-canary-negative'))
+        assert role != 'rabbit' or image == RABBIT
+        limit = recovery.DEFAULT_FSIZE if baseline else recovery.role_fsize(role)
         cid = self.cmd('create-'+name, ['docker', 'create', '--pull=never', '--name', name,
             '--label', 'wizard.qa.manager-seal='+self.owner, '--read-only', '--log-driver=none',
             '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--pids-limit=256', '--cpus=2',
-            '--shm-size=67108864', '--ulimit', 'core=0:0', '--ulimit', 'fsize=33554432:33554432',
+            '--shm-size=67108864', '--ulimit', 'core=0:0', '--ulimit', f'fsize={limit}:{limit}',
             *options, image, *command])
         assert len(cid) == 64; self.record('container', cid, name); return cid
 
@@ -394,7 +397,7 @@ class Rig:
                         # Never export any credential-bearing header or session field.
                         if any(t in clean.lower() for t in (b'cookie', b'authorization', b'password', b'jwt_secret', b'sessionid')):
                             clean = b'[credential-bearing log line withheld]\n'
-                        out.write(clean)
+                        out.write(clean); out.flush()
             except Exception:
                 self.log_failure = True
         thread = threading.Thread(target=capture, daemon=True); thread.start()
@@ -411,10 +414,11 @@ class Rig:
     def broker_cli(self, cid, user, action):
         self.receipt['operation'] = 'rabbit-'+action
         outcome = recovery.bounded_cli(recovery.broker_argv(cid, user, action))
-        ok = outcome['exit_code'] == 0 and outcome['termination_reason'] is None
-        row = {'action': action, 'exit_code': outcome['exit_code'], 'termination_reason': outcome['termination_reason'],
+        classification = recovery.cli_classification(outcome)
+        ok = classification == 'success'
+        row = {'action': action, 'classification': classification, 'exit_code': outcome['exit_code'], 'termination_reason': outcome['termination_reason'],
                'user': user, 'explicit_cli_env': recovery.CLI_ENV,
-               'rpc_timeout_seconds': None if action == 'cookie_metadata' else 10,
+               'rpc_timeout_seconds': 10 if action in ('ping', 'check_running', 'list_queues') else None,
                'stdout_bytes_captured': len(outcome['stdout']), 'stderr_bytes_captured': len(outcome['stderr']),
                'stdout': recovery.sanitized_cli(outcome['stdout'], self.secrets),
                'stderr': recovery.sanitized_cli(outcome['stderr'], self.secrets)}
@@ -429,6 +433,8 @@ class Rig:
         raw = (json.dumps(evidence, indent=2)+'\n').encode()
         assert len(raw) <= 256*1024
         (self.out/'rabbit-cli.sanitized.json').write_bytes(raw)
+        if classification == 'fatal_file_size_limit':
+            raise recovery.FatalBrokerCLI('synthetic broker file size limit; no readiness retry')
         if not ok: raise RuntimeError('synthetic broker CLI failed; see bounded diagnostic')
         return outcome['stdout'].decode().strip()
 
@@ -443,7 +449,112 @@ class Rig:
             self.broker_cli(cid, user, 'ping')
             self.broker_cli(cid, user, 'check_running')
             return True
+        except recovery.FatalBrokerCLI: raise
         except RuntimeError: return False
+
+    def rabbit_contract(self, cid, user, net, bound):
+        # Allowlisted synthetic metadata projection, never Config.Env/cookies.
+        fields = {'image': '.Image', 'user': '.Config.User', 'readonly': '.HostConfig.ReadonlyRootfs',
+                  'memory': '.HostConfig.Memory', 'memory_swap': '.HostConfig.MemorySwap',
+                  'tmpfs': '.HostConfig.Tmpfs', 'ulimits': '.HostConfig.Ulimits',
+                  'pids': '.HostConfig.PidsLimit', 'cpus': '.HostConfig.NanoCpus',
+                  'shmem': '.HostConfig.ShmSize', 'network': '.HostConfig.NetworkMode',
+                  'caps': '.HostConfig.CapDrop', 'security': '.HostConfig.SecurityOpt'}
+        template = '{'+','.join(json.dumps(k)+':{{json '+v+'}}' for k, v in fields.items())+'}'
+        value = json.loads(self.cmd('owned-rabbit-contract', ['docker', 'inspect', '--format', template, cid]))
+        assert value['image'] == RABBIT and value['user'] == user and value['readonly'] is True
+        assert value['memory'] == value['memory_swap'] == GIB
+        assert value['pids'] == 256 and value['cpus'] == 2000000000 and value['shmem'] == 64*MIB
+        assert value['network'] == net and value['caps'] == ['ALL']
+        assert value['security'] in (['no-new-privileges'], ['no-new-privileges:true']), 'no-new-privileges absent'
+        uid, gid = map(int, user.split(':'))
+        assert value['tmpfs'] == {p: f'size={size},uid={uid},gid={gid},mode=0700' for p, size in
+            (('/var/lib/rabbitmq', 512*MIB), ('/var/log/rabbitmq', 16*MIB), ('/tmp', 16*MIB))}
+        limits = {r['Name']: (r['Soft'], r['Hard']) for r in value['ulimits']}
+        assert limits['core'] == (0, 0) and limits['fsize'] == (bound, bound)
+        return value
+
+    def rabbit_limit_canary(self, net, user, password):
+        """Sequential fresh tmpfs brokers; exact SIGXFSZ negative, real RPC positive.
+
+        No per-command RLIMIT shim, strace, extra image or capability. The only
+        resource-policy change between the two is broker-role RLIMIT_FSIZE.
+        """
+        proof = {'public_image': RABBIT, 'user': user, 'passed': False,
+                 'original_specific_file_proven': False, 'runs': []}
+        self.receipt['rabbit_limit_canary'] = proof
+        import fcntl
+        # One-use stage + kernel-held exclusive holder, retained through the
+        # installed phase. No extra holder container or overlapping brokers.
+        self.canary_holder = os.open(self.root/'rabbit-canary-exclusive.lock', os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        fcntl.flock(self.canary_holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        proof['exclusive_holder_acquired'] = True
+        options = recovery.rabbit_options(net, user, password)
+        for negative in (True, False):
+            label = 'canary-negative' if negative else 'canary-positive'
+            bound = recovery.DEFAULT_FSIZE if negative else recovery.RABBIT_FSIZE
+            row = {'kind': label, 'fsize_soft_bytes': bound, 'fsize_hard_bytes': bound}
+            proof['runs'].append(row)
+            # Each run has the same common create policy, UID, network, mounts,
+            # env and command as the installed broker. Names/cookies are fresh.
+            cid = self.create(self.owner+'-'+label, RABBIT, options, [], role='rabbit', baseline=negative)
+            row['container_id'] = cid
+            try:
+                row['runtime_contract'] = self.rabbit_contract(cid, user, net, bound)
+                self.start(cid, label)
+                def booted():
+                    state = self.state(cid)
+                    if state.get('Status') in ('exited', 'dead') or state.get('OOMKilled'):
+                        raise RuntimeError('canary broker exited')
+                    if not state['Running']: return False  # docker start attach may still be scheduling
+                    return 'Server startup complete; 3 plugins started.' in (self.out/(label+'.sanitized.log')).read_text()
+                self.wait(label+'-server-started', booted, 120)
+                row['server_started'] = True
+                row['limit_metadata'] = recovery.validate_limit_metadata(self.broker_cli(cid, user, 'limit_metadata'), user, bound)
+                row['public_files'] = recovery.validate_public_files(self.broker_cli(cid, user, 'public_files'))
+                # Isolate exact action evidence per canary; never mix readiness
+                # attempts from later installed RPC into the A/B proof.
+                saved = self.receipt.pop('rabbit_cli', {})
+                try:
+                    if negative:
+                        cookie = self.broker_cli(cid, user, 'cookie_metadata')
+                        values = cookie.split()
+                        assert len(values) == 4 and all(v.isdigit() for v in values) and values[0] == user.split(':')[0]
+                        try: self.broker_cli(cid, user, 'ping')
+                        except recovery.FatalBrokerCLI: pass
+                        else: raise AssertionError('original precise file-size-limit failure not reproduced')
+                        evidence = self.receipt['rabbit_cli']['ping']
+                        assert evidence['attempts'] == evidence['failures'] == 1
+                        assert evidence['first_failure']['classification'] == 'fatal_file_size_limit'
+                        row['precise_negative'] = True
+                    else:
+                        self.wait(label+'-rpc', lambda: self.rabbit_ready(cid, user), 30)
+                        assert all(self.receipt['rabbit_cli'][action].get('success') for action in ('cookie_metadata', 'ping', 'check_running'))
+                        row['real_ping_and_check_running_pass'] = True
+                    row['cli'] = self.receipt['rabbit_cli']
+                finally:
+                    row['cli'] = self.receipt.get('rabbit_cli', {})
+                    self.receipt['rabbit_cli'] = saved
+                row['state_after_rpc'] = self.state(cid)
+                assert row['state_after_rpc']['Running'] and not row['state_after_rpc']['OOMKilled']
+            finally:
+                self.cmd('canary-owned-remove', ['docker', 'rm', '-f', cid])
+                check = subprocess.run(['docker', 'inspect', '--format', '{{.Id}}', cid], capture_output=True, timeout=10)
+                assert recovery.exact_missing(check, 'container', cid), 'canary cleanup not verified'
+                self.ids.remove(cid)
+                row['removed_verified'] = True
+                (self.out/'rabbit-limit-canary.json').write_text(json.dumps(proof, indent=2)+'\n')
+        contracts = []
+        for row in proof['runs']:
+            contract = dict(row['runtime_contract'])
+            contract['ulimits'] = [v for v in contract['ulimits'] if v['Name'] != 'fsize']
+            contracts.append(contract)
+        assert contracts[0] == contracts[1], 'canary policy changed beyond fsize'
+        proof['passed'] = all(row['removed_verified'] for row in proof['runs'])
+        proof['same_option_producer_as_installed'] = True
+        proof['causal_limit_ab_proven'] = True
+        (self.out/'rabbit-limit-canary.json').write_text(json.dumps(proof, indent=2)+'\n')
+        assert proof['passed']
 
     def wait(self, label, predicate, timeout=120):
         self.receipt['phase'] = label
@@ -541,6 +652,14 @@ class Rig:
                     'original_exit153_cause_proven': False}
             self.cmd('remove-metadata-donor', ['docker', 'rm', c]); self.ids.remove(c)
         self.cmd('remove-tool-donor', ['docker', 'rm', donor]); self.ids.remove(donor)
+        # Exclusive single queued controller; one disposable broker at a time.
+        # Retain this exact network/password for the later installed broker.
+        self.creation_intent('network', self.owner+'-infra')
+        net = self.cmd('infra-network-create', ['docker', 'network', 'create', '--internal', '--label', 'wizard.qa.manager-seal='+self.owner, self.owner+'-infra'])
+        self.record('network', net)
+        dbpw = os.urandom(24).hex(); queuepw = os.urandom(24).hex(); self.secrets.extend([dbpw, queuepw])
+        self.rabbit_limit_canary(net, ':'.join(map(str, identities['rabbitmq'])), queuepw)
+        assert self.receipt['rabbit_limit_canary']['passed'], 'pre-build Rabbit canary required'
         volumes = {}
         for role, size in (('work', 5*GIB), ('fixture', 64*MIB)):
             name = self.owner+'-'+role
@@ -640,10 +759,7 @@ class Rig:
         assert self.request('DELETE', '/containers/'+positive)[0] < 300; self.ids.remove(positive)
         (self.control/'activate').write_text(cfg['activation'])
         self.wait('guard-activation', lambda: any(json.loads(l)['operation'] == 'activated' for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines()), 5)
-        self.creation_intent('network', self.owner+'-infra')
-        net = self.cmd('infra-network-create', ['docker', 'network', 'create', '--internal', '--label', 'wizard.qa.manager-seal='+self.owner, self.owner+'-infra'])
-        self.record('network', net)
-        dbpw = os.urandom(24).hex(); queuepw = os.urandom(24).hex(); self.secrets.extend([dbpw, queuepw])
+        assert self.receipt['rabbit_limit_canary']['passed']
         infra = {}
         for role, image, service, env, aliases, mounts in [
             ('postgres', PG, 'postgres', ['POSTGRES_DB=tipi', 'POSTGRES_USER=tipi', 'POSTGRES_PASSWORD='+dbpw], ['runtipi-db'],
@@ -655,7 +771,12 @@ class Rig:
             options = ['--user', f'{suid}:{sgid}', '--network', net, '--network-alias', aliases[0], '--memory', str(GIB), '--memory-swap', str(GIB)]
             for k in env: options += ['--env', k]
             for path, size in mounts: options += ['--tmpfs', f'{path}:size={size},uid={suid},gid={sgid},mode=0700']
-            infra[role] = self.create(self.owner+'-'+role, image, options, [])
+            if role == 'rabbit': options = recovery.rabbit_options(net, f'{suid}:{sgid}', queuepw)
+            infra[role] = self.create(self.owner+'-'+role, image, options, [], role='rabbit' if role == 'rabbit' else 'default')
+            if role == 'rabbit':
+                contract = self.rabbit_contract(infra[role], f'{suid}:{sgid}', net, recovery.RABBIT_FSIZE)
+                assert contract == self.receipt['rabbit_limit_canary']['runs'][1]['runtime_contract'], 'installed broker/canary policy drift'
+                self.receipt['installed_rabbit_contract_matches_canary'] = True
             self.start(infra[role], role)
         def dbready():
             if not self.state(infra['postgres'])['Running']: raise RuntimeError('database exited')
@@ -844,6 +965,9 @@ console.log(JSON.stringify({status:r.status,cookie:r.headers.get('set-cookie'),b
                 check = subprocess.run(['docker', kind, 'inspect', ident], capture_output=True, timeout=10)
                 if not recovery.exact_missing(check, kind, ident): self.errors.append(kind+'_remove_failed')
         self.receipt['cleanup_errors'] = self.errors
+        if hasattr(self, 'canary_holder'):
+            os.close(self.canary_holder)
+            self.receipt.setdefault('rabbit_limit_canary', {})['exclusive_holder_released'] = True
         self.receipt['reserve_after_cleanup_bytes'] = shutil.disk_usage('/srv/work').free
         if self.receipt['reserve_after_cleanup_bytes'] < capacity.RESERVE: self.errors.append('reserve_breached')
         self.receipt['phase_at_exit'] = self.receipt['phase']

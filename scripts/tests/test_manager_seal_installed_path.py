@@ -4,6 +4,8 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import inspect
+import subprocess
 import io
 import json
 import os
@@ -413,6 +415,145 @@ class Recovery(unittest.TestCase):
                         self.assertFalse(dist.exists())
                 with patch.object(recovery, 'PRIOR_ARCHIVE_SHA', '0'*64):
                     with self.assertRaises(AssertionError): recovery.restore_bundle(p, root/'wrong-hash')
+
+
+class RabbitFileLimit(unittest.TestCase):
+    def test_precise_fatal_signature_not_generic_153_timeout_or_cap(self):
+        good = dict(exit_code=153, termination_reason=None, stdout=b'', stderr=b'File size limit exceeded\n')
+        self.assertEqual(recovery.cli_classification(good), 'fatal_file_size_limit')
+        for delta in ({'exit_code': 1}, {'stderr': b'Failed to create scheduler thread\n'},
+                      {'stderr': b'prefix File size limit exceeded\n'}, {'stdout': b'unexpected'},
+                      {'termination_reason': 'timeout'}, {'termination_reason': 'output_cap'}):
+            self.assertNotEqual(recovery.cli_classification(dict(good, **delta)), 'fatal_file_size_limit')
+
+    def test_fatal_readiness_escapes_instead_of_116_retries_transient_stays_retryable(self):
+        r = rig.Rig.__new__(rig.Rig); r.state = lambda _: {'Running': True}; r.receipt = {}
+        for error in (recovery.FatalBrokerCLI('fixed file-limit diagnostic'), RuntimeError('transient')):
+            r.broker_cli = lambda *a: (_ for _ in ()).throw(error)
+            if isinstance(error, recovery.FatalBrokerCLI):
+                with self.assertRaises(recovery.FatalBrokerCLI): r.rabbit_ready('a'*64, '100:101')
+            else: self.assertFalse(r.rabbit_ready('a'*64, '100:101'))
+
+    def test_per_role_finite_bound_and_no_other_budget_raise(self):
+        self.assertEqual(recovery.role_fsize('rabbit'), 64*2**20)
+        self.assertEqual(recovery.role_fsize('default'), 32*2**20)
+        with self.assertRaises(AssertionError): recovery.role_fsize('postgres')
+        text = inspect.getsource(rig.Rig.create)
+        self.assertIn("role='default'", text); self.assertIn('name.endswith(\'-canary-negative\')', text)
+        self.assertIn('fsize={limit}:{limit}', text)
+        for user in ('100:101', '999:999'):
+            options = recovery.rabbit_options('f'*64, user, 'synthetic-test-password')
+            self.assertNotIn('--ulimit', options)
+            self.assertIn('--memory-swap', options)
+            self.assertEqual(options.count('--tmpfs'), 3)
+            self.assertIn('/tmp:size=16777216,uid='+user.split(':')[0]+',gid='+user.split(':')[1]+',mode=0700', options)
+
+    def test_numeric_only_limit_metadata_and_fixed_public_file_pins(self):
+        for bound in (32*2**20, 64*2**20):
+            raw = '100\n101\n'+f'Max file size             {bound} {bound} bytes\n'*2
+            self.assertEqual(recovery.validate_limit_metadata(raw, '100:101', bound)['exec_hard_bytes'], bound)
+            for bad in (raw.replace('100\n', '0\n'), raw.replace(str(bound), 'unlimited'), raw+'secret\n'):
+                with self.assertRaises(AssertionError): recovery.validate_limit_metadata(bad, '100:101', bound)
+        paths = ['/opt/rabbitmq/escript/rabbitmqctl', '/opt/rabbitmq/escript/rabbitmq-diagnostics']
+        raw = f'{recovery.RABBIT_ESCRIPT_BYTES}\n'*2+''.join(recovery.RABBIT_ESCRIPT_SHA+'  '+p+'\n' for p in paths)
+        self.assertEqual(set(recovery.validate_public_files(raw)), set(paths))
+        for bad in (raw.replace(str(recovery.RABBIT_ESCRIPT_BYTES), '1'), raw.replace(recovery.RABBIT_ESCRIPT_SHA, 'f'*64), raw+'extra\n'):
+            with self.assertRaises(AssertionError): recovery.validate_public_files(bad)
+        argv = recovery.broker_argv('a'*64, '100:101', 'limit_metadata')
+        self.assertNotIn('cookie', ' '.join(argv)); self.assertNotIn('env ', argv[-1])
+        # Exercise fixed metadata shell against THIS test process only, offline.
+        out = subprocess.check_output(['sh', '-c', argv[-1]], text=True)
+        self.assertEqual(len(out.splitlines()), 4)
+
+    def test_allowlisted_actual_contract_validation_refuses_policy_drift(self):
+        # Synthetic source-only projection; real Docker readback awaits queue.
+        r = rig.Rig.__new__(rig.Rig)
+        value = {'image': rig.RABBIT, 'user': '100:101', 'readonly': True,
+            'memory': rig.GIB, 'memory_swap': rig.GIB, 'pids': 256, 'cpus': 2000000000,
+            'shmem': 64*rig.MIB, 'network': 'f'*64, 'caps': ['ALL'], 'security': ['no-new-privileges'],
+            'ulimits': [{'Name': 'core', 'Soft': 0, 'Hard': 0}, {'Name': 'fsize', 'Soft': recovery.RABBIT_FSIZE, 'Hard': recovery.RABBIT_FSIZE}],
+            'tmpfs': {p: f'size={n},uid=100,gid=101,mode=0700' for p, n in
+                (('/var/lib/rabbitmq', 512*rig.MIB), ('/var/log/rabbitmq', 16*rig.MIB), ('/tmp', 16*rig.MIB))}}
+        def cmd(label, argv):
+            self.assertNotIn('.Config.Env', ' '.join(argv)); return json.dumps(value)
+        r.cmd = cmd
+        self.assertEqual(r.rabbit_contract('a'*64, '100:101', 'f'*64, recovery.RABBIT_FSIZE), value)
+        original = copy.deepcopy(value)
+        for key, bad in (('image', 'unpinned'), ('user', '0:0'), ('readonly', False), ('memory_swap', 2*rig.GIB),
+                         ('pids', 512), ('security', []), ('caps', []), ('tmpfs', {}), ('ulimits', original['ulimits'][:1])):
+            value = dict(original, **{key: bad})
+            with self.assertRaises((AssertionError, KeyError)): r.rabbit_contract('a'*64, '100:101', 'f'*64, recovery.RABBIT_FSIZE)
+
+    def test_canary_is_before_dependency_assembly_and_installed_contract_is_compared(self):
+        text = inspect.getsource(rig.Rig.run)
+        self.assertLess(text.index('self.rabbit_limit_canary('), text.index('volumes = {}'))
+        self.assertLess(text.index('self.rabbit_limit_canary('), text.index('build_command('))
+        self.assertIn("assert self.receipt['rabbit_limit_canary']['passed']", text)
+        self.assertIn('installed broker/canary policy drift', text)
+        self.assertEqual(text.count('recovery.rabbit_options('), 1)
+        canary = inspect.getsource(rig.Rig.rabbit_limit_canary)
+        self.assertIn('for negative in (True, False)', canary)
+        self.assertIn('recovery.rabbit_options(', canary)
+        self.assertNotIn('pull', canary); self.assertNotIn('strace', canary.split('proof =', 1)[1])
+
+    def test_real_canary_control_flow_with_source_only_runtime_seams(self):
+        # This is a source-only orchestrator regression, NOT a real RPC claim.
+        for invalid in (None, 'wrong_negative', 'missing_running_rpc', 'cleanup'):
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+                r = rig.Rig.__new__(rig.Rig); r.root = Path(tmp); r.out = Path(tmp)
+                r.owner = 'msi-offline'; r.receipt = {}; r.ids = []; r.secrets = []
+                created = []; removed = []
+                def create(name, image, options, command, **kw):
+                    self.assertEqual(r.ids, [])  # strictly sequential runtime
+                    cid = ('a' if kw['baseline'] else 'b')*64
+                    r.ids.append(cid); created.append((name, image, list(options), command, kw)); return cid
+                def start(cid, label): (r.out/(label+'.sanitized.log')).write_text('Server startup complete; 3 plugins started.\n')
+                def wait(label, predicate, timeout): self.assertTrue(predicate())
+                r.create = create; r.start = start; r.wait = wait
+                r.state = lambda cid: {'Running': True, 'OOMKilled': False}
+                r.cmd = lambda label, args: removed.append(args[-1])
+                r.rabbit_contract = lambda cid, user, net, bound: {'fixed': True, 'ulimits': [{'Name': 'fsize', 'Soft': bound, 'Hard': bound}]}
+                def cli(cid, user, action):
+                    if action == 'limit_metadata':
+                        bound = recovery.DEFAULT_FSIZE if cid[0] == 'a' else recovery.RABBIT_FSIZE
+                        return f'100\n101\n'+f'Max file size {bound} {bound} bytes\n'*2
+                    if action == 'public_files':
+                        return f'{recovery.RABBIT_ESCRIPT_BYTES}\n'*2+''.join(recovery.RABBIT_ESCRIPT_SHA+'  /opt/rabbitmq/escript/'+p+'\n' for p in ('rabbitmqctl', 'rabbitmq-diagnostics'))
+                    if action == 'cookie_metadata': return '100 101 600 20'
+                    if cid[0] == 'a':
+                        row = {'attempts': 1, 'failures': 1, 'first_failure': {'classification': 'fatal_file_size_limit'}}
+                        r.receipt.setdefault('rabbit_cli', {})[action] = row
+                        if invalid == 'wrong_negative': raise RuntimeError('not the precise negative')
+                        raise recovery.FatalBrokerCLI('exact negative')
+                    r.receipt.setdefault('rabbit_cli', {})[action] = {'success': {'exit_code': 0}}
+                    if invalid == 'missing_running_rpc' and action == 'check_running': raise RuntimeError('not running')
+                    return ''
+                r.broker_cli = cli
+                # Use the actual readiness implementation and retain metadata success.
+                def ready(cid, user):
+                    ok = rig.Rig.rabbit_ready(r, cid, user)
+                    if ok: r.receipt['rabbit_cli']['cookie_metadata'] = {'success': {'exit_code': 0}}
+                    return ok
+                r.rabbit_ready = ready
+                missing = types.SimpleNamespace(returncode=1, stdout=b'', stderr=b'Error: No such object: '+b'a'*64)
+                def inspect_missing(argv, **kw):
+                    target = argv[-1]
+                    if invalid == 'cleanup': return types.SimpleNamespace(returncode=0, stdout=target.encode(), stderr=b'')
+                    return types.SimpleNamespace(returncode=1, stdout=b'', stderr=b'Error: No such object: '+target.encode())
+                try:
+                    with patch.object(rig.subprocess, 'run', side_effect=inspect_missing):
+                        if invalid:
+                            with self.assertRaises((RuntimeError, AssertionError)): r.rabbit_limit_canary('f'*64, '100:101', 'synthetic')
+                            self.assertFalse(r.receipt['rabbit_limit_canary']['passed'])
+                        else:
+                            r.rabbit_limit_canary('f'*64, '100:101', 'synthetic')
+                            proof = r.receipt['rabbit_limit_canary']
+                            self.assertTrue(proof['passed']); self.assertTrue(proof['causal_limit_ab_proven'])
+                            self.assertEqual(len(created), 2); self.assertEqual(created[0][2], created[1][2])
+                            self.assertEqual(r.ids, []); self.assertEqual(len(removed), 2)
+                            self.assertFalse(proof['original_specific_file_proven'])
+                finally:
+                    if hasattr(r, 'canary_holder'): os.close(r.canary_holder)
 
 
 if __name__ == '__main__': unittest.main()
