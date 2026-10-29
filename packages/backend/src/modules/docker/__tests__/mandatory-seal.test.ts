@@ -75,7 +75,34 @@ function seamManager(root: string, doc: any) {
   return { manager, run, sealed };
 }
 
+// Fixture-local projection: network actors do not inherit container labels.
+function ownedEventTrace(urn: string) {
+  const events: any[] = [];
+  const ownedIds = new Set<string>();
+  const earlyConnections = new Map<string, any[]>();
+  return { events, accept(event: any) {
+    if (event.Type === 'container' && event.Action === 'create' && event.Actor.Attributes['wizard.qa.manager-seal.fixture'] === urn) {
+      ownedIds.add(event.Actor.ID); events.push(event);
+      events.push(...(earlyConnections.get(event.Actor.ID) ?? [])); earlyConnections.delete(event.Actor.ID);
+    } else if (event.Type === 'network' && event.Action === 'connect') {
+      const id = event.Actor.Attributes.container;
+      if (ownedIds.has(id)) events.push(event);
+      else earlyConnections.set(id, [...(earlyConnections.get(id) ?? []), event]);
+    }
+  } };
+}
+
 describe('reviewed manager admission regressions', () => {
+  it('retains even an early attach to an unlabeled public network for an owned identity, excluding unrelated trace rows', () => {
+    const trace = ownedEventTrace('synthetic:fixture');
+    const attach = { Type: 'network', Action: 'connect', Actor: { ID: 'unlabeled-network', Attributes: { container: 'owned', name: 'public-bridge' } } };
+    trace.accept(attach);
+    trace.accept({ Type: 'container', Action: 'create', Actor: { ID: 'unrelated', Attributes: {} } });
+    trace.accept({ ...attach, Actor: { ID: 'other-network', Attributes: { container: 'unrelated' } } });
+    trace.accept({ Type: 'container', Action: 'create', Actor: { ID: 'owned', Attributes: { 'wizard.qa.manager-seal.fixture': 'synthetic:fixture' } } });
+    expect(trace.events).toHaveLength(2);
+    expect(trace.events).toContainEqual(attach);
+  });
   it('projects installed consumer approval, revoke and reapproval onto the security base under the grant lock', async () => {
     const f = await fixture();
     const installed = await installedFixture(f);
@@ -264,20 +291,28 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     let shareApproved = true;
     let expectedImage = doc.services[main].image;
     const expectedContainers = new Set<string>();
-    // Live, byte/time bounded trace. Readiness and drain use observed owned
-    // sentinel creates, never a sleep or finite retrospective event history.
-    const events: any[] = [];
+    // Docker network-event label filters match the NETWORK, not its container.
+    // They would miss a transient attach to an unlabeled public bridge. Consume
+    // only create/connect metadata and retain only this fixture's identities;
+    // buffer early connects until their container create identifies ownership.
+    // No config/env, logs, exec or contents of other containers are accessed.
+    const trace = ownedEventTrace(urn);
+    const events = trace.events;
     let pending = ''; let traceError: Error | undefined;
     let traceBytes = 0;
     const stream = spawn('docker', ['events', '--since', String(Math.floor(Date.now() / 1000)),
-      '--filter', `label=wizard.qa.manager-seal.fixture=${urn}`, '--format', '{{json .}}']);
+      '--filter', 'type=container', '--filter', 'type=network', '--filter', 'event=create', '--filter', 'event=connect', '--format', '{{json .}}']);
     stream.on('error', (e) => { traceError = e; });
     stream.stdout.on('data', (b) => {
       traceBytes += b.length;
       if (traceBytes > 4 * 1024 * 1024) { traceError = new Error('scoped trace exceeded byte bound'); stream.kill(); return; }
       pending += b.toString();
       const lines = pending.split('\n'); pending = lines.pop()!;
-      try { for (const line of lines.filter(Boolean)) events.push(JSON.parse(line)); }
+      try {
+        for (const line of lines.filter(Boolean)) {
+          trace.accept(JSON.parse(line));
+        }
+      }
       catch { traceError = new Error('invalid Docker event trace'); }
     });
     let streamClosed = false;

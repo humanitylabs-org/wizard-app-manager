@@ -78,7 +78,7 @@ def main():
     tools.mkdir(exist_ok=True)
     node_link = tools / 'node'
     if not node_link.exists(): node_link.symlink_to(NODE)
-    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}', DOCKER_BUILDKIT='1', NODE_OPTIONS='--experimental-sqlite')
+    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}', DOCKER_BUILDKIT='1', NODE_OPTIONS='--experimental-sqlite', RUN_MANAGER_SEAL_DOCKER='0')
 
     def run(label, command, cwd=root, timeout=900, allow_failure=False):
         print(label + ': ' + ' '.join(map(str, command)), flush=True)
@@ -116,7 +116,8 @@ def main():
             assert (qa/'compose-version.log').read_text().strip().lstrip('v') == '2.40.0'
             run('dependencies', ['bun', 'install', '--frozen-lockfile'], timeout=660)
             run('common-build', ['bun', 'run', 'build'], cwd=root/'packages/common', timeout=300)
-            # First diagnostic gate: no Docker/image work before types + units.
+            # First diagnostic gate: no fixture activation or manager image
+            # packaging before types + units (public tool binaries are needed).
             run('backend-types', [root/'node_modules/.bin/tsgo', '--noEmit'], cwd=root/'packages/backend', timeout=300)
             run('backend-unit', [root/'node_modules/.bin/vitest', 'run', '--reporter=json', '--outputFile='+str(qa/'backend-unit.json')], cwd=root/'packages/backend')
             capacity(root, 8 * GIB)
