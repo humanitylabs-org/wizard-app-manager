@@ -27,7 +27,7 @@ void metadata_test_body(long argc, char **argv) {
     struct statx st;
     if (argv[1][0] == 'u') {
         long fd = SC(openat,-100,target,1|01000,0,0,0);
-        if (fd < 3 || SC(write,fd,"control\n",8,0,0,0) != 8) finish(50);
+        if (fd < 0 || SC(write,fd,"control\n",8,0,0,0) != 8) finish(50);
         finish(0);
     }
     if (argv[1][0] == 'm') {
@@ -97,7 +97,7 @@ void metadata_test_body(long argc, char **argv) {
     PROBE(setns); PROBE(unshare); PROBE(clone); PROBE(clone3); PROBE(execve); PROBE(execveat);
     PROBE(prctl); PROBE(seccomp); PROBE(prlimit64); PROBE(setrlimit);
     PROBE(timer_create); PROBE(timer_settime); PROBE(rt_sigaction); PROBE(rt_sigprocmask);
-    row(__NR_kill,SC(kill,1,9,0,0,0,0)); /* watchdog/container PID1 */
+    row(__NR_kill,SC(kill,1,9,0,0,0,0)); /* trusted shell/container PID1 */
     PROBE(tgkill); PROBE(pidfd_send_signal);
 #if defined(__x86_64__)
     PROBE(open); PROBE(creat); PROBE(mkdir); PROBE(unlink); PROBE(rmdir);

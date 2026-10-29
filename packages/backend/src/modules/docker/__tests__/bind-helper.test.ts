@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bindMetadataArgs, bindMetadataImage, reapBindHelper, runBindHelper, type HelperRun } from '../bind-helper';
+import { BIND_METADATA_SUPERVISOR, bindMetadataArgs, bindMetadataImage, reapBindHelper, runBindHelper, type HelperRun } from '../bind-helper';
 
 vi.mock('node:fs', async (load) => load<typeof import('node:fs')>());
 const roots: string[] = [];
@@ -35,8 +35,14 @@ describe('bounded helper custody', () => {
     const args = bindMetadataArgs(request);
     expect(args).toEqual(['--rm', '--restart=no', '--stop-timeout=1', '--network=none', '--read-only',
       '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--user=0:0', '--entrypoint=/bin/busybox',
-      '--mount', 'type=bind,source=/,target=/host,readonly', request.image, 'timeout', '-s', 'KILL', '12',
+      '--mount', 'type=bind,source=/,target=/host,readonly', request.image, 'sh', '-c',
+      '/bin/busybox timeout -s KILL 12 "$@"; rc=$?; exit "$rc"', 'wizard-bind-metadata-supervisor',
       '/app/libexec/wizard-bind-metadata', '0', '/safe']);
+    // Shell metacharacters remain one positional path, never executable text.
+    const hostile = '/safe/$(id);`id` $HOME "quoted"';
+    const literal = bindMetadataArgs({ ...request, source: hostile });
+    expect(literal.slice(-4)).toEqual(['wizard-bind-metadata-supervisor', '/app/libexec/wizard-bind-metadata', '0', hostile]);
+    expect(literal[literal.indexOf('-c') + 1]).toBe(BIND_METADATA_SUPERVISOR);
     for (const bad of [{ image: 'node:latest' }, { image: 'sha256:short' }, { managerUid: -1 },
       { managerUid: 0xffffffff }, { managerUid: 1.5 }, { source: '/a/../b' }, { source: '/a\n' },
       { source: '/a/' }, { source: '/' + 'a'.repeat(4090) }])

@@ -15,7 +15,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { teardownApp } from '../app-teardown';
-import { runBindHelper, reapBindHelper, bindMetadataImage, helperRun } from '../bind-helper';
+import { BIND_METADATA_SUPERVISOR, runBindHelper, reapBindHelper, bindMetadataImage, helperRun } from '../bind-helper';
 // App/canary fixture only, NEVER the production metadata helper artifact.
 const BIND_CHECK_IMAGE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc';
 
@@ -286,7 +286,7 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
     };
     let primary: unknown;
     try {
-      let id = '';
+      let id = '', name = '';
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline && !id) {
         if (closed || spawnError) throw new Error(`Helper child exited before readiness: ${stderr}`, { cause: spawnError });
@@ -295,15 +295,41 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
           expect(journal.phase).toBe('created');
           const info = JSON.parse(await docker('inspect', '--type', 'container', journal.name))[0];
           expect(info.Config.Labels['wizard.bind-check']).toBe(journal.nonce);
-          if (info.State.Running) id = info.Id;
+          expect(info.Image).toBe(await bindMetadataImage());
+          expect(info.Config.Entrypoint).toEqual(['/bin/busybox']);
+          expect(info.Config.Cmd).toEqual(['sh', '-c', BIND_METADATA_SUPERVISOR, 'wizard-bind-metadata-supervisor', '/bin/sleep', '300']);
+          if (info.State.Running) { id = info.Id; name = journal.name; }
         }
         if (!id) await new Promise((r) => setTimeout(r, 100));
       }
       expect(id, `Helper readiness timeout (not an early exit): ${stderr}`).not.toBe('');
-      child.kill('SIGKILL'); await reapChild();
+      // Read exact NUL-delimited argv rather than width-truncated ps args. The
+      // packaged shell must still be init, with the actual timeout target its
+      // non-init child. No dependency on a host init executable/configuration.
+      expect((await docker('exec', id, '/bin/busybox', 'cat', '/proc/1/cmdline')).split('\0').slice(0, -1))
+        .toEqual(['/bin/busybox', 'sh', '-c', BIND_METADATA_SUPERVISOR, 'wizard-bind-metadata-supervisor', '/bin/sleep', '300']);
+      const processes = (await docker('exec', id, '/bin/busybox', 'ps', '-o', 'pid,ppid,comm')).split('\n').slice(1).map((line) => line.trim().split(/\s+/));
+      const targets = processes.filter(([pid, ppid, comm]) => Number(pid) > 1 && ppid === '1' && comm === 'sleep');
+      expect(targets).toHaveLength(1);
+      child.kill('SIGKILL'); expect((await reapChild()).signal).toBe('SIGKILL');
       // Wait on the exact daemon object, then reconcile durable intent. No client
       // remaining alive is necessary for the helper's own timeout/AutoRemove.
-      await docker('wait', id).catch((e) => { if (!String(e.stderr).includes('No such container')) throw e; });
+      const missingExact = (e: any, target: string) => e.code === 1 && ['container', 'object'].some((kind) =>
+        String(e.stderr).trim().toLowerCase() === `error: no such ${kind}: ${target}`.toLowerCase());
+      const killedAt = Date.now();
+      await docker('wait', id).then((exit) => expect(exit).toBe('137')).catch((e) => { if (!missingExact(e, id)) throw e; });
+      expect(Date.now() - killedAt).toBeLessThan(18_000); // watchdog 12s; CLI hard bound remains 45s
+      // AutoRemove must finish BEFORE a surviving test process reconciles the
+      // journal. Otherwise reapBindHelper could hide a broken daemon watchdog.
+      for (const target of [id, name]) {
+        const absentBy = Date.now() + 5_000;
+        for (;;) {
+          try { await docker('inspect', '--type', 'container', target); }
+          catch (e) { if (missingExact(e, target)) break; throw e; }
+          if (Date.now() >= absentBy) throw new Error('Daemon watchdog did not remove its exact helper');
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
       await reapBindHelper(f.root);
       expect(await docker('ps', '-aq', '--filter', 'label=wizard.bind-check')).toBe('');
       await f.service.composeApp(f.urn, 'up --detach');

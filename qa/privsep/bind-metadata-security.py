@@ -15,6 +15,9 @@ ROOT = Path('/opt/metadata-security')
 SOURCE = Path('/opt/wam-candidate')
 OUT = Path('/root/metadata-security.json')
 HELPER = '/app/libexec/wizard-bind-metadata'
+SUPERVISOR = '/bin/busybox timeout -s KILL 12 "$@"; rc=$?; exit "$rc"'
+# The rig must use the production fixed shell text, not a different watchdog.
+assert "export const BIND_METADATA_SUPERVISOR = '"+SUPERVISOR+"';" in (SOURCE/'packages/backend/src/modules/docker/bind-helper.ts').read_text()
 rows = []
 containers = set()
 mounts = []
@@ -34,7 +37,7 @@ def digest(path):
 def docker_args(binary=HELPER, *, extra=(), cap=True, nnp=True):
     args = ['docker', 'create', '--name', 'metadata-'+str(len(rows))+'-'+str(time.monotonic_ns()),
             '--label', 'wizard.metadata-security=synthetic', '--network=none', '--read-only', '--restart=no',
-            '--entrypoint=/bin/busybox']
+            '--stop-timeout=1', '--user=0:0', '--entrypoint=/bin/busybox']
     if cap:
         args += ['--cap-drop=ALL']
     if nnp:
@@ -42,7 +45,7 @@ def docker_args(binary=HELPER, *, extra=(), cap=True, nnp=True):
     args += ['--mount', 'type=bind,source=/,target=/host,readonly']
     args += ['--mount', f'type=bind,source={ROOT}/bin,target=/probe,readonly']
     args += list(extra)
-    return args + [image, 'timeout', '-s', 'KILL', '12', binary]
+    return args + [image, 'sh', '-c', SUPERVISOR, 'wizard-bind-metadata-supervisor', binary]
 
 def launch(mode, source, binary=HELPER, *, extra=(), cap=True, nnp=True, expected=0):
     cid = cmd(*docker_args(binary, extra=extra, cap=cap, nnp=nnp), mode, source).stdout.strip()
@@ -197,6 +200,15 @@ try:
             if 'barrier\n' in logs: break
             time.sleep(0.05)
         else: raise AssertionError('post-filter barrier missing')
+        # Exact packaged BusyBox supervisor remains PID1; the same-bootstrap
+        # filtered body is its non-init child, killable by timeout's watcher.
+        init = cmd('docker','exec',cid,'/bin/busybox','cat','/proc/1/cmdline').stdout.split('\0')[:-1]
+        assert init==['/bin/busybox','sh','-c',SUPERVISOR,'wizard-bind-metadata-supervisor','/probe/hostile','b',target],init
+        # comm is kernel exec identity, not a read of the nondumpable body's
+        # address space (its /proc/PID/cmdline may legitimately be inaccessible).
+        process_rows = [line.split() for line in cmd('docker','exec',cid,'/bin/busybox','ps','-o','pid,ppid,comm').stdout.splitlines()[1:]]
+        body = [r for r in process_rows if len(r)==3 and int(r[0])>1 and r[1]=='1' and r[2]=='hostile']
+        assert len(body)==1,process_rows
         cmd('mount','-t','tmpfs','-o','mode=0755','metadata-future',ROOT/'future'); mounts.append(ROOT/'future')
         (ROOT/'future/sentinel').write_bytes(b'future-mounted\n')
         now=(ROOT/'future/sentinel').stat()
@@ -217,6 +229,7 @@ try:
         assert gone.returncode==1 and gone.stderr.strip().lower() in {'error: no such '+k+': '+cid for k in ('container','object')}
         containers.remove(cid)
         return {'before':met[0],'after':met[1],'postfilter_barrier':True,'unfiltered_control_wrote_actual_mount':True,
+                'supervisor_pid':1,'postfilter_body_pid':int(body[0][0]),'postfilter_body_parent_pid':1,
                 'scope':'synthetic shared/slave child only; private root fallback does not promise future visibility'}
     check('C-future-propagated-actual-writable-mount',future)
 finally:

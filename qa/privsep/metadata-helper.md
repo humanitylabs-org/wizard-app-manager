@@ -45,6 +45,26 @@ entrypoint, watchdog and typed UID/path request. It never trusts Config.Image,
 a floating tag, an agent image/argv/profile or an environment image override.
 The helper child has none of the manager's source/runtime overlays.
 
+The fixed entrypoint is `/bin/busybox sh -c` with literal shell text:
+
+```sh
+/bin/busybox timeout -s KILL 12 "$@"; rc=$?; exit "$rc"
+```
+
+The fixed `$0` is `wizard-bind-metadata-supervisor`; the fixed packaged helper
+path, validated UID and selected path are separate positional arguments, never
+interpolated into shell text. There is no agent-selected executable/argv surface.
+The trailing status/exit commands deliberately prevent shell tail-exec: the
+trusted shell remains namespace PID1 and waits for its child. BusyBox timeout
+execs the metadata body in that **non-PID1 child**, while its detached watcher
+sends the fixed SIGKILL after 12 seconds. The shell reaps its target and exits
+with its status (137 on watchdog KILL); init exit terminates any remaining
+namespace processes, and Docker AutoRemove removes the container. This lifetime
+does not rely on an alive manager or its CLI. External force-removal is still
+through the ancestor daemon; graceful stop is not promised by this shell, and
+the fixed one-second Docker stop timeout bounds its fallback KILL. No host init
+binary/configuration, new image dependency, or metadata seccomp exception is used.
+
 Creation intent is fsynced before create. Full create ID/name/nonce readback is
 required before start. Cleanup checks the journal full ID, name and nonce,
 removes only that ID, and confirms exact name absence under a fresh deadline.
@@ -64,11 +84,19 @@ is captured before cleanup; combined failure preserves both errors.
 - C: actual writable nested tmpfs with unfiltered write control; future tmpfs
   after a post-filter metadata barrier in an isolated synthetic shared/slave
   child mount, matching device/inode and a subsequent unfiltered write control.
+  Both controls accept fd0 after the unchanged production bootstrap closes it;
+  they require changed sentinel bytes on the actual mounted device. The barrier
+  case also reads exact supervisor argv and asserts a non-init post-filter body.
   This does not upgrade private-root visibility into a shared-root claim.
 - D: existing backend lifecycle engine cases, including backend death and hang,
   use the exact NEW backend image as the manager namespace. Their test-only
   sleep-body adapter proves custody/watchdog, not seccomp. Python412 runs before
   any helper activity after pinned Node/Bun + repaired UV + protected basetemp.
+  The backend-death case verifies the exact packaged supervisor/image and a
+  non-init sleep target, SIGKILLs/reaps its manager, then waits for watchdog exit
+  within 18 seconds (45-second hard Docker CLI bound). Exact-ID and exact-name
+  absence must precede surviving-test journal reconciliation; cleanup cannot
+  conceal an ineffective daemon watchdog.
 
 `verify-metadata-policy.py` interprets emitted cBPF bytes; it is static proof,
 not a substitute for the kernel EPERM tests. `bind-metadata-security.py` is

@@ -20,6 +20,10 @@ const fullId = (id: unknown): id is string => typeof id === 'string' && /^[a-f0-
 const missing = (e: any, target: string) => e.code === 1 && ['container', 'object'].some((kind) =>
   String(e.stderr).trim().toLowerCase() === `error: no such ${kind}: ${target}`.toLowerCase());
 export const BIND_METADATA_PATH = '/app/libexec/wizard-bind-metadata';
+// BusyBox timeout execs its target. A non-tail-exec shell must remain PID1 so
+// timeout's same-namespace watcher can KILL the target (never namespace init).
+// No selected value enters shell text; the fixed helper/UID/path are positional.
+export const BIND_METADATA_SUPERVISOR = '/bin/busybox timeout -s KILL 12 "$@"; rc=$?; exit "$rc"';
 export type BindMetadataRequest = { image: string; managerUid: number; source: string };
 
 /** Only the attested running manager chooses the artifact. Never Config.Image,
@@ -60,7 +64,7 @@ export function bindMetadataArgs(request: BindMetadataRequest): string[] {
   return ['--rm', '--restart=no', '--stop-timeout=1', '--network=none', '--read-only',
     '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--user=0:0',
     '--entrypoint=/bin/busybox', '--mount', 'type=bind,source=/,target=/host,readonly',
-    image, 'timeout', '-s', 'KILL', '12', BIND_METADATA_PATH, String(managerUid), source];
+    image, 'sh', '-c', BIND_METADATA_SUPERVISOR, 'wizard-bind-metadata-supervisor', BIND_METADATA_PATH, String(managerUid), source];
 }
 
 /** Called only under the authority lease, including stop. The intent is synced
