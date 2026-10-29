@@ -123,4 +123,4 @@ def test_manual_stops_next_app_in_already_running_batch(tmp_path, monkeypatch):
         return {'version': 2, 'status': 'running'}
     monkeypatch.setattr(cli, 'app_update', update)
     result = au.apply(c, automatic=True, notify=False)
-    assert calls == ['first'] and result['updated'] == ['first']
+    assert calls == ['first'] and [r['id'] for r in result['updated']] == ['first']
