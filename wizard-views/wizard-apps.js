@@ -20,18 +20,17 @@ import {
   canUse,
   connectable,
   cutGroups,
-  cutList,
   cutRows,
   cuttable,
   doneWords,
-  footerLine,
   linkInfo,
   linkedApps,
   list,
+  listLayout,
   mapModel,
+  pickFirst,
   reconnectRows,
   talksSentence,
-  waitingLines,
 } from './connections-map.js';
 import { runtipiDomainUrl } from './runtipi-open.js';
 
@@ -514,7 +513,8 @@ export async function renderResources(el, ctx = {}) {
 }
 
 // ---- Connections -------------------------------------------------------------------------------------------------
-// The owner's app connections as one picture, in the visual language of Wizard's Home map (round discs, wires drawn
+// The owner's app connections as one list on every screen (listLayout: one column on a phone, Linked apps in a second
+// column on a wide pane), and behind See map as one picture, in the visual language of Wizard's Home map (round discs, wires drawn
 // between them, every word on a small chip, simple at rest and more on tap). Data: the network report from
 // wam/network.py (live from wam's /api/connections, else the apps.json snapshot) plus the App Manager's connection
 // state (GET {api}/apps/wizard/connections) for what the owner decided; connections-map.js turns both into plain words.
@@ -619,7 +619,7 @@ export async function renderConnections(el, ctx = {}) {
   let details = false;
   let sheetId = ''; // the app whose sheet is open ('@agent:<i>' an agent, '@sys:<id>' part of Wizard, '@link:<a>|<b>' a line)
   let picking = false; // the sheet's chooser is open: Cut off from… (Open mode) or Connect to… (Strict mode)
-  let showMap = false; // phone widths: the list shows, the map is one tap away (See map)
+  let showMap = false; // the list shows on every screen; the map is one tap away (See map)
   let drawn = '';
   let dlg = null;
   const ago = (t) => {
@@ -794,68 +794,65 @@ export async function renderConnections(el, ctx = {}) {
           toast.undo ? `<button type="button" class="wam-btn" data-cm-undo${dis('undo')}>Undo</button>` : ''
         }</div>`
       : '<div class="wam-cm-toast" role="status" aria-live="polite" hidden></div>';
-    // Phone widths (the container query in wizard-apps.css): the same model as a list, the map one tap away.
+    // The list: one model and the same words on every screen (connections-map.js listLayout); a phone shows one
+    // column, a wide pane puts Linked apps in a second column (the container query in wizard-apps.css). The map is
+    // one tap away (See map).
     const chev = '<i class="wam-cm-go" aria-hidden="true"></i>';
-    const waits = waitingLines(m);
-    const linkedRows = linkedApps(m);
-    const cutRowsList = cutList(m);
-    const sec = (title, count, body) =>
-      `<section class="wam-cl-sec" aria-label="${esc(title)}"><h3>${esc(title)}${count == null ? '' : ` <span>${count}</span>`}</h3><div class="wam-cl-card">${body}</div></section>`;
-    const listHtml = `<div class="wam-cl">
-        <h2 class="wam-cl-title">Connections</h2>
-        ${roOnly()}
-        ${
-          waits.length
-            ? `<section class="wam-cl-wait" aria-label="Waiting for your OK"><h3>Waiting for your OK</h3>${waits
-                .map((p) => {
-                  const key = `ask:${p.from}:${p.to}`;
-                  return `<div class="wam-cl-ask"><span class="wam-cm-ask-ics">${cmGlyph({ id: p.from, name: p.fromName })}${cmGlyph({ id: p.toIds[0], name: nm(p.toIds[0]) })}</span><p>${esc(p.text)}</p>
-                    <span class="wam-cm-ask-acts"><button type="button" class="wam-btn" data-cm-deny data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Don’t allow</button><button type="button" class="wam-btn primary" data-cm-allow data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Allow</button></span></div>`;
-                })
-                .join('')}</section>`
-            : ''
-        }
-        ${sec(
-          m.agents.length > 1 ? 'Your agents' : 'Your agent',
-          null,
-          agentRows(m)
+    const lay = listLayout(m);
+    const sec = (s, body) =>
+      `<section class="wam-cl-sec is-${s.key}" aria-label="${esc(s.title)}"><h3>${esc(s.title)}${s.count == null ? '' : ` <span>${s.count}</span>`}</h3><div class="wam-cl-card">${body}</div></section>`;
+    const sectionHtml = (s) => {
+      if (s.key === 'wait')
+        return `<section class="wam-cl-wait is-wait" aria-label="${esc(s.title)}"><h3>${esc(s.title)}</h3>${s.rows
+          .map((p) => {
+            const key = `ask:${p.from}:${p.to}`;
+            return `<div class="wam-cl-ask"><span class="wam-cm-ask-ics">${cmGlyph({ id: p.from, name: p.fromName })}${cmGlyph({ id: p.toIds[0], name: nm(p.toIds[0]) })}</span><p>${esc(p.text)}</p>
+              <span class="wam-cm-ask-acts"><button type="button" class="wam-btn" data-cm-deny data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Don’t allow</button><button type="button" class="wam-btn primary" data-cm-allow data-from="${esc(p.from)}" data-to="${esc(p.to)}"${dis(key)}>Allow</button></span></div>`;
+          })
+          .join('')}</section>`;
+      if (s.key === 'agent')
+        return sec(
+          s,
+          s.rows
             .map(
               (g) =>
                 `<button type="button" class="wam-cl-row" data-cm-agent="${g.index}" aria-haspopup="dialog">${cmGlyph({ id: g.main ? 'wizard' : m.agents[g.index].id, name: g.title })}<span class="wam-cl-tx"><b>${esc(g.title)}</b> <span>· ${esc(g.line)}</span></span>${chev}</button>`,
             )
             .join(''),
-        )}
-        ${
-          linkedRows.length
-            ? sec(
-                'Linked apps',
-                linkedRows.length,
-                linkedRows
-                  .map(
-                    (r) =>
-                      `<button type="button" class="wam-cl-row" data-cm-uses="${esc(r.id)}" aria-haspopup="dialog">${cmGlyph(r)}<span class="wam-cl-tx"><b>${esc(r.name)}</b> <span>→ ${esc(r.links.map((l) => l.name).join(', '))}</span></span>${chev}</button>`,
-                  )
-                  .join(''),
-              )
-            : ''
-        }
-        ${
-          cutRowsList.length
-            ? sec(
-                'Cut by you',
-                null,
-                cutRowsList
-                  .map((x) => {
-                    const at = x.pair ? `data-cm-recut="${esc(x.pair)}"` : `data-cm-regrant="${esc(`${x.group.from}|${x.group.to}`)}"`;
-                    const key = `recut:${x.pair || `${x.group.from}|${x.group.to}`}`;
-                    return `<div class="wam-cl-row is-static"><span class="wam-cm-pair">${cmGlyph({ id: x.a, name: nm(x.a) })}${cmGlyph({ id: x.b, name: nm(x.b) })}</span><span class="wam-cl-tx"><b>${esc(x.text)}</b></span><button type="button" class="wam-btn" ${at}${dis(key)}>Reconnect</button></div>`;
-                  })
-                  .join(''),
-              )
-            : ''
-        }
-        <p class="wam-cl-foot">${esc(footerLine(m.mode))}</p>
-        <button type="button" class="wam-btn wam-cl-mapbtn" data-cm-seemap>See map</button>
+        );
+      if (s.key === 'linked')
+        return sec(
+          s,
+          s.rows
+            .map(
+              (r) =>
+                `<button type="button" class="wam-cl-row" data-cm-uses="${esc(r.id)}" aria-haspopup="dialog">${cmGlyph(r)}<span class="wam-cl-tx"><b>${esc(r.name)}</b> <span>→ ${esc(r.links.map((l) => l.name).join(', '))}</span></span>${chev}</button>`,
+            )
+            .join(''),
+        );
+      return sec(
+        s,
+        s.rows
+          .map((x) => {
+            const at = x.pair ? `data-cm-recut="${esc(x.pair)}"` : `data-cm-regrant="${esc(`${x.group.from}|${x.group.to}`)}"`;
+            const key = `recut:${x.pair || `${x.group.from}|${x.group.to}`}`;
+            return `<div class="wam-cl-row is-static"><span class="wam-cm-pair">${cmGlyph({ id: x.a, name: nm(x.a) })}${cmGlyph({ id: x.b, name: nm(x.b) })}</span><span class="wam-cl-tx"><b>${esc(x.text)}</b></span><button type="button" class="wam-btn" ${at}${dis(key)}>Reconnect</button></div>`;
+          })
+          .join(''),
+      );
+    };
+    const listHtml = `<div class="wam-cl${lay.columns === 2 ? ' is-two' : ''}">
+        <h2 class="wam-cl-title">Connections</h2>
+        ${roOnly()}
+        ${lay.sections.map(sectionHtml).join('')}
+        <div class="wam-cl-end">
+          <p class="wam-cl-foot">${esc(lay.footer)}</p>
+          <div class="wam-cl-acts">${
+            lay.pick
+              ? `<button type="button" class="wam-btn" data-cm-choose aria-haspopup="dialog"${canAct ? '' : ' disabled'}>${esc(lay.pick.label)}</button>`
+              : ''
+          }<button type="button" class="wam-btn wam-cl-mapbtn" data-cm-seemap>See map</button></div>
+        </div>
       </div>`;
     const html = `<div class="wam-cm${showMap ? ' is-map' : ''}">
         ${listHtml}
@@ -1002,6 +999,21 @@ export async function renderConnections(el, ctx = {}) {
       const b = bandOf(kind);
       return `<p class="wam-cm-where"><b>${esc(b.where)}</b> ${esc(b.blurb)}</p>`;
     };
+    // The agent's list and the first-app chooser are long: on a wide screen their dialog is wider, in two columns.
+    dlg.classList.toggle('is-wide', sheetId.startsWith('@agent:') || sheetId === '@pick' || picking);
+    if (sheetId === '@pick') {
+      // Connect two apps (Strict mode) / Cut two apps apart (Open mode), from the list: the first app, then its sheet
+      // opens with the chooser for the second.
+      const pk = pickFirst(m);
+      if (!pk || !pk.apps.length) return sheetClose(dlg);
+      set(`<div class="wam-cm-sh-head"><h2 id="wamCmTitle">${esc(pk.label)}</h2></div>
+        <p class="wam-cm-says">${esc(pk.ask)}</p>
+        <div class="wam-cm-chips is-all">${pk.apps
+          .map((x) => `<button type="button" class="wam-cm-chip" data-cm-start="${esc(x.id)}">${cmGlyph(x)}<span>${esc(x.name)}</span></button>`)
+          .join('')}</div>
+        ${roOnly()}`);
+      return;
+    }
     if (sheetId.startsWith('@agent:')) {
       const g = m.agents[Number(sheetId.slice(7))];
       if (!g) return sheetClose(dlg);
@@ -1025,7 +1037,7 @@ export async function renderConnections(el, ctx = {}) {
               .join('')}</div>`,
         )
         .join('');
-      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span><h2 id="wamCmTitle">${esc(g.name)}</h2></div>
+      set(`<div class="wam-cm-sh-head"><span class="wam-cm-disc">${cmGlyph({ id: g.main ? 'wizard' : g.id, name: g.name })}</span><h2 id="wamCmTitle">${esc(row.title)}</h2></div>
         ${where('agent')}
         <p class="wam-cm-says">${esc(`${row.title} ${row.line}.`)}</p>${who}
         <p class="wam-cm-sh-note">Turning items off for an agent is coming next.</p>
@@ -1186,12 +1198,13 @@ export async function renderConnections(el, ctx = {}) {
       }
       ${roOnly()}`);
   };
-  const openSheet = (id) => {
+  const openSheet = (id, pick = false) => {
     sheetId = id;
-    picking = false;
+    picking = pick;
     ensureSheet();
     paintSheet();
     sheetOpen(dlg);
+    dlg.scrollTop = 0;
   };
 
   // ---- data and changes ----
@@ -1280,6 +1293,13 @@ export async function renderConnections(el, ctx = {}) {
     if (line) return openSheet(`@link:${line.getAttribute('data-cm-link')}`);
     const usesRow = t('[data-cm-uses]');
     if (usesRow) return openSheet(`@uses:${usesRow.dataset.cmUses}`);
+    if (t('[data-cm-choose]:not([disabled])')) return openSheet('@pick');
+    const first = t('[data-cm-start]');
+    if (first) {
+      // the first app picked: its own sheet, with the chooser for the second already open
+      const id = first.dataset.cmStart;
+      return openSheet(el._wamModel?.mode === 'declared' ? `@uses:${id}` : id, true);
+    }
     if (t('[data-cm-seemap]') || t('[data-cm-seelist]')) {
       showMap = !!t('[data-cm-seemap]');
       paint(d);
@@ -1433,6 +1453,17 @@ export async function renderConnections(el, ctx = {}) {
     }
   }
   bindClicks(el, onClick);
+  // Esc closes the open dialog first. Inside Wizard the shell takes every key from the window (capture on the
+  // document) and, in full screen, would leave full screen and keep the dialog open; the window's capture runs first.
+  if (!el._wamEsc) {
+    el._wamEsc = (e) => {
+      if (e.key !== 'Escape' || e.isComposing || !dlg?.open) return;
+      e.preventDefault();
+      e.stopPropagation();
+      sheetClose(dlg);
+    };
+    window.addEventListener('keydown', el._wamEsc, true);
+  }
   if (el._wamConn) paint(el._wamConn);
   await load();
   // Live: a request waiting for the owner, or a change made elsewhere, shows up without a reload.

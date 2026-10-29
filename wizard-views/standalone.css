@@ -102,7 +102,7 @@ body.wux[data-only] {
 }
 body.wux[data-only] .wux-sheet {
   --wux-top: 24px;
-  max-width: 980px;
+  max-width: 1240px;
 }
 html[data-wz-hosted] body.wux[data-only] {
   padding: 0;
