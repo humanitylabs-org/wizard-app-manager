@@ -6,7 +6,7 @@ author: Wizard OS
 license: MIT
 metadata:
   hermes:
-    tags: [wizard-os, onboarding, tips, reminders, help]
+    tags: [wizard-os, onboarding, tips, reminders, notifications, alerts, help]
 ---
 
 # Wizard guide
