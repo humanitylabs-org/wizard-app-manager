@@ -504,3 +504,8 @@ Channel: on latest only. Stable stays 0.3.84 (promoted separately by the release
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/335. SHA256: `e47f3d9aac054be5b34cb648e18aa38ee7328dea10383e86660eb7d662404a7d`.
 0.3.85 plus App Manager #350 (a fresh install's agent can use the Claude sign-in; new image v4.10.2-wizard.897-016a8cb) and wizard-app-store #44 (Claude sign-in is just a link and a code box: Claude 0.2.12, ChatGPT 0.2.10).
 Channel: latest only; Stable waits for James on #349.
+
+## stable 0.3.86
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/337. `releases/stable` → 0.3.86; `promotions/0.3.86.json` sha256 `1c97ddf50f773ceee10f6ce7596cfff4ac08a0660fd9679b41170488f44a0fa0`.
+Fast-tracked as **feature** on the owner's decision (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"), overruling the James hold on #349. Installed upgrade 0.3.84 → 0.3.86 passed: wizard-os docs/acceptance/promote-0.3.86.md.

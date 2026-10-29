@@ -1,0 +1,16 @@
+{
+  "version": "0.3.86",
+  "latest_since": "2026-10-29T22:41:32Z",
+  "promoted_at": "2026-10-29T23:16:44Z",
+  "upgrade_test": {
+    "from": "0.3.84",
+    "to": "0.3.86",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.86.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Recommended fixes wizard-app-manager#350 and wizard-app-store#44 (fresh-install Claude sign-in). Owner (Miguel, 30 Oct 2026): 'If you're shipping a fix, ship it straight to stable' - this explicitly overrules the James hold on wizard-app-manager#349, which rides along in App Manager 016a8cbf. Installed upgrade 0.3.84 -> 0.3.86 passed on a disposable KVM guest (public os.sh).",
+    "notes": "Rides along: wizard-ux and App Manager changes in 0.3.85 (incl. wizard-app-manager#349)."
+  }
+}
