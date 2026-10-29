@@ -31,6 +31,11 @@ def verify_saved(root, manifest, runner):
         assert p.stat().st_size <= 128*runner.MIB and runner.sha(p) == expected, 'saved evidence hash drift'
     previous = json.loads((saved/'SOURCE.json').read_text())
     changes = source_closure(previous, manifest)
+    assert set(manifest['file_modes']) == set(manifest['files']), 'continuation full mode inventory'
+    for relative, mode in manifest['file_modes'].items():
+        metadata = (root/relative).lstat()
+        assert stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, 'continuation source requires regular single-link files'
+        assert stat.S_IMODE(metadata.st_mode) == mode, 'continuation committed source mode drift'
     receipt = json.loads((saved/'docker-receipt.json').read_text())
     assert receipt['source'] == SOURCE and receipt['manifest_sha256'] == PINS['SOURCE.json']
     assert receipt['runner_sha256'] == previous['files']['scripts/manager-seal-docker.py']
@@ -133,6 +138,10 @@ def inside(args, runner):
         result['inherited_candidate'] = verify_saved(root, manifest, runner)
         result['limits'] = runner.inside_limits(fixture)
         assert runner.sha('/tooling/node') == runner.early.NODE_SHA and runner.sha('/tooling/docker') == runner.DOCKER_SHA
+        result['phase'] = 'continuation-runtime-preflight'
+        assert runner.run(['/tooling/docker', '--version']).startswith('Docker version 26.1.5')
+        runner.run(['/tooling/docker', 'version', '--format', '{{.Server.Version}}'])
+        assert runner.run(['/tooling/compose', 'version', '--short']).lstrip('v') == '2.40.0'
         result['phase'] = 'saved-artifact-validation'
         dist = extract_saved(root, Path('/work/saved-artifacts'), runner)
         result['saved_bundle'] = validate_bundle(dist, root, saved=True)

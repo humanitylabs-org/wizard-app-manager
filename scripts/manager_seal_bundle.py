@@ -51,7 +51,7 @@ def validate_bundle(dist, source, *, saved=False, installed=None):
         assert {n: (v['bytes'], v['sha256']) for n, v in inventory.items()} == SAVED_BUNDLE, 'saved bundle bytes drift'
     js = blobs['main.js'].decode('utf-8')
     assert len(js) > 1024 and js.count('//# sourceMappingURL=main.js.map') == 1, 'bundle sourcemap reference'
-    references = re.findall(r'[\"\'](\./[^\"\'\n]*\.node)[\"\']', js)
+    references = re.findall(r'[\"\']([^\"\'\n]*\.node)[\"\']', js)
     assert sorted(references) == sorted('./'+name for name in ADDONS), 'bundle native references must exactly match emitted addons'
     source_map = json.loads(blobs['main.js.map'])
     assert source_map['version'] == 3 and len(source_map['sources']) == len(source_map['sourcesContent']), 'bundle sourcemap shape'

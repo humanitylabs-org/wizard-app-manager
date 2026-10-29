@@ -94,7 +94,8 @@ class BundleOracle(unittest.TestCase):
 
     def test_missing_duplicate_unknown_and_traversing_js_native_references_refused(self):
         name = next(iter(bundle.ADDONS))
-        for replacement in ['', 'require("./'+name+'");require("./'+name+'");', 'require("./evil.node");', 'require("./../evil.node");']:
+        for replacement in ['', 'require("./'+name+'");require("./'+name+'");', 'require("./evil.node");', 'require("./../evil.node");',
+                            'require("/outside/evil.node");', 'require("evil.node");', 'require("../evil.node");']:
             with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as tmp:
                 source, dist = self.fixture(Path(tmp)); js = dist/'main.js'
                 js.write_text(js.read_text().replace('require("./'+name+'");', replacement))
