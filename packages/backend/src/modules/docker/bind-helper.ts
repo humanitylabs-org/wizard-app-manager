@@ -53,7 +53,7 @@ export function bindMetadataArgs(request: BindMetadataRequest): string[] {
   const { image, managerUid, source } = request;
   if (!/^sha256:[a-f0-9]{64}$/.test(image) || !Number.isInteger(managerUid) || managerUid < 0 || managerUid >= 0xffffffff ||
       typeof source !== 'string' || Buffer.byteLength(source) > 4089 || !source.startsWith('/') ||
-      /[\x00-\x1f\x7f]/.test(source) || path.posix.normalize(source) !== source || (source !== '/' && source.endsWith('/')))
+      [...source].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) || path.posix.normalize(source) !== source || (source !== '/' && source.endsWith('/')))
     throw new Error('Invalid bind metadata request');
   // No explicit propagation on this root inspection mount: Docker 20.10 uses
   // automatic rslave, or its private-source fallback. App mounts stay rprivate.

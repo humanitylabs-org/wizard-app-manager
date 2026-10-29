@@ -273,7 +273,10 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
         model,
         ctx,
         managerUid,
-        async (request) => runBindHelper(dataDir, { ...request, image: metadataImage ??= await bindMetadataImage(undefined, bindDeadline) }, undefined, bindDeadline),
+        async (request) => {
+          metadataImage ??= await bindMetadataImage(undefined, bindDeadline);
+          return runBindHelper(dataDir, { ...request, image: metadataImage }, undefined, bindDeadline);
+        },
         async (source) => {
           // Missing ordinary data directories may be created only through an
           // attested backend mapping of the ancestry the daemon just checked.
