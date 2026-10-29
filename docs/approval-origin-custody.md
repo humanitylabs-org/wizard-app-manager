@@ -30,6 +30,16 @@ systemctl or a new sudo grant. The agent/session UID has neither permission.
 route restoration after boot. Shutdown ordering stops tailscaled first. If
 custody cannot start, tailscaled cannot start through this dependency.
 
+That whole-daemon fail-closed behavior is deliberate **after successful custody
+installation**, including a disabled approval origin: an administrator must
+repair custody before restarting tailscaled. It is not a promise that unrelated
+tailnet services remain available through custody failure. A failed first install
+is different: acquire and verify the socket before committing this dependency;
+on failure remove only that attempt's new unit/enablement changes and restore any
+preexisting worker file/enablement. A missing Serve route alone never selects
+first-install rollback: existing root socket/dependency/loaded-unit evidence
+means preserve custody and refuse an unsafe or failed upgrade.
+
 ## Publication, disable and removal
 
 `wam approval-origin enable` requires persistent custody and reads back the exact

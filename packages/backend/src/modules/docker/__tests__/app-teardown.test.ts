@@ -30,8 +30,13 @@ describe('daemon-owned teardown', () => {
     await teardownApp('demo:wizardapps', 'down --remove-orphans', f.docker);
     expect(f.docker.listContainers).toHaveBeenCalledWith({ all: true, filters: { label: ['com.docker.compose.project=demo_wizardapps'] } });
     expect(f.stop).toHaveBeenCalledWith({ t: 10 });
-    expect(f.remove).toHaveBeenCalledWith({ force: false, v: true });
+    expect(f.remove).toHaveBeenCalledWith({ force: false, v: false });
     expect(f.inspect).toHaveBeenCalledTimes(2);
+  });
+  it('explicit destructive uninstall alone removes anonymous volumes', async () => {
+    const f = fixture();
+    await teardownApp('demo:wizardapps', 'down --volumes --remove-orphans', f.docker);
+    expect(f.remove).toHaveBeenCalledWith({ force: false, v: true });
   });
   it('stop retains the container and acknowledges non-running state', async () => {
     const f = fixture();

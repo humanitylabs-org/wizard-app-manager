@@ -20,8 +20,13 @@ const exec = promisify(execFile);
 const enabled = process.env.WIZARD_LIFECYCLE_ENGINE_PROOF === '1';
 const cases: { root: string; urn: string; volume: string; appData: string }[] = [];
 const docker = async (...args: string[]) => (await exec('docker', args, { timeout: 45_000 })).stdout.trim();
+const anonymousVolumes = new Set<string>();
+const anonymousImages = new Set<string>();
+const persistedContainers = new Set<string>();
 
 afterEach(async () => {
+  for (const id of persistedContainers) await docker('rm', '-f', id);
+  persistedContainers.clear();
   for (const c of cases.splice(0)) {
     await teardownApp(c.urn, 'down --remove-orphans');
     await docker('volume', 'rm', c.volume).catch((e) => { if (!String(e.stderr).includes('no such volume')) throw e; });
@@ -29,6 +34,10 @@ afterEach(async () => {
     await fs.rm(c.root, { recursive: true, force: true });
     await fs.rm(c.appData, { recursive: true, force: true });
   }
+  for (const name of anonymousVolumes) await docker('volume', 'rm', name).catch((e) => { if (!/no such volume/i.test(String(e.stderr))) throw e; });
+  anonymousVolumes.clear();
+  for (const image of anonymousImages) await docker('image', 'rm', image);
+  anonymousImages.clear();
 });
 
 async function fixture() {
@@ -78,6 +87,46 @@ async function fixture() {
 }
 
 describe.runIf(enabled)('production lifecycle with real engine (disposable guest only)', () => {
+  it.each(['stop', 'down --remove-orphans'] as const)('retains image-VOLUME anonymous identity and sentinel bytes on %s', async (command) => {
+    const f = await anonymousFixture();
+    await f.service.composeApp(f.urn, command);
+    // Read back the ORIGINAL daemon volume name, never a replacement volume or
+    // next-up mount. Removed anonymous volumes are not automatically remounted.
+    expect(JSON.parse(await docker('volume', 'inspect', f.anonymous))[0].Name).toBe(f.anonymous);
+    expect(await docker('run', '--rm', '--network=none', '--mount', `type=volume,source=${f.anonymous},target=/recover,readonly`,
+      BIND_CHECK_IMAGE, 'cat', '/recover/sentinel')).toBe('anonymous-persistent-sentinel');
+  }, 120_000);
+
+  it('explicit --volumes uninstall deletes the image-VOLUME anonymous mount', async () => {
+    const f = await anonymousFixture();
+    await f.service.composeApp(f.urn, 'down --volumes --remove-orphans');
+    await expect(docker('volume', 'inspect', f.anonymous)).rejects.toMatchObject({ stderr: expect.stringMatching(/no such volume/i) });
+  }, 120_000);
+
+  it.each(['stopped-writable-parent', 'stopped-readonly-child'] as const)('refuses %s persisted restart-always overlap before app create', async (kind) => {
+    const f = await fixture();
+    const parent = path.join(f.appData, 'data');
+    const child = path.join(parent, 'child');
+    await fs.mkdir(child, { recursive: true });
+    const parentFirst = kind === 'stopped-writable-parent';
+    const persisted = await docker('create', '--restart=always', '--network=none', '--mount',
+      `type=bind,source=${parentFirst ? parent : child},target=/persisted${parentFirst ? '' : ',readonly'}`,
+      BIND_CHECK_IMAGE, 'sleep', '300');
+    persistedContainers.add(persisted);
+    await docker('start', persisted); await docker('stop', '-t', '1', persisted);
+    const info = JSON.parse(await docker('inspect', persisted))[0];
+    expect(info.State.Running).toBe(false);
+    expect(info.HostConfig.RestartPolicy.Name).toBe('always');
+    f.model.services.web.volumes = [{ type: 'bind', source: parentFirst ? child : parent, target: '/data' }];
+    await f.write();
+    const beforeStart = vi.fn();
+    await expect(f.service.composeApp(f.urn, 'up --detach', beforeStart)).rejects.toThrow('overlap');
+    expect(beforeStart).not.toHaveBeenCalled();
+    expect(await f.ids()).toEqual([]);
+    // No daemon restart needed: conservative all-container inventory is the gate.
+    expect(JSON.parse(await docker('inspect', persisted))[0].State.Running).toBe(false);
+  }, 120_000);
+
   it.each(['stop', 'uninstall', 'restart'] as const)('ignores hooks added after startup during %s teardown', async (action) => {
     const f = await fixture();
     await f.service.composeApp(f.urn, 'up --detach');
@@ -185,3 +234,23 @@ describe.runIf(enabled)('production lifecycle with real engine (disposable guest
     expect(await f.ids()).toHaveLength(1);
   }, 120_000);
 });
+
+async function anonymousFixture() {
+  const f = await fixture();
+  const image = `${f.project}:anonymous`;
+  await fs.writeFile(path.join(f.root, 'Anonymous.Dockerfile'), `FROM ${BIND_CHECK_IMAGE}\nVOLUME /anonymous\n`);
+  await docker('build', '--network=none', '-f', path.join(f.root, 'Anonymous.Dockerfile'), '-t', image, f.root);
+  anonymousImages.add(image);
+  expect(JSON.parse(await docker('image', 'inspect', image))[0].Config.Volumes).toHaveProperty('/anonymous');
+  f.model.services.web.image = image;
+  f.model.services.web.command = ['sh', '-ec', 'printf anonymous-persistent-sentinel > /anonymous/sentinel; while :; do sleep 1; done'];
+  await f.write();
+  await f.service.composeApp(f.urn, 'up --detach');
+  const id = (await f.ids())[0]!;
+  const mounts = JSON.parse(await docker('inspect', id))[0].Mounts;
+  const anonymous = mounts.find((m: any) => m.Type === 'volume' && m.Destination === '/anonymous')?.Name;
+  expect(anonymous).toMatch(/^[a-f0-9]{64}$/);
+  anonymousVolumes.add(anonymous);
+  expect(await docker('exec', id, 'sh', '-ec', 'n=0; while [ ! -f /anonymous/sentinel ] && [ $n -lt 50 ]; do n=$((n+1)); sleep 0.1; done; cat /anonymous/sentinel')).toBe('anonymous-persistent-sentinel');
+  return { ...f, anonymous };
+}

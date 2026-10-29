@@ -154,15 +154,48 @@ else: raise SystemExit(2)
     CHILDREN.append(hostile)
     check('occupied_probe_ready', hostile.stdout.readline().strip() == 'READY')
     check('occupied_before_enable_refused', run(*args, ok=False).returncode != 0 and not route())
+    unitdir = Path('/etc/systemd/system')
+    dependency = unitdir / 'tailscaled.service.d/50-wizard-owner-approval.conf'
+    def first_install_absent():
+        return (not (unitdir / SOCKET).exists() and not (unitdir / SERVICE).exists() and
+                not dependency.exists() and SOCKET not in prop('tailscaled.service', 'Requires').split() and
+                not (unitdir / 'sockets.target.wants' / SOCKET).is_symlink() and
+                not (unitdir / 'multi-user.target.wants' / SERVICE).is_symlink())
+    check('occupied_first_install_leaves_no_new_boot_contract', first_install_absent())
+    # Keep the hostile listener alive: a synthetic daemon restart must still
+    # succeed, proving no poisoned global Requires= remains after refusal.
+    run('systemctl', 'restart', 'tailscaled.service')
+    check('occupied_first_install_tailscaled_restart_works', prop('tailscaled.service', 'ActiveState') == 'active' and hostile.poll() is None)
     denied = run('/usr/bin/python3', '-c',
                  "from wam.owner_confirm import enable; from pathlib import Path; enable(Path('" + str(STATE) + "'), 'fixture.example.ts.net')",
                  user='wizard-system', ok=False)
     check('occupied_address_publication_refused', denied.returncode != 0 and not route() and hostile.poll() is None)
     os.killpg(hostile.pid, signal.SIGKILL); hostile.wait(timeout=5)
-    run('systemctl', 'reset-failed', SOCKET)
+    # Fault only the final readback in a root-trusted synthetic module. Actual
+    # installer, writes, socket acquisition and systemd ordering still execute.
+    failed_module = ROOT_STAGE / 'postdependency-fault.py'
+    failed_module.write_text(module.read_text() + '\ndef require_custody():\n raise RuntimeError("synthetic postdependency readback failure")\n')
+    fault_args = [*args[:-1], str(failed_module)]
+    check('postdependency_first_install_failure_restores_contract', run(*fault_args, ok=False).returncode != 0 and first_install_absent() and not route())
+    run('systemctl', 'restart', 'tailscaled.service')
+    check('postdependency_first_install_tailscaled_restart_works', prop('tailscaled.service', 'ActiveState') == 'active')
     run(*args)
     check('custody_before_publication', low_bind() == 'HELD' and not route())
     inode = listener_inode()
+    upgrade_module = ROOT_STAGE / 'upgrade-fault.py'
+    upgrade_module.write_text(module.read_text() + '''
+_real_require_custody = require_custody
+_readbacks = 0
+def require_custody():
+ global _readbacks
+ inode = _real_require_custody()
+ _readbacks += 1
+ if _readbacks == 2: raise RuntimeError('synthetic upgrade readback failure')
+ return inode
+''')
+    upgrade_args = [*args[:-1], str(upgrade_module)]
+    check('disabled_origin_upgrade_failure_retains_custody', run(*upgrade_args, ok=False).returncode != 0 and
+          not route() and dependency.exists() and listener_inode() == inode and low_bind() == 'HELD')
     worker = Path('/opt/wizard-custody-fixture-worker.py')
     worker.write_text('''import json,os,sys
 from pathlib import Path
@@ -196,6 +229,8 @@ print(json.dumps({'attempts':attempts,'captured':captured,'stopped_by_parent':Pa
     check('nonroot_worker_inherits_root_socket', first['uid'] == u.pw_uid and first['inode'] == inode)
     manager("from wam.owner_confirm import enable; enable(__import__('pathlib').Path('" + str(STATE) + "'), 'fixture.example.ts.net')")
     check('publication_after_custody', bool(route()))
+    check('routed_upgrade_failure_retains_custody', run(*upgrade_args, ok=False).returncode != 0 and
+          bool(route()) and dependency.exists() and listener_inode() == inode and low_bind() == 'HELD')
     run('systemctl', 'kill', '--signal=KILL', '--kill-whom=main', SERVICE)
     wait(lambda: prop(SERVICE, 'ActiveState') == 'failed')
     check('abrupt_exit_retains_address', low_bind() == 'HELD' and bool(route()) and listener_inode() == inode)
@@ -267,9 +302,11 @@ r=c.getresponse(); print(r.status); r.read()
     check('tailscaled_stopped_before_release', prop('tailscaled.service', 'ActiveState') == 'inactive')
     check('bind_positive_control_after_explicit_safe_release', low_bind() == 'BOUND')
     check('no_agent_root_assignment', u.pw_uid != 0)
-    print(json.dumps({'scope':'synthetic-systemd-kernel-only','authenticated_tailnet_tested':False,
+    receipt = {'scope':'synthetic-systemd-kernel-only','authenticated_tailnet_tested':False,
                       'source_custody_sha256':hashlib.sha256(module.read_bytes()).hexdigest(),
-                      'cases':REPORT,'case_count':len(REPORT),'hammer':h}, indent=2))
+                      'cases':REPORT,'case_count':len(REPORT),'hammer':h}
+    (FIXTURE / 'approval-custody-receipt.json').write_text(json.dumps(receipt, indent=2))
+    print(json.dumps(receipt, indent=2))
 
 
 if __name__ == '__main__':

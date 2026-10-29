@@ -42,7 +42,9 @@ export async function teardownApp(
       try { await container.stop({ t: 10 }); } catch (e: any) { if (e.statusCode !== 304 && !absent(e)) throw e; }
     }
     if (verb === 'down') {
-      try { await container.remove({ force: false, v: true }); } catch (e) { if (!absent(e)) throw e; }
+      // Stop/Deny/restart retain anonymous volume identities and bytes for
+      // recovery (not automatic remount on the next up). Only uninstall opts in.
+      try { await container.remove({ force: false, v: flags.includes('--volumes') }); } catch (e) { if (!absent(e)) throw e; }
       try { await container.inspect(); throw new Error('App container removal was not acknowledged'); }
       catch (e) { if (!absent(e)) throw e; }
     } else {

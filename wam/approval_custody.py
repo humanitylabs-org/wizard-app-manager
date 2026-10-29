@@ -94,16 +94,10 @@ def listener_row(proc=Path('/proc/net/tcp')):
     return rows[0][2]
 
 
-def require_custody():
-    """Require the loaded persistent root unit and boot ordering before Serve.
-
-    Requires/After on tailscaled also orders shutdown: tailscaled stops before
-    PID 1 releases the socket. Manual socket stop is forbidden. Ordinary manager
-    stop, crash, upgrade or failed startup never stops the socket unit.
-    """
+def require_socket_custody():
+    """Verify acquisition before the first install commits tailscaled ordering."""
     fragment = UNITS / SOCKET
-    dropin = UNITS / 'tailscaled.service.d/50-wizard-owner-approval.conf'
-    if not _trusted_file(fragment, SOCKET_TEXT) or not _trusted_file(dropin, TAILSCALE_TEXT):
+    if not _trusted_file(fragment, SOCKET_TEXT):
         raise ValueError('secure approval socket lifecycle is not installed; ask the administrator for host preparation')
     s = _show(SOCKET)
     if (s.get('FragmentPath') != str(fragment) or s.get('DropInPaths') or
@@ -113,17 +107,30 @@ def require_custody():
             s.get('TriggerLimitIntervalUSec') != '0' or
             s.get('Listen') != f'127.0.0.1:{PORT} (Stream)'):
         raise ValueError('approval socket unit is not the exact active persistent custody unit')
-    ts = _show('tailscaled.service')
-    if (str(dropin) not in ts.get('DropInPaths', '').split() or
-            SOCKET not in ts.get('Requires', '').split() or
-            SOCKET not in ts.get('After', '').split() or ts.get('NeedDaemonReload') != 'no'):
-        raise ValueError('tailscaled lacks persistent approval custody ordering')
+
     # systemd otherwise propagates service start-limit hits to the socket and
     # CLOSES it, even with RefuseManualStop. This must be disabled on the worker.
     service = _show(SERVICE)
     if service.get('StartLimitIntervalUSec') != '0' or service.get('NeedDaemonReload') != 'no':
         raise ValueError('manager start-limit policy can release approval custody')
     return listener_row()
+
+
+def require_custody():
+    """Require the persistent root socket AND boot/shutdown ordering before Serve.
+
+    Worker failure never releases custody. After successful installation a socket
+    failure deliberately blocks all of tailscaled, not only the approval route.
+    """
+    inode = require_socket_custody()
+    dropin = UNITS / 'tailscaled.service.d/50-wizard-owner-approval.conf'
+    ts = _show('tailscaled.service')
+    if (not _trusted_file(dropin, TAILSCALE_TEXT) or
+            str(dropin) not in ts.get('DropInPaths', '').split() or
+            SOCKET not in ts.get('Requires', '').split() or
+            SOCKET not in ts.get('After', '').split() or ts.get('NeedDaemonReload') != 'no'):
+        raise ValueError('tailscaled lacks persistent approval custody ordering')
+    return inode
 
 
 def owned(home=None):

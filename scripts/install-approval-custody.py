@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 
+UNITS = Path('/etc/systemd/system')
+
 
 def run(*argv):
     return subprocess.run([str(a) for a in argv], check=True, capture_output=True, text=True, timeout=45)
@@ -35,12 +37,15 @@ def write(path, text):
         path.parent.chmod(0o755)
     staged = path.with_name('.' + path.name + '.' + str(os.getpid()))
     fd = os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, 'w') as f:
-        os.fchmod(f.fileno(), 0o644)
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    staged.replace(path)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            os.fchmod(f.fileno(), 0o644)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(directory)
@@ -98,8 +103,59 @@ def main():
         return apply(action, user, account, state, tree, custody)
 
 
+def loaded(unit):
+    try:
+        text = run('systemctl', 'show', unit).stdout
+    except subprocess.CalledProcessError as exc:
+        # systemctl may return nonzero for a nonexistent first-install unit.
+        text = exc.stdout or ''
+        if 'LoadState=not-found' not in text.splitlines():
+            raise
+    return dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+
+
+def enablement_links(unitdir, names):
+    # Root unit inventory, never manager-owned origin/config as mode authority.
+    return {p for p in unitdir.rglob('*') if p.is_symlink() and
+            Path(os.readlink(p)).name in names}
+
+
+def rollback_first_install(unitdir, custody, before, links, missing_dirs, worker_was_active):
+    socket_path = unitdir / custody.SOCKET
+    dropin = unitdir / 'tailscaled.service.d/50-wizard-owner-approval.conf'
+    # Lift only this failed first install's dependency BEFORE releasing its
+    # socket. Otherwise stopping a Requires= dependency can stop tailscaled too.
+    dropin.unlink(missing_ok=True)
+    if socket_path.exists():
+        write(socket_path, custody.SOCKET_TEXT.replace('RefuseManualStop=yes', 'RefuseManualStop=no'))
+    run('systemctl', 'daemon-reload')
+    if socket_path.exists():
+        run('systemctl', 'stop', custody.SOCKET)
+        if loaded(custody.SOCKET).get('ActiveState') not in ('inactive', 'failed'):
+            raise RuntimeError('failed first install socket rollback not acknowledged')
+    if not worker_was_active and loaded(custody.SERVICE).get('ActiveState') not in ('inactive', 'failed'):
+        run('systemctl', 'stop', custody.SERVICE)
+    # Do not use disable: it can remove preexisting aliases/enablement links.
+    for p in enablement_links(unitdir, {custody.SOCKET, custody.SERVICE}) - links:
+        p.unlink()
+    for p, old in before.items():
+        if old is None:
+            p.unlink(missing_ok=True)
+        else:
+            text, mode, uid, gid = old
+            write(p, text)
+            os.chown(p, uid, gid)
+            p.chmod(mode)
+    run('systemctl', 'daemon-reload')
+    # Only empty directories introduced by this attempt, never a recursive rm.
+    for p in sorted(missing_dirs, key=lambda p: len(p.parts), reverse=True):
+        if p.exists():
+            p.rmdir()
+    os.sync()
+
+
 def apply(action, user, account, state, tree, custody):
-    unitdir = Path('/etc/systemd/system')
+    unitdir = UNITS
     socket_path = unitdir / custody.SOCKET
     dropin = unitdir / 'tailscaled.service.d/50-wizard-owner-approval.conf'
     current = routes()  # failure to inspect persistent Serve config is a refusal
@@ -154,15 +210,41 @@ def apply(action, user, account, state, tree, custody):
         os.sync()  # persist unit retirement as well as the fsynced origin record
         print('Approval routes removed and acknowledged before socket release. Tailscaled remains stopped; administrator may restart it explicitly.')
         return
-    if current:
+    # An absent route is NOT a first-install signal: disable retains custody.
+    # Any root-installed/loaded socket or dependency means an existing contract,
+    # including malformed or failed remnants. Refuse rather than roll it back.
+    prior_links = enablement_links(unitdir, {custody.SOCKET, custody.SERVICE})
+    socket_state, ts_state = loaded(custody.SOCKET), loaded('tailscaled.service')
+    existing_contract = bool(current or socket_path.exists() or socket_path.is_symlink() or
+                             dropin.exists() or dropin.is_symlink() or
+                             socket_state.get('LoadState') != 'not-found' or
+                             custody.SOCKET in ts_state.get('Requires', '').split() or
+                             any(Path(os.readlink(p)).name == custody.SOCKET for p in prior_links))
+    if existing_contract:
         # Never upgrade an old routed bind into alleged continuous custody.
         # A previous genuine installation can be rerun only while custody holds.
         custody.require_custody()
     if not run('systemctl', 'show', 'tailscaled.service', '-p', 'LoadState', '--value').stdout.strip() == 'loaded':
         raise RuntimeError('system tailscaled service is required')
-    write(socket_path, custody.SOCKET_TEXT)
-    write(dropin, custody.TAILSCALE_TEXT)
-    write(unitdir / custody.SERVICE, f'''[Unit]
+    service_path = unitdir / custody.SERVICE
+    worker_was_active = loaded(custody.SERVICE).get('ActiveState') not in ('inactive', 'failed')
+    before = {}
+    missing_dirs = set()
+    for p in (socket_path, dropin, service_path):
+        protected(p)
+        s = p.stat() if p.exists() else None
+        before[p] = (p.read_text(), s.st_mode & 0o777, s.st_uid, s.st_gid) if s else None
+        for parent in p.parents:
+            if parent == unitdir:
+                break
+            if not parent.exists():
+                missing_dirs.add(parent)
+    for p in (unitdir / 'sockets.target.wants', unitdir / 'multi-user.target.wants'):
+        if not p.exists():
+            missing_dirs.add(p)
+    try:
+        write(socket_path, custody.SOCKET_TEXT)
+        write(service_path, f'''[Unit]
 Description=Wizard App Manager (protected approval activation)
 After=docker.service network-online.target
 Requires=docker.service
@@ -185,15 +267,20 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 ''')
-    run('systemctl', 'daemon-reload')
-    # Occupied ports fail here, BEFORE any approval Serve mutation. The socket
-    # stays independent of worker stop/restart/update; never PartOf the worker.
-    run('systemctl', 'enable', '--now', custody.SOCKET)
-    run('systemctl', 'enable', custody.SERVICE)
-    # Include systemctl-created enablement symlinks and new parent directories,
-    # before any later publication may rely on custody surviving a power loss.
-    os.sync()
-    custody.require_custody()
+        run('systemctl', 'daemon-reload')
+        # Acquire AND verify the exact protected socket before introducing any
+        # global tailscaled dependency. No Serve mutation occurs in this phase.
+        run('systemctl', 'enable', '--now', custody.SOCKET)
+        custody.require_socket_custody()
+        write(dropin, custody.TAILSCALE_TEXT)
+        run('systemctl', 'daemon-reload')
+        run('systemctl', 'enable', custody.SERVICE)
+        os.sync()
+        custody.require_custody()
+    except BaseException:
+        if not existing_contract:
+            rollback_first_install(unitdir, custody, before, prior_links, missing_dirs, worker_was_active)
+        raise
     print('Persistent approval socket custody ready; no approval origin published.')
 
 

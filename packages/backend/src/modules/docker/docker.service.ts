@@ -252,7 +252,9 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       await this.assertVolumeIdentity(model, appUrn.replace(':', '_'), bindDeadline);
       const managerUid = (await fs.stat(path.join(dataDir, '.env'))).uid;
       if (Object.values(model.services ?? {}).some((s: any) => (s.volumes ?? []).some((v: any) => v.type === 'bind'))) {
-        const ids = (await helperRun(['ps', '-q', '--no-trunc'], bindDeadline)).stdout.trim().split(/\s+/).filter(Boolean);
+        // Persisted binds can return without admission on daemon restart (always
+        // policy). Stopped deployments retain their overlap fence until removed.
+        const ids = (await helperRun(['ps', '-a', '-q', '--no-trunc'], bindDeadline)).stdout.trim().split(/\s+/).filter(Boolean);
         const existing: string[] = [];
         const existingSources: string[] = [];
         for (const id of ids) {

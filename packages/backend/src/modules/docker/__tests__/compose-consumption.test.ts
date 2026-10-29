@@ -4,10 +4,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DockerService } from '../docker.service';
 import { assertNoWritableBindAncestors, executableModel, verifyBindSources } from '../compose-consumption';
+import { helperRun, runBindHelper } from '../bind-helper';
 
 // These tests exercise real files and inherited kernel lock descriptors. The
 // normal backend setup's memfs mock cannot supply a descriptor to flock.
 vi.mock('node:fs', async (importOriginal) => importOriginal<typeof import('node:fs')>());
+vi.mock('../bind-helper', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../bind-helper')>(),
+  helperRun: vi.fn(), runBindHelper: vi.fn(async () => ({ stdout: 'safe\n' })),
+}));
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -123,6 +128,41 @@ describe('final compose consumption', () => {
     expect(() => assertNoWritableBindAncestors(model, [], ['/safe/root/data'])).not.toThrow();
     model.services.web.volumes.push({ type: 'bind', source: '/safe/root', target: '/root' });
     expect(() => assertNoWritableBindAncestors(model)).toThrow('overlap');
+  });
+
+  it('refuses a stopped restart-always writable ancestor before helper or app create', async () => {
+    const { service } = await fixture();
+    service.assertHostPolicy = vi.fn(async () => ({ model: { services: { web: { volumes: [
+      { type: 'bind', source: '/safe/root/data', target: '/data' },
+    ] } } }, ctx: context }));
+    vi.mocked(runBindHelper).mockClear();
+    vi.mocked(helperRun).mockImplementation(async (args) => {
+      if (args[0] === 'ps') return { stdout: args.includes('-a') ? 'stopped-id\n' : '' };
+      expect(args).toEqual(['inspect', '--type', 'container', 'stopped-id']);
+      return { stdout: JSON.stringify([{ Id: 'stopped-id', Config: { Hostname: 'ordinary-app' },
+        State: { Running: false }, HostConfig: { RestartPolicy: { Name: 'always' } },
+        Mounts: [{ Type: 'bind', Source: '/safe/root', RW: true }] }]) };
+    });
+    await expect(service.validatedCompose('demo:wizardapps')).rejects.toThrow('overlap');
+    expect(helperRun).toHaveBeenCalledWith(['ps', '-a', '-q', '--no-trunc'], expect.any(AbortSignal));
+    expect(runBindHelper).not.toHaveBeenCalled();
+  });
+
+  it('refuses a new writable ancestor of a stopped persisted readonly child before create', async () => {
+    const { service } = await fixture();
+    service.assertHostPolicy = vi.fn(async () => ({ model: { services: { web: { volumes: [
+      { type: 'bind', source: '/safe/root', target: '/data' },
+    ] } } }, ctx: context }));
+    vi.mocked(runBindHelper).mockClear();
+    vi.mocked(helperRun).mockImplementation(async (args) => {
+      if (args[0] === 'ps') return { stdout: args.includes('-a') ? 'stopped-child\n' : '' };
+      expect(args).toEqual(['inspect', '--type', 'container', 'stopped-child']);
+      return { stdout: JSON.stringify([{ Id: 'stopped-child', Config: { Hostname: 'ordinary-app' },
+        State: { Running: false }, HostConfig: { RestartPolicy: { Name: 'always' } },
+        Mounts: [{ Type: 'bind', Source: '/safe/root/data', RW: false }] }]) };
+    });
+    await expect(service.validatedCompose('demo:wizardapps')).rejects.toThrow('overlap');
+    expect(runBindHelper).not.toHaveBeenCalled();
   });
 
   it('escapes values, never mapping keys', () => {
