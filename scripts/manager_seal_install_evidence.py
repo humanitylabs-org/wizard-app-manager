@@ -160,8 +160,57 @@ def platform_matches(value, actual):
     return '!'+actual not in values and (all(v.startswith('!') for v in values) or actual in values)
 
 
+def installed_inventory(checkout, workspaces):
+    """Read real package manifests, including Bun 1.3's isolated/peer store.
+
+    A lock key is not a hoisted placement promise. Traverse only module roots
+    inside this synthetic export, never arbitrary source directories/symlinks.
+    """
+    boundary = checkout.resolve()
+    pending = [checkout/'node_modules'] + [checkout/p/'node_modules' for p in workspaces if p]
+    seen = set()
+    seen_packages = set()
+    installed = []
+    while pending:
+        modules = pending.pop()
+        real = modules.resolve()
+        if real in seen or not real.is_relative_to(boundary) or not modules.is_dir():
+            continue
+        seen.add(real)
+        assert len(seen) <= 10000, 'module inventory cap exceeded'
+        for entry in sorted(modules.iterdir()):
+            if entry.name == '.bun' and entry.is_dir() and not entry.is_symlink():
+                for store in sorted(entry.iterdir()):
+                    if store.is_dir() and not store.is_symlink():
+                        pending.append(store/'node_modules')
+                continue
+            if entry.name.startswith('.') or not entry.resolve().is_relative_to(boundary) or not entry.is_dir():
+                continue
+            packages = sorted(entry.iterdir()) if entry.name.startswith('@') else [entry]
+            for package in packages:
+                target = package.resolve()
+                if target in seen_packages or not target.is_relative_to(boundary) or not package.is_dir():
+                    continue
+                seen_packages.add(target)
+                path = package/'package.json'
+                if not path.is_file():
+                    continue
+                assert path.resolve().is_relative_to(boundary), 'manifest escapes checkout'
+                assert path.stat().st_size <= 2*MIB, 'package manifest cap exceeded'
+                value = json.loads(path.read_text())
+                installed.append({'path': str(target.relative_to(boundary)),
+                                  'name': value.get('name'), 'version': value.get('version')})
+                assert len(installed) <= 10000, 'package inventory cap exceeded'
+                pending.append(package/'node_modules')
+    return installed
+
+
 def compare_install(checkout):
     lock = read_lock(checkout/'bun.lock')
+    installed = installed_inventory(checkout, lock['workspaces'])
+    by_identity = {}
+    for package in installed:
+        by_identity.setdefault((package['name'], package['version']), []).append(package['path'])
     workspaces = []
     for rel, expected in lock['workspaces'].items():
         path = checkout/rel/'package.json'
@@ -181,6 +230,7 @@ def compare_install(checkout):
         manifest = target/'package.json'
         actual = {}
         if manifest.is_file():
+            assert manifest.resolve().is_relative_to(checkout.resolve()), 'manifest escapes checkout'
             assert manifest.stat().st_size <= 2*MIB
             obj = json.loads(manifest.read_text())
             actual = {k: obj[k] for k in ('name', 'version', 'os', 'cpu', 'libc') if k in obj}
@@ -192,6 +242,14 @@ def compare_install(checkout):
         state = ('present' if actual else 'missing')
         if actual and not workspace and (actual.get('name') != expected_name or actual.get('version') != version):
             state = 'mismatch'
+        placement_state = state
+        placement = target
+        locations = by_identity.get((expected_name, version), []) if not workspace else []
+        if state != 'present' and locations:
+            target = checkout/locations[0]
+            obj = json.loads((target/'package.json').read_text())
+            actual = {k: obj[k] for k in ('name', 'version', 'os', 'cpu', 'libc') if k in obj}
+            state = 'present'
         bins = meta.get('bin', {})
         if isinstance(bins, str):
             bins = {expected_name.rsplit('/', 1)[-1]: bins}
@@ -204,39 +262,19 @@ def compare_install(checkout):
                                    'executable': os.access(binary, os.X_OK)})
         rows.append({'lock_key': key, 'expected': spec, 'path': str(target.relative_to(checkout)),
                      'symlink': target.is_symlink(), 'actual': actual, 'platform_applicable': applicable,
-                     'state': state, 'bins': bin_status})
-    # Also enumerate actual installs, including package-local node_modules and
-    # unexpected packages. Never follow arbitrary symlinks or read package bodies.
-    installed = []
-    for rel in ['', *[r for r in lock['workspaces'] if r]]:
-        modules = checkout/rel/'node_modules'
-        if not modules.is_dir():
-            continue
-        for parent, dirs, files in os.walk(modules, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if d != '.cache' and not d.startswith('.'))
-            path = Path(parent)
-            if 'package.json' not in files or path.parent.name not in ('node_modules',) and not path.parent.name.startswith('@'):
-                # Traverse only node_modules/package[/node_modules], not sources.
-                if path.name != 'node_modules' and not path.name.startswith('@'):
-                    dirs[:] = [d for d in dirs if d == 'node_modules']
-                continue
-            manifest = path/'package.json'
-            assert manifest.stat().st_size <= 2*MIB
-            obj = json.loads(manifest.read_text())
-            installed.append({'path': str(path.relative_to(checkout)), 'name': obj.get('name'), 'version': obj.get('version')})
-            assert len(installed) <= 10000, 'installed inventory count cap'
-            dirs[:] = [d for d in dirs if d == 'node_modules']
+                     'state': state, 'bins': bin_status, 'locations': locations,
+                     'hoisted_path': str(placement.relative_to(checkout)), 'hoisted_state': placement_state})
     mask = os.umask(0o077)
     os.umask(mask)
     return {'lock_sha256_after': sha(checkout/'bun.lock'), 'lock_package_count': len(rows),
             'bootstrap': {'umask': oct(mask), 'uid': os.getuid(), 'gid': os.getgid(),
-                          'tools': {name: shutil.which(name) for name in ('node', 'bun', 'git', 'sh', 'bash', 'python3', 'make', 'g++', 'unzip')},
+                          'tools': {name: shutil.which(name) for name in ('node', 'bun', 'node-gyp', 'git', 'sh', 'bash', 'python3', 'make', 'g++', 'unzip')},
                           'source_modes': {rel: oct((checkout/rel).stat().st_mode & 0o777)
                                            for rel in ('package.json', 'bun.lock', 'bunfig.toml', 'packages/frontend/scripts/postinstall.sh')
                                            if (checkout/rel).is_file()}},
             'workspace_comparison': workspaces, 'packages': rows, 'installed': installed,
             'candidate_missing_or_mismatch': [r['lock_key'] for r in rows if r['platform_applicable'] and r['state'] != 'present'],
-            'interpretation': 'Lock placement comparison, not proof every missing row is fatal; platform optional/hoisting may differ. Full sanitized error log is authoritative.'}
+            'interpretation': 'Name/version presence includes the isolated .bun store and peer contexts; hoisted_state is informational, not a placement requirement. Presence does not prove dependency-edge resolution. Missing optional/platform packages need not be fatal. Full sanitized error log and original installer exit are authoritative.'}
 
 
 def capture_install(argv, cwd, log, timeout):

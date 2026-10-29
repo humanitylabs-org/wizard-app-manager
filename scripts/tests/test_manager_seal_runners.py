@@ -56,12 +56,49 @@ class ManagerSealRunners(unittest.TestCase):
         self.assertIn('size='+str(early.SCRATCH), tmpfs)
         self.assertIn('mode=0700,uid=1234,gid=1234', tmpfs)
         mounts = [cmd[i+1] for i, arg in enumerate(cmd) if arg == '--mount']
-        self.assertEqual(len(mounts), 2)
+        self.assertEqual(len(mounts), 3)
         self.assertTrue(all(m.endswith(',readonly') for m in mounts))
+        self.assertIn('type=bind,src=/srv/work/manager-seal-synthetic/manager-seal-early-results/bootstrap-tmp,dst=/tmp,readonly', mounts)
+        self.assertEqual(cmd.count('--tmpfs'), 1)
         self.assertNotIn('docker.sock', ' '.join(cmd))
         self.assertNotIn('--privileged', cmd)
         self.assertEqual(early.RESERVE, 214748364800)
         self.assertEqual(build.FOOTPRINT, {'focused': 17179869184, 'image': 42949672960})
+
+    def test_bunx_redirect_is_one_uid_bound_readonly_alias_not_another_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            alias = early.prepare_bunx_tmp_alias(output, 1234)
+            self.assertEqual([p.name for p in alias.iterdir()], ['bunx-1234-node-gyp@latest'])
+            link = alias/'bunx-1234-node-gyp@latest'
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(str(link.readlink()), '/work/tmp/bunx-1234-node-gyp@latest')
+            self.assertEqual(alias.stat().st_mode & 0o777, 0o700)
+            with self.assertRaises(FileExistsError):
+                early.prepare_bunx_tmp_alias(output, 1234)
+
+    def test_bunx_alias_verifies_actual_write_through_and_refuses_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            alias, target_parent = root/'alias', root/'target'
+            alias.mkdir()
+            target_parent.mkdir()
+            name = early.bunx_node_gyp_cache(1234)
+            target = target_parent/name
+            target.mkdir()
+            link = alias/name
+            link.symlink_to(target, target_is_directory=True)
+            result = early.verify_bunx_tmp_alias(alias, target_parent, 1234)
+            self.assertTrue(result['write_through_verified'])
+            self.assertEqual(list(target.iterdir()), [])
+            (alias/'unexpected').touch()
+            with self.assertRaises(AssertionError):
+                early.verify_bunx_tmp_alias(alias, target_parent, 1234)
+            (alias/'unexpected').unlink()
+            link.unlink()
+            link.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(AssertionError):
+                early.verify_bunx_tmp_alias(alias, target_parent, 1234)
 
     def test_error_filenames_cannot_exhaust_or_match_real_error_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,11 +196,54 @@ class ManagerSealRunners(unittest.TestCase):
             self.assertEqual(result['candidate_missing_or_mismatch'], ['missing'])
             self.assertTrue(all(not row['differences'] for row in result['workspace_comparison']))
             self.assertEqual(result['lock_package_count'], 5)
-            self.assertEqual({r['name'] for r in result['installed']}, {'@scope/present', 'child'})
+            self.assertEqual({r['name'] for r in result['installed']}, {'@scope/present', 'child', 'common'})
             workspace.joinpath('package.json').unlink()
             result = evidence.compare_install(root)
             self.assertFalse(result['workspace_comparison'][1]['exists'])
             self.assertIn('common', result['candidate_missing_or_mismatch'])
+
+    def test_isolated_store_scopes_versions_peers_and_bins_are_not_missing_hoists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/'package.json').write_text('{"name":"root"}')
+            for version, peer in [('1.2.3', '+aaaa'), ('1.2.3', '+bbbb'), ('2.0.0', '')]:
+                package = root/f'node_modules/.bun/@scope+tool@{version}{peer}/node_modules/@scope/tool'
+                package.mkdir(parents=True)
+                (package/'package.json').write_text(json.dumps({'name':'@scope/tool', 'version':version}))
+                (package/'cli.js').write_text('#!/usr/bin/env node\n')
+                (package/'cli.js').chmod(0o755)
+            lock = {'workspaces':{'':{'name':'root'}}, 'packages':{
+                '@scope/tool':['@scope/tool@1.2.3', '', {'bin':{'tool':'cli.js'}}],
+                'parent/@scope/tool':['@scope/tool@2.0.0'],
+                'absent-version':['@scope/tool@3.0.0']}}
+            (root/'bun.lock').write_text(json.dumps(lock))
+            result = evidence.compare_install(root)
+            self.assertEqual(result['candidate_missing_or_mismatch'], ['absent-version'])
+            self.assertEqual(len(result['installed']), 3)
+            row = result['packages'][0]
+            self.assertEqual(row['hoisted_state'], 'missing')
+            self.assertEqual(row['state'], 'present')
+            self.assertEqual(len(row['locations']), 2)
+            self.assertTrue(row['bins'][0]['exists'])
+            self.assertTrue(row['bins'][0]['executable'])
+
+    def test_inventory_deduplicates_store_links_without_reading_escape_or_source_trees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, outside = Path(tmp)/'export', Path(tmp)/'outside'
+            root.mkdir()
+            outside.mkdir()
+            (outside/'package.json').write_text('not-json-must-not-be-read')
+            package = root/'node_modules/.bun/tool@1.0.0/node_modules/tool'
+            package.mkdir(parents=True)
+            (package/'package.json').write_text('{"name":"tool","version":"1.0.0"}')
+            (root/'node_modules/tool').symlink_to(package, target_is_directory=True)
+            (root/'node_modules/escape').symlink_to(outside, target_is_directory=True)
+            source = package/'src'
+            source.mkdir()
+            (source/'package.json').write_text('not-json-must-not-be-read')
+            installed = evidence.installed_inventory(root, {})
+            self.assertEqual(len(installed), 1)
+            self.assertEqual(installed[0]['name'], 'tool')
 
     def test_capture_preserves_exit_timeout_and_explicit_byte_cap(self):
         with tempfile.TemporaryDirectory() as tmp:

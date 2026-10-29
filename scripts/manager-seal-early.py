@@ -55,6 +55,42 @@ def verify_source(root, source, manifest_sha):
     return manifest
 
 
+def bunx_node_gyp_cache(uid):
+    # Bun 1.3.0 bunx_command.zig uses platformTempDir(), not TMPDIR.
+    return f'bunx-{uid}-node-gyp@latest'
+
+
+def prepare_bunx_tmp_alias(output, uid):
+    """One read-only /tmp entry; all payload writes stay on the SAME /work cap.
+
+    Do not add another tmpfs or make /tmp/root writable. Docker bind-mounts this
+    directory read-only; the absolute link resolves only INSIDE the container.
+    """
+    alias = output/'bootstrap-tmp'
+    alias.mkdir(mode=0o700)
+    name = bunx_node_gyp_cache(uid)
+    (alias/name).symlink_to('/work/tmp/'+name, target_is_directory=True)
+    return alias
+
+
+def verify_bunx_tmp_alias(tmp, target_parent, uid):
+    name = bunx_node_gyp_cache(uid)
+    target = target_parent/name
+    assert target.is_dir() and not target.is_symlink(), 'missing capped bunx target'
+    assert sorted(p.name for p in tmp.iterdir()) == [name], 'unexpected /tmp entries'
+    assert (tmp/name).is_symlink() and os.readlink(tmp/name) == str(target), 'bunx alias drift'
+    assert (tmp/name).resolve() == target.resolve(), 'bunx alias escaped capped target'
+    assert (tmp/name).stat().st_dev == target_parent.stat().st_dev, 'bunx cache is not on /work tmpfs'
+    probe = tmp/name/'.manager-seal-alias-probe'
+    with probe.open('xb') as stream:
+        stream.write(b'synthetic-bunx-alias\n')
+    try:
+        assert (target/probe.name).read_bytes() == b'synthetic-bunx-alias\n'
+    finally:
+        probe.unlink()
+    return {'path': str(tmp/name), 'target': str(target), 'same_tmpfs': True, 'write_through_verified': True}
+
+
 def create_command(root, name, uid, gid, source, manifest_sha):
     return ['docker', 'create', '--pull=never', '--name', name,
             '--label', 'wizard.qa.manager-seal.early='+source, '--read-only',
@@ -65,6 +101,7 @@ def create_command(root, name, uid, gid, source, manifest_sha):
             '--tmpfs', f'/work:rw,exec,nosuid,nodev,size={SCRATCH},mode=0700,uid={uid},gid={gid}',
             '--mount', f'type=bind,src={root},dst=/source,readonly',
             '--mount', f'type=bind,src={NODE},dst=/tooling/node,readonly',
+            '--mount', f'type=bind,src={root}/manager-seal-early-results/bootstrap-tmp,dst=/tmp,readonly',
             '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'HOME=/work/home',
             '--env', 'TMPDIR=/work/tmp', '--env', 'XDG_CACHE_HOME=/work/cache',
             '--env', 'BUN_INSTALL_CACHE_DIR=/work/cache/bun', '--env', 'npm_config_cache=/work/cache/npm',
@@ -85,6 +122,9 @@ def inside(args):
     work = next(m for m in mounts if m[1] == '/work')
     assert work[2] == 'tmpfs' and os.statvfs('/work').f_blocks * os.statvfs('/work').f_frsize <= SCRATCH
     assert 'ro' in next(m for m in mounts if m[1] == '/')[3].split(',')
+    assert 'ro' in next(m for m in mounts if m[1] == '/tmp')[3].split(',')
+    for path in ('/source', '/tooling/node'):
+        assert 'ro' in next(m for m in mounts if m[1] == path)[3].split(',')
     assert not Path('/var/run/docker.sock').exists()
     root = Path('/source')
     manifest = verify_source(root, args.source, args.manifest_sha256)
@@ -97,11 +137,14 @@ def inside(args):
         shutil.copy2(root/rel, dst)
     for rel in ('bin', 'tmp', 'home', 'cache', 'logs'):
         Path('/work', rel).mkdir(mode=0o700)
+    Path('/work/tmp', bunx_node_gyp_cache(os.getuid())).mkdir(mode=0o700)
+    bunx_alias = verify_bunx_tmp_alias(Path('/tmp'), Path('/work/tmp'), os.getuid())
     Path('/work/bin/node').symlink_to('/tooling/node')
     result = {'source_head': args.source, 'source_manifest_sha256': args.manifest_sha256,
               'phase': 'early', 'scratch_bytes': SCRATCH, 'memory_bytes': MEMORY,
               'swap_bytes': 0, 'steps': {}, 'early_pass': False, 'focused_pass': False,
               'full_docker_acceptance': False, 'image_built': False, 'RUNTIPI_ADMITTED': False}
+    result['bunx_tmp_alias'] = bunx_alias
 
     def step(label, argv, cwd=checkout, timeout=300):
         log = Path('/work/logs', label+'.log')
@@ -178,6 +221,7 @@ def main(args):
     assert not subprocess.check_output(['docker', 'ps', '-aq', '--filter', 'name=^/'+name+'$'], text=True).strip(), 'existing owned name'
     output = root/'manager-seal-early-results'
     output.mkdir(exist_ok=False)
+    prepare_bunx_tmp_alias(output, os.getuid())
     receipt = {'source_head': args.source, 'source_manifest_sha256': args.manifest_sha256,
                'runner_sha256': digest(__file__), 'image_id': IMAGE, 'phase': 'early',
                'reserve_bytes': RESERVE, 'host_allowance_bytes': HOST_ALLOWANCE,
