@@ -210,6 +210,10 @@ def test_stdin_adapters_never_put_secrets_in_argv_or_errors(monkeypatch, case):
     assert all(value not in str(argv) for argv, _ in calls for value in OLD.values())
     assert OLD['POSTGRES_PASSWORD'].encode() not in calls[0][1]['input']
     assert b'SCRAM-SHA-256$' in calls[0][1]['input']
+    assert b'pg_terminate_backend(pid)' in calls[0][1]['input']
+    assert b"usename = 'tipi' AND pid <> pg_backend_pid()" in calls[0][1]['input']
+    assert 'close_all_user_connections' in calls[2][0]
+    assert calls[2][0][calls[2][0].index('--user') + 1] == 'rabbitmq'
     assert calls[1][1]['input'] == (OLD['RABBITMQ_PASSWORD'] + '\n').encode()
     def failed(*args, **kwargs):
         return SimpleNamespace(returncode=1, stdout=b'', stderr=OLD['JWT_SECRET'].encode())
