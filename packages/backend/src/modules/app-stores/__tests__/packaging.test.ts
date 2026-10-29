@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { copySource, preparePackage, pruneSources, repoPath, sourceDir } from '../packaging';
+import { copySource, preparePackage, pruneSources, repoPath, sourceDir, sourceInventory, inventoryPath, pristineSource } from '../packaging';
 
 const sha = 'b'.repeat(40);
 
@@ -83,8 +83,36 @@ describe('runtime.package (source | build | image)', () => {
     for (const n of ['demo@aaaaaaaaaaaa', `demo@${sha.slice(0, 12)}`, 'other@aaaaaaaaaaaa']) {
       await fs.promises.mkdir(path.join(root, '.wizard-source', 'wizardapps', n), { recursive: true });
     }
+    const old = path.join(root, '.wizard-source', 'wizardapps', 'demo@aaaaaaaaaaaa');
+    await fs.promises.writeFile(inventoryPath(old), JSON.stringify(await sourceInventory(old)));
     await pruneSources(root, 'wizardapps', 'demo', `demo@${sha.slice(0, 12)}`);
     expect(fs.readdirSync(path.join(root, '.wizard-source', 'wizardapps')).sort()).toEqual([`demo@${sha.slice(0, 12)}`, 'other@aaaaaaaaaaaa']);
+  });
+
+  it('never replaces modified source at the same commit, and retains modified and unknown old copies', async () => {
+    const compose = { services: { demo: { image: 'python' } } };
+    const opts = { pkg: 'source', compose, src, target, appName: 'demo', commit: sha };
+    await preparePackage(opts);
+    expect(await pristineSource(target)).toBe(true);
+    await preparePackage(opts); // no-op is safe and inventories old copies verified against upstream
+    await fs.promises.writeFile(path.join(target, 'app/server.py'), 'owner code');
+    expect(await pristineSource(target)).toBe(false);
+    await expect(preparePackage(opts)).rejects.toThrow(/nothing replaced/);
+    const unknown = sourceDir(path.join(tmp, 'app-data'), 'wizardapps', 'demo', 'c'.repeat(40));
+    await fs.promises.mkdir(unknown, { recursive: true });
+    await fs.promises.writeFile(path.join(unknown, 'owner.txt'), 'older owner code');
+    await pruneSources(path.join(tmp, 'app-data'), 'wizardapps', 'demo', 'new');
+    expect(fs.readFileSync(path.join(target, 'app/server.py'), 'utf8')).toBe('owner code');
+    expect(fs.readFileSync(path.join(unknown, 'owner.txt'), 'utf8')).toBe('older owner code');
+  });
+
+  it('detects added, deleted and retargeted source links without following them', async () => {
+    await fs.promises.symlink('server.py', path.join(src, 'app/alias'));
+    await preparePackage({ pkg: 'source', compose: { services: {} }, src, target, appName: 'demo', commit: sha });
+    expect(await pristineSource(target)).toBe(true);
+    await fs.promises.unlink(path.join(target, 'app/alias'));
+    await fs.promises.symlink('Dockerfile', path.join(target, 'app/alias'));
+    expect(await pristineSource(target)).toBe(false);
   });
 
   it('repoPath normalizes and refuses escapes', () => {
