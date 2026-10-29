@@ -22,7 +22,7 @@ chose a mode and that already runs apps the owner installed (anything that isn't
 one notification saying how to turn Keep apps apart on (Settings › Connections › Details). A new box, or one with only
 Wizard's own defaults, is settled to **declared**. A recorded choice is never changed; the decision is kept as
 `connection_mode_settled` in `~/.wizard-os/app-manager.json`. Where wam can't read `wizard-grants.json` it can't see a
-recorded choice and applies the same rule.
+recorded choice and applies the same rule, except that an API-reported open is always kept (open is never a default).
 
 **Before switching a box from open to declared,** check that every app-to-app call it relies on is declared or granted:
 an app that calls another without a `uses:` loses it. Look for other apps' hostnames in each app's compose, env and code

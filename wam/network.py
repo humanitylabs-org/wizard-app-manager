@@ -1109,6 +1109,14 @@ def settle_mode(c, rt, installed: set[str], defaults: set[str], notify=None) -> 
             _save_cfg(c.home, {**_cfg(c.home), SETTLED: done})
         return None
     readable, mode = _recorded_mode(c.runtipi_root)
+    if not readable:
+        # The App Manager's API reports declared for both a choice and no choice, but open is always a choice.
+        try:
+            got = rt.req("GET", "/apps/wizard/connections")
+            if isinstance(got, dict) and got.get("mode") == "open":
+                readable, mode = True, "open"
+        except Exception:  # noqa: BLE001 - unreadable either way: the rule below
+            pass
     owner_apps = sorted(set(installed) - set(defaults))
     if readable and mode:
         target, why = mode, "owner choice kept"

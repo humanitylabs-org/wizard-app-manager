@@ -1,6 +1,7 @@
 """Upgrade safety for app isolation: a box that ran apps before isolation keeps them connected (open) unless its owner
 chose; a new box starts with apps kept apart (declared). Decided once per box, at the start of `wam bootstrap`."""
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +10,12 @@ from wam import cli, network
 
 
 class RT:
-    def __init__(self, fail=False):
-        self.posts, self.fail = [], fail
+    def __init__(self, fail=False, api_mode="declared"):
+        self.posts, self.fail, self.api_mode = [], fail, api_mode
 
     def req(self, method, path, body=None, **kw):
+        if method == "GET":
+            return {"mode": self.api_mode, "grants": []}
         if self.fail:
             raise RuntimeError("404 not found")
         self.posts.append((method, path, body))
@@ -142,3 +145,33 @@ def test_notify_reports_whether_notifications_took_it(tmp_path, monkeypatch):
     assert app_updates._notify(c, "t", "m", required=True) is False
     monkeypatch.setattr(app_updates.urllib.request, "urlopen", lambda *a, **k: R(b'{"result":{"content":[]}}'))
     assert app_updates._notify(c, "t", "m", required=True) is True
+
+
+@pytest.mark.parametrize("installed", [{"wizard-ux"}, {"files", "money"}])
+def test_unreadable_grants_keep_an_api_reported_open_choice(box, installed):
+    """Codex P1: wizard-grants.json is often root-owned 0600. Open is always an owner choice, so it is kept."""
+    p = box.runtipi_root / "state" / "wizard-grants.json"
+    p.write_text("{}")
+    p.chmod(0)
+    try:
+        if os.access(p, os.R_OK):
+            pytest.skip("running as root: the file stays readable")
+        rt, sent = RT(api_mode="open"), []
+        out = settle(box, rt, installed, sent)
+        assert out["mode"] == "open" and rt.posts == [] and sent == []
+    finally:
+        p.chmod(0o600)
+
+
+def test_unreadable_grants_reporting_declared_follow_the_rule(box):
+    p = box.runtipi_root / "state" / "wizard-grants.json"
+    p.write_text("{}")
+    p.chmod(0)
+    try:
+        if os.access(p, os.R_OK):
+            pytest.skip("running as root: the file stays readable")
+        rt = RT(api_mode="declared")
+        assert settle(box, rt, {"wizard-ux"})["mode"] == "declared"
+        assert rt.posts == [("POST", "/apps/wizard/connection-mode", {"mode": "declared"})]
+    finally:
+        p.chmod(0o600)
