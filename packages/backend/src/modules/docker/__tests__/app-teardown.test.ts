@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { appProject, teardownApp } from '../app-teardown';
+import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
+import { DockerService } from '../docker.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { LoggerService } from '@/core/logger/logger.service';
 
 function fixture() {
   let exists = true;
@@ -47,6 +51,17 @@ describe('daemon-owned teardown', () => {
     await expect(teardownApp('demo:wizardapps', 'down', f.docker)).rejects.toThrow('daemon unavailable');
     expect(f.remove).not.toHaveBeenCalled();
   });
+  it('uninstall stops before an unreadable recipe inventory and retains control/data on failure', async () => {
+    const calls: string[] = [];
+    const service = { composeApp: vi.fn(async () => { calls.push('stop'); }), storage: { apps: async () => { calls.push('inventory'); throw new Error('unreadable recipe'); } } };
+    const files = { deleteAppFolder: vi.fn(), deleteAppDataDir: vi.fn() };
+    const ref: any = { get: (token: any) => new Map<any, any>([[DockerService, service], [AppFilesManager, files], [LoggerService, { info: vi.fn() }]]).get(token) };
+    expect(await new UninstallAppCommand(ref, {} as any).execute('demo:wizardapps')).toMatchObject({ success: false });
+    expect(calls).toEqual(['stop', 'inventory']);
+    expect(files.deleteAppFolder).not.toHaveBeenCalled();
+    expect(files.deleteAppDataDir).not.toHaveBeenCalled();
+  });
+
   it('does not accept raw project or option injection', () => {
     expect(() => appProject('demo:wizardapps --all')).toThrow('Invalid');
   });

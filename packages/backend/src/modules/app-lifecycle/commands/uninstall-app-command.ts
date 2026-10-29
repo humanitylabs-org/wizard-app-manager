@@ -13,6 +13,10 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     try {
       logger.info(`Uninstalling app ${appUrn}`);
 
+      // Risk-reducing target teardown precedes any recipe/grant inventory read.
+      // Keep named volumes as the owner's rollback copy. Never continue to data
+      // deletion when the daemon cannot acknowledge the exact target removal.
+      await dockerService.composeApp(appUrn, 'down --remove-orphans --rmi all');
       const removedId = appUrn.split(':')[0]!;
       const installed = await dockerService.storage.apps();
       const affected = await dockerService.storage.remove(removedId);
@@ -21,10 +25,6 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         await dockerService.composeApp(app.urn as AppUrn, 'down --remove-orphans');
         await dockerService.composeApp(app.urn as AppUrn, 'up --detach --force-recreate --remove-orphans');
       }
-      // Do not delete data/control records if daemon teardown is unacknowledged.
-      // Keep named volumes as the owner's rollback copy.
-      await dockerService.composeApp(appUrn, 'down --remove-orphans --rmi all');
-
       await appFilesManager.deleteAppFolder(appUrn);
       await appFilesManager.deleteAppDataDir(appUrn);
 
