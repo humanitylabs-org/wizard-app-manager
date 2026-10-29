@@ -1222,7 +1222,7 @@ def bootstrap(c: Config) -> dict:
     return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, *, held: dict | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
@@ -1255,6 +1255,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict) -> list[str]:
         from .source_integrity import update_block
         reason = update_block(c.runtipi_root, STORE, app_id, verify_legacy=True)
         if reason:
+            if held is not None:
+                held[app_id] = reason
             print(f"keeping {app_id} unchanged: {reason}", file=sys.stderr)
             continue
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
@@ -1954,6 +1956,7 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        raise ValueError('Use wam app update <app> [--no-backup]; raw or bulk update passthrough is not safe')
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
