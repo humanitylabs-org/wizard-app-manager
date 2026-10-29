@@ -492,3 +492,9 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/334. `releases/stable` → 0.3.84; `promotions/0.3.84.json` sha256 `48eece5b9a407d3cddb5a185913ea06e4714c8ca79bed111a364f6635328eabc`.
 Fast-tracked as **feature** (owner-approved). Installed upgrade 0.3.83 → 0.3.84 passed: wizard-os docs/acceptance/promote-0.3.84.md.
+
+## 0.3.85 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/333. SHA256: `73a059e3bcc34f15cc78333881228a437240bf3d3c217dd90eae00535417845b`.
+0.3.84 plus the Recommended fix App Manager #349 (upgrading boxes keep their apps connected; new boxes start with apps kept apart). Evidence: wizard-os docs/acceptance/release-0.3.85.md (installed upgrade 0.3.83 -> 0.3.84 -> 0.3.85 on a disposable KVM guest).
+Channel: on latest only. Stable stays 0.3.84 (promoted separately by the release train, wizard-os #334); 0.3.85 waits for James.
