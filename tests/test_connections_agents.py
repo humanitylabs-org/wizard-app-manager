@@ -155,7 +155,7 @@ class Service:
             def do_GET(self):
                 if self.path == "/wizard/v1/agents":
                     return self._send(200, {"agents": [
-                        {"id": "hermes", "label": "Hermes", "harness": "hermes", "privacy": "standard",
+                        {"id": "hermes", "label": "Oscar", "harness": "hermes", "privacy": "standard",
                          "model": {"provider": "host", "model": ""},
                          "permissions": {"wizard_apps": sorted(svc.lists["hermes"] - {"browser"}),
                                          "agent_apps": sorted(svc.lists["hermes"] & {"browser"})}},
@@ -192,12 +192,12 @@ def service(monkeypatch, tmp_path):
     s.srv.shutdown()
 
 
-def _named(tmp_path, label="Oscar"):
+def _named(tmp_path):
     hh = tmp_path / "hermes"
     hh.mkdir(exist_ok=True)
     (hh / "config.yaml").write_text("model:\n  default: claude-opus-5-5\n  provider: anthropic\n")
     (tmp_path / "alongside.json").write_text(json.dumps({"mode": "alongside", "agent": {
-        "id": "host-hermes", "name": "host Hermes", "label": label, "hermes_home": str(hh), "origin": "http://127.0.0.1:8642"}}))
+        "id": "host-hermes", "name": "host Hermes", "hermes_home": str(hh), "origin": "http://127.0.0.1:8642"}}))
     return tmp_path
 
 
@@ -241,16 +241,25 @@ def test_no_agent_service_is_said_plainly(monkeypatch, tmp_path):
     assert e.value.status == 503
 
 
-def test_the_owners_name_for_his_agent_reaches_the_agent_service(tmp_path):
-    st = json.loads(_named(tmp_path).joinpath("alongside.json").read_text())
-    st["shell"] = {"port": 8796}
-    st["service"] = {"port": 8798}
-    text = alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
-    assert 'WIZARD_MAIN_AGENT_LABEL: "Oscar"' in text
-    st["agent"]["label"] = 'Os"car\n: x'
-    assert 'WIZARD_MAIN_AGENT_LABEL: "Oscar x"' in alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
-    del st["agent"]["label"]
-    assert "WIZARD_MAIN_AGENT_LABEL" not in alongside.shell_override(st, "wizard-agent-service", tmp_path / "wos", "service")
+def test_turn_all_on_is_all_or_nothing(service, tmp_path):
+    service.lists["hermes"] -= {"cinequeue", "browser"}
+    with pytest.raises(agent_access.AccessError):   # "files" isn't an app the Agent Service gives agents
+        agent_access.set_access(tmp_path, "hermes", ["cinequeue", "browser", "files"], True)
+    assert service.puts == [] and service.lists["hermes"] == {"money"}
+    # a write that fails half way is put back
+    real = agent_access._req
+    def flaky(origin, method, path, body=None, timeout=10):
+        if method == "PUT" and "/browser/" in path and body == {"agents": ["hermes"]}:
+            raise agent_access.AccessError("the Agent Service refused: boom")
+        return real(origin, method, path, body, timeout)
+    agent_access._req = flaky
+    try:
+        with pytest.raises(agent_access.AccessError):
+            agent_access.set_access(tmp_path, "hermes", ["cinequeue", "browser"], True)
+    finally:
+        agent_access._req = real
+    assert service.lists["hermes"] == {"money"}
+    assert service.puts[-1] == ("cinequeue", {"agents": []})
 
 
 # ---- `wizard call`: the host agent's other way to an app honours the same lists ---------------------------------
@@ -260,9 +269,14 @@ def _cli(tmp_path, *args, allowed=("money",)):
     (home / "apps.json").write_text(json.dumps({"schema": 1, "apps": [
         {"id": "cinequeue", "name": "Movies", "status": "running", "mcp": {"url": "http://127.0.0.1:9/mcp"}},
         {"id": "money", "name": "Money", "status": "running", "mcp": {"url": "http://127.0.0.1:9/mcp"}}]}))
-    agents = tmp_path / "agents"
-    agents.mkdir(exist_ok=True)
-    (agents / ".main-agent.json").write_text(json.dumps({"schema": 1, "wizard_apps": list(allowed), "agent_apps": []}))
+    agents = tmp_path / "wizard-os" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents.parent / "settings.json").write_text(json.dumps({"schema": 1, "agent": {"name": "Oscar"}}))
+    main = agents / ".main-agent.json"
+    if allowed is None:
+        main.write_text('{"schema": 1, "wizard_apps": [')   # cut short mid-write
+    else:
+        main.write_text(json.dumps({"schema": 1, "wizard_apps": list(allowed), "agent_apps": []}))
     env = {**os.environ, "WIZARD_OS_HOME": str(home), "WIZARD_AGENTS_DIR": str(agents), "HOME": str(tmp_path)}
     return subprocess.run([sys.executable, str(ROOT / "wizard-cli" / "wizard"), *args], capture_output=True, text=True,
                           env=env, timeout=30)
@@ -281,3 +295,6 @@ def test_wizard_call_refuses_an_app_the_owner_turned_off_in_plain_words(tmp_path
     # turned on again (or never chosen): it is only the app's own reachability that decides
     r = _cli(tmp_path, "call", "cinequeue.cinequeue_list", "{}", "--json", allowed=("money", "cinequeue"))
     assert r.returncode == 7   # unreachable: the test app isn't running, but the call was allowed
+    # a lists file that can't be read allows nothing: the owner's Off never turns into On
+    assert _cli(tmp_path, "call", "money.x", "{}", "--json", allowed=None).returncode == 10
+

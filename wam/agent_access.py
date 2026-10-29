@@ -89,15 +89,6 @@ def _host_model(home: Path | None) -> tuple[str, str]:
     return "", ""
 
 
-def main_label(home: Path | None) -> str:
-    """The owner's name for his main agent on an alongside box (`alongside.json` agent.label, e.g. "Oscar"); the
-    Agent Service gets the same name as WIZARD_MAIN_AGENT_LABEL. '' when he hasn't named it."""
-    from . import alongside
-    st = alongside.load(Path(home)) if home else None
-    label = ((st or {}).get("agent") or {}).get("label")
-    return re.sub(r"[\x00-\x1f]", "", str(label)).strip()[:60] if isinstance(label, str) else ""
-
-
 def _ids(v) -> list[str]:
     return [x for x in v if isinstance(x, str) and APP_ID.fullmatch(x)] if isinstance(v, list) else []
 
@@ -114,7 +105,6 @@ def instances(home: Path | None) -> dict:
     opts = _req(origin, "GET", "/wizard/v1/agent-options")
     known = sorted({a.get("id") for k in ("wizard_apps", "agent_apps") for a in (opts.get(k) or [])
                     if isinstance(a, dict) and isinstance(a.get("id"), str) and APP_ID.fullmatch(a["id"])})
-    label = main_label(home)
     out = []
     for a in got.get("agents") or []:
         if not isinstance(a, dict) or not AGENT_ID.fullmatch(str(a.get("id") or "")) or a.get("role") == "recovery":
@@ -128,7 +118,7 @@ def instances(home: Path | None) -> dict:
         harness = str(a.get("harness") or "hermes")
         out.append({
             "id": a["id"],
-            "name": (label if main and label else str(a.get("label") or a["id"]))[:60],
+            "name": str(a.get("label") or a["id"])[:60],
             "harness": HARNESSES.get(harness, harness[:1].upper() + harness[1:30]), "harness_id": harness[:30],
             "model": name, "provider": prov, "main": main, "private": a.get("privacy") == "private",
             "on": sorted(set(_ids(perms.get("wizard_apps"))) | set(_ids(perms.get("agent_apps")))),
@@ -154,12 +144,27 @@ def set_access(home: Path | None, agent: str, apps: list[str], on: bool) -> dict
     agents = {a.get("id") for a in (_req(origin, "GET", "/wizard/v1/agents").get("agents") or []) if isinstance(a, dict)}
     if agent not in agents:
         raise ValueError(f"no agent called {agent}")
+    # Read every app first (an unknown app refuses the whole change before anything is written), then write; if a
+    # write fails, put back the ones already written, so Turn all on is all or nothing.
+    plan = []
     for app in dict.fromkeys(apps):
         cur = _req(origin, "GET", f"/wizard/v1/apps/{app}/agents")
-        ids = [a["id"] for a in cur.get("agents") or [] if isinstance(a, dict) and a.get("enabled") and isinstance(a.get("id"), str)]
+        ids = sorted(a["id"] for a in cur.get("agents") or [] if isinstance(a, dict) and a.get("enabled") and isinstance(a.get("id"), str))
         want = sorted(set(ids) | {agent}) if on else sorted(set(ids) - {agent})
-        if sorted(ids) != want:
+        if ids != want:
+            plan.append((app, ids, want))
+    done = []
+    try:
+        for app, ids, want in plan:
             _req(origin, "PUT", f"/wizard/v1/apps/{app}/agents", {"agents": want})
+            done.append((app, ids))
+    except AccessError:
+        for app, ids in reversed(done):
+            try:
+                _req(origin, "PUT", f"/wizard/v1/apps/{app}/agents", {"agents": ids})
+            except AccessError:
+                pass
+        raise
     return instances(home)
 
 

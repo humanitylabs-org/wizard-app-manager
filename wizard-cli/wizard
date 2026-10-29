@@ -151,16 +151,28 @@ def agents_dir() -> Path | None:
     return None
 
 
-def main_agent_access() -> tuple[set | None, str]:
-    """(the app ids the main agent may use, or None for every app; its name). The name is the owner's for it
-    (alongside.json agent.label), else the Agent Service's default."""
-    label = ((alongside_state().get("agent") or {}).get("label") or "").strip()[:60] or "Hermes"
-    d = agents_dir()
+def _json_file(path: Path):
     try:
-        st = json.loads((d / ".main-agent.json").read_text(encoding="utf-8")) if d else None
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        st = None
-    if not isinstance(st, dict) or st.get("schema") != 1:
+        return None
+
+
+def main_agent_access() -> tuple[set | None, str]:
+    """(the app ids the main agent may use, or None for every app; its name). The name is what the owner calls it
+    (the Agent Service's settings.json agent.name), else the Agent Service's default, Hermes. A lists file that is
+    there but can't be read allows nothing (fail closed): the owner's Off must never turn into On."""
+    d = agents_dir()
+    name = ((_json_file(d.parent / "settings.json") if d else None) or {}).get("agent") or {}
+    label = str(name.get("name") or "").strip()[:40] if isinstance(name, dict) else ""
+    label = "Hermes" if label in ("", "Wizard") else label
+    f = d / ".main-agent.json" if d else None
+    if not f or not f.exists():
+        return None, label
+    st = _json_file(f)
+    if not isinstance(st, dict):
+        return set(), label
+    if st.get("schema") != 1:   # no stored choice: every app, as the gateway does
         return None, label
     return {x for k in ("wizard_apps", "agent_apps") for x in (st.get(k) or []) if isinstance(x, str)}, label
 

@@ -588,11 +588,6 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", stt_origin):
             raise SystemExit(f"Transcriber address {stt_origin!r} is not a loopback origin")
         stt_env = f"\n      WIZARD_STT_ORIGIN: {stt_origin}"
-    # The owner's name for his agent (alongside.json agent.label, e.g. "Oscar"): the Agent Service calls the main
-    # agent by it (Chats, Connections → Agents, "Oscar is not allowed to use Money").
-    label = re.sub(r"[^\w .'-]", "", str(a.get("label") or ""), flags=re.UNICODE).strip()[:40]
-    if label:
-        stt_env += f'\n      WIZARD_MAIN_AGENT_LABEL: "{label}"'
     return SHELL_OVERRIDE.format(
         app=app_id, origin=a["origin"], port=port,
         access=("The owner opted in to sharing session history (--share-history): the Hermes home is mounted\n"

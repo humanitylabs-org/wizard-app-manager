@@ -20,8 +20,9 @@ On Miguel's box: `~/runtipi/app-data/wizardapps/wizard-agent-service/data/wizard
 wam never writes these files: it changes them through the Agent Service's owner API on the box's loopback
 (`PUT /wizard/v1/apps/<app>/agents`, which sets exactly which agents may use one app), `wam/agent_access.py`.
 
-The main agent's name: the owner's own for it, `alongside.json` `agent.label` (e.g. `"Oscar"`) on an alongside box,
-which wam also hands the Agent Service as `WIZARD_MAIN_AGENT_LABEL`; else the Agent Service's label (default "Hermes").
+The main agent's name is what the owner calls his agent, the Agent Service's `settings.json` `agent.name` (e.g.
+`"Oscar"`; the shell's `WizConfig.agent()`), else its `WIZARD_MAIN_AGENT_LABEL` (default "Hermes"). Its harness is
+Hermes; its model is the host Hermes's own (`config.yaml` `model`) on an alongside box.
 
 ## Where it is enforced
 
@@ -35,7 +36,8 @@ The agent reaches app tools only through the Agent Service gateway (`/wizard/mcp
   Connections."** The call never reaches the app. (A private app stays answered like one that is not installed.)
 
 The host agent's other way to an app, the `wizard` CLI (`wizard tools|call <app>`), reads the same `.main-agent.json`
-and refuses the same way (exit code 10, `not_allowed`); `wizard apps list` marks such an app `allowed: false`.
+and refuses the same way (exit code 10, `not_allowed`); `wizard apps list` marks such an app `allowed: false`. A lists
+file it can't read allows nothing (fail closed).
 
 ## Who may change it
 
