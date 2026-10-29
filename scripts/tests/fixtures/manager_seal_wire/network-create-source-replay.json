@@ -1,0 +1,1 @@
+{"Driver":"bridge","Scope":"","IPAM":null,"Internal":true,"Attachable":false,"Ingress":false,"ConfigOnly":false,"ConfigFrom":null,"Options":null,"Labels":{"wizard.qa.manager-seal":"qa"},"Name":"qa-net"}

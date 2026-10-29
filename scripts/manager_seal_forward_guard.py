@@ -71,9 +71,9 @@ ENDPOINT = dict(**fields(str, 'MacAddress NetworkID EndpointID Gateway IPAddress
                 **fields(int, 'GwPriority IPPrefixLen GlobalIPv6PrefixLen'),
                 IPAMConfig=dict, Links=list, Aliases=list, DriverOpts=dict, DNSNames=list)
 IPAM = dict(Driver=str, Config=list, Options=dict)
-NETWORK = dict(**fields(str, 'Name Driver'),
-               **fields(bool, 'CheckDuplicate Internal Attachable Ingress EnableIPv6 EnableIPv4'),
-               IPAM=IPAM, Options=dict, Labels=dict)
+NETWORK = dict(**fields(str, 'Name Driver Scope'),
+               **fields(bool, 'CheckDuplicate Internal Attachable Ingress EnableIPv6 EnableIPv4 ConfigOnly'),
+               IPAM=IPAM, ConfigFrom=dict, Options=dict, Labels=dict)
 HOST = dict(**fields(str, 'ContainerIDFile NetworkMode VolumeDriver CgroupnsMode IpcMode Cgroup PidMode UTSMode UsernsMode Runtime Isolation CgroupParent CpusetCpus CpusetMems'),
             **fields(bool, 'AutoRemove Privileged PublishAllPorts ReadonlyRootfs OomKillDisable Init'),
             **fields(int, 'OomScoreAdj ShmSize CpuShares Memory NanoCpus BlkioWeight CpuPeriod CpuQuota CpuRealtimePeriod CpuRealtimeRuntime MemoryReservation MemorySwap MemorySwappiness PidsLimit CpuCount CpuPercent IOMaximumIOps IOMaximumBandwidth'),
@@ -81,7 +81,7 @@ HOST = dict(**fields(str, 'ContainerIDFile NetworkMode VolumeDriver CgroupnsMode
             **fields(dict, 'PortBindings Sysctls Tmpfs'), LogConfig=LOG, RestartPolicy=RESTART)
 CONTAINER = dict(**fields(str, 'Hostname Domainname User Image WorkingDir StopSignal'),
                  **fields(bool, 'AttachStdin AttachStdout AttachStderr Tty OpenStdin StdinOnce NetworkDisabled'),
-                 **fields(list, 'Env Cmd Entrypoint'), **fields(dict, 'Volumes Labels ExposedPorts'),
+                 **fields(list, 'Env Cmd Entrypoint OnBuild'), **fields(dict, 'Volumes Labels ExposedPorts'),
                  StopTimeout=int, Healthcheck=HEALTH, HostConfig=HOST,
                  NetworkingConfig={'EndpointsConfig': dict})
 
@@ -198,6 +198,9 @@ class Policy:
         string_map(body.get('Labels'))
         for key in ('Env', 'Cmd', 'Entrypoint'):
             strings(body.get(key))
+        # SDK v28.5.0 Config.OnBuild has no omitempty; Compose leaves it nil.
+        # Never delegate image-build instructions, even a well-typed string list.
+        require(body.get('OnBuild') is None or body['OnBuild'] == [])
         if body.get('Healthcheck') is not None:
             strings(body['Healthcheck'].get('Test'))
             for key in HEALTH.keys() - {'Test'}:
@@ -209,7 +212,7 @@ class Policy:
         require(len(self.containers) < 5 and self.activated)
         allowed = {'Hostname', 'Domainname', 'User', 'AttachStdin', 'AttachStdout', 'AttachStderr', 'Tty', 'OpenStdin',
                    'StdinOnce', 'Env', 'Cmd', 'Image', 'Volumes', 'WorkingDir', 'Entrypoint', 'NetworkDisabled',
-                   'Labels', 'StopSignal', 'StopTimeout', 'Healthcheck', 'HostConfig', 'NetworkingConfig', 'ExposedPorts'}
+                   'Labels', 'StopSignal', 'StopTimeout', 'Healthcheck', 'HostConfig', 'NetworkingConfig', 'ExposedPorts', 'OnBuild'}
         require(set(body) <= allowed)
         require(body.get('Image') in self.cfg['images'])
         require(body.get('User') == self.cfg['user'])
@@ -302,7 +305,13 @@ class Policy:
             string_map(body.get('Labels'))
             string_map(body.get('Options'))
             require(self.activated and not query and len(self.networks) < 6)
-            require(set(body) <= {'Name', 'CheckDuplicate', 'Driver', 'Internal', 'Attachable', 'Ingress', 'IPAM', 'EnableIPv6', 'Options', 'Labels', 'EnableIPv4'})
+            require(set(body) <= {'Name', 'CheckDuplicate', 'Driver', 'Internal', 'Attachable', 'Ingress', 'IPAM', 'EnableIPv6', 'Options', 'Labels', 'EnableIPv4', 'Scope', 'ConfigOnly', 'ConfigFrom'})
+            # These unconditionally serialized SDK fields are not authority:
+            # admit ONLY the exact unused producer values, not local/swarm
+            # scope, config-only networks or any source network reference.
+            require('Scope' not in body or body['Scope'] == '')
+            require('ConfigOnly' not in body or body['ConfigOnly'] is False)
+            require(body.get('ConfigFrom') is None)
             require(body.get('Name') in self.cfg['network_names'] and body['Name'] not in self.networks.values())
             require(body.get('Driver') in ('', 'bridge') and not body.get('EnableIPv6') and not body.get('Attachable') and not body.get('Ingress'))
             ipam = body.get('IPAM') or {}

@@ -1,0 +1,67 @@
+{
+  "compose-create.go": {
+    "url": "https://raw.githubusercontent.com/docker/compose/v2.40.0/pkg/compose/create.go",
+    "sha256": "cb0e029ef12200188475189313b327bb6334dfcabed1361a486c46d5cc39d660",
+    "bytes": 49095
+  },
+  "compose-go.mod": {
+    "url": "https://raw.githubusercontent.com/docker/compose/v2.40.0/go.mod",
+    "sha256": "6fccfbbe8988ed77edf60bbb574683bb9c7a129c235e652e83e6d2f00c02700e",
+    "bytes": 10529
+  },
+  "sdk-network.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/network/network.go",
+    "sha256": "0973a75d95cf2a9f81fbeb145b56b98c19f85607afa56166ca5821e454f95096",
+    "bytes": 7398
+  },
+  "sdk-endpoint.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/network/endpoint.go",
+    "sha256": "f046a2d6759a7fdac33bdf555c792196f52fcfa7be7b212b1f89293146bf3bca",
+    "bytes": 4575
+  },
+  "sdk-hostconfig.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/container/hostconfig.go",
+    "sha256": "ea0e0d03bf9927b83400080cc58b3a842384ebf52d130577d22f92842e9d4f19",
+    "bytes": 19811
+  },
+  "sdk-config.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/container/config.go",
+    "sha256": "08df9dce6147eb2a4edb9859d81fedbdb13f2af2e249db38bf79361f67db4bcf",
+    "bytes": 4186
+  },
+  "sdk-mount.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/mount/mount.go",
+    "sha256": "a4b9e8529fbe5ef4aa0b1144aa720a6e12f04991a988248199750471b140c91d",
+    "bytes": 5352
+  },
+  "sdk-network-create.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/client/network_create.go",
+    "sha256": "8bf1910e14b2e213b329ae49ff233871584407e4113683af5341ed9341780e27",
+    "bytes": 1257
+  },
+  "sdk-container-create.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/client/container_create.go",
+    "sha256": "a89a5c1e60444a615322c7599d04ec2c83195cd5ffb444890b6033bcb65e8d13",
+    "bytes": 5757
+  },
+  "sdk-request.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/client/request.go",
+    "sha256": "dbb75093a66084e8346f9b1b939768f21b3ce10892b38a39f19ec270ee02cf5e",
+    "bytes": 11931
+  },
+  "sdk-ipam.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/network/ipam.go",
+    "sha256": "b8d0aca4a8e884ae15fec9eb5bc589a9bf3057d598518d81ea16002820589b88",
+    "bytes": 4120
+  },
+  "sdk-create-request.go": {
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.0/api/types/container/create_request.go",
+    "sha256": "b9d5ac7fea8cc905a7c3ba4b8df6995a4294f8c64c966e37bc4bd4684f7106a1",
+    "bytes": 511
+  },
+  "healthcheck.go": {
+    "url": "https://raw.githubusercontent.com/moby/docker-image-spec/v1.3.1/specs-go/v1/image.go",
+    "sha256": "70ff081667b9f247cab5e72d89f08a99625f95d70c12809d29acad940789a9e7",
+    "bytes": 2158
+  }
+}
