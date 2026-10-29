@@ -17,6 +17,16 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from wam.credential_rotation import DockerServices, Rotation, parse_env, SAFE_ENV
 from wam.runtipi import cli_token
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rotation_diagnostics import Diagnostics, assert_no_credentials, teardown
+
+DIAG = Diagnostics()
+
+
+class DiagnosticServices(DockerServices):
+    """Test-only subprocess seam; production Rotation and adapter remain unchanged."""
+    def command(self, args, data=None, *, ok=(0,)):
+        return DIAG.run(args, data=data, env=SAFE_ENV, cwd=self.root, ok=ok, compose=self.compose)
 
 BASE = Path('/var/lib/wizard-rotation-acceptance')
 MANAGER, LEGACY = 1992, 1993
@@ -28,9 +38,7 @@ CASES = ('no-crash', 'journal:db_intent', 'effect:db', 'effect:queue',
 
 
 def command(args, data=None):
-    result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=SAFE_ENV, timeout=300)
-    if result.returncode: raise RuntimeError('Disposable command failed; raw output intentionally suppressed')
+    result = DIAG.run(args, data=data, env=SAFE_ENV, timeout=300)
     return result.stdout
 
 
@@ -43,7 +51,9 @@ def request(io, path, *, token=None, body=None):
             ".then(r=>console.log(r.status)).catch(()=>process.exit(1));")
     raw = io.command(['docker', 'exec', '-i', cid, 'node', '-e', code],
                      json.dumps({'path': path, 'token': token, 'body': body}).encode()).stdout
-    return int(raw.strip())
+    status = int(raw.strip())
+    DIAG.emit('http-status', endpoint=path if path in ('/api/auth/register', '/api/marketplace/all') else 'other', status=status)
+    return status
 
 
 def identity_snapshot(paths):
@@ -93,7 +103,7 @@ def fixture(folder, images):
                          'healthcheck': {'test': ['CMD', 'rabbitmq-diagnostics', '-q', 'ping'], 'interval': '3s', 'timeout': '10s', 'retries': 60}},
         'runtipi': {'image': images['backend'], 'env_file': ['.env'], 'environment': {'NODE_ENV': 'production'},
                     'depends_on': {'runtipi-db': {'condition': 'service_healthy'}, 'runtipi-queue': {'condition': 'service_healthy'}},
-                    'volumes': [str(root) + ':/data', str(root / '.env') + ':/data/.env',
+                    'volumes': [str(root) + ':/data', str(root / '.env') + ':/data/.env', str(root / 'cache') + ':/cache',
                                 str(root / 'app-data') + ':/app-data', '/var/run/docker.sock:/var/run/docker.sock:ro'],
                     'healthcheck': {'test': ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3000/api/health'], 'interval': '3s', 'timeout': '3s', 'retries': 60}}}
     (root / 'docker-compose.yml').write_text(json.dumps({'services': services}))
@@ -107,9 +117,12 @@ def fixture(folder, images):
 
 
 def main():
+    DIAG.checkpoint('authorization')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--authorize-disposable', action='store_true')
     parser.add_argument('--source-revision', required=True)
+    parser.add_argument('--diagnostic-first-case', action='store_true',
+                        help='Only no-crash; emits review_required, never full acceptance')
     for name in ('backend', 'db', 'queue'): parser.add_argument('--' + name + '-image', required=True)
     args = parser.parse_args()
     if os.getuid() != 0 or not args.authorize_disposable:
@@ -133,49 +146,74 @@ def main():
     BASE.mkdir(mode=0o755)
     receipt = {'schema': 1, 'images': images, 'source_revision': args.source_revision,
                'cases': [], 'runtime': 'real-disposable-docker'}
-    for index, point in enumerate(CASES):
+    points = CASES[:1] if args.diagnostic_first_case else CASES
+    for index, point in enumerate(points):
+        DIAG.case = point
+        DIAG.checkpoint('fixture')
         folder = BASE / str(index); folder.mkdir(mode=0o755)
-        root, control, app, appenv = fixture(folder, images)
-        io = DockerServices(root)
+        io = DiagnosticServices(folder / 'runtipi')
+        primary = None
         try:
+            root, control, app, appenv = fixture(folder, images)
+            DIAG.checkpoint('initial-service-readiness')
             io.command([*io.compose, 'up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '240'])
+            DIAG.checkpoint('register-synthetic-operator')
             # Synthetic-only first operator. No existing owner credential is read.
             assert request(io, '/api/auth/register', body={'username': 'owner@rotation.invalid', 'password': 'Disposable-Only-Password-2026!'}) in (200, 201)
             original_bearer = cli_token(OLD['JWT_SECRET'], ttl=3600)
+            DIAG.checkpoint('original-bearer')
             assert request(io, '/api/marketplace/all', token=original_bearer) == 200
             before = identity_snapshot((app, appenv))
             def crash(where):
+                # Rotation emits fixed source-defined labels, never credential data.
+                assert where in ('backup:before.env', 'backup:after.env', 'effect:stop', 'effect:db', 'effect:queue', 'effect:env',
+                                 'effect:restart', 'effect:verify') or where in tuple('journal:' + p for p in
+                                 ('prepared', 'quiesced', 'db_intent', 'db_rotated', 'queue_intent',
+                                  'queue_rotated', 'file_committed', 'restarted', 'verified'))
+                DIAG.emit('rotation-checkpoint', checkpoint=where)
                 if where == point: raise InterruptedError('injected disposable crash')
             kwargs = dict(root=root, control=control / 'credentials', uid=MANAGER, gid=MANAGER, io=io)
+            DIAG.checkpoint('rotate')
             try: Rotation(**kwargs, crash=crash).rotate()
             except InterruptedError:
                 assert point != 'no-crash'
-            result = Rotation(**kwargs).rotate()
+            DIAG.checkpoint('resume-or-idempotent-verify')
+            result = Rotation(**kwargs, crash=lambda where: DIAG.emit('rotation-checkpoint', checkpoint=where)).rotate()
+            DIAG.checkpoint('assert-credentials-and-bearers')
             assert result['phase'] == 'verified'
             new = parse_env((root / '.env').read_bytes())
             assert all(new[k] != OLD[k] for k in OLD)
             assert request(io, '/api/marketplace/all', token=original_bearer) == 401
             assert request(io, '/api/marketplace/all', token=cli_token(new['JWT_SECRET'])) == 200
+            DIAG.checkpoint('assert-app-preservation-and-legacy-denial')
             assert identity_snapshot((app, appenv)) == before
             assert_legacy_denied((root / '.env', control / 'credentials/before.env', control / 'credentials/after.env', control / 'credentials/journal.json'))
             for p in (control / 'credentials').iterdir():
                 assert p.stat().st_uid == 0 and p.stat().st_mode & 0o777 == 0o600
             # Container logs must not contain any synthetic old/new plaintext key.
+            DIAG.checkpoint('assert-no-credential-logs')
             logs = io.command([*io.compose, 'logs', '--no-color']).stdout
-            assert all(v.encode() not in logs for v in (*OLD.values(), *new.values()))
+            assert_no_credentials(logs, OLD, new)
             receipt['cases'].append({'boundary': point, 'phase': 'verified', 'old_bearer': 401, 'new_bearer': 200,
                                      'old_database_password': 'rejected', 'old_queue_password': 'rejected',
                                      'app_bytes_uid_gid_mode': 'unchanged', 'legacy_uid_protected_read': 'denied'})
             print('PASS disposable boundary ' + point, flush=True)
+        except BaseException as error:
+            primary = error
+            DIAG.failure(error)
+            raise
         finally:
-            io.command([*io.compose, 'down', '--volumes', '--remove-orphans', '--timeout', '30'])
-    assert len(receipt['cases']) == len(CASES)
-    (BASE / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    print('Receipt: ' + str(BASE / 'receipt.json'))
+            teardown(io, DIAG, primary)
+    assert len(receipt['cases']) == len(points)
+    name = 'diagnostic-receipt.json' if args.diagnostic_first_case else 'receipt.json'
+    if args.diagnostic_first_case:
+        receipt.update(status='review_required', full_acceptance=False, diagnostic_only=True)
+    (BASE / name).write_text(json.dumps(receipt, indent=2) + '\n')
+    print('Receipt: ' + str(BASE / name))
 
 
 if __name__ == '__main__':
     try: main()
-    except Exception:
-        print('FAIL disposable rotation acceptance; raw exception suppressed to keep synthetic credentials out of logs', file=sys.stderr)
+    except Exception as error:
+        DIAG.failure(error)
         raise SystemExit(1)
