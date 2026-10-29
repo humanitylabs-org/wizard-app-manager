@@ -78,7 +78,8 @@ def test_root_preparation_never_inherits_agent_code_environment(monkeypatch):
     from pathlib import Path
     repo = Path(__file__).resolve().parents[1]
     get = (repo / 'get.sh').read_text()
-    assert 'mktemp /run/wizard-prepare.XXXXXXXX.py' in get
+    assert 'mktemp -d /run/wizard-prepare.XXXXXXXX' in get
+    assert 'protected-agent-storage.py' in get
     assert '/usr/bin/python3 -I "$helper"' in get
     ns = runpy.run_path(str(repo / 'scripts/prepare-alongside.py'))
     env = {'PATH': '/agent/bin', 'HOME': '/agent', 'PYTHONPATH': '/agent',

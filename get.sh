@@ -931,7 +931,21 @@ if [ "${WIZARD_CHECK:-0}" = 1 ]; then preflight; exit 0; fi
 
 # An already separated manager updates its protected checkout as itself. Never
 # scan the agent home, re-run root host preparation or re-enter the agent login.
+storage_preflight() {
+  local stage rc
+  if [ "$(id -u)" -eq 0 ]; then
+    stage="$(mktemp -d /run/wizard-storage-check.XXXXXXXX)"
+  else
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/wizard-storage-check.XXXXXXXX")"
+  fi
+  rc=0
+  curl -fsSL "$REPO/raw/$REF/scripts/protected-agent-storage.py" -o "$stage/check.py" || rc=$?
+  if [ "$rc" -eq 0 ]; then /usr/bin/python3 -I "$stage/check.py" "$@" >/dev/null || rc=$?; fi
+  rm -f "$stage/check.py"; rmdir "$stage"
+  return "$rc"
+}
 if separated_manager; then
+  storage_preflight check-pairing /var/lib/wizard-os/.wizard-os/privsep.json || exit 2
   MODE=alongside; export WIZARD_MODE=alongside WIZARD_SEPARATED=1
 fi
 if [ "$MODE" != fresh ] && ! separated_manager; then
@@ -968,14 +982,19 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       echo "The selected Hermes owner uses rootless Docker. The one-time host preparation does not support that layout yet; existing Docker and Hermes were not changed." >&2
       exit 2
     fi
+    if [ "$ALONG_USER" != root ]; then
+      storage_preflight check "$ALONG_USER" "$ALONG_HOME" || exit 2
+    fi
     prepare_server
     if [ "$ALONG_USER" != root ] && { [ "$(wos_mode "$ALONG_USER")" = none ] || [ -f /var/lib/wizard-os/.wizard-privsep ]; }; then
       # Only NEW alongside installs use this layout. The root step fetches trusted
       # code itself; nothing executed by the system lives in the Hermes home.
-      helper="$(mktemp /run/wizard-prepare.XXXXXXXX.py)"
+      preparation="$(mktemp -d /run/wizard-prepare.XXXXXXXX)"
+      helper="$preparation/prepare-alongside.py"
       curl -fsSL "$REPO/raw/$REF/scripts/prepare-alongside.py" -o "$helper"
+      curl -fsSL "$REPO/raw/$REF/scripts/protected-agent-storage.py" -o "$preparation/protected-agent-storage.py"
       /usr/bin/python3 -I "$helper" "$ALONG_USER" "$ALONG_HOME" "$REF"
-      rm -f "$helper"
+      rm -f "$helper" "$preparation/protected-agent-storage.py"; rmdir "$preparation"
       exit 0
     fi
     if [ "$ALONG_USER" != root ]; then

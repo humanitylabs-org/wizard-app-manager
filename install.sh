@@ -9,6 +9,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
 
+# Existing separated updates cannot move an agent home at the manager UID.
+# Refuse BEFORE private-access setup, Docker, pairing or Service mutation.
+if [ "${WIZARD_SEPARATED:-0}" = 1 ]; then
+  /usr/bin/python3 -I "$HERE/scripts/protected-agent-storage.py" check-pairing \
+    "${WIZARD_OS_HOME:-$HOME/.wizard-os}/privsep.json" >/dev/null
+fi
+
 # Fail before private access, Docker, files or services change. Validation needs no YAML dependency.
 (cd "$HERE" && python3 -m wam.release_pins)
 

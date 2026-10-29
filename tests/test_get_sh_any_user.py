@@ -58,12 +58,15 @@ while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; -*) ;; *) url="$1";; e
 if [[ "$url" == */scripts/prepare-alongside.py ]] && [ -n "$out" ]; then
   printf '%s\n' 'import os,sys' 'with open(os.environ["FAKE_LOG"],"a") as f: f.write("SEPARATED owner="+sys.argv[1]+" home="+sys.argv[2]+" WIZARD_AGENT_SAFE="+os.environ.get("WIZARD_AGENT_SAFE","")+"\n")' > "$out"
 fi
+if [[ "$url" == */scripts/protected-agent-storage.py ]] && [ -n "$out" ]; then
+  printf '%s\n' 'import os,sys' 'with open(os.environ["FAKE_LOG"],"a") as f: f.write("STORAGE_PREFLIGHT "+" ".join(sys.argv[1:])+"\n")' 'sys.exit(0 if os.environ.get("FAKE_STORAGE_READY","1")=="1" else 2)' > "$out"
+fi
 """
 
 STUBS['mktemp'] = r"""#!/bin/bash
-if [[ "${1:-}" == /run/wizard-prepare.* ]]; then
+if [ "${1:-}" = -d ] && [[ "${2:-}" == /run/wizard-* ]]; then
   echo "root-helper-safe-directory $*" >> "$FAKE_LOG"
-  exec /usr/bin/mktemp "$(dirname "$FAKE_LOG")/root-helper.XXXXXXXX.py"
+  exec /usr/bin/mktemp -d "$(dirname "$FAKE_LOG")/root-helper.XXXXXXXX"
 fi
 exec /usr/bin/mktemp "$@"
 """
@@ -475,4 +478,15 @@ def test_passwordful_user_gets_exact_one_time_admin_command_without_writes(box, 
     assert not (box.users["alice"][1] / ".wizard-os").exists()
     assert list(box.sudoers.iterdir()) == []
     assert "apt-get" not in box.log.read_text() and "systemd-run" not in box.log.read_text()
+
+
+def test_storage_maintenance_refusal_precedes_any_host_preparation(box):
+    box.add_user('alice', 1001)
+    box.hermes('alice')
+    p = box.run('root', FAKE_STORAGE_READY='0')
+    assert p.returncode == 2, p.stdout + p.stderr
+    calls = box.log.read_text()
+    assert 'STORAGE_PREFLIGHT check alice ' in calls
+    assert 'apt-get' not in calls and 'usermod' not in calls and not box.separated()
+    assert not box.handoff() and list(box.sudoers.iterdir()) == []
 

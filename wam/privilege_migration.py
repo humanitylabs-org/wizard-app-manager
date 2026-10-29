@@ -27,7 +27,10 @@ CONTROL = Path('/var/lib/wizard-os-migration')
 SYSTEMD = Path('/etc/systemd/system')
 STEPS = ('inventory', 'quiesce', 'snapshot', 'relocate', 'wiring', 'prepare',
          'units', 'start', 'doctor', 'remove_docker', 'credentials', 'complete')
-# The host dashboard and stock Hermes gateway intentionally stay at the agent uid.
+# The host dashboard and stock Hermes gateway retain their agent UID and unit
+# identity. This manager-only stop list is NOT a storage writer fence. The
+# selected home moves only in the separate sole-host-init storage transaction;
+# migrate refuses a missing committed mapping before touching this journal.
 USER_UNITS = ('wizard-app-manager-api.service', 'wizard-troubleshooter.service',
               'wizard-guardian.service', 'wizard-guardian.timer', 'wizard-backup.service',
               'wizard-backup.timer', 'wizard-os-update.service',
@@ -609,13 +612,39 @@ print(json.dumps(out))
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='wam privilege')
-    parser.add_argument('action', choices=('migrate','rollback','status'))
+    parser.add_argument('action', choices=('migrate','rollback','status','storage-relocate','storage-rollback'))
     parser.add_argument('--agent'); parser.add_argument('--hermes-home'); parser.add_argument('--ref')
     parser.add_argument('--stop-after', choices=STEPS, help='Owner checkpoint: resume with the same migrate command')
     parser.add_argument('--authorize-invalidation', action='store_true', help='Owner consent to invalidate leaked manager credentials after live Docker access is revoked; signs out backend sessions')
     args = parser.parse_args(argv)
     if os.getuid() != 0:
         raise ValueError('Ask the owner to run the explicit root host-preparation migration; use the thin wam client for app actions.')
+    # REUSE one root-only storage primitive for both installer and migration.
+    # It never starts a runtime or rotates credentials. Ordinary calls refuse
+    # before even creating the migration control directory or lock.
+    import runpy
+    storage = runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts/protected-agent-storage.py'))
+    if args.action.startswith('storage-'):
+        if not args.agent or not args.hermes_home: raise ValueError('Explicit agent and logical home required')
+        value = storage['Transaction'](args.agent, args.hermes_home).run(args.action.removeprefix('storage-'))
+        print(json.dumps(value, indent=2)); return 0
+    if args.action == 'rollback':
+        from .credential_rotation import rollback_allowed
+        rollback_allowed(CONTROL/'credentials')  # BEFORE lock/control mutations
+        if args.agent:
+            agent = args.agent
+        else:
+            agent = storage['protected_json'](CONTROL/'journal.json', private=True)['agent']
+        uid = pwd.getpwnam(agent).pw_uid
+        if (storage['ANCHOR']/'.mappings'/f'{uid}.json').exists():
+            raise ValueError('Complete the protected storage maintenance rollback before legacy runtime rollback')
+    if args.action == 'migrate':
+        if args.agent and args.hermes_home:
+            agent, logical = args.agent, args.hermes_home
+        else:
+            doc = storage['protected_json'](CONTROL/'journal.json', private=True)
+            agent, logical = doc['agent'], doc['hermes_home']
+        storage['require_mapping'](agent, logical)
     CONTROL.mkdir(mode=0o700, exist_ok=True)
     if CONTROL.is_symlink() or CONTROL.stat().st_uid != 0 or CONTROL.stat().st_mode & 0o077:
         raise ValueError('Migration control directory must be root-owned 0700')

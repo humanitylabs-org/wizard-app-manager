@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import runpy
 import secrets
 import shutil
 import subprocess
@@ -55,6 +56,16 @@ def main():
     agent = pwd.getpwnam(name)
     if not agent.pw_uid or name == 'wizard-system':
         raise SystemExit('Separated alongside requires a non-root Hermes account.')
+    # No root online copy, pairing rewrite, group probe, or Service change may
+    # precede the separately authorized recovery-boot storage transaction.
+    # get.sh fetches both reviewed files from the same trusted ref, under /run.
+    storage_file = Path(__file__).with_name('protected-agent-storage.py')
+    if not storage_file.is_file():
+        raise SystemExit('maintenance-needed: protected storage preflight is missing')
+    storage = runpy.run_path(str(storage_file))
+    try: storage['require_mapping'](name, hh)
+    except (ValueError, OSError, KeyError):
+        raise SystemExit('maintenance-needed: selected Hermes storage must be relocated in root-only recovery first') from None
     # Do not silently change an existing account's privileges or layout (Slice 6).
     groups = {grp.getgrgid(g).gr_name for g in os.getgrouplist(name, agent.pw_gid)}
     if groups & {'sudo', 'wheel', 'admin'} or ('docker' in groups and not migration):
