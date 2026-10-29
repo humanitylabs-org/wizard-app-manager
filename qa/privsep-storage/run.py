@@ -27,11 +27,12 @@ BASE = Path('/srv/work/images/debian-12-genericcloud-amd64.qcow2')
 BASE_SHA = '24036a8b79cbb11d809752c60f2f885b1a3b02b1d663faa0b648eb87bd7a256e'
 LOCK = Path('/srv/work/heavy/production/worker.lock')
 PYTEST_MODULES = ('tests/test_agent_storage.py', 'tests/test_privsep_alongside.py',
-                  'tests/test_privilege_migration.py', 'tests/test_get_sh_any_user.py')
+                  'tests/test_privilege_migration.py', 'tests/test_get_sh_any_user.py',
+                  'tests/test_initial_pid_namespace.py')
 
 
 def pytest_inventory(sources):
-    """Expand this finite four-module closure without importing/collecting tests.
+    """Expand this finite module closure without importing/collecting tests.
 
     Refuse new dynamic parametrization rather than guessing a passing count.
     Names follow pytest's default single-argument IDs (or literal explicit IDs).
@@ -108,15 +109,22 @@ def guest_inventory(source):
             'maintenance_boot_budget':len(cuts)+1,'normal_intervention_budget':len(interventions)}
 
 
-def preflight(stage):
+def preflight(stage, manifest_sha256):
+    # The parent's native argv binds the manifest BEFORE any input is parsed.
+    assert re.fullmatch('[0-9a-f]{64}', manifest_sha256), 'invalid manifest hash'
+    assert not (stage/'manifest.json').is_symlink()
+    assert digest(stage/'manifest.json') == manifest_sha256, 'manifest hash mismatch'
     doc=json.loads((stage/'manifest.json').read_text())
     assert re.fullmatch('[0-9a-f]{40}',doc['revision']) and stage.name==doc['revision']
     assert str(stage.parent)=='/srv/work/privsep/storage'
     assert doc['reserve_bytes']==RESERVE and doc['pending_bytes']==PENDING
     for name,value in doc['files'].items():
         assert '/' not in name and not (stage/name).is_symlink() and digest(stage/name)==value
+    assert digest(__file__) == doc['files']['runner.py'], 'executing runner differs from admitted source'
     assert inventory(stage/'source.tar')==json.loads((stage/'source-members.json').read_text())
     rows=json.loads((stage/'source-members.json').read_text())
+    assert len(rows) == len({row['path'] for row in rows}) == doc['source_members']
+    assert next(row['sha256'] for row in rows if row['path']=='scripts/protected-agent-storage.py') == doc['product_sha256']
     for name,key in [('qa/privsep-storage/run.py','runner.py'),('qa/privsep-storage/guest.py','guest.py')]:
         assert next(row['sha256'] for row in rows if row['path']==name)==digest(stage/key)
     # Parse—not import—the staged guest and exact expected runtime case identities.
@@ -173,6 +181,10 @@ class Runner:
             'reached_phases':[],'checkpoints':[],
             'source_binding':'genuine pushed commit + complete git archive',
             'scope':'protected storage primitive only; stock gateway, installed Service/HTTP/install follow separately'}
+        # Unit collector fixtures have no manifest; actual runs always do.
+        if (stage/'manifest.json').exists():
+            self.receipt.update(manifest_sha256=digest(stage/'manifest.json'),
+                                product_sha256=doc['product_sha256'])
         self.proc=None;self.log=None
         self.key=self.evidence/'id_ed25519';self.disk=self.evidence/'disk.qcow2'
         self.secondary=self.evidence/'secondary.qcow2';self.serial=None
@@ -442,9 +454,10 @@ class Runner:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage',type=Path,required=True)
+    parser.add_argument('--manifest-sha256',required=True)
     parser.add_argument('--preflight',action='store_true');parser.add_argument('--execute',action='store_true')
     args=parser.parse_args();assert args.preflight != args.execute
-    stage=args.stage.absolute();doc,result=preflight(stage)
+    stage=args.stage.absolute();doc,result=preflight(stage,args.manifest_sha256)
     if args.preflight:print(json.dumps(result,sort_keys=True));return 0
     native_lock();assert result['capacity_admissible'],'protected reserve + pending footprint unavailable'
     temp=stage/'tmp';temp.mkdir(mode=0o700)

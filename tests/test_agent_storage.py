@@ -312,3 +312,28 @@ def test_rollback_unavailability_precedes_direction_and_logical_mutation():
     assert "self.doc.get('direction') == 'rollback'" in run
     checker=ast.unparse(next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='require_mapping'))
     assert "'state': 'ready'" in checker and 'os.readlink' in checker and '.resolve(' not in checker
+
+
+@pytest.mark.parametrize('binding', ('wrong', 'malformed'))
+def test_storage_stage_manifest_binding_precedes_json_and_external_probes(tmp_path, binding):
+    spec=importlib.util.spec_from_file_location('storage_binding_under_test',REPO/'qa/privsep-storage/run.py')
+    assert spec is not None and spec.loader is not None
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    (tmp_path/'manifest.json').write_text('not JSON; must never be parsed')
+    expected='0'*64 if binding=='wrong' else 'not-a-sha256'
+    with pytest.raises(AssertionError,match='manifest hash mismatch' if binding=='wrong' else 'invalid manifest hash'):
+        module.preflight(tmp_path,expected)
+
+
+def test_storage_cold_init_oracle_requires_v2_same_fd_kernel_identity():
+    tree=ast.parse((REPO/'qa/privsep-storage/guest.py').read_text())
+    init=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='init')
+    sole=next(n for n in init.body if isinstance(n,ast.FunctionDef) and n.name=='sole_init')
+    text=ast.unparse(sole)
+    for required in ('m.require_fence()', 'os.fstat(fd)', 'libc.fstatfs(fd,', 'fcntl.ioctl(fd,',
+                     "'sole-host-init-v2'", "'device': st.st_dev"):
+        assert required in text
+    assert any(isinstance(n,ast.Try) and [ast.unparse(v) for v in n.finalbody]==['os.close(fd)']
+               for n in ast.walk(sole))
+    assert any(isinstance(n,ast.Assert) and isinstance(n.test,ast.Compare)
+               and isinstance(n.test.left,ast.Name) and n.test.left.id=='value' for n in ast.walk(sole))

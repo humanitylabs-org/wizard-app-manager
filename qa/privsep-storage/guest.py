@@ -325,7 +325,24 @@ def intervene():
 def init():
     assert os.getpid() == 1 and os.geteuid() == 0
     m = product()
-    receipt(INIT[0], m.require_fence)
+    def sole_init():
+        # Compare v2 evidence with independent facts on one real live FD.
+        # Device identity is per boot, never a hard-coded observation/token.
+        value = m.require_fence()
+        import fcntl
+        fd = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            st = os.fstat(fd); buf = (ctypes.c_long * 32)()
+            libc = ctypes.CDLL(None, use_errno=True)
+            assert libc.fstatfs(fd, ctypes.byref(buf)) == 0
+            nstype = fcntl.ioctl(fd, 0xB703)
+            assert stat.S_ISREG(st.st_mode) and buf[0] == 0x6E736673
+            assert st.st_ino == 0xEFFFFFFC and nstype == 0x20000000
+            assert value == {'mechanism': 'sole-host-init-v2', 'userspace_tasks': 1,
+                'pid_namespace': {'device': st.st_dev, 'inode': st.st_ino, 'type': nstype}}
+        finally: os.close(fd)
+        return value
+    receipt(INIT[0], sole_init)
     def surviving():
         pid = os.fork()
         if pid == 0:
