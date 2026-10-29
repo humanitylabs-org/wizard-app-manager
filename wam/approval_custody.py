@@ -6,6 +6,8 @@ neither unit installation nor Serve setup authority.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import os
 from pathlib import Path
 import socket
@@ -40,6 +42,17 @@ TAILSCALE_TEXT = f'''[Unit]
 Requires={SOCKET}
 After={SOCKET}
 '''
+
+
+@contextmanager
+def publication_lock(home):
+    """Serialize supported publication/withdrawal/root removal before release."""
+    fd = os.open(Path(home) / 'approval-origin.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _show(unit):

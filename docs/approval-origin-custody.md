@@ -45,6 +45,8 @@ or disable the custody socket**. Failed route removal/readback retains recovery
 metadata and custody. Migration refuses before quiescing an old worker if its
 approval route exists without independent custody.
 
+Publication, disable and root removal share one protected cross-process lock so
+a concurrent supported publication cannot race the withdrawal/release sequence.
 Only the owner-approved root host phase can remove custody. The fixed sequence is:
 remove all approval routes and saved-origin routes; acknowledge their absence;
 persist origin retirement; stop tailscaled and acknowledge inactivity; stop and

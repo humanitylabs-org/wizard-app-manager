@@ -102,6 +102,25 @@ def route(tmp_path, monkeypatch):
     return tmp_path, web, calls, run
 
 
+def test_publication_waits_for_shared_root_removal_lock(route):
+    import threading
+    home, web, calls, run = route
+    ready, done = threading.Event(), threading.Event()
+    errors = []
+    def publish():
+        ready.set()
+        try: oc.enable(home, HOST, run=run)
+        except BaseException as exc: errors.append(exc)
+        finally: done.set()
+    with ac.publication_lock(home):
+        t = threading.Thread(target=publish)
+        t.start()
+        assert ready.wait(1) and not done.wait(.05)
+        assert not calls
+    t.join(timeout=2)
+    assert done.is_set() and not errors and len(calls) == 1
+
+
 def test_publish_readback_and_idempotent_retry(route):
     home, web, calls, run = route
     assert oc.enable(home, HOST, run=run)['origin'] == ORIGIN

@@ -86,6 +86,19 @@ def main():
         raise RuntimeError('invalid trusted custody module')
     custody = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(custody)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(state, user.pw_uid, user.pw_gid)
+    state.chmod(0o700)
+    lock = os.open(state / 'approval-origin.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchown(lock, user.pw_uid, user.pw_gid)
+    finally:
+        os.close(lock)
+    with custody.publication_lock(state):
+        return apply(action, user, account, state, tree, custody)
+
+
+def apply(action, user, account, state, tree, custody):
     unitdir = Path('/etc/systemd/system')
     socket_path = unitdir / custody.SOCKET
     dropin = unitdir / 'tailscaled.service.d/50-wizard-owner-approval.conf'

@@ -162,6 +162,12 @@ def _run(argv):
 
 
 def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> dict:
+    from .approval_custody import publication_lock
+    with publication_lock(home):
+        return _enable(home, host, https_port, run)
+
+
+def _enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> dict:
     """Publish only after persistent PID 1 custody. Existing unattested sites refuse.
 
     Removing a route cannot evict an already-open same-origin hostile page.
@@ -200,6 +206,12 @@ def enable(home, host: str, https_port: int = DEFAULT_HTTPS_PORT, run=None) -> d
 
 
 def disable(home, run=None) -> dict:
+    from .approval_custody import publication_lock
+    with publication_lock(home):
+        return _disable(home, run)
+
+
+def _disable(home, run=None) -> dict:
     """Withdraw and acknowledge the persistent route; NEVER release the socket."""
     run = run or _run
     path = Path(home) / CONFIG
