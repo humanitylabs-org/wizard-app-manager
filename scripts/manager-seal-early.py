@@ -108,6 +108,17 @@ def inside(args):
             proc = subprocess.run(list(map(str, argv)), cwd=cwd, stdout=f, stderr=subprocess.STDOUT, timeout=timeout)
         result['steps'][label] = {'exit_code': proc.returncode, 'log_sha256': digest(log), 'log_bytes': log.stat().st_size}
         if proc.returncode:
+            # Keep the package-specific error even when verbose success rows
+            # bury it outside the log tail. Public dependency logs only.
+            budget = 16384
+            with log.open('rb') as f:
+                for line in f:
+                    if any(token in line.lower() for token in (b'error', b'failed', b'enoent', b'eacces', b'enospc', b'not found')):
+                        chunk = line[:min(budget, 2048)]
+                        print(chunk.decode(errors='replace'), end='', flush=True)
+                        budget -= len(chunk)
+                        if budget <= 0:
+                            break
             with log.open('rb') as f:
                 f.seek(max(0, log.stat().st_size-16384))
                 print(f.read(16384).decode(errors='replace'), flush=True)
@@ -134,7 +145,7 @@ def inside(args):
         step('bun-version', ['bun', '--version'])
         assert Path('/work/logs/bun-version.log').read_text().strip() == '1.3.0'
         step('runner-regressions', ['python3', '-m', 'unittest', 'discover', '-s', 'scripts/tests', '-p', 'test_manager_seal_runners.py'])
-        step('dependencies', ['bun', 'install', '--frozen-lockfile'], timeout=660)
+        step('dependencies', ['bun', 'install', '--frozen-lockfile', '--verbose'], timeout=660)
         assert digest(checkout/'bun.lock') == manifest['files']['bun.lock'], 'frozen lock changed'
         step('common-build', ['bun', 'run', 'build'], cwd=checkout/'packages/common')
         step('backend-types', [checkout/'node_modules/.bin/tsgo', '--noEmit'], cwd=checkout/'packages/backend')
