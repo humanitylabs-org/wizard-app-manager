@@ -1089,9 +1089,15 @@
 }
 .wam-cm-sh-acts {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 8px;
   padding: 10px 0 4px;
   border-top: 1px solid var(--line);
+}
+/* Restore defaults: room between its note and the Cancel / Restore pair. */
+.wam-cm-sh-note + .wam-cm-sh-acts {
+  margin-top: 12px;
 }
 .wam-cm-sh-acts .wam-btn {
   min-width: 140px;
