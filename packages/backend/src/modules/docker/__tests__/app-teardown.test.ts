@@ -41,10 +41,18 @@ describe('daemon-owned teardown', () => {
   });
   it('refuses mismatched runtime identity before any stop', async () => {
     const f = fixture();
-    f.labels['runtipi.appurn'] = 'other:wizardapps';
+    f.labels['com.docker.compose.project'] = 'other_wizardapps';
     await expect(teardownApp('demo:wizardapps', 'down', f.docker)).rejects.toThrow('ambiguous');
     expect(f.stop).not.toHaveBeenCalled();
   });
+  it('does not let mutable nonreserved app labels prevent risk-reducing stop', async () => {
+    const f = fixture();
+    f.labels['runtipi.appurn'] = 'other:wizardapps';
+    await teardownApp('demo:wizardapps', 'down', f.docker);
+    expect(f.stop).toHaveBeenCalled();
+    expect(f.remove).toHaveBeenCalled();
+  });
+
   it('propagates unacknowledged stop instead of deleting records', async () => {
     const f = fixture();
     f.stop.mockRejectedValue(new Error('daemon unavailable'));

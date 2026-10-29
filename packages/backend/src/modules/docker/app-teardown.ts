@@ -29,8 +29,9 @@ export async function teardownApp(
     const container = docker.getContainer(item.Id);
     const info = await container.inspect();
     const labels = info.Config.Labels ?? {};
-    if (info.Id !== item.Id || labels[PROJECT] !== project || !labels[SERVICE] ||
-        (labels['runtipi.appurn'] !== undefined && labels['runtipi.appurn'] !== urn))
+    // Nonreserved app labels can be overridden by a recipe. They must neither
+    // expand custody nor prevent the owner stopping this reserved project.
+    if (info.Id !== item.Id || labels[PROJECT] !== project || !labels[SERVICE])
       throw new Error('App container identity is ambiguous');
     images.add(info.Image);
     return { container, info };
