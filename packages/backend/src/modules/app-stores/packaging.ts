@@ -35,8 +35,8 @@ export const pristineSource = async (root: string) => {
     return isDeepStrictEqual(expected, await sourceInventory(root));
   } catch { return false; }
 };
-const recordSource = async (root: string) =>
-  fs.promises.writeFile(inventoryPath(root), `${JSON.stringify(await sourceInventory(root))}\n`);
+const recordSource = async (root: string, expected?: Record<string, unknown>) =>
+  fs.promises.writeFile(inventoryPath(root), `${JSON.stringify(expected ?? await sourceInventory(root))}\n`);
 
 // spec/WIZARD_MD.md "Packaging" (DECISIONS #76): runtime.package is source | build | image.
 // source/build apps get their pinned commit (without .git) copied to
@@ -141,10 +141,11 @@ export const preparePackage = async (opts: {
     if (e.code === 'ENOENT') return false;
     throw e;
   });
+  const expected = await sourceInventory(src);
   if (exists) {
-    if (!isDeepStrictEqual(await sourceInventory(target), await sourceInventory(src)))
+    if (!isDeepStrictEqual(await sourceInventory(target), expected))
       throw new Error('Owner source differs: keep or merge your changes before updating; nothing replaced');
-    await recordSource(target);
+    await recordSource(target, expected);
     return true;
   }
   const tmp = `${target}.tmp-${process.pid}`;
@@ -152,6 +153,6 @@ export const preparePackage = async (opts: {
   await copySource(src, tmp);
   // Never remove a destination which appeared while copying.
   await fs.promises.rename(tmp, target);
-  await recordSource(target);
+  await recordSource(target, expected);
   return true;
 };

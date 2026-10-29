@@ -46,7 +46,10 @@ is one manual run and never enables Automatic. The shell uses the existing owner
 
 **Owner code.** Managed source/build copies get a sibling `<source-dir>.inventory.json` file when packaged.
 Changed files, additions, deletions and symlink changes hold the app for review; an older copy without an
-inventory is unverified and held too. Even a named manual update does not bypass this guard. Same-commit
+inventory is verified against freshly fetched upstream at its exact installed full commit; only an exact
+match establishes the trusted baseline. Unavailable evidence says “cannot confirm unchanged”, not “owner
+changed it”. Known differences remain held. Installer reruns report holds separately from install failures.
+Even a named manual update does not bypass this guard. Raw/bulk update passthrough is rejected. Same-commit
 preparation compares against the fetched upstream before doing anything, and refuses different bytes;
 source cleanup removes only copies still matching their recorded inventory. Modified/unrecorded copies
 are retained. This is accidental-change protection, not a hostile-owner security attestation. Ignoring

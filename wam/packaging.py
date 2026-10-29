@@ -120,15 +120,16 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         s["pull_policy"] = "build"
     from .source_integrity import inventory, record
     target = Path(target)
+    expected = inventory(Path(src))
     if target.exists() or target.is_symlink():
-        if inventory(target) != inventory(Path(src)):
+        if inventory(target) != expected:
             raise PackagingError("Owner source differs: keep or merge your changes before updating; nothing replaced")
-        record(target)
+        record(target, expected)
         return True
     tmp = Path(f"{target}.tmp-{os.getpid()}")
     shutil.rmtree(tmp, ignore_errors=True)
     copy_source(src, tmp)
     # Never remove a destination which appeared while copying.
     tmp.rename(target)
-    record(target)
+    record(target, expected)
     return True

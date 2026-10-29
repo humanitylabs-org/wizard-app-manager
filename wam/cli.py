@@ -1197,13 +1197,14 @@ def bootstrap(c: Config) -> dict:
             del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
-    updated = release_updates(c, rt, failed)
+    held = {}
+    updated = release_updates(c, rt, failed, held=held)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
-    return {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
+    return {"installed": done, "updated": updated, "failed": failed, "held": held, "spots": slots.table(reg), "networks": _net_brief(net)}
 
 
-def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
+def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None, *, held: dict | None = None) -> list[str]:
     """Move installed release defaults to the release's source commit on an upgrade rerun.
 
     A release-installed default is locked to its commit (`.wizard-selection`), so filling empty spots alone left
@@ -1236,6 +1237,13 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             continue
         if source != row["repo"]:
             continue
+        from .source_integrity import update_block
+        reason = update_block(c.runtipi_root, STORE, app_id)
+        if reason:
+            if held is not None:
+                held[app_id] = reason
+            print(f"keeping {app_id} unchanged: {reason}", file=sys.stderr)
+            continue  # held is not a failed install; no recipe/config mutation
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
         if commit == row["commit"] and (not row.get("index_version") or
                                           str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
@@ -1824,9 +1832,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     app, store = urn.split(":", 1)
     if store == STORE:
         from .source_integrity import update_block
-        if update_block(c.runtipi_root, store, app):
-            raise SystemExit(f"REFUSED: {app} has changed or unverified owner source. "
-                             "Keep or merge your changes before updating; nothing replaced.")
+        reason = update_block(c.runtipi_root, store, app)
+        if reason:
+            message = ("Your code needs review; keep or merge your changes" if reason == 'owner-source'
+                       else "Cannot confirm this app is unchanged; retry verification before updating")
+            raise SystemExit(f"REFUSED: {app}: {message}; nothing replaced.")
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
@@ -1891,6 +1901,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        # Raw lifecycle calls bypass source, topology and owner-access checks.
+        # Use the guarded single-app API; unsupported/bulk shapes fail closed.
+        raise ValueError('Use wam app update <app> [--no-backup]; raw or bulk update passthrough is not safe')
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)

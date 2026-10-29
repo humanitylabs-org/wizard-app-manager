@@ -35,11 +35,12 @@ def test_changed_or_unrecorded_source_cannot_update(tmp_path, mutation):
         (source / 'alias').symlink_to('code.py')
     else:
         si.record_path(source).unlink()
-    assert si.update_block(root, 'wizardapps', 'demo') == 'owner-source'
+    reason = 'source-unverified' if mutation == 'unknown' else 'owner-source'
+    assert si.update_block(root, 'wizardapps', 'demo') == reason
     row = {'app': {'appName': 'demo', 'version': 1, 'status': 'running', 'appStoreSlug': 'wizardapps'},
            'metadata': {'latestVersion': 2}}
     assert au.candidates([row], store='wizardapps', runtipi_root=root, home=tmp_path / 'home',
-                         release_managed=set())[0]['skip'] == 'owner-source'
+                         release_managed=set())[0]['skip'] == reason
     class NoMutation:
         def app(self, urn):
             return {"app": {"status": "running"}}

@@ -43,8 +43,8 @@ def record_path(root: Path) -> Path:
     return root.with_name(root.name + ".inventory.json")
 
 
-def record(root: Path) -> None:
-    record_path(root).write_text(json.dumps(inventory(root), sort_keys=True) + "\n")
+def record(root: Path, expected: dict | None = None) -> None:
+    record_path(root).write_text(json.dumps(inventory(root) if expected is None else expected, sort_keys=True) + "\n")
 
 
 def pristine(root: Path) -> bool:
@@ -72,6 +72,40 @@ def update_block(runtipi_root: Path, store: str, app: str) -> str | None:
         if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
             return "source-unverified"
         source = packaging.source_dir(packaging.app_data_root(runtipi_root), store, app, commit)
-        return None if pristine(source) else "owner-source"
+        return verify_installed(source, installed, commit)
     except (OSError, ValueError, TypeError, AttributeError):
+        return "source-unverified"
+
+
+def verify_installed(source: Path, installed: Path, commit: str) -> str | None:
+    """Migrate legacy copies only against a fresh, exact installed-commit checkout.
+
+    The prepared store recipe/cache can already be newer or locally edited. Neither
+    is evidence. Never create/replace source here; only save trusted expected bytes.
+    """
+    import re
+    import tempfile
+    from . import private
+    try:
+        path = record_path(source)
+        if path.exists() or path.is_symlink():
+            expected = json.loads(path.read_text())
+            if not isinstance(expected, dict):
+                return "source-unverified"
+            return None if expected == inventory(source) else "owner-source"
+        # Missing/unreadable source is not proof of owner edits.
+        actual = inventory(source)
+        repo = json.loads((installed / '.wizard-source').read_text()).get('repo')
+        if not isinstance(repo, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+            return "source-unverified"
+        with tempfile.TemporaryDirectory(prefix='wam-verify-') as tmp:
+            upstream = Path(tmp) / 'source'
+            private.fetch(repo, commit, upstream, private.token())  # verifies fetched HEAD == commit
+            expected = inventory(upstream)
+        if actual != expected or inventory(source) != expected:
+            return "owner-source"
+        # Persist the trusted expected inventory, never re-snapshot arbitrary bytes.
+        path.write_text(json.dumps(expected, sort_keys=True) + '\n')
+        return None
+    except (OSError, ValueError, TypeError, AttributeError, private.PrivateError):
         return "source-unverified"
