@@ -132,6 +132,7 @@ def test_client_will_not_send_token_to_remote_origin(tmp_path, monkeypatch):
 
 
 def test_separated_service_runs_at_agent_uid_without_privileged_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr('wam.privsep.storage_source', lambda st: '/var/lib/wizard-agent-homes/1001')
     (tmp_path / 'privsep.json').write_text('{}')
     st = {'agent': {'uid': 1001, 'gid': 1001, 'hermes_home': '/home/hermes/.hermes', 'origin': 'http://127.0.0.1:8642'},
           'service': {'port': 8923}, 'images': {}}

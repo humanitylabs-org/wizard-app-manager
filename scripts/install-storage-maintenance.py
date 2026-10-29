@@ -28,7 +28,7 @@ def main():
         st = os.fstat(fd)
         if st.st_uid or st.st_mode & 0o022: raise ValueError('unprotected installation source')
         contents = {}
-        for name in ('protected-agent-storage.py', 'storage-maintenance-init.py'):
+        for name in ('install-storage-maintenance.py', 'protected-agent-storage.py', 'storage-maintenance-init.py'):
             code = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
             try:
                 st = os.fstat(code)

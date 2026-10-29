@@ -330,6 +330,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
             _split: bool = False, _record: dict | None = None, allow_host_access: bool = False) -> dict:
+    privsep.preflight(c.home, app_id)
     release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
@@ -711,10 +712,11 @@ def app_logs(c, app_id, tail=100):
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
     runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
+    if verb in ("start", "restart"):
+        privsep.preflight(c.home, app_id)
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     if verb in ("start", "restart"):
-        privsep.preflight(c.home, app_id)
         host_policy.require_app(c, urn.split(":")[0], where="installed")
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")

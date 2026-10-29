@@ -286,7 +286,7 @@ class Runner:
             self.receipt['diagnostic_errors'].append(dict(row))
         self.save();return row
 
-    def start(self,index,maintenance=False,boot=None):
+    def start(self,index,maintenance=False,boot=None,*,init='/root/storage-proof/init.sh',root_rw=True):
         self.capacity()
         with socket.socket() as s:s.bind(('127.0.0.1',0));self.port=s.getsockname()[1]
         self.serial=self.evidence/f'boot-{index}-serial.log'
@@ -297,7 +297,7 @@ class Runner:
               '-drive',f'file={self.evidence/"seed.iso"},if=virtio,format=raw,readonly=on']
         if maintenance:
             argv+=['-kernel',str(self.evidence/'vmlinuz'),'-initrd',str(self.evidence/'initrd'),
-                   '-append','root=UUID='+boot['root_uuid']+' rw console=ttyS0 init=/root/storage-proof/init.sh']
+                   '-append','root=UUID='+boot['root_uuid']+(' rw' if root_rw else ' ro')+' console=ttyS0 init='+init]
             # No network interface in maintenance, not even a guest SSH server.
             argv+=['-nic','none']
         else:argv+=['-netdev',f'user,id=n0,hostfwd=tcp:127.0.0.1:{self.port}-:22','-device','virtio-net-pci,netdev=n0']

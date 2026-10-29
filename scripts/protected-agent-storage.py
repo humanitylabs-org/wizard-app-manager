@@ -8,8 +8,8 @@ root shell, stopped-service receipt, lock or namespace container is not a fence.
 Payloads are opaque: only cp and a byte comparator read regular-file contents;
 no payload configuration, database, plugin or executable is interpreted.
 
-Install this reviewed file on protected root-owned ancestry, boot it explicitly
-as init= with rw root, and supply /etc/wizard-agent-storage/request.json. Boot
+Install the reviewed pair with install-storage-maintenance.py, select the fixed
+maintenance-init once with rw root, and supply its protected request.json. Boot
 selection and real-home authorization belong to the administrator, not get.sh.
 On success OR failure PID 1 stays in maintenance until the administrator reboots.
 The public check command is read-only and does not need maintenance or root.

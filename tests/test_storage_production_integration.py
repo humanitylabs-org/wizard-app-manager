@@ -42,15 +42,24 @@ def test_public_mapping_is_only_physical_bind_and_keeps_both_container_paths(pub
     assert not any('docker.sock' in v for v in mounts)
 
 
-@pytest.mark.parametrize('bad', ['uid-string', 'gid-mismatch', 'unknown-field', 'identity-bool', 'schema-bool', 'unsafe-logical'])
+@pytest.mark.parametrize('bad', ['uid-string', 'uid-overflow', 'gid-mismatch', 'unknown-field', 'identity-bool',
+    'schema-bool', 'unsafe-logical', 'mapping-uid', 'mapping-gid', 'mapping-schema', 'mapping-state',
+    'mapping-logical', 'mapping-physical'])
 def test_bad_public_mapping_or_runtime_identity_is_closed(public_mapping, bad):
     st, mapping, _ = public_mapping
     if bad == 'uid-string': st['agent']['uid'] = '1234'
+    elif bad == 'uid-overflow': st['agent']['uid'] = 2**80
     elif bad == 'gid-mismatch': st['agent']['gid'] = 9999
     elif bad == 'unknown-field': mapping['command'] = 'never execute'
     elif bad == 'identity-bool': mapping['identity'][0] = True
     elif bad == 'schema-bool': mapping['schema'] = True
     elif bad == 'unsafe-logical': st['agent']['hermes_home'] += '\n    privileged: true'
+    elif bad == 'mapping-uid': mapping['uid'] = 1236
+    elif bad == 'mapping-gid': mapping['gid'] = 1236
+    elif bad == 'mapping-schema': mapping['schema'] = 2
+    elif bad == 'mapping-state': mapping['state'] = 'rollback-unavailable'
+    elif bad == 'mapping-logical': mapping['logical'] = '/home/other/.hermes'
+    elif bad == 'mapping-physical': mapping['physical'] = '/etc'
     with pytest.raises(ValueError, match='maintenance-needed'): privsep.storage_source(st)
 
 

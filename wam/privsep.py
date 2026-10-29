@@ -20,7 +20,8 @@ def storage_source(st):
     import runpy
     try:
         a = st['agent']
-        if type(a['uid']) is not int or type(a['gid']) is not int or a['uid'] <= 0:
+        if (type(a['uid']) is not int or type(a['gid']) is not int
+                or not 0 < a['uid'] < 0xffffffff or not 0 <= a['gid'] < 0xffffffff):
             raise ValueError('invalid runtime identity')
         if not isinstance(a['hermes_home'], str) or not re.fullmatch(r'/[A-Za-z0-9._/-]+', a['hermes_home']):
             raise ValueError('invalid logical home')
@@ -34,6 +35,11 @@ def storage_source(st):
                 or type(mapping['identity']) is not list or len(mapping['identity']) != 2
                 or any(type(v) is not int or v < 0 for v in mapping['identity'])):
             raise ValueError('invalid public mapping')
+        if (mapping['schema'] != 1 or mapping['state'] != 'ready'
+                or mapping['uid'] != a['uid'] or mapping['gid'] != a['gid']
+                or mapping['logical'] != a['hermes_home']
+                or mapping['physical'] != '/var/lib/wizard-agent-homes/'+str(a['uid'])):
+            raise ValueError('public mapping identity mismatch')
         return mapping['physical']
     except (KeyError, TypeError, ValueError, OSError):
         raise ValueError('maintenance-needed: protected Hermes storage mapping is unavailable or stale') from None
