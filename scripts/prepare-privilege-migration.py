@@ -1,8 +1,8 @@
 #!/usr/bin/python3 -I
 """Owner-approved host step. Fetch a trusted ref; NEVER run an agent checkout.
 
-Usage: sudo /usr/bin/python3 -I prepare-privilege-migration.py AGENT HERMES_HOME REF
-After this step: sudo /var/lib/wizard-os-migration/source/scripts/wam-privilege rollback
+Usage: sudo /usr/bin/python3 -I prepare-privilege-migration.py AGENT HERMES_HOME REF [--authorize-invalidation]
+Rollback is forbidden once the credential password-change intent starts.
 Keep a separate root/admin login open: the selected account's sessions restart.
 """
 import os
@@ -17,8 +17,9 @@ def main():
     if os.getuid() != 0: raise SystemExit('An administrator must run this explicit host step.')
     os.environ.clear()
     os.environ.update(PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', HOME='/root')
-    if len(sys.argv) != 4: raise SystemExit(__doc__)
-    agent, hh, ref = sys.argv[1:]
+    authorize = sys.argv[4:] == ['--authorize-invalidation']
+    if len(sys.argv) != 4 and not authorize: raise SystemExit(__doc__)
+    agent, hh, ref = sys.argv[1:4]
     if (not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', agent) or
             not re.fullmatch(r'/[A-Za-z0-9._/-]+', hh) or '..' in Path(hh).parts or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,199}', ref) or '..' in ref):
@@ -43,7 +44,8 @@ def main():
     # The source directory stays root-owned. Service-account lifecycle calls use
     # the independent protected copy at /var/lib/wizard-os/wizard-app-manager.
     subprocess.run(['/usr/bin/python3','-I',str(tree/'scripts/wam-privilege'),'migrate',
-                    '--agent',agent,'--hermes-home',hh,'--ref',ref],check=True)
+                    '--agent',agent,'--hermes-home',hh,'--ref',ref,
+                    *(['--authorize-invalidation'] if authorize else [])],check=True)
 
 
 if __name__ == '__main__': main()
