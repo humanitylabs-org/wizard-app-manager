@@ -192,7 +192,8 @@ export class WizardIndexStore extends AppStoreFilesManager {
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
       if (!SHA.test(pin.commit ?? '') || pin.commit !== (await this.localCommit(appName)) || pin.repo !== source.repo)
         throw new Error('invalid owner-local selection pin');
-      if (!(await this.sourcePackage(appName))) return;
+      // Ordinary status/start reads must not fetch or migrate an existing source selection.
+      if (!fresh || !(await this.sourcePackage(appName))) return;
       if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pin.repo)) throw new Error('invalid source repository');
       pinned = { id: appName, name: appName, summary: '', repo: pin.repo,
         install: { git: `https://github.com/${pin.repo}`, commit: pin.commit } };
@@ -200,8 +201,9 @@ export class WizardIndexStore extends AppStoreFilesManager {
     const rec = pinned ?? await this.lookup(appName, fresh);
     if (!rec || !SHA.test(rec.install?.commit ?? '')) return;
     const have = await this.localCommit(appName);
-    // Never skip the upstream comparison/baseline for existing source copies.
-    if (have === rec.install.commit && !(await this.sourcePackage(appName))) return;
+    // Only explicit recipe copy (install/update/repair) verifies same-commit source.
+    // Status/update checks keep their original read-only/offline fast path.
+    if (have === rec.install.commit && (!fresh || !(await this.sourcePackage(appName)))) return;
 
     const { dataDir } = this.configuration.get('directories');
     const src = path.join(dataDir, 'repos', `.${this.storeConfig.slug}-src`, `${appName}@${rec.install.commit.slice(0, 12)}`);

@@ -97,6 +97,23 @@ describe('re-prepare a missing source copy at the same commit', () => {
     });
   }
 
+  for (const selected of [false, true]) it(`same-commit ${selected ? 'selected' : 'indexed'} status is offline and leaves legacy owner edits alone`, async () => {
+    const { inventoryPath, sourceInventory } = await import('../packaging');
+    await fs.promises.writeFile(path.join(folder, 'wizard.md'), wizardMd('source'));
+    const target = sourceDir(appData, 'wizardapps', 'srcapp', sha);
+    await fs.promises.mkdir(target, { recursive: true });
+    await fs.promises.writeFile(path.join(target, 'code'), 'owner changes');
+    if (selected) {
+      await fs.promises.writeFile(path.join(folder, '.wizard-selection'), JSON.stringify({ repo: 'org/srcapp', commit: sha }));
+      await fs.promises.writeFile(path.join(folder, '.wizard-source'), JSON.stringify({ repo: 'org/srcapp' }));
+    }
+    const before = await sourceInventory(target);
+    await manager.ensureApp('srcapp');
+    expect(fetched).toEqual([]);
+    expect(await sourceInventory(target)).toEqual(before);
+    expect(fs.existsSync(inventoryPath(target))).toBe(false);
+  });
+
   it('leaves image packages alone (no source copy needed)', async () => {
     await fs.promises.writeFile(path.join(folder, 'wizard.md'), wizardMd('image'));
     await manager.ensureApp('srcapp', true);
