@@ -105,8 +105,18 @@ payload ownership and ordinary home ownership are unchanged.
   verifies bytes/metadata, fsyncs, then publishes atomically.
 - A private protected pre-change snapshot is distinct from the active writable
   canonical leaf. Interrupted partial copies are retained and restarted under a
-  fresh name. Source access timestamps are privately journaled before `cp` and
-  repaired on resume before byte/metadata comparison.
+  fresh name. A version-2 private graph records each relative component, object
+  identity/type, mode/UID/GID, link count, size, mtime/ctime, access time and
+  regular-file bytes/xattrs BEFORE `cp`. The complete graph is revalidated
+  READ-ONLY before any timestamp write, using no-follow descriptor-relative
+  traversal. Only attributable atime drift is repaired; a legitimate changed
+  mtime is never overwritten. Source and target have independently validated,
+  disjoint inode identities; hardlink aliases are restored once per inode.
+  The graph is captured AFTER fingerprints have completed their own symlink
+  atime repair (which changes ctime). Pending validation does not read symlink
+  text or mutate its metadata. Legacy records and cuts during restoration itself
+  are ambiguous and refuse, retaining every copy for administrator review. This
+  conservative refusal is not an automatic recovery promise for every cut.
 - Verification covers opaque regular-file bytes, numeric UID/GID, mode,
   nanosecond atime/mtime, hardlink relationships, symlink text and supported
   ACL/xattrs. Cross-filesystem ctime/birthtime/inode identity cannot be preserved
@@ -127,6 +137,34 @@ payload ownership and ordinary home ownership are unchanged.
   tree—including any later writes—under a protected quarantine name. Original
   credential journal semantics are unchanged; no credential mutation is part of
   this seam.
+- Rollback first atomically publishes `state: rollback-unavailable`, then
+  journals its rollback direction/original phase before changing logical
+  selection. Even a cut between those two writes blocks forward resume. Finite
+  rollback phases end in a durable mapping withdrawal, including early rollback
+  that retains the original directory. Public checks require `state: ready`,
+  the canonical identity/private layout and an exact absolute logical alias.
+  Absent, relative, stale or non-symlink aliases refuse without adopting their
+  targets. Alias readback is a current consistency observation, NOT a durable
+  pin. Only the unchanged final canonical bind helper authorizes actual Docker
+  consumption. Public checks inspect filesystem/ACL metadata, not payload bytes.
+
+### Deliberate compatibility limit: private leaf required
+
+The selected leaf itself must have **no group/world permission bits and no
+POSIX access/default ACL**. An ordinary `.hermes` mode 0700 is supported. A 0755
+or 0750 leaf, or a leaf with a named-user ACL, is refused BEFORE any transaction
+directory, journal, snapshot, stage or publication is created, even if its old
+account home is 0700. No automatic chmod/chown is performed. This prevents
+relocation from silently removing the only effective privacy barrier.
+
+Relevant existing copy-parent directories must have no default ACL: this covers
+the public anchor, private controls and ordinary home used for restore siblings.
+`cp` uses a private umask, a private source root and a default-ACL-free destination
+parent, so the copied root never relies on a later permission repair for privacy.
+Resume, copy, publication and rollback revalidate the finite known endpoints.
+ACLs/xattrs INSIDE an accepted private leaf remain preserved. No new agent-owned
+protected parent or parent-ACL architecture is introduced. Unsupported layouts
+remain an explicit first-slice refusal, not a permanent assertion about all homes.
 
 Root reads selected bytes only for opaque transport and comparison, and numeric
 filesystem metadata for verification. It never parses a payload database,
@@ -167,6 +205,27 @@ identities are checkpointed, deduplicated and checked against the full expected
 set. Missing/failed/skipped cases cannot produce green. First errors, diagnostics,
 source binding and all owned-VM cleanup are retained.
 
+The extended inventory adds real fixed-`/usr/bin/cp` interruptions with durable
+pending-copy records, an observed open source FD, an incomplete target and an
+attested stopped copy child before host power-off. Bounded normal boots between
+maintenance boots substitute a synthetic descendant with an external-sentinel
+symlink, make a legitimate edit, install an ambiguous record or change leaf
+privacy; unchanged resume is a separate positive. Source/external metadata and
+all partial identities are retained in private evidence. Real UID 65534 actors
+with cleared supplementary groups must be denied access to interrupted snapshots
+and crossfs stages, and to committed canonical leaves. Both filesystems include
+restrictive-home/permissive-leaf/ACL negatives before any copy or control creation.
+New rollback power cuts exercise public unavailability, private direction intent,
+pending restore copy, alias removal, restored logical selection, canonical
+retention and final withdrawal, not just the original forward cuts. The host boot
+budget is derived from that exact finite cut inventory plus a completion boot;
+intervention boots have their own bounded phases and exported artifacts.
+
+These are QUEUED assertions, not executed passes. The original failed attempt
+stopped at focused Python fixtures before any kernel storage cases. Exact
+extended case IDs/counts and Python IDs are sealed in the revision manifest;
+JUnit must match the full four-module inventory with zero skips/failures/errors.
+
 ## Explicit remaining integration gates
 
 This first slice **does not make installation work end-to-end**. In particular,
@@ -187,3 +246,13 @@ after those finite follow-ons. The retained backend binary/image may be reused
 only with explicit finite build-input dependency equality, never relabelled as a
 new whole-source build. Nothing here supersedes prior image/security evidence or
 the owner's no-main/no-live/no-deploy/no-release gate.
+
+**F1 is still separate:** the QA cold-init wrapper mounts proc/sysfs, remounts
+root writable and calls the imported primitive as PID 1. It does NOT exercise
+production `main()` or its private request/error loop. Direct production entry
+requires those boot mounts/writable-root prerequisites to be established by a
+reviewed trusted boot path; product `main()` currently checks the fence before
+provisioning `/proc`. A real positive and negative boot through the exact product
+entry/request remain mandatory before installer/integration/release claims. A QA
+wrapper pass cannot discharge that gate. Fresh and alongside-config installation
+acceptance also remain unexecuted, behind the owner's explicit final confirmation.

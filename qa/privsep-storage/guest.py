@@ -38,7 +38,24 @@ INIT = ('sole-init-admitted', 'surviving-respawner-refused', 'samefs-metadata',
         'nested-mount-refused', 'fifo-refused', 'external-hardlink-refused',
         'agent-leaf-write-and-parent-rename-denied', 'crossfs-metadata', 'crossfs-rollback')
 CRASH = tuple(f'{fs}-crash-{phase}' for fs in ('samefs', 'crossfs') for phase in BARRIERS)
-EXPECTED = NORMAL + INIT + CRASH
+PENDING = ('samefs-crash-pending-unchanged', 'samefs-crash-pending-substitution',
+           'samefs-crash-pending-edit', 'samefs-crash-pending-ambiguous', 'samefs-crash-pending-privacy')
+ROLLBACK_BARRIERS = ('rollback_unavailable_public', 'rollback_unavailable_intent',
+    'rollback_copy_intent', 'rollback_alias_intent', 'rollback_restore_intent',
+    'rollback_metadata_intent', 'rollback_withdraw_intent', 'rollback_after_withdrawal',
+    'pending-rollback-copy', 'after-logical-restoration')
+SECURITY = ('samefs-private-leaf-755-refused', 'samefs-private-leaf-750-refused',
+    'samefs-private-leaf-acl-refused', 'samefs-default-parent-acl-refused',
+    'crossfs-private-leaf-755-refused', 'crossfs-private-leaf-750-refused',
+    'crossfs-private-leaf-acl-refused', 'crossfs-default-parent-acl-refused',
+    'mapping-drifted-alias-refused', 'mapping-absent-alias-refused',
+    'mapping-directory-alias-refused', 'mapping-relative-alias-refused',
+    'samefs-private-commit-other-uid-denied', 'crossfs-private-commit-other-uid-denied',
+    'crossfs-default-anchor-acl-refused','samefs-early-rollback-unavailable','crossfs-early-rollback-unavailable')
+ROLLBACK_CRASH = tuple(f'{fs}-crash-{phase}' for fs in ('samefs', 'crossfs') for phase in ROLLBACK_BARRIERS)
+CUTS = CRASH + PENDING + ('crossfs-crash-private-stage',) + ROLLBACK_CRASH
+EXPECTED = NORMAL + INIT + CRASH + PENDING + SECURITY + ('crossfs-crash-private-stage',) + ROLLBACK_CRASH
+INTERVENTIONS = PENDING + ('crossfs-crash-private-stage',)
 
 
 def product():
@@ -113,9 +130,17 @@ def account_for(index): return 'hermes' if index == 0 else f'storage{index:02d}'
 
 def prepare():
     assert os.geteuid() == 0 and os.getpid() != 1 and ROOT.is_dir()
-    for index in range(36):
+    for index in range(100):
         name = account_for(index)
         command(['useradd', '-m', '-u', str(1100+index), '-s', '/bin/sh', name]); fixture(name)
+    # Bounded actual copy window, not sparse files/reflink publication barriers.
+    for index in (40,41,42,43,44,58,68,88):
+        p=pwd.getpwnam(account_for(index));path=Path(p.pw_dir)/'.hermes/large-copy'
+        with path.open('wb') as stream:
+            chunk=b'opaque-synthetic-copy-window\x00' * 2048
+            for _ in range(4096): stream.write(chunk)
+        os.chown(path,p.pw_uid,p.pw_gid)
+    outside=ROOT/'outside';outside.mkdir(mode=0o700);(outside/'payload').write_bytes(b'external synthetic sentinel')
     command(['mkfs.ext4', '-F', '/dev/vdb'])
     (ROOT/'pairing-sentinel.json').write_text('{"synthetic":"unchanged"}\n')
     # A live service with real systemd automatic restart, not a JSON/PID receipt.
@@ -204,6 +229,98 @@ def crash(name, phase):
     while True: time.sleep(1)
 
 
+def denied_other_uid(paths):
+    """Real kernel denial, with no inherited supplementary group authority."""
+    paths=[Path(p) for p in paths];assert paths and all(p.is_dir() for p in paths)
+    pid=os.fork()
+    if pid==0:
+        try:
+            os.setgroups([]);os.setgid(65534);os.setuid(65534)
+            for path in paths:
+                try:fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+                except PermissionError:pass
+                else:os.close(fd);os._exit(2)
+                try:os.open(path/'held',os.O_RDONLY)
+                except PermissionError:pass
+                else:os._exit(3)
+            os._exit(0)
+        except BaseException:os._exit(4)
+    _,status=os.waitpid(pid,0);assert os.waitstatus_to_exitcode(status)==0
+    return {'other_uid':65534,'supplementary_groups':[],'denied_endpoints':len(paths)}
+
+
+def fixed_cp_cut(m, name, predicate):
+    """Intercept only the real fixed cp invocation, never substitute a copy.
+
+    The child must hold the actual source large file open and have an incomplete
+    target file. Stop it, attest the kernel stop, then let the HOST kill QEMU.
+    Errors kill/reap this child before failing; normal product code is unchanged.
+    """
+    original=m.subprocess.run
+    def run(argv, **kwargs):
+        if not (argv[0]=='/usr/bin/cp' and predicate(Path(argv[-2]),Path(argv[-1]))):
+            return original(argv,**kwargs)
+        assert argv[:6]==['/usr/bin/cp','-a','--preserve=all','--reflink=auto','--',argv[-2]]
+        source,target=Path(argv[-2]),Path(argv[-1]);child=subprocess.Popen(argv,**{k:v for k,v in kwargs.items() if k!='check'})
+        try:
+            end=time.monotonic()+30;observed=False
+            while time.monotonic()<end and child.poll() is None:
+                try:
+                    active=[os.readlink(p) for p in Path(f'/proc/{child.pid}/fd').iterdir()]
+                    incomplete=(target/'large-copy').exists() and (target/'large-copy').stat().st_size<(source/'large-copy').stat().st_size
+                    if str(source/'large-copy') in active and incomplete:
+                        child.send_signal(signal.SIGSTOP);pid,status=os.waitpid(child.pid,os.WUNTRACED)
+                        assert pid==child.pid and os.WIFSTOPPED(status)
+                        assert (target/'large-copy').stat().st_size<(source/'large-copy').stat().st_size
+                        observed=True;break
+                except FileNotFoundError:pass
+                time.sleep(0.001)
+            assert observed,'actual incomplete cp window not observed'
+            rows=json.loads((ROOT/'copy-events.json').read_text()) if (ROOT/'copy-events.json').exists() else []
+            rows.append({'case':name,'source':str(source),'target':str(target),
+                'source_identity':m.identity(source.lstat()),'partial_identity':m.identity(target.lstat()),
+                'actual_cp_pid':child.pid,'source_fd_observed':True,'kernel_stopped':True,
+                'partial_bytes':(target/'large-copy').stat().st_size,'source_bytes':(source/'large-copy').stat().st_size})
+            persist(ROOT/'copy-events.json',rows);crash(name,'actual-pending-copy')
+        finally:
+            if child.poll() is None:child.kill()
+            child.wait(timeout=30)
+    return original,run
+
+
+def intervene():
+    assert os.geteuid()==0 and os.getpid()!=1
+    state=json.loads(STATE.read_text());name=state['name'];assert name in INTERVENTIONS and state['resume']
+    m=product();event=next(r for r in json.loads((ROOT/'copy-events.json').read_text()) if r['case']==name)
+    source=Path(event['source']);target=Path(event['target'])
+    # A crossfs abandoned stage must be inspected on its actual filesystem.
+    mounted=name=='crossfs-crash-private-stage'
+    if mounted:command(['mount','/dev/vdb',ANCHOR])
+    try:
+        assert m.identity(target.lstat())==event['partial_identity']
+        denied=denied_other_uid([source,target])
+        if name.endswith('-substitution'):
+            (source/'nested').rename(source/'nested-retained');(source/'nested').symlink_to(ROOT/'outside')
+        elif name.endswith('-edit'):
+            fd=os.open(source/'nested/payload',os.O_WRONLY|os.O_APPEND)
+            try:os.write(fd,b'legitimate inter-boot edit');os.fsync(fd)
+            finally:os.close(fd)
+        elif name.endswith('-ambiguous'):
+            uid=pwd.getpwnam(source.parent.name).pw_uid
+            path=CONTROL/str(uid)/'journal.json';doc=m.protected_json(path,private=True)
+            doc['pending_copy'].pop('schema');persist(path,doc)
+        elif name.endswith('-privacy'):source.chmod(0o750)
+        rows=json.loads((ROOT/'intervention-results.json').read_text()) if (ROOT/'intervention-results.json').exists() else []
+        rows.append({'case':name,'source_graph_after':m.graph(source),'external_graph':m.graph(ROOT/'outside'),
+                     'external_stat':list((ROOT/'outside/payload').lstat()),
+                     'external_atime_ns':(ROOT/'outside/payload').lstat().st_atime_ns,
+                     'external_mtime_ns':(ROOT/'outside/payload').lstat().st_mtime_ns,
+                     'partial_identity':event['partial_identity'],'denial':denied,'passed':True})
+        persist(ROOT/'intervention-results.json',rows);os.sync()
+    finally:
+        if mounted:command(['umount',ANCHOR])
+
+
 def init():
     assert os.getpid() == 1 and os.geteuid() == 0
     m = product()
@@ -211,7 +328,7 @@ def init():
     def surviving():
         pid = os.fork()
         if pid == 0:
-            os.setgid(1100); os.setuid(1100)
+            os.setgroups([]); os.setgid(1100); os.setuid(1100)
             while True: time.sleep(1)
         try:
             return refuse(lambda:m.Transaction('hermes','/home/hermes/.hermes').run(), 'another userspace process')
@@ -294,7 +411,7 @@ def init():
         pid=os.fork()
         if pid==0:
             try:
-                os.setgid(uid);os.setuid(uid)
+                os.setgroups([]);os.setgid(uid);os.setuid(uid)
                 leaf=ANCHOR/str(uid);(leaf/'agent-write').write_bytes(b'agent-useful')
                 (leaf/'agent-write').rename(leaf/'agent-renamed')
                 try:leaf.rename(ANCHOR/(str(uid)+'-replaced'))
@@ -330,10 +447,140 @@ def init():
         try:m.Transaction(account,source).run(checkpoint=hook)
         finally:m.atomic=atomic;m.rename_new=rename;os.symlink=symlink
         raise AssertionError('crash barrier not reached')
+    def pending_case(name,index):
+        account=account_for(index);source=Path('/home/'+account+'/.hermes');uid=pwd.getpwnam(account).pw_uid
+        state=json.loads(STATE.read_text()) if STATE.exists() else {}
+        if state.get('name')==name and state.get('resume'):
+            intervention=next(r for r in json.loads((ROOT/'intervention-results.json').read_text()) if r['case']==name)
+            event=next(r for r in json.loads((ROOT/'copy-events.json').read_text()) if r['case']==name)
+            partial=Path(event['target']);assert m.identity(partial.lstat())==event['partial_identity']
+            if name.endswith(('-unchanged','-private-stage')):
+                result=m.Transaction(account,source).run();assert result['phase']=='committed'
+                m.require_mapping(account,source);denied_other_uid([ANCHOR/str(uid),partial])
+            else:
+                journal=CONTROL/str(uid)/'journal.json';before=journal.read_bytes()
+                reason='ambiguous interrupted copy record' if name.endswith('-ambiguous') else 'privacy layout' if name.endswith('-privacy') else 'source graph changed'
+                refuse(lambda:m.Transaction(account,source).run(),reason)
+                assert journal.read_bytes()==before and m.graph(source)==intervention['source_graph_after']
+            outside=(ROOT/'outside/payload').lstat()
+            assert m.graph(ROOT/'outside')==intervention['external_graph']
+            assert list(outside)==intervention['external_stat']
+            assert outside.st_atime_ns==intervention['external_atime_ns'] and outside.st_mtime_ns==intervention['external_mtime_ns']
+            assert m.identity(partial.lstat())==event['partial_identity']
+            persist(STATE,{'name':name,'resume':False})
+            return {'actual_cp_interrupted':True,'intervening_normal_boot':True,'all_partial_copies_retained':True,
+                    'external_metadata_unchanged':True,'changed_source_metadata_preserved':not name.endswith(('-unchanged','-private-stage'))}
+        predicate=(lambda src,dst:dst.parent==ANCHOR and dst.name.startswith('.staging-')) if name.endswith('-private-stage') else (lambda src,dst:src==source)
+        original,hook=fixed_cp_cut(m,name,predicate);m.subprocess.run=hook
+        try:m.Transaction(account,source).run()
+        finally:m.subprocess.run=original
+        raise AssertionError('actual pending copy cut not reached')
+
+    def privacy_negative(fs,variant,index):
+        account=account_for(index);p=pwd.getpwnam(account);source=Path(p.pw_dir)/'.hermes'
+        source.parent.chmod(0o700)
+        if variant in ('755','750'):source.chmod(int(variant,8))
+        elif variant=='acl':command(['setfacl','-m','u:65534:rx',source])
+        else:command(['setfacl','-m','d:u:65534:rwx',source.parent])
+        before=m.graph(source);denied_other_uid([source])
+        try:
+            reason='default ACL' if variant=='parent' else 'privacy layout'
+            refuse(lambda:m.Transaction(account,source).run(),reason)
+            assert m.graph(source)==before and not (CONTROL/str(p.pw_uid)).exists()
+            assert not (ANCHOR/str(p.pw_uid)).exists()
+            denied_other_uid([source])
+            return {'pre_mutation_refusal':True,'source_graph_unchanged':True,'no_control_or_payload_creation':True,'filesystem':fs}
+        finally:
+            if variant=='parent':command(['setfacl','-k',source.parent])
+
+    def alias_negative(variant,index):
+        account=account_for(index);source=Path('/home/'+account+'/.hermes')
+        move(account,'rename');m.require_mapping(account,source);source.unlink()
+        if variant=='drifted':source.symlink_to(ROOT/'outside')
+        elif variant=='directory':source.mkdir(mode=0o700)
+        elif variant=='relative':source.symlink_to('../../var/lib/wizard-agent-homes/'+str(pwd.getpwnam(account).pw_uid))
+        outside=(ROOT/'outside/payload').lstat()
+        try:m.require_mapping(account,source)
+        except (m.Refusal,OSError):pass
+        else:raise AssertionError('stale alias accepted')
+        assert (ROOT/'outside/payload').lstat()==outside
+        return {'public_mapping_refused':True,'no_target_adopted':True,'private_target_unread':True}
+
+    def private_commit(index,method):
+        account=account_for(index);move(account,method)
+        return denied_other_uid([ANCHOR/str(pwd.getpwnam(account).pw_uid)])
+
+    def anchor_acl():
+        source=Path('/home/storage91/.hermes');before=m.graph(source)
+        command(['setfacl','-m','d:u:65534:rwx',ANCHOR])
+        try:
+            refuse(lambda:m.Transaction('storage91',source).run(),'default ACL')
+            assert not (CONTROL/'1191').exists() and not (ANCHOR/'1191').exists() and m.graph(source)==before
+            return {'before_state_or_payload_creation':True,'target_default_acl_refused':True}
+        finally:command(['setfacl','-k',ANCHOR])
+
+    def early_rollback(index):
+        account=account_for(index);source=Path('/home/'+account+'/.hermes');uid=pwd.getpwnam(account).pw_uid
+        class Paused(Exception):pass
+        def stop(value):
+            if value=='snapshot_ready':raise Paused()
+        before=m.fingerprint(source)
+        try:m.Transaction(account,source).run(checkpoint=stop)
+        except Paused:pass
+        else:raise AssertionError('early rollback setup did not stop')
+        result=m.Transaction(account,source).run('rollback');assert result['phase']=='rolled_back'
+        assert m.fingerprint(source)==before and not (ANCHOR/'.mappings'/f'{uid}.json').exists()
+        refuse(lambda:m.Transaction(account,source).run(),'cannot resume forward')
+        return {'original_selection_retained':True,'readiness_withdrawn':True,'forward_resume_denied':True}
+
+    def rollback_cut(fs,phase,index):
+        name=f'{fs}-crash-{phase}';account=account_for(index);source=Path('/home/'+account+'/.hermes');uid=pwd.getpwnam(account).pw_uid
+        state=json.loads(STATE.read_text()) if STATE.exists() else {}
+        if state.get('name')==name and state.get('resume'):
+            try:m.require_mapping(account,source)
+            except (m.Refusal,OSError):pass
+            else:raise AssertionError('interrupted rollback accepted as ready')
+            doc=m.protected_json(CONTROL/str(uid)/'journal.json',private=True)
+            before=source.lstat() if os.path.lexists(source) else None
+            refuse(lambda:m.Transaction(account,source).run(),'forward resume forbidden' if phase=='rollback_unavailable_public' else 'cannot resume forward')
+            assert (source.lstat() if os.path.lexists(source) else None)==before
+            result=m.Transaction(account,source).run('rollback');assert result['phase']=='rolled_back'
+            assert source.is_dir() and not source.is_symlink() and m.fingerprint(source)==doc['fingerprint']
+            final=m.protected_json(CONTROL/str(uid)/'journal.json',private=True)
+            assert (ANCHOR/final['post_mapping']/'later-write').read_bytes()==b'retain later user bytes'
+            assert not (ANCHOR/'.mappings'/f'{uid}.json').exists()
+            assert m.Transaction(account,source).run('rollback')['phase']=='rolled_back'
+            persist(STATE,{'name':name,'resume':False})
+            return {'rollback_power_cut_resumed':True,'public_unavailable_during_recovery':True,'forward_resume_denied':True,'later_bytes_retained':True,'boundary':phase}
+        move(account,'rename' if fs=='samefs' else 'copy')
+        (ANCHOR/str(uid)/'later-write').write_bytes(b'retain later user bytes')
+        original_rename=m.rename_new;original_run=m.subprocess.run
+        def rename_hook(oldp,old,newp,new):
+            original_rename(oldp,old,newp,new)
+            if phase=='after-logical-restoration' and newp.path==source.parent and new==source.name:crash(name,phase)
+        def checkpoint(value):
+            if value==phase:crash(name,phase)
+        setattr(m,'rename_new',rename_hook)
+        if phase=='pending-rollback-copy':
+            _,m.subprocess.run=fixed_cp_cut(m,name,lambda src,dst:dst.parent==source.parent and dst.name.startswith('.wizard-restore-'))
+        try:m.Transaction(account,source).run('rollback',checkpoint=checkpoint)
+        finally:setattr(m,'rename_new',original_rename);m.subprocess.run=original_run
+        raise AssertionError('rollback crash not reached')
+
     # The order is stable across actual kernel reboots; completed case rows are
     # skipped only by exact persisted identity, never counted twice.
     for i,phase in enumerate(BARRIERS,10):
         receipt(f'samefs-crash-{phase}',lambda phase=phase,i=i:crash_case('samefs',phase,i))
+    for i,name in enumerate(PENDING,40):receipt(name,lambda name=name,i=i:pending_case(name,i))
+    for i,variant in enumerate(('755','750','acl','parent'),36):
+        name='samefs-default-parent-acl-refused' if variant=='parent' else f'samefs-private-leaf-{variant}-refused'
+        receipt(name,lambda variant=variant,i=i:privacy_negative('samefs',variant,i))
+    for i,variant in enumerate(('drifted','absent','directory','relative'),52):
+        receipt(f'mapping-{variant}-alias-refused',lambda variant=variant,i=i:alias_negative(variant,i))
+    receipt('samefs-private-commit-other-uid-denied',lambda:private_commit(56,'rename'))
+    receipt('samefs-early-rollback-unavailable',lambda:early_rollback(92))
+    for i,phase in enumerate(ROLLBACK_BARRIERS,60):
+        receipt(f'samefs-crash-{phase}',lambda phase=phase,i=i:rollback_cut('samefs',phase,i))
     # Actual distinct block filesystem; no mocked EXDEV or host mount effects.
     ANCHOR.mkdir(exist_ok=True)
     command(['mount','/dev/vdb',ANCHOR])
@@ -343,6 +590,15 @@ def init():
         receipt(INIT[14],lambda:rollback('storage20'))
         for i,phase in enumerate(BARRIERS,21):
             receipt(f'crossfs-crash-{phase}',lambda phase=phase,i=i:crash_case('crossfs',phase,i))
+        for i,variant in enumerate(('755','750','acl','parent'),48):
+            name='crossfs-default-parent-acl-refused' if variant=='parent' else f'crossfs-private-leaf-{variant}-refused'
+            receipt(name,lambda variant=variant,i=i:privacy_negative('crossfs',variant,i))
+        receipt('crossfs-private-commit-other-uid-denied',lambda:private_commit(57,'copy'))
+        receipt('crossfs-default-anchor-acl-refused',anchor_acl)
+        receipt('crossfs-early-rollback-unavailable',lambda:early_rollback(93))
+        receipt('crossfs-crash-private-stage',lambda:pending_case('crossfs-crash-private-stage',58))
+        for i,phase in enumerate(ROLLBACK_BARRIERS,80):
+            receipt(f'crossfs-crash-{phase}',lambda phase=phase,i=i:rollback_cut('crossfs',phase,i))
     finally:
         command(['umount',ANCHOR])
     rows=json.loads(REPORT.read_text());names=[r['name'] for r in rows]
@@ -358,6 +614,7 @@ if __name__=='__main__':
     try:
         if sys.argv[1]=='prepare':prepare()
         elif sys.argv[1]=='init':init()
+        elif sys.argv[1]=='intervene':intervene()
         else:raise AssertionError('unknown fixed guest phase')
     except BaseException as exc:
         persist(ROOT/'first-error.json',{'phase':sys.argv[1],'error_type':type(exc).__name__,

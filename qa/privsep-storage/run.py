@@ -90,6 +90,24 @@ def inventory(path):
     return sorted(rows,key=lambda row:row['path'])
 
 
+def guest_inventory(source):
+    """Finite literal AST inventory, never import/execute the guest driver."""
+    tree=ast.parse(source);scope={}
+    keys=('NORMAL','INIT','BARRIERS','PENDING','ROLLBACK_BARRIERS','SECURITY')
+    for node in tree.body:
+        if isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in keys:
+            scope[node.targets[0].id]=ast.literal_eval(node.value)
+    forward=tuple(f'{fs}-crash-{phase}' for fs in ('samefs','crossfs') for phase in scope['BARRIERS'])
+    rollback=tuple(f'{fs}-crash-{phase}' for fs in ('samefs','crossfs') for phase in scope['ROLLBACK_BARRIERS'])
+    stage=('crossfs-crash-private-stage',)
+    cuts=forward+scope['PENDING']+stage+rollback
+    expected=scope['NORMAL']+scope['INIT']+forward+scope['PENDING']+scope['SECURITY']+stage+rollback
+    interventions=scope['PENDING']+stage
+    assert len(expected)==len(set(expected)) and len(cuts)==len(set(cuts)) and set(cuts)<=set(expected)
+    return {'expected_cases':list(expected),'expected_cuts':list(cuts),'intervention_cases':list(interventions),
+            'maintenance_boot_budget':len(cuts)+1,'normal_intervention_budget':len(interventions)}
+
+
 def preflight(stage):
     doc=json.loads((stage/'manifest.json').read_text())
     assert re.fullmatch('[0-9a-f]{40}',doc['revision']) and stage.name==doc['revision']
@@ -102,13 +120,8 @@ def preflight(stage):
     for name,key in [('qa/privsep-storage/run.py','runner.py'),('qa/privsep-storage/guest.py','guest.py')]:
         assert next(row['sha256'] for row in rows if row['path']==name)==digest(stage/key)
     # Parse—not import—the staged guest and exact expected runtime case identities.
-    tree=ast.parse((stage/'guest.py').read_text());scope={}
-    for node in tree.body:
-        if isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('NORMAL','INIT','BARRIERS'):
-            scope[node.targets[0].id]=ast.literal_eval(node.value)
-    scope['EXPECTED']=scope['NORMAL']+scope['INIT']+tuple(f'{fs}-crash-{phase}' for fs in ('samefs','crossfs') for phase in scope['BARRIERS'])
-    assert list(scope['EXPECTED'])==doc['expected_cases']
-    assert len(scope['EXPECTED'])==len(set(scope['EXPECTED']))
+    guest=guest_inventory((stage/'guest.py').read_text())
+    assert all(doc[k]==v for k,v in guest.items())
     import tarfile
     with tarfile.open(stage/'source.tar') as archive:
         sources={}
@@ -120,7 +133,8 @@ def preflight(stage):
     assert doc['expected_pytest_count']==len(expected_python)
     assert BASE.is_file() and digest(BASE)==BASE_SHA
     free=shutil.disk_usage(stage).free
-    result={'static_integrity':True,'revision':doc['revision'],'cases_expected':len(scope['EXPECTED']),
+    result={'static_integrity':True,'revision':doc['revision'],'cases_expected':len(guest['expected_cases']),
+            'cuts_expected':len(guest['expected_cuts']),'maintenance_boot_budget':guest['maintenance_boot_budget'],
             'pytest_cases_expected':len(expected_python),
             'free_bytes':free,'reserve_bytes':RESERVE,'pending_bytes':PENDING,
             'required_bytes':RESERVE+PENDING,'capacity_admissible':free>=RESERVE+PENDING,
@@ -235,7 +249,7 @@ class Runner:
         SSH/SCP. Failure of an expected transfer stays visible as a diagnostic
         error; no collector assertion may replace the first proof failure.
         """
-        assert name in ('cases.json','complete.json','first-error.json','crash-state.json')
+        assert name in ('cases.json','complete.json','first-error.json','crash-state.json','intervention-results.json','copy-events.json')
         row={'name':name,'local':local_name,'expected':expected,'status':'not_reached'}
         if reached:
             try:
@@ -339,9 +353,9 @@ class Runner:
         try:self.proc.wait(timeout=60)
         except subprocess.TimeoutExpired:raise AssertionError('initial guest did not shut down')
         self.stop()
-        seen=[]
+        seen=[];intervened=[]
         self.phase('maintenance')
-        for index in range(1,16):
+        for index in range(1,self.doc['maintenance_boot_budget']+1):
             self.start(index,True,boot)
             deadline=time.monotonic()+360
             completed=False
@@ -350,10 +364,30 @@ class Runner:
                 assert 'STORAGE_PROOF_FAILED' not in text,'guest proof failed; preserve first error on readback'
                 barriers=re.findall(r'STORAGE_CRASH_BARRIER:([a-z0-9_-]+)',text)
                 if barriers:
-                    assert len(barriers)==1 and barriers[0] not in seen,'unexpected/repeated crash barrier'
+                    assert len(barriers)==1 and barriers[0] in self.doc['expected_cuts'] and barriers[0] not in seen,'unexpected/repeated crash barrier'
                     seen.append(barriers[0]);self.stop(power_cut=True)
                     self.receipt['actual_power_cuts']=list(seen)
-                    self.checkpoint('actual-power-cut',case=barriers[0],boot=index);break
+                    self.checkpoint('actual-power-cut',case=barriers[0],boot=index)
+                    if barriers[0] in self.doc['intervention_cases']:
+                        # Explicit bounded normal boot; synthetic edits ONLY.
+                        # Export the real intervention/cp observations before
+                        # requiring success, then shut down before cold init.
+                        self.start('intervention-'+str(index))
+                        self.phase('source-intervention')
+                        rc=self.guest('source-intervention-'+str(index),
+                            '/usr/bin/python3 -I /root/storage-proof/guest.py intervene',180,required=False)
+                        artifacts=[self.collect_artifact(n,'intervention-'+str(index)+'-'+n,reached=True,expected=True)
+                                   for n in ('intervention-results.json','copy-events.json')]
+                        self.collect_artifact('first-error.json','intervention-'+str(index)+'-first-error.json',reached=True,expected=False)
+                        self.checkpoint('source-intervention-collected',case=barriers[0],exit=rc,artifacts=artifacts)
+                        assert rc==0 and all(a['status']=='collected' for a in artifacts),'bounded source intervention failed'
+                        data=json.loads((self.evidence/('intervention-'+str(index)+'-intervention-results.json')).read_text())
+                        assert sum(r['case']==barriers[0] and r['passed'] is True for r in data)==1
+                        intervened.append(barriers[0]);self.receipt['actual_interventions']=list(intervened);self.save()
+                        self.guest('shutdown-intervention-'+str(index),'sync\nsystemctl poweroff\n',60,False)
+                        assert self.proc is not None
+                        self.proc.wait(timeout=60);self.stop()
+                    break
                 if 'STORAGE_PROOF_COMPLETE' in text:
                     completed=True
                     self.proc.wait(timeout=60);self.stop();break
@@ -363,16 +397,22 @@ class Runner:
             if completed:break
         else:raise AssertionError('too many recovery boots')
         self.receipt['actual_power_cuts']=seen;self.save()
-        self.start(16)
-        artifacts=[self.collect_artifact(name,name,reached=True,expected=True) for name in ('cases.json','complete.json')]
+        self.start('final')
+        artifacts=[self.collect_artifact(name,name,reached=True,expected=True) for name in ('cases.json','complete.json','intervention-results.json','copy-events.json')]
         self.checkpoint('maintenance-results-collected',artifacts=artifacts,actual_power_cuts=seen)
-        expected_crashes=[n for n in self.doc['expected_cases'] if '-crash-' in n]
+        expected_crashes=self.doc['expected_cuts']
         assert set(seen)==set(expected_crashes) and len(seen)==len(expected_crashes)
+        assert set(intervened)==set(self.doc['intervention_cases']) and len(intervened)==self.doc['normal_intervention_budget']
         assert all(row['status']=='collected' for row in artifacts),'maintenance result export incomplete'
         rows=json.loads((self.evidence/'cases.json').read_text());names=[r['name'] for r in rows]
         assert len(names)==len(set(names))==len(self.doc['expected_cases'])
         assert set(names)==set(self.doc['expected_cases']) and all(r['passed'] is True for r in rows)
-        complete=json.loads((self.evidence/'complete.json').read_text());assert complete['passed'] is True
+        complete=json.loads((self.evidence/'complete.json').read_text())
+        assert complete['passed'] is True and complete['expected']==self.doc['expected_cases'] and complete['cases']==len(rows)
+        copies=json.loads((self.evidence/'copy-events.json').read_text())
+        expected_copies=self.doc['intervention_cases']+[n for n in expected_crashes if n.endswith('-pending-rollback-copy')]
+        assert len(copies)==len(expected_copies) and {r['case'] for r in copies}==set(expected_copies)
+        assert all(r['source_fd_observed'] and r['kernel_stopped'] and 0<=r['partial_bytes']<r['source_bytes'] for r in copies)
         self.receipt.update(passed=True,actual_case_count=len(rows),python_cases=self.receipt['focused_pytest']['actual_count'],runtime_acceptance='storage seam only')
         self.guest('shutdown-final','sync\nsystemctl poweroff\n',60,False)
         self.proc.wait(timeout=60);self.stop()
@@ -384,6 +424,7 @@ class Runner:
         maintenance='maintenance' in self.receipt['reached_phases']
         prepared=any(c['name']=='normal-result-collected' and c['exit']==0 for c in self.receipt['checkpoints'])
         plans=[('cases.json',reached,prepared),('first-error.json',reached,False),('crash-state.json',maintenance,False)]
+        if maintenance:plans.extend([('intervention-results.json',True,False),('copy-events.json',True,False)])
         try:
             self.stop()
             # No preparation means none of these files can exist; do not boot
@@ -412,7 +453,9 @@ def main():
     runner=Runner(stage,doc)
     def interrupt(sig,frame):raise TimeoutError('bounded native signal '+str(sig))
     for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGALRM):signal.signal(sig,interrupt)
-    signal.alarm(7000)
+    # Bound from the actual finite cut/intervention inventory, not the old 12
+    # forward cuts. Native parent timeout includes an additional cleanup margin.
+    signal.alarm(2400+doc['maintenance_boot_budget']*360+doc['normal_intervention_budget']*660)
     try:runner.execute()
     except BaseException as exc:
         runner.receipt['first_error']={'type':type(exc).__name__,'reason':str(exc) if isinstance(exc,(AssertionError,TimeoutError)) else 'fixed phase exception',

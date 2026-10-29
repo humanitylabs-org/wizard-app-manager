@@ -212,3 +212,103 @@ def test_runner_phase_exports_precede_required_assertions_and_preserve_case_orac
     assert text.index("self.checkpoint('maintenance-results-collected'")<text.index('set(seen) == set(expected_crashes)')
     assert "set(names) == set(self.doc['expected_cases'])" in text
     assert "len(names) == len(set(names)) == len(self.doc['expected_cases'])" in text
+
+
+def _graph_fixture(m, monkeypatch, tmp_path):
+    # Kernel metadata/read/write regressions in the disposable worker only.
+    # No transaction/fence is admitted by this helper.
+    monkeypatch.setattr(m, 'mount_check', lambda path: None)
+    class Parent:
+        def __init__(self, path, **kwargs): self.fd=os.open(path,m.DIRECTORY)
+        def check(self): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): os.close(self.fd)
+    monkeypatch.setattr(m,'Pinned',Parent)
+    root=tmp_path/'source';root.mkdir(mode=0o700)
+    (root/'nested').mkdir();(root/'nested/data').write_bytes(b'original')
+    os.link(root/'nested/data',root/'alias')
+    (root/'link').symlink_to('nested/data')
+    return root
+
+
+@pytest.mark.parametrize('change',('substitution','edit','added','removed','mtime-restored'))
+def test_recovery_graph_refuses_drift_before_any_timestamp_write(monkeypatch,tmp_path,change):
+    m=load();root=_graph_fixture(m,monkeypatch,tmp_path);proof=m.graph(root)
+    outside=tmp_path/'outside';outside.mkdir();(outside/'data').write_bytes(b'sentinel')
+    if change=='substitution':
+        (root/'nested').rename(root/'old');(root/'nested').symlink_to(outside)
+    elif change=='edit':(root/'nested/data').write_bytes(b'legitimate change')
+    elif change=='added':(root/'new').write_bytes(b'new')
+    elif change=='removed':(root/'link').unlink()
+    else:
+        old=(root/'nested/data').stat();(root/'nested/data').write_bytes(b'changed!')
+        os.utime(root/'nested/data',ns=(old.st_atime_ns,old.st_mtime_ns))
+    sentinel=(outside/'data').stat();changed=(root/'alias').stat()
+    writes=[];monkeypatch.setattr(m.os,'utime',lambda *a,**k:writes.append((a,k)))
+    with pytest.raises(m.Refusal):m.restore_times(root,proof)
+    assert writes==[] and (outside/'data').stat()==sentinel and (root/'alias').stat()==changed
+
+
+def test_recovery_graph_allows_only_atime_and_restores_hardlink_once(monkeypatch,tmp_path):
+    m=load();root=_graph_fixture(m,monkeypatch,tmp_path);proof=m.graph(root)
+    data=root/'nested/data';old=data.stat();os.utime(data,ns=(old.st_atime_ns+500,old.st_mtime_ns))
+    # utime itself changes ctime, unlike cp reads. Capture this clean baseline
+    # and alter only its atime field to model a read's permitted metadata delta.
+    proof=m.graph(root)
+    for row in proof['rows']:
+        if row['relative'] in (['alias'],['nested','data']):row['atime']=old.st_atime_ns
+    calls=[];real=os.utime
+    def record(*a,**k):calls.append(k);return real(*a,**k)
+    monkeypatch.setattr(m.os,'utime',record)
+    m.restore_times(root,proof)
+    assert data.stat().st_mtime_ns==old.st_mtime_ns and data.stat().st_atime_ns==old.st_atime_ns
+    assert len(calls)==1 and calls[0]['follow_symlinks'] is False and 'dir_fd' in calls[0]
+
+
+def test_target_recovery_uses_distinct_identity_graph(monkeypatch,tmp_path):
+    import shutil
+    m=load();root=_graph_fixture(m,monkeypatch,tmp_path);source=m.graph(root)
+    target=tmp_path/'copy';shutil.copytree(root,target,symlinks=True)
+    # copytree does not preserve hardlinks; recreate the expected graph.
+    (target/'alias').unlink();os.link(target/'nested/data',target/'alias')
+    original=root.stat();os.utime(target,ns=(original.st_atime_ns,original.st_mtime_ns))
+    target_proof=m.graph(target)
+    assert target_proof['rows'][-1]['proof'][:2]!=source['rows'][-1]['proof'][:2]
+    m.restore_times(target,target_proof,times=source)
+    assert (target/'alias').stat().st_ino==(target/'nested/data').stat().st_ino
+
+
+@pytest.mark.parametrize('record',([],{'schema':1,'rows':[]},{'schema':2,'rows':[]},
+    {'schema':2,'rows':[{'relative':['..'],'proof':[0,0,0,0,0,0,0,0,0],'atime':0}]}))
+def test_ambiguous_or_malformed_recovery_record_never_opens_payload(monkeypatch,record):
+    m=load();calls=[];monkeypatch.setattr(m,'graph',lambda p:calls.append(p))
+    with pytest.raises(m.Refusal):m.restore_times(Path('/synthetic-only'),record)
+    assert calls==[]
+
+
+@pytest.mark.parametrize('mode',(0o755,0o750,0o710,0o701))
+def test_unsupported_leaf_privacy_refuses_without_mutation(monkeypatch,tmp_path,mode):
+    m=load();root=_graph_fixture(m,monkeypatch,tmp_path);root.chmod(mode);before=root.stat()
+    with pytest.raises(m.Refusal,match='privacy layout'):m.private_leaf(root)
+    assert root.stat()==before
+
+
+def test_private_leaf_positive_and_copy_parent_default_acl_negative(monkeypatch,tmp_path):
+    m=load();root=_graph_fixture(m,monkeypatch,tmp_path);m.private_leaf(root)
+    monkeypatch.setattr(m.os,'listxattr',lambda *a,**k:['system.posix_acl_default'])
+    with pytest.raises(m.Refusal,match='default ACL'):m.copy_parent(tmp_path)
+    with pytest.raises(m.Refusal,match='privacy layout'):m.private_leaf(root)
+
+
+def test_rollback_unavailability_precedes_direction_and_logical_mutation():
+    tree=ast.parse(PRODUCT.read_text())
+    txn=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Transaction')
+    methods={n.name:ast.unparse(n) for n in txn.body if isinstance(n,ast.FunctionDef)}
+    begin=methods['begin_rollback'];run=methods['run']
+    assert begin.index('rollback_guard()')<begin.index('atomic(maps,')<begin.index("self.doc['direction'] = 'rollback'")
+    assert run.index("if action == 'rollback':\n        rollback_guard()")<run.index("mkdir(lib,")
+    assert run.index('self.begin_rollback(checkpoint)')<run.index('restore_times(original, rows)')
+    assert "mapping.get('state') != 'ready'" in run
+    assert "self.doc.get('direction') == 'rollback'" in run
+    checker=ast.unparse(next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='require_mapping'))
+    assert "'state': 'ready'" in checker and 'os.readlink' in checker and '.resolve(' not in checker

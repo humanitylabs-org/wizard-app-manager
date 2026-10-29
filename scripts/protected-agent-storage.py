@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import secrets
 import stat
 import subprocess
@@ -300,31 +301,149 @@ def fingerprint(path, *, sync=False):
     return hashlib.sha256(json.dumps(rows, ensure_ascii=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def access_times(path):
-    rows = []
-    def walk(current, relative):
-        st = current.lstat()
-        rows.append([relative, st.st_atime_ns, st.st_mtime_ns])
-        if stat.S_ISDIR(st.st_mode):
-            fd = os.open(current, DIRECTORY | os.O_NOATIME)
-            try:
-                for name in sorted(os.listdir(fd)): walk(current/name, relative + [name])
-            finally: os.close(fd)
-    walk(path, [])
+def private_leaf(path):
+    """First slice: the leaf itself, not its former home, must deny other UIDs.
+
+    Leaf ACLs (even masked ones) are deliberately unsupported; inner ACLs remain
+    opaque preserved metadata. No chmod/chown is a compatibility repair.
+    """
+    owner = path.parent.stat().st_uid if str(path).startswith('/home/') else None
+    with Pinned(path.parent, owner=owner) as parent:
+        fd = os.open(path.name, DIRECTORY | os.O_NOATIME, dir_fd=parent.fd)
+        try:
+            st = os.fstat(fd)
+            if st.st_mode & 0o077 or any(a in os.listxattr(fd) for a in
+                    ('system.posix_acl_access', 'system.posix_acl_default')):
+                raise Refusal('unsupported selected-leaf privacy layout')
+        finally: os.close(fd)
+
+
+def copy_parent(path):
+    # A default ACL overrides umask during mkdir/cp. Refuse it before creating
+    # any target, even if cp would eventually replace the inherited metadata.
+    fd = os.open(path, DIRECTORY | os.O_NOATIME)
+    try:
+        if 'system.posix_acl_default' in os.listxattr(fd):
+            raise Refusal('unsupported copy-parent default ACL')
+    finally: os.close(fd)
+
+
+def graph(path):
+    """Read-only, descriptor-relative graph proof. Never readlink/utime here.
+
+    cp changes atime, not ctime/mtime. ctime therefore detects intervening edits,
+    including edit-and-restore of mtime. Collect AFTER any fingerprint's own
+    symlink atime repair. Aliases are validated together before restoring once.
+    """
+    path = clean_path(path); mount_check(path)
+    rows = []; counts = {}; links = {}
+    with Pinned(path.parent, owner=path.parent.stat().st_uid if str(path).startswith('/home/') else None) as parent:
+        rootdev = os.stat(path.name, dir_fd=parent.fd, follow_symlinks=False).st_dev
+        def walk(pfd, name, relative):
+            st = os.stat(name, dir_fd=pfd, follow_symlinks=False)
+            kind = stat.S_IFMT(st.st_mode)
+            if st.st_dev != rootdev or kind not in (stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK):
+                raise Refusal('unsupported recovery graph object')
+            key = (st.st_dev, st.st_ino)
+            proof = [st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid,
+                     st.st_nlink, st.st_size if kind != stat.S_IFDIR else 0,
+                     st.st_mtime_ns, st.st_ctime_ns]
+            row = {'relative': relative, 'proof': proof, 'atime': st.st_atime_ns}
+            if kind != stat.S_IFDIR:
+                counts[key] = counts.get(key, 0) + 1; links[key] = st.st_nlink
+            if kind in (stat.S_IFDIR, stat.S_IFREG):
+                fd = os.open(name, (DIRECTORY if kind == stat.S_IFDIR else
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC) | os.O_NOATIME, dir_fd=pfd)
+                try:
+                    if identity(os.fstat(fd)) != identity(st): raise Refusal('recovery graph inode changed')
+                    row['attrs'] = [[a, os.getxattr(fd, a).hex()] for a in sorted(os.listxattr(fd))]
+                    if kind == stat.S_IFDIR:
+                        for child in sorted(os.listdir(fd)): walk(fd, child, relative + [child])
+                    else:
+                        h = hashlib.sha256()
+                        while data := os.read(fd, 1048576): h.update(data)
+                        row['bytes'] = h.hexdigest()
+                finally: os.close(fd)
+            rows.append(row)
+        walk(parent.fd, path.name, [])
+        parent.check()
+    if counts != links: raise Refusal('hardlink escapes selected tree')
+    return {'schema': 2, 'rows': rows}
+
+
+def validate_graph_record(record):
+    if not isinstance(record, dict) or set(record) != {'schema', 'rows'} or record['schema'] != 2:
+        raise Refusal('ambiguous interrupted copy record')
+    rows = record['rows']
+    if not isinstance(rows, list) or not rows: raise Refusal('invalid recovery graph')
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or not {'relative', 'proof', 'atime'} <= set(row):
+            raise Refusal('invalid recovery graph')
+        rel = row['relative']; proof = row['proof']
+        if (not isinstance(rel, list) or any(not isinstance(p, str) or p in ('', '.', '..')
+                or '/' in p or '\x00' in p for p in rel) or tuple(rel) in seen
+                or not isinstance(proof, list) or len(proof) != 9
+                or any(type(v) is not int for v in proof) or type(row['atime']) is not int):
+            raise Refusal('invalid recovery graph')
+        seen.add(tuple(rel))
+    if () not in seen: raise Refusal('invalid recovery graph')
+    for rel in seen:
+        if rel and rel[:-1] not in seen: raise Refusal('invalid recovery graph')
     return rows
 
 
-def restore_times(path, rows, *, partial=False):
-    for relative, atime, mtime in reversed(rows):
-        if any(not isinstance(p, str) or p in ('', '.', '..') or '/' in p for p in relative):
-            raise Refusal('invalid private timestamp record')
-        current = path.joinpath(*relative)
-        try: st = current.lstat()
-        except FileNotFoundError:
-            if partial: continue
-            raise
-        if (st.st_atime_ns, st.st_mtime_ns) != (atime, mtime):
-            os.utime(current, ns=(atime, mtime), follow_symlinks=False)
+def graph_without_atime(record):
+    validate_graph_record(record)
+    return [{k: v for k, v in row.items() if k != 'atime'} for row in record['rows']]
+
+
+def restoration_plan(path, record, *, times=None):
+    """Validate the ENTIRE graph read-only before the first privileged write."""
+    rows = validate_graph_record(record)
+    actual = graph(path)
+    if graph_without_atime(actual) != graph_without_atime(record): raise Refusal('interrupted copy source graph changed')
+    desired = {tuple(r['relative']): r for r in validate_graph_record(times or record)}
+    if set(desired) != {tuple(r['relative']) for r in rows}: raise Refusal('copy graph membership mismatch')
+    # Complete target layout/mtime/type/alias agreement before writing either tree.
+    aliases = {}; source_aliases = {}
+    for row in rows:
+        src = desired[tuple(row['relative'])]; a = row['proof']; b = src['proof']
+        if a[2:8] != b[2:8]: raise Refusal('copy graph metadata mismatch')
+        aliases.setdefault(tuple(a[:2]), []).append(row['relative'])
+        source_aliases.setdefault(tuple(b[:2]), []).append(row['relative'])
+    if sorted(aliases.values()) != sorted(source_aliases.values()): raise Refusal('copy hardlink mismatch')
+    return rows, desired
+
+
+def restore_times(path, record, *, times=None):
+    """Each graph has its OWN identities. Only validated atime is restored.
+
+    mtime is never repaired after drift. Every intermediate fd uses NOFOLLOW.
+    A crash during restoration is explicitly ambiguous and refuses on resume.
+    """
+    rows, desired = restoration_plan(path, record, times=times)
+    done = set(); proofs = {tuple(r['relative']): r['proof'] for r in rows}
+    with Pinned(path.parent, owner=path.parent.stat().st_uid if str(path).startswith('/home/') else None) as parent:
+        for row in rows:
+            rel = row['relative']; key = tuple(row['proof'][:2])
+            if key in done: continue
+            done.add(key); fds = []
+            try:
+                pfd = parent.fd
+                components = [path.name] + rel
+                for index, component in enumerate(components[:-1]):
+                    pfd = os.open(component, DIRECTORY | os.O_NOATIME, dir_fd=pfd); fds.append(pfd)
+                    if identity(os.fstat(pfd)) != proofs[tuple(rel[:index])][:2]:
+                        raise Refusal('recovery intermediate identity changed')
+                st = os.stat(components[-1], dir_fd=pfd, follow_symlinks=False)
+                if identity(st) != list(key): raise Refusal('recovery graph inode changed')
+                atime = desired[tuple(rel)]['atime']
+                if st.st_atime_ns != atime:
+                    os.utime(components[-1], ns=(atime, st.st_mtime_ns), dir_fd=pfd, follow_symlinks=False)
+            finally:
+                for fd in reversed(fds): os.close(fd)
+        parent.check()
 
 
 def copy_opaque(source, target):
@@ -337,10 +456,11 @@ def copy_opaque(source, target):
             st = os.stat(executable.name, dir_fd=parent.fd, follow_symlinks=False)
             if not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_mode & 0o022:
                 raise Refusal('unprotected transfer executable')
+    private_leaf(source); copy_parent(target.parent)
     result = subprocess.run(['/usr/bin/cp', '-a', '--preserve=all', '--reflink=auto', '--',
                              str(source), str(target)], env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'},
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, check=False)
+                            stderr=subprocess.DEVNULL, check=False, umask=0o077)
     require_fence()  # cp is reaped; no child or inherited writer remains.
     if result.returncode: raise Refusal('opaque transfer failed (partial copy retained)')
 
@@ -360,14 +480,24 @@ def selected(agent, logical):
 def require_mapping(agent, logical):
     account, logical = selected(agent, logical)
     doc = protected_json(ANCHOR/'.mappings'/f'{account.pw_uid}.json')
-    expected = {'schema': 1, 'uid': account.pw_uid, 'gid': account.pw_gid,
+    expected = {'schema': 1, 'state': 'ready', 'uid': account.pw_uid, 'gid': account.pw_gid,
                 'logical': str(logical), 'physical': str(ANCHOR/str(account.pw_uid))}
     if any(doc.get(k) != v for k, v in expected.items()): raise Refusal('storage mapping mismatch')
     with Pinned(ANCHOR) as parent:
         st = os.stat(str(account.pw_uid), dir_fd=parent.fd, follow_symlinks=False)
         if (not stat.S_ISDIR(st.st_mode) or st.st_uid != account.pw_uid or st.st_gid != account.pw_gid
-                or identity(st) != doc.get('identity')):
+                or st.st_mode & 0o077 or identity(st) != doc.get('identity')):
             raise Refusal('canonical storage identity changed')
+        if any(a in os.listxattr(ANCHOR/str(account.pw_uid), follow_symlinks=False)
+               for a in ('system.posix_acl_access', 'system.posix_acl_default')):
+            raise Refusal('unsupported canonical-leaf ACL')
+    # This is a current consistency observation, NOT a durable alias race pin.
+    # Never resolve/adopt its target. The physical consumer stays canonical.
+    with Pinned(logical.parent, owner=account.pw_uid) as home:
+        st = os.stat(logical.name, dir_fd=home.fd, follow_symlinks=False)
+        if not stat.S_ISLNK(st.st_mode) or os.readlink(logical.name, dir_fd=home.fd) != expected['physical']:
+            raise Refusal('logical storage alias disagreement')
+        home.check()
     return doc
 
 
@@ -398,12 +528,14 @@ class Transaction:
         st = os.stat(name or self.logical.name, dir_fd=self.home.fd, follow_symlinks=False)
         if not stat.S_ISDIR(st.st_mode) or identity(st) != self.doc['source_identity']:
             raise Refusal('selected source identity changed')
+        private_leaf(self.logical.parent/(name or self.logical.name))
         return st
 
     def matches(self, path, expected):
         st = path.lstat()
         if not stat.S_ISDIR(st.st_mode) or identity(st) != expected:
             raise Refusal('transaction endpoint identity changed')
+        private_leaf(path)
         if fingerprint(path) != self.doc['fingerprint']: raise Refusal('opaque transfer metadata/bytes changed')
 
     def run(self, action='relocate', *, checkpoint=None):
@@ -411,6 +543,33 @@ class Transaction:
         require_fence()
         if action not in ('relocate', 'rollback'): raise Refusal('unknown storage operation')
         if action == 'rollback': rollback_guard()
+        # Privacy admission precedes ALL directory/lock/journal/payload writes.
+        # Resume inventories finite known endpoints without following an alias.
+        try: existing = protected_json(self.control/'journal.json', private=True)
+        except FileNotFoundError: existing = None
+        if existing is None:
+            with Pinned(self.logical.parent, owner=self.uid):
+                st = self.logical.lstat()
+                if not stat.S_ISDIR(st.st_mode) or st.st_uid != self.uid or st.st_gid != self.account.pw_gid:
+                    raise Refusal('selected source must be a real agent-owned directory')
+                private_leaf(self.logical)
+        else:
+            paths = [self.logical, self.target]
+            for key in ('snapshot', 'stage', 'restore', 'retained', 'post_mapping'):
+                if key in existing:
+                    name = existing[key]
+                    if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\x00' in name:
+                        raise Refusal('invalid transaction endpoint name')
+                    parent = self.control if key == 'snapshot' else ANCHOR if key in ('stage', 'post_mapping') else self.logical.parent
+                    paths.append(parent/name)
+            for path in paths:
+                try: st = path.lstat()
+                except FileNotFoundError: continue
+                if stat.S_ISDIR(st.st_mode): private_leaf(path)
+                elif path != self.logical or not stat.S_ISLNK(st.st_mode):
+                    raise Refusal('transaction endpoint type changed')
+        for path in (Path('/var/lib'), ANCHOR, CONTROL, self.control, self.logical.parent):
+            if path.exists(): copy_parent(path)
         with Pinned('/var/lib') as lib:
             mkdir(lib, ANCHOR.name, 0o755); mkdir(lib, CONTROL.name, 0o700)
         with Pinned(CONTROL) as control:
@@ -444,12 +603,30 @@ class Transaction:
                     raise Refusal('transaction belongs to another source')
                 if self.home.ids != self.doc['home_identity'] or self.dest.ids != self.doc['target_parent_identity']:
                     raise Refusal('transaction parent identity changed')
+                if action == 'relocate' and (self.doc.get('direction') == 'rollback' or
+                        self.doc['phase'].startswith('rollback') or self.doc['phase'] == 'rolled_back'):
+                    raise Refusal('rollback transaction cannot resume forward')
+                if action == 'relocate':
+                    try: mapping = protected_json(ANCHOR/'.mappings'/f'{self.uid}.json')
+                    except FileNotFoundError: mapping = None
+                    if mapping is not None and mapping.get('state') != 'ready':
+                        raise Refusal('rollback mapping unavailable; forward resume forbidden')
+                if action == 'rollback': self.begin_rollback(checkpoint)
                 if 'pending_copy' in self.doc:
                     pending = self.doc['pending_copy']
                     original = clean_path(pending['source'])
-                    if identity(original.lstat()) != pending['source_identity']:
-                        raise Refusal('interrupted copy source identity changed')
+                    if pending.get('schema') != 2 or pending.get('state') != 'copying':
+                        raise Refusal('ambiguous interrupted copy record')
+                    if (not isinstance(pending.get('times'), str) or
+                            not re.fullmatch(r'times-[0-9a-f]{32}\.json', pending['times'])):
+                        raise Refusal('invalid recovery record name')
                     rows = protected_json(self.control/pending['times'], private=True, maxbytes=67108864)
+                    # An interrupted restoration is ambiguous. Persist that fact
+                    # before writing; never authorize it by a half-updated ctime.
+                    validate_graph_record(rows)
+                    if graph_without_atime(graph(original)) != graph_without_atime(rows):
+                        raise Refusal('interrupted copy source graph changed')
+                    pending['state'] = 'restoring'; self.save(self.doc['phase'])
                     restore_times(original, rows)
                     fingerprint(original, sync=True)
                     # The unfinished destination is retained and never trusted
@@ -471,16 +648,26 @@ class Transaction:
         self.home.check(); self.dest.check(); self.state.check()
         if not stat.S_ISDIR(source.lstat().st_mode): raise Refusal('opaque source is not a real directory')
         if os.path.lexists(target): raise Refusal('opaque destination already exists')
-        rows = access_times(source)
+        private_leaf(source); copy_parent(target.parent)
+        rows = graph(source)
         if len(json.dumps(rows).encode()) > 67108864:
             raise Refusal('timestamp manifest exceeds finite storage limit')
         name = 'times-' + secrets.token_hex(16) + '.json'
         atomic(self.state, name, rows)
-        self.doc['pending_copy'] = {'source': str(source), 'target': str(target), 'times': name,
-                                    'source_identity': identity(source.lstat())}
+        self.doc['pending_copy'] = {'schema': 2, 'state': 'copying', 'source': str(source), 'target': str(target), 'times': name}
         self.save(self.doc['phase'])
         copy_opaque(source, target)
-        restore_times(source, rows); restore_times(target, rows)
+        private_leaf(source); private_leaf(target)
+        target_rows = graph(target)
+        # Validate source before marking restoration and before any timestamp
+        # writes. cp's own access has no authority to hide a legitimate edit.
+        if graph_without_atime(graph(source)) != graph_without_atime(rows):
+            raise Refusal('interrupted copy source graph changed')
+        if {tuple(r['proof'][:2]) for r in rows['rows']} & {tuple(r['proof'][:2]) for r in target_rows['rows']}:
+            raise Refusal('copy source and target share inode identities')
+        restoration_plan(source, rows); restoration_plan(target, target_rows, times=rows)
+        self.doc['pending_copy']['state'] = 'restoring'; self.save(self.doc['phase'])
+        restore_times(source, rows); restore_times(target, target_rows, times=rows)
         fingerprint(source, sync=True); fingerprint(target, sync=True)
         self.doc.pop('pending_copy'); self.save(self.doc['phase'])
 
@@ -559,7 +746,7 @@ class Transaction:
                 raise Refusal('logical alias changed')
             self.mark('metadata_intent', checkpoint)
             mapping = {k: self.doc[k] for k in ('schema', 'uid', 'gid', 'logical', 'physical')}
-            mapping['identity'] = self.doc['target_identity']
+            mapping['identity'] = self.doc['target_identity']; mapping['state'] = 'ready'
             with Pinned(ANCHOR/'.mappings') as maps: atomic(maps, f'{self.uid}.json', mapping, 0o644)
             self.mark('committed', checkpoint); phase = self.doc['phase']
         if phase != 'committed': raise Refusal('unknown transaction phase')
@@ -568,18 +755,42 @@ class Transaction:
         require_mapping(self.account.pw_name, self.logical)
         return {'phase': phase, 'physical': str(self.target), 'logical': str(self.logical)}
 
+    def begin_rollback(self, checkpoint):
+        rollback_guard()
+        if self.doc['phase'] == 'rolled_back': return
+        # The public record changes FIRST. A cut before private direction save
+        # still refuses forward resume. Alias checks are not durable race pins.
+        if self.doc.get('direction') != 'rollback':
+            mapping = {k: self.doc[k] for k in ('schema', 'uid', 'gid', 'logical', 'physical')}
+            mapping['state'] = 'rollback-unavailable'
+            with Pinned(ANCHOR/'.mappings') as maps: atomic(maps, f'{self.uid}.json', mapping, 0o644)
+            if checkpoint: checkpoint('rollback_unavailable_public')
+            self.doc['direction'] = 'rollback'; self.doc['rollback_origin'] = self.doc['phase']
+            self.mark('rollback_unavailable_intent', checkpoint)
+
+    def withdraw_mapping(self, checkpoint):
+        self.mark('rollback_withdraw_intent', checkpoint)
+        with Pinned(ANCHOR/'.mappings') as maps:
+            try: os.unlink(f'{self.uid}.json', dir_fd=maps.fd)
+            except FileNotFoundError: pass
+            os.fsync(maps.fd)
+        if checkpoint: checkpoint('rollback_after_withdrawal')
+        self.mark('rolled_back', checkpoint)
+        return {'phase': 'rolled_back'}
+
     def rollback(self, checkpoint):
         rollback_guard()  # also immediately before the first rollback mutation
         phase = self.doc['phase']
         if phase == 'rolled_back': return {'phase': phase}
+        if phase == 'rollback_withdraw_intent': return self.withdraw_mapping(checkpoint)
+        origin = self.doc.get('rollback_origin', phase)
         # Before link publication the original is still selected. Nothing needs
         # deletion; preserve all copies and simply withdraw any public mapping.
-        if phase in ('prepared', 'snapshot_intent', 'snapshot_ready', 'transfer_intent', 'transfer_ready') or (
-                phase in ('publish_intent', 'published') and self.logical.is_dir() and not self.logical.is_symlink()):
+        if phase == 'rollback_unavailable_intent' and (origin in ('prepared', 'snapshot_intent', 'snapshot_ready', 'transfer_intent', 'transfer_ready') or (
+                origin in ('publish_intent', 'published') and self.logical.is_dir() and not self.logical.is_symlink())):
             self.source_check()
-            self.mark('rolled_back', checkpoint)
-            return {'phase': 'rolled_back'}
-        if not phase.startswith('rollback'):
+            return self.withdraw_mapping(checkpoint)
+        if phase == 'rollback_unavailable_intent':
             self.matches(self.control/self.doc['snapshot'], self.doc['snapshot_identity'])
             self.doc['restore'] = '.wizard-restore-' + secrets.token_hex(16)
             self.doc['post_mapping'] = '.retained-' + secrets.token_hex(16)
@@ -624,11 +835,7 @@ class Transaction:
             else:
                 st = (ANCHOR/self.doc['post_mapping']).lstat()
                 if identity(st) != self.doc['target_identity']: raise Refusal('retained canonical identity changed')
-            with Pinned(ANCHOR/'.mappings') as maps:
-                try: os.unlink(f'{self.uid}.json', dir_fd=maps.fd)
-                except FileNotFoundError: pass
-                os.fsync(maps.fd)
-            self.mark('rolled_back', checkpoint); phase = self.doc['phase']
+            return self.withdraw_mapping(checkpoint)
         if phase != 'rolled_back': raise Refusal('unknown rollback phase')
         return {'phase': phase}
 
