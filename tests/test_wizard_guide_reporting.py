@@ -10,6 +10,15 @@ def test_guide_keeps_onboarding_and_problem_activation():
         assert trigger in description
 
 
+def test_guide_loads_for_one_way_alerts():
+    description = next(line for line in GUIDE.read_text().splitlines() if line.startswith('description:'))
+    for trigger in ('alert', 'job finished', 'watcher'):
+        assert trigger in description
+    text = GUIDE.read_text()
+    assert '## Alerts and notifications' in text
+    assert 'deliver: notification' in text
+
+
 def test_developer_mode_follows_branch_without_promising_automatic_rebases():
     text = GUIDE.read_text()
     developer = next(line for line in text.splitlines() if line.startswith('3. **Developer mode**'))

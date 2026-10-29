@@ -1,6 +1,6 @@
 ---
 name: wizard-guide
-description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips or a reminder, wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
+description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips, a reminder or to be told when something happens, when you must alert them (a job finished, a watcher found something), wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
 version: 1.2.0
 author: Wizard OS
 license: MIT
