@@ -102,6 +102,9 @@ def test_template_add_field_uses_look_only_names():
 
 def test_design_rules_template_is_clean_and_breaks_warn(tmp_path):
     app = builder.new_app('design-rules', tmp_path, 'A design-rules app')
+    # This fixture exercises an existing non-Git import. Generated apps are now
+    # strict (covered in test_style_gate); legacy design guidance still warns.
+    (app / '.builder.json').unlink()
     assert builder.design_rows(app) == []
     web = app / 'web'
     (web / 'styles.css').write_text((web / 'styles.css').read_text()

@@ -29,6 +29,10 @@ jobs:
       - run: pip install pyyaml pytest pyjwt
       - name: Portable paths guard
         run: python tests/test_portable_paths.py
+      - name: Verify canonical snapshot and strict new-app styles
+        run: |
+          python tools/sync_wizard_style.py --check
+          python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
       - run: python -m pytest -q
       - uses: actions/setup-node@v4
         with: {node-version: "22"}
