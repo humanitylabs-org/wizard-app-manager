@@ -39,9 +39,11 @@ def test_snapshot_hashes_and_generated_app(tmp_path):
     assert html.index('boot.js') < html.index('wizard-tokens.css') < html.index('wizard-ui.css') < html.index('styles.css')
     assert html.index('/wizard-os-home/core/app-client.js') < html.index('app.js')
     assert not (app / 'web/theme-client.js').exists()
+    assert html.index('/wizard-os-home/core/app-client.js') < html.index('wizard-sheet.js') < html.index('app.js')
+    assert 'container: wz-app' in (app / 'web/wizard-ui.css').read_text()
 
 
-@pytest.mark.parametrize('asset', ['wizard-tokens.css', 'wizard-ui.css', 'boot.js'])
+@pytest.mark.parametrize('asset', ['wizard-tokens.css', 'wizard-ui.css', 'boot.js', 'wizard-sheet.js'])
 def test_drifted_distribution_refuses_generation(tmp_path, monkeypatch, asset):
     repo = tmp_path / 'wam'
     shutil.copytree(builder.REPO / 'templates', repo / 'templates')
@@ -78,3 +80,77 @@ def test_snapshot_source_and_missing_asset_fail(tmp_path):
     (template / 'web/boot.js').unlink()
     with pytest.raises(ValueError, match='snapshot drifted'):
         builder.validate_style_snapshot(template)
+
+
+def test_forked_kit_is_a_warning_not_an_error(tmp_path):
+    from wam import builder
+    import shutil
+    app = tmp_path / 'app'
+    shutil.copytree(builder.REPO / 'templates' / 'hello-wizard', app)
+    assert builder.kit_rows(app) == []
+    kit = app / 'web' / 'wizard-ui.css'
+    kit.write_text(kit.read_text() + '\n.my-chat { display: flex; }\n')
+    rows = builder.kit_rows(app)
+    assert len(rows) == 1 and rows[0]['severity'] == 'warning' and 'styles.css' in rows[0]['detail']
+
+
+def test_template_add_field_uses_look_only_names():
+    from wam import builder
+    html = (builder.REPO / 'templates' / 'hello-wizard' / 'web' / 'index.html').read_text()
+    assert 'class="wz-field-row"' in html and 'wz-compose' not in html
+
+
+def test_design_rules_template_is_clean_and_breaks_warn(tmp_path):
+    app = builder.new_app('design-rules', tmp_path, 'A design-rules app')
+    # This fixture exercises an existing non-Git import. Generated apps are now
+    # strict (covered in test_style_gate); legacy design guidance still warns.
+    (app / '.builder.json').unlink()
+    assert builder.design_rows(app) == []
+    web = app / 'web'
+    (web / 'styles.css').write_text((web / 'styles.css').read_text()
+                                    + '\n.wz-app { max-width: 640px; margin: 0 auto; }\n.x { color: #ff0000; }\n'
+                                    '.wz-prose { max-width: 72ch; }\n.wz-empty p { max-width: 30ch; }\n')
+    (web / 'app.js').write_text((web / 'app.js').read_text() + '\nif (window.confirm("Delete?")) alert("gone");\n')
+    report = builder.check_app(app)
+    rules = {r['rule']: r for r in report['warnings']}
+    assert report['ok'] and all(r['severity'] == 'warning' for r in report['warnings'])
+    assert 'web/styles.css: .wz-app' in rules['design: the window is the page']['detail']
+    assert 'styles.css: .wz-prose' not in rules['design: the window is the page']['detail']
+    assert 'web/styles.css' in rules['design: colours come from the kit']['detail']
+    assert 'web/app.js' in rules['design: one pop-up, the sheet']['detail']
+
+
+def test_design_rules_skip_vendored_and_find_the_top_frame(tmp_path):
+    app = builder.new_app('design-frame', tmp_path, 'A design-rules app')
+    web = app / 'web'
+    html = (web / 'index.html').read_text().replace('<div class="wz-app">', '<div class="wz-app shell" id="root">')
+    (web / 'index.html').write_text(html)
+    (web / 'styles.css').write_text('@media (min-width: 1px) { #root { max-width: 900px } }\n'
+                                    '.card { color: var(--ink); max-width: none; }\n'
+                                    'html.wz-hosted .shell::before { max-width: 10px }\n'
+                                    '.settings-panel main, .card .wz-app { max-width: 60ch }\n')
+    (web / 'vendor').mkdir()
+    (web / 'vendor/lib.css').write_text('.wz-app { max-width: 1px; color: rgb(0, 0, 0); }')
+    (web / 'vendor/lib.js').write_text('alert(1)')
+    (web / 'more.js').write_text('// alert("commented")\nfunction confirm(x) { return x }\nobj.prompt("ok")\n')
+    rows = builder.design_rows(app)
+    assert [r['rule'] for r in rows] == ['design: the window is the page']
+    detail = rows[0]['detail']
+    assert '#root' in detail and '.shell' in detail and 'vendor' not in detail and 'settings-panel' not in detail
+    assert '.card .wz-app' not in detail
+    (app / 'src').mkdir()
+    (app / 'src/View.tsx').write_text('export const ask = () => window.confirm("Sure?")\n')
+    assert 'src/View.tsx' in builder.design_rows(app)[-1]['detail']
+
+
+def test_unguarded_shell_calls_warn_and_guarded_ones_pass(tmp_path):
+    app = builder.new_app('shell-compat', tmp_path, 'A shell-compat app')
+    web = app / 'web'
+    (web / 'reply.js').write_text("button.onclick = () => window.WizardApp.nav.openContextDraft({id: 'a'});\n")
+    rows = [r for r in builder.design_rows(app) if r['rule'] == 'compatibility: works on every Wizard']
+    assert rows and 'web/reply.js: WizardApp.nav.openContextDraft' in rows[0]['detail'] and rows[0]['severity'] == 'warning'
+    (web / 'reply.js').write_text("const ok = typeof window.WizardApp?.nav?.openContextDraft === 'function';\n"
+                                  "if (ok) window.WizardApp.nav.openContextDraft({id: 'a'});\n")
+    assert not [r for r in builder.design_rows(app) if r['rule'].startswith('compatibility')]
+    (web / 'reply.js').write_text("window.WizardApp?.chat?.prompt('hi');\n")
+    assert not [r for r in builder.design_rows(app) if r['rule'].startswith('compatibility')]

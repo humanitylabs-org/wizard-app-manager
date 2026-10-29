@@ -1,0 +1,16 @@
+{
+  "version": "0.3.38",
+  "latest_since": "2026-10-24T11:08:59Z",
+  "promoted_at": "2026-10-24T11:19:46Z",
+  "upgrade_test": {
+    "from": "0.3.36",
+    "to": "0.3.38",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.38.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Miguel-authorized private launch; supported strict installer upgrade from stable 0.3.36 passed with exact public digests, real uploads and local voice transcription, both browser shells, healthy doctors and preserved Hermes/config/history.",
+    "notes": "Ride-alongs include UX shared app kit #382, My skin #377, search/new-chat #433, voice timeout/unreadable recording, versioned assets, stale 404 handling, Service pending steer replay, WAM doctor reporting. Shared-shell risk verified on installed demo. No fresh box available without a wipe; physical microphone untested. No owner-data migration or Hermes update."
+  }
+}

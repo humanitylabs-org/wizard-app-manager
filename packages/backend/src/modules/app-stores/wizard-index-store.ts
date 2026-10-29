@@ -15,6 +15,7 @@ import * as yaml from 'yaml';
 import { AppStoreFilesManager } from './app-store-files-manager';
 import { prepareChatsModule } from './chats-module';
 import { preparePackage, sourceDir } from './packaging';
+import { hermesRecipe } from '../app-lifecycle/hermes-lock';
 
 export const WIZARD_STORE_SLUG = 'wizardapps';
 export const DEFAULT_WIZARD_INDEX = 'https://apps.aiwizards.com';
@@ -150,7 +151,15 @@ export class WizardIndexStore extends AppStoreFilesManager {
     if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) return hit.rec;
     try {
       const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
-      const rec = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
+      const listed = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
+      const rec =
+        listed && appName === 'hermes-agent'
+          ? {
+              ...listed,
+              repo: hermesRecipe.repo,
+              install: { ...listed.install, git: `https://github.com/${hermesRecipe.repo}`, commit: hermesRecipe.commit },
+            }
+          : listed;
       this.lastCheck.set(appName, { at: Date.now(), rec });
       return rec;
     } catch (e) {
@@ -162,6 +171,15 @@ export class WizardIndexStore extends AppStoreFilesManager {
   private async localCommit(appName: string) {
     const f = path.join(this.getAppStoreFolder(), appName, '.wizard-commit');
     return (await this.filesystem.isFile(f)) ? ((await this.filesystem.readTextFile(f)) ?? '').trim() : null;
+  }
+
+  /** True when the prepared recipe at `commit` is a source/build package whose app-data source copy is missing. */
+  private async sourceMissing(appName: string, commit: string) {
+    const wizardText = await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, 'wizard.md'));
+    const pkg = String(((frontMatter(wizardText ?? '').runtime ?? {}) as { package?: unknown }).package ?? '');
+    if (pkg !== 'source' && pkg !== 'build') return false;
+    const { appDataDir } = this.configuration.get('directories');
+    return !(await this.filesystem.isDirectory(sourceDir(appDataDir, this.storeConfig.slug, appName, commit)));
   }
 
   /** Make sure repos/<slug>/apps/<id> holds the commit the index lists now. Fetches only this app. */
@@ -184,12 +202,16 @@ export class WizardIndexStore extends AppStoreFilesManager {
       const source = JSON.parse((await this.filesystem.readTextFile(path.join(this.getAppStoreFolder(), appName, '.wizard-source'))) ?? '{}');
       if (!SHA.test(pin.commit ?? '') || pin.commit !== (await this.localCommit(appName)) || pin.repo !== source.repo)
         throw new Error('invalid owner-local selection pin');
+      if (appName === 'hermes-agent' && (pin.commit !== hermesRecipe.commit || pin.repo !== hermesRecipe.repo))
+        throw new Error('Hermes selection differs from the shared exact lock');
       return;
     }
     const rec = await this.lookup(appName, fresh);
     if (!rec || !SHA.test(rec.install?.commit ?? '')) return;
     const have = await this.localCommit(appName);
-    if (have === rec.install.commit) return;
+    // Same commit is done, unless its pinned source copy (source/build packaging) is gone: then the compose's
+    // ${APP_SOURCE_DIR} would be empty and every update fails with "invalid spec: :/app:ro".
+    if (have === rec.install.commit && !(await this.sourceMissing(appName, have))) return;
 
     const { dataDir } = this.configuration.get('directories');
     const src = path.join(dataDir, 'repos', `.${this.storeConfig.slug}-src`, `${appName}@${rec.install.commit.slice(0, 12)}`);
@@ -281,7 +303,7 @@ export class WizardIndexStore extends AppStoreFilesManager {
     await this.filesystem.writeTextFile(path.join(tmp, '.wizard-commit'), `${rec.install.commit}\n`);
     await this.filesystem.writeTextFile(
       path.join(tmp, '.wizard-source'),
-      `${JSON.stringify({ repo: rec.repo, git: rec.install.git, index: this.indexUrl })}\n`,
+      `${JSON.stringify({ repo: rec.repo, git: rec.install.git, index: this.indexUrl, source: 'standard' })}\n`,
     );
 
     await this.filesystem.removeDirectory(dst);

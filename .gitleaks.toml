@@ -1,0 +1,9 @@
+# Secret scan config for this public repo. Extends gitleaks' default rules.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixture values, not credentials"
+condition = "AND"
+paths = ['''^tests/''']
+regexes = ['''^existing-hermes-api-key-0123456789$''', '''^runtipi-fixture-jwt-secret-123456789$''']

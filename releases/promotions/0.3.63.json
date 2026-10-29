@@ -1,0 +1,16 @@
+{
+  "version": "0.3.63",
+  "latest_since": "2026-10-26T17:08:33Z",
+  "promoted_at": "2026-10-26T17:31:56Z",
+  "upgrade_test": {
+    "from": "0.3.61",
+    "to": "0.3.63",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.63.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Recommended fix (wizard-app-store #32, chatgpt-connection #3, claude-connection #3): on a customer alongside box ChatGPT sign-in from the app never completed, Claude reported success while the host agent had no Claude credential and then listed the same email twice, and Home showed both as not connected. 0.3.63 only moves the two AI connection apps (ChatGPT 0.1.4 -> 0.2.4 shared accounts page; Claude 0.2.5 -> 0.2.6). Fixture tests fail-first (9/12 fail on the old engines); live candidate on demo proved broker sign-in start, stale-address reporting and Home read; installed upgrade 0.3.61->0.3.63 on demo via os.sh WIZARD_STRICT=1: pinned, 0 failed checks, Hermes config/env/auth unchanged, doctor 0 FAIL, engines healthy, Home shows ChatGPT with usage.",
+    "notes": "Changed pins vs 0.3.61: default_apps ai-connection (chatgpt-connection f87d5dd -> 476d771) and claude-subscription (claude-connection eb434ae -> d0b59dd) only. No migrations. Risks: ChatGPT moves from the 0.1.4 single-account page to the multi-account page (no Use ChatGPT / Disconnect buttons; sign-ins are managed per account); ChatGPT account changes without a page password follow Claude 0.2.5's same-origin rule. Not covered: real provider approval (owner step), real-account duplicate merge (fixture-only; exact emailHash needs wizard-agent-service #194 in a later Agent Service pin). Latest moves to 0.3.64 = 0.3.62 + the same two app pins."
+  }
+}

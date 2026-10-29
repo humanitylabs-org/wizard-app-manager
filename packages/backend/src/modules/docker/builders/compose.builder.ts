@@ -6,6 +6,7 @@ import deepmerge from 'deepmerge';
 import * as yaml from 'yaml';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { rewriteVolumes } from '../wizard-storage';
+import { mountAppGrants } from '../wizard-app-grants';
 
 /**
  * Interpolate {{RUNTIPI_APP_ID}} placeholders in labels with the actual app ID
@@ -83,6 +84,15 @@ type NormalizedComposeService = DynamicComposeSchemaYaml['services'][string] & {
   labels: Record<string, string | number | boolean>;
 };
 
+export function servicesForArchitecture(input: DynamicComposeSchemaYaml, architecture?: string) {
+  const services = JSON.parse(JSON.stringify(input.services)) as DynamicComposeSchemaYaml['services'];
+  const override = input['x-runtipi']?.overrides?.find((o: { architecture: string }) => o.architecture === architecture);
+  for (const [name, service] of Object.entries(override?.services ?? {})) {
+    services[name] = services[name] ? deepmerge(services[name], service, { arrayMerge: (_target: unknown[], source: unknown[]) => source }) : service;
+  }
+  return services;
+}
+
 export class DockerComposeBuilder {
   private buildService = (
     service: DynamicComposeSchemaYaml['services'][string],
@@ -96,6 +106,10 @@ export class DockerComposeBuilder {
     serviceCopy.networks = normalizeNetworks(serviceCopy.networks);
     serviceCopy.ports = normalizePorts(serviceCopy.ports);
     serviceCopy.labels = normalizeLabels(serviceCopy.labels);
+    if (appStoreId === 'wizardapps') {
+      // Routing and exposure are owner settings, never recipe-supplied control labels.
+      serviceCopy.labels = Object.fromEntries(Object.entries(serviceCopy.labels).filter(([key]) => !key.toLowerCase().startsWith('traefik.')));
+    }
 
     const xruntipiParams = service['x-runtipi'] || ({} as XRuntipiServiceParams);
 
@@ -157,22 +171,7 @@ export class DockerComposeBuilder {
 
     const inputCopy = JSON.parse(JSON.stringify(input)) as DynamicComposeSchemaYaml;
 
-    // Merge architecture-specific overrides
-    if (architecture && inputCopy['x-runtipi']?.overrides) {
-      const architectureOverrides = inputCopy['x-runtipi'].overrides.find((o) => o.architecture === architecture);
-      if (architectureOverrides) {
-        for (const [serviceName, overrideService] of Object.entries(architectureOverrides.services)) {
-          if (inputCopy.services[serviceName]) {
-            const arrayMode = {
-              arrayMerge: (_target: unknown[], source: unknown[]) => source,
-            };
-            inputCopy.services[serviceName] = deepmerge(inputCopy.services[serviceName], overrideService, arrayMode);
-          } else {
-            inputCopy.services[serviceName] = overrideService;
-          }
-        }
-      }
-    }
+    inputCopy.services = servicesForArchitecture(inputCopy, architecture);
 
     const services = Object.values(inputCopy.services).filter(Boolean);
     const hasMultipleServices = services.length > 1;
@@ -214,6 +213,6 @@ export class DockerComposeBuilder {
       '\n',
     );
 
-    return header + yaml.stringify(appStoreId === 'wizardapps' ? rewriteVolumes(inputCopy, appName) : inputCopy, { nullStr: '' });
+    return header + yaml.stringify(appStoreId === 'wizardapps' ? mountAppGrants(rewriteVolumes(inputCopy, appName)) : inputCopy, { nullStr: '' });
   };
 }

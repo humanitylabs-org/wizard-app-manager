@@ -7,6 +7,7 @@ import hmac
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -120,7 +121,11 @@ class Runtipi:
         return self.req("POST", f"/app-lifecycle/{urn}/install", form or {}, timeout=120)
 
     def update(self, urn: str, perform_backup: bool = True) -> dict:
-        return self.req("PATCH", f"/app-lifecycle/{urn}/update", {"performBackup": perform_backup}, timeout=120)
+        body = {"performBackup": perform_backup}
+        if urn.split(':', 1)[0] == 'hermes-agent':
+            from .hermes_lock import authorize
+            body['hermesPromotion'] = authorize()
+        return self.req("PATCH", f"/app-lifecycle/{urn}/update", body, timeout=120)
 
     def start(self, urn: str) -> dict:
         return self.req("POST", f"/app-lifecycle/{urn}/start", {}, timeout=120)
@@ -133,6 +138,60 @@ class Runtipi:
 
     def uninstall(self, urn: str, remove_backups: bool = False) -> dict:
         return self.req("DELETE", f"/app-lifecycle/{urn}/uninstall", {"removeBackups": remove_backups}, timeout=120)
+
+    # per-app backups (Runtipi's own: a tar.gz of app-data/, app/ and user-config/, made and restored as root by the
+    # Runtipi container with the app stopped; see packages/backend/src/modules/backups/backup.manager.ts)
+    def backup_app(self, urn: str) -> dict:
+        return self.req("POST", f"/backups/{urn}/backup", {}, timeout=120)
+
+    def list_backups(self, urn: str) -> list[dict]:
+        """Newest first: [{id (file name), size, date (ms)}]."""
+        return self.req("GET", f"/backups/{urn}?page=1&pageSize=1000").get("data") or []
+
+    def restore_backup(self, urn: str, filename: str) -> dict:
+        return self.req("POST", f"/backups/{urn}/restore", {"filename": filename}, timeout=120)
+
+    def delete_backup(self, urn: str, filename: str) -> dict:
+        return self.req("DELETE", f"/backups/{urn}", {"filename": filename})
+
+    def download_backup(self, urn: str, filename: str, dst: Path, timeout: int = 3600) -> int:
+        """Stream one backup archive to `dst`; returns its size."""
+        r = urllib.request.Request(f"{self.base}/backups/{urn}/{urllib.parse.quote(filename)}/download")
+        r.add_header("Authorization", f"Bearer {cli_token(self.secret)}")
+        n = 0
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as resp, open(dst, "wb") as out:
+                while chunk := resp.read(1 << 20):
+                    out.write(chunk)
+                    n += len(chunk)
+        except urllib.error.HTTPError as e:
+            raise RuntipiError(f"GET backup {urn}/{filename} -> {e.code}: {e.read()[:300]!r}") from None
+        return n
+
+    def upload_backup(self, urn: str, src: Path, filename: str, timeout: int = 3600) -> dict:
+        """Upload an archive as `filename` (multipart, streamed from disk; Runtipi itself buffers it in memory)."""
+        boundary = "wizard-" + hashlib.sha256(f"{filename}{time.time()}".encode()).hexdigest()[:24]
+        head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: application/gzip\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        size = Path(src).stat().st_size
+
+        def body():
+            yield head
+            with open(src, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    yield chunk
+            yield tail
+        r = urllib.request.Request(f"{self.base}/backups/{urn}/upload", data=body(), method="POST")
+        r.add_header("Authorization", f"Bearer {cli_token(self.secret)}")
+        r.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        r.add_header("Content-Length", str(len(head) + size + len(tail)))
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raise RuntipiError(f"upload backup {urn} -> {e.code}: {e.read()[:300]!r}") from None
+        return json.loads(raw) if raw else {}
 
     def wait_status(self, urn: str, want: set[str], timeout: int = 900) -> str:
         deadline = time.time() + timeout

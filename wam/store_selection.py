@@ -29,7 +29,15 @@ def resolve(c, app_id, body):
     source, repo, commit, operation = (body[k] for k in ('source', 'repo', 'commit', 'operation'))
     if not all(isinstance(x, str) for x in (source, repo, commit, operation)) or not ID.fullmatch(source) or not REPO.fullmatch(repo) or (commit and not SHA.fullmatch(commit)) or operation not in ('install', 'update', 'switch'):
         raise ValueError('invalid release selection')
-    if source == 'owner-private':
+    if source == 'link':
+        if not commit:
+            raise ValueError('link selection requires an immutable commit')
+        from . import private
+        try:
+            entry = private.resolve_link(repo, commit, app_id)
+        except private.PrivateError as e:
+            raise ValueError(str(e)) from None
+    elif source == 'owner-private':
         entry = test_catalog.resolve(app_id)
     elif source == 'standard':
         # Resolve the exact repository, never the index's first matching app id.
@@ -61,6 +69,15 @@ def resolve(c, app_id, body):
 def execute(c, app_id, selection):
     from . import cli, private
     source, entry = selection['source'], selection['entry']
+    if app_id == 'hermes-agent':
+        from . import hermes_lock
+        recipe = hermes_lock.load()['agent_recipe']
+        if any(selection[k] != recipe[k] for k in ('repo', 'commit')):
+            raise ValueError('Hermes is frozen: Store selection differs from the shared exact lock')
+        # Reject before prepare (or the Alpha adapter) can replace staged files or
+        # .wizard-selection. The downstream lifecycle guard is too late for this.
+        if selection['operation'] != 'install':
+            hermes_lock.authorize()
     installed = cli.installed_ids(c.runtipi())
     if selection['operation'] == 'install' and app_id in installed:
         raise ValueError('already installed; refresh and choose an explicit release change')
@@ -73,7 +90,9 @@ def execute(c, app_id, selection):
             raise ValueError('installed repository identity unavailable; nothing changed') from None
         if existing.get('repo') != selection['repo']:
             raise ValueError('installed repository conflict; nothing changed')
-    if source not in ('standard', 'owner-private'):
+        if source == 'link' and existing.get('source') != 'link':
+            raise ValueError('installed source is not link; nothing changed')
+    if source not in ('standard', 'owner-private', 'link'):
         # Use the shipped, owner-local adapter. It revalidates subscription, release assets,
         # installed identity, explicit update policy and authenticated activation receipts.
         from . import store_data
@@ -88,7 +107,8 @@ def execute(c, app_id, selection):
         argv = [node, str(module), 'install', '--source', source, '--app', app_id, '--commit', selection['commit']]
         if selection['operation'] != 'install':
             argv.append('--update')
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=1200)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=1200,
+                                env={**os.environ, 'WAM_INSTALL_SOURCE': source})
         if result.returncode:
             try:
                 reason = json.loads(result.stderr).get('error', 'Alpha installation failed')
@@ -97,9 +117,9 @@ def execute(c, app_id, selection):
             raise ValueError(reason)
         return {'status': 'running', **json.loads(result.stdout)}
     # An exact local recipe remains under normal Runtipi install/update/backup handling.
-    record = private.prepare(c.runtipi_root, cli.STORE, selection['repo'],
+    record = private.prepare(c.runtipi_root, cli.STORE, selection['repo'], source=source,
                              release=entry if source == 'owner-private' else None,
-                             source_pin={'id': app_id, 'repo': selection['repo'], 'commit': selection['commit']} if source == 'standard' else None)
+                             source_pin={'id': app_id, 'repo': selection['repo'], 'commit': selection['commit']} if source in ('standard', 'link') else None)
     folder = c.runtipi_root / 'repos' / cli.STORE / 'apps' / app_id
     # The maintained manager respects this owner-local pin instead of replacing it with
     # a later public index response. It is not a remote-catalog field.
@@ -114,4 +134,6 @@ def execute(c, app_id, selection):
     actual_commit = (installed_dir / '.wizard-commit').read_text().strip()
     if (actual.get('repo'), actual_commit) != (selection['repo'], selection['commit']):
         raise ValueError('installed release identity did not match the selection')
+    if actual.get('source') != source:
+        raise ValueError('installed source did not match the selection')
     return result

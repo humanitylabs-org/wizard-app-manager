@@ -52,6 +52,8 @@ def box(tmp_path):
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "later", cwd=src)
     rel = tmp_path / "releases"
     rel.mkdir()
+    lock = json.loads((REPO / 'wam/hermes-lock.json').read_text())
+    (rel / 'hermes-lock.json').write_text(json.dumps(lock))
     release = {
         "version": "9.9.9",
         "components": {"wizard-app-manager": {"repo": "humanitylabs-org/wizard-app-manager", "commit": pinned}},
@@ -61,7 +63,7 @@ def box(tmp_path):
         },
         "default_apps": {
             "shell": {"app": "wizard-shell", "index_version": "0.2.0"},
-            "agent": {"app": "hermes-agent", "index_version": "1", "alongside": "external: host Hermes"},
+            "agent": {**lock['agent_recipe'], "index_version": "1", "alongside": "external: host Hermes"},
             "files": {"app": "files", "index_version": "2.63.23"},
             "notifications": None,
         },
@@ -82,7 +84,7 @@ def box(tmp_path):
     hermes = bin_dir / "hermes"
     hermes.write_text("#!/bin/sh\nexit 0\n"); hermes.chmod(0o755)
     apps = {"apps": [{"id": "wizard-shell", "version": "0.2.0"}, {"id": "files", "version": "2.63.23"},
-                     {"id": "hermes-agent", "version": "1"}]}
+                     {"id": "hermes-agent", "version": "1", "commit": lock['agent_recipe']['commit']}]}
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home), "WIZARD_MODE": "fresh",
            "WAM_REPO": str(src), "WIZARD_RELEASE_BASE": f"file://{rel}", "WAM_DIR": str(home / "wam"),
            "RUNTIPI_DIGEST": WAM_DIGEST, "SHELL_DIGEST": SHELL_DIGEST, "APPS_JSON": json.dumps(apps),
@@ -285,7 +287,8 @@ def test_a_modified_app_manager_checkout_is_refused(box):
     assert p.returncode == 0
     (box["home"] / "wam" / "install.sh").write_text("#!/usr/bin/env bash\necho tampered\n")
     p, rec = box["run"]()
-    assert p.returncode == 1 and "local changes" in p.stderr and rec is None
+    assert p.returncode == 1 and "local changes" in p.stderr
+    assert rec["release"] == "9.9.9" and rec["status"] == "pinned"  # failed preflight keeps the prior receipt
 
 
 def test_a_broken_default_app_entry_still_writes_a_record(box):

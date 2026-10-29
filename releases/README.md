@@ -7,9 +7,125 @@ This directory publishes only the installer’s release metadata. The canonical 
 ## Channels (wizard-os DECISIONS #75)
 
 - `latest`: every release as soon as it is cut. Mirror it with each new release JSON.
-- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix-only release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
+- `stable`: only releases promoted with wizard-os `tools/promote_stable.py`, i.e. 72 hours on latest plus a passed upgrade test, recorded in `promotions/<version>.json`. A fix or feature release with a passed upgrade test may skip the 72 hours (`fast_track` in its record, wizard-os DECISIONS #82 and #93); `wam/updates.py` applies the same gate as the tool. Mirror the record together with the pointer.
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
+
+## stable 0.3.63
+
+Promoted under DECISIONS #82/#93 (fast-track, classification **fix**). Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4: the same accounts page as Claude, sign-in through the agent, "Device code sign-in for Codex" named up front) and Claude claude-connection eb434ae → d0b59dd (0.2.6: no Claude Code fallback on alongside boxes, one row per account); both report an unreachable agent with Retry and answer `/api/connection` with `unreachable` instead of an empty inventory (wizard-app-store #32). Installed upgrade 0.3.61 → 0.3.63 passed on the demo box through `os.sh` with `WIZARD_STRICT=1`: pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, Home shows ChatGPT with usage. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.63.md (wizard-os #259 cut, #261 promotion). Rollback: point `stable` back at 0.3.61.
+
+Release JSON SHA256: `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+Promotion JSON SHA256: `80eb7f616dd25b5a2da0548d3284f55d2379a7f06082e1e6f34aea06bddc1534`.
+
+## 0.3.64 provenance
+
+Latest continuity: 0.3.62 (the 0.3.60 runtime pins) plus the same two AI connection app pins as Stable 0.3.63, so Latest never trails Stable. Channel: latest. Canonical: wizard-os #261. SHA256 `0c19f7bd3436fe7c8c00738c8e8cea09af2db62964f2638c05f97c88aea9e8a4`.
+
+## stable 0.3.61 (superseded by 0.3.63)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: approved final wording verbatim, "ship it"). Stable 0.3.59 with only the shell pin changed: wizard-ux 325be039 → 87b35bcb1314961887c06da5f96ad10b50786fe6 (`release/stable-onboarding`; #567 Recommended fix: the orb never freezes in an iPhone Safari tab; #568: three-step guide "Step N of 3" with the owner's words, Hide and Install beats removed; image `sha256:ecaba88e568ff2b6d90c6ca19a5b9bba153fcbb2eb7a4ee1aca3073c9e9acdb6`, official dispatch run 40339463332). Every other pin is identical to 0.3.59. Installed upgrade 0.3.59 → 0.3.61 passed on demo-4 through `os.sh` with `WIZARD_STRICT=1` (mirror-head base disclosed): pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, live WebKit check 61/61. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.61.md (wizard-os #257 cut, #258 promotion). Rollback: point `stable` back at 0.3.59.
+
+Release JSON SHA256: `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+Promotion JSON SHA256: `ce5b9ff2811b108ccfc6d2ffb4744897dea9b5e54985d2c339a70c759174c076`.
+
+## 0.3.63 provenance
+
+Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4, engine `wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418`) and Claude claude-connection eb434ae → d0b59dd (0.2.6, engine `wizard-claude:0.2.6@sha256:5c7ca0b3b38803794aa3296f69bed11253a4136c26acded9f3298ed115580745`), both from wizard-app-store #32. Channel: stable since wizard-os #261. Canonical: wizard-os #259. SHA256 `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+
+## 0.3.62 provenance
+
+Latest continuity only: exactly the 0.3.60 runtime pins (only version, name and about differ), so Latest never trails Stable. It does not carry the 0.3.61 guide or fix; those reach main through wizard-ux #569. Channel: latest. Canonical: wizard-os #257 (file) and #258 (latest → 0.3.62). SHA256 `c6b9fde9bcd21fbd159ded564f59453b9f0bd8be925488238afef03df10ad057`.
+
+## 0.3.61 provenance
+
+Cut in wizard-os #257 (merge `d1793589`) and promoted to stable in #258 (merge `e094225d`). SHA256 `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+
+## stable 0.3.59 (superseded by 0.3.61)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: "Ship it (not limited to just 2 though)"). Stable 0.3.57 plus any number of Claude subscriptions:
+- **Claude app.** claude-connection 3b2d618 → eb434ae (0.2.5; engine `wizard-claude:0.2.5@sha256:4a8f91cfa6abc829d17af533f18d23932a131ca48e2e821e870db0f474a2436f`, wizard-app-store #31).
+- **Shell.** wizard-ux ffa4c636 → 325be039 (#564: #537 + #558 cherry-picked on `release/stable-onboarding`; image `sha256:cd80f6f823cfc2fd74532fbad5d002eebf2b584cdf080ad30a944b97566db06d`, differs only in `core/chat-models.js`).
+- **App Manager.** d926eec → e3f76a68 on `maintenance/stable-0.3.57` (#250 = #249 + #252: alongside host dashboards turn on the account broker and reload after the plugin refresh; image inputs unchanged).
+
+Every other pin is identical to 0.3.57. The upgrade 0.3.57 → 0.3.59 passed at component level: the pinned App Manager steps (`claude_login.ensure`, `host_dashboard.ensure`) plus a Compose recreate of both Claude versions. The original sign-in stayed byte-identical, and rollback was verified. No full `os.sh` run happened on a real box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.59.md (wizard-os #256). Rollback: point `stable` back at 0.3.57.
+
+Release JSON SHA256: `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+Promotion JSON SHA256: `6d6a2c84c0151263179607ddaba9dfcd9aedd7c79580a4c37255bf3d7f11dc36`.
+
+## 0.3.60 provenance
+
+Latest 0.3.58 plus the same multi-account Claude change, so Latest never trails Stable:
+- **Claude app.** claude-connection eb434ae.
+- **App Manager.** 4879531820cec4680ab19ed0a47ee8f094421c8a on `maintenance/latest-0.3.58` (#251).
+- **Shell.** Wizard UX main a0399680 (#558, includes #537; image `sha256:a4b018a26f62ee42b9a5399a52ba6e5371a5ce3f714a16e576ff183b25611223`). 16 other main UX PRs since e0900880 ride along; they are listed in its `about`.
+
+Channel: latest. Canonical: wizard-os #255 (cut) and #256 (latest → 0.3.60). SHA256 `ab3258adb9fe60252550af96a9f62445a4768c0be5a3addca3c43c1e9c93f5d9`.
+
+## 0.3.59 provenance
+
+Cut in wizard-os #255 (merge `109c46b3`) and promoted to stable in #256. SHA256 `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+
+## stable 0.3.57 (superseded by 0.3.59)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-requested and authorized by Miguel, 26 Oct 2026). It is stable 0.3.55 with only the wizard-ux pin changed: `components.wizard-ux`, `images.wizard-ux` and `default_apps.shell` move from 26c3b20 to ffa4c6366f9267e3ed5ca2fbc710ca9c8ad97686 (wizard-ux #548 on `release/stable-onboarding`), image `sha256:a667cd87f0446dce9e6117ff05adf741df47979d380a31c946cd400e11ed721c`. The phone tour ends with an optional Add to Home Screen beat, replacing the install text removed from os.md (#246). Every other pin is identical to 0.3.55. The upgrade 0.3.55 → 0.3.57 passed at component level, the same standard as 0.3.55. It used the pinned App Manager d926eec `write_shell_override` step with the release pins, a Compose recreate onto the new digest, and a browser matrix on the upgraded container (11/11), with rollback verified. No full `os.sh` installer run happened on a real box (see the evidence). Canonical evidence: wizard-os/docs/acceptance/promote-0.3.57.md (wizard-os #251). Rollback: point `stable` back at 0.3.55.
+
+Release JSON SHA256: `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+Promotion JSON SHA256: `841d522aeb0132d2539d5e61493f7bd8d5f16e422d9d69a88b48bc48e10abc4e`.
+
+## 0.3.58 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250 (file) and PR #251 (cut onto latest), `releases/0.3.58.json`; byte-identical SHA-256 `e9de77dddc22dfe3301f210e4fa276bb5bafd6e80514d6322ce2b88ea5c9405f`.
+- Latest continuity only: exactly the 0.3.56 runtime pins (only version, name and about differ), so Latest testers keep the 0.3.54 backup bundle while stable moves to 0.3.57. It does not carry the 0.3.57 Install beat.
+- Channel: on latest only.
+
+## 0.3.57 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250, `releases/0.3.57.json`; byte-identical SHA-256 `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+- Stable 0.3.55 plus wizard-ux #548 (official maintenance publication run 40292759016). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.57` above.
+
+## stable 0.3.55 (superseded by 0.3.57)
+
+Promoted under DECISIONS #82 (fast-track, classification fix). It is stable 0.3.53 with only the Troubleshooter pin changed: `components.wizard-troubleshooter` 4b1f0ef → c1b4c432fd7b162d23d42fb7d3d8fb049bee764e (wizard-troubleshooter #12 and #13, plus the #10 license). This is host tooling with no image, and every other pin is identical to 0.3.53. Upgrade 0.3.53 → 0.3.55 of the `wam troubleshooter` step passed in a disposable systemd box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.55.md (wizard-os #249). Rollback: point `stable` back at 0.3.53.
+
+Release JSON SHA256: `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+Promotion JSON SHA256: `7dd2fbedeb54949b388837ccfec91ea9c3d80eabb576b9e46f3ff8487b41428a`.
+
+## 0.3.56 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248 (file) and PR #249 (cut onto latest), `releases/0.3.56.json`; byte-identical SHA-256 `a9d449c424e653c63b905a0d31cb0cee886dce5c696fd4688f9e214a21e028c5`.
+- Latest 0.3.54 plus the same Troubleshooter pin as stable 0.3.55 (c1b4c43). Every image and every other pin is identical to 0.3.54.
+- Channel: on latest only. It keeps the 0.3.54 backup bundle, which still needs its own gates before promotion.
+
+## 0.3.55 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248, `releases/0.3.55.json`; byte-identical SHA-256 `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+- Stable 0.3.53 plus Troubleshooter c1b4c43. This adds the bounded owner-approved repair tools shared by Claude, ChatGPT and Tinfoil (#12), and lets Claude fall back to the agent's second Claude sign-in on a usage limit (#13). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.55` above.
+
+## stable 0.3.53 (superseded by 0.3.55)
+
+Promoted under DECISIONS #82 (fast-track, classification fix: only the wizard-ux Stable onboarding fix vs stable 0.3.39) after a supported strict installer upgrade of the alongside demo from stable 0.3.39. Authorized by Miguel (@mistermizel), 26 Oct 2026. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.53.md (wizard-os #244). Rollback: point `stable` back at 0.3.39.
+
+Release JSON SHA256: `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+Promotion JSON SHA256: `55dadebe6e5711dbd8f1b1fcc601ba4ea461c06c1e464eee53868c5e5adb816f`.
+
+## 0.3.53 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #242, `releases/0.3.53.json`; byte-identical SHA-256 `53bcbd64c56967add1bf70634c6139e7e022d28ccda39f36da58748eba301bcb`.
+- Corrected fix-only Stable onboarding candidate. Supersedes the unpromoted 0.3.51 candidate without rewriting its immutable manifest: UX #535 reserves native safe areas and gives absolute Done rows real WebKit/Chromium scroll reach. No unrelated Latest feature imported; all non-UX runtime pins are identical to Stable 0.3.39.
+- Official hosted signed maintenance publication and anonymous amd64/arm64 pulls: UX run `40264433758`, source `26c3b20fa484b79cb1b1836bfd05064195659360`, digest `sha256:03a93684174475546f38bcabd246894cecbde09bc6c78e4ae1178ed0045d91d9`.
+- At cut (superseded): Stable stayed 0.3.39 until new exact-candidate installed acceptance and separately reviewed promotion. Latest continuity will preserve the prior Latest bundle separately and never promote it as this repair.
+- Channel now: promoted to stable 26 Oct 2026 after the installed 0.3.39 → 0.3.53 acceptance; see `## stable 0.3.53` above.
+
+## 0.3.51 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #237, `releases/0.3.51.json`.
+- Byte-identical SHA-256: `9f28c6104767a5812cd429a2f086bda657d3aa782850f72a4873632b180ce2cd`.
+- Fix-only backport atop Stable 0.3.39. Only the UX component/image/default-shell source changes; no unrelated 0.3.50 features are promoted. One-time maintenance-source exception reviewed in wizard-os #236 and UX #530; runtime backport UX #531.
+- Official hosted multi-architecture publish/sign/finalize/anonymous-pull run: `wizard-ux/actions/runs/40259576904`; exact maintenance source `c0bd9adc82f6d61cd156b9f2568249cff7d668ba`, digest `sha256:a36276aa5f63676c3217a24664831cac80e32c434adf3312b0fc66cb34ea9bd0`.
+- Channel: Latest only at this cut. Stable stays 0.3.39 until installed upgrade/fresh acceptance and a separately reviewed promotion record. This mirror does not claim that acceptance has passed.
 
 ## 0.2.2 provenance
 
@@ -158,3 +274,136 @@ Future releases copy only reviewed release JSONs and advance `stable` through a 
 - Canonical source: `humanitylabs-org/wizard-os` PR #122 (merge `261f554`), `releases/0.3.28.json`. Byte-identical SHA-256: `0a1c633798b839e5498c4e3b3254afff0656055c7196b48541ebcb240a27ca17`.
 - 0.3.27 plus App Manager #146 (`b44c109`, wizard-os#87): on fresh boxes an app installed from the Store opens. `WIZARD_TRUSTED_HOSTS/ORIGINS` now name the shell origin and the app's own private address; before, they were empty without alongside.json and the app answered 403 "Unknown host". Also carries #140 (additive Chats slot, no default app). The App Manager image moves to the official `v4.10.2-wizard.391-8d6e7bd` (`sha256:197c4b57…`, amd64+arm64); its image inputs are unchanged up to b44c109.
 - Channel: on `latest` only. `stable` stays 0.3.25 until 0.3.28 has a promotion record. Every other pin is identical to 0.3.27.
+
+## 0.3.34 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #187 (merge `b9e2f17`), `releases/0.3.34.json`. Byte-identical SHA-256: `86006b42f04e5cb55e70e46aae09c01661b2b4d8ac4b869cf3f486d0fdb7ddd9`.
+- Current main for the private launch: Wizard UX `788affe`, Agent Service `65d33e1`, App Manager `0f8a58b` (image `db4325a`, image inputs unchanged). Default apps and Hermes pin unchanged from 0.3.33.
+- Channel: on latest only.
+
+## stable 0.3.34 (promoted 24 Oct 2026)
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #189 (branch `release/promote-0.3.34`, merge `5d7823f99ec8932b13163f7260a32be618956eb8`), `releases/stable` (SHA-256 `9bfdc0fda10c4841166b035a7c6d794879ec5bb2438c98a5cff8f897e5ccecad`) and `releases/promotions/0.3.34.json` (SHA-256 `b39449ac389001a96f8b47f90f4f0807f1b67a868bed0e8fb020ec750fbec2f3`).
+- Fast-tracked feature promotion (DECISIONS #93, launch phase): upgrade 0.3.32 -> 0.3.34 passed on the demo box, evidence `docs/acceptance/promote-0.3.34.md`.
+- Channel: `stable` and `latest` both 0.3.34. Rollback: point `stable` back at 0.3.32.
+
+## 0.3.35 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.35.json`, SHA-256 `5cb16a802b380129e7377622af8205843ad904a673909efea119ab9f098926f4`.
+- 0.3.34 plus Agent Service `039eff5` (#141 phone setup on alongside boxes, #142 owner message shows). Channel: on latest.
+
+## 0.3.36 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.36.json`, SHA-256 `3f6727df061f5f092e273aa3c20fc65c99a1b86c87bb02f83735ce4a64c186ca`.
+- 0.3.35 plus Agent Service `35b2463` (#143 owner message matching on real Hermes history). Channel: on latest.
+
+## stable 0.3.36 (promoted 24 Oct 2026)
+
+- Fast-tracked fix promotion: upgrade 0.3.34 -> 0.3.36 passed on the demo box, evidence `docs/acceptance/promote-0.3.36.md`. Rollback: point `stable` back at 0.3.34.
+
+## 0.3.37 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` `releases/0.3.37.json`, SHA-256 `4046b9ce04ef80663c644dce05526cc24fd677c5fa741158830a6641c55cb266`.
+- 0.3.36 plus Wizard UX `78b3311` (#440) and App Manager `cfd13ec` (#194). Channel: on latest.
+
+## 0.3.38 provenance
+
+Canonical: wizard-os releases/0.3.38.json. SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Channel: on latest only; stable remains 0.3.36 pending installed-demo upgrade verification.
+
+## stable 0.3.38
+
+Promoted under DECISIONS #93 after supported installed-demo upgrade from stable 0.3.36. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.38.md (wizard-os #197). Feature classification records shared-kit/My-skin/default-change ride-alongs.
+
+Release JSON SHA256: `999fc2a33e0534478e23172d899fd4aa8bc1281724815bb62c6c42004f0862bf`.
+Promotion JSON SHA256: `61927c23be97586486781c4b932b40351cd7c6bed637666f0c120f0bc072dd03`.
+
+## 0.3.39 provenance
+
+Canonical: wizard-os releases/0.3.39.json (wizard-os #203). SHA256: `6aa5201e633339f71b3854c13dff30189d0a03d57799854713c1455e19a60243`.
+0.3.38 plus wizard-ux #456 (`c8433e3`): first-run tour without the Command beat and with per-step skip; UX image `sha256:57bb8e26154aeec5a1316497ab6e22570858a842b6e8ecda7890568ea594ee19`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.38 pending installed-demo upgrade verification.
+
+## stable 0.3.39
+
+Promoted under DECISIONS #93 (classification feature: the default first-run tour changes) after a supported strict installer upgrade of the alongside demo from stable 0.3.38. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.39.md (wizard-os #204). Rollback: point `stable` back at 0.3.38.
+
+Release JSON SHA256: `6aa5201e633339f71b3854c13dff30189d0a03d57799854713c1455e19a60243`.
+Promotion JSON SHA256: `ca495855d7f5b917fac0eb20037df1523cf1aff974214ae9633fe26431914bbe`.
+
+## 0.3.40 provenance
+
+Canonical: wizard-os releases/0.3.40.json (wizard-os #209). SHA256: `947cb1e88bf758e8e4889f85a352e1d04f688fc3543f9e3e9c8dedc8eda7fd53`.
+0.3.39 plus wizard-ux #482/#483 (`9fcf86c`): alongside first launch starts the first-message orientation once (phone tour, desktop composer guide), Setup stays manual, the desktop shell loads the tour; UX image `sha256:c369207da4392095a2be02c6c56c05f877b6bf079546c6816c375b11659b6c90`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade verification.
+
+## 0.3.50 provenance
+
+Canonical wizard-os PR #233. Channel: on latest only; stable remains 0.3.39.
+Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca13044f`. Complete 0.3.49 non-UX pins retained; compatible Android/onboarding/Spaces UX is immutable 03b07142. No passed runtime release gate or promotion implied.
+
+## 0.3.65 provenance
+
+Canonical: wizard-os releases/0.3.65.json (wizard-os #262). SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Stable 0.3.63 plus wizard-app-manager #258 on the Stable maintenance branch (#259, `8607981`): installer reruns recreate connection apps on an address/login change or stale running container, HTTPS-off owner step, approved Tailscale login waited for, official-installer Hermes routes to `hermes update`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.63 pending the upgrade test.
+
+## stable 0.3.65
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after a passed 0.3.63 -> 0.3.65 upgrade test with WIZARD_STRICT=1 on a disposable guest. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.65.md (wizard-os #263). Rollback: point `stable` back at 0.3.63.
+
+Release JSON SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Promotion JSON SHA256: `b66b41d3fcf982410a70c2ff31efba8589cf11a6be87ea32508a63acbc40f50b`.
+
+## 0.3.66 provenance
+
+Canonical: wizard-os releases/0.3.66.json (wizard-os #263). SHA256: `68605bbc445ec12a38f6350a304e91b17773a3bdb289d10dcebebac2d34ab8b7`.
+Latest continuity: 0.3.64 plus wizard-app-manager #258 on the Latest maintenance branch (#260, `da2f01d`). Other pins unchanged.
+Channel: on latest only.
+
+## 0.3.68 provenance
+
+Canonical: wizard-os releases/0.3.68.json (wizard-os #267). SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+0.3.67 plus Agent Service main `b1f8d2c1` (#191, #195, #196 emailHash, #203 identity marker), Wizard UX main `d53b2b24` (#573 model picker refresh), Claude 0.2.8 (`43f6a412`) and ChatGPT 0.2.6 (`f73b8487`). WAM, Troubleshooter, Hermes and other default apps unchanged.
+Channel: on latest only; stable remains 0.3.65 pending the upgrade tests.
+
+## stable 0.3.68
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after passed 0.3.65 -> 0.3.68 and 0.3.61 -> 0.3.68 upgrade tests with WIZARD_STRICT=1 on disposable guests. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.68.md (wizard-os #270). Rollback: point `stable` back at 0.3.65.
+
+Release JSON SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+Promotion JSON SHA256: `0984d62ca0b54ac0e4dab86e26df9b2dee7d2f93ddd89783f29eb8a3f21d3474`.
+
+## 0.3.70 provenance
+
+Canonical: wizard-os releases/0.3.70.json (wizard-os #270). SHA256: `1488db56ff5f4fa1f83105f18700d5f172b926934d201e933533a84f144699b4`.
+0.3.69 (WAM `08b54f65`, #267) with 0.3.68's Agent Service `b1f8d2c1`, Wizard UX `d53b2b24`, Claude 0.2.8 and ChatGPT 0.2.6.
+Channel: on latest only.
+
+## 0.3.71 provenance
+
+Canonical: wizard-os releases/0.3.71.json (wizard-os #287). SHA256: `7f854dbbe2cb15129615f3a2fd3ed1632a46d749219013f890a093fe0812a850`.
+0.3.70 with Notifications 2.29.0-wizard10 (`oscarhenrycollins/notifications` `cdce9f18`, #277); compose images unchanged from 2.29.0-wizard2. Everything else exactly 0.3.70.
+Channel: on latest only.
+
+## 0.3.72 provenance
+
+Canonical: wizard-os releases/0.3.72.json (wizard-os #292). SHA256: `0bf3563ed9d27b24f479819678d982cff036d17c32b246cc8602f1833257c588`.
+0.3.71 with Wizard UX main `970378b2` (wizard-ux #670: pinned chats stay the same on every device; image `sha256:d1b00210…`, push run 40628699290). Everything else exactly 0.3.71.
+Channel: on latest only.
+
+## stable 0.3.72
+
+Canonical: wizard-os #293 (promotion), cut in wizard-os #292. `releases/stable` → 0.3.72 (sha256 `d8c646206043137d6ef9e2a12e9f1de591b37cb026b94f4476c101db0f3338ab`); `promotions/0.3.72.json` sha256 `3911f6babcf670f2d43df22145926e35720c369d1efb0436a4751045ecfc44a7`.
+Fast-tracked under DECISIONS #93 as a **feature** (owner-requested pins fix wizard-ux #670, plus ride-alongs: Notifications 2.29.0-wizard10, Wizard UX main features, App Manager 08b54f65). Installed upgrade 0.3.68 → 0.3.72 passed: wizard-os docs/acceptance/promote-0.3.72.md.
+
+## 0.3.73 provenance
+
+Canonical: wizard-os releases/0.3.73.json (release train). SHA256: `79ee11458bed4df743fda84a0484afc021440f5861043383233e30c9d52a511b`.
+Latest 0.3.72 with Wizard UX 970378b2 -> db361987, Agent Service b1f8d2c1 -> 3773ca0c. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#674 Recommended fix: Spaces and subject order keep every device's edit; humanitylabs-org/wizard-ux#675 Recommended fix (performance): Settings says 'Takes about 2 minutes' when only the interfa; humanitylabs-org/wizard-ux#676 Recommended fix: an unreachable Wizard on Tailscale says what to check instead of 'No inte; humanitylabs-org/wizard-agent-service#205 Recommended fix: serve live run events for model-locked turns (events were 404 for every W; humanitylabs-org/wizard-agent-service#206 Recommended fix: archive window honours the Auto-archive choice; humanitylabs-org/wizard-agent-service#214 Recommended fix: owners choose Summary or Concise replies; humanitylabs-org/wizard-agent-service#219 Recommended fix: bring live fixes onto main: dismissed errors stay dismissed, faster Chats; humanitylabs-org/wizard-agent-service#221 Recommended fix: apps list carries declared type and category; humanitylabs-org/wizard-agent-service#237 Recommended fix: every picture or file an agent sends shows in chats; humanitylabs-org/wizard-agent-service#238 Recommended fix: shared lists keep every device's edit (item operations on ui-preferences); humanitylabs-org/wizard-agent-service#243 Recommended fix: Setup stops saying a phone is connected once the last phone leaves the ta. Stable stays 0.3.72 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.73
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/303 (release train). `releases/stable` → 0.3.73; `promotions/0.3.73.json` sha256 `915e97a34a50a70d4e6d1e3fb38dfedcf3d751a40c02a86eb487b14a2e58747b`.
+Fast-tracked as **feature**. Installed upgrade 0.3.72 → 0.3.73 passed: wizard-os docs/acceptance/promote-0.3.73.md.

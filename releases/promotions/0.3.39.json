@@ -1,0 +1,16 @@
+{
+  "version": "0.3.39",
+  "latest_since": "2026-10-24T15:49:26Z",
+  "promoted_at": "2026-10-24T16:10:32Z",
+  "upgrade_test": {
+    "from": "0.3.38",
+    "to": "0.3.39",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.39.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Miguel-authorized: changes the default first-run tour (no Command beat, per-step skip), so classified feature under DECISIONS #93. Supported strict installer upgrade from stable 0.3.38 on the alongside demo passed with the exact public digests; all 23 release checks (14 core) pass, doctors pass, Hermes config/.env/SOUL/source/sessions preserved, no reboot; served tour.js is byte-identical to c8433e3; live phone 390x844 tour and desktop 1440x900 browser checks pass 15/15.",
+    "notes": "Only the wizard-ux pin changes (3965b60 -> c8433e3). UX ride-alongs on main: #451/#455 home-screen pinning, #449/#418 Chats document-scroll and Sending bubble fixes, #431 quieter Change Wizard on Reach. Agent Service, App Manager, Hermes and default apps unchanged. No migrations or owner-data deletion. Known: older Automatic updaters accept only fix fast-tracks (WAM #200 P1), so they will not auto-take this feature promotion; Update now / installer works."
+  }
+}

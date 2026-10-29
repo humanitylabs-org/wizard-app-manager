@@ -123,6 +123,67 @@ def test_collect_keeps_channel_and_catalog_exact_pins(tmp_path):
     assert unpublished == ['not-published']
 
 
+def test_collect_skips_slots_a_release_leaves_empty(tmp_path):
+    """Releases from 0.3.60 on carry `"agent-history": null`; custody must not crash on it."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    row = {'repo': 'builder/app', 'commit': 'a'*40}
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({'default_apps': {'slot': row, 'agent-history': None}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'slot': {'app': 'demo', 'repo': 'builder/app'}}}))
+    catalog = [{'repo': 'builder/app', 'id': 'demo', 'install': {'commit': 'a'*40}}]
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, catalog)
+    assert pins == [('builder/app', 'a'*40)]
+    assert unpublished == []
+
+
+def test_collect_copies_release_pinned_host_component_defaults(tmp_path):
+    """The Troubleshooter default is host tooling pinned in release components, not an index app."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'tool': {'repo': 'org/host-tool', 'commit': 'c'*40, 'branch': 'main'}},
+        'default_apps': {}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {
+        'tool': {'app': 'host-tool', 'repo': 'org/host-tool', 'required': False}}}))
+    host_only = set()
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, [], host_only=host_only)
+    assert pins == [('org/host-tool', 'c'*40)]
+    assert host_only == {('org/host-tool', 'c'*40)}
+    assert unpublished == []
+
+
+def test_unlisted_app_default_pinned_as_a_component_keeps_its_manifest(tmp_path):
+    """wizard-ux is both a release component and a default app: a catalog miss must not make it host-only."""
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'ux': {'repo': 'org/ux', 'commit': 'd'*40}},
+        'default_apps': {'shell': {'repo': 'org/ux', 'commit': 'd'*40}}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'shell': {'app': 'ux', 'repo': 'org/ux'}}}))
+    host_only = set()
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, [], host_only=host_only)
+    assert pins == [('org/ux', 'd'*40)]
+    assert host_only == set()
+
+
+def test_collect_still_refuses_an_unpinned_default(tmp_path):
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({
+        'components': {'other': {'repo': 'org/other', 'commit': 'c'*40}}, 'default_apps': {}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'tool': {'app': 'host-tool', 'repo': 'org/host-tool'}}}))
+    with pytest.raises(ValueError, match='no pinned publication'):
+        mirror_defaults.collect(tmp_path, [])
+
+
 def test_denied_registry_does_not_mean_missing(monkeypatch):
     calls = []
     def denied(*args, **kwargs):
@@ -175,6 +236,33 @@ def test_new_bundle_upload_is_read_back_into_fresh_git(tmp_path, fixture, monkey
     assert len(uploads) == 1
     assert record['commit'] == sha
     assert len(record['bundle_sha256']) == 64
+
+
+def test_host_component_source_is_kept_without_an_app_manifest(tmp_path, fixture, monkeypatch):
+    """Host tooling (the Troubleshooter) has no wizard.md: keep its bundle, read no images; apps still need one."""
+    tool = tmp_path / 'tool'
+    tool.mkdir()
+    git(tool, 'init', '-q')
+    git(tool, 'config', 'user.name', 'Test')
+    git(tool, 'config', 'user.email', 'test@example.org')
+    (tool / 'install.sh').write_text('echo host tooling\n')
+    git(tool, 'add', '.')
+    git(tool, 'commit', '-qm', 'host tooling')
+    sha = git(tool, 'rev-parse', 'HEAD')
+    git(tool, 'update-ref', mirrors.source_ref('gone/tool', sha), sha)
+    git(tool, 'bundle', 'create', str(tmp_path / 'assets' / mirrors.source_name('gone/tool', sha)), mirrors.source_ref('gone/tool', sha))
+    def no_api(*a, **k):
+        raise AssertionError('existing mirror must not need builder metadata or an upload')
+    monkeypatch.setattr(private, '_api', no_api)
+    monkeypatch.setattr(mirror_defaults, 'api_json', no_api)
+    work = tmp_path / 'work'
+    work.mkdir()
+    assets = {mirrors.source_name('gone/tool', sha): {}}
+    images, record = mirror_defaults.ensure_source('gone/tool', sha, work, private._git_env(''), {'id': 1}, assets, compose=False)
+    assert images == set()
+    assert record['commit'] == sha and len(record['bundle_sha256']) == 64
+    with pytest.raises(subprocess.CalledProcessError):
+        mirror_defaults.ensure_source('gone/tool', sha, work, private._git_env(''), {'id': 1}, assets)
 
 
 def test_nonpublic_builder_is_not_published(tmp_path, monkeypatch):

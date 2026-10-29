@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -32,16 +33,23 @@ def _front(text: str) -> dict:
 
 
 def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
-    """wizard.md + config.json of an installed Wizard app, from the store copy (falls back to installed copy)."""
-    for d in (runtipi_root / "repos" / store / "apps" / app_id, runtipi_root / "apps" / store / app_id):
+    """Installed wizard.md + config.json; the store copy is only a legacy fallback."""
+    for d in (runtipi_root / "apps" / store / app_id, runtipi_root / "repos" / store / "apps" / app_id):
         wm = d / "wizard.md"
         if wm.is_file():
             w = _front(wm.read_text())
             cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
-            src = json.loads((d / ".wizard-source").read_text()) if (d / ".wizard-source").is_file() else {}
-            commit = (d / ".wizard-commit").read_text().strip() if (d / ".wizard-commit").is_file() else None
-            return {"w": w, "cfg": cfg, "dir": d, "repo": src.get("repo"), "commit": commit,
-                    "private": src.get("private") is True}
+            installed = runtipi_root / 'apps' / store / app_id
+            identity = installed if (installed / '.wizard-source').is_file() else d
+            src = json.loads((identity / '.wizard-source').read_text()) if (identity / '.wizard-source').is_file() else {}
+            commit = (identity / '.wizard-commit').read_text().strip() if (identity / '.wizard-commit').is_file() else None
+            repo, source = src.get('repo'), src.get('source')
+            if src.get('local') or (isinstance(repo, str) and repo.startswith('local/')):
+                source = 'local'
+            elif not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
+                source = 'standard'  # legacy installs without a recorded source stay Public
+            return {"w": w, "cfg": cfg, "dir": d, "repo": repo, "commit": commit,
+                    "source": source, "private": src.get("private") is True}
     return None
 
 
@@ -87,6 +95,11 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         if any(a["id"] == name for a in apps):
             raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
+        from .wizardmd import voice_names
+        try:
+            spoken = voice_names(w)
+        except ValueError:
+            spoken = []  # optional field: a bad list drops the names, never the app or the registry (wam check reports it)
         from . import chats_views
         chats = chats_views.installed(meta['dir'], w, meta['commit'])
         port = app.get("port") or cfg.get("port")
@@ -95,13 +108,17 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         apps.append({
             "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
             "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
-            "repo": meta["repo"], "commit": meta["commit"],
+            "repo": meta["repo"], "commit": meta["commit"], "source": meta["source"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({"voice_names": spoken} if spoken else {}),
             "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
             **({"private_inference": w["private_inference"]} if "private_inference" in w else {}),
+            # Optional tag (James, 23 Oct 2026): `privacy: private` keeps the app off every non-private agent until
+            # the owner ticks one. Anything else, or no line at all, is a standard app.
+            **({"privacy": "private"} if str(w.get("privacy", "")).strip().lower() == "private" else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
@@ -126,6 +143,60 @@ def public_projection(reg: dict) -> dict:
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
 
 
+def read_grants_file(path: Path) -> list | None:
+    """Read public grant metadata when accessible; never require root-owned backend state."""
+    try:
+        doc = json.loads(path.read_text())
+        grants = doc.get('grants') if isinstance(doc, dict) else None
+        return grants if isinstance(grants, list) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_skills(sk: Path, apps: list) -> None:
+    """Project each installed app's SKILL.md into skills/<app>/ without a moment where a still-installed app's skill
+    is missing. Readers run concurrently with this: Hermes' skill loader, `wizard link`'s collision check, and other
+    registry writers (the App Manager's network watcher rewrites the registry after every app start, e.g. while the
+    installer recreates connection apps). Each file is replaced atomically; only folders of apps that are gone are
+    removed, and two writers at once never fail on each other's folders."""
+    # get, not pop: write_registry writes twice and the second pass must copy skills too
+    want = {a["id"]: a["_skill_src"] for a in apps
+            if a.get("_skill_src") and not a["id"].startswith(ROUTING_SKILL_PREFIX)}
+    for entry in list(sk.iterdir()):
+        # skills/ is shared: the Agent Service / wizard-os Hermes plugin keep the wizard-job-* routing
+        # skills (and their stamp) here. Only per-app skill folders are ours to prune.
+        if entry.name.startswith(ROUTING_SKILL_PREFIX) or entry.name == ROUTING_STAMP:
+            continue
+        if entry.name in want and entry.is_dir() and not entry.is_symlink():
+            for inner in list(entry.iterdir()):   # an app folder holds only its SKILL.md (and writers' temp files)
+                if inner.name == "SKILL.md":
+                    continue
+                if inner.name.startswith(".SKILL.md."):   # another writer's temp file: leave it unless it is stale
+                    try:
+                        if time.time() - inner.lstat().st_mtime < 300:
+                            continue
+                    except OSError:
+                        continue
+                if inner.is_dir() and not inner.is_symlink():
+                    shutil.rmtree(inner, ignore_errors=True)
+                else:
+                    inner.unlink(missing_ok=True)
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+    for app_id, src in want.items():
+        d = sk / app_id
+        d.mkdir(exist_ok=True)
+        tmp = d / f".SKILL.md.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, d / "SKILL.md")
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
 def write(reg: dict, root: Path | None = None) -> Path:
     root = root or home()
     root.mkdir(parents=True, exist_ok=True)
@@ -137,20 +208,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
         reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
         reg['slots']['chats']['default'] = chats_views.BUILTIN
     sk.mkdir(exist_ok=True)
-    for entry in sk.iterdir():
-        # skills/ is shared: the Agent Service / wizard-os Hermes plugin keep the wizard-job-* routing
-        # skills (and their stamp) here. Only per-app skill folders are ours to prune.
-        if entry.name.startswith(ROUTING_SKILL_PREFIX) or entry.name == ROUTING_STAMP:
-            continue
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
-    for a in reg["apps"]:
-        src = a.get("_skill_src")   # get, not pop: write_registry writes twice and the second pass must copy skills too
-        if src and not a["id"].startswith(ROUTING_SKILL_PREFIX):
-            (sk / a["id"]).mkdir()
-            shutil.copy2(src, sk / a["id"] / "SKILL.md")
+    write_skills(sk, reg["apps"])
     prev = root / "apps.json"
     old = {}
     if prev.is_file():
@@ -161,7 +219,7 @@ def write(reg: dict, root: Path | None = None) -> Path:
     for slot, val in (old.get("slots") or {}).items():   # keep owner slot choices across rewrites
         if slot in reg["slots"] and val.get("default") in reg["slots"][slot]["candidates"]:
             reg["slots"][slot]["default"] = val["default"]
-    tmp = root / "apps.json.tmp"
+    tmp = root / f".apps.json.{os.getpid()}.{threading.get_ident()}.tmp"   # unique: registry writers can overlap
     owner = routes(root)
     owner_routes_enabled = (root / "routes.json").exists()
 
@@ -176,11 +234,20 @@ def write(reg: dict, root: Path | None = None) -> Path:
                         "staged": True})
         return out
 
-    grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
-    grants = json.loads(grants_path.read_text()).get('grants', []) if grants_path.is_file() else old.get('grants', [])
-    public = {**reg, "grants": reg.get('grants', grants), "apps": [project(a) for a in reg["apps"]]}
-    tmp.write_text(json.dumps(public, indent=2) + "\n")
-    tmp.replace(prev)
+    # write_registry already resolved these through the API. Do not eagerly reopen
+    # the backend's 0600 file before considering that value (including an empty list).
+    grants = reg.get('grants')
+    if not isinstance(grants, list):
+        grants_path = Path(os.environ.get('WIZARD_GRANTS_FILE', root.parent / 'wizard-grants.json'))
+        grants = read_grants_file(grants_path)
+        if grants is None:
+            grants = old.get('grants', [])
+    public = {**reg, "grants": grants, "apps": [project(a) for a in reg["apps"]]}
+    try:
+        tmp.write_text(json.dumps(public, indent=2) + "\n")
+        tmp.replace(prev)
+    finally:
+        tmp.unlink(missing_ok=True)
     return prev
 
 

@@ -24,6 +24,7 @@ const uninstallAppBodySchema = type({
 
 const updateAppBodySchema = type({
   performBackup: 'boolean',
+  hermesPromotion: 'string?',
 });
 
 const lifecycleRequestSchema = type({

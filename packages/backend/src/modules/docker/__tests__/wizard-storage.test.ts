@@ -38,7 +38,11 @@ describe('rule 15 and volume compile', () => {
     const source = { ...compose, volumes: { login: {} }, services: { main: { ...compose.services.main, volumes: ['login:/login'] } } };
     const builder = new DockerComposeBuilder();
     const wizard = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:wizardapps' as AppUrn, '10.1.0.0/24'));
-    expect(wizard.services.main.volumes).toEqual(['${APP_DATA_DIR}/volumes/login:/login']);
+    expect(wizard.services.main.volumes).toEqual([
+      '${APP_DATA_DIR}/volumes/login:/login',
+      '${APP_DATA_DIR}/wizard:/wizard:ro',
+      '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+    ]);
     expect(wizard.volumes).toBeUndefined();
     const stock = yaml.parse(builder.getDockerCompose(source as any, {}, 'example:stock' as AppUrn, '10.1.0.0/24'));
     expect(stock.services.main.volumes).toEqual(['login:/login']);
@@ -83,6 +87,21 @@ describe('rule 15 and volume compile', () => {
     await fs.symlink(path.join(root, 'outside'), path.join(root, 'link'));
     await expect(confined(root, 'link/sub', true)).rejects.toThrow('real directory');
     await expect(confined(root, '../outside', true)).rejects.toThrow('Unsafe');
+  });
+});
+describe('fresh volume ownership', () => {
+  it('initialises a new bind for its numeric service user and never chowns existing data', async () => {
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    const source = { services: { main: { ...compose.services.main, user: `${uid}:${gid}`, volumes: ['fresh:/data'] } }, volumes: { fresh: {} } };
+    const urn = await install({ id: 'fresh-app' }, source);
+    const built = new DockerComposeBuilder().getDockerCompose(source as any, {}, urn as AppUrn, '10.1.0.0/24');
+    await store.prepare(urn, built);
+    const folder = path.join(root, 'app-data/wizardapps/fresh-app/volumes/fresh');
+    expect((await fs.stat(folder)).uid).toBe(uid);
+    await fs.writeFile(path.join(folder, 'owner-state'), 'preserved');
+    await store.prepare(urn, built);
+    expect(await fs.readFile(path.join(folder, 'owner-state'), 'utf8')).toBe('preserved');
   });
 });
 describe('owner share grants', () => {
@@ -262,8 +281,17 @@ describe('live legacy Claude compatibility', () => {
       );
       const result = yaml.parse(await store.prepare(urn, built));
       expect(result.volumes).toEqual({ login: { name: LEGACY_CLAUDE } });
-      expect(result.services.main.volumes).toEqual(['login:/claude:rw', '${APP_DATA_DIR}/volumes/cache:/cache']);
-      expect(result.services.sidecar.volumes).toEqual(source.services.sidecar.volumes);
+      expect(result.services.main.volumes).toEqual([
+        'login:/claude:rw',
+        '${APP_DATA_DIR}/volumes/cache:/cache',
+        '${APP_DATA_DIR}/wizard:/wizard:ro',
+        '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+      ]);
+      expect(result.services.sidecar.volumes).toEqual([
+        ...source.services.sidecar.volumes,
+        '${APP_DATA_DIR}/wizard:/wizard:ro',
+        '${APP_DATA_DIR}/wizard-requests:/wizard-requests',
+      ]);
       expect(result['x-wizard-volumes']).toEqual([{ name: 'cache', old: 'cache', relative: 'volumes/cache' }]);
       expect(run.mock.calls.some(([, args]) => args[0] === 'volume' && args[1] === 'inspect')).toBe(true);
       expect(run.mock.calls.some(([, args]) => args[0] === 'run')).toBe(false);
@@ -380,5 +408,120 @@ describe('legacy copy and explicit Claude upgrade', () => {
     await install(consumer);
     await store.prepare('hermes-agent:wizardapps', yaml.stringify(compose));
     expect((await store.readGrants()).grants).toEqual([]);
+  });
+});
+
+describe('installed pre-rule-15 recipes with their own fixed-name volume (wam#289)', () => {
+  // smart-home 0.2.2 as released: two services share one fixed-name volume.
+  const smartHome = {
+    volumes: { 'smart-home-config': { name: 'wizard-smart-home-config' } },
+    services: {
+      'smart-home': { image: 'ui', user: '0:0', volumes: ['smart-home-config:/ha'], 'x-runtipi': { is_main: true } },
+      'smart-home-engine': { image: 'ha', volumes: ['smart-home-config:/config'] },
+    },
+  };
+  const build = (source: any, urn: string) =>
+    new DockerComposeBuilder().getDockerCompose(source as Parameters<DockerComposeBuilder['getDockerCompose']>[0], {}, urn as AppUrn, '10.1.0.0/24');
+  function volume(info: Record<string, any> | null) {
+    run.mockImplementation(async (_f, args) => {
+      if (args[0] === 'volume' && args[1] === 'ls') return { stdout: info ? 'other\nwizard-smart-home-config\n' : 'other\n' };
+      if (args[0] === 'volume' && args[1] === 'inspect' && info) return { stdout: JSON.stringify(info) };
+      throw new Error(`Unexpected Docker call: ${args.join(' ')}`);
+    });
+  }
+  const labelled = (project: string) => ({
+    Name: 'wizard-smart-home-config',
+    Driver: 'local',
+    Options: null,
+    Labels: { 'com.docker.compose.project': project, 'com.docker.compose.volume': 'smart-home-config' },
+  });
+
+  it('compiles stop/start compose for the installed app, keeping the exact volume on every service', () => {
+    const result = yaml.parse(build(smartHome, 'smart-home:wizardapps'));
+    expect(result.volumes).toEqual({ 'smart-home-config': { name: 'wizard-smart-home-config' } });
+    expect(result.services['smart-home'].volumes[0]).toBe('smart-home-config:/ha');
+    expect(result.services['smart-home-engine'].volumes[0]).toBe('smart-home-config:/config');
+    expect(result['x-wizard-volumes']).toEqual([]);
+  });
+  it.each([
+    ['files', { name: 'wizard-smart-home-config' }],
+    ['smart-home', { name: 'hermes-data' }],
+    ['smart-home', { name: 'wizard-smart-home-config', external: true }],
+    ['smart-home', { name: 'wizard-smart-home-config', driver: 'local' }],
+    ['smart-home', { name: 'smart-homeless' }],
+  ])('still refuses a fixed name that is not the app’s own plain volume (%s %j)', (id, opts) => {
+    expect(() => rewriteVolumes({ ...smartHome, volumes: { 'smart-home-config': opts } } as any, id)).toThrow(/Fixed volume name|Nonportable/);
+  });
+  it.each([
+    ['labelled by its own Compose project', labelled('smart-home_wizardapps')],
+    ['created without labels', { Name: 'wizard-smart-home-config', Driver: 'local', Options: null, Labels: null }],
+  ])('starts with the existing volume %s: no copy, no move', async (_label, info) => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    volume(info);
+    const apply = vi.fn();
+    const result = yaml.parse(await store.prepare(urn, build(smartHome, urn), apply));
+    expect(apply).toHaveBeenCalledOnce();
+    expect(result.volumes).toEqual({ 'smart-home-config': { name: 'wizard-smart-home-config' } });
+    expect(result.services['smart-home-engine'].volumes).toContain('smart-home-config:/config');
+    expect(run.mock.calls.map(([, args]) => args.slice(0, 2).join(' '))).toEqual(['volume ls', 'volume inspect']);
+  });
+  it('gives ordinary app-data storage, never a new fixed-name volume, when the volume is missing (new install or reset)', async () => {
+    const user = `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`;
+    const mine = structuredClone(smartHome);
+    for (const svc of Object.values(mine.services)) (svc as { user?: string }).user = user;
+    const urn = await install({ id: 'smart-home' }, mine);
+    volume(null);
+    const apply = vi.fn();
+    const result = yaml.parse(await store.prepare(urn, build(mine, urn), apply));
+    expect(apply).toHaveBeenCalledOnce();
+    expect(result.volumes).toBeUndefined();
+    expect(result.services['smart-home'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/ha');
+    expect(result.services['smart-home-engine'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/config');
+    expect(result['x-wizard-volumes']).toEqual([{ name: 'smart-home-config', old: 'smart-home-config', relative: 'volumes/smart-home-config' }]);
+    expect((await fs.stat(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config'))).isDirectory()).toBe(true);
+    expect(run.mock.calls.some(([, args]) => ['create', 'run'].includes(args[1] ?? '') || args[0] === 'run')).toBe(false);
+  });
+  it('keeps app-data storage once the app has it, even if the old name is recreated later', async () => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    await fs.mkdir(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config'), { recursive: true });
+    await fs.writeFile(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config/configuration.yaml'), 'kept');
+    volume({ Name: 'wizard-smart-home-config', Driver: 'local', Options: null, Labels: null });
+    const result = yaml.parse(await store.prepare(urn, build(smartHome, urn)));
+    expect(result.volumes).toBeUndefined();
+    expect(result.services['smart-home'].volumes[0]).toBe('${APP_DATA_DIR}/volumes/smart-home-config:/ha');
+    expect(await fs.readFile(path.join(root, 'app-data/wizardapps/smart-home/volumes/smart-home-config/configuration.yaml'), 'utf8')).toBe('kept');
+  });
+  it('refuses to start rather than switch storage when Docker cannot list volumes', async () => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    run.mockRejectedValue(new Error('Cannot connect to the Docker daemon'));
+    const apply = vi.fn();
+    await expect(store.prepare(urn, build(smartHome, urn), apply)).rejects.toThrow('Docker daemon');
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['was created by another app', labelled('files_wizardapps'), 'created by files_wizardapps'],
+    ['is not a plain local volume', { Driver: 'local', Options: { type: 'none', o: 'bind', device: '/elsewhere' } }, 'plain local'],
+    ['uses another driver', { Driver: 'nfs', Options: null }, 'plain local'],
+  ])('refuses to start when the volume %s', async (_label, info, message) => {
+    const urn = await install({ id: 'smart-home' }, smartHome);
+    volume(info);
+    const apply = vi.fn();
+    await expect(store.prepare(urn, build(smartHome, urn), apply)).rejects.toThrow(message);
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it('gives a name to the installed app with the closest claim', async () => {
+    await install({ id: 'smart-home' }, { ...compose, volumes: {} });
+    const urn = await install({ id: 'smart' }, { ...smartHome, services: { main: { ...compose.services.main, volumes: ['smart-home-config:/x'] } } });
+    volume(labelled('smart_wizardapps'));
+    const apply = vi.fn();
+    await expect(store.prepare(urn, yaml.stringify({ services: { main: { image: 'x' } } }), apply)).rejects.toThrow('belongs to smart-home');
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it('does not let a new candidate use a fixed name', async () => {
+    const dir = path.join(root, 'repos/wizardapps/apps/smart-home');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'wizard.md'), '---\nid: smart-home\n---\n');
+    await fs.writeFile(path.join(dir, 'docker-compose.yml'), yaml.stringify(smartHome));
+    await expect(store.proposed('smart-home')).rejects.toThrow('fixed name');
   });
 });

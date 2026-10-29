@@ -43,7 +43,9 @@ def listing(c):
             store_selection.resolve(c, d["app"], body)
             row["selection"] = body
         except (ValueError, RuntimeError, OSError):
-            row["unavailable"] = "Not published for this Wizard yet. Try again after an update."
+            # Not installable here (unpublished or unresolvable): leave it out of Setup instead of showing a
+            # greyed card a new owner can do nothing with. It appears once the index publishes it.
+            continue
         rows.append(row)
     return {"apps": rows}
 

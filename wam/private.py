@@ -5,7 +5,7 @@ indexed app: fetch the repo at its newest commit (with this box's GitHub login),
 and write the app into the Wizard store folder. Images are pulled on the host with the same login, so Runtipi finds
 them locally. Nothing about a private app is sent to the index.
 
-GitHub login, first found wins: $GITHUB_TOKEN, $GH_TOKEN, `gh auth token`. Private images also need the
+GitHub login, first found wins: $GITHUB_TOKEN, $GH_TOKEN, ~/.wizard-os/github-token, `gh auth token`. Private images also need the
 `read:packages` scope (`gh auth refresh -s read:packages`).
 """
 from __future__ import annotations
@@ -37,6 +37,12 @@ def token() -> str:
     for k in ("GITHUB_TOKEN", "GH_TOKEN"):
         if os.environ.get(k):
             return os.environ[k]
+    try:
+        saved = (Path.home() / '.wizard-os/github-token').read_text().strip()
+        if saved:
+            return saved
+    except OSError:
+        pass
     try:
         out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20)
         return out.stdout.strip() if out.returncode == 0 else ""
@@ -158,10 +164,40 @@ def write_sealed_bootstrap(runtipi_root, store, app_id, compose):
     override.write_text(header + 'services:\n' + textwrap.indent(body, '  '))
 
 
+def _check_link(src: Path, app_id: str) -> dict:
+    """Apply the shipped wizard.md rules to unlisted code, before any preparation."""
+    checks = wizardmd.check(src)
+    if not wizardmd.passed(checks):
+        raise PrivateError('link wizard.md check failed: ' + '; '.join(wizardmd.failures(checks)))
+    manifest = wizardmd.front_matter((src / 'wizard.md').read_text())
+    if manifest.get('id') != app_id:
+        raise PrivateError('link app identity mismatch')
+    return manifest
+
+
+def resolve_link(repo: str, commit: str, app_id: str) -> dict:
+    """Resolve only a GitHub identity + immutable SHA; no browser-provided metadata."""
+    if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*', repo)
+            or not re.fullmatch(r'[0-9a-f]{40}', commit)
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', app_id)):
+        raise PrivateError('invalid link selection')
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Path(tmpdir) / 'src'
+        fetch(repo, commit, src, token())
+        manifest = _check_link(src, app_id)
+    return {'id': app_id, 'repo': repo, 'commit': commit,
+            'uses': manifest.get('uses') or [], 'source': 'link'}
+
+
 def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *, release: dict | None = None,
-            expected_id: str | None = None, source_pin: dict | None = None) -> dict:
+            expected_id: str | None = None, source_pin: dict | None = None, source: str | None = None) -> dict:
     """Fetch `repo` (owner/name) at its newest commit into the Wizard store folder and pull its images.
     Returns an index-like record: {id, repo, uses, private: True, install: {commit}}."""
+    source = source or os.environ.get('WAM_INSTALL_SOURCE') or ('standard' if source_pin else 'owner-private')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
+        raise PrivateError('invalid install source')
+    if source == 'link' and not source_pin:
+        raise PrivateError('link requires an immutable source pin')
     tok = tok or token()
     if not tok and not source_pin:
         raise PrivateError(f"{repo} isn't in the public index and this box has no GitHub login. Run `gh auth login` "
@@ -178,6 +214,9 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Path(tmpdir) / "src"
         fetch(repo, commit, src, tok)
+        if source == 'link':
+            assert source_pin is not None
+            _check_link(src, source_pin['id'])
         wtext = (src / "wizard.md").read_text() if (src / "wizard.md").is_file() else ""
         if not wtext:
             raise PrivateError(f"{repo}: no wizard.md")
@@ -234,10 +273,18 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
             raise PrivateError(f"{repo}: {e}") from e
         # Runtipi pulls public release images through its normal install path. A fresh
         # sudo user need not have Docker socket access or a registry login on the CLI.
-        if not source_pin:
+        # A share link may name a private repo whose images sit in private GHCR: preload those with the
+        # server-side login. Best effort, so a public link on a box without Docker CLI access still installs.
+        if not source_pin or (source == 'link' and tok):
             for img in images({"services": {n: s for n, s in (compose.get("services") or {}).items()
                                             if isinstance(s, dict) and not s.get("build")}}):
-                pull(img, tok)
+                if source_pin:
+                    try:
+                        pull(img, tok)
+                    except (PrivateError, OSError):
+                        pass
+                else:
+                    pull(img, tok)
 
         dst = runtipi_root / "repos" / store / "apps" / app_id
         old_tipi = 0
@@ -290,7 +337,7 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         if (cfg_p.parent / "data").is_dir():
             shutil.copytree(cfg_p.parent / "data", tmp / "data")
         (tmp / ".wizard-commit").write_text(commit + "\n")
-        (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True}) + "\n")
+        (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True, "source": source}) + "\n")
         if release or source_pin:
             (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
         shutil.rmtree(dst, ignore_errors=True)

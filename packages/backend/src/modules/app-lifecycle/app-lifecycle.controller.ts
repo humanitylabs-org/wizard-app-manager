@@ -55,7 +55,11 @@ export class AppLifecycleController {
   @Patch(':urn/update')
   @ApiResponse({ type: LifecycleRequestDto })
   async updateApp(@Param('urn') urn: string, @Body() body: UpdateAppBody) {
-    const res = await this.appLifecycleService.updateApp({ appUrn: castAppUrn(urn), performBackup: body.performBackup });
+    const res = await this.appLifecycleService.updateApp({
+      appUrn: castAppUrn(urn),
+      performBackup: body.performBackup,
+      hermesPromotion: body.hermesPromotion,
+    });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 

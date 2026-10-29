@@ -24,6 +24,10 @@ def test_updates_status_has_hermes_without_a_pin(tmp_path):
 def box(tmp_path, monkeypatch):
     # Import inside the fixture: the integration test above also fails on main.
     from wam import hermes_update as hu
+    # Transaction/rollback fixtures use synthetic commits. Policy refusal and
+    # seven-day approval are covered independently in test_hermes_lock.py.
+    monkeypatch.setattr(hu.hermes_lock, 'check_pin', lambda pin: pin)
+    monkeypatch.setattr(hu.hermes_lock, 'authorize', lambda: 'fixture')
     h, hh = tmp_path / 'wizard', tmp_path / 'hermes'
     h.mkdir(); hh.mkdir()
     monkeypatch.setenv('HOME', str(tmp_path))
@@ -69,7 +73,7 @@ def box(tmp_path, monkeypatch):
     alongside = {'mode': 'alongside', 'agent': {'hermes_home': str(hh), 'origin': f'http://127.0.0.1:{port}',
                                               'uid': os.getuid()}, 'service': {'port': port}}
     (h / 'alongside.json').write_text(json.dumps(alongside))
-    (h / 'release.json').write_text(json.dumps({'release': '1.0.0'}))
+    (h / 'release.json').write_text(json.dumps({'release': '1.0.0', 'status': 'pinned'}))
     releases = tmp_path / 'releases'; releases.mkdir()
     (releases / 'stable').write_text('9.0.0')  # never selects a newer release than the box follows
     pin = {'tag': 'v0.0.2', 'commit': commits[1], 'image': None, 'test_record': 'fixture',
@@ -104,6 +108,25 @@ def test_status_states(box):
     (b['h'] / 'alongside.json').unlink()
     assert hu.status(b['h'])['state'] == 'container'
     assert hu.update(b['h'])['state'] == 'container'
+
+
+def test_official_installer_layout_routes_to_hermes_update(box):
+    """Heidi's box: stock root Hermes from the official install.sh has no venv/ (a .hermes/bin launcher over
+    managed environments, install stamp updateMechanism=self). `wam updates` must point at the supported
+    `hermes update`, not say "update this Hermes by hand (not a git checkout with a venv)"."""
+    b = box
+    (b['repo'] / 'venv' / 'bin' / 'python').unlink()
+    launcher = b['repo'] / '.hermes' / 'bin' / 'hermes'
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\n')
+    st = b['hu'].status(b['h'])
+    assert st['state'] == 'self_updating' and st['command'] == 'hermes update' and st['install_type'] == 'official'
+    assert 'hermes update' in st['reason'] and 'by hand' not in st['reason']
+    assert b['hu'].update(b['h'])['state'] == 'self_updating'
+    assert b['git']('rev-parse', 'HEAD') == b['commits'][0]   # never touched
+    launcher.unlink()
+    (b['repo'] / 'install-stamp.json').write_text('{"updateMechanism": "self"}')
+    assert b['hu'].status(b['h'])['state'] == 'self_updating'
 
 
 def test_manual_installs_are_never_touched(box):
@@ -162,6 +185,29 @@ def test_update_with_online_backup_and_receipt(box):
     assert backup.stat().st_mode & 0o777 == 0o700
     assert 'web_dist' in ' '.join(saved['notes'])
     assert json.loads((b['repo'] / 'install-stamp.json').read_text())['baseVersion'] == '0.0.2'
+
+
+def test_successful_update_expires_only_old_wam_snapshots(box):
+    b = box; hu = b['hu']
+    backups = b['h'] / 'backups'; backups.mkdir()
+    old = backups / 'hermes-20200101T000000Z-0123abcd'; old.mkdir()
+    keep = backups / 'unrelated-folder'; keep.mkdir()
+    out = hu.update(b['h'], wait_quiet=0, health_timeout=0)
+    assert out['state'] == 'updated' and out['backups_pruned'] == [old.name]
+    assert not old.exists() and keep.is_dir() and Path(out['backup']).is_dir()
+
+
+def test_failed_update_keeps_every_snapshot(box, monkeypatch):
+    b = box; hu = b['hu']
+    backups = b['h'] / 'backups'; backups.mkdir()
+    old = backups / 'hermes-20200101T000000Z-0123abcd'; old.mkdir()
+    def fail_once(*args, calls=[]):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('fake restart failed')
+    monkeypatch.setattr(hu, 'restart', fail_once)
+    assert hu.update(b['h'], wait_quiet=0, health_timeout=0)['state'] == 'rolled_back'
+    assert old.is_dir()
 
 
 def test_busy_deadline_does_not_mutate_install(box):

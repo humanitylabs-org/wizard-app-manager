@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
 import { WizardStorage } from './wizard-storage';
+import { enforceAppNetworks } from './wizard-networks';
+import { servicesForArchitecture } from './builders/compose.builder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -13,7 +15,32 @@ import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
 
 @Injectable()
-export class DockerService {
+export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
+  private grantsTimer?: NodeJS.Timeout;
+  private requestsTimer?: NodeJS.Timeout;
+  onApplicationBootstrap() {
+    const run = () => this.storage.reconcile().catch((e) => this.logger.error('App grants reconcile failed', e));
+    void run();
+    this.grantsTimer = setInterval(() => void run(), 5 * 60 * 1000);
+    this.grantsTimer.unref?.();
+    // Connection requests apps leave at runtime (/wizard-requests/connections.json): picked up within seconds.
+    let busy = false;
+    this.requestsTimer = setInterval(() => {
+      if (busy) return;
+      busy = true;
+      this.storage
+        .collectRequests()
+        .catch((e) => this.logger.error('Connection requests check failed', e))
+        .finally(() => {
+          busy = false;
+        });
+    }, 5000);
+    this.requestsTimer.unref?.();
+  }
+  onModuleDestroy() {
+    if (this.grantsTimer) clearInterval(this.grantsTimer);
+    if (this.requestsTimer) clearInterval(this.requestsTimer);
+  }
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
@@ -98,8 +125,24 @@ export class DockerService {
     const generated = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
     if (!generated.content) throw new Error(`Missing generated Compose for ${appUrn}`);
     await this.storage.prepare(appUrn, generated.content, async (prepared) => {
-      if (prepared !== generated.content) {
-        await fs.writeFile(`${generated.path}.tmp-storage`, prepared);
+      // App networks: every start of a Wizard app, from wam, the App Store views or Runtipi's UI (wizard-networks.ts).
+      const app = await Promise.resolve()
+        .then(() => this.appsRepository.getAppByUrn(appUrn))
+        .catch(() => undefined);
+      let publishedServices: string[] = [];
+      if (appUrn.endsWith(':wizardapps') && (app?.exposed === true || app?.exposedLocal === true)) {
+        const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn);
+        if (!source.content) throw new Error(`Missing source Compose for published ${appUrn}`);
+        const services = servicesForArchitecture(source.content, this.config.get('architecture'));
+        publishedServices = Object.entries(services)
+          .filter(
+            ([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined,
+          )
+          .map(([name]) => name);
+      }
+      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices);
+      if (enforced !== generated.content) {
+        await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
       }
       await apply?.();

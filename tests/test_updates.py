@@ -197,7 +197,7 @@ def test_store_listener_updates_route(tmp_path, monkeypatch):
     sent = []
 
     def call(method, body=None, **hdr):
-        hd = {"Tailscale-User-Login": "owner@example.com", "Origin": "https://box.ts.net:8444",
+        hd = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@example.com", "Origin": "https://box.ts.net:8444",
               "X-Wizard-Store": "1", "Content-Type": "application/json", **hdr}
         raw = json.dumps(body).encode() if body is not None else b""
         hd["Content-Length"] = str(len(raw))
@@ -255,7 +255,8 @@ def test_dead_runner_pid_is_interrupted_and_the_stale_lock_is_released(tmp_path)
     assert updates.installing(h) is False
     st = json.loads((h / "install-status.json").read_text())
     assert st["state"] == "interrupted" and st["interrupted_step"] == "starting"
-    assert st["interrupted_reason"] == "runner exited" and "retried" in st["message"]
+    assert st["interrupted_reason"] == "runner exited" and "Update now" in st["message"]
+    assert "will be retried" not in st["message"]  # an unpinned / Ask-me box is never retried by itself
     assert not (h / "install.lock").exists()
 
 

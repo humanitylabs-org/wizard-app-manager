@@ -149,13 +149,14 @@ def test_api_requires_token_for_changes(tmp_path, monkeypatch):
         srv.shutdown()
 
 
-def test_template_mcp_server_speaks_mcp():
+def test_template_mcp_server_speaks_mcp(tmp_path):
     import subprocess
     src = (TEMPLATE / "app" / "server.py").read_text()
     import socket
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
-    proc = subprocess.Popen([sys.executable, "-c", src], env={"PORT": str(port), "PATH": "/usr/bin:/bin"})
+    proc = subprocess.Popen([sys.executable, "-c", src], cwd=tmp_path,
+                            env={"PORT": str(port), "PATH": "/usr/bin:/bin", "DATA_DIR": str(tmp_path / "data")})
     try:
         for _ in range(50):
             try:
@@ -861,6 +862,7 @@ def test_app_update_uses_api_and_restarts_a_running_app(monkeypatch):
         def wait_status(self, urn, want, timeout=0): return self.st
     monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli, "network_step", lambda *a, **k: {})   # app networks: tests/test_network.py
     res = cli.app_update(cli.Config(), "notifications")
     assert seen == [("update", "notifications:wizardapps"), ("start", "notifications:wizardapps")]
     assert res["status"] == "running" and res["restarted"] is True
@@ -1021,7 +1023,7 @@ def test_alongside_gives_service_its_attachment_folders(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     rt = tmp_path / "rt"
-    assert alongside.adopt_media(rt, "img:1", "1001:1001") is False          # no media folder yet
+    assert alongside.adopt_media(rt, "", "1001:1001") is False  # invalid pin never creates storage
     (rt / "media").mkdir(parents=True)
     assert alongside.adopt_media(rt, "bad image;rm", "1001:1001") is False
     assert alongside.adopt_media(rt, "img:1", "1001:1001; rm -rf /") is False
@@ -1101,8 +1103,59 @@ def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(
         (d / ".wizard-commit").write_text(commit + "\n")
         (d / ".wizard-source").write_text(json.dumps({"repo": repo}))
     calls = []
-    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: calls.append(("prepare", ref)) or {"id": ref})
-    monkeypatch.setattr(cli, "app_update", lambda c, a: calls.append(("update", a)) or {"status": "running"})
-    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: None, runtipi_root=tmp_path))
+    def prepare(c, ref):
+        calls.append(("prepare", ref))
+        d = tmp_path / "repos" / cli.STORE / "apps" / ref
+        d.mkdir(parents=True)
+        (d / "config.json").write_text('{}')
+        (d / "wizard.md").write_text('---\nversion: 1\n---\n')
+        return {"id": ref}
+    def update(c, app):
+        calls.append(("update", app))
+        d = tmp_path / "apps" / cli.STORE / app
+        (d / ".wizard-commit").write_text(new)
+        (d / "wizard.md").write_text('---\nversion: 1\n---\n')
+        return {"status": "running"}
+    monkeypatch.setattr(cli, "resolve_any", prepare)
+    monkeypatch.setattr(cli, "app_update", update)
+    rt = SimpleNamespace(app=lambda urn: {"app": {"status": "running", "config": {"openPort": False, "exposed": False, "exposedLocal": False}}})
+    out = cli.bootstrap(SimpleNamespace(runtipi=lambda: rt, runtipi_root=tmp_path))
     assert calls == [("prepare", "files"), ("update", "files")]
     assert out["updated"] == ["files"] and out["failed"] == {}
+
+
+def test_cli_install_retries_an_app_the_manager_removed_once(monkeypatch):
+    """0.3.40 retained launch box: `wam install wisdom` failed once on a cancelled pull; the retry succeeds."""
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    tries = []
+
+    def install(c, app_id, given=None, wait=True):
+        tries.append(app_id)
+        if len(tries) == 1:
+            raise SystemExit(f"{app_id}: install failed (the App Manager removed it; see `docker logs runtipi`)")
+        return {"id": app_id}
+    monkeypatch.setattr(cli, "install", install)
+    assert cli.install_with_retry(None, "wisdom") == {"id": "wisdom"} and tries == ["wisdom", "wisdom"]
+
+
+def test_cli_install_does_not_retry_other_errors_and_reports_a_second_failure(monkeypatch):
+    import pytest
+    monkeypatch.setattr(cli, "BOOTSTRAP_RETRY_DELAY", 0)
+    calls = []
+
+    def refused(c, app_id, given=None, wait=True):
+        calls.append(app_id)
+        raise SystemExit(f"{app_id}: not in the index")
+    monkeypatch.setattr(cli, "install", refused)
+    with pytest.raises(SystemExit):
+        cli.install_with_retry(None, "nope")
+    assert calls == ["nope"]
+
+    def always_removed(c, app_id, given=None, wait=True):
+        calls.append(app_id)
+        raise SystemExit(f"{app_id}: install failed (the App Manager removed it)")
+    calls.clear()
+    monkeypatch.setattr(cli, "install", always_removed)
+    with pytest.raises(SystemExit, match="install failed"):
+        cli.install_with_retry(None, "wisdom")
+    assert calls == ["wisdom", "wisdom"]

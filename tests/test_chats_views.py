@@ -148,7 +148,7 @@ def test_only_existing_settings_owner_listener_can_choose_default(tmp_path, monk
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
     def request(body=None, **extra):
         conn = http.client.HTTPConnection('127.0.0.1', server.server_port)
-        headers = {'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
                    'X-Wizard-Store': '1', 'Content-Type': 'application/json', **extra}
         conn.request('POST' if body else 'GET', '/_slots/chats', json.dumps(body) if body else None, headers)
         res = conn.getresponse(); result = res.status, json.loads(res.read()); conn.close(); return result
@@ -161,3 +161,14 @@ def test_only_existing_settings_owner_listener_can_choose_default(tmp_path, monk
         assert request({'default': 'wizard-chats'})[0] == 200
     finally:
         server.shutdown(); server.server_close(); thread.join()
+
+
+def test_optional_privacy_tag_reaches_the_registry(tmp_path, monkeypatch):
+    """James, 23 Oct 2026: an optional tag marks an app private; untagged apps carry no privacy field."""
+    _, tipi, home, row, reg = admitted(tmp_path, monkeypatch)
+    assert 'privacy' not in next(a for a in reg['apps'] if a['id'] == 'mizel-chats')
+    manifest = next(tipi.glob('repos/*/apps/mizel-chats/wizard.md'))
+    text = manifest.read_text()
+    manifest.write_text(text.replace('---\n', '---\nprivacy: private\n', 1))
+    tagged = registry.build([row], 'wizardapps', '127.0.0.1', tipi)
+    assert next(a for a in tagged['apps'] if a['id'] == 'mizel-chats')['privacy'] == 'private'
