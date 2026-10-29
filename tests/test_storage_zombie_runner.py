@@ -93,8 +93,9 @@ def test_real_constructor_manifest_complete_before_vm(tmp_path):
     assert r.receipt['revision']==doc['revision'] and r.proc is None
     assert r.receipt['product_sha256']==doc['product_sha256']
     assert r.receipt['causal_cases']==[] and r.receipt['causal_proof_complete'] is False
-    assert r.receipt['service_revision']==doc['service_revision']
-    assert production.validate_runner_contract(stage,doc)['contract_validated']
+    assert r.receipt['service_source_revision']==doc['service_revision']
+    assert production.validate_runner_contract(stage,doc)==production.runner_manifest_reads(
+        (stage/'storage-runner.py').read_text(),(stage/'runner.py').read_text())
 
 
 def test_production_continuation_preserves_fourteen_case_oracle():
