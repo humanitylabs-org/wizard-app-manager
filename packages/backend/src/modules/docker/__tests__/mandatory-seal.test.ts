@@ -31,7 +31,9 @@ async function fixture() {
   const urn = createAppUrn(main, `seal${process.env.MANAGER_SEAL_PROJECT_SUFFIX ?? path.basename(root).toLowerCase().replaceAll(/[^a-z0-9]/g, '').slice(-10)}`);
   const network = (suffix: string) => `${main}-${suffix}`;
   const qaLabel = { 'wizard.qa.manager-seal': process.env.MANAGER_SEAL_QA_OWNER ?? 'unit', 'wizard.qa.manager-seal.fixture': urn };
+  const identity = `${process.getuid!()}:${process.getgid!()}`;
   const service = (nets: string[]) => ({ image: process.env.MANAGER_SEAL_TEST_IMAGE ?? 'python:3.12-slim',
+    user: identity, // Same owner as 0700 fixture roots/0600 synthetic key; no DAC bypass.
     entrypoint: ['python3', '-c'], command: ['import time; time.sleep(3600)'], restart: 'no', pull_policy: 'never',
     read_only: true, mem_limit: '128m', memswap_limit: '128m', pids_limit: 32, cpus: 0.5,
     logging: { driver: 'none' }, tmpfs: ['/tmp:size=4194304,mode=1777,noexec,nosuid,nodev'],
@@ -49,11 +51,11 @@ async function fixture() {
     internal: true, enable_ipv6: false, driver_opts: { 'com.docker.network.bridge.inhibit_ipv4': 'true' }, labels: { [LABEL]: POLICY, ...qaLabel },
   }])) };
   doc.networks[network('edge-uplink')] = { internal: false, enable_ipv6: false, labels: qaLabel };
-  await fs.mkdir(path.join(root, 'home'));
-  await fs.writeFile(path.join(root, 'home/history.txt'), 'Synthetic continuity only.\n');
+  await fs.mkdir(path.join(root, 'home'), { mode: 0o700 });
+  await fs.writeFile(path.join(root, 'home/history.txt'), 'Synthetic continuity only.\n', { mode: 0o600 });
   await fs.writeFile(path.join(root, 'key'), 'synthetic-not-a-provider-credential\n', { mode: 0o600 });
   const seal = new MandatorySeal(root);
-  return { root, main, urn, doc, seal, qaLabel };
+  return { root, main, urn, doc, seal, qaLabel, identity };
 }
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
@@ -65,7 +67,7 @@ async function installedFixture(f: Awaited<ReturnType<typeof fixture>>, baseline
   const rows = [{ appName: f.main, appStoreSlug: store }, { appName: provider, appStoreSlug: store }];
   for (const [id, manifest, compose] of [
     [f.main, { id: f.main, mounts: [{ app: provider, share: 'synthetic-share', path: '/managed-share' }] }, recipe],
-    [provider, { id: provider, shares: [{ id: 'synthetic-share', path: 'shared' }] }, { services: { provider: { image: 'synthetic', user: `${process.getuid?.()}:${process.getgid?.()}`, 'x-runtipi': { is_main: true } } } }],
+    [provider, { id: provider, shares: [{ id: 'synthetic-share', path: 'shared' }] }, { services: { provider: { image: 'synthetic', user: f.identity, 'x-runtipi': { is_main: true } } } }],
   ] as const) {
     const dir = path.join(f.root, 'apps', store, id);
     await fs.mkdir(dir, { recursive: true });
@@ -140,6 +142,18 @@ async function finalEventCutoff(probe: () => Promise<void>, drain: () => Promise
 }
 
 describe('reviewed manager admission regressions', () => {
+  it('matches every synthetic bind reader to the owner without widening private modes', async () => {
+    const f = await fixture();
+    expect(Object.values(f.doc.services).map((s: any) => s.user)).toEqual(Array(5).fill(f.identity));
+    for (const [name, mode] of [['', 0o700], ['home', 0o700], ['home/history.txt', 0o600], ['key', 0o600]] as const) {
+      const metadata = await fs.stat(path.join(f.root, name));
+      expect(metadata.mode & 0o777).toBe(mode);
+      expect(`${metadata.uid}:${metadata.gid}`).toBe(f.identity);
+    }
+    await installedFixture(f);
+    const provider = yaml.parse(await fs.readFile(path.join(f.root, 'apps', f.urn.split(':')[1], 'synthetic-provider', 'docker-compose.yml'), 'utf8'));
+    expect(provider.services.provider.user).toBe(f.identity);
+  });
   it('retains even an early attach to an unlabeled public network for an owned identity, excluding unrelated trace rows', () => {
     const trace = ownedEventTrace('synthetic:fixture');
     const attach = { Type: 'network', Action: 'connect', Actor: { ID: 'unlabeled-network', Attributes: { container: 'owned', name: 'public-bridge' } } };
@@ -481,7 +495,7 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     const bound = setTimeout(() => { traceError = new Error('event trace deadline'); stream.kill(); }, 210_000);
     const sentinelIds: string[] = [];
     const barrier = async () => {
-      const id = (await exec('docker', ['create', '--pull=never', '--network=none', '--read-only', '--log-driver=none', '--memory=33554432', '--memory-swap=33554432', '--pids-limit=16', '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--label', `wizard.qa.manager-seal=${qaLabel['wizard.qa.manager-seal']}`,
+      const id = (await exec('docker', ['create', '--pull=never', '--user', f.identity, '--network=none', '--read-only', '--log-driver=none', '--memory=33554432', '--memory-swap=33554432', '--pids-limit=16', '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--label', `wizard.qa.manager-seal=${qaLabel['wizard.qa.manager-seal']}`,
         '--label', `wizard.qa.manager-seal.fixture=${urn}`, doc.services[main].image])).stdout.trim();
       sentinelIds.push(id);
       const deadline = Date.now() + 10_000;
@@ -494,6 +508,7 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
     const inspect = async () => {
       const ids = (await exec('docker', ['ps', '-aq', '--no-trunc', '--filter', `label=com.docker.compose.project=${project}`])).stdout.trim().split(/\s+/).filter(Boolean);
       const rows = await Promise.all(ids.map(async (id) => {
+        expect((await exec('docker', ['inspect', '--format', '{{.Config.User}}', id])).stdout.trim()).toBe(f.identity);
         const { stdout } = await exec('docker', ['inspect', '--format', '{{json .NetworkSettings.Networks}}', id]);
         const { stdout: service } = await exec('docker', ['inspect', '--format', '{{index .Config.Labels "com.docker.compose.service"}}', id]);
         const attached = JSON.parse(stdout);
@@ -518,6 +533,8 @@ dockerDescribe('mandatory seal direct manager lifecycle (real Docker)', () => {
       const mounts = JSON.parse((await exec('docker', ['inspect', '--format', '{{json .Mounts}}', client.id])).stdout);
       expect(mounts).toContainEqual(expect.objectContaining({ Destination: '/home/synthetic', Source: path.join(root, 'home') }));
       expect((await exec('docker', ['exec', client.id, 'cat', '/home/synthetic/history.txt'])).stdout).toBe('Synthetic continuity only.\n');
+      const key = rows.find((row) => row.service === `${main}-key`)!;
+      expect((await exec('docker', ['exec', key.id, 'cat', '/run/provider-key/key'])).stdout).toBe('synthetic-not-a-provider-credential\n');
       expect(mounts.some((m: any) => m.Destination === '/managed-share' && m.Source === installed.source)).toBe(shareApproved);
       expect((await exec('docker', ['inspect', '--format', '{{.Image}}', client.id])).stdout.trim()).toBe(expectedImage);
       // Read only this explicitly synthetic value, never Config.Env or any

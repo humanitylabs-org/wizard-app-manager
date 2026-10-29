@@ -15,6 +15,7 @@ from pathlib import Path
 import selectors
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -163,23 +164,38 @@ def report_counts(report):
     return {k: report[k] for k in ('numTotalTests', 'numPassedTests', 'numFailedTests', 'numPendingTests', 'success')}
 
 
+def fixture_identity(fixture):
+    # No DAC-bypass capability: every reader must match the 0700 tmpfs owner.
+    uid, gid = os.getuid(), os.getgid()
+    metadata = fixture.lstat()
+    assert uid != 0 and gid != 0, 'fixture requires explicit nonroot uid/gid'
+    assert stat.S_ISDIR(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == 0o700, 'fixture root must be a real 0700 directory'
+    assert (metadata.st_uid, metadata.st_gid) == (uid, gid), 'fixture root owner must match worker uid/gid'
+    return f'{uid}:{gid}'
+
+
 def daemon_bind_preflight(fixture, owner):
     # Real daemon, same canonical bounded volume path, no dependency install.
+    identity = fixture_identity(fixture)
     marker = 'PUBLIC synthetic manager daemon bind proof'
-    (fixture/'bind-probe.txt').write_text(marker+'\n')
+    with (fixture/'bind-probe.txt').open('x') as probe:
+        os.fchmod(probe.fileno(), 0o600)
+        probe.write(marker+'\n')
     versions = {}
     try:
         for image, version in [(PYTHON_IMAGE, '3.12.'), (early.IMAGE, '3.11.2')]:
             value = run(['/tooling/docker', 'run', '--rm', '--pull=never', '--name', owner+'-version',
+                         '--user', identity,
                          '--label', 'wizard.qa.manager-seal='+owner, '--read-only', '--network=none', '--log-driver=none',
                          '--memory=33554432', '--memory-swap=33554432', '--pids-limit=16', '--cap-drop=ALL',
                          '--security-opt=no-new-privileges:true', '--mount', f'type=bind,src={fixture},dst=/probe,readonly',
-                         '--entrypoint=python3', image, '-c', 'import sys; print(sys.version.split()[0]); print(open("/probe/bind-probe.txt").read().strip())'])
+                         '--entrypoint=python3', image, '-c', 'import os,sys; print(sys.version.split()[0]); print(str(os.getuid())+":"+str(os.getgid())); print(open("/probe/bind-probe.txt").read().strip())'])
             lines = value.splitlines()
-            assert len(lines) == 2 and lines[0].startswith(version) and lines[1] == marker, value
+            assert len(lines) == 3 and lines[0].startswith(version) and lines[1] == identity and lines[2] == marker, value
             versions[image] = lines[0]
     finally: (fixture/'bind-probe.txt').unlink(missing_ok=True)
-    return {'versions': versions, 'daemon_reads_same_synthetic_tmpfs_bytes': True}
+    return {'versions': versions, 'user': identity, 'fixture_root_mode': '0700', 'marker_mode': '0600',
+            'daemon_reads_same_synthetic_tmpfs_bytes': True}
 
 
 def network_driver_preflight(owner):
@@ -244,7 +260,7 @@ def inside(args):
         result['daemon_bind_preflight'] = daemon_bind_preflight(fixture, args.owner)
         result['network_driver_preflight'] = network_driver_preflight(args.owner)
         checkout = bootstrap(root, manifest, step)
-        step('runner-focused', ['python3', '-m', 'unittest', 'discover', '-s', 'scripts/tests', '-p', 'test_manager_seal_docker.py'])
+        step('runner-focused', ['python3', '-m', 'unittest', 'test_manager_seal_docker', '-v'], cwd=checkout/'scripts/tests')
         deps = {}; result['steps']['dependencies'] = deps
         dependency_step(checkout, Path('/work/logs'), manifest['files']['bun.lock'], deps)
         assert deps['exit_code'] == 0 and deps['log_complete'] and deps['comparison_complete']

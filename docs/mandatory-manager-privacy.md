@@ -78,6 +78,26 @@ sleeper and are version-checked. This is **not** Python 3.13 compatibility proof
 No image pulls/builds or disk-backed dependency cache are permitted. Fixture
 roots are read-only, logs disabled and memory/pids/tmpfs allocations capped.
 
+The first Docker attempt at `08068fc6` failed before any test/bootstrap step:
+the bind-probe container inherited image UID 0 while the bounded volume was
+owned by UID/GID 1000 with mode 0700. With all capabilities dropped, root had no
+DAC override and could not open `/probe/bind-probe.txt`. This was a fixture
+identity failure, not product enforcement evidence. Its failed receipt/log are
+retained unchanged. The repaired bind probes use explicit worker UID:GID and
+assert the actual child identity as well as reading an owner-only 0600 marker.
+They refuse a root/mismatched identity, symlink root or widened directory mode.
+All five Compose sleepers now use the same explicit identity, including the
+client's synthetic home reader and the synthetic 0600 key reader; the installed
+share-provider recipe uses that identity too. Home stays 0700 with 0600 history.
+Never-started, unmounted event sentinels also specify it. The tool-donor container
+is never started and reads no fixture bind; the existing worker already uses the
+matching UID:GID with a 0700 tmpfs. Service `/tmp` remains the separately capped
+4 MiB 1777 scratch; it is not the private fixture root. No mode widening,
+supplementary DAC capability, privileged container or weaker limit is introduced.
+Local harness regressions check command construction/contracts only. Actual
+image bind/Compose identity and TypeScript execution remain for the next
+parent-submitted bounded forum job, not locally claimed Docker acceptance.
+
 The candidate includes the exact disabled-config bypass; real cross-process
 enrollment/launch exclusion; prefix/shortcut refusals; sticky revoked share
 through update/recovery; no-op bytes, stale CAS and envelope-revision negatives;
