@@ -12,6 +12,8 @@ REUSE: existing lifecycle controller, validated form schema, handler, real queue
 
 ## Verified small regressions
 
+The normal Git commit/push completed but printed `Can't find lefthook in PATH` twice. This is a **formatter-hook tooling failure**, not a formatting/lint pass. No dependency install or hook bypass was performed; explicit `git diff --check` and the executable small tests below passed. Formatting/full TypeScript/Vitest verification remains for the admitted worker.
+
 `docs/manager-seal-startup-install-method-evidence.json` contains actual Node output, source/test/runner hashes and pinned baseline source hashes.
 
 - Exact candidate source-method tests: **7/7 pass**.
