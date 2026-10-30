@@ -1,0 +1,16 @@
+{
+  "version": "0.3.90",
+  "latest_since": "2026-10-30T07:52:32Z",
+  "promoted_at": "2026-10-30T10:16:06Z",
+  "upgrade_test": {
+    "from": "0.3.89",
+    "to": "0.3.90",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.90.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Miguel, 30 Oct 2026: If you are shipping a fix, ship it straight to stable. App paths dropped after restarts; PR #364 fixed it, regression fails on old code, KVM upgrade from stable passed.",
+    "notes": "0.3.90 also carries Store removal fixes; 0.3.91 remains Latest with newer Wizard UX fixes."
+  }
+}
