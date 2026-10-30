@@ -387,8 +387,9 @@ def cleanup_containers():
                     first_error = exc
         remaining = inventory()
         assert identity() == engine, 'daemon changed during cleanup'
-        report['readback_absent'] = not remaining and not report['unowned_exact_ids']
-        assert report['readback_absent'], 'guest container inventory is not empty'
+        report['readback_absent'] = (not remaining and not report['unowned_exact_ids'] and
+            report['absent_exact_ids'] == report['attempted_exact_ids'] and first_error is None)
+        assert report['readback_absent'], 'guest container inventory or exact absence proof is incomplete'
         if first_error is not None:
             raise first_error
         report['passed'] = True

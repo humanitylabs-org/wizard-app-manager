@@ -68,6 +68,7 @@ def test_inspect_error_or_survival_is_never_absence(tmp_path, status):
         m.cleanup_containers()
     result = readback(tmp_path)
     assert result['passed'] is False and result['absent_exact_ids'] == []
+    assert not result['readback_absent']
     assert result['removed_exact_ids'] == [A]
 
 
@@ -93,7 +94,7 @@ def test_unavailable_daemon_is_failure_not_empty_guest(tmp_path):
 
 def test_unknown_project_survives_while_exact_owned_ids_are_removed(tmp_path):
     m = guest(tmp_path); daemon = Daemon(unowned=(OTHER,)); m.daemon_request = daemon.request
-    with pytest.raises(AssertionError, match='not empty'):
+    with pytest.raises(AssertionError, match='incomplete'):
         m.cleanup_containers()
     assert set(daemon.rows) == {OTHER}
     assert not any(OTHER in path for method, path in daemon.calls if method == 'DELETE')
