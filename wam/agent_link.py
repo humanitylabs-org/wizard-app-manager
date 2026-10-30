@@ -45,13 +45,18 @@ PLUGIN_REF = '1f78352d20485c04e3583a42c9b85c04e233aece'
 ACCOUNT_CHANGES = 'chatgpt'
 
 # Runs inside the Hermes container as uid 1000. Installs (or refreshes) the plugin this link put there; a plugin it
-# did not install, or one changed since, is the owner's and is left alone. Prints one JSON line.
+# did not install, or one changed since, is the owner's and is left alone. Every install/refresh is journalled in the
+# marker *before* Hermes runs: a failed or interrupted one is undone (its partial copy removed, the plugin it replaced
+# and Hermes' install metadata put back) on failure or on the next run, never left looking like an owner's plugin.
+# Prints one JSON line; `managed` says the link owns the plugin (only then is it enabled).
 PLUGIN = r'''
-import hashlib, json, os, subprocess, sys, tempfile
+import hashlib, json, os, shutil, subprocess, sys, tempfile
 hermes, source, ref, name = sys.argv[1:5]
 home = os.environ.get('HERMES_HOME') or '/opt/data'
 pdir = os.path.join(home, 'plugins')
 root, marker = os.path.join(pdir, name), os.path.join(pdir, '.wizard-fresh-link.json')
+backup, meta = os.path.join(pdir, '.wizard-fresh-link.backup'), os.path.join(pdir, '.install-metadata.json')
+meta_backup = backup + '.metadata.json'
 def tree(path):
     h = hashlib.sha256()
     for d, dirs, files in os.walk(path):
@@ -65,10 +70,33 @@ def tree(path):
                 h.update(fh.read())
             h.update(b'\0')
     return h.hexdigest()
+def save(doc):
+    fd, tmp = tempfile.mkstemp(prefix='.wizard-fresh-link.', dir=pdir)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(doc, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, marker)
+def undo(journal):
+    if os.path.isdir(root):
+        shutil.rmtree(root)
+    if os.path.isdir(backup):
+        os.replace(backup, root)
+    if os.path.exists(meta_backup):
+        os.replace(meta_backup, meta)
+    elif not journal.get('meta_existed') and os.path.exists(meta):
+        os.remove(meta)
+    if journal.get('previous'):
+        save(journal['previous'])
+    elif os.path.exists(marker):
+        os.remove(marker)
+    return journal.get('previous')
 try:
     mine = json.load(open(marker))
 except (OSError, ValueError):
     mine = None
+if mine and mine.get('state') == 'installing':
+    mine = undo(mine)   # an earlier run was interrupted mid-install
 extra = []
 if not os.path.isdir(root):
     state = 'installed'
@@ -81,15 +109,37 @@ elif mine.get('sha256') != tree(root):
 else:
     state, extra = 'refreshed', ['--force']
 if state in ('installed', 'refreshed'):
-    p = subprocess.run([hermes, 'plugins', 'install', source, '--ref', ref, '--no-enable', '--no-deps'] + extra,
-                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
-    if p.returncode or not os.path.isfile(os.path.join(root, 'plugin.yaml')):
-        raise SystemExit('wizard-os plugin not installed: ' + (p.stderr or p.stdout)[-300:])
-    fd, tmp = tempfile.mkstemp(prefix='.wizard-fresh-link.', dir=pdir)
-    with os.fdopen(fd, 'w') as f:
-        json.dump({'source': source, 'ref': ref, 'sha256': tree(root)}, f)
-    os.replace(tmp, marker)
-print(json.dumps({'plugin': state, 'changed': state in ('installed', 'refreshed')}))
+    os.makedirs(pdir, exist_ok=True)
+    for old in (backup, meta_backup):
+        if os.path.isdir(old):
+            shutil.rmtree(old)
+        elif os.path.exists(old):
+            os.remove(old)
+    journal = {'state': 'installing', 'ref': ref, 'previous': mine if state == 'refreshed' else None,
+               'meta_existed': os.path.exists(meta)}
+    if journal['meta_existed']:
+        shutil.copy2(meta, meta_backup)
+    if state == 'refreshed':
+        shutil.copytree(root, backup, symlinks=True)
+    save(journal)
+    try:
+        p = subprocess.run([hermes, 'plugins', 'install', source, '--ref', ref, '--no-enable', '--no-deps'] + extra,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+        ok = not p.returncode and os.path.isfile(os.path.join(root, 'plugin.yaml'))
+        why = (p.stderr or p.stdout)[-300:]
+    except (OSError, subprocess.SubprocessError) as e:
+        ok, why = False, type(e).__name__
+    if not ok:
+        undo(journal)
+        raise SystemExit('wizard-os plugin not installed (nothing changed): ' + (why.strip() or 'no plugin.yaml'))
+    save({'source': source, 'ref': ref, 'sha256': tree(root)})
+    for old in (backup, meta_backup):
+        if os.path.isdir(old):
+            shutil.rmtree(old)
+        elif os.path.exists(old):
+            os.remove(old)
+print(json.dumps({'plugin': state, 'changed': state in ('installed', 'refreshed'),
+                  'managed': state in ('installed', 'refreshed', 'current')}))
 '''
 
 # Runs inside the Hermes container as uid 1000. Token on stdin (first line); prints one JSON line.
@@ -253,12 +303,14 @@ def link(c, store='wizardapps', restart=True):
     try:   # the ChatGPT app's sign-ins; the gateway link above never waits on it
         plugin = ensure_plugin(docker, _container(docker, AGENT_APP + '-engine')[0])
     except (ValueError, OSError, subprocess.SubprocessError) as e:
-        plugin = {'plugin': 'error', 'error': str(e)[:200], 'changed': False}
+        plugin = {'plugin': 'error', 'error': str(e)[:200], 'changed': False, 'managed': False}
 
     def edit(probe):
         eng = _container(docker, AGENT_APP + '-engine')[0]
-        q = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', '-e', 'WIZARD_LINK_PLUGIN=' + PLUGIN_NAME,
-                                     '-e', 'WIZARD_LINK_ACCOUNT_CHANGES=' + ACCOUNT_CHANGES, eng, HERMES_PY, '-c', EDIT,
+        # Only a plugin this link installed is enabled: an owner's own copy stays as he left it (opt-in).
+        env = ['-e', 'WIZARD_LINK_PLUGIN=' + PLUGIN_NAME, '-e', 'WIZARD_LINK_ACCOUNT_CHANGES=' + ACCOUNT_CHANGES] \
+            if plugin.get('managed') else []
+        q = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', *env, eng, HERMES_PY, '-c', EDIT,
                                      url, MCP_NAME, SKILLS_TARGET] + (['probe'] if probe else []),
                            input=token + '\n', capture_output=True, text=True, timeout=90)
         if q.returncode:
