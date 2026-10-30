@@ -85,6 +85,27 @@ def test_an_app_or_shell_mid_restart_keeps_its_same_origin_path(tmp_path, fake_t
     assert "8800" not in fake_tailscale[0].read_text()   # a stopped app still isn't published
 
 
+def test_owner_unix_gateway_keeps_the_app_on_its_wizard_path(tmp_path, fake_tailscale):
+    """Messenger's owner ingress (a Unix-socket Serve route the owner set) must not push the app onto its raw port."""
+    calls, _ = fake_tailscale
+    served = tmp_path / "served"
+    d = json.loads(served.read_text())
+    d["TCP"]["8796"] = {"HTTPS": True}
+    d["Web"]["box.tail1234.ts.net:8796"] = {"Handlers": {
+        "/": {"Proxy": "http://127.0.0.1:8796"},
+        "/messenger": {"Proxy": "unix:/home/o/.wizard-os/messenger-owner/ingress.sock"}}}
+    served.write_text(json.dumps(d))
+    reg = {"apps": [dict(a) for a in REG["apps"]] + [
+        {"id": "messenger", "name": "Messenger", "category": "app", "status": "running",
+         "view": {"url": "http://127.0.0.1:9245/"}}]}
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    m = next(l for l in res["links"] if l["id"] == "messenger")
+    assert m["open"] == "/messenger/" and not res.get("gateway_skipped")
+    assert "--set-path=/messenger/" not in calls.read_text()        # the owner's route is never replaced
+    links.apply_to_registry(reg, tmp_path / "home")
+    assert next(a for a in reg["apps"] if a["id"] == "messenger")["view"]["url"] == "/messenger/"
+
+
 def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
     calls, state = fake_tailscale
     state.write_text(json.dumps({"BackendState": "NeedsLogin", "Self": {"DNSName": ""}}))
