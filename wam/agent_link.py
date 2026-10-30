@@ -77,19 +77,28 @@ def save(doc):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, marker)
+def drop_backups():
+    for old in (backup, meta_backup):
+        if os.path.isdir(old):
+            shutil.rmtree(old)
+        elif os.path.exists(old):
+            os.remove(old)
 def undo(journal):
+    # Replay-safe: the backups are copied back, and dropped only after the marker says the undo is done, so an
+    # interruption anywhere in here is undone again (from the same backups) by the next run.
     if os.path.isdir(root):
         shutil.rmtree(root)
     if os.path.isdir(backup):
-        os.replace(backup, root)
+        shutil.copytree(backup, root, symlinks=True)
     if os.path.exists(meta_backup):
-        os.replace(meta_backup, meta)
+        shutil.copy2(meta_backup, meta)
     elif not journal.get('meta_existed') and os.path.exists(meta):
         os.remove(meta)
     if journal.get('previous'):
         save(journal['previous'])
     elif os.path.exists(marker):
         os.remove(marker)
+    drop_backups()
     return journal.get('previous')
 try:
     mine = json.load(open(marker))
@@ -112,11 +121,7 @@ else:
     state, extra = 'refreshed', ['--force']
 if state in ('installed', 'refreshed'):
     os.makedirs(pdir, exist_ok=True)
-    for old in (backup, meta_backup):
-        if os.path.isdir(old):
-            shutil.rmtree(old)
-        elif os.path.exists(old):
-            os.remove(old)
+    drop_backups()
     journal = {'state': 'installing', 'ref': ref, 'previous': mine if state == 'refreshed' else None,
                'meta_existed': os.path.exists(meta)}
     if journal['meta_existed']:
@@ -135,11 +140,7 @@ if state in ('installed', 'refreshed'):
         undo(journal)
         raise SystemExit('wizard-os plugin not installed (nothing changed): ' + (why.strip() or 'no plugin.yaml'))
     save({'source': source, 'ref': ref, 'sha256': tree(root)})
-    for old in (backup, meta_backup):
-        if os.path.isdir(old):
-            shutil.rmtree(old)
-        elif os.path.exists(old):
-            os.remove(old)
+    drop_backups()
 print(json.dumps({'plugin': state, 'changed': state in ('installed', 'refreshed'),
                   'managed': state in ('installed', 'refreshed', 'current')}))
 '''

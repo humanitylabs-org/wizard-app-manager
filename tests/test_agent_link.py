@@ -418,3 +418,18 @@ def test_installer_rerun_reports_a_plugin_that_could_not_be_installed(tmp_path, 
     assert cli.relink_fresh_agent(SimpleNamespace(home=tmp_path), object())['plugin'] == 'error'
     err = capsys.readouterr().err
     assert 'offline' in err and 'ChatGPT' in err and 'wam agent-link' in err
+
+
+def test_undo_interrupted_after_restoring_is_replayed_safely(tmp_path):
+    """Killed during a refresh's undo, after the working plugin was put back but before the marker said so: the next
+    run undoes again from the same backup instead of losing the plugin."""
+    import shutil
+    (tmp_path / 'plugins').mkdir()
+    run_plugin(tmp_path, 'a' * 40)
+    good = json.loads((tmp_path / 'plugins/.wizard-fresh-link.json').read_text())
+    shutil.copytree(tmp_path / 'plugins/wizard-os', tmp_path / 'plugins/.wizard-fresh-link.backup')
+    (tmp_path / 'plugins/.wizard-fresh-link.json').write_text(json.dumps(
+        {'state': 'installing', 'ref': 'b' * 40, 'previous': good, 'meta_existed': True}))
+    assert run_plugin(tmp_path, 'a' * 40) == {'plugin': 'current', 'changed': False, 'managed': True}
+    assert 'ref: ' + 'a' * 40 in (tmp_path / 'plugins/wizard-os/plugin.yaml').read_text()
+    assert not (tmp_path / 'plugins/.wizard-fresh-link.backup').exists()
