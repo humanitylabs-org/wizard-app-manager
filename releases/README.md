@@ -550,3 +550,15 @@ Channel: on latest; Stable stays 0.3.89 until the installed upgrade test passes 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/347. `releases/stable` → 0.3.90; `promotions/0.3.90.json` sha256 `b35c72fcf2fa1488d134cd35f0a5106bda829d581b6fc34add462b763a66145f`.
 Fast-tracked as **fix** on Miguel’s rule (30 Oct 2026: “If you’re shipping a fix, ship it straight to stable”). Installed upgrade 0.3.89 → 0.3.90 passed: wizard-os docs/acceptance/promote-0.3.90.md (#346), 27 checks / 0 failed. Latest remains 0.3.90 on the mirror until the subsequent 0.3.91 mirror is published.
 Rollback: point `releases/stable` back to 0.3.89.
+
+## 0.3.91 provenance
+
+Canonical: wizard-os releases/0.3.91.json (humanitylabs-org/wizard-os#345, release train). SHA256: `4c0a1b8e8cfe64485745c172dbc42808849d2c2ba357b4d4310451797709e8bb`.
+0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80 (wizard-ux#757 Store can remove an installed app; #758 model picker stays clear of draft text).
+Channel: on latest only (superseded by 0.3.92). Supersedes the conflicting mirror PR #366.
+
+## 0.3.92 provenance
+
+Canonical: wizard-os releases/0.3.92.json (humanitylabs-org/wizard-os#348). SHA256: `c267ab1812f52563537511769f2fe4af7bcec7296ed99869e124d0f18da79a26`.
+0.3.91 with App Manager 29c4b831 -> 23a71b5d (#368: an app behind an owner gateway, e.g. Messenger, keeps its Wizard path; a stale Serve read is re-checked). Image unchanged, v4.10.2-wizard.897-016a8cb.
+Channel: on latest; Stable stays 0.3.90 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
