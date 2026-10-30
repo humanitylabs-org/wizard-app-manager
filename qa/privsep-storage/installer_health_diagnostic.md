@@ -233,10 +233,13 @@ Native forum statvfs observed **277823594496** available bytes:
 - Prior RO wrapper floor 277258805248 leaves **564789248**, not a fresh-install budget.
 - Even prior actual 610 allocation + 64MiB telemetry would require **279731859456**
   available, a **1908264960** shortfall. Prior actual is NOT a guaranteed new peak.
-- Conservative enforceable all-in new-stage cap from the existing thin runner:
-  **8589934592** bytes, including source/COW/logs/instrumentation (do not add those
-  again). Reserve+pending+new peak requires **285781630976** available; shortfall
-  **7958036480**. This is an admission bound, not a claim the new run will use 8GiB.
+- Conservative all-in new-stage allocation reservation, reusing the existing thin
+  runner's declared stage ceiling: **8589934592** bytes, including
+  source/COW/logs/instrumentation (do not add those again). Reserve+pending+new
+  reservation requires **285781630976** available; shortfall **7958036480**.
+  This is not a measured or proven new peak: any later collector/runner must
+  demonstrate enforcement before native admission, rather than rely on the old
+  runner's between-command checks or claim the run will necessarily use 8GiB.
 
 The same original 60GB contains future campaign budget; it cannot simultaneously
 be treated as still protected pending work AND spent by this additional diagnostic.
