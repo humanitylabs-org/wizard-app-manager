@@ -74,13 +74,20 @@ def route_status(config: dict, host: str, port: int, path: str, target: str) -> 
     return "missing"
 
 
+# An app mid-restart (or mid-update) is still installed and comes straight back: keep its page published. The
+# registry is often written while an app is restarting (the network watcher rewrites it after every start), and
+# dropping the app here for that moment took a published app (and, when it was the shell, every same-origin path)
+# off links.json, so the shell got its raw port back as the view and could no longer open it in a window.
+LIVE_STATUSES = (None, "running", "starting", "restarting", "updating")
+
+
 def pages(reg: dict) -> list[dict]:
     """Installed apps with a page: id, name, category, local port and path, from apps.json."""
     out = []
     for a in reg.get("apps") or []:
         v = a.get("view") or {}
         url = v.get("local") or v.get("url") or ""
-        if not url.startswith("http://") or a.get("status") not in (None, "running"):
+        if not url.startswith("http://") or a.get("status") not in LIVE_STATUSES:
             continue
         hostport, _, path = url[len("http://"):].partition("/")
         port = hostport.rpartition(":")[2]

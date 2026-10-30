@@ -70,6 +70,21 @@ def test_publishes_only_app_pages_shell_first(tmp_path, fake_tailscale):
     assert saved["links"] == res["links"]
 
 
+@pytest.mark.parametrize("who", ["messenger", "wizard-shell"])
+def test_an_app_or_shell_mid_restart_keeps_its_same_origin_path(tmp_path, fake_tailscale, who):
+    """A registry written while an app (or the shell) restarts must not move the app off its /<id>/ path."""
+    reg = {"apps": [dict(a) for a in REG["apps"]] + [
+        {"id": "messenger", "name": "Messenger", "category": "app", "status": "running",
+         "view": {"url": "http://127.0.0.1:9245/"}}]}
+    next(a for a in reg["apps"] if a["id"] == who)["status"] = "restarting"
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    m = next(l for l in res["links"] if l["id"] == "messenger")
+    assert m["open"] == "/messenger/" and m["url"].startswith("https://") and m["url"].endswith(":8796/messenger/")
+    links.apply_to_registry(reg, tmp_path / "home")
+    assert next(a for a in reg["apps"] if a["id"] == "messenger")["view"]["url"] == "/messenger/"
+    assert "8800" not in fake_tailscale[0].read_text()   # a stopped app still isn't published
+
+
 def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
     calls, state = fake_tailscale
     state.write_text(json.dumps({"BackendState": "NeedsLogin", "Self": {"DNSName": ""}}))
