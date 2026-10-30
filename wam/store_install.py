@@ -11,8 +11,9 @@ root maps to the owner) can't reach it with a forged identity header. Unix-socke
   - its Origin is the shell's own tailnet origin (no cross-site posts),
   - it is JSON with the `X-Wizard-Store: 1` header (a simple form or image tag can't send that),
   - an exact selection resolves server-side against a catalog/subscription, or a link's pinned GitHub
-    manifest passes the wizard.md checker and matches the app id. No browser URLs, settings or uninstall.
+    manifest passes the wizard.md checker and matches the app id. No browser URLs or settings.
     A second tap while an install runs joins it instead of starting another.
+Removal ("Remove app") is a separate exact-identity route behind the same gate: store_remove.py.
 """
 from __future__ import annotations
 
@@ -125,12 +126,16 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
         return 200, {"app": app_id, "state": "installed", "note": "already installed"}
     if not selection and not allowed(c, app_id):
         return 404, {"error": f"{app_id} is not in the App Store"}
+    from . import store_remove
+    store_remove.removing(app_id, c)   # read an unknown removal back now, outside the lock
     with _lock:
         job = _jobs.get(app_id)
         if job and job["state"] == "installing":
             if selection and job.get("selection") != {k: selection[k] for k in ("source", "repo", "commit", "operation")}:
                 return 409, {"error": "another release operation is already running for this app"}
             return 202, job
+        if store_remove.removing(app_id):
+            return 409, {"error": "this app is being removed; refresh when that finishes"}
         job = _jobs[app_id] = {"app": app_id, "state": "installing", "started": int(time.time())}
         if selection:
             job["selection"] = {k: selection[k] for k in ("source", "repo", "commit", "operation")}

@@ -1687,6 +1687,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
             return self._chats_default(method)
+        if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
+            return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
         if app_id == '_recommended':
             from . import recommended
             if method == 'GET':
@@ -1772,6 +1774,30 @@ class StoreHandler(BaseHTTPRequestHandler):
             if isinstance(e, agent_access.AccessError):
                 return self._json(e.status, {"error": f"Not changed: {str(e)[:240]}"})
             raise
+
+    def _remove(self, method: str, sub: str) -> None:
+        """GET <app>/plan: what removing it does. POST <app> {repo, commit, dependents, empties}: remove exactly that
+        reviewed identity. GET <app>: the job. The owner gate in _go already ran (check_request for the POST)."""
+        from . import store_remove as sr
+        parts = sub.split('/')
+        if not parts or not sr.ID.fullmatch(parts[0]) or len(parts) > 2 or (len(parts) == 2 and parts[1] != 'plan'):
+            return self._json(404, {'error': 'not found'})
+        app_id, is_plan = parts[0], len(parts) == 2
+        try:
+            if method == 'GET':
+                return self._json(200, sr.plan(self.cfg, app_id)) if is_plan else self._json(*sr.status(app_id, self.cfg))
+            if is_plan:
+                return self._json(404, {'error': 'not found'})
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 < size <= 4096:
+                return self._json(400, {'error': 'invalid body size'})
+            return self._json(*sr.start(self.cfg, app_id, json.loads(self.rfile.read(size))))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
+        except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+            sys.stderr.write(f"wam store: remove {app_id} failed: {type(e).__name__}: {e}\n")
+            return self._json(500, {'error': f"The App Manager couldn't check this removal ({type(e).__name__}). "
+                                             "Nothing was removed."})
 
     def _chats_default(self, method: str) -> None:
         from . import chats_views
