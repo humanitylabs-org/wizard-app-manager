@@ -190,7 +190,7 @@ def inherited_fixtures(stage,helpers,rows):
 def validate(stage,expected):
     assert re.fullmatch('[0-9a-f]{64}',expected) and digest(stage/'manifest.json')==expected
     d=json.loads((stage/'manifest.json').read_text())
-    assert stage==Path('/srv/work/privsep/storage-contract-a')/d['revision'] and Path.cwd()==stage
+    assert stage==Path('/srv/work/privsep/storage-contract-a')/(d['revision']+'-fixture-repair') and Path.cwd()==stage
     assert d['schema']=='storage-contract-a-v1' and d['review_required'] and not d['full_acceptance']
     assert d['reserve_bytes']==RESERVE and d['campaign_remaining_bytes']==REMAINING
     assert not (stage/'evidence').exists(),'one-shot stage already entered'
@@ -237,7 +237,8 @@ def validate(stage,expected):
     # Complete affected modules plus six selected old seams; don't collect/rerun
     # unchanged storage/identity suites merely to obtain more green tests.
     assert sorted(set(computed+d['affected_existing_cases']))==d['expected_pytest_cases']
-    assert d['fresh_pytest_cases']==list(REPAIRED_CASES)
+    assert d['fresh_pytest_cases']==list(REPAIRED_CASES) and d['inherited_focused_count']==103
+    assert digest(stage/'inherited-fixtures.json')==d['inherited_fixtures_sha256']
     assert sorted(fixture_evidence['cases']+d['fresh_pytest_cases'])==d['expected_pytest_cases']
     for n in ('runner.py','guest.py','state.py','identity.py','custody-static.py'):ast.parse((stage/n).read_text())
     for n in ('get.sh','install.sh','scripts/prepare-named-user.sh'):
