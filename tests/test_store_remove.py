@@ -275,6 +275,7 @@ def test_listener_refuses_a_removal_from_the_box_itself(tmp_path, monkeypatch, s
     monkeypatch.setattr(si, "peer_uid", lambda p: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "owner@x.com")
     monkeypatch.setattr(si, "served_origins", lambda h: {"https://box.tail1.ts.net:8796"})
+    monkeypatch.setattr(si, "own_ips", lambda: {"192.0.2.1"})
     monkeypatch.setattr(sr, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not remove")))
     monkeypatch.setattr(cli.StoreHandler, "cfg", c, raising=False)
     (c.home / "links.json").write_text(json.dumps({"host": "box.tail1.ts.net"}))
@@ -284,10 +285,10 @@ def test_listener_refuses_a_removal_from_the_box_itself(tmp_path, monkeypatch, s
         body = json.dumps({"repo": "org/money", "commit": C1, "dependents": [], "empties": []})
         good = {"Tailscale-User-Login": "owner@x.com", "Origin": "https://box.tail1.ts.net:8796",
                 "X-Wizard-Store": "1", "Content-Type": "application/json", "Content-Length": str(len(body))}
-        for headers, why in (({**good, "X-Forwarded-For": "100.64.0.1"}, "this Wizard itself"),
-                             ({**good, "X-Forwarded-For": "100.64.0.9", "Origin": "https://evil.example"}, "wrong origin"),
-                             ({**good, "X-Forwarded-For": "100.64.0.9", "X-Wizard-Store": ""}, "bad request"),
-                             ({**good, "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "guest@x.com"}, "owner")):
+        for headers, why in (({**good, "X-Forwarded-For": "192.0.2.1"}, "this Wizard itself"),
+                             ({**good, "X-Forwarded-For": "192.0.2.9", "Origin": "https://evil.example"}, "wrong origin"),
+                             ({**good, "X-Forwarded-For": "192.0.2.9", "X-Wizard-Store": ""}, "bad request"),
+                             ({**good, "X-Forwarded-For": "192.0.2.9", "Tailscale-User-Login": "guest@x.com"}, "owner")):
             h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
             h.request("POST", "/_remove/money", body, headers)
             r = h.getresponse()
