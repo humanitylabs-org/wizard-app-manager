@@ -35,6 +35,14 @@ One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
    valid-project negatives, new prerequisite/inspection/partial/retirement
    regressions and unchanged exact custody transaction fixtures. Root-only cases
    run as real root under protected basetemp. Zero skips/errors/failures required.
+   Retain all 103 previously selected IDs and add exactly two observer regressions
+   (105 total). One asserts the exact manager-UID argv plus independent root file
+   and symlink hashes; the other uses a real different-owner synthetic Git repo,
+   requiring root ownership refusal before AND after a successful owner read.
+   Only its newly created `/run/storage-contract-a-git-*` parent is searchable;
+   no pytest/private ancestor is chmodded. The fixture maps the fixed manager
+   identity to `nobody` because the native manager account is not created yet;
+   actual installation must exercise the unchanged `wizard-system` identity.
    A red checkpoint stops before image load or installer activity.
 2. Reuse saved backend and Service archives. No rebuild of either. Export and
    attest exact config/platform/labels/ordered layers before AND after installation.
@@ -47,6 +55,10 @@ One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
    UID/GID/mode/ACL and directory identities pre/post upstream and after final
    setup. Verify complete root-fetched source closure before upstream. No manager
    writers beforehand, payload permissions are not changed by the QA observer.
+   The root helper already chowns the clone before this checkpoint: read HEAD
+   with `runuser -u wizard-system -- git -C ... rev-parse HEAD`, not root Git.
+   Keep Git's ownership guard unchanged (no safe.directory exemptions); root
+   independently hashes the complete source-member list, including symlink bytes.
    **Full get.sh discovery/prepare_server is not a new native claim**; its selected
    helper, actual install.sh and actual custody installer execute unchanged.
 4. A conservative read-only listener/drop-in observer must see the real socket
@@ -84,5 +96,10 @@ remaining 66220945408 already excludes 851 allocation. Credit 474 evidence
 2949689344 and the entire retained signed-out stage 207671296 ONCE only after independent complete
 stat inventory equality. New stage/COW allocation reduces the remaining pending
 original peak once; monitor free >= reserve + unallocated remaining at commands.
+The retained, unexecuted 0ae contract-A stage is separately stat-inventoried and
+credited ONCE as already-allocated campaign bytes, never deleted or rewritten.
+Current source is bound against its archive too: only this QA observer, runner,
+documentation and the new regression module may differ; all product bytes stay
+exactly 0ae. Its 103 selected test IDs remain a required subset of the new 105.
 Whole new stage cap 8 GiB, per-QEMU-file cap 6 GiB; these are limits, not headroom
 claims. Retain all old archives/images/evidence, no broad cleanup.

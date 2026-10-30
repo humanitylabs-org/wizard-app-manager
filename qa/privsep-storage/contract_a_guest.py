@@ -110,6 +110,19 @@ def metadata(label):
     report.setdefault('root_control_metadata',{})[label] = result; save(); return result
 
 
+def fetched_source_closure(revision):
+    # The real root helper has already chowned its clone to wizard-system.
+    # Respect Git's ownership guard; root still independently hashes ALL bytes.
+    checkout = BASE/'wizard-app-manager'
+    assert subprocess.check_output(['runuser','-u','wizard-system','--','git','-C',str(checkout),
+                                    'rev-parse','HEAD'],timeout=30).decode().strip()==revision
+    for row in json.loads((ROOT/'source-members.json').read_text()):
+        p=checkout/row['path']
+        raw=os.fsencode(os.readlink(p)) if row['kind']=='symlink' else p.read_bytes()
+        assert sha(raw)==row['sha256']
+    report['root_fetched_complete_source_closure']=True
+
+
 def no_manager_writer():
     for p in Path('/proc').iterdir():
         if not p.name.isdecimal() or int(p.name)==os.getpid():continue
@@ -159,13 +172,7 @@ def install():
         if any(a.endswith('/scripts/prepare-named-user.sh') for a in argv):
             if event=='call':
                 no_manager_writer(); metadata('before-upstream')
-                # Verify root-fetched checkout bytes independently of its label.
-                assert subprocess.check_output(['git','-C',str(BASE/'wizard-app-manager'),'rev-parse','HEAD']).decode().strip()==revision
-                for row in json.loads((ROOT/'source-members.json').read_text()):
-                    p=BASE/'wizard-app-manager'/row['path']
-                    raw=os.fsencode(os.readlink(p)) if row['kind']=='symlink' else p.read_bytes()
-                    assert sha(raw)==row['sha256']
-                report['root_fetched_complete_source_closure']=True
+                fetched_source_closure(revision)
             elif event=='return': metadata('after-upstream-before-normalization')
         if any(a.endswith('/scripts/install-approval-custody.py') for a in argv):
             if event=='call':

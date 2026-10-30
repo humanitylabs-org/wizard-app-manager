@@ -29,6 +29,8 @@ PRIOR=Path('/srv/work/privsep/storage-zombie-reap/851c2e6c6ec7c905d1a95ac1aad40f
 OLD=Path('/srv/work/privsep/storage-service-continuation/474414caf8199c1912fd3343abcc796ec0d34973')
 SIGNED=Path('/srv/work/privsep/custody-signedout/439e70d4b102e9fe971b8f0200717d99c1aabc83')
 BASE_REV='439e70d4b102e9fe971b8f0200717d99c1aabc83'
+RETAINED=Path('/srv/work/privsep/storage-contract-a/0ae7388053211f8921e75cac030541b338496869')
+RETAINED_MANIFEST='bf31c19dcbc1552582e685fc3abd062001d712b2bd7ee4f5d68a553fb9894880'
 RESERVE=217179869184
 ORIGINAL_REMAINING=66220945408
 OLD_ALLOCATED=2949689344
@@ -45,7 +47,11 @@ CHANGED=('scripts/prepare-named-user.sh','scripts/prepare-alongside.py',
          'qa/privsep-storage/production_guest.py','tests/test_storage_cleanup_api.py',
          'tests/test_alongside_install_boundaries.py')
 ADDED=('qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a_guest.py',
-       'qa/privsep-storage/contract_a.md','tests/test_custody_prerequisite.py')
+       'qa/privsep-storage/contract_a.md','tests/test_custody_prerequisite.py',
+       'tests/test_contract_a_observer.py')
+TEST_MODULES=('tests/test_alongside_install_boundaries.py','tests/test_storage_cleanup_api.py',
+              'tests/test_custody_prerequisite.py','tests/test_custody_install_atomic.py',
+              'tests/test_contract_a_observer.py')
 
 
 def digest(p):
@@ -118,6 +124,17 @@ def validate(stage,expected):
     a,b=({r['path']:r for r in v} for v in (oldrows,rows))
     assert set(b)-set(a)==set(ADDED) and not set(a)-set(b)
     assert {n for n in a if a[n]!=b[n]}==set(CHANGED)
+    # Parent-admitted product bytes stay EXACTLY 0ae; only QA repair is allowed.
+    assert digest(RETAINED/'manifest.json')==RETAINED_MANIFEST
+    retained_doc=json.loads((RETAINED/'manifest.json').read_text())
+    previous={r['path']:r for r in helpers.inventory(RETAINED/'source.tar')}
+    assert set(b)-set(previous)=={'tests/test_contract_a_observer.py'} and not set(previous)-set(b)
+    assert {n for n in previous if previous[n]!=b[n]}=={
+        'qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a_guest.py',
+        'qa/privsep-storage/contract_a.md'}
+    retained=helpers.allocated(RETAINED)
+    assert json.loads((stage/'retained-contract-stages.json').read_text())=={str(RETAINED):retained}
+    assert d['retained_contract_stage_bytes']==retained['allocated_bytes']
     assert all(b[n]==r for r in json.loads((PRIOR/'backend-inputs.json').read_text()) for n in [r['path']])
     assert len(json.loads((PRIOR/'backend-inputs.json').read_text()))==622
     assert helpers.inventory(PRIOR/'service.tar')==json.loads((stage/'service-members.json').read_text())
@@ -131,6 +148,9 @@ def validate(stage,expected):
             ('qa/privsep-storage/custody_signedout_run.py','custody-static.py')):
             assert hashlib.sha256(t.extractfile(src).read()).hexdigest()==d['files'][dst]
     computed=inventory_tests(sources,d['test_modules'])
+    assert d['test_modules']==list(TEST_MODULES)
+    assert set(retained_doc['expected_pytest_cases'])<=set(d['expected_pytest_cases'])
+    assert len(retained_doc['expected_pytest_cases'])==103 and len(d['expected_pytest_cases'])==105
     # Complete affected modules plus six selected old seams; don't collect/rerun
     # unchanged storage/identity suites merely to obtain more green tests.
     assert sorted(set(computed+d['affected_existing_cases']))==d['expected_pytest_cases']
@@ -168,7 +188,7 @@ def validate(stage,expected):
     assert digest(SIGNED/'evidence/result.json')=='cebb368b9eb566e0f24e682733a08743bc6e824adbcc3d228f471166e7cf6f8f'
     for p,n,amount in ((OLD/'evidence','old-allocation.json',OLD_ALLOCATED),(SIGNED,'signed-allocation.json',SIGNED_ALLOCATED)):
         observed=helpers.allocated(p);assert observed==json.loads((stage/n).read_text()) and observed['allocated_bytes']==amount
-    helpers.absence([PRIOR,OLD,SIGNED,stage])
+    helpers.absence([PRIOR,OLD,SIGNED,RETAINED,stage])
     for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
     amount=helpers.allocated(stage)['allocated_bytes'];free=shutil.disk_usage(stage).free
     report={'static_only':True,'tests_executed':False,'heavy_executed':False,'submitted':False,'review_required':True,
@@ -178,7 +198,9 @@ def validate(stage,expected):
         'expected_service_cases':list(CASES),'inherited':closure,'inherited_identity_cases':27,'inherited_signedout_checks':6,
         'reserve_bytes':RESERVE,'old_allocation_credited_once':OLD_ALLOCATED,'signed_allocation_credited_once':SIGNED_ALLOCATED,
         'campaign_remaining_bytes':REMAINING,'new_stage_allocated_bytes':amount,'free_bytes':free,
-        'required_bytes':RESERVE+max(0,REMAINING-amount),'capacity_admissible':amount<MAX_NEW and free>=RESERVE+max(0,REMAINING-amount),
+        'retained_contract_stage_bytes_credited_once':retained['allocated_bytes'],
+        'required_bytes':RESERVE+max(0,REMAINING-retained['allocated_bytes']-amount),
+        'capacity_admissible':amount<MAX_NEW and free>=RESERVE+max(0,REMAINING-retained['allocated_bytes']-amount),
         'old_474_container_absence':'UNPROVEN: old guest is never booted','full_acceptance':False}
     return d,snapshot,helpers,production,report
 
@@ -187,8 +209,11 @@ def make_runner(base,helpers):
     class ContractRunner(base.Runner):
         def capacity(self):
             amount=helpers.allocated(self.stage)['allocated_bytes'];free=shutil.disk_usage(self.stage).free
-            self.receipt['capacity']={'allocated_bytes':amount,'free_bytes':free,'remaining_pending_bytes':max(0,REMAINING-amount),'reserve_bytes':RESERVE}
-            self.save();assert amount<=MAX_NEW and free>=RESERVE+max(0,REMAINING-amount)
+            retained=self.doc['retained_contract_stage_bytes']
+            pending=max(0,REMAINING-retained-amount)
+            self.receipt['capacity']={'allocated_bytes':amount,'free_bytes':free,'remaining_pending_bytes':pending,
+                'retained_contract_stage_bytes_credited_once':retained,'reserve_bytes':RESERVE}
+            self.save();assert amount<=MAX_NEW and free>=RESERVE+pending
 
         def start(self,*args,**kw):
             old=resource.getrlimit(resource.RLIMIT_FSIZE);resource.setrlimit(resource.RLIMIT_FSIZE,(FILE_CAP,old[1]))
@@ -318,12 +343,13 @@ def main():
         try:r.stop()
         except BaseException as e:r.receipt['cleanup_errors'].append('stop-'+type(e).__name__)
         try:
-            helpers.absence([PRIOR,OLD,SIGNED,args.stage])
+            helpers.absence([PRIOR,OLD,SIGNED,RETAINED,args.stage])
             assert len(r.receipt['boots'])<=1 and all(b['stopped'] and not Path('/proc',str(b['pid'])).exists() for b in r.receipt['boots'])
             for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
             for n,row in snapshot['files'].items():assert digest(PRIOR/n)==row['sha256']
             assert helpers.allocated(OLD/'evidence')==json.loads((args.stage/'old-allocation.json').read_text())
             assert helpers.allocated(SIGNED)==json.loads((args.stage/'signed-allocation.json').read_text())
+            assert {str(RETAINED):helpers.allocated(RETAINED)}==json.loads((args.stage/'retained-contract-stages.json').read_text())
             r.receipt['original_disks_and_old_evidence_unchanged']=True;r.receipt['all_boot_pids_absent']=True;r.capacity()
         except BaseException as e:r.receipt['cleanup_errors'].append('preservation-'+type(e).__name__)
         r.receipt['passed']=bool(r.receipt['passed'] and not r.receipt['cleanup_errors'] and r.receipt.get('new_guest_container_absence_proven') and r.receipt.get('all_boot_pids_absent'))
