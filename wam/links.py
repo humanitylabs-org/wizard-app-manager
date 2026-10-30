@@ -12,6 +12,8 @@ Rules:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -47,15 +49,48 @@ def tailnet() -> dict:
     return {"state": d.get("BackendState") or "unknown", "host": host}
 
 
+class ServeUnavailable(ValueError):
+    """Serve could not be READ this time (timeout, busy tailscaled, half-written answer). It says nothing about the
+    routes themselves, so it must never move a published app off its address (see publish: last known good)."""
+
+
 def serve_status() -> dict:
     """Fail closed: an unreadable Serve configuration is not an empty one."""
-    r = _run(["tailscale", "serve", "status", "--json"])
+    try:
+        r = _run(["tailscale", "serve", "status", "--json"])
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ServeUnavailable(f"could not read Tailscale Serve configuration ({type(e).__name__})") from e
     if r.returncode:
-        raise ValueError("could not read Tailscale Serve configuration")
-    d = json.loads(r.stdout or "{}")
+        raise ServeUnavailable("could not read Tailscale Serve configuration")
+    try:
+        d = json.loads(r.stdout or "{}")
+    except ValueError as e:
+        raise ServeUnavailable("unreadable Tailscale Serve configuration") from e
     if not isinstance(d, dict):
-        raise ValueError("invalid Tailscale Serve configuration")
+        raise ServeUnavailable("invalid Tailscale Serve configuration")
     return d
+
+
+def _previous_links(home: Path) -> dict[str, dict]:
+    try:
+        saved = json.loads((home / "links.json").read_text())
+        return {l["id"]: l for l in saved.get("links") or [] if isinstance(l, dict) and l.get("id")}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
+@contextlib.contextmanager
+def _publish_lock(home: Path):
+    """One link refresh at a time per box. Installs run in threads and the CLI, API and network watcher all
+    publish; two runs interleaving Serve reads/writes and links.json replacements is how a working app lost
+    its Wizard address."""
+    home.mkdir(parents=True, exist_ok=True)
+    with open(home / ".links.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def route_status(config: dict, host: str, port: int, path: str, target: str) -> str:
@@ -200,6 +235,14 @@ def gateway_shell_ports(config: dict, host: str, shell_port: int) -> list[int]:
 def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True,
             api_port: int = 7790) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
+    if not apply:
+        return _publish(reg, home, shell_ids, apply, api_port)
+    with _publish_lock(home):
+        return _publish(reg, home, shell_ids, apply, api_port)
+
+
+def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int) -> dict:
+    prev = _previous_links(home)
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
     gw = gateway_paths(home)
@@ -210,6 +253,19 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
     else:
         sids = shell_ids or set()
         shell_port = next((r["port"] for r in rows if r["id"] in sids), None)
+        # The shell is installed but not in this run's pages (mid-update, briefly stopped): its routes are untouched,
+        # so apps that opened inside Wizard keep their same-origin address instead of falling back to raw ports.
+        shell_away = shell_port is None and any(a.get("id") in sids for a in reg.get("apps") or [])
+
+        def keep_previous(r: dict, why: str) -> bool:
+            """Last known good: an app that already opened at a Wizard path keeps it when this run could not
+            confirm it for a reason that says nothing about the route (Serve unreadable, shell away)."""
+            p = prev.get(r["id"])
+            if not p or not str(p.get("open") or "").startswith("/"):
+                return False
+            result["links"].append({**p, "port": r["port"], "kept": why})
+            result.setdefault("kept", {})[r["id"]] = why
+            return True
 
         def ensure(publish_port: int, path: str, target: str, set_path: bool) -> None:
             """Publish one private route, or raise ValueError; an existing different route is never replaced."""
@@ -236,6 +292,9 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                     raise ValueError("Serve route readback did not match requested private proxy")
 
         for r in rows:
+            if shell_away and keep_previous(r, "shell restarting"):
+                continue
+            unreadable = False   # this row hit ServeUnavailable: no verdict about its routes
             g = gw.get(r["id"]) if shell_port else None
             # Old release-pinned recipes still serve at /. Do not route those
             # through /files/ until their matching app update is installed.
@@ -250,13 +309,18 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                     publish_ports = gateway_shell_ports(serve_status(), ts["host"], port) if g else [port]
                 except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                     result["errors"][r["id"]] = str(e)[:200]
+                    if isinstance(e, ServeUnavailable):
+                        keep_previous(r, "serve unreadable")
                     continue
                 for publish_port in publish_ports:
                     try:
                         ensure(publish_port, path, target, bool(g))
                     except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                         result["errors"][r["id"] if publish_port == port else f"{r['id']}@{publish_port}"] = str(e)[:200]
+                        unreadable = unreadable or (publish_port == port and isinstance(e, ServeUnavailable))
                 if r["id"] in result["errors"]:
+                    if unreadable:
+                        keep_previous(r, "serve unreadable")
                     continue
             if implicit:
                 # Also on the shell's origin, so Wizard (same-origin views only) opens it in a window. The app keeps
@@ -269,6 +333,7 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                     except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                         iports, implicit = [], None
                         result.setdefault("gateway_skipped", {})[r["id"]] = str(e)[:200]
+                        unreadable = isinstance(e, ServeUnavailable)
                     for publish_port in iports:
                         try:
                             ensure(publish_port, implicit["path"], itarget, True)
@@ -276,7 +341,10 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
                             result.setdefault("gateway_skipped", {})[f"{r['id']}@{publish_port}"] = str(e)[:200]
                             if publish_port == int(shell_port):
                                 implicit = None
+                                unreadable = isinstance(e, ServeUnavailable)
                                 break
+            if not implicit and unreadable and keep_previous(r, "serve unreadable"):
+                continue
             if implicit:
                 result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{implicit['path']}",
                                         "open": implicit["path"], "gateway_strip": implicit["strip"],
