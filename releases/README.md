@@ -562,3 +562,9 @@ Channel: on latest only (superseded by 0.3.92). Supersedes the conflicting mirro
 Canonical: wizard-os releases/0.3.92.json (humanitylabs-org/wizard-os#348). SHA256: `c267ab1812f52563537511769f2fe4af7bcec7296ed99869e124d0f18da79a26`.
 0.3.91 with App Manager 29c4b831 -> 23a71b5d (#368: an app behind an owner gateway, e.g. Messenger, keeps its Wizard path; a stale Serve read is re-checked). Image unchanged, v4.10.2-wizard.897-016a8cb.
 Channel: on latest; Stable stays 0.3.90 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## 0.3.93 provenance
+
+Canonical: wizard-os releases/0.3.93.json (humanitylabs-org/wizard-os#349). SHA256: `76766fd438c248d5316072350777636eaeaae3f8fc699711401d6593c27d3ce2`.
+0.3.92 plus Wizard UX #755 (every skin in one list in Settings and onboarding; tweaks one list, off by default, labelled by author, quick button per author; Notifications in Chats and Machines on Home are ordinary settings); image sha-96f111f0. Everything else unchanged from 0.3.92.
+Channel: on latest; Stable stays 0.3.90 until the installed upgrade test passes.
