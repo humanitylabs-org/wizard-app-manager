@@ -1,0 +1,169 @@
+{
+  "base_revision": "55bff558efdaca1c2be694922d2b5777be43895e",
+  "control_policy": {
+    "allowed_finals": [
+      "m",
+      "K"
+    ],
+    "cr_records_preserved": true,
+    "fixed_messages_outer_sgr_only": true,
+    "max_csi_per_record": 32,
+    "max_parameter_chars": 32
+  },
+  "docker_phrases": {
+    "Cannot connect to the Docker daemon": "docker-daemon-unreachable",
+    "OCI runtime create failed": "docker-oci-create-failed",
+    "address already in use": "docker-address-in-use",
+    "bind source path does not exist": "docker-bind-source-missing",
+    "cannot allocate memory": "docker-memory-unavailable",
+    "connection refused": "docker-connection-refused",
+    "context deadline exceeded": "docker-deadline-exceeded",
+    "dependency failed to start": "compose-dependency-start-failed",
+    "device or resource busy": "docker-resource-busy",
+    "error mounting": "docker-mount-failed",
+    "error while creating mount source path": "docker-mount-source-create-failed",
+    "failed to create shim task": "docker-shim-create-failed",
+    "failed to read dockerfile": "dockerfile-unreadable",
+    "invalid bind mount spec": "docker-bind-spec-invalid",
+    "invalid mount config for type": "docker-mount-config-invalid",
+    "invalid mount path": "docker-mount-path-invalid",
+    "invalid propagation mode": "docker-propagation-invalid",
+    "invalid volume specification": "docker-volume-spec-invalid",
+    "is not a shared mount": "docker-mount-not-shared",
+    "is unhealthy": "compose-unhealthy",
+    "manifest unknown": "docker-manifest-unknown",
+    "mount denied": "docker-mount-denied",
+    "mounts denied": "docker-mount-denied",
+    "no configuration file provided": "compose-config-missing",
+    "no space left on device": "docker-space-exhausted",
+    "no such file or directory": "docker-no-such-file",
+    "not a directory": "docker-not-directory",
+    "not a shared or slave mount": "docker-mount-not-shared-or-slave",
+    "operation not permitted": "docker-operation-not-permitted",
+    "out of memory": "docker-memory-exhausted",
+    "permission denied": "docker-permission-denied",
+    "permission denied while trying to connect to the Docker daemon socket": "docker-socket-permission",
+    "port is already allocated": "docker-port-allocated",
+    "pull access denied": "docker-pull-denied",
+    "read-only file system": "docker-filesystem-readonly",
+    "resource temporarily unavailable": "docker-resource-unavailable",
+    "too many open files": "docker-open-files-exhausted"
+  },
+  "fixed_messages": {
+    "Docker is unavailable to this account. Ask an administrator to run host preparation, then start a new login and retry.": [
+      "failure",
+      "docker-unavailable-account"
+    ],
+    "Installing Tailscale (private access)": [
+      "marker",
+      "private-access-install-start"
+    ],
+    "Private access: HTTPS certificates are on; continuing.": [
+      "marker",
+      "private-access-certificates-ready"
+    ],
+    "Private access: Tailscale connected (existing settings preserved).": [
+      "marker",
+      "private-access-connected"
+    ],
+    "Private access: Tailscale preinstalled, not connected yet. Later: sudo tailscale up": [
+      "marker",
+      "private-access-not-connected"
+    ],
+    "Private access: cloudflare selected; leaving Tailscale unchanged.": [
+      "marker",
+      "private-access-cloudflare"
+    ],
+    "Private access: none selected; leaving Tailscale unchanged.": [
+      "marker",
+      "private-access-none"
+    ],
+    "Tailscale sign-in link:": [
+      "marker",
+      "private-access-signin-prompt"
+    ],
+    "Wizard OS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again.": [
+      "failure",
+      "python-yaml-unavailable"
+    ],
+    "note: approved app host access was not recorded; apps that need it stay off until 'wam host-approvals sync' succeeds": [
+      "warning",
+      "host-approval-sync-unrecorded"
+    ]
+  },
+  "inherited_methods_to_rerun": 21,
+  "new_finite_checks_by_method": {
+    "22": 78,
+    "23": 37,
+    "24": 13,
+    "25": 18,
+    "26": 26,
+    "27": 8,
+    "28": 1,
+    "29": 5,
+    "30": 2,
+    "31": 10,
+    "32": 7,
+    "33": 6,
+    "34": 1,
+    "35": 1
+  },
+  "new_finite_checks_total": 213,
+  "new_methods": 14,
+  "product_revision": "610716410029f2f70fe4233102584c30e9b9022f",
+  "realistic_expected_ids": {
+    "bind-invalid": "docker-bind-spec-invalid",
+    "bind-missing": "docker-bind-source-missing",
+    "compose-exit": "compose-service-exit",
+    "connect-refused": "docker-connection-refused",
+    "container-unhealthy": "compose-unhealthy",
+    "missing-file": "docker-no-such-file",
+    "mount-config": "docker-mount-config-invalid",
+    "mount-denied": "docker-mount-denied",
+    "mount-path": "docker-mount-path-invalid",
+    "mount-runtime": "docker-mount-failed",
+    "mount-source-ro": "docker-mount-source-create-failed",
+    "oom": "docker-memory-exhausted",
+    "permission": "docker-permission-denied",
+    "propagation-invalid": "docker-propagation-invalid",
+    "propagation-shared": "docker-mount-not-shared",
+    "propagation-slave": "docker-mount-not-shared-or-slave",
+    "readonly": "docker-filesystem-readonly",
+    "release-render": "release-pins-invalid",
+    "shell-command": "shell-command-not-found",
+    "shell-cp": "shell-filesystem-readonly",
+    "shell-errno": "shell-errno",
+    "shell-exit": "shell-command-exit",
+    "shell-install-cd": "shell-no-such-file",
+    "shell-mkdir": "shell-permission-denied",
+    "unhealthy": "compose-dependency-start-failed",
+    "volume-spec": "docker-volume-spec-invalid"
+  },
+  "schema": "installer-classifier-refinement-review-v1",
+  "shell_phrases": {
+    "Cannot allocate memory": "shell-memory-unavailable",
+    "File exists": "shell-file-exists",
+    "Is a directory": "shell-is-directory",
+    "No space left on device": "shell-space-exhausted",
+    "No such file or directory": "shell-no-such-file",
+    "Not a directory": "shell-not-directory",
+    "Operation not permitted": "shell-operation-not-permitted",
+    "Permission denied": "shell-permission-denied",
+    "Read-only file system": "shell-filesystem-readonly",
+    "Resource temporarily unavailable": "shell-resource-unavailable",
+    "Too many open files": "shell-open-files-exhausted",
+    "command not found": "shell-command-not-found",
+    "not found": "shell-not-found"
+  },
+  "source_paths": [
+    "install.sh",
+    "scripts/setup-private-access.sh",
+    "scripts/protected-agent-storage.py",
+    "wam/release_pins.py",
+    "scripts/prepare-alongside.py",
+    "qa/privsep-storage/contract_a_guest.py"
+  ],
+  "test_methods": 35,
+  "tests_executed_by_stager": false,
+  "unknown_after_continuation": "stop-and-report-no-automatic-retry"
+}

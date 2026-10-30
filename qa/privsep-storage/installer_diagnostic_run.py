@@ -105,6 +105,10 @@ def preflight(stage, manifest_sha, *, full=True):
     for x in m['tools']:
         clean_ancestors(x['path'])
         assert identity(x['path']) == x['stat'] and digest(x['path']) == x['sha256']
+    # Inherit the completed RO proof, not a claimed root cause. Hash-only reads.
+    for x in m['inherited_diagnostic']['artifacts']:
+        clean_ancestors(x['path'])
+        assert identity(x['path']) == x['stat'] and digest(x['path']) == x['sha256']
     assert Path(sys.executable).resolve() == Path(m['python']).resolve()
     module = load_parser(stage/'source')
     vocab = module.repertoire({p: (stage/'source'/p).read_text() for p in module.SOURCE_PATHS})
@@ -257,7 +261,7 @@ def execute(stage, sha):
         receipt['fresh_synthetic_test_exit'] = qa.returncode
         save()
         qa_summary = json.loads(qa.stdout)
-        assert qa.returncode == 0 and qa_summary == {'tests': 21, 'failures': 0, 'errors': 0, 'skipped': 0}
+        assert qa.returncode == 0 and qa_summary == {'tests': 35, 'failures': 0, 'errors': 0, 'skipped': 0}
         receipt['fresh_synthetic_tests'] = qa_summary
         save()
         for row in m['inputs']:
@@ -299,6 +303,11 @@ def execute(stage, sha):
         send_private(proc.stdin, payload, deadline)
         result = json.loads(get_frame(proc.stdout, deadline, b'WZ_FORENSIC_RESULT=', state))
         module.validate_export(result, m['vocabulary'])
+        p = result['projection']
+        expected = m['expected_private_log']
+        assert result['log_metadata'] == expected['metadata']
+        assert p['prefix_sha256'] == expected['sha256'] and p['bytes_read'] == expected['bytes']
+        assert p['processed_lines'] == expected['records'] and p['eof'] and not p['bounded_incomplete']
         receipt['guest'] = result
         receipt['diagnosis'] = result['diagnosis']
         receipt['private_channel_bytes'] = state['bytes']

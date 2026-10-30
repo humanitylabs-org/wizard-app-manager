@@ -61,16 +61,24 @@ a diagnostic search target. Never boot old 474 or any other historical guest.
 
 ## Finite execution and distinct proof
 
-The parent-reviewed job first runs **21 new synthetic tests only**, with
-URL/token, unknown input/hash, caps, qualified subprocess traceback, first-error,
-source omission/drift, forged export-field/enum negatives, and a lexical source-
-inventory ordering negative/positive. Test output is a
-four-counter JSON record, not arbitrary unittest tracebacks. Failure stops before
+The parent-reviewed refinement job reruns **only the original 21 synthetic methods
+plus 14 new methods (35 total)** because the parser changed. The 14 new methods
+expand to **213 finite checks**, including 26 realistic fixtures, the full 37-entry
+Docker phrase and 13-entry shell suffix inventories, numeric bounds, ANSI mixed
+with URL/token sentinels, CR ordering, unknown controls, fixed-marker assembly
+negatives, source-line bounds and nested forged export fields/phrase IDs. See
+`installer_classifier_refinement.json` for the exact phrases, expected IDs and
+per-method finite count. No synthetic method or appliance has run in staging.
+Test output is a four-counter JSON record, not arbitrary unittest tracebacks. Failure stops before
 QEMU. No rerun loop. The sole native observation has a 240-second console deadline,
 2 MiB private-channel ceiling, 15-second mount/unmount calls, and bounded exact
 owned cleanup. Per-file hashing has a 60-second bound. Worker timeout: 1200 seconds.
 Guest RAM: 1536 MiB, one vCPU. New disk budget: 64 MiB including source transport
-and small receipts; reserve unchanged at 217179869184 bytes. The original allowance
+and small receipts; reserve unchanged at 217179869184 bytes. The parent job wrapper
+also retains the original pending 60011827200 bytes: **277258805248 bytes free**
+is required at native exec under the inherited heavy lock. The smaller internal
+reserve-plus-diagnostic check is not the job's admission floor. Never lower the
+wrapper's pending or reserve amounts to fit a new stage. The original allowance
 66220945408 is not a cumulative quota. Existing retention is not deleted or
 recounted as pending allocation. The prior stage's 2473054208 allocated bytes and
 all previous receipts stay separate and unchanged.
@@ -82,9 +90,45 @@ not rerun or relabeled whole acceptance. This diagnostic always says
 UNKNOWN observation, not successful installation. No enrollment, positive auth,
 tailnet publication, reboot, release, full get.sh, merge, or live proof is granted.
 
+## One classifier refinement; never an installer retry
+
+The inherited complete 6548-byte/127-record read found only `private-access-none`
+at record 115, with 126 unknowns. Its failure cause remains UNKNOWN. The pinned
+`install.sh` lines 112–122 next render release pins and execute the real Docker
+Compose up; therefore source supports looking for release-render and Docker/
+Compose errors, **not** asserting either as the actual failure. The static private-
+access helper echoes and all admitted pre-exit installer literal messages are
+source-asserted. Interpolated paths/status/link values and action-approval messages
+are not exported. Backend/index literals are not added: Compose up does not dump
+those services' logs; their unhealthy/start failures use fixed Compose IDs.
+
+The expanded standard-tool vocabulary covers invalid bind/mount/volume specs,
+missing source, propagation/shared mount, permission/readonly/no-file, daemon/
+connection refusal, dependency/unhealthy, runtime/resource and bounded shell errno
+or nonzero exit forms. These are **phrase observations**, not causal diagnoses.
+Multiple matched Docker phrases are fixed IDs only, never message fragments.
+Traceback line numbers must fit the hash-bound source file's numeric line count.
+
+Allow at most 32 CSI sequences per record, at most 32 parameter characters each,
+and only SGR (`m`) or erase-line (`K`). Unsupported CSI, OSC, other C0/C1 and invalid
+UTF-8 stay unknown. Fixed phase/warning messages accept outer SGR decoration only,
+never an embedded-control join or erase-line assembly. CR/CRLF/LF delimit records;
+earlier progress records are not erased, skipped or joined. Unknown hashing uses
+original raw framed records, never normalized text. An otherwise plausible error
+without an approved prefix/reason or exceeding bounds remains unknown.
+
+Pin the inherited completed diagnostic receipt and worker log by exact hash/stat,
+all six original image/kernel/initrd inputs unchanged, and the expected private
+log metadata/whole-file digest/count. The same maintenance reader, guest PID1,
+namespace launcher, transport and explicit RO disk graph are retained unchanged.
+After this **one** refined projection, if failure is still unknown, stop and report
+counts/hashes and uncertainty. No automatic second vocabulary campaign, broader
+file read, failed-OS boot, installer restart, guestfish install, Docker run or
+installation rerun is authorized. Diagnostic exit zero is not acceptance.
+
 ## Parent admission review
 
-Inspect the exact pushed diff, parser and 21 synthetic cases, guest reader,
+Inspect the exact pushed diff, parser and 35 synthetic methods, guest reader,
 namespace launcher, explicit graph and complete source-member manifest. Confirm
 the stopped-610 image and all backing-chain metadata/hash pins, retained source
 and native receipt hashes, fresh free-space gate, no new runtime directory, no
