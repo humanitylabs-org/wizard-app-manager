@@ -544,3 +544,9 @@ Rollback: point `releases/stable` back to 0.3.88.
 Canonical: wizard-os releases/0.3.90.json (humanitylabs-org/wizard-os#344). SHA256: `222679a91c7500a346c59bb7a4184897f1729d4d7a3699c3effe019e576fa3d2`.
 0.3.89 plus App Manager #364 (apps starting, restarting or updating, or a restarting shell, keep their same-origin Wizard path; Messenger no longer opens blank) with #362/#363 (Store removes an installed app); image unchanged, v4.10.2-wizard.897-016a8cb. Everything else unchanged from 0.3.89.
 Channel: on latest; Stable stays 0.3.89 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## 0.3.91 provenance
+
+Canonical: wizard-os releases/0.3.91.json (release train). SHA256: `4c0a1b8e8cfe64485745c172dbc42808849d2c2ba357b4d4310451797709e8bb`.
+Latest 0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#757 Recommended fix: Store can remove an installed app; humanitylabs-org/wizard-ux#758 Recommended fix: model picker stays clear of draft text; humanitylabs-org/wizard-app-manager#362 Recommended fix: Store can remove an installed app safely; humanitylabs-org/wizard-app-manager#363 Fix: use documentation IPs in Store removal tests; humanitylabs-org/wizard-app-manager#364 Recommended fix: keep an app's Wizard path while it or the shell restarts. Stable stays 0.3.89 until the installed upgrade test passes.
+Channel: on latest only.
