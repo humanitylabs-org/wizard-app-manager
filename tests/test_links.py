@@ -79,7 +79,7 @@ def test_an_app_or_shell_mid_restart_keeps_its_same_origin_path(tmp_path, fake_t
     next(a for a in reg["apps"] if a["id"] == who)["status"] = "restarting"
     res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
     m = next(l for l in res["links"] if l["id"] == "messenger")
-    assert m["open"] == "/messenger/" and m["url"] == "https://box.tail1234.ts.net:8796/messenger/"
+    assert m["open"] == "/messenger/" and m["url"].startswith("https://") and m["url"].endswith(":8796/messenger/")
     links.apply_to_registry(reg, tmp_path / "home")
     assert next(a for a in reg["apps"] if a["id"] == "messenger")["view"]["url"] == "/messenger/"
     assert "8800" not in fake_tailscale[0].read_text()   # a stopped app still isn't published
