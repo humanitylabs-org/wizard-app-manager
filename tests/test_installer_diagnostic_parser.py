@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +137,21 @@ class InstallerProjection(unittest.TestCase):
         self.assertEqual(r['unknown_count'], 2)
         self.assertEqual(r['diagnosis'], 'unknown')
         P.validate_export(wrap(r), VOCAB)
+
+    def test_21_source_inventory_lexical_order(self):
+        spec = importlib.util.spec_from_file_location('finite_installer_runner', ROOT/'qa/privsep-storage/installer_diagnostic_run.py')
+        assert spec is not None and spec.loader is not None
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory(prefix='finite-inventory-') as name:
+            root = Path(name)
+            (root/'a').mkdir()
+            (root/'a/z').write_text('synthetic')
+            (root/'a.txt').write_text('synthetic')
+            old_path_order = [str(p.relative_to(root)) for p in sorted(root.rglob('*')) if p.is_file()]
+            expected = ['a.txt', 'a/z']
+            self.assertNotEqual(old_path_order, expected)
+            self.assertEqual([r['path'] for r in runner.inventory(root)], expected)
 
 
 if __name__ == '__main__':

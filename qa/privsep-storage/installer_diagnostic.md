@@ -61,9 +61,10 @@ a diagnostic search target. Never boot old 474 or any other historical guest.
 
 ## Finite execution and distinct proof
 
-The parent-reviewed job first runs **20 new synthetic parser tests only**, with
+The parent-reviewed job first runs **21 new synthetic tests only**, with
 URL/token, unknown input/hash, caps, qualified subprocess traceback, first-error,
-source omission/drift, and forged export-field/enum negatives. Test output is a
+source omission/drift, forged export-field/enum negatives, and a lexical source-
+inventory ordering negative/positive. Test output is a
 four-counter JSON record, not arbitrary unittest tracebacks. Failure stops before
 QEMU. No rerun loop. The sole native observation has a 240-second console deadline,
 2 MiB private-channel ceiling, 15-second mount/unmount calls, and bounded exact
@@ -83,7 +84,7 @@ tailnet publication, reboot, release, full get.sh, merge, or live proof is grant
 
 ## Parent admission review
 
-Inspect the exact pushed diff, parser and 20 synthetic cases, guest reader,
+Inspect the exact pushed diff, parser and 21 synthetic cases, guest reader,
 namespace launcher, explicit graph and complete source-member manifest. Confirm
 the stopped-610 image and all backing-chain metadata/hash pins, retained source
 and native receipt hashes, fresh free-space gate, no new runtime directory, no

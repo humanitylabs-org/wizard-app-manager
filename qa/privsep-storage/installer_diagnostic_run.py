@@ -78,7 +78,7 @@ def inventory(root):
             result.append({'path': rel, 'kind': 'file', 'sha256': digest(p), 'mode': stat.S_IMODE(st.st_mode)})
         elif not p.is_dir():
             raise ValueError('source-special-member')
-    return result
+    return sorted(result, key=lambda row: row['path'])
 
 
 def preflight(stage, manifest_sha, *, full=True):
@@ -253,11 +253,11 @@ def execute(stage, sha):
     try:
         qa = subprocess.run([m['python'], '-I', '-B', str(stage/'source'/SOURCE_FILES[3])],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=45,
-            env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'}, check=False)
+            env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': str(run)}, check=False)
         receipt['fresh_synthetic_test_exit'] = qa.returncode
         save()
         qa_summary = json.loads(qa.stdout)
-        assert qa.returncode == 0 and qa_summary == {'tests': 20, 'failures': 0, 'errors': 0, 'skipped': 0}
+        assert qa.returncode == 0 and qa_summary == {'tests': 21, 'failures': 0, 'errors': 0, 'skipped': 0}
         receipt['fresh_synthetic_tests'] = qa_summary
         save()
         for row in m['inputs']:
