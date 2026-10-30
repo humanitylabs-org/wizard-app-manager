@@ -166,7 +166,7 @@ def validate(stage,expected):
     assert digest(SIGNED/'evidence/receipt.json')=='2ba970fdea7e782780f1e074d7b1bacd5f336449d72a3d367412f14483315eee'
     assert signed['passed'] and signed['guest_result']['passed'] and len(signed['guest_result']['checks'])==6
     assert digest(SIGNED/'evidence/result.json')=='cebb368b9eb566e0f24e682733a08743bc6e824adbcc3d228f471166e7cf6f8f'
-    for p,n,amount in ((OLD/'evidence','old-allocation.json',OLD_ALLOCATED),(SIGNED/'evidence','signed-allocation.json',SIGNED_ALLOCATED)):
+    for p,n,amount in ((OLD/'evidence','old-allocation.json',OLD_ALLOCATED),(SIGNED,'signed-allocation.json',SIGNED_ALLOCATED)):
         observed=helpers.allocated(p);assert observed==json.loads((stage/n).read_text()) and observed['allocated_bytes']==amount
     helpers.absence([PRIOR,OLD,SIGNED,stage])
     for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
@@ -323,7 +323,7 @@ def main():
             for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
             for n,row in snapshot['files'].items():assert digest(PRIOR/n)==row['sha256']
             assert helpers.allocated(OLD/'evidence')==json.loads((args.stage/'old-allocation.json').read_text())
-            assert helpers.allocated(SIGNED/'evidence')==json.loads((args.stage/'signed-allocation.json').read_text())
+            assert helpers.allocated(SIGNED)==json.loads((args.stage/'signed-allocation.json').read_text())
             r.receipt['original_disks_and_old_evidence_unchanged']=True;r.receipt['all_boot_pids_absent']=True;r.capacity()
         except BaseException as e:r.receipt['cleanup_errors'].append('preservation-'+type(e).__name__)
         r.receipt['passed']=bool(r.receipt['passed'] and not r.receipt['cleanup_errors'] and r.receipt.get('new_guest_container_absence_proven') and r.receipt.get('all_boot_pids_absent'))

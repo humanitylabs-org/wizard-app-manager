@@ -81,7 +81,7 @@ unproven gates.
 
 Capacity never resets the campaign cap or lowers reserve 217179869184. Original
 remaining 66220945408 already excludes 851 allocation. Credit 474 evidence
-2949689344 and signed-out evidence 207671296 ONCE only after independent complete
+2949689344 and the entire retained signed-out stage 207671296 ONCE only after independent complete
 stat inventory equality. New stage/COW allocation reduces the remaining pending
 original peak once; monitor free >= reserve + unallocated remaining at commands.
 Whole new stage cap 8 GiB, per-QEMU-file cap 6 GiB; these are limits, not headroom
