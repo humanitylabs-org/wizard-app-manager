@@ -9,7 +9,12 @@ DeFleur was running (release 0.2.2 end-to-end test). This is the same three-part
      <WIZARD_OS_HOME>/mcp-token); the service's config is never changed.
   2. The service's pointer-skill folder mounted read-only at /opt/wizard-os/skills (additive user-config
      override), plus `skills.external_dirs += /opt/wizard-os/skills`.
-  3. A restart of the agent when the mount or config changed, then one live `initialize` from the agent's
+  3. The `wizard-os` Hermes plugin (as `wizard link` installs it alongside), pinned to one Agent Service commit and
+     installed with stock `hermes plugins install` into the agent's own data, plus `plugins.enabled += wizard-os`
+     and `WIZARD_ACCOUNT_CHANGES=chatgpt` in its `.env`: the ChatGPT app adds sign-ins through that plugin's
+     account broker. Claude stays off the broker: its sign-in is the Claude app's own Claude Code page, the login
+     the agent's Claude subscription provider uses (and the one that sets the agent's model).
+  4. A restart of the agent when the mount, plugin or config changed, then one live `initialize` from the agent's
      container to the gateway.
 
 Hermes' files are edited inside its own container as its own user (uid 1000), so host ownership of the app
@@ -31,6 +36,114 @@ GATEWAY_URL = 'http://wizard-agent-service:8787/wizard/mcp'
 SKILLS_TARGET = '/opt/wizard-os/skills'
 MCP_NAME = 'wizard'
 HERMES_PY = '/opt/hermes/.venv/bin/python'
+HERMES_BIN = '/opt/hermes/.venv/bin/hermes'
+PLUGIN_NAME = 'wizard-os'
+PLUGIN_SOURCE = 'humanitylabs-org/wizard-agent-service#hermes-plugin/wizard-os'
+# One immutable commit (never a moving branch): a box gets the plugin bytes this App Manager was tested with.
+PLUGIN_REF = '1f78352d20485c04e3583a42c9b85c04e233aece'
+# Providers whose sign-ins the agent's account broker may add/reconnect/remove (wizard-os plugin 0.4.2+).
+ACCOUNT_CHANGES = 'chatgpt'
+
+# Runs inside the Hermes container as uid 1000. Installs (or refreshes) the plugin this link put there; a plugin it
+# did not install, or one changed since, is the owner's and is left alone. Every install/refresh is journalled in the
+# marker *before* Hermes runs: a failed or interrupted one is undone (its partial copy removed, the plugin it replaced
+# and Hermes' install metadata put back) on failure or on the next run, never left looking like an owner's plugin.
+# Prints one JSON line; `managed` says the link owns the plugin (only then is it enabled).
+PLUGIN = r'''
+import hashlib, json, os, shutil, subprocess, sys, tempfile
+hermes, source, ref, name = sys.argv[1:5]
+home = os.environ.get('HERMES_HOME') or '/opt/data'
+pdir = os.path.join(home, 'plugins')
+root, marker = os.path.join(pdir, name), os.path.join(pdir, '.wizard-fresh-link.json')
+backup, meta = os.path.join(pdir, '.wizard-fresh-link.backup'), os.path.join(pdir, '.install-metadata.json')
+meta_backup = backup + '.metadata.json'
+def tree(path):
+    h = hashlib.sha256()
+    for d, dirs, files in os.walk(path):
+        dirs[:] = sorted(x for x in dirs if x not in ('__pycache__', '.git'))
+        for f in sorted(files):
+            if f.endswith('.pyc'):
+                continue
+            p = os.path.join(d, f)
+            h.update(os.path.relpath(p, path).encode() + b'\0')
+            with open(p, 'rb') as fh:
+                h.update(fh.read())
+            h.update(b'\0')
+    return h.hexdigest()
+def save(doc):
+    fd, tmp = tempfile.mkstemp(prefix='.wizard-fresh-link.', dir=pdir)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(doc, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, marker)
+def drop_backups():
+    for old in (backup, meta_backup):
+        if os.path.isdir(old):
+            shutil.rmtree(old)
+        elif os.path.exists(old):
+            os.remove(old)
+def undo(journal):
+    # Replay-safe: the backups are copied back, and dropped only after the marker says the undo is done, so an
+    # interruption anywhere in here is undone again (from the same backups) by the next run.
+    if os.path.isdir(root):
+        shutil.rmtree(root)
+    if os.path.isdir(backup):
+        shutil.copytree(backup, root, symlinks=True)
+    if os.path.exists(meta_backup):
+        shutil.copy2(meta_backup, meta)
+    elif not journal.get('meta_existed') and os.path.exists(meta):
+        os.remove(meta)
+    if journal.get('previous'):
+        save(journal['previous'])
+    elif os.path.exists(marker):
+        os.remove(marker)
+    drop_backups()
+    return journal.get('previous')
+try:
+    mine = json.load(open(marker))
+except (OSError, ValueError):
+    mine = None
+if mine and mine.get('state') == 'installing':
+    mine = undo(mine)   # an earlier run was interrupted mid-install
+extra = []
+if not os.path.isdir(root) and mine:
+    state = 'owner-removed'   # the owner removed the copy the link installed: never put it back
+elif not os.path.isdir(root):
+    state = 'installed'
+elif not mine:
+    state = 'owner-managed'
+elif mine.get('sha256') != tree(root):
+    state = 'owner-modified'   # changed since the link installed it, whatever the pin: the owner's now
+elif mine.get('ref') == ref:
+    state = 'current'
+else:
+    state, extra = 'refreshed', ['--force']
+if state in ('installed', 'refreshed'):
+    os.makedirs(pdir, exist_ok=True)
+    drop_backups()
+    journal = {'state': 'installing', 'ref': ref, 'previous': mine if state == 'refreshed' else None,
+               'meta_existed': os.path.exists(meta)}
+    if journal['meta_existed']:
+        shutil.copy2(meta, meta_backup)
+    if state == 'refreshed':
+        shutil.copytree(root, backup, symlinks=True)
+    save(journal)
+    try:
+        p = subprocess.run([hermes, 'plugins', 'install', source, '--ref', ref, '--no-enable', '--no-deps'] + extra,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+        ok = not p.returncode and os.path.isfile(os.path.join(root, 'plugin.yaml'))
+        why = (p.stderr or p.stdout)[-300:]
+    except (OSError, subprocess.SubprocessError) as e:
+        ok, why = False, type(e).__name__
+    if not ok:
+        undo(journal)
+        raise SystemExit('wizard-os plugin not installed (nothing changed): ' + (why.strip() or 'no plugin.yaml'))
+    save({'source': source, 'ref': ref, 'sha256': tree(root)})
+    drop_backups()
+print(json.dumps({'plugin': state, 'changed': state in ('installed', 'refreshed'),
+                  'managed': state in ('installed', 'refreshed', 'current')}))
+'''
 
 # Runs inside the Hermes container as uid 1000. Token on stdin (first line); prints one JSON line.
 EDIT = r'''
@@ -70,13 +183,32 @@ if skills not in dirs:
     sk['external_dirs'] = dirs + [skills]
     cfg['skills'] = sk
     out['config_changed'] = True
+# The wizard-os plugin, once installed in the agent's own plugins folder: enabled unless the owner disabled it.
+plugin = os.environ.get('WIZARD_LINK_PLUGIN', '')
+has_plugin = bool(plugin) and os.path.isfile(os.path.join(home, 'plugins', plugin, 'plugin.yaml'))
+if has_plugin:
+    pl = cfg.get('plugins') or {}
+    if not isinstance(pl, dict) or not isinstance(pl.get('enabled') or [], list) or not isinstance(pl.get('disabled') or [], list):
+        raise SystemExit('plugins is not a mapping of lists; left alone')
+    enabled = list(pl.get('enabled') or [])
+    if plugin not in enabled and plugin not in (pl.get('disabled') or []):
+        pl['enabled'] = enabled + [plugin]
+        cfg['plugins'] = pl
+        out['config_changed'] = True
 if out['config_changed']:
     atomic(cfgp, yaml.safe_dump(cfg, sort_keys=False), 0o600)
 lines = open(envp).read().splitlines() if os.path.exists(envp) else []
+keys = [l.split('=', 1)[0].strip() for l in lines]
+want = list(lines)
 cur = [l for l in lines if l.split('=', 1)[0].strip() == 'WIZARD_MCP_TOKEN']
 if cur != ['WIZARD_MCP_TOKEN=' + token]:
-    keep = [l for l in lines if l.split('=', 1)[0].strip() != 'WIZARD_MCP_TOKEN']
-    atomic(envp, '\n'.join(keep + ['WIZARD_MCP_TOKEN=' + token]) + '\n', 0o600)
+    want = [l for l in want if l.split('=', 1)[0].strip() != 'WIZARD_MCP_TOKEN'] + ['WIZARD_MCP_TOKEN=' + token]
+# The plugin's account broker, for the providers the link names. An owner's own value (even 0) is kept.
+changes = os.environ.get('WIZARD_LINK_ACCOUNT_CHANGES', '')
+if has_plugin and changes and 'WIZARD_ACCOUNT_CHANGES' not in keys:
+    want.append('WIZARD_ACCOUNT_CHANGES=' + changes)
+if want != lines:
+    atomic(envp, '\n'.join(want) + '\n', 0o600)
     out['env_changed'] = True
 if len(sys.argv) > 4 and sys.argv[4] == 'probe':
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
@@ -144,6 +276,17 @@ def add_skills_mount(c, store='wizardapps'):
     return True
 
 
+def ensure_plugin(docker, engine):
+    """Install the pinned wizard-os plugin into the agent's data (stock `hermes plugins install`, as uid 1000).
+    Returns {plugin: installed|refreshed|current|owner-managed|owner-modified, changed}. Raises ValueError."""
+    q = subprocess.run(docker + ['exec', '-u', '1000:1000', engine, HERMES_PY, '-c', PLUGIN,
+                                 HERMES_BIN, PLUGIN_SOURCE, PLUGIN_REF, PLUGIN_NAME],
+                       capture_output=True, text=True, timeout=330)
+    if q.returncode:
+        raise ValueError((q.stderr or q.stdout).strip()[-300:] or 'wizard-os plugin not installed')
+    return json.loads(q.stdout.strip().splitlines()[-1])
+
+
 def link(c, store='wizardapps', restart=True):
     """Connect the hermes-agent app to the gateway. Returns a receipt without secrets."""
     from . import alongside
@@ -160,10 +303,17 @@ def link(c, store='wizardapps', restart=True):
     if p.returncode or not token:
         raise ValueError('the Agent Service has no gateway token yet (start it once, then retry)')
     mount_changed = add_skills_mount(c, store)
+    try:   # the ChatGPT app's sign-ins; the gateway link above never waits on it
+        plugin = ensure_plugin(docker, _container(docker, AGENT_APP + '-engine')[0])
+    except (ValueError, OSError, subprocess.SubprocessError) as e:
+        plugin = {'plugin': 'error', 'error': str(e)[:200], 'changed': False, 'managed': False}
 
     def edit(probe):
         eng = _container(docker, AGENT_APP + '-engine')[0]
-        q = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', eng, HERMES_PY, '-c', EDIT,
+        # Only a plugin this link installed is enabled: an owner's own copy stays as he left it (opt-in).
+        env = ['-e', 'WIZARD_LINK_PLUGIN=' + PLUGIN_NAME, '-e', 'WIZARD_LINK_ACCOUNT_CHANGES=' + ACCOUNT_CHANGES] \
+            if plugin.get('managed') else []
+        q = subprocess.run(docker + ['exec', '-i', '-u', '1000:1000', *env, eng, HERMES_PY, '-c', EDIT,
                                      url, MCP_NAME, SKILLS_TARGET] + (['probe'] if probe else []),
                            input=token + '\n', capture_output=True, text=True, timeout=90)
         if q.returncode:
@@ -171,7 +321,7 @@ def link(c, store='wizardapps', restart=True):
         return json.loads(q.stdout.strip().splitlines()[-1])
 
     first = edit(probe=False)
-    changed = mount_changed or first['config_changed'] or first['env_changed']
+    changed = mount_changed or plugin['changed'] or first['config_changed'] or first['env_changed']
     restarted = False
     if changed and restart:
         rt = c.runtipi()
@@ -182,7 +332,8 @@ def link(c, store='wizardapps', restart=True):
         rt.wait_status(urn, {'running'}, timeout=900)
         restarted = True
     check = edit(probe=True)
-    return {'gateway': url, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed,
+    return {'gateway': url, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed, 'plugin': plugin['plugin'],
+            **({'plugin_error': plugin['error']} if plugin.get('error') else {}),
             'config_changed': first['config_changed'], 'env_changed': first['env_changed'],
             'restart_required': changed and not restarted, 'restarted': restarted,
             'gateway_status': check.get('gateway_status'), 'skills_visible': check.get('skills_visible'),

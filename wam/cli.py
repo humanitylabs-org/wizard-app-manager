@@ -455,7 +455,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
         try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
             from .agent_link import link as agent_link
-            agent_link(c, STORE)
+            plugin_note(agent_link(c, STORE))
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
             print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
     if app_id in ("hermes-agent", "wizard-claude") and status == "running" and not alongside.load(c.home):
@@ -1228,6 +1228,7 @@ def bootstrap(c: Config) -> dict:
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
     updated = release_updates(c, rt, failed)
+    relink_fresh_agent(c, rt)
     if mode and mode.get("notice") == "pending":   # Notifications may have been installed just now
         settle_connection_mode(c, rt)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
@@ -1235,6 +1236,29 @@ def bootstrap(c: Config) -> dict:
     out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
     if mode:
         out["connection_mode"] = mode
+    return out
+
+
+def relink_fresh_agent(c: Config, rt) -> dict | None:
+    """Every installer run on a fresh box: bring an existing agent's link up to this App Manager (e.g. the wizard-os
+    plugin the ChatGPT app signs in through, added after the box was installed). Idempotent: an agent already linked
+    is not restarted. Never fails the installer."""
+    try:
+        if alongside.load(c.home) or not {"hermes-agent", "wizard-agent-service"} <= installed_ids(rt):
+            return None
+        from .agent_link import link as agent_link
+        return plugin_note(agent_link(c, STORE))
+    except Exception as e:  # noqa: BLE001
+        print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
+        return None
+
+
+def plugin_note(out: dict) -> dict:
+    """A link whose wizard-os plugin could not be installed (e.g. GitHub unreachable) still links the gateway; say so,
+    or the ChatGPT app keeps answering "can't add sign-ins" with nothing on screen explaining why."""
+    if isinstance(out, dict) and out.get("plugin_error"):
+        print(f"note: the agent's wizard-os plugin is not installed ({out['plugin_error'][:160]}); the ChatGPT app "
+              "can't add sign-ins until it is: run `wam agent-link`", file=sys.stderr)
     return out
 
 
