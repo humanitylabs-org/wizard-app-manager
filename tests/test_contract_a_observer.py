@@ -60,14 +60,20 @@ def test_fetched_revision_uses_exact_manager_identity_and_root_hashes_every_memb
 
 @pytest.mark.skipif(os.geteuid() != 0, reason='real UID proof runs in disposable root guest')
 def test_real_foreign_checkout_retains_git_guard_and_ownership(tmp_path, monkeypatch):
+    import shutil
+
     assert os.geteuid() == 0
     account = pwd.getpwnam('nobody'); assert account.pw_uid != 0
+    trusted_path = '/usr/sbin:/usr/bin:/sbin:/bin'
+    # Fail as a missing prerequisite, not as a false ownership refusal.
+    for binary in ('runuser', 'git'):
+        assert shutil.which(binary, path=trusted_path), 'missing trusted system prerequisite: ' + binary
     # Only this freshly created /run fixture becomes searchable. Never chmod
     # pytest's private ancestors, /root, /run itself, or any production checkout.
     with tempfile.TemporaryDirectory(prefix='storage-contract-a-git-', dir='/run') as name:
         base = Path(name); base.chmod(0o711)
         checkout = base/'wizard-app-manager'; checkout.mkdir(mode=0o700)
-        env = {'PATH': '/usr/bin:/bin', 'HOME': str(base/'unused-home'),
+        env = {'PATH': trusted_path, 'HOME': str(base/'unused-home'),
                'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
                'GIT_CONFIG_SYSTEM': '/dev/null', 'LANG': 'C'}
         def git(*args):

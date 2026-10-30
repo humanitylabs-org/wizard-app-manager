@@ -31,6 +31,17 @@ SIGNED=Path('/srv/work/privsep/custody-signedout/439e70d4b102e9fe971b8f0200717d9
 BASE_REV='439e70d4b102e9fe971b8f0200717d99c1aabc83'
 RETAINED=Path('/srv/work/privsep/storage-contract-a/0ae7388053211f8921e75cac030541b338496869')
 RETAINED_MANIFEST='bf31c19dcbc1552582e685fc3abd062001d712b2bd7ee4f5d68a553fb9894880'
+FAILED=Path('/srv/work/privsep/storage-contract-a/0513fbc4c3870d7e5bd551f7c7cc45fdace34500')
+FAILED_MANIFEST='96ab59c8b3e67d383487496754d7a21b5c48b39e2fcf8193f75f7266006188cd'
+FAILED_RECEIPT='9c011f6046f1acbea66a855564a0562053d19dc1fb43f3ec92272baa23b33506'
+FAILED_XML='23c3b42e8aca19361b9e49b0d1a5a8843d9c38a919b1f2f6fa1e85a981cf9142'
+FAILED_JOB_LOG=Path('/srv/work/heavy/production/spool/heavy_0e49b9bf3d7e4191aa82f93192930266.log')
+FAILED_JOB_LOG_SHA='255038d5897910d4255136ba483d0bfc3853425a6a0cd2f7f71727fbeab4161e'
+FAILED_ALLOCATED=53530624
+REPAIRED_CASES=('tests/test_alongside_install_boundaries.py::test_actual_manager_uid_can_sync_after_protected_setup',
+                'tests/test_contract_a_observer.py::test_real_foreign_checkout_retains_git_guard_and_ownership')
+FIXTURE_DELTA=('qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a.md',
+               'tests/test_alongside_install_boundaries.py','tests/test_contract_a_observer.py')
 RESERVE=217179869184
 ORIGINAL_REMAINING=66220945408
 OLD_ALLOCATED=2949689344
@@ -106,6 +117,76 @@ def inventory_tests(sources,modules):
     assert len(result)==len(set(result));return sorted(result)
 
 
+def inherited_fixtures(stage,helpers,rows):
+    """Read-only source/AST/XML closure; no test imports or execution.
+
+    Whole archive equality outside four QA paths covers conftest, fixtures,
+    subprocess entrypoints and product dependencies, not just passing names.
+    Two changed test modules must be AST-identical outside their failed method.
+    """
+    assert digest(FAILED/'manifest.json')==FAILED_MANIFEST
+    olddoc=json.loads((FAILED/'manifest.json').read_text())
+    for name,value in olddoc['files'].items():assert digest(FAILED/name)==value
+    assert digest(FAILED/'evidence/receipt.json')==FAILED_RECEIPT
+    assert digest(FAILED/'evidence/focused.xml')==FAILED_XML
+    assert digest(FAILED_JOB_LOG)==FAILED_JOB_LOG_SHA
+    oldreceipt=json.loads((FAILED/'evidence/receipt.json').read_text())
+    assert oldreceipt['passed'] is False and oldreceipt['focused_pytest']['exit']==1
+    assert oldreceipt['all_boot_pids_absent'] and oldreceipt['original_disks_and_old_evidence_unchanged']
+    assert not oldreceipt['cleanup_errors'] and len(oldreceipt['steps'])==17
+    for step in oldreceipt['steps']:
+        assert Path(step['log']).name==step['log']
+        assert digest(FAILED/'evidence'/step['log'])==step['sha256']
+    oldrows=helpers.inventory(FAILED/'source.tar')
+    assert oldrows==json.loads((FAILED/'source-members.json').read_text())
+    before,after=({r['path']:r for r in v} for v in (oldrows,rows))
+    assert set(before)==set(after)
+    assert {n for n in before if before[n]!=after[n]}==set(FIXTURE_DELTA)
+    ast_closure={}
+    with tarfile.open(FAILED/'source.tar') as old,tarfile.open(stage/'source.tar') as new:
+        for case in REPAIRED_CASES:
+            path,method=case.split('::');normalized=[]
+            for archive in (old,new):
+                tree=ast.parse(archive.extractfile(path).read())
+                selected=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==method]
+                assert len(selected)==1
+                # Keep signature/decorator changes scoped to the failed method.
+                tree.body.remove(selected[0]);normalized.append(ast.dump(tree,include_attributes=False))
+            assert normalized[0]==normalized[1], 'shared fixture/module drift'
+            ast_closure[path]=hashlib.sha256(normalized[0].encode()).hexdigest()
+        # No retained test imports/calls these QA orchestration/doc paths or the
+        # repaired methods. Local stdlib imports are confined inside each repair.
+        for path in olddoc['test_modules']+sorted({v.split('::')[0] for v in olddoc['affected_existing_cases']}):
+            tree=ast.parse(old.extractfile(path).read())
+            for n in tree.body:
+                if isinstance(n,ast.FunctionDef) and n.name in {v.split('::')[1] for v in REPAIRED_CASES}:continue
+                text=ast.dump(n,include_attributes=False)
+                assert 'contract_a_run' not in text and 'contract_a.md' not in text
+                assert all(v.split('::')[1] not in text for v in REPAIRED_CASES)
+    expected=olddoc['expected_pytest_cases']
+    mapping={('.'.join(v[0][:-3].split('/'))+('.'+v[1] if len(v)==3 else ''),v[-1]):s for s in expected for v in [s.split('::')]}
+    passed=[];failed=[];got=[]
+    xml=ET.parse(FAILED/'evidence/focused.xml')
+    for c in xml.findall('.//testcase'):
+        case=mapping[(c.get('classname'),c.get('name'))];got.append(case)
+        assert c.find('error') is None and c.find('skipped') is None
+        (failed if c.find('failure') is not None else passed).append(case)
+    assert sorted(got)==expected and len(got)==len(set(got))==105
+    assert sorted(failed)==sorted(REPAIRED_CASES) and len(passed)==103
+    assert oldreceipt['focused_pytest']['cases']==expected
+    report={'fresh':False,'count':len(passed),'cases':sorted(passed),
+        'source_revision':FAILED.name,'manifest_sha256':FAILED_MANIFEST,
+        'receipt_sha256':FAILED_RECEIPT,'xml_sha256':FAILED_XML,
+        'native_job_id':'heavy_0e49b9bf3d7e4191aa82f93192930266',
+        'native_job_log_path':str(FAILED_JOB_LOG),'native_job_log_sha256':FAILED_JOB_LOG_SHA,
+        'historical_failed_cases':sorted(failed),'historical_receipt_passed':False,
+        'phase_log_hash_count':17,'unchanged_archive_members':len(rows)-len(FIXTURE_DELTA),
+        'complete_dependency_closure_unchanged_outside_exact_qa_delta':True,
+        'shared_fixture_and_module_ast_sha256':ast_closure}
+    assert json.loads((stage/'inherited-fixtures.json').read_text())==report
+    return report
+
+
 def validate(stage,expected):
     assert re.fullmatch('[0-9a-f]{64}',expected) and digest(stage/'manifest.json')==expected
     d=json.loads((stage/'manifest.json').read_text())
@@ -131,10 +212,12 @@ def validate(stage,expected):
     assert set(b)-set(previous)=={'tests/test_contract_a_observer.py'} and not set(previous)-set(b)
     assert {n for n in previous if previous[n]!=b[n]}=={
         'qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a_guest.py',
-        'qa/privsep-storage/contract_a.md'}
+        'qa/privsep-storage/contract_a.md','tests/test_alongside_install_boundaries.py'}
     retained=helpers.allocated(RETAINED)
-    assert json.loads((stage/'retained-contract-stages.json').read_text())=={str(RETAINED):retained}
-    assert d['retained_contract_stage_bytes']==retained['allocated_bytes']
+    failed=helpers.allocated(FAILED);assert failed['allocated_bytes']==FAILED_ALLOCATED
+    assert json.loads((stage/'retained-contract-stages.json').read_text())=={str(RETAINED):retained,str(FAILED):failed}
+    assert d['retained_contract_stage_bytes']==retained['allocated_bytes']+failed['allocated_bytes']
+    fixture_evidence=inherited_fixtures(stage,helpers,rows)
     assert all(b[n]==r for r in json.loads((PRIOR/'backend-inputs.json').read_text()) for n in [r['path']])
     assert len(json.loads((PRIOR/'backend-inputs.json').read_text()))==622
     assert helpers.inventory(PRIOR/'service.tar')==json.loads((stage/'service-members.json').read_text())
@@ -154,6 +237,8 @@ def validate(stage,expected):
     # Complete affected modules plus six selected old seams; don't collect/rerun
     # unchanged storage/identity suites merely to obtain more green tests.
     assert sorted(set(computed+d['affected_existing_cases']))==d['expected_pytest_cases']
+    assert d['fresh_pytest_cases']==list(REPAIRED_CASES)
+    assert sorted(fixture_evidence['cases']+d['fresh_pytest_cases'])==d['expected_pytest_cases']
     for n in ('runner.py','guest.py','state.py','identity.py','custody-static.py'):ast.parse((stage/n).read_text())
     for n in ('get.sh','install.sh','scripts/prepare-named-user.sh'):
         with tarfile.open(stage/'source.tar') as t:subprocess.run(['bash','-n'],input=t.extractfile(n).read(),check=True,timeout=30)
@@ -188,19 +273,20 @@ def validate(stage,expected):
     assert digest(SIGNED/'evidence/result.json')=='cebb368b9eb566e0f24e682733a08743bc6e824adbcc3d228f471166e7cf6f8f'
     for p,n,amount in ((OLD/'evidence','old-allocation.json',OLD_ALLOCATED),(SIGNED,'signed-allocation.json',SIGNED_ALLOCATED)):
         observed=helpers.allocated(p);assert observed==json.loads((stage/n).read_text()) and observed['allocated_bytes']==amount
-    helpers.absence([PRIOR,OLD,SIGNED,RETAINED,stage])
+    helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,stage])
     for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
     amount=helpers.allocated(stage)['allocated_bytes'];free=shutil.disk_usage(stage).free
     report={'static_only':True,'tests_executed':False,'heavy_executed':False,'submitted':False,'review_required':True,
         'source_revision':d['revision'],'complete_source_members':len(rows),'backend_inputs_verified':622,
         'service_archive_sha256':SERVICE_SHA,'service_source_revision':d['service_revision'],
-        'fresh_pytest_count':len(d['expected_pytest_cases']),'expected_native_checks':d['expected_native_checks'],
+        'fresh_pytest_count':len(d['fresh_pytest_cases']),'inherited_focused_pytest':fixture_evidence,
+        'composite_pytest_count':len(d['expected_pytest_cases']),'expected_native_checks':d['expected_native_checks'],
         'expected_service_cases':list(CASES),'inherited':closure,'inherited_identity_cases':27,'inherited_signedout_checks':6,
         'reserve_bytes':RESERVE,'old_allocation_credited_once':OLD_ALLOCATED,'signed_allocation_credited_once':SIGNED_ALLOCATED,
         'campaign_remaining_bytes':REMAINING,'new_stage_allocated_bytes':amount,'free_bytes':free,
-        'retained_contract_stage_bytes_credited_once':retained['allocated_bytes'],
-        'required_bytes':RESERVE+max(0,REMAINING-retained['allocated_bytes']-amount),
-        'capacity_admissible':amount<MAX_NEW and free>=RESERVE+max(0,REMAINING-retained['allocated_bytes']-amount),
+        'retained_contract_stage_bytes_credited_once':d['retained_contract_stage_bytes'],
+        'required_bytes':RESERVE+max(0,REMAINING-d['retained_contract_stage_bytes']-amount),
+        'capacity_admissible':amount<MAX_NEW and free>=RESERVE+max(0,REMAINING-d['retained_contract_stage_bytes']-amount),
         'old_474_container_absence':'UNPROVEN: old guest is never booted','full_acceptance':False}
     return d,snapshot,helpers,production,report
 
@@ -228,8 +314,8 @@ def make_runner(base,helpers):
             if rc==0 and name.endswith('.json'):return json.loads((self.evidence/name).read_text())
 
         def regressions(self):
-            expected=self.doc['expected_pytest_cases']
-            selectors=self.doc['test_modules']+self.doc['affected_existing_cases']
+            expected=self.doc['fresh_pytest_cases']
+            selectors=expected
             script='cd '+TREE+'\nmkdir -m700 '+ROOT+'/test-tmp\nexport TMPDIR='+ROOT+'/test-tmp PYTHONDONTWRITEBYTECODE=1\ntest "$(id -u)" = 0\n/usr/bin/python3 -m pytest -q '+shlex.join(selectors)+' --basetemp='+ROOT+'/test-tmp/pytest --junitxml='+ROOT+'/focused.xml\n'
             rc=self.guest('focused-root-regressions',script,900,False)
             self.download('focused.xml')
@@ -239,6 +325,14 @@ def make_runner(base,helpers):
             self.receipt['focused_pytest']={'exit':rc,'cases':sorted(got),'xml_sha256':digest(self.evidence/'focused.xml')};self.save()
             assert rc==0 and sorted(got)==expected and len(got)==len(set(got))
             assert not any(xml.findall('.//'+v) for v in ('failure','error','skipped'))
+            inherited=json.loads((self.stage/'inherited-fixtures.json').read_text())
+            combined=sorted(inherited['cases']+got)
+            assert combined==self.doc['expected_pytest_cases'] and len(combined)==len(set(combined))==105
+            self.receipt['focused_composite']={'passed':True,'fresh_count':len(got),
+                'inherited_count':inherited['count'],'cases':combined,
+                'inherited_evidence_sha256':digest(self.stage/'inherited-fixtures.json'),
+                'historical_failed_receipt_sha256':FAILED_RECEIPT,'historical_receipt_passed':False}
+            self.save()
 
         def attest(self,kind,when):
             # Locator from exact save/load, not a mutable tag as evidence. Both
@@ -343,13 +437,14 @@ def main():
         try:r.stop()
         except BaseException as e:r.receipt['cleanup_errors'].append('stop-'+type(e).__name__)
         try:
-            helpers.absence([PRIOR,OLD,SIGNED,RETAINED,args.stage])
+            helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,args.stage])
             assert len(r.receipt['boots'])<=1 and all(b['stopped'] and not Path('/proc',str(b['pid'])).exists() for b in r.receipt['boots'])
             for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
             for n,row in snapshot['files'].items():assert digest(PRIOR/n)==row['sha256']
             assert helpers.allocated(OLD/'evidence')==json.loads((args.stage/'old-allocation.json').read_text())
             assert helpers.allocated(SIGNED)==json.loads((args.stage/'signed-allocation.json').read_text())
-            assert {str(RETAINED):helpers.allocated(RETAINED)}==json.loads((args.stage/'retained-contract-stages.json').read_text())
+            assert {str(p):helpers.allocated(p) for p in (RETAINED,FAILED)}==json.loads((args.stage/'retained-contract-stages.json').read_text())
+            inherited_fixtures(args.stage,helpers,helpers.inventory(args.stage/'source.tar'))
             r.receipt['original_disks_and_old_evidence_unchanged']=True;r.receipt['all_boot_pids_absent']=True;r.capacity()
         except BaseException as e:r.receipt['cleanup_errors'].append('preservation-'+type(e).__name__)
         r.receipt['passed']=bool(r.receipt['passed'] and not r.receipt['cleanup_errors'] and r.receipt.get('new_guest_container_absence_proven') and r.receipt.get('all_boot_pids_absent'))

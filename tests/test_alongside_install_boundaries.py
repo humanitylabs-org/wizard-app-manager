@@ -159,36 +159,113 @@ def test_foreign_control_owner_refuses_with_real_metadata(tmp_path):
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason='real UID proof runs in disposable root guest')
-def test_actual_manager_uid_can_sync_after_protected_setup(tmp_path):
+def test_actual_manager_uid_can_sync_after_protected_setup(tmp_path, record_property):
+    import errno
+    import json
+    import select
+    import tempfile
+    import time
+    import traceback
+
     assert os.geteuid() == 0, 'requires disposable root guest'
-    m, base, root, control = control_fixture(tmp_path)
-    uid, gid = 12340, 12340
-    for p in (base, root, control):
-        os.chown(p, uid, gid)
-    with m.protected_runtipi_setup(base, uid, gid):
-        root.chmod(0o775); control.chmod(0o775); (root/'.env').touch()
-    # Preload code before dropping UID. Inherit only the synthetic directory FD;
-    # do not chmod pytest ancestors, /root, or any other owner's directories.
+    # Preload before setuid. No product changes, mock writer or policy exemption.
     from wam import final_host_tokens as f
-    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        child = os.fork()
-        if child == 0:
-            try:
-                signal.signal(signal.SIGALRM, signal.SIG_DFL); signal.alarm(10)
-                os.fchdir(directory)
-                os.setgroups([]); os.setgid(gid); os.setuid(uid)
-                c = SimpleNamespace(runtipi_root='.')
-                assert f.write(c, {'wizardapps/synthetic': ['network:synthetic']})
-                assert f._read(c)['apps'] == {'wizardapps/synthetic': ['network:synthetic']}
-            except BaseException:
-                os._exit(1)
-            os._exit(0)
-        _, status = os.waitpid(child, 0)
-        assert os.waitstatus_to_exitcode(status) == 0
-    finally:
-        os.close(directory)
-    assert (control/'wizard-host-approvals.json').stat().st_uid == uid
+    uid, gid = 12340, 12340
+
+    def child_write(root, relative):
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        readfd, writefd = os.pipe()
+        child = None; reaped = False
+        try:
+            child = os.fork()
+            if child == 0:
+                os.close(readfd)
+                result = {}; code = 1
+                try:
+                    signal.signal(signal.SIGALRM, signal.SIG_DFL); signal.alarm(10)
+                    os.fchdir(directory); os.close(directory)
+                    os.setgroups([]); os.setgid(gid); os.setuid(uid); os.umask(0o022)
+                    assert os.getresuid() == (uid, uid, uid)
+                    assert os.getresgid() == (gid, gid, gid) and os.getgroups() == []
+                    caps = {k: int(v.strip(), 16) for line in Path('/proc/self/status').read_text().splitlines()
+                            for k, _, v in [line.partition(':')]
+                            if k in ('CapEff', 'CapPrm', 'CapAmb')}
+                    assert caps == {'CapEff': 0, 'CapPrm': 0, 'CapAmb': 0}
+                    c = SimpleNamespace(runtipi_root='.' if relative else str(root))
+                    assert f.write(c, {'wizardapps/synthetic': ['network:synthetic']})
+                    assert f._read(c)['apps'] == {'wizardapps/synthetic': ['network:synthetic']}
+                    result = {'passed': True, 'uid': os.getuid(), 'gid': os.getgid(),
+                              'groups': os.getgroups(), 'capabilities': caps}; code = 0
+                except BaseException as exc:
+                    # Numeric metadata and bounded frames only: no exception
+                    # payload, source lines, arbitrary locals, argv or environment.
+                    result = {'passed': False, 'type': type(exc).__name__[:80],
+                              'errno': exc.errno if isinstance(exc, OSError) else None,
+                              'frames': [{'file': Path(v.filename).name[:80],
+                                          'function': v.name[:80], 'line': v.lineno}
+                                         for v in traceback.extract_tb(exc.__traceback__)[-8:]]}
+                try:
+                    raw = json.dumps(result, sort_keys=True).encode()
+                    assert len(raw) <= 3072
+                    assert os.write(writefd, raw) == len(raw)
+                finally:
+                    os.close(writefd); os._exit(code)
+            os.close(writefd); writefd = None
+            assert select.select([readfd], [], [], 15)[0], 'synthetic child report timeout'
+            raw = os.read(readfd, 3073)
+            assert len(raw) <= 3072, 'synthetic child report cap'
+            deadline = time.monotonic() + 5
+            while True:
+                done, status = os.waitpid(child, os.WNOHANG)
+                if done:
+                    reaped = True; break
+                assert time.monotonic() < deadline, 'synthetic child exit timeout'
+                time.sleep(0.01)
+            result = json.loads(raw)
+            assert os.waitstatus_to_exitcode(status) == (0 if result['passed'] else 1), result
+            return result
+        finally:
+            # Includes parent assertions, fork errors, malformed reports and timeout.
+            if child is not None and child != 0 and not reaped:
+                try: os.kill(child, signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(child, 0)
+            os.close(readfd)
+            if writefd is not None: os.close(writefd)
+            os.close(directory)
+
+    # First diagnose the old FD-cwd shape against a private ancestor. Python's
+    # tempfile makes its dir absolute, so an inherited cwd FD is insufficient.
+    # Historical child exception was discarded; this is a fresh causal control.
+    observations = []
+    for relative in (True, False):
+        with tempfile.TemporaryDirectory(prefix='storage-contract-a-uid-', dir='/run') as name:
+            parent = Path(name)
+            if not relative:
+                parent.chmod(0o711)  # ONLY our newly created synthetic parent
+            m, base, root, control = control_fixture(parent)
+            for p in (base, root, control):
+                os.chown(p, uid, gid); p.chmod(0o755)
+            with m.protected_runtipi_setup(base, uid, gid):
+                root.chmod(0o775); control.chmod(0o775); (root/'.env').touch()
+            result = child_write(root, relative)
+            observations.append({'relative_private_ancestor': relative, 'result': result})
+            record_property('synthetic_uid_observations', json.dumps(observations, sort_keys=True))
+            if relative:
+                assert not result['passed'] and result['type'] == 'PermissionError', result
+                assert result['errno'] == errno.EACCES, result
+                assert any(v['file'] == 'tempfile.py' and v['function'] == '_mkstemp_inner'
+                           for v in result['frames']), result
+                assert not (control/f.FILE).exists()
+            else:
+                assert result['passed'] and result['uid'] == uid and result['gid'] == gid, result
+                for p in (base, root, control):
+                    st = p.lstat()
+                    assert st.st_uid == uid and st.st_gid == gid and stat.S_IMODE(st.st_mode) == 0o755
+                for p in (control/f.FILE, control/'.wizard-host-authority.lock'):
+                    st = p.lstat()
+                    assert stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+                    assert st.st_uid == uid and st.st_gid == gid and stat.S_IMODE(st.st_mode) == 0o644
 
 
 @pytest.mark.parametrize('replacement', ['directory', 'symlink'])

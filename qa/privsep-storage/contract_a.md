@@ -31,18 +31,35 @@ capacity. It never imports/collects tests, boots VMs, invokes Docker or builds.
 
 One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
 
-1. Run all affected 54 f18 cases, additional actual-project positive/unrelated
-   valid-project negatives, new prerequisite/inspection/partial/retirement
-   regressions and unchanged exact custody transaction fixtures. Root-only cases
-   run as real root under protected basetemp. Zero skips/errors/failures required.
-   Retain all 103 previously selected IDs and add exactly two observer regressions
-   (105 total). One asserts the exact manager-UID argv plus independent root file
-   and symlink hashes; the other uses a real different-owner synthetic Git repo,
-   requiring root ownership refusal before AND after a successful owner read.
-   Only its newly created `/run/storage-contract-a-git-*` parent is searchable;
-   no pytest/private ancestor is chmodded. The fixture maps the fixed manager
-   identity to `nobody` because the native manager account is not created yet;
-   actual installation must exercise the unchanged `wizard-system` identity.
+1. Inherit exactly 103 passing IDs from the failed 0513 job; execute ONLY its two
+   repaired real-UID cases, with zero skips/errors/failures. No new test IDs, no
+   blanket 105 rerun. Compare full source/member/mode closure outside four QA
+   paths, and complete module AST outside each repaired method (including shared
+   helpers, imports and decorators). Bind failed receipt, XML, all 17 phase logs
+   and native spool log. Failed historical evidence stays failed; a separate
+   composite records 103 inherited + 2 fresh = 105, never 105 freshly executed.
+
+   Manager fixture: the old child used an inherited cwd FD below private `/root`
+   pytest ancestors and a relative config. The product writer passes that dir
+   to tempfile, which uses an absolute pathname; an FD alone cannot grant ancestor
+   search. Its historical exception was swallowed, so the precise historical
+   frame/errno remains unknown. First run a bounded synthetic private-ancestor
+   FD-cwd negative; require actual PermissionError/EACCES at `_mkstemp_inner` or
+   stop before the positive/native continuation. Capture only bounded exception
+   type, errno and frames over a pipe (no payload/locals/argv/env), with deadline,
+   unconditional pipe closure and kill/reap. Then use a realistic absolute root
+   under a NEW `/run` parent with 0711 search, manager-owned 0755 leaves and actual
+   uid/gid 12340, no groups/effective/permitted/ambient capabilities. Assert actual
+   lock/token file type, owner/group, mode and link count. Never chmod existing
+   `/run`, `/root`, pytest ancestors or product controls to bypass policy. Preserve
+   the causal negative and positive observations as XML properties.
+
+   Git fixture: its captured failure was ENOENT for `runuser`; its isolated PATH
+   excluded `/usr/sbin`, unlike the correct production environment. Add only fixed
+   system sbin dirs and explicit binary prerequisite checks. Keep exact observer
+   argv assertions, the nobody-only synthetic mapping, root dubious-ownership
+   refusal before AND after real owner success, independent byte/symlink hashing
+   and unchanged ownership. No safe.directory allowance or native identity change.
    A red checkpoint stops before image load or installer activity.
 2. Reuse saved backend and Service archives. No rebuild of either. Export and
    attest exact config/platform/labels/ordered layers before AND after installation.
@@ -98,8 +115,11 @@ stat inventory equality. New stage/COW allocation reduces the remaining pending
 original peak once; monitor free >= reserve + unallocated remaining at commands.
 The retained, unexecuted 0ae contract-A stage is separately stat-inventoried and
 credited ONCE as already-allocated campaign bytes, never deleted or rewritten.
-Current source is bound against its archive too: only this QA observer, runner,
-documentation and the new regression module may differ; all product bytes stay
-exactly 0ae. Its 103 selected test IDs remain a required subset of the new 105.
+The complete failed 0513 stage is also inventoried and its 53530624 allocated
+bytes credited ONCE against that same remaining peak; no historical evidence is
+deleted. Current source differs from 0513 only in this runner/doc and the two
+failed test methods. All product bytes stay exactly 0513/0ae. The 0ae-to-current
+comparison also retains the previously reviewed QA observer change. All 105 IDs
+remain accounted for, with only the two failures eligible for fresh execution.
 Whole new stage cap 8 GiB, per-QEMU-file cap 6 GiB; these are limits, not headroom
 claims. Retain all old archives/images/evidence, no broad cleanup.
