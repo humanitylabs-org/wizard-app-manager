@@ -279,15 +279,16 @@ def main():
         # Preserve the existing Serve graph; the ordinary installer must not
         # publish new links. Operator reassignment above is a separate root step.
         sysenv['WIZARD_PRIVATE_ACCESS'] = 'none'
-    run(['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'], cwd=BASE)
-    # Root installs the same persistent socket contract used by fresh boxes.
-    # Worker restarts never release this address. No agent systemd authority.
+    # Establish custody BEFORE the ordinary installer verifies/restarts it.
+    # This is the same owner-approved root phase, not an install.sh fallback.
+    # The daemon dependency is committed only after actual socket acquisition.
     import tempfile
     with tempfile.TemporaryDirectory(prefix='wizard-approval-', dir='/root') as staging:
         module = Path(staging) / 'approval_custody.py'
         shutil.copyfile(tree / 'wam/approval_custody.py', module)
         run(['/usr/bin/python3', '-I', tree / 'scripts/install-approval-custody.py',
              'install', 'wizard-system', state, tree, module], env=env)
+    run(['runuser', '-u', 'wizard-system', '--', 'env', '-i', *[k + '=' + v for k, v in sysenv.items()], 'bash', tree / 'install.sh'], cwd=BASE)
     write(Path('/etc/systemd/system/wizard-runtipi.service'), f'''[Unit]
 Description=Wizard Runtipi base
 Requires=docker.service

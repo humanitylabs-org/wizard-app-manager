@@ -21,7 +21,10 @@ def guest(tmp_path):
 
 class Daemon:
     def __init__(self, owned=(A, B), unowned=()):
-        self.rows = {cid: {'Id': cid, 'Labels': {'com.docker.compose.project': 'runtipi'}} for cid in owned}
+        # The two real app project names, rather than network names/all-runtipi.
+        projects = ('wizard-agent-service_wizardapps', 'wizard-ux_wizardapps')
+        self.rows = {cid: {'Id': cid, 'Labels': {'com.docker.compose.project': projects[i % 2]}}
+                     for i, cid in enumerate(owned)}
         self.rows.update({cid: {'Id': cid, 'Labels': {'com.docker.compose.project': 'unowned'}} for cid in unowned})
         self.calls = []
         self.delete_failure = None
@@ -101,6 +104,29 @@ def test_unknown_project_survives_while_exact_owned_ids_are_removed(tmp_path):
     result = readback(tmp_path)
     assert result['removed_exact_ids'] == result['absent_exact_ids'] == [A, B]
     assert result['unowned_exact_ids'] == [OTHER] and not result['passed']
+
+
+@pytest.mark.parametrize('project', ['runtipi', 'wizard-agent-service_wizardapps', 'wizard-ux_wizardapps'])
+def test_actual_campaign_project_is_owned(tmp_path, project):
+    m = guest(tmp_path); daemon = Daemon(owned=(A,))
+    daemon.rows[A]['Labels']['com.docker.compose.project'] = project
+    m.daemon_request = daemon.request
+    m.cleanup_containers()
+    assert readback(tmp_path)['absent_exact_ids'] == [A]
+
+
+@pytest.mark.parametrize('project', ['notes_wizardapps', 'wizard-other_wizardapps',
+                                   'wizard-app-abc', 'wizard-link-abc', 'wizard-gw-abc',
+                                   'wizard-core', 'wizard-ux_wizardapps-extra', 'other'])
+def test_valid_but_unrelated_project_is_never_removed(tmp_path, project):
+    m = guest(tmp_path); daemon = Daemon(unowned=(OTHER,))
+    daemon.rows[OTHER]['Labels']['com.docker.compose.project'] = project
+    m.daemon_request = daemon.request
+    with pytest.raises(AssertionError, match='incomplete'):
+        m.cleanup_containers()
+    assert set(daemon.rows) == {OTHER}
+    assert not any(OTHER in path for method, path in daemon.calls if method == 'DELETE')
+    assert not readback(tmp_path)['passed']
 
 
 def test_partial_removal_retains_progress_and_first_failure(tmp_path):

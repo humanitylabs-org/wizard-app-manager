@@ -68,17 +68,25 @@ def test_real_root_entry_hands_only_literal_pins_to_manager(tmp_path, monkeypatc
         dirty.update(pins)
     monkeypatch.setattr(m.os, 'environ', dirty)
     captured = {}
+    events = []
     class ReachedInstaller(Exception):
         pass
     def command(argv, **kwargs):
         if argv[:2] == ['git', 'clone']:
-            (Path(argv[-1]) / 'scripts').mkdir(parents=True)
+            tree = Path(argv[-1])
+            (tree / 'scripts').mkdir(parents=True)
+            (tree / 'wam').mkdir()
+            (tree / 'wam/approval_custody.py').write_bytes((REPO/'wam/approval_custody.py').read_bytes())
+        if 'scripts/install-approval-custody.py' in str(argv):
+            events.append('root-custody')
         if 'scripts/prepare-named-user.sh' in str(argv):
             # The trusted upstream setup changes these two dirs to group-write.
             for p in (m.BASE/'runtipi', m.BASE/'runtipi/user-config'):
                 p.chmod(0o775)
             (m.BASE/'runtipi/.env').touch()
         if argv[:2] == ['runuser', '-u'] and argv[-1] == m.BASE/'wizard-app-manager/install.sh':
+            assert events == ['root-custody'], 'ordinary installer requires custody to exist already'
+            events.append('ordinary-install')
             assert argv[4:6] == ['env', '-i']
             captured.update(v.split('=', 1) for v in argv[6:-2])
             raise ReachedInstaller()

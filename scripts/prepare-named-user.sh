@@ -40,15 +40,21 @@ fi
 echo "Administrator approval grants $owner rootful Docker group access (administrator-equivalent); it does not grant passwordless sudo."
 usermod -aG docker "$owner"
 loginctl enable-linger "$owner"
-# Tailscale's host package/daemon needs root. Owner login is still a genuine owner action.
-# The ordinary installer will reuse the running daemon without a second sudo invocation.
+# One security contract in both private-access modes: custody needs the official
+# package and a responsive daemon for authoritative persisted Serve inspection.
+# `none` disables private APP access, not this security prerequisite. Installing
+# or starting the daemon does not enroll, log in, publish, or grant an operator.
+# Reuse the existing official dependency installer, never select the tailscale
+# access provider merely to obtain its package (that path can invoke `up`).
+if ! command -v tailscale >/dev/null; then
+  script="$(mktemp)"; trap 'rm -f "$script"' EXIT
+  curl -fsSL https://tailscale.com/install.sh -o "$script"
+  sh "$script"; rm -f "$script"; trap - EXIT
+fi
+systemctl enable --now tailscaled
+# Only an explicitly selected private-access provider grants an operator.
+# The custody installer still independently refuses failed/unknown inspection.
 if [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = tailscale ]; then
-  if ! command -v tailscale >/dev/null; then
-    script="$(mktemp)"; trap 'rm -f "$script"' EXIT
-    curl -fsSL https://tailscale.com/install.sh -o "$script"
-    sh "$script"; rm -f "$script"; trap - EXIT
-  fi
-  systemctl enable --now tailscaled
   # Do not silently replace an existing designated operator. A conflicting administrator is a real gate.
   operator="$(tailscale debug prefs | python3 -c 'import json,sys; print(json.load(sys.stdin).get("OperatorUser") or "")')"
   if [ -n "$operator" ] && [ "$operator" != "$owner" ] && [ "$operator" != "$reassign_from" ]; then

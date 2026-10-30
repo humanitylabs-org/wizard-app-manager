@@ -347,6 +347,12 @@ def daemon_request(method, path, *, socket_path='/var/run/docker.sock'):
         sock.close()
 
 
+# Derived from this campaign's finite installs (appUrn.replace(':', '_')),
+# NOT network names or a prefix/suffix ownership guess. Inventory supplies the
+# exact full IDs; every destructive request and readback stays bound to those.
+CLEANUP_PROJECTS = ('runtipi', 'wizard-agent-service_wizardapps', 'wizard-ux_wizardapps')
+
+
 def cleanup_containers():
     # A fresh synthetic guest owns only the finite Wizard/Runtipi projects.
     # Never delete another project or turn daemon/permission failures into absence.
@@ -369,7 +375,7 @@ def cleanup_containers():
         for row in rows:
             labels = row.get('Labels') or {}
             project = labels.get('com.docker.compose.project', '')
-            if re.fullmatch(r'(?:runtipi|wizard-(?:app|link|gw)-[a-z0-9]+|wizard-core)', project):
+            if project in CLEANUP_PROJECTS:
                 report['attempted_exact_ids'].append(row['Id'])
             else:
                 report['unowned_exact_ids'].append(row['Id'])
