@@ -104,10 +104,10 @@ elif not os.path.isdir(root):
     state = 'installed'
 elif not mine:
     state = 'owner-managed'
+elif mine.get('sha256') != tree(root):
+    state = 'owner-modified'   # changed since the link installed it, whatever the pin: the owner's now
 elif mine.get('ref') == ref:
     state = 'current'
-elif mine.get('sha256') != tree(root):
-    state = 'owner-modified'
 else:
     state, extra = 'refreshed', ['--force']
 if state in ('installed', 'refreshed'):

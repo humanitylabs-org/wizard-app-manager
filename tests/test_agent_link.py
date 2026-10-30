@@ -400,3 +400,21 @@ def test_plugin_the_owner_removed_is_not_reinstalled(tmp_path):
     assert run_plugin(tmp_path, 'b' * 40) == {'plugin': 'owner-removed', 'changed': False, 'managed': False}
     assert not (tmp_path / 'plugins/wizard-os').exists()
     assert len((tmp_path / 'calls.log').read_text().splitlines()) == 1
+
+
+def test_owner_edit_under_the_current_pin_is_the_owners(tmp_path):
+    (tmp_path / 'plugins').mkdir()
+    run_plugin(tmp_path, 'a' * 40)
+    (tmp_path / 'plugins/wizard-os/plugin.yaml').write_text('owner edit\n')
+    assert run_plugin(tmp_path, 'a' * 40) == {'plugin': 'owner-modified', 'changed': False, 'managed': False}
+
+
+def test_installer_rerun_reports_a_plugin_that_could_not_be_installed(tmp_path, monkeypatch, capsys):
+    from wam import alongside, cli
+    monkeypatch.setattr(alongside, 'load', lambda home: None)
+    monkeypatch.setattr(cli, 'installed_ids', lambda rt: {'hermes-agent', 'wizard-agent-service'})
+    monkeypatch.setattr(agent_link, 'link', lambda *a, **k: {'linked': True, 'plugin': 'error',
+                                                             'plugin_error': 'wizard-os plugin not installed: offline'})
+    assert cli.relink_fresh_agent(SimpleNamespace(home=tmp_path), object())['plugin'] == 'error'
+    err = capsys.readouterr().err
+    assert 'offline' in err and 'ChatGPT' in err and 'wam agent-link' in err

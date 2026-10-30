@@ -455,7 +455,7 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             and {"hermes-agent", "wizard-agent-service"} <= {a["id"] for a in reg["apps"]}:
         try:   # fresh mode: the agent app gets the `wizard` gateway and pointer skills (alongside: `wizard link`)
             from .agent_link import link as agent_link
-            agent_link(c, STORE)
+            plugin_note(agent_link(c, STORE))
         except Exception as e:  # noqa: BLE001 - never fail the install for it; doctor/agent-link repair it
             print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
     if app_id in ("hermes-agent", "wizard-claude") and status == "running" and not alongside.load(c.home):
@@ -1247,10 +1247,19 @@ def relink_fresh_agent(c: Config, rt) -> dict | None:
         if alongside.load(c.home) or not {"hermes-agent", "wizard-agent-service"} <= installed_ids(rt):
             return None
         from .agent_link import link as agent_link
-        return agent_link(c, STORE)
+        return plugin_note(agent_link(c, STORE))
     except Exception as e:  # noqa: BLE001
         print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
         return None
+
+
+def plugin_note(out: dict) -> dict:
+    """A link whose wizard-os plugin could not be installed (e.g. GitHub unreachable) still links the gateway; say so,
+    or the ChatGPT app keeps answering "can't add sign-ins" with nothing on screen explaining why."""
+    if isinstance(out, dict) and out.get("plugin_error"):
+        print(f"note: the agent's wizard-os plugin is not installed ({out['plugin_error'][:160]}); the ChatGPT app "
+              "can't add sign-ins until it is: run `wam agent-link`", file=sys.stderr)
+    return out
 
 
 def settle_connection_mode(c: Config, rt) -> dict | None:
