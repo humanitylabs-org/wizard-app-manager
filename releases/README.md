@@ -538,3 +538,9 @@ Channel: on latest; Stable stays 0.3.88 until the installed upgrade test passes 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/342. `releases/stable` → 0.3.89; `promotions/0.3.89.json` sha256 `aecad83472cd7ccacb57a016b8c050191d24888caa4e2d8fe48012fc2422a206`.
 Fast-tracked as **fix** on the owner's rule (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"). Installed upgrade 0.3.88 → 0.3.89 passed: wizard-os docs/acceptance/promote-0.3.89.md. Fresh install of 0.3.89 on a clean KVM guest passed (27 checks / 0 failed, wizard-os plugin installed and enabled): wizard-os docs/acceptance/fresh-0.3.89.md (humanitylabs-org/wizard-os#343).
 Rollback: point `releases/stable` back to 0.3.88.
+
+## 0.3.90 provenance
+
+Canonical: wizard-os releases/0.3.90.json (humanitylabs-org/wizard-os#344). SHA256: `222679a91c7500a346c59bb7a4184897f1729d4d7a3699c3effe019e576fa3d2`.
+0.3.89 plus App Manager #364 (apps starting, restarting or updating, or a restarting shell, keep their same-origin Wizard path; Messenger no longer opens blank) with #362/#363 (Store removes an installed app); image unchanged, v4.10.2-wizard.897-016a8cb. Everything else unchanged from 0.3.89.
+Channel: on latest; Stable stays 0.3.89 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
