@@ -16,8 +16,10 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
+CONFLICT_RECHECK_S = 1.0   # pause before re-reading Serve when a route looks taken (see publish.ensure)
 ADMIN_PORTS = {8480, 8443}   # the App Manager itself: box-only
 
 
@@ -72,6 +74,17 @@ def route_status(config: dict, host: str, port: int, path: str, target: str) -> 
     if tcp and not handlers:
         return "conflict"
     return "missing"
+
+
+def owner_fronted(config: dict, host: str, port: int, path: str) -> bool:
+    """A private (non-Funnel) route the owner pointed at a local Unix-socket gateway, e.g. Messenger's owner ingress.
+    wam never replaces it, and it still counts as the app's published address."""
+    if (config.get("AllowFunnel") or {}).get(f"{host}:{port}"):
+        return False
+    web = (config.get("Web") or {}).get(f"{host}:{port}") or {}
+    handlers = {(key.rstrip("/") or "/"): val for key, val in (web.get("Handlers") or {}).items()}
+    proxy = str((handlers.get(path.rstrip("/") or "/") or {}).get("Proxy") or "")
+    return proxy.startswith("unix:/")
 
 
 # An app mid-restart (or mid-update) is still installed and comes straight back: keep its page published. The
@@ -200,7 +213,16 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
 
         def ensure(publish_port: int, path: str, target: str, set_path: bool) -> None:
             """Publish one private route, or raise ValueError; an existing different route is never replaced."""
-            status = route_status(serve_status(), ts["host"], publish_port, path, target)
+            config = serve_status()
+            status = route_status(config, ts["host"], publish_port, path, target)
+            if status == "conflict" and not owner_fronted(config, ts["host"], publish_port, path):
+                # Re-read once before giving up: a read taken while Serve is being rewritten (another route being
+                # added) can miss the owner's gateway, and a false conflict moves the app onto its raw port.
+                time.sleep(CONFLICT_RECHECK_S)
+                config = serve_status()
+                status = route_status(config, ts["host"], publish_port, path, target)
+            if status == "conflict" and owner_fronted(config, ts["host"], publish_port, path):
+                return  # the owner put an authenticating gateway in front of this app; keep it and its link
             if status == "conflict":
                 raise ValueError(f"existing Serve route on {publish_port}{path} differs; left untouched")
             if status == "missing":
