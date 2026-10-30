@@ -532,3 +532,9 @@ Fast-tracked as **fix**. Installed upgrade 0.3.86 → 0.3.88 passed: wizard-os d
 Canonical: wizard-os releases/0.3.89.json (humanitylabs-org/wizard-os#341). SHA256: `b52b309ea28a2d1a351312f25b86301a612d2ad7878d69259abfb1e545dd1a9c`.
 0.3.88 plus App Manager #357 (a fresh link installs the wizard-os plugin so ChatGPT sign-in works; image unchanged, v4.10.2-wizard.897-016a8cb), ChatGPT 0.2.12 and Claude 0.2.14 (fresh-Wizard ChatGPT model, Opus default after Claude sign-in). Agent Service 1f78352d and Wizard UX 7f7a9dd2 unchanged from 0.3.88.
 Channel: on latest; Stable stays 0.3.88 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## stable 0.3.89
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/342. `releases/stable` → 0.3.89; `promotions/0.3.89.json` sha256 `aecad83472cd7ccacb57a016b8c050191d24888caa4e2d8fe48012fc2422a206`.
+Fast-tracked as **fix** on the owner's rule (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"). Installed upgrade 0.3.88 → 0.3.89 passed: wizard-os docs/acceptance/promote-0.3.89.md.
+Rollback: point `releases/stable` back to 0.3.88.
