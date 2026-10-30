@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Parent-admitted contract A: focused root fixtures then two real Service cases.
+"""Parent-admitted contract A: inherit 105 fixtures; finish native/Service cases.
 
 --preflight is hash/AST/archive/metadata only. --execute requires native forum
 worker lock and fresh 851 thin overlays. No backend/Service build, storage replay,
@@ -38,6 +38,14 @@ FAILED_XML='23c3b42e8aca19361b9e49b0d1a5a8843d9c38a919b1f2f6fa1e85a981cf9142'
 FAILED_JOB_LOG=Path('/srv/work/heavy/production/spool/heavy_0e49b9bf3d7e4191aa82f93192930266.log')
 FAILED_JOB_LOG_SHA='255038d5897910d4255136ba483d0bfc3853425a6a0cd2f7f71727fbeab4161e'
 FAILED_ALLOCATED=53530624
+FIXED=Path('/srv/work/privsep/storage-contract-a/e5d76154f5c6dbb4604d13fca32efe1e77bc1502-fixture-repair')
+FIXED_MANIFEST='1b0ad0d2759b33f9fc00ec730fce14d0568fd72687861abfc655fbf62b79e8db'
+FIXED_RECEIPT='2a454535e3f7feca8ddd335efd3c6bc6c9e3dbff099e635f03cb0448d1278f66'
+FIXED_XML='0abbf730193777eb97ab868af694ff294714286bd6aacaa271371b01263a9d31'
+FIXED_LOG=Path('/srv/work/heavy/production/spool/heavy_9f70f2f2e0614f9b99f81549449f674b.log')
+FIXED_LOG_SHA='ee7232903a4c3857f85ce1949b35b7e28e68d7346f45d4fddb9babe30b46148e'
+FIXED_ALLOCATED=508805120
+CLOSURE_DELTA=('qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a_guest.py','qa/privsep-storage/contract_a.md')
 REPAIRED_CASES=('tests/test_alongside_install_boundaries.py::test_actual_manager_uid_can_sync_after_protected_setup',
                 'tests/test_contract_a_observer.py::test_real_foreign_checkout_retains_git_guard_and_ownership')
 FIXTURE_DELTA=('qa/privsep-storage/contract_a_run.py','qa/privsep-storage/contract_a.md',
@@ -117,7 +125,7 @@ def inventory_tests(sources,modules):
     assert len(result)==len(set(result));return sorted(result)
 
 
-def inherited_fixtures(stage,helpers,rows):
+def historical_103(stage,helpers,rows):
     """Read-only source/AST/XML closure; no test imports or execution.
 
     Whole archive equality outside four QA paths covers conftest, fixtures,
@@ -187,10 +195,75 @@ def inherited_fixtures(stage,helpers,rows):
     return report
 
 
+def inherited_fixture_report(helpers,rows):
+    """Bind the two real passes AND the prior 103; no completed suite replay."""
+    assert digest(FIXED/'manifest.json')==FIXED_MANIFEST
+    doc=json.loads((FIXED/'manifest.json').read_text())
+    for name,value in doc['files'].items():assert digest(FIXED/name)==value
+    fixedrows=helpers.inventory(FIXED/'source.tar')
+    assert fixedrows==json.loads((FIXED/'source-members.json').read_text())
+    inherited=historical_103(FIXED,helpers,fixedrows)
+    assert digest(FIXED/'evidence/receipt.json')==FIXED_RECEIPT
+    assert digest(FIXED/'evidence/focused.xml')==FIXED_XML
+    assert digest(FIXED_LOG)==FIXED_LOG_SHA
+    receipt=json.loads((FIXED/'evidence/receipt.json').read_text())
+    assert receipt['passed'] is False and receipt['focused_pytest']['exit']==0
+    assert receipt['focused_pytest']['xml_sha256']==FIXED_XML
+    assert receipt['all_boot_pids_absent'] and receipt['original_disks_and_old_evidence_unchanged']
+    assert not receipt['cleanup_errors'] and len(receipt['steps'])==30
+    assert len({step['log'] for step in receipt['steps']})==30
+    assert receipt['native']['checks']==[] and receipt['native']['commands']==[]
+    for step in receipt['steps']:
+        assert Path(step['log']).name==step['log']
+        assert digest(FIXED/'evidence'/step['log'])==step['sha256']
+    expected=doc['expected_pytest_cases'];fresh=[]
+    mapping={('.'.join(v[0][:-3].split('/')),v[1]):s for s in REPAIRED_CASES for v in [s.split('::')]}
+    for c in ET.parse(FIXED/'evidence/focused.xml').findall('.//testcase'):
+        assert not any(c.find(n) is not None for n in ('failure','error','skipped'))
+        fresh.append(mapping[(c.get('classname'),c.get('name'))])
+    assert sorted(fresh)==sorted(REPAIRED_CASES)==receipt['focused_pytest']['cases']
+    combined=sorted(inherited['cases']+fresh)
+    composite=receipt['focused_composite']
+    assert composite['passed'] and composite['fresh_count']==2 and composite['inherited_count']==103
+    assert composite['inherited_evidence_sha256']==doc['inherited_fixtures_sha256']==digest(FIXED/'inherited-fixtures.json')
+    assert combined==expected==composite['cases'] and len(set(combined))==len(combined)==105
+    before,after=({r['path']:r for r in v} for v in (fixedrows,rows))
+    assert set(before)==set(after)
+    assert {n for n in before if before[n]!=after[n]}==set(CLOSURE_DELTA)
+    # The observer tests import this QA module, but only fetched_source_closure
+    # and its original globals/dependencies. Keep the ENTIRE remaining AST equal.
+    with tarfile.open(FIXED/'source.tar') as archive:
+        stream=archive.extractfile('qa/privsep-storage/contract_a_guest.py');assert stream is not None
+        tree=ast.parse(stream.read())
+    tree.body=[n for n in tree.body if not isinstance(n,ast.FunctionDef) or n.name not in ('fresh','main')]
+    normalized=ast.dump(tree,include_attributes=False)
+    # Caller source is pinned by the complete rows; read it from the archive in
+    # inherited_fixtures below, not from an unsealed checkout.
+    return {'fresh':False,'count':105,'cases':combined,'source_revision':doc['revision'],
+        'manifest_sha256':FIXED_MANIFEST,'receipt_sha256':FIXED_RECEIPT,'xml_sha256':FIXED_XML,
+        'native_job_id':'heavy_9f70f2f2e0614f9b99f81549449f674b',
+        'native_job_log_path':str(FIXED_LOG),'native_job_log_sha256':FIXED_LOG_SHA,
+        'historical_receipt_passed':False,'phase_log_hash_count':30,
+        'historical_103':inherited,'repaired_passes':sorted(fresh),
+        'unchanged_archive_members':len(rows)-len(CLOSURE_DELTA),
+        'complete_dependency_closure_unchanged_outside_exact_qa_delta':True,
+        'observer_dependency_ast_sha256':hashlib.sha256(normalized.encode()).hexdigest()}
+
+
+def inherited_fixtures(stage,helpers,rows):
+    report=inherited_fixture_report(helpers,rows)
+    with tarfile.open(stage/'source.tar') as archive:
+        tree=ast.parse(archive.extractfile('qa/privsep-storage/contract_a_guest.py').read())
+    tree.body=[n for n in tree.body if not isinstance(n,ast.FunctionDef) or n.name not in ('fresh','main')]
+    assert hashlib.sha256(ast.dump(tree,include_attributes=False).encode()).hexdigest()==report['observer_dependency_ast_sha256']
+    assert json.loads((stage/'inherited-fixtures.json').read_text())==report
+    return report
+
+
 def validate(stage,expected):
     assert re.fullmatch('[0-9a-f]{64}',expected) and digest(stage/'manifest.json')==expected
     d=json.loads((stage/'manifest.json').read_text())
-    assert stage==Path('/srv/work/privsep/storage-contract-a')/(d['revision']+'-fixture-repair') and Path.cwd()==stage
+    assert stage==Path('/srv/work/privsep/storage-contract-a')/(d['revision']+'-source-closure-repair') and Path.cwd()==stage
     assert d['schema']=='storage-contract-a-v1' and d['review_required'] and not d['full_acceptance']
     assert d['reserve_bytes']==RESERVE and d['campaign_remaining_bytes']==REMAINING
     assert not (stage/'evidence').exists(),'one-shot stage already entered'
@@ -215,8 +288,9 @@ def validate(stage,expected):
         'qa/privsep-storage/contract_a.md','tests/test_alongside_install_boundaries.py'}
     retained=helpers.allocated(RETAINED)
     failed=helpers.allocated(FAILED);assert failed['allocated_bytes']==FAILED_ALLOCATED
-    assert json.loads((stage/'retained-contract-stages.json').read_text())=={str(RETAINED):retained,str(FAILED):failed}
-    assert d['retained_contract_stage_bytes']==retained['allocated_bytes']+failed['allocated_bytes']
+    fixed=helpers.allocated(FIXED);assert fixed['allocated_bytes']==FIXED_ALLOCATED
+    assert json.loads((stage/'retained-contract-stages.json').read_text())=={str(RETAINED):retained,str(FAILED):failed,str(FIXED):fixed}
+    assert d['retained_contract_stage_bytes']==retained['allocated_bytes']+failed['allocated_bytes']+fixed['allocated_bytes']
     fixture_evidence=inherited_fixtures(stage,helpers,rows)
     assert all(b[n]==r for r in json.loads((PRIOR/'backend-inputs.json').read_text()) for n in [r['path']])
     assert len(json.loads((PRIOR/'backend-inputs.json').read_text()))==622
@@ -237,7 +311,7 @@ def validate(stage,expected):
     # Complete affected modules plus six selected old seams; don't collect/rerun
     # unchanged storage/identity suites merely to obtain more green tests.
     assert sorted(set(computed+d['affected_existing_cases']))==d['expected_pytest_cases']
-    assert d['fresh_pytest_cases']==list(REPAIRED_CASES) and d['inherited_focused_count']==103
+    assert d['fresh_pytest_cases']==[] and d['inherited_focused_count']==105
     assert digest(stage/'inherited-fixtures.json')==d['inherited_fixtures_sha256']
     assert sorted(fixture_evidence['cases']+d['fresh_pytest_cases'])==d['expected_pytest_cases']
     for n in ('runner.py','guest.py','state.py','identity.py','custody-static.py'):ast.parse((stage/n).read_text())
@@ -274,7 +348,7 @@ def validate(stage,expected):
     assert digest(SIGNED/'evidence/result.json')=='cebb368b9eb566e0f24e682733a08743bc6e824adbcc3d228f471166e7cf6f8f'
     for p,n,amount in ((OLD/'evidence','old-allocation.json',OLD_ALLOCATED),(SIGNED,'signed-allocation.json',SIGNED_ALLOCATED)):
         observed=helpers.allocated(p);assert observed==json.loads((stage/n).read_text()) and observed['allocated_bytes']==amount
-    helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,stage])
+    helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,FIXED,stage])
     for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
     amount=helpers.allocated(stage)['allocated_bytes'];free=shutil.disk_usage(stage).free
     report={'static_only':True,'tests_executed':False,'heavy_executed':False,'submitted':False,'review_required':True,
@@ -314,25 +388,14 @@ def make_runner(base,helpers):
             rc=self.copy(self.evidence/name,path or ROOT+'/'+name,True,required=required)
             if rc==0 and name.endswith('.json'):return json.loads((self.evidence/name).read_text())
 
-        def regressions(self):
-            expected=self.doc['fresh_pytest_cases']
-            selectors=expected
-            script='cd '+TREE+'\nmkdir -m700 '+ROOT+'/test-tmp\nexport TMPDIR='+ROOT+'/test-tmp PYTHONDONTWRITEBYTECODE=1\ntest "$(id -u)" = 0\n/usr/bin/python3 -m pytest -q '+shlex.join(selectors)+' --basetemp='+ROOT+'/test-tmp/pytest --junitxml='+ROOT+'/focused.xml\n'
-            rc=self.guest('focused-root-regressions',script,900,False)
-            self.download('focused.xml')
-            xml=ET.parse(self.evidence/'focused.xml');got=[]
-            mapping={('.'.join(v[0][:-3].split('/'))+('.'+v[1] if len(v)==3 else ''),v[-1]):s for s in expected for v in [s.split('::')]}
-            for c in xml.findall('.//testcase'):got.append(mapping[(c.get('classname'),c.get('name'))])
-            self.receipt['focused_pytest']={'exit':rc,'cases':sorted(got),'xml_sha256':digest(self.evidence/'focused.xml')};self.save()
-            assert rc==0 and sorted(got)==expected and len(got)==len(set(got))
-            assert not any(xml.findall('.//'+v) for v in ('failure','error','skipped'))
-            inherited=json.loads((self.stage/'inherited-fixtures.json').read_text())
-            combined=sorted(inherited['cases']+got)
-            assert combined==self.doc['expected_pytest_cases'] and len(combined)==len(set(combined))==105
-            self.receipt['focused_composite']={'passed':True,'fresh_count':len(got),
-                'inherited_count':inherited['count'],'cases':combined,
+        def retain_regressions(self):
+            # Read-only exact-source/XML closure, NEVER pytest in sealed TREE.
+            inherited=inherited_fixtures(self.stage,helpers,helpers.inventory(self.stage/'source.tar'))
+            assert inherited['count']==105 and self.doc['fresh_pytest_cases']==[]
+            self.receipt['focused_composite']={'passed':True,'fresh_count':0,
+                'inherited_count':105,'cases':inherited['cases'],
                 'inherited_evidence_sha256':digest(self.stage/'inherited-fixtures.json'),
-                'historical_failed_receipt_sha256':FAILED_RECEIPT,'historical_receipt_passed':False}
+                'historical_failed_receipt_sha256':FIXED_RECEIPT,'historical_receipt_passed':False}
             self.save()
 
         def attest(self,kind,when):
@@ -362,8 +425,14 @@ def make_runner(base,helpers):
             self.guest('committed-before','/usr/bin/python3 -I -B '+STATE_ROOT+'/state.py before')
             self.download('committed-before.json',STATE_ROOT+'/committed-before.json')
             self.guest('exact-source','umask 022\nmkdir -m755 '+TREE+'\ntar --no-same-permissions -xf '+ROOT+'/source.tar -C '+TREE+'\n')
-            self.regressions()  # first checkpoint; abort before images/install if red
-            self.phase('focused-regressions-passed')
+            self.retain_regressions()
+            self.phase('focused-regressions-inherited')
+            # Finite diagnostic-first gate. Same source archive/revision as the
+            # installer, once only, BEFORE expensive images or root helper.
+            rc=self.guest('fresh-source-before-images','/usr/bin/python3 -I -B '+ROOT+'/guest.py fresh '+self.doc['revision'],300,False)
+            self.receipt['native']=self.download('native.json');self.save();assert rc==0
+            assert self.receipt['native']['checks']==[{'name':self.doc['expected_native_checks'][0],'passed':True}]
+            self.phase('fresh-source-closure-passed')
             self.guest('docker-real-prerequisite','test -S /var/run/docker.sock\ndocker info >/dev/null\n')
             before={}
             before['backend']=self.load_image('backend',production.BACKEND_ARCHIVE,'privsep-wam:595523fb')
@@ -420,7 +489,7 @@ def main():
     assert report['capacity_admissible'],'reserve plus original campaign peak unavailable'
     os.umask(0o077);tmp=args.stage/'tmp';tmp.mkdir(mode=0o700);os.environ['TMPDIR']=str(tmp);os.environ['PYTHONDONTWRITEBYTECODE']='1'
     r=make_runner(base,helpers)(args.stage,d)
-    r.receipt.update(scope='contract A focused root fixtures plus two real Service continuations',full_acceptance=False,
+    r.receipt.update(scope='contract A inherited 105 fixtures plus remaining native and Service checks',full_acceptance=False,
         admission=report,old_474_container_absence='UNPROVEN',owner_identity_positive_proven=False)
     r.save()
     def interrupt(sig,frame):raise TimeoutError('bounded contract A native deadline')
@@ -438,13 +507,13 @@ def main():
         try:r.stop()
         except BaseException as e:r.receipt['cleanup_errors'].append('stop-'+type(e).__name__)
         try:
-            helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,args.stage])
+            helpers.absence([PRIOR,OLD,SIGNED,RETAINED,FAILED,FIXED,args.stage])
             assert len(r.receipt['boots'])<=1 and all(b['stopped'] and not Path('/proc',str(b['pid'])).exists() for b in r.receipt['boots'])
             for n,row in snapshot['disks'].items():assert helpers.disk_binding(PRIOR/'evidence'/n)==row
             for n,row in snapshot['files'].items():assert digest(PRIOR/n)==row['sha256']
             assert helpers.allocated(OLD/'evidence')==json.loads((args.stage/'old-allocation.json').read_text())
             assert helpers.allocated(SIGNED)==json.loads((args.stage/'signed-allocation.json').read_text())
-            assert {str(p):helpers.allocated(p) for p in (RETAINED,FAILED)}==json.loads((args.stage/'retained-contract-stages.json').read_text())
+            assert {str(p):helpers.allocated(p) for p in (RETAINED,FAILED,FIXED)}==json.loads((args.stage/'retained-contract-stages.json').read_text())
             inherited_fixtures(args.stage,helpers,helpers.inventory(args.stage/'source.tar'))
             r.receipt['original_disks_and_old_evidence_unchanged']=True;r.receipt['all_boot_pids_absent']=True;r.capacity()
         except BaseException as e:r.receipt['cleanup_errors'].append('preservation-'+type(e).__name__)

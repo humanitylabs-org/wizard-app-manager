@@ -137,7 +137,24 @@ def fresh():
     assert not Path('/var/lib/tailscale').exists() and not DEP.exists() and inode() is None
     no_manager_writer()
     s=module('contract_source_inspector',TREE/'qa/privsep-storage/custody_signedout_guest.py')
-    s.ROOT=ROOT; s.TREE=TREE; s.report=report; s.source_closure()
+    s.ROOT=ROOT; s.TREE=TREE; s.report=report
+    try:s.source_closure()
+    except AssertionError:
+        # Preserve the strict checker and first failure. Export only bounded
+        # relative membership metadata, never file bodies or installer output.
+        import tarfile
+        with tarfile.open(ROOT/'source.tar') as archive:
+            expected={m.name.rstrip('/') for m in archive}
+        actual={str(p.relative_to(TREE)) for p in TREE.rglob('*')}
+        missing=sorted(expected-actual);extra=sorted(actual-expected)
+        report['source_closure_membership']={
+            'expected_count':len(expected),'actual_count':len(actual),
+            'missing_count':len(missing),'extra_count':len(extra),
+            'missing':[p[:256] for p in missing[:64]],
+            'extra':[p[:256] for p in extra[:64]],
+            'path_limit':64,'path_character_limit':256,
+            'truncated':any(len(v)>64 or any(len(p)>256 for p in v) for v in (missing,extra))}
+        save();raise
     report['exact_root_helper_argv']=['prepare-alongside.py','hermes','/home/hermes/.hermes',sys.argv[2]]
     report['bootstrap_discovery_exercised']=False
 
@@ -325,13 +342,20 @@ def cleanup():
 
 def main():
     global report
-    assert sys.argv[1] in ('install','security','cleanup','cleanup-containers','cleanup-failed')
+    assert sys.argv[1] in ('fresh','install','security','cleanup','cleanup-containers','cleanup-failed')
     if (ROOT/'native.json').exists():report=json.loads((ROOT/'native.json').read_text())
     lock=os.open(ROOT/'native.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     try:
-        if sys.argv[1]=='install':
+        if sys.argv[1]=='fresh':
+            assert re.fullmatch('[0-9a-f]{40}',sys.argv[2])
+            assert not report['checks']
             check(CHECKS[0],fresh)
+        elif sys.argv[1]=='install':
+            # The one fresh/source check ran before image loading, with the
+            # same revision. Never call fresh again after native installation.
+            assert report['checks']==[{'name':CHECKS[0],'passed':True}]
+            assert report['exact_root_helper_argv']==['prepare-alongside.py','hermes','/home/hermes/.hermes',sys.argv[2]]
             # Installer output stays inside VM; controller receives only fixed
             # booleans/digests in native.json. Root source may print owner URLs.
             with (ROOT/'installer-private.log').open('wb') as out:

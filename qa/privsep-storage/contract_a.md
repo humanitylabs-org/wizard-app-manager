@@ -31,13 +31,34 @@ capacity. It never imports/collects tests, boots VMs, invokes Docker or builds.
 
 One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
 
-1. Inherit exactly 103 passing IDs from the failed 0513 job; execute ONLY its two
-   repaired real-UID cases, with zero skips/errors/failures. No new test IDs, no
-   blanket 105 rerun. Compare full source/member/mode closure outside four QA
-   paths, and complete module AST outside each repaired method (including shared
-   helpers, imports and decorators). Bind failed receipt, XML, all 17 phase logs
-   and native spool log. Failed historical evidence stays failed; a separate
-   composite records 103 inherited + 2 fresh = 105, never 105 freshly executed.
+1. Inherit all **105 verified passing IDs**: 103 from failed 0513 plus the two
+   corrected real-UID cases that passed in failed e5d. Execute **zero** completed
+   tests. Bind both complete source archives/manifests, original receipts/XML,
+   all 17 + 30 phase logs and both native spool logs. Keep the original 0513-to-e5
+   complete source/AST closure and verify e5-to-current membership/modes/bytes
+   unchanged outside exactly this doc, contract_a_run.py and contract_a_guest.py.
+   The observer guest AST remains identical outside fresh/main; the fetched-source
+   observer and all its globals/dependencies are unchanged. All test modules,
+   fixtures and product sources stay byte-identical to e5. A separate composite
+   records 105 inherited + 0 fresh; both historical native receipts stay failed.
+
+   e5 failed before any actual root helper/install.sh invocation: strict source
+   membership failed after its two tests passed and images loaded. Pytest's default
+   cache provider in the sealed tree is a source-backed collision candidate, not
+   captured proof of the historical extra paths (those were not exported). Do not
+   ignore cache names, delete evidence or relax closure. The continuation removes
+   pytest entirely. Any later approved pytest must use `-p no:cacheprovider`,
+   `PYTHONDONTWRITEBYTECODE=1`, and explicit basetemp/JUnit outputs outside the
+   sealed installation tree, or a separately sealed test checkout.
+
+   Run `guest.py fresh <revision>` ONCE, immediately after exact source extraction,
+   before image loads. It uses the original strict complete membership/hash/mode/
+   UID checker and same revision/source archive as installation. On failure,
+   preserve that exception and export relative missing/extra path metadata only:
+   counts plus at most 64 paths per list, 256 characters per path, explicit
+   truncation. No file bodies, private installer log or owner data. Stop before
+   images/helper/install on any unresolved result. Installation requires this
+   exact successful fresh report/revision; never call fresh a second time.
 
    Manager fixture: the old child used an inherited cwd FD below private `/root`
    pytest ancestors and a relative config. The product writer passes that dir
@@ -52,7 +73,8 @@ One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
    uid/gid 12340, no groups/effective/permitted/ambient capabilities. Assert actual
    lock/token file type, owner/group, mode and link count. Never chmod existing
    `/run`, `/root`, pytest ancestors or product controls to bypass policy. Preserve
-   the causal negative and positive observations as XML properties.
+   the causal negative and positive observations as XML properties. These two
+   controls now passed in e5 and their XML properties are retained, not rerun.
 
    Git fixture: its captured failure was ENOENT for `runuser`; its isolated PATH
    excluded `/usr/sbin`, unlike the correct production environment. Add only fixed
@@ -60,7 +82,7 @@ One fresh pair of thin overlays over the committed 851 disks, one ordinary boot:
    argv assertions, the nobody-only synthetic mapping, root dubious-ownership
    refusal before AND after real owner success, independent byte/symlink hashing
    and unchanged ownership. No safe.directory allowance or native identity change.
-   A red checkpoint stops before image load or installer activity.
+   That corrected case also passed in e5; preserve its exact XML identity.
 2. Reuse saved backend and Service archives. No rebuild of either. Export and
    attest exact config/platform/labels/ordered layers before AND after installation.
    Immutable attested engine handles must cross the real clean manager handoff;
@@ -117,9 +139,9 @@ The retained, unexecuted 0ae contract-A stage is separately stat-inventoried and
 credited ONCE as already-allocated campaign bytes, never deleted or rewritten.
 The complete failed 0513 stage is also inventoried and its 53530624 allocated
 bytes credited ONCE against that same remaining peak; no historical evidence is
-deleted. Current source differs from 0513 only in this runner/doc and the two
-failed test methods. All product bytes stay exactly 0513/0ae. The 0ae-to-current
-comparison also retains the previously reviewed QA observer change. All 105 IDs
-remain accounted for, with only the two failures eligible for fresh execution.
+deleted. The complete failed e5 stage is separately stat-inventoried and its
+508805120 allocated bytes credited ONCE. Current source differs from e5 only in
+this runner/doc and the guest fresh/main dispatch. All product bytes stay exactly
+e5/0513/0ae. All 105 IDs remain accounted for and none is freshly executed.
 Whole new stage cap 8 GiB, per-QEMU-file cap 6 GiB; these are limits, not headroom
 claims. Retain all old archives/images/evidence, no broad cleanup.
