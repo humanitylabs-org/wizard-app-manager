@@ -106,6 +106,31 @@ def test_owner_unix_gateway_keeps_the_app_on_its_wizard_path(tmp_path, fake_tail
     assert next(a for a in reg["apps"] if a["id"] == "messenger")["view"]["url"] == "/messenger/"
 
 
+def test_a_stale_serve_read_does_not_move_an_owner_fronted_app(tmp_path, fake_tailscale, monkeypatch):
+    """One Serve read that misses the owner's gateway (Serve mid-rewrite) must not push Messenger onto its port."""
+    real = links.serve_status
+    owner = {"Proxy": "unix:/home/o/.wizard-os/messenger-owner/ingress.sock"}
+    state = {"stale": True}   # Serve looks mid-rewrite until wam pauses and reads it again
+
+    def flaky():
+        d = real()
+        d.setdefault("TCP", {})["8796"] = {"HTTPS": True}
+        site = d.setdefault("Web", {}).setdefault("box.tail1234.ts.net:8796", {}).setdefault("Handlers", {})
+        site.setdefault("/", {"Proxy": "http://127.0.0.1:8796"})
+        site["/messenger"] = {"Proxy": "http://127.0.0.1:1"} if state["stale"] else owner
+        return d
+
+    monkeypatch.setattr(links, "serve_status", flaky)
+    monkeypatch.setattr(links.time, "sleep", lambda _s: state.update(stale=False))
+    reg = {"apps": [{"id": "wizard-shell", "name": "Wizard", "category": "interface", "status": "running",
+                     "view": {"url": "http://127.0.0.1:8796/wizard-ux/"}},
+                    {"id": "messenger", "name": "Messenger", "category": "app", "status": "running",
+                     "view": {"url": "http://127.0.0.1:9245/"}}]}
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "messenger")["open"] == "/messenger/"
+    assert not res.get("gateway_skipped")
+
+
 def test_unpaired_box_gets_no_links_and_a_plain_note(tmp_path, fake_tailscale):
     calls, state = fake_tailscale
     state.write_text(json.dumps({"BackendState": "NeedsLogin", "Self": {"DNSName": ""}}))

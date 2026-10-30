@@ -16,8 +16,10 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
+CONFLICT_RECHECK_S = 1.0   # pause before re-reading Serve when a route looks taken (see publish.ensure)
 ADMIN_PORTS = {8480, 8443}   # the App Manager itself: box-only
 
 
@@ -213,6 +215,12 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
             """Publish one private route, or raise ValueError; an existing different route is never replaced."""
             config = serve_status()
             status = route_status(config, ts["host"], publish_port, path, target)
+            if status == "conflict" and not owner_fronted(config, ts["host"], publish_port, path):
+                # Re-read once before giving up: a read taken while Serve is being rewritten (another route being
+                # added) can miss the owner's gateway, and a false conflict moves the app onto its raw port.
+                time.sleep(CONFLICT_RECHECK_S)
+                config = serve_status()
+                status = route_status(config, ts["host"], publish_port, path, target)
             if status == "conflict" and owner_fronted(config, ts["host"], publish_port, path):
                 return  # the owner put an authenticating gateway in front of this app; keep it and its link
             if status == "conflict":
