@@ -509,3 +509,9 @@ Channel: latest only; Stable waits for James on #349.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/337. `releases/stable` → 0.3.86; `promotions/0.3.86.json` sha256 `1c97ddf50f773ceee10f6ce7596cfff4ac08a0660fd9679b41170488f44a0fa0`.
 Fast-tracked as **feature** on the owner's decision (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"), overruling the James hold on #349. Installed upgrade 0.3.84 → 0.3.86 passed: wizard-os docs/acceptance/promote-0.3.86.md.
+
+## 0.3.87 provenance
+
+Canonical: wizard-os releases/0.3.87.json (release train). SHA256: `c3d29d3e35081bd1db1a46d293afa6fea3322f00129cafc87b130ebd4ee11b8e`.
+Latest 0.3.86 with Wizard UX 53d209c5 -> bc665b42, Agent Service 24f3cd0a -> 44248704. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#712 Recommended fix: the Mac window buttons no longer cover the desktop bar; humanitylabs-org/wizard-ux#745 Recommended fix: keep the mobile reload banner above Chats; humanitylabs-org/wizard-ux#749 fix(landscapes): raise light Chats preview contrast; humanitylabs-org/wizard-ux#750 Recommended fix: Welcome and Settings › Look say "color", not "colour"; humanitylabs-org/wizard-agent-service#272 Recommended fix: refuse history too new for the approved runtime. Stable stays 0.3.86 until the installed upgrade test passes.
+Channel: on latest only.
