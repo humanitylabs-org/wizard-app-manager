@@ -98,7 +98,9 @@ except (OSError, ValueError):
 if mine and mine.get('state') == 'installing':
     mine = undo(mine)   # an earlier run was interrupted mid-install
 extra = []
-if not os.path.isdir(root):
+if not os.path.isdir(root) and mine:
+    state = 'owner-removed'   # the owner removed the copy the link installed: never put it back
+elif not os.path.isdir(root):
     state = 'installed'
 elif not mine:
     state = 'owner-managed'

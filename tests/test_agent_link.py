@@ -388,3 +388,15 @@ def test_owner_plugin_is_never_enabled_by_the_link(tmp_path, monkeypatch):
     out = agent_link.link(c)
     assert out['plugin'] == 'owner-managed' and out['linked'] and edits
     assert not any('WIZARD_LINK_PLUGIN=wizard-os' in a or 'WIZARD_LINK_ACCOUNT_CHANGES=chatgpt' in a for a in edits)
+
+
+def test_plugin_the_owner_removed_is_not_reinstalled(tmp_path):
+    """`hermes plugins remove wizard-os` deletes the folder; the link's marker stays, so a later installer run must
+    not install (and enable) it again."""
+    import shutil
+    (tmp_path / 'plugins').mkdir()
+    run_plugin(tmp_path, 'a' * 40)
+    shutil.rmtree(tmp_path / 'plugins/wizard-os')
+    assert run_plugin(tmp_path, 'b' * 40) == {'plugin': 'owner-removed', 'changed': False, 'managed': False}
+    assert not (tmp_path / 'plugins/wizard-os').exists()
+    assert len((tmp_path / 'calls.log').read_text().splitlines()) == 1
