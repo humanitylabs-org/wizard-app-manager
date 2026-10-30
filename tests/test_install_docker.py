@@ -106,6 +106,18 @@ exec "PYEXE" "$@"
     return p, home, root, calls, outcome
 
 
+@pytest.mark.parametrize('image', ['privsep-wam:595523fb', None])
+def test_explicit_backend_pin_or_default_reaches_real_install_entry(tmp_path, image):
+    expected = image or 'ghcr.io/humanitylabs-org/wizard-app-manager:latest'
+    p, _, root, calls, _ = sandbox(tmp_path, **({'WAM_IMAGE': image} if image else {}))
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text()
+    assert 'image inspect ' + expected in log and 'pull ' + expected in log
+    assert 'image: ' + expected in (root/'user-config/tipi-compose.yml').read_text()
+    if image:
+        assert 'wizard-app-manager:latest' not in log
+
+
 def test_missing_custody_never_stops_old_listener_or_links_agent(tmp_path):
     p, home, root, calls, outcome = sandbox(tmp_path, CUSTODY_RC="1")
     assert p.returncode != 0

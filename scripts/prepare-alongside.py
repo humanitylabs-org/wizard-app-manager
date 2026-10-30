@@ -15,6 +15,8 @@ import secrets
 import shutil
 import subprocess
 import sys
+import stat
+from contextlib import contextmanager
 
 BASE = Path('/var/lib/wizard-os')
 REPO = 'https://github.com/humanitylabs-org/wizard-app-manager.git'
@@ -35,15 +37,110 @@ def write(path, text, mode=0o644, uid=0, gid=0):
     os.chown(path, uid, gid)
 
 
+IMAGE_KEYS = ('WAM_IMAGE', 'WIZARD_SHELL_IMAGE', 'WIZARD_UX_IMAGE', 'WIZARD_AGENT_SERVICE_IMAGE')
+
+
+def image_overrides(environ):
+    """Values, not executable environment: retain literal explicit image choices."""
+    image = (r'(?:sha256:[0-9a-f]{64}|'
+             r'(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)*'
+             r'[a-z0-9]+(?:[._-][a-z0-9]+)*'
+             r'(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?'
+             r'(?:@sha256:[0-9a-f]{64})?)')
+    result = {}
+    for key in IMAGE_KEYS:
+        value = environ.get(key, '')
+        if value:
+            if len(value) > 512 or not re.fullmatch(image, value):
+                raise SystemExit('invalid explicit image reference: ' + key)
+            result[key] = value
+    return result
+
+
+def manager_environment(private_access, images):
+    return {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            'HOME': str(BASE), 'WIZARD_PRIVATE_ACCESS': private_access, **images}
+
+
+@contextmanager
+def protected_runtipi_setup(base, uid, gid):
+    """Pin control directory inodes across the trusted upstream first setup.
+
+    Refuse unsafe retained directories/files. Only a first upstream setup may
+    normalize modes on the two already-pinned directory descriptors; never walk
+    or chmod app data. No token is written until this context exits successfully.
+    """
+    opened = []
+    def directory(parent, name):
+        try:
+            os.mkdir(name, 0o755, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            created = False
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        opened.append(fd)
+        if created:
+            os.fchown(fd, uid, gid)
+        st = os.fstat(fd)
+        if st.st_uid not in (0, uid) or st.st_mode & 0o022:
+            raise ValueError('unsafe retained host authority control directory')
+        return fd, (st.st_dev, st.st_ino)
+    def endpoints(fd):
+        for name in ('wizard-host-approvals.json', '.wizard-host-authority.lock'):
+            try:
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or
+                    st.st_uid not in (0, uid) or st.st_mode & 0o022):
+                raise ValueError('unsafe retained host authority control endpoint')
+    try:
+        basefd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened.append(basefd)
+        st = os.fstat(basefd)
+        if st.st_uid not in (0, uid) or st.st_mode & 0o022:
+            raise ValueError('unsafe host authority parent')
+        rootfd, rootid = directory(basefd, 'runtipi')
+        controlfd, controlid = directory(rootfd, 'user-config')
+        endpoints(controlfd)
+        try:
+            os.stat('.env', dir_fd=rootfd, follow_symlinks=False)
+            first_setup = False
+        except FileNotFoundError:
+            first_setup = True
+        yield
+        # A path replacement (even to another protected directory) is not ours.
+        for parent, name, fd, identity in ((basefd, 'runtipi', rootfd, rootid),
+                                           (rootfd, 'user-config', controlfd, controlid)):
+            st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) != identity:
+                raise ValueError('host authority directory replaced during setup')
+            current = os.fstat(fd)
+            if current.st_uid not in (0, uid):
+                raise ValueError('foreign host authority directory after setup')
+            if first_setup:
+                os.fchmod(fd, 0o755)
+            elif current.st_mode & 0o022:
+                raise ValueError('retained host authority directory became writable')
+        endpoints(controlfd)
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+
+
 def main():
     if os.getuid() != 0:
         raise SystemExit('An administrator must approve host preparation once.')
     private_access = os.environ.get('WIZARD_PRIVATE_ACCESS', 'tailscale')
+    supplied_images = {k: os.environ.get(k, '') for k in IMAGE_KEYS}
     # Never resolve executables, Python/git hooks or shell startup in an agent's
     # inherited environment. get.sh invokes this with the isolated system Python.
     os.environ.clear()
     os.environ.update(PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                       HOME='/root', WIZARD_PRIVATE_ACCESS=private_access)
+    if private_access not in ('none', 'tailscale'):
+        raise SystemExit('invalid private access mode')
+    images = image_overrides(supplied_images)
     name, hh, ref = sys.argv[1:4]
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name) or not re.fullmatch(r'[A-Za-z0-9._/-]+', ref) or ref.startswith('-'):
         raise SystemExit('invalid account or source ref')
@@ -94,6 +191,10 @@ def main():
         run(['useradd', '--system', '--home-dir', BASE, '--shell', '/usr/sbin/nologin', 'wizard-system'])
         system = pwd.getpwnam('wizard-system')
     suid, sgid = system.pw_uid, system.pw_gid
+    base_metadata = BASE.lstat()
+    if (not stat.S_ISDIR(base_metadata.st_mode) or base_metadata.st_mode & 0o022 or
+            base_metadata.st_uid not in (0, suid)):
+        raise SystemExit('unsafe separated manager parent; refusing host preparation')
     os.chown(BASE, suid, sgid)
     write(BASE / '.wizard-privsep', name + '\n', uid=suid, gid=sgid)
     state = BASE / '.wizard-os'
@@ -113,10 +214,10 @@ def main():
         print('Reusing protected App Manager checkout ' + got)
     # Reuse upstream root setup, but grant only the system identity its Docker and
     # Tailscale operator. No invocation of the agent's shell or login scripts.
-    env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(BASE),
-           'WIZARD_PRIVATE_ACCESS': os.environ.get('WIZARD_PRIVATE_ACCESS', 'tailscale')}
-    run(['bash', tree / 'scripts/prepare-named-user.sh', 'wizard-system',
-         *(['--reassign-from', name] if migration else [])], env=env)
+    env = manager_environment(private_access, images)
+    with protected_runtipi_setup(BASE, suid, sgid):
+        run(['bash', tree / 'scripts/prepare-named-user.sh', 'wizard-system',
+             *(['--reassign-from', name] if migration else [])], env=env)
     # Fixed root helper is installed only in this owner-approved host phase.
     if not migration or not Path('/var/lib/wizard-os-server-access/migration-used').exists():
         run(['/usr/bin/python3', '-I', tree / 'scripts/install-server-access.py',

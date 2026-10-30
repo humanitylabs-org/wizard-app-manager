@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 import urllib.request
+import http.client
+import socket
 
 ROOT = Path('/root/storage-production')
 SOURCE = Path('/root/storage-proof/source')
@@ -327,16 +329,77 @@ def replay_state(compare):
     else: save('retired-before',current)
 
 
+def daemon_request(method, path, *, socket_path='/var/run/docker.sock'):
+    """Guest-only Docker API: structural HTTP status, never CLI wording."""
+    connection = http.client.HTTPConnection('localhost', timeout=20)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(20)
+    try:
+        sock.connect(socket_path)
+        connection.sock = sock
+        connection.request(method, path)
+        response = connection.getresponse()
+        raw = response.read(4 * 1024 * 1024 + 1)
+        assert len(raw) <= 4 * 1024 * 1024, 'bounded daemon response exceeded'
+        return response.status, None if not raw else json.loads(raw)
+    finally:
+        connection.close()
+        sock.close()
+
+
 def cleanup_containers():
-    # Entire guest is new and synthetic; never connects to any host daemon.
-    ids=run('docker','ps','-aq').split()
-    if ids: run('docker','rm','--force','--volumes',*ids)
-    assert run('docker','ps','-aq').strip()==''
-    for cid in ids:
-        p=subprocess.run(['docker','inspect','--type','container',cid],capture_output=True)
-        assert p.returncode==1
-        assert p.stderr.decode().strip().lower() in {'error: no such '+kind+': '+cid for kind in ('container','object')}
-    save('container-cleanup',{'removed_exact_ids':ids,'readback_absent':True})
+    # A fresh synthetic guest owns only the finite Wizard/Runtipi projects.
+    # Never delete another project or turn daemon/permission failures into absence.
+    report = {'attempted_exact_ids': [], 'removed_exact_ids': [], 'absent_exact_ids': [],
+              'unowned_exact_ids': [], 'readback_absent': False, 'passed': False}
+    first_error = None
+    def inventory():
+        status, rows = daemon_request('GET', '/containers/json?all=true')
+        assert status == 200 and isinstance(rows, list), 'daemon inventory unavailable'
+        assert all(isinstance(r, dict) and re.fullmatch('[0-9a-f]{64}', r.get('Id', '')) for r in rows)
+        assert len({r['Id'] for r in rows}) == len(rows)
+        return rows
+    def identity():
+        status, info = daemon_request('GET', '/info')
+        assert status == 200 and isinstance(info, dict) and isinstance(info.get('ID'), str) and info['ID']
+        return info['ID']
+    try:
+        engine = identity()
+        rows = inventory()
+        for row in rows:
+            labels = row.get('Labels') or {}
+            project = labels.get('com.docker.compose.project', '')
+            if re.fullmatch(r'(?:runtipi|wizard-(?:app|link|gw)-[a-z0-9]+|wizard-core)', project):
+                report['attempted_exact_ids'].append(row['Id'])
+            else:
+                report['unowned_exact_ids'].append(row['Id'])
+        for cid in report['attempted_exact_ids']:
+            try:
+                status, _ = daemon_request('DELETE', '/containers/' + cid + '?force=true&v=true')
+                assert status in (204, 404), 'exact owned container removal failed'
+                if status == 204:
+                    report['removed_exact_ids'].append(cid)
+                status, missing = daemon_request('GET', '/containers/' + cid + '/json')
+                assert status == 404 and isinstance(missing, dict) and isinstance(missing.get('message'), str)
+                report['absent_exact_ids'].append(cid)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        remaining = inventory()
+        assert identity() == engine, 'daemon changed during cleanup'
+        report['readback_absent'] = not remaining and not report['unowned_exact_ids']
+        assert report['readback_absent'], 'guest container inventory is not empty'
+        if first_error is not None:
+            raise first_error
+        report['passed'] = True
+    except Exception as exc:
+        # Preserve bounded progress even after a partial install/removal failure.
+        report['first_error_type'] = type(first_error or exc).__name__
+        if first_error is not None:
+            raise first_error from None
+        raise
+    finally:
+        save('container-cleanup', report)
 
 
 if __name__=='__main__':

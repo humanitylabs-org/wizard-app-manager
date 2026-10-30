@@ -419,15 +419,18 @@ def make_runner(base):
 
         def cleanup_guest(self):
             if 'real-source-bound-service-and-installed-backend' not in self.receipt['reached_phases']:return
-            if self.receipt.get('guest_container_cleanup'):return
+            if self.receipt.get('guest_container_cleanup'):
+                assert self.receipt['guest_container_cleanup'].get('passed') is True, 'prior exact cleanup failed; not replayed'
+                return
             # A failed Docker prerequisite can have no daemon yet. Once the
             # source packaging phase reached a live daemon, exact cleanup is mandatory.
             rc=self.guest('docker-daemon-cleanup-readiness','test -S /var/run/docker.sock',30,False)
             if rc!=0:
                 assert 'service_image' not in self.receipt,'expected Docker daemon unavailable at cleanup'
                 return
-            self.guest('cleanup-guest-containers','/usr/bin/python3 -I '+GUEST+' cleanup-containers',180)
+            rc=self.guest('cleanup-guest-containers','/usr/bin/python3 -I '+GUEST+' cleanup-containers',180,False)
             self.receipt['guest_container_cleanup']=self.collect_json('container-cleanup');self.save()
+            assert rc == 0 and self.receipt['guest_container_cleanup']['passed'], 'exact guest container cleanup failed'
 
         def diagnostics(self):
             # Serial and per-phase stdout already exist even before first SSH.
