@@ -536,5 +536,5 @@ Channel: on latest; Stable stays 0.3.88 until the installed upgrade test passes 
 ## stable 0.3.89
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/342. `releases/stable` → 0.3.89; `promotions/0.3.89.json` sha256 `aecad83472cd7ccacb57a016b8c050191d24888caa4e2d8fe48012fc2422a206`.
-Fast-tracked as **fix** on the owner's rule (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"). Installed upgrade 0.3.88 → 0.3.89 passed: wizard-os docs/acceptance/promote-0.3.89.md.
+Fast-tracked as **fix** on the owner's rule (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"). Installed upgrade 0.3.88 → 0.3.89 passed: wizard-os docs/acceptance/promote-0.3.89.md. Fresh install of 0.3.89 on a clean KVM guest passed (27 checks / 0 failed, wizard-os plugin installed and enabled): wizard-os docs/acceptance/fresh-0.3.89.md (humanitylabs-org/wizard-os#343).
 Rollback: point `releases/stable` back to 0.3.88.
