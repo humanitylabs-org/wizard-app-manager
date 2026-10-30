@@ -1228,6 +1228,7 @@ def bootstrap(c: Config) -> dict:
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
     updated = release_updates(c, rt, failed)
+    relink_fresh_agent(c, rt)
     if mode and mode.get("notice") == "pending":   # Notifications may have been installed just now
         settle_connection_mode(c, rt)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
@@ -1236,6 +1237,20 @@ def bootstrap(c: Config) -> dict:
     if mode:
         out["connection_mode"] = mode
     return out
+
+
+def relink_fresh_agent(c: Config, rt) -> dict | None:
+    """Every installer run on a fresh box: bring an existing agent's link up to this App Manager (e.g. the wizard-os
+    plugin the ChatGPT app signs in through, added after the box was installed). Idempotent: an agent already linked
+    is not restarted. Never fails the installer."""
+    try:
+        if alongside.load(c.home) or not {"hermes-agent", "wizard-agent-service"} <= installed_ids(rt):
+            return None
+        from .agent_link import link as agent_link
+        return agent_link(c, STORE)
+    except Exception as e:  # noqa: BLE001
+        print(f"note: agent not linked to the app gateway ({str(e)[:160]}); run `wam agent-link`", file=sys.stderr)
+        return None
 
 
 def settle_connection_mode(c: Config, rt) -> dict | None:
