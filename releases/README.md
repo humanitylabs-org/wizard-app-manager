@@ -579,3 +579,9 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/351 (release train). `releases/stable` → 0.3.94; `promotions/0.3.94.json` sha256 `f3a3d17caa09dfd5371dbc53527b238fade6ef60858e50b99d0e1287d6bf56fe`.
 Fast-tracked as **feature**. Installed upgrade 0.3.90 → 0.3.94 passed: wizard-os docs/acceptance/promote-0.3.94.md.
+
+## 0.3.95 provenance
+
+Canonical: wizard-os releases/0.3.95.json (release train). SHA256: `fb9522e0b8922a0d9943078a58da0e9ee10030301aafa6e9ec094cbc904cbac5`.
+Latest 0.3.94 with Wizard UX 7991db03 -> 6f920851. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
