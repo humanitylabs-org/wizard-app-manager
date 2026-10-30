@@ -244,6 +244,10 @@ print("; ".join(f"{a} ({v})" for a, v in r.items() if str(v).startswith("error")
     al_bad="$(printf '%s\n' "$al_rec" | sed -n 2p)"
     [ -z "$al_bad" ] || DEGRADED+=("these apps still run with an old agent address, so signing in through them may not reach your agent: $al_bad (fix: wam app restart <app>)")
   fi
+  # One plugin pin for every mode (wam.agent_link.plugin_ref): the release's Agent Service commit, as on fresh boxes.
+  # Without it `wizard link` reinstalled the commit the box was first linked with, so the plugin never moved
+  # forward while the apps that read it did ("Hermes plugin wizard-os >=0.4.0 required").
+  [ -n "${WIZARD_PLUGIN_REF:-}" ] || WIZARD_PLUGIN_REF="$(cd "$HERE" && "$PY" -c 'from wam.agent_link import plugin_ref; print(plugin_ref())' 2>/dev/null || true)"
   if [ ${#FAILED[@]} -gt 0 ]; then
     :
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \

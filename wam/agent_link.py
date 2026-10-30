@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -40,7 +41,21 @@ HERMES_BIN = '/opt/hermes/.venv/bin/hermes'
 PLUGIN_NAME = 'wizard-os'
 PLUGIN_SOURCE = 'humanitylabs-org/wizard-agent-service#hermes-plugin/wizard-os'
 # One immutable commit (never a moving branch): a box gets the plugin bytes this App Manager was tested with.
-PLUGIN_REF = '1f78352d20485c04e3583a42c9b85c04e233aece'
+PLUGIN_REF = '9233c1997e8abde380af75342a3eb3ab19437635'
+
+
+def plugin_ref() -> str:
+    """The plugin commit for this box: the release's own Agent Service commit (the plugin ships in that repo), so
+    plugin and service always move together; PLUGIN_REF only for an unpinned/developer run."""
+    path = os.environ.get('WIZARD_RELEASE_PINS')
+    try:
+        row = (json.loads(Path(path).read_text()).get('components') or {}).get('wizard-agent-service') or {} if path else {}
+        commit = row.get('commit') if isinstance(row, dict) else None
+        if row.get('repo') == PLUGIN_SOURCE.split('#', 1)[0] and isinstance(commit, str) and re.fullmatch(r'[0-9a-f]{40}', commit):
+            return commit
+    except (OSError, ValueError, AttributeError):
+        pass
+    return PLUGIN_REF
 # Providers whose sign-ins the agent's account broker may add/reconnect/remove (wizard-os plugin 0.4.2+).
 ACCOUNT_CHANGES = 'chatgpt'
 
@@ -280,7 +295,7 @@ def ensure_plugin(docker, engine):
     """Install the pinned wizard-os plugin into the agent's data (stock `hermes plugins install`, as uid 1000).
     Returns {plugin: installed|refreshed|current|owner-managed|owner-modified, changed}. Raises ValueError."""
     q = subprocess.run(docker + ['exec', '-u', '1000:1000', engine, HERMES_PY, '-c', PLUGIN,
-                                 HERMES_BIN, PLUGIN_SOURCE, PLUGIN_REF, PLUGIN_NAME],
+                                 HERMES_BIN, PLUGIN_SOURCE, plugin_ref(), PLUGIN_NAME],
                        capture_output=True, text=True, timeout=330)
     if q.returncode:
         raise ValueError((q.stderr or q.stdout).strip()[-300:] or 'wizard-os plugin not installed')
