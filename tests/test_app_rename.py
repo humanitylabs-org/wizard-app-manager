@@ -348,3 +348,11 @@ def test_new_record_from_an_explicit_repo(tmp_path, monkeypatch):
 def test_migrate_refuses_a_bad_repo(box):
     c, rt, fs, installs = box
     assert "bad repo" in ar.migrate(c, "cinequeue", "movies", repo="../x")["error"] and not installs
+
+
+def test_owner_ui_state_follows_the_rename():
+    doc = {"desks": [{"wins": [{"appId": "usuals", "url": "/usuals/"}, {"appId": "other"}]}],
+           "in_development": ["usuals", "food", "photos"], "name": "usuals"}
+    out = ar.rename_in_owner_ui(doc, "usuals", "food")
+    assert out["desks"][0]["wins"][0] == {"appId": "food", "url": "/usuals/"} and out["desks"][0]["wins"][1] == {"appId": "other"}
+    assert out["in_development"] == ["food", "photos"] and out["name"] == "usuals"

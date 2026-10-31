@@ -189,6 +189,28 @@ def rename_in_updates_state(doc: dict, old: str, new: str) -> dict:
     return out
 
 
+OWNER_UI_FILES = ("launcher.json", "workspaces.json")   # <wizard-os home> shell state that names apps by id
+
+
+def rename_in_owner_ui(doc, old: str, new: str):
+    """Shell state (open desks' windows `appId`, launcher `in_development`): exact references to `old` become `new`.
+    Window urls stay; the gateway redirects an old app path to the new one."""
+    if isinstance(doc, dict):
+        out = {}
+        for k, v in doc.items():
+            if k in ("appId", "app_id") and v == old:
+                v = new
+            elif k == "in_development" and isinstance(v, list):
+                v = list(dict.fromkeys(new if x == old else x for x in v))
+            else:
+                v = rename_in_owner_ui(v, old, new)
+            out[k] = v
+        return out
+    if isinstance(doc, list):
+        return [rename_in_owner_ui(x, old, new) for x in doc]
+    return doc
+
+
 def rename_compose_override(text: str, old: str, new: str, services: set[str]) -> str:
     """The owner's user-config compose override: a service block named after the old id is renamed when the new
     recipe's service is named after the new id, and so is its name in wam's x-wizard-networks record (so `wam network
@@ -438,7 +460,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
     files = {"grants": "/data/state/wizard-grants.json", "router": router,
              "override": po["user"] + "/docker-compose.yml"}
     saved_files: dict[str, bytes | None] = {k: rt_read(p) for k, p in files.items()}
-    local = {"routes": wos / "routes.json", **{f: wos / f for f in CARRY_STATE_FILES}}
+    local = {"routes": wos / "routes.json", **{f: wos / f for f in CARRY_STATE_FILES + OWNER_UI_FILES}}
     saved_local = {k: (p.read_bytes() if p.is_file() else None) for k, p in local.items()}
     for k, v in {**saved_files, **saved_local}.items():
         if v is not None:
@@ -518,6 +540,15 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             if (s := saved_local[f]) is not None:
                 local[f].write_text(json.dumps(rename_in_updates_state(json.loads(s), old, new),
                                                indent=2) + "\n")
+        for f in OWNER_UI_FILES:
+            if (s := saved_local[f]) is not None:
+                try:
+                    doc = json.loads(s)
+                except ValueError:
+                    continue
+                if (fixed := rename_in_owner_ui(doc, old, new)) != doc:
+                    local[f].write_text(json.dumps(fixed, indent=2) + "\n")
+                    log(f"{f} carried")
         if old in network.host_access_allowed(c.home) and new not in network.host_access_allowed(c.home):
             network.set_host_access_allowed(c.home, new, True)
             added["host_access"] = True
