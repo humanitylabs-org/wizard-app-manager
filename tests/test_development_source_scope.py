@@ -90,3 +90,83 @@ def test_design_warnings_use_the_same_nonserved_scope(tmp_path):
     (root / 'web/tests').mkdir()
     (root / 'web/tests/served.js').write_text('window.alert("runtime");')
     assert any('web/tests/served.js' in r['detail'] for r in builder.design_rows(root))
+
+
+@pytest.mark.parametrize(('filename', 'content'), [
+    ('Dockerfile', 'FROM node:22\nCMD ["npx", "serve", "tests"]\n'),
+    ('Containerfile', 'FROM node:22\nCMD npx serve tests\n'),
+    ('serve.sh', '#!/bin/sh\nexec npx serve tests\n'),
+    ('runtipi/docker-compose.yml', 'services:\n  app:\n    command: npx serve tests\n'),
+    ('runtipi/docker-compose.yml', 'services:\n  app:\n    build: tests\n'),
+])
+def test_runtime_entrypoints_keep_development_trees_in_scope(tmp_path, filename, content):
+    root = app(tmp_path)
+    (root / 'tests').mkdir()
+    (root / 'tests/app.js').write_text(BAD)
+    target = root / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    assert forbidden(root)
+
+
+@pytest.mark.parametrize('command', ['npm start', 'npm run serve-ui', 'npm test', '["npm", "run", "test"]'])
+def test_runtime_package_scripts_are_followed_but_unused_tests_are_not(tmp_path, command):
+    import json
+    root = app(tmp_path)
+    (root / 'tests').mkdir()
+    (root / 'tests/app.js').write_text(BAD)
+    (root / 'package.json').write_text(json.dumps({'scripts': {
+        'test': 'node tests/app.js', 'start': 'npm run serve-ui',
+        'serve-ui': 'npx serve tests'
+    }}))
+    (root / 'Dockerfile').write_text('FROM node:22\nCMD ' + command + '\n')
+    assert forbidden(root)
+
+
+@pytest.mark.parametrize(('filename', 'content'), [
+    ('web/app.js', "// import '../tests/fixture.js'\nWizardApp.theme.get();"),
+    ('web/app.js', "/* import '../tests/fixture.js' */\nWizardApp.theme.get();"),
+    ('server.py', "# serve 'tests'\nprint('app')\n"),
+    ('Dockerfile', '# serve tests\nFROM node:22\nCMD npx serve web\n'),
+    ('runtipi/docker-compose.yml', 'services:\n  app:\n    command: npx serve web # tests is QA only\n'),
+])
+def test_comment_only_development_mentions_are_not_runtime_references(tmp_path, filename, content):
+    root = app(tmp_path)
+    (root / 'tests').mkdir()
+    (root / 'tests/app.js').write_text(BAD)
+    target = root / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    assert not forbidden(root)
+
+
+def test_package_test_script_alone_does_not_make_harness_runtime(tmp_path):
+    import json
+    root = app(tmp_path)
+    (root / 'tests').mkdir()
+    (root / 'tests/app.js').write_text(BAD)
+    (root / 'package.json').write_text(json.dumps({'scripts': {
+        'test': 'node tests/app.js', 'start': 'npx serve web'
+    }}))
+    assert not forbidden(root)
+
+
+def test_transitive_entrypoint_in_development_tree_is_also_runtime(tmp_path):
+    root = app(tmp_path)
+    for directory in ['ops', 'tests']:
+        (root / directory).mkdir()
+    (root / 'runtipi').mkdir()
+    (root / 'runtipi/docker-compose.yml').write_text('services:\n  app:\n    command: sh ops/start.sh\n')
+    (root / 'ops/start.sh').write_text('exec npx serve tests\n')
+    (root / 'tests/app.js').write_text(BAD)
+    assert forbidden(root)
+
+
+def test_transitive_import_in_development_tree_is_also_runtime(tmp_path):
+    root = app(tmp_path)
+    for directory in ['qa', 'tests']:
+        (root / directory).mkdir()
+    (root / 'web/app.js').write_text("import '../tests/loader.js';")
+    (root / 'tests/loader.js').write_text("import '../qa/app.js';")
+    (root / 'qa/app.js').write_text(BAD)
+    assert forbidden(root)

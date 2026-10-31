@@ -16,7 +16,10 @@ Top-level `tests/`, `test/`, `qa/` and `ops/` harnesses are omitted only when bo
 outside those trees. This uses existing view metadata, not an app-local ignore
 file. Missing, ambiguous or escaping metadata keeps the full scan. A runtime
 import, URL or server-path reference to a development tree brings the whole tree
-back into scope; nested paths such as `web/tests/` are never omitted. Symlinks
+back into scope, including transitive entrypoints. Dockerfile/Containerfile and
+shell entrypoints, plain YAML command/build paths, and package runtime scripts
+are inspected; unused test scripts and language comments are not runtime
+references. Nested paths such as `web/tests/` are never omitted. Symlinks
 remain errors, including in development trees. The canonical style policy and
 its strict/new-line ratchet are unchanged. This lint is not a JavaScript sandbox;
 it does not execute a server to infer dynamic routes.
