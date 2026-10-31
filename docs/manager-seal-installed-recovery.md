@@ -84,6 +84,12 @@ failing an update, retrying, changing product code, or trusting hostile optional
 config. A source-pinned audit is included in the new receipt/static preflight.
 A separately reviewed product contract or explicit permission for a different
 multi-action backup/restore workflow is needed for later lifecycle acceptance.
+The trusted enrollment CLI is rebuilt separately from unchanged source during
+runtime assembly, not embedded in backend main.js.map. Static preflight binds
+its source through the complete original manifest; backend module audit sources
+must additionally match the retained backend sourcemap. The unsubmitted
+`d230066d3b97` stage failed only that overly broad CLI-in-backend-map assertion;
+it remains untouched and counts in retained storage, alongside `73d719f3c6ce`.
 
 ## Install-time prune refusal accounting (QA only)
 

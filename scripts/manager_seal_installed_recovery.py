@@ -118,6 +118,7 @@ def audit_update_rollback_contract(root):
         'backup_restore_selects_archive_filename_not_policy_anchor': True,
         'backup_restore_does_not_recreate_running_runtime': True,
         'trusted_stage_allows_one_new_pair_retaining_previous': True,
+        'trusted_cli_built_separately_from_backend_bundle': True,
         'second_distinct_stage_with_previous_refused': True,
         'requested_two_post_contract_supported': False, 'transactions_added': False,
         'runner_ends_after': 'restart', 'production_changed': False}

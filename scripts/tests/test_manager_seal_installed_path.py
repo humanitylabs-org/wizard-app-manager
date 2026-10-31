@@ -146,6 +146,7 @@ await new Function('ForbiddenException','UnauthorizedException','return (async()
         self.assertFalse(result['transactions_added'])
         self.assertTrue(result['automatic_failure_recovery_is_not_accepted_rollback_transaction'])
         self.assertEqual(result['runner_ends_after'], 'restart')
+        self.assertTrue(result['trusted_cli_built_separately_from_backend_bundle'])
         self.assertEqual(len(result['source_pins']), 8)
 
     def test_actual_http_javascript_headers_bound_plaintext_and_transport(self):
