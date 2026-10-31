@@ -299,7 +299,9 @@ class GuestStatic(unittest.TestCase):
         src = GUEST.read_text()
         self.assertIn("'POSTGRES_PASSWORD': secrets.token_hex(24)", src)
         self.assertNotIn("read_text().split('=')", src)
-        self.assertIn("'project': PROJECTS[arm]" if False else "ARM_PROJECT = {'A': 'msq-a', 'B': 'msq-b', 'C': 'runtipi'}", src)
+        self.assertIn("ARM_PROJECT = {'A': 'msq-a', 'B': 'msq-b', 'C': 'runtipi'}", src)
+        G = load('ms_guest_projects', GUEST)
+        self.assertEqual(G.ARM_PROJECT, C.PROJECTS); self.assertEqual(set(G.CLEANUP_PROJECTS), set(C.PROJECTS.values()))
 
     def test_release_pins_entry_matches_product(self):
         src = tree_file('install.sh').decode()
