@@ -91,7 +91,11 @@ selection and accounting negatives.
 
 The fresh stage is canonical `/srv/work/manager-seal-installed-<sha12>` with root
 0700, explicit per-file SOURCE/SIDECARS hashes/modes and no wildcards in the QA
-reuse exception list. Preserve every old stage. Static preflight is Python
+reuse exception list. Count non-QA baseline membership from the retained manifest
+minus that explicit list; do not inherit an earlier stage's magic count when an
+existing QA helper becomes an exception. A failed static stage is preserved;
+corrections get a new commit and new canonical root, never in-place remote edits.
+Preserve every old stage. Static preflight is Python
 `-I -S -B`; capacity remains 4 GiB retained-plus-pending, 1 GiB per run, 200 GiB
 free reserve. No Docker calls, runtime execution or sustained remote work belongs
 to staging/static preflight. Fresh installed acceptance remains for the parent.

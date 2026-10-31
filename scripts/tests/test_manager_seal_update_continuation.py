@@ -194,6 +194,20 @@ class UpdateSequence(unittest.TestCase):
 
 
 class SourceAndCapture(unittest.TestCase):
+    def test_reuse_count_recomputed_when_existing_review_helper_becomes_qa(self):
+        prior = {'files': {'scripts/manager_seal_installed_review.ts':'qa', 'packages/backend/main.ts':'product'}}
+        exceptions = {'scripts/manager_seal_installed_review.ts', 'scripts/new-qa.py'}
+        reuse = {'unchanged_export_files':1, 'qa_exceptions':sorted(exceptions),
+                 'full_non_qa_export_equal':True, 'backend_rebuilt':False}
+        self.assertEqual(update.assert_reuse_closure(reuse, prior, exceptions),1)
+        with self.assertRaisesRegex(AssertionError, 'baseline count drift'):
+            update.assert_reuse_closure(dict(reuse,unchanged_export_files=2),prior,exceptions)
+
+    def test_reuse_wildcard_and_product_exceptions_refused(self):
+        for exception in ('scripts/*.py', 'packages/backend/main.ts'):
+            with self.assertRaisesRegex(AssertionError, 'QA exception scope widened'):
+                update.assert_reuse_closure({}, {'files':{}}, {exception})
+
     def test_source_pinned_missing_anchor_transition_and_grant_fixture(self):
         result = update.source_contract(ROOT)
         self.assertFalse(result['rollback_transaction_prepared'])

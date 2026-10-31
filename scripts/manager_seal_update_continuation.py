@@ -10,6 +10,17 @@ COMMAND_V1 = 'import time; time.sleep(1800)'
 COMMAND_V2 = COMMAND_V1+' # trusted revision 2'
 
 
+def assert_reuse_closure(reuse, prior_manifest, exceptions):
+    """Count the actual non-QA baseline, never inherit a stale stage magic total."""
+    assert all(path.startswith(('scripts/', 'docs/')) and not any(c in path for c in '*?[')
+               for path in exceptions), 'QA exception scope widened'
+    assert set(reuse['qa_exceptions']) == set(exceptions)
+    expected = len(set(prior_manifest['files'])-set(exceptions))
+    assert reuse['unchanged_export_files'] == expected, 'non-QA baseline count drift'
+    assert reuse['full_non_qa_export_equal'] and reuse['backend_rebuilt'] is False
+    return expected
+
+
 def source_contract(root):
     """Exact source/line pins; do not mistake snapshot reinput for anchor promotion."""
     root = Path(root)
