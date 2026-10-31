@@ -139,10 +139,19 @@ def rename_in_grants(doc: dict, old: str, new: str) -> dict:
     return out
 
 
-def rename_in_routes(doc: dict, old: str, new: str) -> dict:
+def _view_path(w: dict) -> str | None:
+    v = (w or {}).get("view")
+    p = v.get("path") if isinstance(v, dict) else None
+    return p if isinstance(p, str) and p.startswith("/") else None
+
+
+def rename_in_routes(doc: dict, old: str, new: str, old_view: str | None = None, new_view: str | None = None) -> dict:
     """<wizard-os home>/routes.json: the app's entry moves to the new id; a staging label that carries the old id
-    (cinequeue-next) carries the new one (movies-next). The gateway path (`view`) is the owner's gateway config and
-    stays as it is."""
+    (cinequeue-next) carries the new one (movies-next). The gateway path (`view`) follows the app's own address when
+    it was the app's old address: the old release's declared view path (or `/<old>/`) becomes the new release's
+    declared path (or `/<new>/`), and a staged `/<old>-next/` becomes `/<new>-next/`. A path the owner chose for
+    themselves stays as it is."""
+    old_view, new_view = old_view or f"/{old}/", new_view or f"/{new}/"
     out = {}
     for k, v in (doc or {}).items():
         if k == old and isinstance(v, dict):
@@ -150,6 +159,11 @@ def rename_in_routes(doc: dict, old: str, new: str) -> dict:
             st = v.get("staged_as")
             if isinstance(st, str) and (st == old or st.startswith(old + "-")):
                 v["staged_as"] = new + st[len(old):]
+            view = v.get("view")
+            if view in (old_view, f"/{old}/"):
+                v["view"] = new_view
+            elif isinstance(view, str) and view.startswith(f"/{old}-"):
+                v["view"] = f"/{new}-" + view[len(old) + 2:]
             k = new
         out[k] = v
     return out
@@ -549,6 +563,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         return {"error": f"the source of {old} publishes {rec.get('id')}, not {new}"}
     info = (rt.app(new_urn) or {}).get("info") or {}   # fetches the new recipe into the store folder
     w = _wizard_md(c, new)
+    old_view = _view_path(_wizard_md(c, old))
     if old not in renamed_from(w):
         return {"error": f"{new} does not declare renamed_from: [{old}] in its wizard.md; refusing to move {old}'s data"}
     po, pn = _paths(store, old), _paths(store, new)
@@ -646,8 +661,10 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             log("Connection Router routes carried")
         if (r := saved_local["routes"]) is not None:
             doc = json.loads(r)
-            local["routes"].write_text(json.dumps(rename_in_routes(doc, old, new), indent=2) + "\n")
-            log("gateway route carried")
+            fixed = rename_in_routes(doc, old, new, old_view, _view_path(w))
+            local["routes"].write_text(json.dumps(fixed, indent=2) + "\n")
+            was, now = (doc.get(old) or {}).get("view"), (fixed.get(new) or {}).get("view")
+            log("gateway route carried" + (f" (view {was} -> {now}: serve {now} and redirect {was} to it)" if was != now else ""))
         for f in CARRY_STATE_FILES:
             if (s := saved_local[f]) is not None:
                 local[f].write_text(json.dumps(rename_in_updates_state(json.loads(s), old, new),
