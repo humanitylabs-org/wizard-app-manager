@@ -413,7 +413,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
                                                "config": saved, "files": files,
                                                "local": {k: str(p) for k, p in local.items()}}, indent=2))
     (bdir / "app.json").chmod(0o600)
-    before = rt_tree_summary(po["data"])
+    before = {"files": 0, "bytes": 0}
     steps: list[str] = []
     added: dict = {"secret": None, "host_access": False}
     log = lambda s: (steps.append(s), print(f"rename {old} -> {new}: {s}", file=sys.stderr, flush=True))  # noqa: E731
@@ -454,6 +454,8 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
             park = cli.free_port(int(old_port) + 1000 if int(old_port) < 64000 else 20000, avoid={int(old_port)})
             rt.req("PATCH", f"/app-lifecycle/{old_urn}/update-config", {**saved, "port": park}, timeout=120)
             log(f"old app's port {old_port} parked on {park}")
+        # measured once the old app is stopped and its settings (app.env) rewritten for the parked port
+        before.update(rt_tree_summary(po["data"]))
         rt_copy_tree(po["data"], pn["data"]) if rt_exists(po["data"]) else None
         after = rt_tree_summary(pn["data"])
         if after != before:
