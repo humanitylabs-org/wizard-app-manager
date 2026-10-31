@@ -331,3 +331,20 @@ def test_new_record_prefers_the_renamed_repo_with_the_same_commit(tmp_path, monk
     del recs["humanitylabs-org/movies"]
     monkeypatch.setattr(index, "search", lambda idx, id: [{"repo": "someone/movies"}])
     assert ar._new_record(c, "cinequeue", "movies")["repo"] == "humanitylabs-org/cinequeue"   # never a namesake
+
+
+def test_new_record_from_an_explicit_repo(tmp_path, monkeypatch):
+    """An app that moved from a folder of a bigger repo to its own repo: the new release comes from that repo."""
+    from wam import index, private
+    c = _box(tmp_path, {"outline-streaming-demo": {"repo": "humanitylabs-org/wizard-ux", "private": True}})
+    monkeypatch.setattr(index, "resolve", lambda idx, ref: (_ for _ in ()).throw(index.IndexError_("not listed")))
+    seen = []
+    monkeypatch.setattr(private, "prepare", lambda root, store, repo, expected_id=None, **k:
+                        seen.append((repo, expected_id)) or {"id": expected_id, "repo": repo, "private": True})
+    rec = ar._new_record(c, "outline-streaming-demo", "outline", "humanitylabs-org/outline")
+    assert rec["repo"] == "humanitylabs-org/outline" and seen == [("humanitylabs-org/outline", "outline")]
+
+
+def test_migrate_refuses_a_bad_repo(box):
+    c, rt, fs, installs = box
+    assert "bad repo" in ar.migrate(c, "cinequeue", "movies", repo="../x")["error"] and not installs

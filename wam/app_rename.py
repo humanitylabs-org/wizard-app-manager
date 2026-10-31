@@ -257,9 +257,19 @@ def _paths(store: str, app_id: str) -> dict:
     return {"data": f"/data/app-data/{store}/{app_id}", "user": f"/data/user-config/{store}/{app_id}"}
 
 
-def _new_record(c, old: str, new: str) -> dict:
-    """The new id's install record, from the same source the old app came from."""
+def _new_record(c, old: str, new: str, repo: str | None = None) -> dict:
+    """The new id's install record, from the same source the old app came from, or from `repo` when the app moved
+    to its own repo (e.g. a package that lived in a folder of a bigger repo)."""
     from . import cli, private
+    if repo:
+        from . import index
+        try:
+            rec = index.resolve(c.index, repo)
+        except (index.IndexError_, OSError, ValueError):
+            rec = None
+        if rec and rec.get("id") == new:
+            return rec
+        return private.prepare(c.runtipi_root, cli.STORE, repo, expected_id=new)
     src = _source(c.runtipi_root, cli.STORE, old)
     if (src.get("private") or src.get("local")) and isinstance(src.get("repo"), str):
         from . import test_catalog
@@ -357,7 +367,7 @@ def _verify(c, rt, new: str, want_status: str, *, settle: float, probe_seconds: 
 
 
 def migrate(c=None, old: str = "", new: str | None = None, *, dry_run: bool = False, settle: float = 15,
-            probe_seconds: float = 120, backup_root: Path | None = None) -> dict:
+            probe_seconds: float = 120, backup_root: Path | None = None, repo: str | None = None) -> dict:
     """Move installed app `old` to id `new` (default: what its source now publishes). See the module docstring."""
     from . import cli
     c = c or cli.Config()
@@ -370,13 +380,13 @@ def migrate(c=None, old: str = "", new: str | None = None, *, dry_run: bool = Fa
         return {"error": "another app rename is running"}
     try:
         return _migrate(c, old, new, dry_run=dry_run, settle=settle, probe_seconds=probe_seconds,
-                        backup_root=backup_root)
+                        backup_root=backup_root, repo=repo)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
 
-def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
+def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=None):
     from . import cli, network
     store = cli.STORE
     rt = c.runtipi()
@@ -400,7 +410,11 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
     old_port, old_status = row.get("port"), row.get("status")
     if old_status not in ("running", "stopped"):
         return {"error": f"{old} is {old_status}; try again when it is running or stopped"}
-    rec = _new_record(c, old, new)
+    if repo is not None and not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+        return {"error": f"bad repo {repo!r} (owner/name)"}
+    if new is None and repo:
+        return {"error": "--repo needs the new id"}
+    rec = _new_record(c, old, new, repo)
     if rec.get("id") != new:
         return {"error": f"the source of {old} publishes {rec.get('id')}, not {new}"}
     info = (rt.app(new_urn) or {}).get("info") or {}   # fetches the new recipe into the store folder
