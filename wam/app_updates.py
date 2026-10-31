@@ -360,15 +360,18 @@ def _notify(c, title: str, message: str, priority: str = "default", required: bo
         return False
 
 
-def _summary(done: list, rolled: list, failed: list, needs: list) -> tuple[str, str, str] | None:
+def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list = ()) -> tuple[str, str, str] | None:
     """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue)."""
-    if not (done or rolled or failed or needs):
+    if not (done or rolled or failed or needs or renamed):
         return None
 
     def nm(r: dict) -> str:
         return r.get("name") or r["id"]
 
     parts = []
+    if renamed:
+        parts.append("Moved " + ", ".join(nm(r) for r in renamed) + " to " + ("its" if len(renamed) == 1 else "their")
+                     + " new release; everything you saved came along.")
     if done:
         parts.append("Updated " + ", ".join(f"{nm(d)} ({d['to_version'] or d['to']})" for d in done) + ".")
     if rolled:
@@ -380,11 +383,12 @@ def _summary(done: list, rolled: list, failed: list, needs: list) -> tuple[str, 
         parts.append("Could not update " + "; ".join(f"{nm(f)}: {f['reason']}" for f in failed)
                      + ". Ask your Wizard to look at it.")
     bad = rolled or failed or needs
-    title = "App updates need a look" if bad else (f"{len(done)} app{'s' if len(done) != 1 else ''} updated")
+    n = len(done) + len(renamed)
+    title = "App updates need a look" if bad else (f"{n} app{'s' if n != 1 else ''} updated")
     return title, " ".join(parts), "high" if failed else "default"
 
 
-def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True) -> dict:
+def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -412,6 +416,28 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if dry_run:
             return {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
         done, rolled, failed, needs = [], [], [], []
+        renamed = []
+        if not only:
+            # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
+            # back on its own; its update, if any, then runs under the new id on the next run.
+            from . import app_rename
+            try:
+                moves = (renames or app_rename.rename_due)(c, rt)
+            except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
+                print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
+                moves = []
+            for res in moves:
+                if res.get("renamed"):
+                    renamed.append({"id": res["to"], "name": res.get("name") or res["to"]})
+                else:
+                    failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
+                                   "reason": "moving it to its new name did not work, so it stays as it was"
+                                   + ("" if res.get("rolled_back", True) else " (needs a look)"),
+                                   "rollback": res})
+            if renamed:
+                moved = {r["id"] for r in renamed}
+                rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+                due = [r for r in rows if not r["skip"] and r["id"] not in moved]
         fails = _failed(c.home)
         for r in due:
             urn = f"{r['id']}:{cli.STORE}"
@@ -454,14 +480,14 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             cli.write_registry(c, rt)
         except Exception:  # noqa: BLE001
             pass
-        last = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        last = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "renamed": [x["id"] for x in renamed],
                 "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
                 "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
         _write(c.home, failed=fails, last=last)
-        msg = _summary(done, rolled, failed, needs)
+        msg = _summary(done, rolled, failed, needs, renamed)
         if notify and msg:
             _notify(c, *msg)
-        return {"started": True, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
+        return {"started": True, "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
                 "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None}
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
