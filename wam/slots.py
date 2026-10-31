@@ -17,6 +17,13 @@ def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
     return defaults(json.loads(path.read_text())["slots"])
 
 
+def multi_slots(path: Path = DEFAULTS_FILE) -> set[str]:
+    """Spots and capabilities a consumer reaches every provider of: the `multi` system spots (ai-connection, chats)
+    plus defaults.json `multi_capabilities` (e.g. health-data, read by Health from every wearable connector)."""
+    extra = (json.loads(path.read_text()).get("multi_capabilities") or {}).get("ids") or []
+    return {k for k, v in load_defaults(path).items() if (v or {}).get("multi")} | {str(x) for x in extra}
+
+
 # Apps that are no longer a slot default but are still installed on boxes and still updated from their repo.
 # wizard-shell: the pre-split bundle (UX + Agent Service in one image), built from the wizard-agent-service repo.
 RETIRED_REPOS = {"wizard-shell": "humanitylabs-org/wizard-agent-service"}

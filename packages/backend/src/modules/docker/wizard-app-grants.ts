@@ -299,6 +299,10 @@ type AppFile = {
   outgoing: Record<string, string>;
   incoming: { from: string; sha256: string }[];
   provider_endpoints?: Record<string, string>;
+  /** Every provider's own endpoint per grant target (`slot:<capability>` -> app id -> URL). `provider_endpoints`
+   * keeps one endpoint per target for older consumers; a front end over a spot several apps fill (Health over
+   * WHOOP, Oura...) reads this to reach all of them. Derived on every reconcile, never an owner override. */
+  provider_endpoints_all?: Record<string, Record<string, string>>;
   enforce: boolean;
   [key: string]: any;
 };
@@ -408,6 +412,7 @@ export async function reconcileAppGrants(
         outgoing: {},
         incoming: [...old.incoming],
         provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing))),
+        provider_endpoints_all: {},
       },
     });
     if (!adopted.has(app.manifest.id)) {
@@ -459,9 +464,16 @@ export async function reconcileAppGrants(
       }
       managed[provider.manifest.id] ??= [];
       managed[provider.manifest.id]?.push(digest);
+      const own = providerEndpoint(provider);
+      if (own) {
+        // Own-property check: a target id such as `constructor` must not resolve to Object.prototype.
+        const all = consumer.doc.provider_endpoints_all!;
+        if (!Object.hasOwn(all, g.to)) all[g.to] = {};
+        all[g.to]![provider.manifest.id] = own;
+      }
       const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
       const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
-      const endpoint = ownerOverride ? oldEndpoint : providerEndpoint(provider);
+      const endpoint = ownerOverride ? oldEndpoint : own;
       if (endpoint) {
         consumer.doc.provider_endpoints![g.to] = endpoint;
         if (!ownerOverride) {

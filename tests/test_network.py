@@ -95,6 +95,20 @@ def test_a_slot_links_only_the_owners_active_provider_unless_the_slot_is_multi()
     assert ("chat", "claude") in pairs and ("chat", "gpt") in pairs
 
 
+def test_health_data_is_a_multi_capability_so_health_reaches_every_wearable():
+    from wam import slots
+    multi = slots.multi_slots()
+    assert {"health-data", "ai-connection"} <= multi
+    assert "health-data" not in slots.load_defaults()      # a capability, not a system spot (no parking placeholder)
+    apps = [app("wizard-health", uses=["health-data"]), app("wizard-whoop", provides=["health-data"]),
+            app("wizard-oura", provides=["health-data"]), app("wizard-fitbit", provides=["health-data"]),
+            app("mailer", uses=["email"]), app("resend", provides=["email"]), app("smtp", provides=["email"])]
+    p = net.plan(apps, [], set(), slot_choice={"health-data": "wizard-whoop", "email": "smtp"}, multi_slots=multi)
+    pairs = reach(p)
+    assert {("wizard-health", x) for x in ("wizard-whoop", "wizard-oura", "wizard-fitbit")} <= pairs
+    assert ("mailer", "smtp") in pairs and ("mailer", "resend") not in pairs   # other spots keep one active provider
+
+
 def test_grants_and_router_requirements_are_declarations_too():
     apps = [app("wisdom", router=True), app("wizard-connection-router", provides=["connection-router"]),
             app("recorder"), app("transcriber", provides=["transcription"])]
