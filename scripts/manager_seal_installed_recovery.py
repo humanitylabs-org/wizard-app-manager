@@ -16,6 +16,17 @@ PRIOR_RECEIPT_SHA = '202efaaadc2ca6cf5a791290ac3639daf66d9d725cb43d403904af8a3af
 # Exact QA/doc-only exceptions. Everything else, including build inputs, must
 # have identical Git-export path membership, content and modes before reuse.
 QA_DELTA = frozenset({
+    'scripts/manager_seal_post_update_replay.py',
+    'scripts/tests/test_manager_seal_update_prune.py',
+    'docs/manager-seal-update-prune.md',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/SHA256.json',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/guard-ledger.jsonl',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/controller-ledger.jsonl',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/runtime-events.json',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/receipt.json',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/manager.sanitized.log',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/cleanup.json',
+    'scripts/tests/fixtures/manager-seal-update-ece1410307f5/old-installed-path.py',
     'scripts/manager_seal_installed_path.py',
     'scripts/manager_seal_update_continuation.py',
     'scripts/manager_seal_installed_review.ts',

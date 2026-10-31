@@ -1,0 +1,2074 @@
+{
+  "source": "ece1410307f54e6c6b47f4b81088459d624b9dd4",
+  "manifest_sha256": "1d823baee9d6b242b1f5d52212dc68e37e55dd4ff5ed52e8de3f89aef6d97cd8",
+  "phase": "terminal-update",
+  "first_installed_synthetic_path_pass": false,
+  "full_acceptance": false,
+  "RUNTIPI_ADMITTED": false,
+  "single_accepted_update_pass": false,
+  "successive_accepted_updates_pass": false,
+  "rollback_transaction_pass": false,
+  "official_image_pass": false,
+  "memory_caps": {
+    "build": 6442450944,
+    "manager": 1073741824,
+    "postgres": 1073741824,
+    "rabbit": 1073741824,
+    "guard": 268435456,
+    "fixture": 671088640,
+    "controller": 1073741824,
+    "launcher_headroom": 268435456,
+    "sentinels": 67108864,
+    "tmpfs_keeper": 33554432
+  },
+  "tmpfs_caps": {
+    "work": 5368709120,
+    "fixture": 67108864,
+    "postgres_data": 536870912,
+    "postgres_run": 16777216,
+    "postgres_tmp": 16777216,
+    "rabbit_data": 536870912,
+    "rabbit_logs": 16777216,
+    "rabbit_tmp": 16777216,
+    "manager_data": 268435456,
+    "manager_appdata": 67108864,
+    "manager_cache": 33554432,
+    "manager_tmp": 67108864,
+    "guard_tmp": 16777216,
+    "controller_tmp": 16777216,
+    "shmem": 805306368
+  },
+  "allocation_envelope": {
+    "source_stage": 67108864,
+    "tool_copies": 104857600,
+    "sanitized_logs": 67108864,
+    "new_artifacts": 134217728,
+    "control_and_ledger": 33554432,
+    "daemon_overlay_and_metadata_estimate": 268435456,
+    "margin": 398458880
+  },
+  "smaller_envelope_assessment": {
+    "candidate_additional_peak_bytes": 536870912,
+    "smaller_peak_proven": false,
+    "declared_current_peak_bytes": 1073741824,
+    "declared_components_without_margin_bytes": 675282944,
+    "observed_runs_are_not_upper_bounds": true,
+    "unproven_aggregate_bounds": [
+      "daemon_overlay_and_metadata_estimate",
+      "control_and_ledger_combined_outputs",
+      "all_future_lifecycle_receipts_and_allocation_rounding"
+    ],
+    "decision": "retain existing peak; stop before staging if admission rejects it"
+  },
+  "capacity_latest": {
+    "next_run_additional_peak_bytes": 1073741824,
+    "next_run_already_allocated_bytes": 105627648,
+    "not_yet_allocated_bytes": 968114176,
+    "retained_plus_next_peak_bytes": 3830886400,
+    "retained_plus_next_peak_limit_bytes": 4294967296,
+    "free_required_bytes": 215716478976,
+    "blockers": [],
+    "admitted": true,
+    "accounting": "per-run additional allocation; no lifetime quota; existing retained already deducted from free",
+    "free_bytes": 283876200448,
+    "retained_allocated_bytes": 2862772224,
+    "current_stage_allocated_bytes": 105627648
+  },
+  "backend_reuse": {
+    "production_source": "c44b1ac6dab07b94a75074169ffcd4a35fd6b87a",
+    "current_qa_source": "ece1410307f54e6c6b47f4b81088459d624b9dd4",
+    "unchanged_export_files": 1036,
+    "qa_exceptions": [
+      "docs/manager-seal-c92d-guard-producer-repair.md",
+      "docs/manager-seal-installed-first-path.md",
+      "docs/manager-seal-installed-recovery.md",
+      "docs/manager-seal-pinned-wire-readiness.md",
+      "docs/manager-seal-prune-sdk-repair.md",
+      "docs/manager-seal-startup-install-handoff.md",
+      "docs/manager-seal-update-continuation.md",
+      "docs/manager-seal-update-version.md",
+      "scripts/manager_seal_forward_guard.py",
+      "scripts/manager_seal_installed_capacity.py",
+      "scripts/manager_seal_installed_path.py",
+      "scripts/manager_seal_installed_recovery.py",
+      "scripts/manager_seal_installed_review.ts",
+      "scripts/manager_seal_runtime_events.py",
+      "scripts/manager_seal_store_http.py",
+      "scripts/manager_seal_update_continuation.py",
+      "scripts/manager_seal_update_schema_probe.py",
+      "scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/SHA256.json",
+      "scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/cleanup.json",
+      "scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/events.json",
+      "scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/ledger.jsonl",
+      "scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/receipt.json",
+      "scripts/tests/fixtures/manager-seal-guard-ledger-18e32355313b.jsonl",
+      "scripts/tests/fixtures/manager-seal-guard-ledger-5ae46c549e29.jsonl",
+      "scripts/tests/fixtures/manager-seal-prune-sdk.http",
+      "scripts/tests/fixtures/manager-seal-prune-sdk.json",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/SHA256.json",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/cleanup.json",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/controller-ledger.jsonl",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/manager.sanitized.log",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/old-continuation.py",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/receipt.json",
+      "scripts/tests/fixtures/manager-seal-update-9a016bb8c339/terminal-update-failure.json",
+      "scripts/tests/fixtures/manager_seal_wire/daemon-network-router.go",
+      "scripts/tests/fixtures/manager_seal_wire/network-list-retained.json",
+      "scripts/tests/fixtures/manager_seal_wire/network_filters_test.go",
+      "scripts/tests/fixtures/manager_seal_wire/public-sources.json",
+      "scripts/tests/fixtures/manager_seal_wire/sdk-filter-errors.go",
+      "scripts/tests/fixtures/manager_seal_wire/sdk-filter-parse.go",
+      "scripts/tests/fixtures/manager_seal_wire/sdk-filter-version.go",
+      "scripts/tests/fixtures/manager_seal_wire/sdk-network-list.go",
+      "scripts/tests/test_manager_seal_forward_guard.py",
+      "scripts/tests/test_manager_seal_installed_capacity.py",
+      "scripts/tests/test_manager_seal_installed_path.py",
+      "scripts/tests/test_manager_seal_network_filters.py",
+      "scripts/tests/test_manager_seal_prune_sdk.py",
+      "scripts/tests/test_manager_seal_update_continuation.py",
+      "scripts/tests/test_manager_seal_update_version.py"
+    ],
+    "backend_rebuilt": false,
+    "full_non_qa_export_equal": true
+  },
+  "offline_recovery_preflight": {
+    "exit_code": 0,
+    "termination_reason": null,
+    "log_complete": true,
+    "log_sha256": "e78bd08209b261cd24ff6085a4d98ae3ec4830e6febcbb4c00736229110a9068",
+    "log_bytes": 9642,
+    "sanitized": {
+      "raw_sha256": "e78bd08209b261cd24ff6085a4d98ae3ec4830e6febcbb4c00736229110a9068",
+      "raw_bytes": 9642,
+      "sanitized_sha256": "e78bd08209b261cd24ff6085a4d98ae3ec4830e6febcbb4c00736229110a9068",
+      "sanitized_bytes": 9642,
+      "redaction": "ANSI removed; sensitive and verbose HTTP header values redacted"
+    }
+  },
+  "offline_network_filter_preflight": {
+    "exit_code": 0,
+    "termination_reason": null,
+    "log_complete": true,
+    "log_sha256": "f5769a90d5420b98248eecc5456645ba2e681596461931fe6608d5de7a9d4579",
+    "log_bytes": 2912,
+    "sanitized": {
+      "raw_sha256": "f5769a90d5420b98248eecc5456645ba2e681596461931fe6608d5de7a9d4579",
+      "raw_bytes": 2912,
+      "sanitized_sha256": "f5769a90d5420b98248eecc5456645ba2e681596461931fe6608d5de7a9d4579",
+      "sanitized_bytes": 2912,
+      "redaction": "ANSI removed; sensitive and verbose HTTP header values redacted"
+    }
+  },
+  "operation": "owned-container-remove",
+  "cached_images": [
+    {
+      "id": "sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc",
+      "bytes": 290643404,
+      "digests": [
+        "postgres@sha256:862ffc2556a2db763f0439c8323490000cd01975d2798a845e4a8dd3a905862f"
+      ],
+      "volumes": [
+        "/var/lib/postgresql/data"
+      ]
+    },
+    {
+      "id": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+      "bytes": 174989577,
+      "digests": [
+        "rabbitmq@sha256:21577d148f4f7563a87d761862fa353f59348a094833ca8b1b1a46a8102dffce"
+      ],
+      "volumes": [
+        "/var/lib/rabbitmq"
+      ]
+    },
+    {
+      "id": "sha256:908ba820e904091ddd38402404fdde212ca2f14b61b33c621dfe134d635f8ce9",
+      "bytes": 345216194,
+      "digests": [],
+      "volumes": []
+    },
+    {
+      "id": "sha256:04133e3c92bb23638cec40f6696efecee9427c41c25305bc34d9629775b48d11",
+      "bytes": 1131430755,
+      "digests": [
+        "node@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd"
+      ],
+      "volumes": []
+    },
+    {
+      "id": "sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+      "bytes": 119488133,
+      "digests": [
+        "python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159"
+      ],
+      "volumes": []
+    }
+  ],
+  "network_filter_canary": {
+    "passed": true,
+    "installed_proof": false,
+    "zero_authority": true,
+    "same_incoming_query": "/networks?filters=%7B%22name%22%3A%7B%22agent-synthetic_migrated_agent-synthetic-seal%22%3Atrue%7D%7D",
+    "runs": [
+      {
+        "variant": "previous_mixed",
+        "status": 400,
+        "outcome": "invalid_filter",
+        "forwarded_target": "/networks?filters=%7B%22name%22%3A%7B%22agent-synthetic_migrated_agent-synthetic-seal%22%3Atrue%7D%2C%22id%22%3A%5B%220000000000000000000000000000000000000000000000000000000000000000%22%5D%7D",
+        "forward_count": 1,
+        "upstream_empty": null
+      },
+      {
+        "variant": "canonical",
+        "status": 200,
+        "outcome": "empty_list",
+        "forwarded_target": "/networks?filters=%7B%22id%22%3A%7B%220000000000000000000000000000000000000000000000000000000000000000%22%3Atrue%7D%2C%22name%22%3A%7B%22agent-synthetic_migrated_agent-synthetic-seal%22%3Atrue%7D%7D",
+        "forward_count": 1,
+        "upstream_empty": true
+      }
+    ]
+  },
+  "producer_protocol_witness": {
+    "sha256": "8563bd3393462f475cc034ec6f2eacee3ddad106d6fd27ea5fba6b99796951ed",
+    "producer": "Compose v2.40.0 / SDK v28.5.0",
+    "container_requests": 5,
+    "network_requests": 4,
+    "incoming_requests": 27,
+    "upstream_requests": 23,
+    "expected_refusals": 0,
+    "probe_refusals": 0,
+    "install_prune_refusals": 0,
+    "start_restart_prune_refusals": 0,
+    "network_discovery_misses": 4,
+    "paired_network_creations": 4
+  },
+  "public_entrypoints": {
+    "postgres": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5",
+    "rabbitmq": "74fb817b72664354317f6fc88e529e5c12dac2585596239f6e0416f1c096bb98"
+  },
+  "rabbit_cli_source": {
+    "public_image": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+    "path": "/opt/rabbitmq/sbin/rabbitmq-env",
+    "sha256": "4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af",
+    "release_source_sha256": "4593a53a99e9115feaeddb272e206b1d39c22fb9532f9c143fc682e78c9d62af",
+    "release": "v4.4.0",
+    "ctl_args_route_verified": true,
+    "full_source_pin_verified": true,
+    "run_escript_body_sha256": "41d31e2b5110c053486c3b16662814f43cb8a7fa4b79caed588c4232d502f40f",
+    "original_exit153_cause_proven": false
+  },
+  "rabbit_limit_canary": {
+    "public_image": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+    "user": "100:101",
+    "passed": true,
+    "original_specific_file_proven": false,
+    "runs": [
+      {
+        "kind": "canary-negative",
+        "fsize_soft_bytes": 33554432,
+        "fsize_hard_bytes": 33554432,
+        "container_id": "cee20bea2505ac978b45869b0978459305979b41440bd0388fa7e36ff4e9d36a",
+        "runtime_contract": {
+          "image": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+          "user": "100:101",
+          "readonly": true,
+          "memory": 1073741824,
+          "memory_swap": 1073741824,
+          "tmpfs": {
+            "/tmp": "size=16777216,uid=100,gid=101,mode=0700",
+            "/var/lib/rabbitmq": "size=536870912,uid=100,gid=101,mode=0700",
+            "/var/log/rabbitmq": "size=16777216,uid=100,gid=101,mode=0700"
+          },
+          "ulimits": [
+            {
+              "Hard": 0,
+              "Name": "core",
+              "Soft": 0
+            },
+            {
+              "Hard": 33554432,
+              "Name": "fsize",
+              "Soft": 33554432
+            }
+          ],
+          "pids": 256,
+          "cpus": 2000000000,
+          "shmem": 67108864,
+          "network": "278b1e8fb1f8f68de122ef10baa63628bba8114cf20306c42a5fa4e8c238203a",
+          "caps": [
+            "ALL"
+          ],
+          "security": [
+            "no-new-privileges:true"
+          ]
+        },
+        "server_started": true,
+        "limit_metadata": {
+          "uid": 100,
+          "gid": 101,
+          "exec_soft_bytes": 33554432,
+          "exec_hard_bytes": 33554432,
+          "pid1_soft_bytes": 33554432,
+          "pid1_hard_bytes": 33554432
+        },
+        "public_files": {
+          "/opt/rabbitmq/escript/rabbitmqctl": {
+            "bytes": 7414174,
+            "sha256": "863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0"
+          },
+          "/opt/rabbitmq/escript/rabbitmq-diagnostics": {
+            "bytes": 7414174,
+            "sha256": "863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0"
+          }
+        },
+        "precise_negative": true,
+        "cli": {
+          "cookie_metadata": {
+            "attempts": 1,
+            "failures": 0,
+            "success": {
+              "action": "cookie_metadata",
+              "classification": "success",
+              "exit_code": 0,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": null,
+              "stdout_bytes_captured": 15,
+              "stderr_bytes_captured": 0
+            }
+          },
+          "ping": {
+            "attempts": 1,
+            "failures": 1,
+            "first_failure": {
+              "action": "ping",
+              "classification": "fatal_file_size_limit",
+              "exit_code": 153,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": 10,
+              "stdout_bytes_captured": 0,
+              "stderr_bytes_captured": 25,
+              "stdout": "",
+              "stderr": "File size limit exceeded"
+            },
+            "latest_failure": {
+              "action": "ping",
+              "classification": "fatal_file_size_limit",
+              "exit_code": 153,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": 10,
+              "stdout_bytes_captured": 0,
+              "stderr_bytes_captured": 25,
+              "stdout": "",
+              "stderr": "File size limit exceeded"
+            }
+          }
+        },
+        "state_after_rpc": {
+          "Status": "running",
+          "Running": true,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Dead": false
+        },
+        "removed_verified": true
+      },
+      {
+        "kind": "canary-positive",
+        "fsize_soft_bytes": 67108864,
+        "fsize_hard_bytes": 67108864,
+        "container_id": "a480a4b24fec101120a98e556d2d2b412c667fdfdfbd6a3fcd0d5a75e3f419ae",
+        "runtime_contract": {
+          "image": "sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4",
+          "user": "100:101",
+          "readonly": true,
+          "memory": 1073741824,
+          "memory_swap": 1073741824,
+          "tmpfs": {
+            "/tmp": "size=16777216,uid=100,gid=101,mode=0700",
+            "/var/lib/rabbitmq": "size=536870912,uid=100,gid=101,mode=0700",
+            "/var/log/rabbitmq": "size=16777216,uid=100,gid=101,mode=0700"
+          },
+          "ulimits": [
+            {
+              "Hard": 0,
+              "Name": "core",
+              "Soft": 0
+            },
+            {
+              "Hard": 67108864,
+              "Name": "fsize",
+              "Soft": 67108864
+            }
+          ],
+          "pids": 256,
+          "cpus": 2000000000,
+          "shmem": 67108864,
+          "network": "278b1e8fb1f8f68de122ef10baa63628bba8114cf20306c42a5fa4e8c238203a",
+          "caps": [
+            "ALL"
+          ],
+          "security": [
+            "no-new-privileges:true"
+          ]
+        },
+        "server_started": true,
+        "limit_metadata": {
+          "uid": 100,
+          "gid": 101,
+          "exec_soft_bytes": 67108864,
+          "exec_hard_bytes": 67108864,
+          "pid1_soft_bytes": 67108864,
+          "pid1_hard_bytes": 67108864
+        },
+        "public_files": {
+          "/opt/rabbitmq/escript/rabbitmqctl": {
+            "bytes": 7414174,
+            "sha256": "863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0"
+          },
+          "/opt/rabbitmq/escript/rabbitmq-diagnostics": {
+            "bytes": 7414174,
+            "sha256": "863b1228a2f437fe17cd2baa924a2b5bd94d943effe2c2c338e91e7e47233df0"
+          }
+        },
+        "real_ping_and_check_running_pass": true,
+        "cli": {
+          "cookie_metadata": {
+            "attempts": 1,
+            "failures": 0,
+            "success": {
+              "action": "cookie_metadata",
+              "classification": "success",
+              "exit_code": 0,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": null,
+              "stdout_bytes_captured": 15,
+              "stderr_bytes_captured": 0
+            }
+          },
+          "ping": {
+            "attempts": 1,
+            "failures": 0,
+            "success": {
+              "action": "ping",
+              "classification": "success",
+              "exit_code": 0,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": 10,
+              "stdout_bytes_captured": 15,
+              "stderr_bytes_captured": 0
+            }
+          },
+          "check_running": {
+            "attempts": 1,
+            "failures": 0,
+            "success": {
+              "action": "check_running",
+              "classification": "success",
+              "exit_code": 0,
+              "termination_reason": null,
+              "user": "100:101",
+              "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+              "rpc_timeout_seconds": 10,
+              "stdout_bytes_captured": 65,
+              "stderr_bytes_captured": 0
+            }
+          }
+        },
+        "state_after_rpc": {
+          "Status": "running",
+          "Running": true,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Dead": false
+        },
+        "removed_verified": true
+      }
+    ],
+    "exclusive_holder_acquired": true,
+    "same_option_producer_as_installed": true,
+    "causal_limit_ab_proven": true,
+    "exclusive_holder_released": true
+  },
+  "rabbit_cli": {
+    "limit_metadata": {
+      "attempts": 2,
+      "failures": 0,
+      "success": {
+        "action": "limit_metadata",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": null,
+        "stdout_bytes_captured": 166,
+        "stderr_bytes_captured": 0
+      }
+    },
+    "public_files": {
+      "attempts": 2,
+      "failures": 0,
+      "success": {
+        "action": "public_files",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": null,
+        "stdout_bytes_captured": 225,
+        "stderr_bytes_captured": 0
+      }
+    },
+    "cookie_metadata": {
+      "attempts": 1,
+      "failures": 0,
+      "success": {
+        "action": "cookie_metadata",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": null,
+        "stdout_bytes_captured": 15,
+        "stderr_bytes_captured": 0
+      }
+    },
+    "ping": {
+      "attempts": 1,
+      "failures": 0,
+      "success": {
+        "action": "ping",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": 10,
+        "stdout_bytes_captured": 15,
+        "stderr_bytes_captured": 0
+      }
+    },
+    "check_running": {
+      "attempts": 1,
+      "failures": 0,
+      "success": {
+        "action": "check_running",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": 10,
+        "stdout_bytes_captured": 65,
+        "stderr_bytes_captured": 0
+      }
+    },
+    "list_queues": {
+      "attempts": 1,
+      "failures": 0,
+      "success": {
+        "action": "list_queues",
+        "classification": "success",
+        "exit_code": 0,
+        "termination_reason": null,
+        "user": "100:101",
+        "explicit_cli_env": "RABBITMQ_CTL_ERL_ARGS=+S 2:2 +SDcpu 1 +SDio 1 +A 4",
+        "rpc_timeout_seconds": 10,
+        "stdout_bytes_captured": 69,
+        "stderr_bytes_captured": 0
+      }
+    }
+  },
+  "rabbit_cookie_metadata": {
+    "uid": "100",
+    "gid": "101",
+    "mode": "400",
+    "bytes": "20"
+  },
+  "synthetic_roots": {
+    "fixture": "/var/lib/docker/volumes/msi-ece1410307f5-fixture/_data",
+    "work": "/var/lib/docker/volumes/msi-ece1410307f5-work/_data"
+  },
+  "build": {
+    "phase": "store-repack",
+    "steps": {
+      "toolchain-node-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "28d5d468fcfe77594f84d719d1550610e3ff0904f1601e7d0e93325244965451",
+        "log_bytes": 9
+      },
+      "toolchain-gcc-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "8c59c3b7b9051484db9a6b6576edf12a3aca7381a06a174a2d4dbfd6ce08681f",
+        "log_bytes": 240
+      },
+      "toolchain-g++-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "8854612eaf6fea7cbba6da95264f0cc26bf09d0a9b8bbc09e20e16cde2ef31eb",
+        "log_bytes": 240
+      },
+      "toolchain-ld-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "c8a5239ca0e8268c178da2617843c3e92788711b1e1abafa232616bd487e729c",
+        "log_bytes": 281
+      },
+      "toolchain-make-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "8ee498ee2fc27e8dcdf99191b454077df95e3840d841ec94321748b6d7f36819",
+        "log_bytes": 297
+      },
+      "toolchain-python3-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8",
+        "log_bytes": 14
+      },
+      "toolchain-node-gyp-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "9c1ce484acd2fbd2e8562b44e08e0f63a047bc41a2588a437d4bdb02eb8ed4cd",
+        "log_bytes": 8
+      },
+      "toolchain-node-sqlite": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "d162e22e2a04724faff94134efc01b44cb8ae7a19d15e942aad3e02fd967a846",
+        "log_bytes": 166
+      },
+      "toolchain-compile-link-make": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "e46dda5f04354e8393d8c4eee1e8114394425ff1c5b5d31efca8bddb0e567715",
+        "log_bytes": 81
+      },
+      "toolchain-node-gyp-build": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "440e95c564c6d3c6fc54e664f44c59e7a5e51c7e809abdabd8aa779b7ff35f04",
+        "log_bytes": 4395
+      },
+      "toolchain-node-gyp-load": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "log_bytes": 0
+      },
+      "bun-version": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "64d23f858ef51b0f996e4966d4e27c0371b437e2d2787890b1f7ad22d4ec5663",
+        "log_bytes": 6
+      },
+      "dependencies": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "793229b3c9943eec65dcaa26dd4e713257cbf57bcb61da75b5c601d725e2abfc",
+        "log_bytes": 4636407,
+        "log_evidence": {
+          "raw_sha256": "793229b3c9943eec65dcaa26dd4e713257cbf57bcb61da75b5c601d725e2abfc",
+          "raw_bytes": 4636407,
+          "sanitized_sha256": "d7607d96c99f1ba37dd3b1e86e361493c51441710229b87aaee55fe6ba653bcb",
+          "sanitized_bytes": 4028064,
+          "redaction": "ANSI removed; sensitive and verbose HTTP header values redacted"
+        },
+        "comparison_complete": true,
+        "artifacts": {
+          "dependencies.sanitized.log": {
+            "name": "dependencies.sanitized.log",
+            "bytes": 4028064,
+            "sha256": "d7607d96c99f1ba37dd3b1e86e361493c51441710229b87aaee55fe6ba653bcb"
+          },
+          "dependency-comparison.json": {
+            "name": "dependency-comparison.json",
+            "bytes": 1219170,
+            "sha256": "e763cda447a30c9085309542f852f61072427ffffaeb6ecf57aecd6d8d9a6ddb"
+          },
+          "dependency-errors.json": {
+            "name": "dependency-errors.json",
+            "bytes": 131,
+            "sha256": "5afcba79fbde927b808acf478f204a4e3362069df55645bdf1c3013259063e31"
+          }
+        }
+      },
+      "common-build": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "ad66201b4e7148ea5c306377c0a90d24947f65c6ec56739b4abd927fbeaf3b55",
+        "log_bytes": 46
+      },
+      "review-cli-build": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "985b0eb56dbc6a722ec5f0ef04bcb7c4eac415c4894f1fe4e2241472b9fd01c6",
+        "log_bytes": 226
+      },
+      "trusted-cli-build": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "6cb16e287b5733f3550a57a7f933b470410f53eb5aa9afea4cff9ce8cd222f95",
+        "log_bytes": 225
+      },
+      "store-init": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "ca9e2a63074b0c071bba75548099755afdba4e80a05709fbe5336ec0725960c1",
+        "log_bytes": 62
+      },
+      "store-add": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "log_bytes": 0
+      },
+      "store-commit": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "8f80ed0a9809f4a0bd0828f3c0437fde8b95a83094b93d046ed1f8b2ec9e68e3",
+        "log_bytes": 259
+      },
+      "store-bare": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "bd50ff11b31a287a0f929ea4722d55d073abcc2d6e5bbb1a474e066b6b2a2eb7",
+        "log_bytes": 64
+      },
+      "store-repack": {
+        "exit_code": 0,
+        "termination_reason": null,
+        "log_complete": true,
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "log_bytes": 0
+      }
+    },
+    "built": true,
+    "source": "ece1410307f54e6c6b47f4b81088459d624b9dd4",
+    "inherited_backend": {
+      "source": "c44b1ac6dab07b94a75074169ffcd4a35fd6b87a",
+      "archive_sha256": "e9d848ad144e5afda0f5b7c28095b08ca23fcf43bf630530f07dc7702d1cb53d",
+      "original_steps": {
+        "toolchain-node-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "28d5d468fcfe77594f84d719d1550610e3ff0904f1601e7d0e93325244965451",
+          "log_bytes": 9
+        },
+        "toolchain-gcc-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "8c59c3b7b9051484db9a6b6576edf12a3aca7381a06a174a2d4dbfd6ce08681f",
+          "log_bytes": 240
+        },
+        "toolchain-g++-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "8854612eaf6fea7cbba6da95264f0cc26bf09d0a9b8bbc09e20e16cde2ef31eb",
+          "log_bytes": 240
+        },
+        "toolchain-ld-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "c8a5239ca0e8268c178da2617843c3e92788711b1e1abafa232616bd487e729c",
+          "log_bytes": 281
+        },
+        "toolchain-make-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "8ee498ee2fc27e8dcdf99191b454077df95e3840d841ec94321748b6d7f36819",
+          "log_bytes": 297
+        },
+        "toolchain-python3-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8",
+          "log_bytes": 14
+        },
+        "toolchain-node-gyp-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "9c1ce484acd2fbd2e8562b44e08e0f63a047bc41a2588a437d4bdb02eb8ed4cd",
+          "log_bytes": 8
+        },
+        "toolchain-node-sqlite": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "d162e22e2a04724faff94134efc01b44cb8ae7a19d15e942aad3e02fd967a846",
+          "log_bytes": 166
+        },
+        "toolchain-compile-link-make": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "e46dda5f04354e8393d8c4eee1e8114394425ff1c5b5d31efca8bddb0e567715",
+          "log_bytes": 81
+        },
+        "toolchain-node-gyp-build": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "440e95c564c6d3c6fc54e664f44c59e7a5e51c7e809abdabd8aa779b7ff35f04",
+          "log_bytes": 4395
+        },
+        "toolchain-node-gyp-load": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "log_bytes": 0
+        },
+        "bun-version": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "64d23f858ef51b0f996e4966d4e27c0371b437e2d2787890b1f7ad22d4ec5663",
+          "log_bytes": 6
+        },
+        "dependencies": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "4086fe9e9aecff9a5e787f6c60cd1a05c478f9f57021c2f97e59df205cc588bd",
+          "log_bytes": 4636497,
+          "log_evidence": {
+            "raw_sha256": "4086fe9e9aecff9a5e787f6c60cd1a05c478f9f57021c2f97e59df205cc588bd",
+            "raw_bytes": 4636497,
+            "sanitized_sha256": "3cf0ffde9a4434a5df3b43ba79efbac3ec18b02108858102bee15e531966d62a",
+            "sanitized_bytes": 4028174,
+            "redaction": "ANSI removed; sensitive and verbose HTTP header values redacted"
+          },
+          "comparison_complete": true,
+          "artifacts": {
+            "dependencies.sanitized.log": {
+              "name": "dependencies.sanitized.log",
+              "bytes": 4028174,
+              "sha256": "3cf0ffde9a4434a5df3b43ba79efbac3ec18b02108858102bee15e531966d62a"
+            },
+            "dependency-comparison.json": {
+              "name": "dependency-comparison.json",
+              "bytes": 1219170,
+              "sha256": "e763cda447a30c9085309542f852f61072427ffffaeb6ecf57aecd6d8d9a6ddb"
+            },
+            "dependency-errors.json": {
+              "name": "dependency-errors.json",
+              "bytes": 131,
+              "sha256": "05ed2b2318a17d21b0d0977acd80ee9192792925c737deb650740909380706f1"
+            }
+          }
+        },
+        "common-build": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "ad66201b4e7148ea5c306377c0a90d24947f65c6ec56739b4abd927fbeaf3b55",
+          "log_bytes": 46
+        },
+        "backend-bundle": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "3eb8b14c538a0616b10b83821eedd6eee3117144896a67fc01bb1c9d393676e8",
+          "log_bytes": 30
+        },
+        "review-cli-build": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "4062825bade8deb06d50004b2759bab0ba39e79da279f7a1d84db7d874a94565",
+          "log_bytes": 226
+        },
+        "trusted-cli-build": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "19aa6130d892436c9170d63be4ebdb084d33e896fa1f6bf1877395443d96c35a",
+          "log_bytes": 225
+        },
+        "store-init": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "ca9e2a63074b0c071bba75548099755afdba4e80a05709fbe5336ec0725960c1",
+          "log_bytes": 62
+        },
+        "store-add": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "log_bytes": 0
+        },
+        "store-commit": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "618ef03f8b1400c335b7ed5577cc9151cf499732a043352681090eaccf540d35",
+          "log_bytes": 259
+        },
+        "store-bare": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "bd50ff11b31a287a0f929ea4722d55d073abcc2d6e5bbb1a474e066b6b2a2eb7",
+          "log_bytes": 64
+        },
+        "store-repack": {
+          "exit_code": 0,
+          "termination_reason": null,
+          "log_complete": true,
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "log_bytes": 0
+        }
+      },
+      "backend_rebuilt": false
+    },
+    "bundle": {
+      "files": {
+        "main.js.map": {
+          "bytes": 20939421,
+          "sha256": "d609f72c87d9a2272c7ca6ec4bee6e0bf87546eabad7fdb15f5ccf976a492df9"
+        },
+        "main.js": {
+          "bytes": 6855144,
+          "sha256": "b915a5ae7e42dafa1abf7d3b7f174f029941dfc8a23dc9373bf7d4dbe5dbfc3a"
+        },
+        "sshcrypto-a3khcfhj.node": {
+          "bytes": 83264,
+          "sha256": "616ce07eaa7e936b114efeb64256aaf487934f9be515e34cd46753b399ae5f59"
+        },
+        "cpufeatures-e8x7s2f1.node": {
+          "bytes": 60552,
+          "sha256": "264e4d7eba6ff421a4078b9272848b27f1803879aee448bc2b13ae93f352efab"
+        }
+      },
+      "native_provenance": {
+        "cpufeatures-e8x7s2f1.node": {
+          "package": "cpu-features",
+          "version": "0.0.10",
+          "integrity": "sha512-9IkYqtX3YHPCzoVg1Py+o9057a3i0fp7S530UWokCSaFVTc7CwXPRiOjRjBQQ18ZCNafx78YfnG+HALxtVmOGA==",
+          "source_map_path": "../../../node_modules/.bun/cpu-features@0.0.10/node_modules/cpu-features/lib/index.js",
+          "source_sha256": "fbdd49dfead22e1fbd0cfee47457dc343d3a5950092cf7922a671b2d40595771",
+          "original_require": "require('../build/Release/cpufeatures.node')",
+          "emitted_reference": "./cpufeatures-e8x7s2f1.node",
+          "elf64_x86_64_shared": true,
+          "frozen_install_source_compared": true
+        },
+        "sshcrypto-a3khcfhj.node": {
+          "package": "ssh2",
+          "version": "1.17.0",
+          "integrity": "sha512-wPldCk3asibAjQ/kziWQQt1Wh3PgDFpC0XpwclzKcdT1vql6KeYxf5LIt4nlFkUeR8WuphYMKqUA56X4rjbfgQ==",
+          "source_map_path": "../../../node_modules/.bun/ssh2@1.17.0/node_modules/ssh2/lib/protocol/crypto.js",
+          "source_sha256": "a729d2064e787e2a4589c25a284444fe54a58b7434a4e6e5e8e9c73c6d91e28e",
+          "original_require": "require('./crypto/build/Release/sshcrypto.node')",
+          "emitted_reference": "./sshcrypto-a3khcfhj.node",
+          "elf64_x86_64_shared": true,
+          "frozen_install_source_compared": true
+        }
+      },
+      "saved_bytes_pinned": false,
+      "bun_version": "1.3.0",
+      "build_ts_sha256": "70441708edc4e06c843583637d937a2d97ab4db648674ae8de7d6a2e66d11b41",
+      "bun_lock_sha256": "07dd09dc0a77f4ac2476869d86c7cc6901082270648facfd7cb49e43d8cd35a4",
+      "classification": "saved backend bundle only; not API/image acceptance"
+    },
+    "embedded_production_sources": {
+      "../src/app.service.ts": "531d1d12d37a04a5ece7ff504f6f06376acc8e7a881baaab9941cacf1ffe084e",
+      "../src/main.ts": "d796790fa9ca3b8e7b4a9c729e16504bd845d4f2dadd428d642bc7073bda55be",
+      "../src/modules/app-lifecycle/handlers/install-app.handler.ts": "1b4705533f76480513b39293c4123da953e80af40ee7212ea4e96001b4b2b2d3",
+      "../src/modules/docker/docker.service.ts": "04ef4e9742d601099e510f4f518b4a249f197054eaa2b29b4b5f66e789aa433c",
+      "../src/modules/docker/docker.module.ts": "2523b4b7e95face98dec57bee66f4e8c49d79c152bd0b61d4fa9a45a9bb20692",
+      "../src/modules/docker/mandatory-seal.ts": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc",
+      "../src/modules/docker/wizard-storage.ts": "dab3f7bb925bf0247f31d6b60a2cc8977424ea4b7a9b2c9d368715760dae7d09"
+    },
+    "recipe_sha256": "0728ea6ff29f1c6e63c9c2efdcdd74b14c5bafa57aadc45ac016dd4809790862",
+    "compiled_sha256": "ca0f2ce490dbc71867015a69504e30539efbee1f8ddcb962f93c2c194f4db01e",
+    "assets": {
+      "assets/app-not-found.jpg": "004fbc01db0bd6ffb029ef3d87854fdf7c1750d8dd2bfe15a33b644565cd04e1",
+      "assets/default-app-logo.jpg": "41191af41f7a8e159a11abde437db1ad1f8776fd5388ef806cde74dbef1b9a7e",
+      "assets/translations/af-ZA.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/ar-SA.json": "c24c74041e8fdb330e0d2b99ff132674d96093c3f18d6a3da89f0bd825c6844d",
+      "assets/translations/ca-ES.json": "f9e6d2b6e13cde5ad6cc2c88dd34801dc3de2f64dcb97a56e22201766a0957ba",
+      "assets/translations/cs-CZ.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/da-DK.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/de-DE.json": "e4d0fab109cd8b248f6c3dd5aad61541bc160752553cb010800f3e1bdff27a33",
+      "assets/translations/el-GR.json": "1dd02b89ee138824b664cc759eb408be18f999a3ef786668e84dbb571b2cc821",
+      "assets/translations/en-US.json": "985d977b0937677f62b9e729ab3e3e47aa1eba47f91ca92bb333af77583fdb36",
+      "assets/translations/en.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/es-ES.json": "c5e3f5bc69e4ab577feb05a20ab34f07b266de39ec849679654c06acbb75834a",
+      "assets/translations/fi-FI.json": "cfeeb09256ea54857d84ba4dadd90b5851ae830f0f1a9505e0f7ce62a8d7e8bf",
+      "assets/translations/fr-FR.json": "6aee31150ce8b9824d7354161f66062f73fbaa58056809531cfe8d2cc78e4efd",
+      "assets/translations/he-IL.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/hu-HU.json": "04563d44993f1dda40ebd33f020f20b6184dea196d8e6edb881dee4ca5263864",
+      "assets/translations/it-IT.json": "759ba21412e94dccd86fd917ce455e7c03c24e2a9beb2f289090efb49efef1c6",
+      "assets/translations/ja-JP.json": "8d1593ee494b9ab316d9af14929739d194c97bdc73be402e5c32e52ae1ca1006",
+      "assets/translations/ko-KR.json": "cb570ff6021449fe648e4d1dfac3c1e4e03529edd1fe3687bab4d7a606439c2c",
+      "assets/translations/nl-NL.json": "502a84903fd9d281f26e0be1c947a47a54515a832acabac47c0da34cd1bcb14f",
+      "assets/translations/no-NO.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/pl-PL.json": "c7a6d67bb208935ba16beacbec480efbdc7be9be48e5b6d0cbe03a2faae1751a",
+      "assets/translations/pt-BR.json": "08f20249287a0f061130d888b2e7aa594ba8770827dcdb668c8f00fc42628458",
+      "assets/translations/pt-PT.json": "b06df35aacccb6271ee01b1a3a60e2c0b57bdc5e27e08fb78906076e02d656b6",
+      "assets/translations/ro-RO.json": "052edc9a929c57293bc6af51685f71b415a99a164cc2524ec7b1aeb19bb526e9",
+      "assets/translations/ru-RU.json": "5de91b81ab64274931f1dc8bda94e4d64ee113ffbb546a3d68f07b8bdba11209",
+      "assets/translations/sr-SP.json": "097ef59a8ff89ef0212d0191479cc48ad8b80ec02acf58deceda983059b7fc0a",
+      "assets/translations/sv-SE.json": "92e0cfc7e94c87e10809ea2815f8b5d6e245392854df7676c2b682bc9635a0d6",
+      "assets/translations/tr-TR.json": "e26bcb18f0dccf2a3a108ecdfcea2a8672d31d69388f4d07ecc2fa7cad712abc",
+      "assets/translations/uk-UA.json": "1300175760f5c243b450acd40b54d88ea40eefb960c7adf46c522ea274db2478",
+      "assets/translations/vi-VN.json": "1dcd2f8f40ca19ef71114d4c910e07cb16712161d5a55d94188e02f4bd641a94",
+      "assets/translations/zh-CN.json": "4b7dfa9c1a153bee9a06d8c05118c4d961852abad899e3854758181303fa67b2",
+      "assets/translations/zh-TW.json": "7c7e7f2b9c204f3c9b18cc221920485d1195f13df43d07947cf39b8fe17336c5",
+      "assets/migrations/0000_sleepy_earthquake.sql": "75e3e6f62e40334f98d824ae5a39cdb17a862770bfb6fd4fbf740dfbc3dda1d3",
+      "assets/migrations/0001_crazy_vanisher.sql": "4d0a3c187bd68d08947229499682528f672cec570d78e5f9cc4989c675d69822",
+      "assets/migrations/0002_add-app-version.sql": "7cab8f859574a3cc4b426f9fce447dc397845ff419ff63c8304a38f25302aeb3",
+      "assets/migrations/0003_add-status-updating.sql": "7f0b9b4c7bee2970231070cb2b3b59156c9b24755118fadeb02ec428477ca3d9",
+      "assets/migrations/0004_add-exposed-domain-fields.sql": "16aead902a4de00893e2b9e37d587c4932ee9b07d511cef21b706d563adbccd6",
+      "assets/migrations/0005_add-user-operator.sql": "5fd2978db449dbbe0d9de49cca4a9862922126296b293aeedc84500da213353b",
+      "assets/migrations/0006_add-totp-user-fields.sql": "1b8264308e9be138783fd85807cd3a87ab91ef566d71a29028dbf355677ce227",
+      "assets/migrations/0007_merge-config-with-domain-and-exposed.sql": "5acf49254cfa183a8f32e418393a3e61a3df80fd6b6abf52590c37c3dd6fa071",
+      "assets/migrations/0008_add-guest-dashboard.sql": "910d7bac560b6899ae3797c484d1dd30898322cf8c738bc8c735bf158bf61465",
+      "assets/migrations/0009_add-status-resetting.sql": "c04b8db84d22a6b00eb679fa774e1836d4990cc1d2e7e84fa32e62345c1f05f5",
+      "assets/migrations/0010_link-table-description.sql": "13227d488386c6e5ecc83a474e0931f5916e74637077fa50410a71fc856d5b97",
+      "assets/migrations/0011_app-local-exposed.sql": "380311c71c1a9cae098b82ddcd279c37f2ca5e23f4657e1eeb6132e81e862ab5",
+      "assets/migrations/0012_restarting-state.sql": "67d707ef8b4f201b91090c16f72d445a496e44c894873d7f10f61236fa7d80e6",
+      "assets/migrations/0013_backingup-state.sql": "3829b253e577b090c8f3f134e8cc6caa79c4408a46dda1bfd22c4604dd097a67",
+      "assets/migrations/0014_curly_jigsaw.sql": "5035e0ab62b8bf3915e1fd5a63a7713aae074c73ad10f43c58f87ee2bd5a7aeb",
+      "assets/migrations/0015_first_gabe_jones.sql": "528875b7e018d9e8a399a8db558250fbbc3ad72ae51bb7e4a293d6ebfae9c57a",
+      "assets/migrations/0016_closed_enchantress.sql": "d279b2e236bf86fa926757541c8f408293ac7761375295acd8042d98182dd174",
+      "assets/migrations/0017_stale_maverick.sql": "28d4de712d0c81478cc0f751dc7576890351da0a7895b738bf5d7ba3b7fe1f70",
+      "assets/migrations/0018_low_sentinels.sql": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070",
+      "assets/migrations/0019_slow_loa.sql": "da641cff3b89d7a56a947e3f620afd556eebd708084d924128c80233d11b2d9f",
+      "assets/migrations/0020_flimsy_orphan.sql": "3f5e84cce8fdc30fe310f2f32e15df6b208ea3fefbb1056da6278af29aa47db5",
+      "assets/migrations/0021_mighty_molecule_man.sql": "c2e9cb27b539caea5abb5bef2c16afd92814b960950f6609ab926070019ceb40",
+      "assets/migrations/0022_unusual_redwing.sql": "6444766d3cb59a63aa7181fc155ab4b1acc0f38d9630fb62529fe4ffe83d9d49",
+      "assets/migrations/0023_petite_marauders.sql": "9f6433bf479ba269839642ce0ff9d166508f36c40478337b26845d382fc40d60",
+      "assets/migrations/0024_lovely_wolfsbane.sql": "07fb7a3dcf858bb77a5fd2e4070c48ea87995d0b7029c2e68af77bea7dbab239",
+      "assets/migrations/0025_stiff_devos.sql": "6fe7db96f15bda853dda46572c87bc23e387e0a1988a7e1172933a61ef25a19c",
+      "assets/migrations/0026_fair_lord_hawal.sql": "d9ba83144db8649b09da686310b3ff82280b8e3df83f57cb6c3ba9e5f964fbf2",
+      "assets/migrations/0027_petite_dexter_bennett.sql": "347761bac42777b62ae258520cb977a958904fa87409fd4b0f150a9579801eb9",
+      "assets/migrations/0028_eminent_tony_stark.sql": "64088260e80276a110776dd016785c5612295c7b061e51094048c9535e3812b8",
+      "assets/migrations/0029_lumpy_zeigeist.sql": "568916809c419d295f98510d36237ae468401f976b736059b2575e8a931f20ba",
+      "assets/migrations/0030_redundant_bloodaxe.sql": "59e4afee1ffadb1eaadd7eb03af6ed1ace67ca764febf60675c45d96331ba650",
+      "assets/migrations/0031_editable_apps.sql": "1046541efd229ebb0a0f8f81bad544f8e553101463533983925811bc76b8368d",
+      "assets/migrations/relations.ts": "80c9beee566670293695d0381027443f1c5288af762e9ca6fbfcc195b4ab0b25",
+      "assets/migrations/schema.ts": "47af1dce702c7af5b2a75a4797e3776309ca33bf40c263d477554fb110aebc5a",
+      "assets/migrations/types.ts": "9c897c9d575cb7859f2be57e5b28c1a696fa54773b17629dce8ae3469ea95f28",
+      "assets/migrations/meta/0000_snapshot.json": "9ed5cf31116fa3be549646a747538e17904d2a6a11badd93d28ed8754433c1ed",
+      "assets/migrations/meta/0001_snapshot.json": "689c5b4bc52a7f7067eb66f18a084e75100e7cb262ae835d254ecd07fc7e413a",
+      "assets/migrations/meta/0002_snapshot.json": "664df0d0e09f55f771ba21dcc8f88df93ecd3c584ddcbb48902d9639dae6c10e",
+      "assets/migrations/meta/0003_snapshot.json": "c6341f582d47903a0dd48fd5bb47a5b74b39a4940fcd62e1051d803ad801061a",
+      "assets/migrations/meta/0004_snapshot.json": "979c65863a61f2729630988e992012ff7abb1d619eb7f1c4b25b111ad2bc7277",
+      "assets/migrations/meta/0005_snapshot.json": "d0423a599ace6e953789ce8199f30602b0453457def428c9ee018a0a47ae132e",
+      "assets/migrations/meta/0006_snapshot.json": "cf18144a582c9cf78e882d9dc8261ab1b6a1a05c84ed545d4d525ede5bdb2a65",
+      "assets/migrations/meta/0007_snapshot.json": "bd537e0d919ffcb34dca2f9429274e092c93c435243fd022aa65f1c572c36dd8",
+      "assets/migrations/meta/0008_snapshot.json": "88ee49058b7e7a9b8e1d0f875661f49c26a9b62748440e20620735aa5ccecf7f",
+      "assets/migrations/meta/0009_snapshot.json": "d142322cddeafc0128b9fc10562749193a973f45c8fc264ed611e154c306adf5",
+      "assets/migrations/meta/0010_snapshot.json": "5e42b4866193d8d27a744545b9b36da99f0ebfbcd52d9ade179f3fa5c7b46001",
+      "assets/migrations/meta/0011_snapshot.json": "a5718d257b3fe8e7fd330404ef22eec44244cb7e64632029f8d04bbe7077d1af",
+      "assets/migrations/meta/0012_snapshot.json": "db86d9ea9aa0747c2642fa641dc5bf8a6e282349865a638028e305d1d5a672c3",
+      "assets/migrations/meta/0013_snapshot.json": "3f0971f77b1c4da3c73464638fe16430d4ae0dc41801347f2edfbf3a6d4adea9",
+      "assets/migrations/meta/0014_snapshot.json": "f969219d66906f14a58d59cd178942e2180b4497559308adcbafe7c28a22958b",
+      "assets/migrations/meta/0015_snapshot.json": "1632a2867c278b6349adc36722d0b79eb1be78c4ad2232d35adf7fddfdcc7eb8",
+      "assets/migrations/meta/0016_snapshot.json": "9691c71a6838ed1b263286c289fecb6075a938853dfb98add21796d18391708f",
+      "assets/migrations/meta/0017_snapshot.json": "48104b95d5a66dc2995705ad4bc7b2fdfa84692604cedcb405569676da9c3b6c",
+      "assets/migrations/meta/0018_snapshot.json": "3633a260fc2061138787353be76d0183ad19675e0c4997e211a4cc35a8454a43",
+      "assets/migrations/meta/0019_snapshot.json": "93054e0562a170ead911017f0f8a23c38093c826227b396f889660f397d3a3dd",
+      "assets/migrations/meta/0020_snapshot.json": "44f98525be8083bcaa7e3f6063a6e73c4ee128b02064e7efc3d790301c47fc31",
+      "assets/migrations/meta/0021_snapshot.json": "fdf8f53fce394aa64c09c294c27088b3cd57903cb4828712368ab60c942a1ab7",
+      "assets/migrations/meta/0022_snapshot.json": "9ba19850f32f1a1a2bbcf52bd5f65adaf42b2a048d1923f91cbe461d739770cf",
+      "assets/migrations/meta/0023_snapshot.json": "ea72c85dda885b1e9f83db2d28ade5b312597437fbdf90cd67f287267a32e7a5",
+      "assets/migrations/meta/0024_snapshot.json": "80159a1b3f5b3f155c448a2aa8315acd3c01dfaf042d74909361809ac2537f5e",
+      "assets/migrations/meta/0025_snapshot.json": "dbafcc8be6a4d0f0622400f7314b66164197f8dedc6e7c711dae5f9a3637172a",
+      "assets/migrations/meta/0026_snapshot.json": "6342bb27d31fcc8de2e6c4f83b2608f2af113468b57ad1665ff02632267baaaf",
+      "assets/migrations/meta/0027_snapshot.json": "1ea3167dc91b5a275c8c4f923fea0f7f284bed5bd8c601e01f91fa4a6e876299",
+      "assets/migrations/meta/0028_snapshot.json": "2a6fd8769eacee4f78a2c95290e693eedb04ae905b9c13a1fd9667b4dd698692",
+      "assets/migrations/meta/0029_snapshot.json": "372587391d62e60a891aa10ecd191aa5c55da5533b141ff314e5cd7247479a54",
+      "assets/migrations/meta/0030_snapshot.json": "d6ebe1e162ee5842a0129e5a972453497d2e57c9b0e402055ea143206b32d3ae",
+      "assets/migrations/meta/_journal.json": "b2930949cd2d8de463f85ef88147e1fc5336c5a6cb227e85ce93fb39bb5abf25",
+      "assets/traefik/traefik.yml": "23b6b09c887389793f9dca76751194aea802459540a5e8fdeff9dd500c43edea",
+      "assets/traefik/dynamic/dynamic.yml": "68cb5bec7944ff2950ec321d80f14c7b613457f7b04d46621d41292c6661ba9d"
+    }
+  },
+  "continuation_bundle_archive_sha256": "5412636590aac69124e7ac016907f263947e434359bda4d58c710b038e52a909",
+  "guard_runtime_proof": {
+    "positive_owned_inspect": true,
+    "unrelated_sentinel_denials": 9,
+    "owned_event_readiness_marker": true,
+    "unrelated_events_filtered": true,
+    "denied_requests_forwarded": 0,
+    "unrelated_unchanged": true,
+    "owned_list_only": true,
+    "completed_before_manager_create": true
+  },
+  "installed_rabbit_contract_matches_canary": true,
+  "packaged_startup_source_audit": {
+    "static_audit_pass": true,
+    "canonical_runner_workdir": "/app",
+    "actual_manager_argv_workdir": "/app",
+    "source_pins": {
+      "Dockerfile": "c291e99a18a388f6b87787374ae2c6ed46cd2c4aef48b7ab4ee07a2045179186",
+      "packages/backend/src/common/constants.ts": "c003d91a1f349637a3686f1b457654a17722f6ebe9bda9c09857c7203a7a5203",
+      "packages/backend/src/modules/i18n/i18n.service.ts": "a2328650bdd7d2a690b478e7cdb8c7c2b867c1142904a238f8a045957a8bfb20",
+      "packages/backend/src/core/database/database.service.ts": "d16f9a82da37666bb61c6c516791d2b5965c39828379b94725c09bd482a4f8f4",
+      "packages/backend/src/app.module.ts": "7f9eac3349ca518775e0de10e9e99b16957fe14da4f593db9f6cc477521f6eda",
+      "packages/backend/src/app.service.ts": "531d1d12d37a04a5ece7ff504f6f06376acc8e7a881baaab9941cacf1ffe084e",
+      "packages/backend/src/modules/app-stores/app-store-files-manager.ts": "1311821926c20b7231a9ed8d8fa95e422cde5492dce5c4a6575e2997c174f898",
+      "packages/backend/src/core/cache/cache.service.ts": "ce3df7613c53e054b640206b5638edbf1325561c5ca334df3c7a05e1f6e86b51",
+      "packages/backend/src/common/helpers/env-helpers.ts": "85dd5ce4ad1c4cf5625a9f4ceae3c0e03364639109d1b56cd8884992dc1360e6",
+      "packages/backend/src/core/config/configuration.service.ts": "b346e74968b84922432b22e1f5e2c4b666221936d02dcdc285161c78d81e28e1",
+      "packages/backend/src/modules/queue/queue.factory.ts": "9c68a4c7a8bfdc127638bf0fefa3db76634a7757b8a31580c941ae23b193ff40",
+      "packages/backend/src/modules/queue/queue.module.ts": "bad690f101fb4a476ce8683f078278fce82c956cc77ce210b80ec1cc212a39bb",
+      "packages/backend/src/modules/app-stores/repos.helpers.ts": "339ca68064dce7e11f36066ce2262d124997b213edeaee22f73a30a8328c09d7",
+      "packages/backend/src/main.ts": "d796790fa9ca3b8e7b4a9c729e16504bd845d4f2dadd428d642bc7073bda55be",
+      "scripts/manager_seal_store_http.py": "2443163e6ce20634230595647a35459b67af0c8c8384e9561d1f699dac0edf4c"
+    },
+    "all_cwd_or_module_relative_consumers": [
+      {
+        "source": "modules/i18n/i18n.service.ts",
+        "line": 10,
+        "text": "let directory = path.join(process.cwd(), 'assets', 'translations');"
+      },
+      {
+        "source": "modules/i18n/i18n.service.ts",
+        "line": 14,
+        "text": "directory = path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');"
+      }
+    ],
+    "all_packaged_asset_consumer_lines": [
+      {
+        "source": "app.module.ts",
+        "line": 78,
+        "text": "rootPath: path.join(APP_DIR, 'assets', 'frontend'),"
+      },
+      {
+        "source": "app.service.ts",
+        "line": 102,
+        "text": "const assetsFolder = path.join(appDir, 'assets');"
+      },
+      {
+        "source": "app.service.ts",
+        "line": 116,
+        "text": "await this.writeTraefikConfig(path.join(assetsFolder, 'traefik', 'traefik.yml'), path.join(dataDir, 'traefik', 'traefik.yml'));"
+      },
+      {
+        "source": "app.service.ts",
+        "line": 118,
+        "text": "path.join(assetsFolder, 'traefik', 'dynamic', 'dynamic.yml'),"
+      },
+      {
+        "source": "core/database/database.service.ts",
+        "line": 25,
+        "text": "return path.join(appDir, 'assets', 'migrations');"
+      },
+      {
+        "source": "core/database/database.service.ts",
+        "line": 31,
+        "text": "await migrate(this.db, { migrationsFolder: this.getMigrationsPath() });"
+      },
+      {
+        "source": "modules/app-stores/app-store-files-manager.ts",
+        "line": 329,
+        "text": "let filePath = path.join(appDir, 'assets', 'default-app-logo.jpg');"
+      },
+      {
+        "source": "modules/i18n/i18n.service.ts",
+        "line": 10,
+        "text": "let directory = path.join(process.cwd(), 'assets', 'translations');"
+      }
+    ],
+    "asset_groups": {
+      "/app/assets": {
+        "source": "packages/backend/assets",
+        "exists_in_source": true,
+        "source_files": 4,
+        "runtime_origin": "unchanged actual source files"
+      },
+      "/app/assets/migrations": {
+        "source": "packages/backend/src/core/database/drizzle",
+        "exists_in_source": true,
+        "source_files": 67,
+        "runtime_origin": "unchanged actual source files"
+      },
+      "/app/assets/translations": {
+        "source": "packages/backend/src/modules/i18n/translations",
+        "exists_in_source": true,
+        "source_files": 31,
+        "runtime_origin": "unchanged actual source files"
+      },
+      "/app/assets/frontend": {
+        "source": "packages/frontend/dist/client",
+        "exists_in_source": false,
+        "source_files": 0,
+        "runtime_origin": "empty synthetic directory; frontend NOT built/copied; UI NOT proven"
+      }
+    },
+    "migration_journal_entries": 32,
+    "database_uses_configured_password": true,
+    "queue_prerequisites": [
+      "internal runtipi-rabbitmq alias and synthetic credentials",
+      "durable app-events-queue/repo-queue/system-events-queue and real consumers required"
+    ],
+    "writable_roots": [
+      "/data",
+      "/app-data",
+      "/cache",
+      "/tmp"
+    ],
+    "bootstrap_prerequisites": [
+      "data env/state/seed/logs",
+      "migrations and PostgreSQL authentication",
+      "loopback Git server and git safe.directory HOME",
+      "traefik template copy and openssl TLS",
+      "SQLite cache and real queue consumers"
+    ],
+    "frontend_proven": false,
+    "runtime_executed": false,
+    "full_acceptance": false,
+    "RUNTIPI_ADMITTED": false
+  },
+  "manager_confinement": {
+    "dockerode_socket_and_compose_host": "proxy-only",
+    "raw_socket_mounted": false,
+    "readonly_root": true,
+    "no_host_namespaces_or_privilege": true,
+    "working_directory": "/app"
+  },
+  "http_responses": {
+    "GET /api/apps/installed unauthenticated": {
+      "attempts": 3,
+      "first": {
+        "status": 0,
+        "body": "",
+        "parse_error": "non_json_or_incomplete",
+        "captured_bytes": 0,
+        "body_truncated": false,
+        "transport_error": "transport_or_read_error",
+        "authenticated_request": false
+      },
+      "latest": {
+        "status": 401,
+        "body": {
+          "statusCode": 401,
+          "message": "Unauthorized",
+          "path": "/api/apps/installed"
+        },
+        "parse_error": null,
+        "captured_bytes": 72,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": false
+      }
+    },
+    "POST /api/app-lifecycle/agent-synthetic:migrated/install unauthenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 401,
+        "body": {
+          "statusCode": 401,
+          "message": "Unauthorized",
+          "path": "/api/app-lifecycle/agent-synthetic:migrated/install"
+        },
+        "parse_error": null,
+        "captured_bytes": 104,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": false
+      },
+      "latest": {
+        "status": 401,
+        "body": {
+          "statusCode": 401,
+          "message": "Unauthorized",
+          "path": "/api/app-lifecycle/agent-synthetic:migrated/install"
+        },
+        "parse_error": null,
+        "captured_bytes": 104,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": false
+      }
+    },
+    "POST /api/auth/register unauthenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 201,
+        "body": {
+          "success": true
+        },
+        "parse_error": null,
+        "captured_bytes": 16,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": false
+      },
+      "latest": {
+        "status": 201,
+        "body": {
+          "success": true
+        },
+        "parse_error": null,
+        "captured_bytes": 16,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": false
+      }
+    },
+    "GET /api/apps/installed authenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 200,
+        "body": {
+          "installed": []
+        },
+        "parse_error": null,
+        "captured_bytes": 16,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 200,
+        "body": {
+          "installed": []
+        },
+        "parse_error": null,
+        "captured_bytes": 16,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    },
+    "POST /api/app-lifecycle/agent-synthetic:migrated/install authenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 201,
+        "body": {
+          "requestId": "404d1bf0-63f0-4e55-9ec1-8393a84852d3"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 201,
+        "body": {
+          "requestId": "404d1bf0-63f0-4e55-9ec1-8393a84852d3"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    },
+    "GET /api/apps/agent-synthetic:migrated authenticated": {
+      "attempts": 4,
+      "first": {
+        "status": 200,
+        "body": {
+          "app": {
+            "id": 2,
+            "status": "stopped",
+            "config": {
+              "exposed": false,
+              "skipEnv": false,
+              "skipRun": true,
+              "openPort": false,
+              "skipPull": true,
+              "forcePull": false,
+              "enableAuth": false,
+              "exposedLocal": false,
+              "isVisibleOnGuestDashboard": false
+            },
+            "createdAt": 1793442400,
+            "updatedAt": 1793442400,
+            "version": 1,
+            "ignoredVersion": null,
+            "exposed": false,
+            "domain": null,
+            "isVisibleOnGuestDashboard": false,
+            "openPort": false,
+            "port": 18080,
+            "exposedLocal": false,
+            "appStoreSlug": "migrated",
+            "appName": "agent-synthetic",
+            "enableAuth": false,
+            "subnet": "10.128.10.0/24",
+            "localSubdomain": null,
+            "pendingRestart": false,
+            "userConfigEnabled": true,
+            "maxBackups": null,
+            "templateUrn": "agent-synthetic:migrated",
+            "lastTemplateSyncAt": 1793442400,
+            "templateVersion": 1,
+            "appStore": {
+              "slug": "migrated",
+              "hash": "b21f23defd54d7f5c10e71c000d790aaf8fb00b6490588c33dfda31d15b517f6",
+              "name": "migrated",
+              "enabled": true,
+              "url": "http://127.0.0.1:8080/store.git",
+              "branch": "main",
+              "createdAt": 1793442398,
+              "updatedAt": 1793442398
+            }
+          },
+          "info": {
+            "id": "agent-synthetic",
+            "name": "Synthetic sealed fixture",
+            "port": 18080,
+            "https": false,
+            "author": "QA",
+            "no_gui": true,
+            "available": true,
+            "exposable": false,
+            "dynamic_config": true,
+            "source": "https://example.invalid/synthetic",
+            "version": "1.0.0",
+            "categories": [
+              "utilities"
+            ],
+            "description": "PUBLIC synthetic fixture.",
+            "short_desc": "Synthetic only",
+            "website": "https://example.invalid",
+            "supported_architectures": [
+              "amd64"
+            ],
+            "created_at": 0,
+            "updated_at": 0,
+            "deprecated": false,
+            "tipi_version": 1,
+            "force_expose": false,
+            "generate_vapid_keys": false,
+            "form_fields": [],
+            "force_pull": false,
+            "urn": "agent-synthetic:migrated"
+          },
+          "metadata": {
+            "hasCustomConfig": false,
+            "localSubdomain": "agent-synthetic-migrated",
+            "appDataDir": "/app-data/migrated/agent-synthetic",
+            "appRepoDir": "/data/repos/migrated/apps/agent-synthetic",
+            "appInstalledDir": "/data/apps/migrated/agent-synthetic",
+            "latestVersion": 1,
+            "minTipiVersion": null,
+            "latestDockerVersion": "1.0.0"
+          }
+        },
+        "parse_error": null,
+        "captured_bytes": 1845,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 200,
+        "body": {
+          "app": {
+            "id": 2,
+            "status": "running",
+            "config": {
+              "exposed": false,
+              "skipEnv": false,
+              "skipRun": true,
+              "openPort": false,
+              "skipPull": true,
+              "forcePull": false,
+              "enableAuth": false,
+              "exposedLocal": false,
+              "isVisibleOnGuestDashboard": false
+            },
+            "createdAt": 1793442400,
+            "updatedAt": 1793442513,
+            "version": 2,
+            "ignoredVersion": null,
+            "exposed": false,
+            "domain": null,
+            "isVisibleOnGuestDashboard": false,
+            "openPort": false,
+            "port": 18080,
+            "exposedLocal": false,
+            "appStoreSlug": "migrated",
+            "appName": "agent-synthetic",
+            "enableAuth": false,
+            "subnet": "10.128.10.0/24",
+            "localSubdomain": null,
+            "pendingRestart": false,
+            "userConfigEnabled": true,
+            "maxBackups": null,
+            "templateUrn": "agent-synthetic:migrated",
+            "lastTemplateSyncAt": 1793442400,
+            "templateVersion": 1,
+            "appStore": {
+              "slug": "migrated",
+              "hash": "b21f23defd54d7f5c10e71c000d790aaf8fb00b6490588c33dfda31d15b517f6",
+              "name": "migrated",
+              "enabled": true,
+              "url": "http://127.0.0.1:8080/store.git",
+              "branch": "main",
+              "createdAt": 1793442398,
+              "updatedAt": 1793442398
+            }
+          },
+          "info": {
+            "id": "agent-synthetic",
+            "name": "Synthetic sealed fixture",
+            "port": 18080,
+            "https": false,
+            "author": "QA",
+            "no_gui": true,
+            "available": true,
+            "exposable": false,
+            "dynamic_config": true,
+            "source": "https://example.invalid/synthetic",
+            "version": "2.0.0",
+            "categories": [
+              "utilities"
+            ],
+            "description": "PUBLIC synthetic fixture.",
+            "short_desc": "Synthetic only",
+            "website": "https://example.invalid",
+            "supported_architectures": [
+              "amd64"
+            ],
+            "created_at": 0,
+            "updated_at": 0,
+            "deprecated": false,
+            "tipi_version": 2,
+            "force_expose": false,
+            "generate_vapid_keys": false,
+            "form_fields": [],
+            "force_pull": false,
+            "urn": "agent-synthetic:migrated"
+          },
+          "metadata": {
+            "hasCustomConfig": true,
+            "localSubdomain": "agent-synthetic-migrated",
+            "appDataDir": "/app-data/migrated/agent-synthetic",
+            "appRepoDir": "/data/repos/migrated/apps/agent-synthetic",
+            "appInstalledDir": "/data/apps/migrated/agent-synthetic",
+            "latestVersion": 2,
+            "minTipiVersion": null,
+            "latestDockerVersion": "2.0.0"
+          }
+        },
+        "parse_error": null,
+        "captured_bytes": 1844,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    },
+    "POST /api/app-lifecycle/agent-synthetic:migrated/start authenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 201,
+        "body": {
+          "requestId": "597b25c5-b586-49d8-b7e7-83a45cda5805"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 201,
+        "body": {
+          "requestId": "597b25c5-b586-49d8-b7e7-83a45cda5805"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    },
+    "POST /api/app-lifecycle/agent-synthetic:migrated/restart authenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 201,
+        "body": {
+          "requestId": "1371dc10-933a-4c3b-85d5-50bc8af0fb5a"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 201,
+        "body": {
+          "requestId": "1371dc10-933a-4c3b-85d5-50bc8af0fb5a"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    },
+    "PATCH /api/app-lifecycle/agent-synthetic:migrated/update authenticated": {
+      "attempts": 1,
+      "first": {
+        "status": 200,
+        "body": {
+          "requestId": "2eed5c62-c119-4c04-8cd6-03f6b52c2db2"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      },
+      "latest": {
+        "status": 200,
+        "body": {
+          "requestId": "2eed5c62-c119-4c04-8cd6-03f6b52c2db2"
+        },
+        "parse_error": null,
+        "captured_bytes": 52,
+        "body_truncated": false,
+        "transport_error": null,
+        "authenticated_request": true
+      }
+    }
+  },
+  "real_queue_consumers": {
+    "app-events-queue": 1,
+    "repo-queue": 1,
+    "system-events-queue": 1
+  },
+  "full_bootstrap_assets_tls_git_cache": true,
+  "auth": {
+    "actual_registration": true,
+    "unauthenticated_lifecycle_denied": true,
+    "actual_session_readback": true
+  },
+  "install_http_source_contract": {
+    "source_pins": {
+      "packages/backend/src/modules/auth/auth.guard.ts": "e313d4c55be5569388e89fec67fbff3088a18180ab31409551eb988c9d89de87",
+      "packages/backend/src/modules/auth/auth.middleware.ts": "952ba14b0c7cad23281df2a53339e2b8ffbaece7d9a5068715ca669a673e4085",
+      "packages/backend/src/modules/auth/auth.controller.ts": "8163a049122955f485e01e6234cdab0b1a64707394411af47a172e143327c34f",
+      "packages/backend/src/common/constants.ts": "c003d91a1f349637a3686f1b457654a17722f6ebe9bda9c09857c7203a7a5203",
+      "packages/backend/src/modules/app-lifecycle/app-lifecycle.controller.ts": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d",
+      "packages/backend/src/modules/app-lifecycle/dto/app-lifecycle.dto.ts": "eac0d9327c45bc523661657a4828051f7e97de2a7ba86604cdf1ab4d6fdcd691",
+      "packages/backend/src/modules/app-lifecycle/handlers/install-app.handler.ts": "1b4705533f76480513b39293c4123da953e80af40ee7212ea4e96001b4b2b2d3",
+      "packages/backend/src/modules/app-lifecycle/services/app-validation.service.ts": "e6e4b819176ef7418c6a4a3c1a2ed52625cfb7f116c5a151564f76bac291c0ee"
+    },
+    "session_unsafe_requires_same_origin_or_referer": true,
+    "cookie_name": "runtipi-sid",
+    "body_fields_permitted": true,
+    "port_optional_uses_store_default": true,
+    "production_changed": false,
+    "historical_status_and_body_recovered": false,
+    "runtime_executed": false
+  },
+  "update_rollback_source_contract": {
+    "source_pins": {
+      "packages/backend/src/modules/app-lifecycle/app-lifecycle.controller.ts": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d",
+      "packages/backend/src/modules/app-lifecycle/dto/app-lifecycle.dto.ts": "eac0d9327c45bc523661657a4828051f7e97de2a7ba86604cdf1ab4d6fdcd691",
+      "packages/backend/src/modules/app-lifecycle/commands/update-app-command.ts": "945b69ca8eadfa6dedea90c440bccdcad9f55bbbda903217083865e998045f0c",
+      "packages/backend/src/modules/docker/mandatory-seal.ts": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc",
+      "packages/backend/src/cli/enroll-mandatory-seal.ts": "1fc577924aa9002591d94e484f993e0d2f73ac90d3e4126c1ed3e77b81cab215",
+      "packages/backend/src/modules/backups/backups.controller.ts": "7a909fb4c0142fb22f9155520be956d8536fef156d6cfd6748d9f7aabd3bdc33",
+      "packages/backend/src/modules/app-lifecycle/commands/restore-app-command.ts": "2259deb0f5f0fde5374db322ea7fc659f2d8cb46f31af7c9015419ff485c574f",
+      "packages/backend/src/modules/backups/backup.manager.ts": "327a8dcb1b58cd3bc3747fff512f302f1146983b7254b1232d471e9c1801fc16"
+    },
+    "update_method": "PATCH",
+    "update_body": {
+      "performBackup": "boolean"
+    },
+    "revision_selector_in_update_dto": false,
+    "explicit_policy_anchor_rollback_http_route": false,
+    "automatic_failure_recovery_is_not_accepted_rollback_transaction": true,
+    "backup_restore_selects_archive_filename_not_policy_anchor": true,
+    "backup_restore_does_not_recreate_running_runtime": true,
+    "trusted_stage_allows_one_new_pair_retaining_previous": true,
+    "trusted_cli_built_separately_from_backend_bundle": true,
+    "second_distinct_stage_with_previous_refused": true,
+    "requested_two_post_contract_supported": false,
+    "transactions_added": false,
+    "runner_ends_after": "restart",
+    "production_changed": false
+  },
+  "update_continuation_contract": {
+    "source_pins": {
+      "packages/backend/src/modules/docker/mandatory-seal.ts": {
+        "sha256": "dfaa19d061cd78a6d5dcf289f63514951557ead887f4f295bd0166c5ac0917fc",
+        "lines": {
+          "if (prior.previous) throw fail();": [
+            144
+          ],
+          "A second distinct revision requires": [
+            131
+          ],
+          "async stage(": [
+            134
+          ],
+          "snapshot(effective:": [
+            189
+          ],
+          "return JSON.stringify(Object.fromEntries": [
+            193
+          ]
+        }
+      },
+      "packages/backend/src/cli/enroll-mandatory-seal.ts": {
+        "sha256": "1fc577924aa9002591d94e484f993e0d2f73ac90d3e4126c1ed3e77b81cab215",
+        "lines": {
+          "['enroll', 'stage']": [
+            9
+          ],
+          "? await seal.stage(urn, expected!, compose, catalogue)": [
+            17
+          ]
+        }
+      },
+      "packages/backend/src/modules/docker/docker.service.ts": {
+        "sha256": "04ef4e9742d601099e510f4f518b4a249f197054eaa2b29b4b5f66e789aa433c",
+        "lines": {
+          "const snapshot = path.join(dir, 'effective.json');": [
+            188
+          ],
+          "seal.snapshot(effective)": [
+            207
+          ],
+          "await launch([...project, '-f', snapshot]);": [
+            208
+          ],
+          "await fs.rm(dir, { recursive: true, force: true });": [
+            210
+          ]
+        }
+      },
+      "packages/backend/src/modules/app-lifecycle/app-lifecycle.controller.ts": {
+        "sha256": "afc609645f89d34931d62a80ea09c66f4495d9e80f4f3b3c5de532737fe1bd9d",
+        "lines": {
+          "@Patch(':urn/update')": [
+            55
+          ]
+        }
+      },
+      "packages/backend/src/modules/app-lifecycle/dto/app-lifecycle.dto.ts": {
+        "sha256": "eac0d9327c45bc523661657a4828051f7e97de2a7ba86604cdf1ab4d6fdcd691",
+        "lines": {
+          "performBackup: 'boolean'": [
+            26
+          ]
+        }
+      },
+      "packages/backend/src/modules/app-lifecycle/commands/update-app-command.ts": {
+        "sha256": "945b69ca8eadfa6dedea90c440bccdcad9f55bbbda903217083865e998045f0c",
+        "lines": {
+          "previousAppDirectory = path.join(temporaryDirectory": [
+            118
+          ],
+          "await dockerService.prepareApp(appUrn);": [
+            137
+          ],
+          "await dockerService.composeApp(appUrn, 'pull');": [
+            138
+          ],
+          "await dockerService.composeApp(appUrn, 'down --remove-orphans');": [
+            157
+          ],
+          "if (previousFilesStaged && deploymentMayHaveChanged && deploymentMayHaveStopped && this.wasRunningBeforeUpdate)": [
+            182
+          ],
+          "await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');": [
+            164,
+            184
+          ]
+        }
+      },
+      "packages/backend/src/modules/app-lifecycle/handlers/update-app.handler.ts": {
+        "sha256": "fa1923bd89eb9196775de72069086d304c423f241a25d9e3f258c404fdd2d884",
+        "lines": {
+          "transitionTo(app.id, appUrn, 'updating')": [
+            47
+          ],
+          "version: updatedVersion": [
+            66
+          ],
+          "rollbackSucceeded === true ? appStatusBeforeUpdate": [
+            72
+          ]
+        }
+      },
+      "packages/backend/src/modules/docker/wizard-shares.controller.ts": {
+        "sha256": "061fb31cc3bd5e378e835321080c3161c55953cae3974776a7403a74821b94fc",
+        "lines": {
+          "@Post(':id/app-grants')": [
+            19
+          ],
+          "this.docker.storage.change({ kind: 'app'": [
+            22
+          ],
+          "@Post(':id/share-grants')": [
+            25
+          ]
+        }
+      },
+      "packages/backend/src/modules/docker/wizard-storage.ts": {
+        "sha256": "dab3f7bb925bf0247f31d6b60a2cc8977424ea4b7a9b2c9d368715760dae7d09",
+        "lines": {
+          "path.join(dir, 'wizard.md')": [
+            208,
+            269,
+            288
+          ],
+          "if (!text) continue;": [
+            212,
+            273,
+            292
+          ],
+          "if (!consumer) throw new Error('Consumer not installed');": [
+            309,
+            328
+          ],
+          "await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\\n`, { mode: 0o600 });": [
+            172
+          ]
+        }
+      }
+    },
+    "update_method": "PATCH",
+    "update_body": {
+      "performBackup": false
+    },
+    "single_accepted_update_prepared": true,
+    "runtime_executed": false,
+    "rollback_transaction_prepared": false,
+    "grant_revocation_prepared": false,
+    "rollback_gap": "No trusted installed/promotion transition clears policy.previous after successful update. A second distinct staged pair is refused at mandatory-seal.ts:144. Update recovery copies prior app/env and may recreate runtime, but never clears/promotes the seal anchor. Do not edit policy or inject a guard fault as a substitute for a shipped revision transition.",
+    "grant_gap": "HTTP app-grant revoke exists, but the retained synthetic fixture has no wizard.md and no app grant to revoke. WizardStorage.apps skips it (208-212); change refuses a missing consumer (308-309). A real grant preservation proof needs a separately reviewed manifest/provider/grant fixture, not a no-op revoke or handwritten grant state.",
+    "full_acceptance": false,
+    "RUNTIPI_ADMITTED": false
+  },
+  "new_install_urn_absent_before_post": true,
+  "request_ids": [
+    "404d1bf0-63f0-4e55-9ec1-8393a84852d3",
+    "597b25c5-b586-49d8-b7e7-83a45cda5805",
+    "1371dc10-933a-4c3b-85d5-50bc8af0fb5a",
+    "2eed5c62-c119-4c04-8cd6-03f6b52c2db2"
+  ],
+  "transactions": [
+    {
+      "action": "install",
+      "request_id": "404d1bf0-63f0-4e55-9ec1-8393a84852d3",
+      "terminal_database": "stopped|1|10.128.10.0/24",
+      "actual_auth_http_readback": true
+    },
+    {
+      "action": "start",
+      "request_id": "597b25c5-b586-49d8-b7e7-83a45cda5805",
+      "terminal_database": "running|1|10.128.10.0/24",
+      "actual_auth_http_readback": true
+    },
+    {
+      "action": "restart",
+      "request_id": "1371dc10-933a-4c3b-85d5-50bc8af0fb5a",
+      "terminal_database": "running|1|10.128.10.0/24",
+      "actual_auth_http_readback": true
+    },
+    {
+      "action": "update",
+      "method": "PATCH",
+      "request_id": "2eed5c62-c119-4c04-8cd6-03f6b52c2db2",
+      "terminal_database": "running|2",
+      "actual_auth_http_readback": true
+    }
+  ],
+  "install_guard_sequence_window": [
+    18,
+    44
+  ],
+  "trusted_reviewed_pair_enrolled": true,
+  "first_slice_guard_accounting": {
+    "expected_refusals": 10,
+    "probe_refusals": 9,
+    "install_prune_refusals": 1,
+    "start_restart_prune_refusals": 0,
+    "network_discovery_misses": 8,
+    "paired_network_creations": 8
+  },
+  "first_slice_real_runtime_events": {
+    "container_create_coverage": 10,
+    "connect_pair_coverage": 20,
+    "unexpected_transient_attachments": 0,
+    "finite_real_engine_event_window_complete": true
+  },
+  "trusted_update_stage": {
+    "urn": "agent-synthetic:migrated",
+    "policy": "tinfoil-sealed-v1",
+    "sha256": "5b1b6c0abdb165e68ca14dc8bfefc0973dd2d5c71a42b2d08577496707d0c31b",
+    "previous_sha256": "19ac16d03980571d5fe0d58f55ee221ab5d06ff265246a1b503ff15ac4cfe8cb",
+    "published_source_version": 2,
+    "hostile_config_used": false,
+    "upstream_commit": "09e761dc04d3d4048793f82af861a6a144690d6e",
+    "publication": {
+      "path": "/data/repos/migrated/apps/agent-synthetic/config.json",
+      "sha256": "6afed8b87c3b2ce6f63daa04e0eb4175612f475218e5bbdf8fed163922e12e39",
+      "version": "2.0.0",
+      "tipi_version": 2,
+      "schema_valid": true,
+      "available": true,
+      "schema_error": null
+    }
+  },
+  "accepted_update": {
+    "request_id": "2eed5c62-c119-4c04-8cd6-03f6b52c2db2",
+    "terminal_database": "running|2",
+    "actual_auth_http_readback": true,
+    "effective_snapshot_launch": true,
+    "effective_snapshot_bytes_retained": false,
+    "runtime_ids": [
+      "0aa9cf601a1a49fac05be6bc7fb39cb1fc2848432346eb382978c9c4bf5d4f74",
+      "c685c84cbe44238e400c8f51abaae5fb244fb1a72e6f80ea553033125a365730",
+      "82a1188e67ab2a05c400b0cf62698cb92801afe7d6adf7b0c338e83cbafbf735",
+      "bd39b484f3867f8bce1a3a89351e5f9c6bb8914678b462d9cb97ab9436c788d8",
+      "29eff3485e6120f66fbde1f21ecb36de0e57181caea3d74ce7173751f2b5e4b3"
+    ],
+    "seal_readback": {
+      "sha256": "5b1b6c0abdb165e68ca14dc8bfefc0973dd2d5c71a42b2d08577496707d0c31b",
+      "previous_sha256": "19ac16d03980571d5fe0d58f55ee221ab5d06ff265246a1b503ff15ac4cfe8cb",
+      "installed_version": 2,
+      "installed_config_sha256": "6afed8b87c3b2ce6f63daa04e0eb4175612f475218e5bbdf8fed163922e12e39",
+      "revision_command": "import time; time.sleep(1800) # trusted revision 2"
+    }
+  },
+  "runtime_events_sha256": "8272196439f75728d5e573a75e57fc9d4bf001f3b7dba6744899b0b80f497e82",
+  "runtime_event_stream": {
+    "opened_before_start": true,
+    "coverage_sentinel": true,
+    "drained_and_reader_joined": true,
+    "byte_cap": 16777216,
+    "row_cap": 32768
+  },
+  "failure": {
+    "type": "AssertionError",
+    "frames": [
+      {
+        "file": "manager_seal_installed_path.py",
+        "function": "main",
+        "line": 1340
+      },
+      {
+        "file": "manager_seal_installed_path.py",
+        "function": "run",
+        "line": 1013
+      },
+      {
+        "file": "manager_seal_installed_path.py",
+        "function": "reconcile_guard_accounting",
+        "line": 332
+      }
+    ]
+  },
+  "pre_cleanup_states": {
+    "3db474d64081519b55a65c002c477730ce87c3f20d3c5039328d65db5692b320": {
+      "Status": "running",
+      "Running": true,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "57502657d925250480a6b53de1bdad8c8e5d09f8a3ced70fe2987da5eac215b0": {
+      "Status": "exited",
+      "Running": false,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "bd5f3333db73c7d57e6271e932bbf462a7b57cc39b3c3c174c8544b23c8c46db": {
+      "Status": "exited",
+      "Running": false,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "6eaaef4664b3ab1f942921503e46dd8ebcbba62feaca61c023a18bb393c3a264": {
+      "Status": "created",
+      "Running": false,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "c3e95cc35f32d371aa410db1e43d62510f91be2fa4a18ed16d0a827b72f0336a": {
+      "Status": "running",
+      "Running": true,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "7b7bc957f08ab4f7d5f42c2920f80e0e43dfb83ce29d9493e3cb05e22a39faff": {
+      "Status": "running",
+      "Running": true,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "53271ffa382095c78427264598a5767d1fe736c10d0c8c074898314a34544b1d": {
+      "Status": "running",
+      "Running": true,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    },
+    "21ed9d7c0cb516e11156aa5d44c51dbd40103a7b8fe124e475adff1179e4560a": {
+      "Status": "running",
+      "Running": true,
+      "ExitCode": 0,
+      "OOMKilled": false,
+      "Dead": false
+    }
+  },
+  "cleanup_errors": [],
+  "reserve_after_cleanup_bytes": 283877523456,
+  "phase_at_exit": "terminal-update",
+  "guard_ledger_sha256": "a04ef1d3858870f191cbd47f076e472aeb2f8f52d403682e2a820a77f041ac4b"
+}

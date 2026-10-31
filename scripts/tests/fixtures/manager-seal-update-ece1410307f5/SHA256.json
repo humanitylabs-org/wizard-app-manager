@@ -1,0 +1,37 @@
+{
+  "cleanup.json": {
+    "bytes": 130,
+    "sha256": "a7207fb2450b4888dfc42a88132b1d593b57bdc6da9cc6a66c55118c701c7d2f",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/parent-cleanup.json"
+  },
+  "controller-ledger.jsonl": {
+    "bytes": 7343,
+    "sha256": "bc3f8f84b544213ce7f1d10e8ed4efe06ef4ab783821e7b7ed7e69d459fb3b6b",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/installed-results/controller-ledger.jsonl"
+  },
+  "guard-ledger.jsonl": {
+    "bytes": 87111,
+    "sha256": "a04ef1d3858870f191cbd47f076e472aeb2f8f52d403682e2a820a77f041ac4b",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/guard-shared/guard-ledger.jsonl"
+  },
+  "manager.sanitized.log": {
+    "bytes": 5288,
+    "sha256": "7b4351d69a3c6321a96b61997993a76bf872ca55956b684297e83171ba012984",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/installed-results/manager.sanitized.log"
+  },
+  "old-installed-path.py": {
+    "bytes": 96239,
+    "sha256": "dd9f755a2381574113106b2841a5a94dd225a7cf3e31d8ae9316932c26a991fd",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/scripts/manager_seal_installed_path.py"
+  },
+  "receipt.json": {
+    "bytes": 84420,
+    "sha256": "7cbe36589c24383a98c035587f26f032ef0b0e3af1ad9020b488ba9d31f13726",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/installed-results/receipt.json"
+  },
+  "runtime-events.json": {
+    "bytes": 129213,
+    "sha256": "8272196439f75728d5e573a75e57fc9d4bf001f3b7dba6744899b0b80f497e82",
+    "source_path": "/srv/work/manager-seal-installed-ece1410307f5/installed-results/runtime-events.json"
+  }
+}

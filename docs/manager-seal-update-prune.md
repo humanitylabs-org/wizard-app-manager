@@ -1,0 +1,23 @@
+# Installed update prune accounting (QA only)
+
+## Root cause and source pins
+
+The successful product update command explicitly disables prune in `update-app-command.ts:133,160,183` (SHA-256 `945b69ca8eadfa6dedea90c440bccdcad9f55bbbda903217083865e998045f0c`). Its **handler** subsequently awaits update-config (`handlers/update-app.handler.ts:65`, SHA-256 `fa1923bd89eb9196775de72069086d304c423f241a25d9e3f258c404fdd2d884`). Update-config queues `generate_env` (`handlers/update-config.handler.ts:53`, SHA-256 `9c320368a079d9298545878bec517c7985b74286b45140ce5127f15a36568603`). `commands/generate-env-command.ts:14` calls `ensureAppDir` without options (SHA-256 `c35acd29e61ab3baa57423c625bd092f9a8ebdd3bd472ca0166822715226b610`). `commands/command.ts:27-30` consequently calls label-scoped `pruneContainers`, catching refusal as an empty result (SHA-256 `faccba3fcef05fe90166e163662cd603e634fe03076c8190d5b27519ea2d561d`). No product source or guard authority is changed.
+
+## Exact accounting
+
+The rig captures the guard sequence lower bound immediately before its single update transaction/PATCH, and the upper bound immediately after the terminal DB, authenticated HTTP, runtime and seal readbacks. Require exactly one closed typed refusal in each disjoint install/update window. Keep exact probe-row identity, contiguous integer sequences, activated/install-before-first-network ordering, boolean label filters, no forward prune, and paired discovery/create accounting. Any extra, untyped, start/restart, outside-window, forwarded or malformed prune fails. Start/restart/update each recreate four networks: the existing three-cycle expectation is correct and unchanged.
+
+## Full-tail replay on retained real bytes
+
+`python3 -B scripts/manager_seal_post_update_replay.py` verifies `scripts/tests/fixtures/manager-seal-update-ece1410307f5/SHA256.json` provenance for the exact failed run's 646-row guard ledger, controller ledger, raw runtime events, receipt, manager log, parent cleanup and old runner. It compiles the retained old accounting function and demonstrates its exact line-332 assertion failure (the saved receipt names caller line 1013).
+
+The replay compiles and executes **every actual statement from the failing guard-accounting assignment to the end of current `Rig.run()`** (12 statements). AST equality proves the entire later tail is unchanged apart from the new update-window keyword. The real bytes pass: 9 probe refusals, one install plus one update prune refusal (sequences 19 and 632), 12 discovery misses/12 paired network creations, 15 distinct creates and 30 attachment pairs, no unexpected transient attachments, four distinct HTTP transaction request IDs, source-audit and final scope flags. It also checks controller coverage of every created resource, saved cleanup errors/residuals, reserve, released canary, state enums, and accepted DB `running|2`/HTTP/effective snapshot/seal revision-2 readbacks. **No later expectations needed correction.**
+
+The historical rig did not capture PATCH bounds. Replay explicitly derives historical phase bounds `[401,646]` from the last restart-container inspection response and terminal retained ledger, not fabricated captured PATCH bounds. Fresh runs now capture exact bounds. The saved historical receipt remains a failure and `single_accepted_update_pass=false`. Replay's counterfactual tail result is not a new installed pass. `rollback_transaction_pass`, `full_acceptance`, and `RUNTIPI_ADMITTED` stay false.
+
+Negative regressions cover prune moved into start or restart, a third prune in any phase, untyped prune, forwarding, closed shape/boolean/filter drift, invalid/missing bounds and probe-identity drift. Focused suite: `PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p 'test_manager_seal_*.py'`.
+
+## Reuse and admission
+
+The explicit QA-only exception list is `manager_seal_installed_recovery.QA_DELTA`; the new entries name this document, the replay helper/test, and every exact fixture path (no directory globs). All other exported paths/content/modes must match the inherited production source. Reuse archive SHA-256 `e9d848ad144e5afda0f5b7c28095b08ca23fcf43bf630530f07dc7702d1cb53d` and bundled `main.js` SHA-256 `b915a5ae7e42dafa1abf7d3b7f174f029941dfc8a23dc9373bf7d4dbe5dbfc3a`; no rebuild. The fresh commit-addressed stage inherits the guarded isolated/no-site/no-bytecode argv, 0700 root, complete SOURCE/SIDECARS inventories and all previous static checks, adding real-byte full-tail replay and source pins. Capacity remains 4 GiB total / 1 GiB run / 200 GiB reserve. Static preflight only: do not submit or execute containers.

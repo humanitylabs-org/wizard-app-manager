@@ -312,7 +312,8 @@ def reconcile_creation_intents(rows, owner):
 
 
 def reconcile_guard_accounting(rows, expected_denials, network_names, expected_cycles=1,
-                               install_prune_window=None, expected_probe_rows=None):
+                               install_prune_window=None, expected_probe_rows=None,
+                               update_prune_window=None):
     """Refusals remain exact; discovery must pair once with a later creation.
 
     No blanket exclusion of 403/404 or arbitrary names. Each fresh/recreated
@@ -326,24 +327,36 @@ def reconcile_guard_accounting(rows, expected_denials, network_names, expected_c
                    for r in rows), 'prune forwarded'
     if expected_probe_rows is not None:
         assert probes == expected_probe_rows, 'probe refusal identity drift'
-    if install_prune_window is None:
+    assert update_prune_window is None or install_prune_window is not None, 'update without install window'
+    windows = [('install', install_prune_window)] if install_prune_window is not None else []
+    if update_prune_window is not None:
+        windows.append(('update', update_prune_window))
+    if not windows:
         assert not prunes, 'prune outside install'
-    else:
-        assert len(prunes) == 1, 'expected exactly one install prune refusal'
-        prune = prunes[0]
+    assert len(prunes) == len(windows), 'expected exactly one prune refusal per admitted window'
+    for prune in prunes:
         assert set(prune) == {'sequence', 'operation', 'reason', 'route', 'filters'}
         assert prune['route'] == '/containers/prune'
         assert prune['filters'] == {'label': {'runtipi.appurn='+URN: True}}
         # Equality alone admits integer 1 as True. Retain the closed wire type.
         assert type(prune['filters']['label']['runtipi.appurn='+URN]) is bool
+    if windows:
         sequences = [r['sequence'] for r in rows]
+        assert all(type(n) is int for n in sequences)
         assert sequences == list(range(1, len(rows)+1)), 'ledger sequence drift'
         activated = [r['sequence'] for r in rows if r['operation'] == 'activated']
         assert len(activated) == 1
         first_network = min(r['sequence'] for r in rows
                             if r['operation'] == 'creation-intent' and r.get('kind') == 'network')
+        for phase, window in windows:
+            assert len(window) == 2 and all(type(n) is int for n in window)
+            lower, upper = window
+            assert 0 <= lower < upper <= len(rows), 'invalid prune window'
+            assert len([p for p in prunes if lower < p['sequence'] <= upper]) == 1, 'prune outside '+phase+' window'
         lower, upper = install_prune_window
-        assert activated[0] <= lower < prune['sequence'] <= upper < first_network, 'prune outside install window'
+        assert activated[0] <= lower < upper < first_network, 'invalid install window'
+        if update_prune_window is not None:
+            assert first_network <= update_prune_window[0], 'overlapping prune windows'
         assert all(r['sequence'] < activated[0] for r in probes), 'probe after activation'
     assert type(expected_cycles) is int and expected_cycles > 0
     pending = {}; misses = 0; created = 0; counts = dict.fromkeys(network_names, 0)
@@ -362,9 +375,12 @@ def reconcile_guard_accounting(rows, expected_denials, network_names, expected_c
             created += 1; counts[name] += 1
     assert not pending and misses == created and created > 0, 'incomplete discovery accounting'
     assert all(count == expected_cycles for count in counts.values()), 'unexpected discovery/create count'
-    return {'expected_refusals': expected_denials+len(prunes), 'probe_refusals': len(probes),
-            'install_prune_refusals': len(prunes), 'start_restart_prune_refusals': 0,
-            'network_discovery_misses': misses, 'paired_network_creations': created}
+    result = {'expected_refusals': expected_denials+len(prunes), 'probe_refusals': len(probes),
+              'install_prune_refusals': int(install_prune_window is not None), 'start_restart_prune_refusals': 0,
+              'network_discovery_misses': misses, 'paired_network_creations': created}
+    if update_prune_window is not None:
+        result['update_prune_refusals'] = 1
+    return result
 
 
 def network_filter_canary(output, raw_socket='/var/run/docker.sock'):
@@ -996,7 +1012,12 @@ class Rig:
             self.receipt['first_installed_synthetic_path_pass'] = True
             self.receipt['phase'] = 'http-single-accepted-update'
             update_continuation.stage(self, subnet)
+            # Sequence bounds immediately bracket the sole PATCH and all its
+            # terminal authenticated DB/HTTP/runtime/seal readbacks.
+            update_lower = len(creation_ledger())
             third = update_continuation.transaction(self, second)
+            update_upper = len(creation_ledger())
+            self.receipt['update_guard_sequence_window'] = [update_lower, update_upper]
             assert not set(third).intersection(first+second)
             creation_rows = creation_ledger()
             def complete(rows):
@@ -1012,6 +1033,7 @@ class Rig:
             'drained_and_reader_joined': True, 'byte_cap': stream.byte_cap, 'row_cap': stream.row_cap}
         self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'],
             expected_cycles=3, install_prune_window=(install_lower, install_upper),
+            update_prune_window=(update_lower, update_upper),
             expected_probe_rows=[r for r in ledger if r['operation'] == 'deny'])
         assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 15
         self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second+third), self.owner)
