@@ -30,6 +30,17 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         self.server.calls.append((self.command, self.path, data))
         path = self.path.split('?')[0]
+        if path == '/events' and hasattr(self.server, 'event_queue'):
+            self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Transfer-Encoding', 'chunked'); self.end_headers()
+            events = self.server.event_queue
+            try:
+                while True:
+                    block = events.get(timeout=5)
+                    if block is None:
+                        self.wfile.write(b'0\r\n\r\n'); self.wfile.flush(); return
+                    self.wfile.write(f'{len(block):x}\r\n'.encode()+block+b'\r\n'); self.wfile.flush()
+            except (OSError, __import__('queue').Empty): return
         value = self.server.replies.get(path, {'real_upstream_marker': True})
         payload = value if isinstance(value, bytes) else json.dumps(value).encode()
         self.send_response(200 if not path.endswith('/create') else 201)
@@ -227,6 +238,73 @@ class Protocol(unittest.TestCase):
         response = conn.getresponse(); result = [json.loads(line) for line in response.read().splitlines()]; conn.close()
         self.assertEqual(result, [lines[1], lines[3]])
         self.assertNotIn(OTHER, json.dumps(self.rows))
+
+    def live_stream(self, **kw):
+        import queue
+        from manager_seal_runtime_events import RuntimeEventStream
+        self.raw.event_queue = queue.Queue()
+        return RuntimeEventStream(self.root/'proxy.sock', self.root/'runtime-events.json',
+                                  lambda: set(self.policy.history), **kw).start()
+
+    def emit(self, row):
+        self.raw.event_queue.put(json.dumps(row).encode()+b'\n')
+
+    def test_live_chunked_without_until_dynamic_exact_ids_and_join(self):
+        stream = self.live_stream()
+        owned = {'Type': 'container', 'Action': 'destroy', 'Actor': {'ID': OWN}, 'timeNano': 42}
+        self.emit(dict(owned, Actor={'ID': OTHER})); self.emit(owned)
+        stream.barrier(lambda rows: owned in rows)
+        # Ordinary requests still progress while /events is open. The create
+        # response registers identity before queued events take the policy lock.
+        self.raw.replies['/containers/create'] = {'Id': NEW}
+        self.assertEqual(self.request('POST', '/containers/create?name=qa-main', self.container())[0], 201)
+        created = dict(owned, Action='create', Actor={'ID': NEW})
+        attached = {'Type': 'network', 'Action': 'connect', 'Actor': {'ID': NET, 'Attributes': {'container': NEW}}, 'timeNano': 43}
+        self.emit(created); self.emit(dict(attached, Actor={'ID': NET, 'Attributes': {'container': OTHER}})); self.emit(attached)
+        stream.drain(lambda rows: created in rows and attached in rows, timeout=2, settle=.1)
+        rows = stream.finish()
+        self.assertEqual(rows, [owned, created, attached]); self.assertFalse(stream.thread.is_alive())
+        self.assertEqual(json.loads(stream.output.read_text()), rows)
+        self.assertNotIn('until=', self.raw.calls[0][1]); self.assertIn('/events?since=', self.raw.calls[0][1])
+        self.assertNotIn(OTHER, json.dumps(self.rows))
+        self.raw.event_queue.put(None)
+
+    def test_live_full_synthetic_two_cycle_sequence_uses_actual_reader(self):
+        from test_manager_seal_installed_path import retained_event_sequences
+        import manager_seal_installed_path as rig
+        ledger, ids, old, synthetic = retained_event_sequences()
+        self.policy.history.update(r['id'] for r in ledger if r['operation'] == 'created')
+        stream = self.live_stream()
+        for e in synthetic: self.emit(e)
+        stream.drain(lambda rows: len(rows) == len(synthetic), timeout=2, settle=.1)
+        rows = stream.finish()
+        self.assertEqual(rig.reconcile_runtime_events(rows, ledger, ids, 'msi-5ae46c549e29')['container_create_coverage'], 10)
+        self.raw.event_queue.put(None)
+
+    def test_live_absolute_deadline_interrupts_idle_reader(self):
+        stream = self.live_stream(seconds=.2)
+        stream.thread.join(timeout=1)
+        self.assertFalse(stream.thread.is_alive())
+        with self.assertRaises(RuntimeError): stream.finish()
+        self.assertEqual(json.loads(stream.output.read_text()), [])
+        self.raw.event_queue.put(None)
+
+    def test_live_eof_cap_missing_sentinel_and_partial_fail_closed_persist(self):
+        import time
+        row = {'Type': 'container', 'Action': 'create', 'Actor': {'ID': OWN}, 'timeNano': 42}
+        for variant in ('eof', 'cap', 'missing', 'partial'):
+            with self.subTest(variant=variant):
+                stream = self.live_stream(**({'row_cap': 1} if variant == 'cap' else {}))
+                self.emit(row)
+                stream.barrier(lambda rows: len(rows) == 1)
+                if variant == 'eof': self.raw.event_queue.put(None)
+                elif variant == 'cap': self.emit(row)
+                elif variant == 'partial': self.raw.event_queue.put(b'{"broken":') ; self.raw.event_queue.put(None)
+                stream.drain(lambda rows: False, timeout=.2)
+                with self.assertRaises(RuntimeError): stream.finish()
+                self.assertFalse(stream.thread.is_alive())
+                self.assertEqual(json.loads(stream.output.read_text()), [row])
+                self.raw.event_queue.put(None)
 
     def test_protocol_smuggling_denied_before_upstream(self):
         cases = [b'POST /containers/create?name=qa-main HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 0\r\n\r\n{}',

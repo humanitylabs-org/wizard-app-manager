@@ -17,6 +17,7 @@ PRIOR_RECEIPT_SHA = '202efaaadc2ca6cf5a791290ac3639daf66d9d725cb43d403904af8a3af
 # have identical Git-export path membership, content and modes before reuse.
 QA_DELTA = frozenset({
     'scripts/manager_seal_installed_path.py',
+    'scripts/manager_seal_runtime_events.py',
     'scripts/manager_seal_installed_recovery.py',
     'scripts/tests/test_manager_seal_installed_path.py',
     'docs/manager-seal-installed-recovery.md',
@@ -85,6 +86,41 @@ def sanitized_http_body(text, secrets=()):
         return value
     try: return clean(json.loads(text)), None
     except (ValueError, RecursionError): return sanitized_cli(text.encode(), secrets), 'non_json_or_incomplete'
+
+
+def audit_update_rollback_contract(root):
+    """Record why this continuation cannot claim the requested two POSTs."""
+    base = Path(root)/'packages/backend/src'; pins = {}
+    def read(rel):
+        raw = (base/rel).read_bytes(); pins['packages/backend/src/'+rel] = digest(raw)
+        return raw.decode()
+    controller = read('modules/app-lifecycle/app-lifecycle.controller.ts')
+    dto = read('modules/app-lifecycle/dto/app-lifecycle.dto.ts')
+    update = read('modules/app-lifecycle/commands/update-app-command.ts')
+    seal = read('modules/docker/mandatory-seal.ts')
+    cli = read('cli/enroll-mandatory-seal.ts')
+    backups = read('modules/backups/backups.controller.ts')
+    restore = read('modules/app-lifecycle/commands/restore-app-command.ts')
+    backup_manager = read('modules/backups/backup.manager.ts')
+    assert 'composeApp(appUrn, \'stop\')' in restore and 'composeApp(appUrn, \'up' not in restore
+    assert 'MandatorySeal' not in backup_manager
+    assert "@Patch(':urn/update')" in controller and "@Post(':urn/update')" not in controller
+    assert 'rollback' not in controller.lower()
+    assert "performBackup: 'boolean'" in dto
+    assert 'const restorePreviousApp = async () =>' in update
+    assert 'rollbackSucceeded: true' in update and 'return { success: true' in update
+    assert 'if (prior.previous) throw fail();' in seal
+    assert "['enroll', 'stage']" in cli
+    assert "@Post(':urn/restore')" in backups and 'filename: sanitizedFilename' in backups
+    return {'source_pins': pins, 'update_method': 'PATCH', 'update_body': {'performBackup': 'boolean'},
+        'revision_selector_in_update_dto': False, 'explicit_policy_anchor_rollback_http_route': False,
+        'automatic_failure_recovery_is_not_accepted_rollback_transaction': True,
+        'backup_restore_selects_archive_filename_not_policy_anchor': True,
+        'backup_restore_does_not_recreate_running_runtime': True,
+        'trusted_stage_allows_one_new_pair_retaining_previous': True,
+        'second_distinct_stage_with_previous_refused': True,
+        'requested_two_post_contract_supported': False, 'transactions_added': False,
+        'runner_ends_after': 'restart', 'production_changed': False}
 
 
 def audit_install_http_contract(root):

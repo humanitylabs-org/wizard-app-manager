@@ -29,6 +29,7 @@ import manager_seal_forward_guard as forward_guard
 from manager_seal_install_evidence import dependency_step, sanitize_line, capture_install, sanitize_log
 from manager_seal_bundle import validate_bundle
 import manager_seal_installed_recovery as recovery
+from manager_seal_runtime_events import RuntimeEventStream
 
 GIB = 2**30
 MIB = 2**20
@@ -878,7 +879,6 @@ class Rig:
             'owned_event_readiness_marker': True, 'unrelated_events_filtered': True,
             'denied_requests_forwarded': 0, 'unrelated_unchanged': True, 'owned_list_only': True,
             'completed_before_manager_create': True}
-        assert self.request('DELETE', '/containers/'+positive)[0] < 300; self.ids.remove(positive)
         (self.control/'activate').write_text(cfg['activation'])
         self.wait('guard-activation', lambda: any(json.loads(l)['operation'] == 'activated' for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines()), 5)
         assert self.receipt['rabbit_limit_canary']['passed']
@@ -940,6 +940,7 @@ class Rig:
         assert self.http('GET', '/api/apps/installed')[0] == 200, 'registered session readback failed'
         self.receipt['auth']['actual_session_readback'] = True
         self.receipt['install_http_source_contract'] = recovery.audit_install_http_contract(self.root)
+        self.receipt['update_rollback_source_contract'] = recovery.audit_update_rollback_contract(self.root)
         self.receipt['phase'] = 'http-install-skipRun'
         assert self.sql("select count(*) from app where app_name='agent-synthetic' and app_store_slug='migrated';") == '0'
         assert not self.owned_fixture_ids(), 'URN collision before first POST'
@@ -958,18 +959,42 @@ class Rig:
         self.receipt['trusted_reviewed_pair_enrolled'] = True
         # Hostile optional source is purely synthetic, never an enrollment input.
         self.exec(manager, ['python3', '-c', "from pathlib import Path; p=Path('/data/user-config/migrated/agent-synthetic'); p.mkdir(parents=True, exist_ok=True); (p/'docker-compose.yml').write_text('services: {agent-synthetic: {privileged: true, network_mode: host}}\\n')"])
-        runtime_since = int(time.time())-1
-        self.transaction('start', None, 'running'); first = self.runtime()
-        self.transaction('restart', None, 'running'); second = self.runtime()
-        events = self.events(runtime_since, int(time.time())+1)
-        creation_rows = [json.loads(l) for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines()]
+        # Open/read response headers BEFORE the first start POST. Docker replay
+        # history is daemon-wide and bounded; a later since/until GET is lossy.
+        def creation_ledger():
+            raw = (self.shared/'guard-ledger.jsonl').read_bytes()
+            assert len(raw) <= 16*MIB
+            return [json.loads(l) for l in raw.splitlines()]
+        def authority():
+            return {positive} | {r['id'] for r in creation_ledger() if r.get('operation') == 'created'}
+        stream = RuntimeEventStream(self.shared/'docker.sock', self.out/'runtime-events.json', authority)
+        try:
+            stream.start()
+            # Existing disposable owned probe is a subscription-readiness marker.
+            # Observe its deletion before any lifecycle create, not headers alone
+            # (Moby flushes HTTP headers BEFORE subscribing).
+            assert self.request('DELETE', '/containers/'+positive)[0] < 300; self.ids.remove(positive)
+            stream.barrier(lambda rows: any(e.get('Type') == 'container' and e.get('Action') == 'destroy'
+                and e['Actor']['ID'] == positive for e in rows))
+            self.transaction('start', None, 'running'); first = self.runtime()
+            self.transaction('restart', None, 'running'); second = self.runtime()
+            creation_rows = creation_ledger()
+            def complete(rows):
+                try: reconcile_runtime_events(rows, creation_rows, set(first+second), self.owner)
+                except AssertionError: return False
+                return True
+            stream.drain(complete)
+        finally:
+            # Even a terminal transaction failure retains its partial owned trace.
+            events = stream.finish()
+            self.receipt['runtime_events_sha256'] = sha(self.out/'runtime-events.json')
+        self.receipt['runtime_event_stream'] = {'opened_before_start': True, 'coverage_sentinel': True,
+            'drained_and_reader_joined': True, 'byte_cap': stream.byte_cap, 'row_cap': stream.row_cap}
         self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'],
             expected_cycles=2, install_prune_window=(install_lower, install_upper),
             expected_probe_rows=[r for r in ledger if r['operation'] == 'deny'])
         assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 10
         self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second), self.owner)
-        (self.out/'runtime-events.json').write_text(json.dumps(events, indent=2)+'\n')
-        self.receipt['runtime_events_sha256'] = sha(self.out/'runtime-events.json')
         assert set(first) != set(second) and not set(first) & set(second), 'restart did not really recreate'
         self.receipt['http_request_ids_distinct'] = len(set(self.receipt['request_ids'])) == 3
         assert self.receipt['http_request_ids_distinct']

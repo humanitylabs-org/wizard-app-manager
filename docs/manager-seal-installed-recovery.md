@@ -1,5 +1,90 @@
 # Installed synthetic continuation: Rabbit CLI and cleanup recovery
 
+## Live lifecycle event collection (supersedes the historical collector warning)
+
+REUSE the saved backend, existing guard policy and strict event reconciler;
+EXTEND the QA runner with `manager_seal_runtime_events.py`. No product change.
+
+Forum `docker version` metadata reports Engine **26.1.5+dfsg1**, GitCommit
+**411e817**, API 1.45 (this is not the v28.5.0 SDK). Pinned upstream Moby
+v26.1.5 commit `411e817ddf710ff8e08fa193da80cb78af708191` has
+`eventsLimit = 256` at `daemon/events/events.go:12`, allocation at line 26,
+and oldest-event eviction at lines 113–118. The v28.5.0 annotated tag resolves
+to commit `cd048300a48700294339c9c91d2dcc691cb8f63b`; the same constant is
+at line 13, allocation at line 27, and eviction at lines 116–121. Both keep a
+daemon-wide replay window, filtering only when loading it. The live publisher
+also has a finite 1024-row queue and 100ms delivery bound; a live subscription
+is not permission to relax completeness. Exact upstream source hashes and
+copies are retained in the continuation proof sidecars. Debian's downstream
+patchset/running daemon bytes have **not** been verified; bounded upstream replay
+is proven for the matching upstream version/commit, while eviction as the exact
+historical cause remains source-supported rather than captured daemon internals.
+
+The actual retained ledger has ten runtime creation records but only five
+runtime create projections from the old retroactive query. It cannot recover
+missing raw bodies. Regression replay fails the unchanged exact create oracle
+on those actual projection fields. A separately labelled synthetic sequence
+copies the recorded create/connect shapes onto both recorded identity cycles;
+it passes 10/10 create and 20/20 attachment coverage through the actual bounded
+reader and Unix/chunked guard protocol peer. That is **not** historical recovery
+or real Docker execution.
+
+The runner now opens `GET /events?since=<nanosecond-now>` with **no until**
+before the first start POST. Header readiness alone is insufficient: Moby flushes
+headers before subscribing (`system_routes.go:269/273` in v26.1.5, 328/332 in
+v28.5.0). Keep the existing never-started owned positive probe until enrollment;
+delete it once after opening the stream, and observe its exact destroy ID before
+start. No additional container is created. Start and restart remain exactly one
+POST each, with the same response-before-assertion, same-origin, DB/HTTP terminal
+and effective.json gates. Failure aborts without retry and closes the reader.
+
+The stream is bounded by 16 MiB, 32768 rows, 64 KiB per line and a 500-second
+shutdown timer. The guard still enforces its 16 MiB aggregate/600-second bound,
+exact-ID event filter and chunked-upstream decoding; event reads no longer use
+the ordinary 15-second idle timeout. After restart terminal/runtime readback,
+wait at most 20 seconds for exact ledger create/connect coverage plus a 750ms
+quiet settle. Stop/join the reader, persist **all full owned event objects** to
+`runtime-events.json` in `finally`, then assert guard accounting and unchanged
+strict create/connect reconciliation. Partial evidence also survives stream,
+transaction, cap, EOF, malformed/truncated line and coverage failures. Foreign
+metadata is refused before retention (and filtered at the guard).
+
+Accounting stays exact: 3 lifecycle requests (install/start/restart), 10 fixture
+container creates, 8 network discovery/create cycles, 9 exact negative probes
+plus 1 install-window typed prune refusal. Moving deletion of the existing owned
+probe does not add a create, discovery or denial. No update/rollback, official
+image or full-acceptance flags become true. The 73d719f3c6ce stage remains
+untouched/unsubmitted and counts in retained capacity.
+
+### Update + rollback contract audit: not added
+
+- `app-lifecycle.controller.ts:55–59` exposes **PATCH**, not POST, `:urn/update`.
+  `UpdateAppBody` (`dto/app-lifecycle.dto.ts:25–27`) accepts only performBackup;
+  there is no reviewed revision/anchor selector. An update uses the store's
+  current recipe. A trusted new pair could be staged through the existing
+  administrator CLI (`cli/enroll-mandatory-seal.ts:7–18`), not optional config.
+- `mandatory-seal.ts:134–151` supports one new staged pair with `previous` as
+  the anchor. Line 144 refuses another distinct stage while previous exists;
+  this does **not** prohibit the first update. `select` at 174–175 can select
+  current or previous based on the whole generated catalogue.
+- `update-app-command.ts:42–136,247–259` has automatic restoration only when
+  the update fails (rollbackSucceeded metadata). That is not an accepted update
+  followed by an independently requested successful rollback transaction.
+- There is no explicit policy-anchor rollback route in the lifecycle controller.
+  The adjacent `POST /backups/:urn/restore` takes an archive filename
+  (`backups.controller.ts:42–52`), not an enrolled anchor. Its command
+  (`restore-app-command.ts:23–34`) stops, restores files, and returns; it does
+  **not** recreate/start the runtime. BackupManager restores app/app-data and
+  optional user-config, not a trusted seal transition. It cannot meet a single
+  rollback POST with running-runtime recreate proof without another mutation.
+
+The requested two single-POST transactions are therefore not a shipped contract.
+The runner ends after restart rather than inventing a rollback API, deliberately
+failing an update, retrying, changing product code, or trusting hostile optional
+config. A source-pinned audit is included in the new receipt/static preflight.
+A separately reviewed product contract or explicit permission for a different
+multi-action backup/restore workflow is needed for later lifecycle acceptance.
+
 ## Install-time prune refusal accounting (QA only)
 
 The failed `5ae46c549e29` ledger is retained verbatim as

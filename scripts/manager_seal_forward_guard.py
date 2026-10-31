@@ -544,9 +544,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             and set(ids) <= set(p.networks) | {'0'*64}):
                         p.audit('synthetic-network-query', filters=f)
                 p.audit('forward', method=self.command, route=target.split('?', 1)[0], kind=op)
-                upstream = UnixHTTP(self.server.raw_socket)
+                upstream = UnixHTTP(self.server.raw_socket, timeout=600 if op == 'events' else 15)
                 upstream.request(self.command, target, body=data or None,
                                  headers={'Content-Type': 'application/json', 'Connection': 'close'})
+                upstream_socket = upstream.sock
                 response = upstream.getresponse()
                 if op != 'events':
                     payload = response.read(MAX_RESPONSE+1)
@@ -572,6 +573,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Connection', 'close'); self.end_headers()
                 end = time.monotonic()+600; total = 0
                 while time.monotonic() < end:
+                    # http.client decodes chunked upstream framing. Idle reads
+                    # retain the finite stream lifetime, not the ordinary 15s
+                    # request timeout; quiet lifecycle phases must not lose EOF.
+                    upstream_socket.settimeout(max(.1, end-time.monotonic()))
                     line = response.readline(65537)
                     if not line: break
                     require(len(line) <= 65536 and line.endswith(b'\n'))

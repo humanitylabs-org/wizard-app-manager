@@ -139,6 +139,15 @@ await new Function('ForbiddenException','UnauthorizedException','return (async()
         self.assertEqual(len(results), 7)
         self.assertTrue(recovery.audit_install_http_contract(self.root)['body_fields_permitted'])
 
+    def test_update_is_patch_and_no_explicit_anchor_rollback_post_exists(self):
+        result = recovery.audit_update_rollback_contract(self.root)
+        self.assertEqual(result['update_method'], 'PATCH')
+        self.assertFalse(result['requested_two_post_contract_supported'])
+        self.assertFalse(result['transactions_added'])
+        self.assertTrue(result['automatic_failure_recovery_is_not_accepted_rollback_transaction'])
+        self.assertEqual(result['runner_ends_after'], 'restart')
+        self.assertEqual(len(result['source_pins']), 8)
+
     def test_actual_http_javascript_headers_bound_plaintext_and_transport(self):
         prefix = r"""const request=JSON.parse(process.argv[1]);let calls=0;
 globalThis.fetch=async(url,options)=>{calls++;if(request[2]?.fail)throw new Error('synthetic secret never export');
@@ -823,6 +832,84 @@ class RetainedPruneAccounting(unittest.TestCase):
     def test_probe_identity_cannot_be_replaced_by_another_deny(self):
         rows = copy.deepcopy(self.rows); rows[2]['rule_line'] = 999
         with self.assertRaisesRegex(AssertionError, 'probe refusal identity drift'): self.reconcile(rows)
+
+
+def retained_event_sequences():
+    """Projection replay; synthetic first cycle is NOT recovered raw evidence."""
+    raw = (Path(__file__).with_name('fixtures')/'manager-seal-guard-ledger-5ae46c549e29.jsonl').read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == '36b65574d140d9e6e00d60eab5897a8e2ade07dc8d3c60299181e603fff491b2'
+    ledger = [json.loads(line) for line in raw.splitlines()]
+    creates = [r for r in ledger if r['operation'] == 'created' and r.get('kind') == 'container']
+    ids = {r['id'] for r in creates}
+    def event(r):
+        # Only recorded projection fields; never claim full historical Actor attrs.
+        return {'Type': r['type'], 'Action': r['action'], 'Actor': {'ID': r['id'],
+            'Attributes': {'container': r['container']} if r.get('container') else {}}, 'timeNano': r['timeNano']}
+    old = [event(r) for r in ledger if r['operation'] == 'event' and
+           (r['id'] in ids or r.get('container') in ids)]
+    pairs = {}
+    for kind in ('container', 'network'):
+        rows = [r for r in ledger if r['operation'] == 'created' and r.get('kind') == kind]
+        for row in rows:
+            same = [r['id'] for r in rows if r['name'] == row['name']]
+            assert len(same) == 2
+            pairs[same[1]] = same[0]
+    template = [e for e in old if (e['Type'], e['Action']) in (('container', 'create'), ('network', 'connect'))]
+    synthetic = copy.deepcopy(template)
+    for e in synthetic:
+        e['Actor']['ID'] = pairs[e['Actor']['ID']]
+        attrs = e['Actor']['Attributes']
+        if attrs.get('container'): attrs['container'] = pairs[attrs['container']]
+    return ledger, ids, old, synthetic+template
+
+
+class LiveEventRegression(unittest.TestCase):
+    def test_actual_retained_retroactive_projection_is_five_of_ten(self):
+        ledger, ids, old, synthetic = retained_event_sequences()
+        creates = {e['Actor']['ID'] for e in old if e['Type'] == 'container' and e['Action'] == 'create'}
+        self.assertEqual((len(creates & ids), len(ids)), (5, 10))
+        with self.assertRaisesRegex(AssertionError, 'incomplete real create window'):
+            rig.reconcile_runtime_events(old, ledger, ids, 'msi-5ae46c549e29')
+
+    def test_shape_faithful_synthetic_stream_sees_ten_of_ten_not_historical_recovery(self):
+        ledger, ids, old, synthetic = retained_event_sequences()
+        owned = {r['id'] for r in ledger if r['operation'] == 'created'}
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            stream = rig.RuntimeEventStream('unused', Path(tmp)/'runtime-events.json', lambda: owned)
+            for e in synthetic: stream.accept(json.dumps(e).encode()+b'\n')
+            stream.drained = True
+            events = stream.finish()
+            result = rig.reconcile_runtime_events(events, ledger, ids, 'msi-5ae46c549e29')
+            self.assertEqual(result['container_create_coverage'], 10)
+            self.assertEqual(result['connect_pair_coverage'], 20)
+            self.assertEqual(json.loads(stream.output.read_text()), synthetic)
+            for missing in (synthetic[1:], synthetic[:-1]):
+                with self.assertRaises(AssertionError):
+                    rig.reconcile_runtime_events(missing, ledger, ids, 'msi-5ae46c549e29')
+
+    def test_caps_foreign_and_partial_fail_before_retention(self):
+        event = {'Type': 'container', 'Action': 'create', 'Actor': {'ID': 'a'*64}, 'timeNano': 42}
+        line = json.dumps(event).encode()+b'\n'
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            for kw, payload in [({'byte_cap': len(line)-1}, line), ({'row_cap': 0}, line),
+                                ({}, line[:-1]), ({}, line.replace(b'a'*64, b'b'*64)),
+                                ({}, b'x'*65537+b'\n')]:
+                stream = rig.RuntimeEventStream('unused', Path(tmp)/'events.json', lambda: {'a'*64}, **kw)
+                with self.assertRaises(RuntimeError): stream.accept(payload)
+                self.assertEqual(stream.rows, [])
+            stream = rig.RuntimeEventStream('unused', Path(tmp)/'events.json', lambda: {'a'*64})
+            stream.accept(line); stream.error = 'synthetic failure'
+            with self.assertRaises(RuntimeError): stream.finish()
+            self.assertEqual(json.loads(stream.output.read_text()), [event])
+
+    def test_runner_order_and_strict_reconciler_preserved(self):
+        source = inspect.getsource(rig.Rig.run)
+        self.assertLess(source.index('stream.start()'), source.index("self.transaction('start'"))
+        self.assertLess(source.index('stream.barrier('), source.index("self.transaction('start'"))
+        self.assertLess(source.index('stream.finish()'), source.index("self.receipt['guard_accounting']"))
+        self.assertNotIn('self.events(runtime_since', source)
+        self.assertIn('finally:', source[source.index('stream.start()'):])
+        self.assertIn("assert created == set(container_ids)", inspect.getsource(rig.reconcile_runtime_events))
 
 
 if __name__ == '__main__': unittest.main()
