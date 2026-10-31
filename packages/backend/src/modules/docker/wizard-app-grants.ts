@@ -466,8 +466,10 @@ export async function reconcileAppGrants(
       managed[provider.manifest.id]?.push(digest);
       const own = providerEndpoint(provider);
       if (own) {
-        consumer.doc.provider_endpoints_all![g.to] ??= {};
-        consumer.doc.provider_endpoints_all![g.to]![provider.manifest.id] = own;
+        // Own-property check: a target id such as `constructor` must not resolve to Object.prototype.
+        const all = consumer.doc.provider_endpoints_all!;
+        if (!Object.hasOwn(all, g.to)) all[g.to] = {};
+        all[g.to]![provider.manifest.id] = own;
       }
       const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
       const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
