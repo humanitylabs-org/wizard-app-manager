@@ -393,6 +393,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
     (bdir / "app.json").chmod(0o600)
     before = rt_tree_summary(po["data"])
     steps: list[str] = []
+    added: dict = {"secret": None, "host_access": False}
     log = lambda s: (steps.append(s), print(f"rename {old} -> {new}: {s}", file=sys.stderr, flush=True))  # noqa: E731
 
     def rollback(reason: str) -> dict:
@@ -403,6 +404,8 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
             ("drop new data", lambda: _sh('rm -rf "$1" "$2"', pn["data"], pn["user"])),
             ("restore files", lambda: [rt_write(files[k], v) for k, v in saved_files.items() if v is not None]),
             ("restore owner files", lambda: [local[k].write_bytes(v) for k, v in saved_local.items() if v is not None]),
+            ("drop copied passwords", lambda: added["secret"].unlink() if added["secret"] else None),
+            ("host access", lambda: network.set_host_access_allowed(c.home, new, False) if added["host_access"] else None),
             ("old port back", lambda: rt.req("PATCH", f"/app-lifecycle/{old_urn}/update-config",
                                              {**saved, "port": old_port}, timeout=120) if old_port else None),
             ("start old", lambda: (rt.start(old_urn), rt.wait_status(old_urn, {"running"}, 300))
@@ -457,8 +460,16 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
             if (s := saved_local[f]) is not None:
                 local[f].write_text(json.dumps(rename_in_updates_state(json.loads(s), old, new),
                                                indent=2) + "\n")
-        if old in network.host_access_allowed(c.home):
+        if old in network.host_access_allowed(c.home) and new not in network.host_access_allowed(c.home):
             network.set_host_access_allowed(c.home, new, True)
+            added["host_access"] = True
+        sec_old, sec_new = Path(c.secrets) / f"{old}.json", Path(c.secrets) / f"{new}.json"
+        if sec_old.is_file() and not sec_new.exists():
+            # generated passwords (build_form): a later reinstall of the new id reuses them; the old file stays
+            sec_new.write_bytes(sec_old.read_bytes())
+            sec_new.chmod(0o600)
+            added["secret"] = sec_new
+            log("saved passwords copied")
         base = {k: v for k, v in saved.items() if k != "port"}
         if old_port:
             base["port"] = int(old_port)
