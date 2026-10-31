@@ -309,13 +309,40 @@ def reconcile_creation_intents(rows, owner):
     return found
 
 
-def reconcile_guard_accounting(rows, expected_denials, network_names, expected_cycles=1):
+def reconcile_guard_accounting(rows, expected_denials, network_names, expected_cycles=1,
+                               install_prune_window=None, expected_probe_rows=None):
     """Refusals remain exact; discovery must pair once with a later creation.
 
     No blanket exclusion of 403/404 or arbitrary names. Each fresh/recreated
     network needs one typed local miss, then its creation intent and real ID.
     """
-    assert len([r for r in rows if r['operation'] == 'deny']) == expected_denials, 'unexpected guard refusal'
+    denies = [r for r in rows if r['operation'] == 'deny']
+    prunes = [r for r in denies if r.get('reason') == 'prune_refused']
+    probes = [r for r in denies if r.get('reason') != 'prune_refused']
+    assert len(probes) == expected_denials, 'unexpected guard refusal'
+    assert not any(r['operation'] == 'forward' and r.get('route') == '/containers/prune'
+                   for r in rows), 'prune forwarded'
+    if expected_probe_rows is not None:
+        assert probes == expected_probe_rows, 'probe refusal identity drift'
+    if install_prune_window is None:
+        assert not prunes, 'prune outside install'
+    else:
+        assert len(prunes) == 1, 'expected exactly one install prune refusal'
+        prune = prunes[0]
+        assert set(prune) == {'sequence', 'operation', 'reason', 'route', 'filters'}
+        assert prune['route'] == '/containers/prune'
+        assert prune['filters'] == {'label': {'runtipi.appurn='+URN: True}}
+        # Equality alone admits integer 1 as True. Retain the closed wire type.
+        assert type(prune['filters']['label']['runtipi.appurn='+URN]) is bool
+        sequences = [r['sequence'] for r in rows]
+        assert sequences == list(range(1, len(rows)+1)), 'ledger sequence drift'
+        activated = [r['sequence'] for r in rows if r['operation'] == 'activated']
+        assert len(activated) == 1
+        first_network = min(r['sequence'] for r in rows
+                            if r['operation'] == 'creation-intent' and r.get('kind') == 'network')
+        lower, upper = install_prune_window
+        assert activated[0] <= lower < prune['sequence'] <= upper < first_network, 'prune outside install window'
+        assert all(r['sequence'] < activated[0] for r in probes), 'probe after activation'
     assert type(expected_cycles) is int and expected_cycles > 0
     pending = {}; misses = 0; created = 0; counts = dict.fromkeys(network_names, 0)
     for row in rows:
@@ -333,7 +360,9 @@ def reconcile_guard_accounting(rows, expected_denials, network_names, expected_c
             created += 1; counts[name] += 1
     assert not pending and misses == created and created > 0, 'incomplete discovery accounting'
     assert all(count == expected_cycles for count in counts.values()), 'unexpected discovery/create count'
-    return {'expected_refusals': expected_denials, 'network_discovery_misses': misses, 'paired_network_creations': created}
+    return {'expected_refusals': expected_denials+len(prunes), 'probe_refusals': len(probes),
+            'install_prune_refusals': len(prunes), 'start_restart_prune_refusals': 0,
+            'network_discovery_misses': misses, 'paired_network_creations': created}
 
 
 def network_filter_canary(output, raw_socket='/var/run/docker.sock'):
@@ -806,7 +835,7 @@ class Rig:
         for suffix in ('positive', 'unrelated'):
             probes.append(self.create(self.owner+'-'+suffix, PYTHON, ['--network=none', '--user', f'{uid}:{gid}', '--memory=33554432', '--memory-swap=33554432'], ['python3', '-c', 'pass']))
         positive, unrelated = probes
-        cfg = {'owner': self.owner, 'project': PROJECT, 'services': SERVICES, 'user': f'{uid}:{gid}',
+        cfg = {'owner': self.owner, 'project': PROJECT, 'app_urn': URN, 'services': SERVICES, 'user': f'{uid}:{gid}',
                'images': [PYTHON], 'containers': {positive: self.owner+'-positive'}, 'networks': {},
                'container_names': [self.owner+'-'+s for s in SERVICES],
                'network_names': [PROJECT+'_'+n for n in NETS], 'uplink': PROJECT+'_'+MAIN+'-edge-uplink',
@@ -917,7 +946,10 @@ class Rig:
         self.receipt['new_install_urn_absent_before_post'] = True
         form = {'skipRun': True, 'skipPull': True, 'skipEnv': False, 'forcePull': False, 'openPort': False,
                 'exposed': False, 'exposedLocal': False, 'enableAuth': False, 'isVisibleOnGuestDashboard': False}
+        install_lower = len((self.shared/'guard-ledger.jsonl').read_text().splitlines())
         self.transaction('install', form, 'stopped')
+        install_upper = len((self.shared/'guard-ledger.jsonl').read_text().splitlines())
+        self.receipt['install_guard_sequence_window'] = [install_lower, install_upper]
         assert not self.owned_fixture_ids(), 'pre-enrollment container creation'
         assert not any(json.loads(l).get('kind') == 'container' and json.loads(l)['operation'] == 'created' for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines())
         subnet = self.sql("select subnet from app where app_name='agent-synthetic' and app_store_slug='migrated';")
@@ -931,7 +963,9 @@ class Rig:
         self.transaction('restart', None, 'running'); second = self.runtime()
         events = self.events(runtime_since, int(time.time())+1)
         creation_rows = [json.loads(l) for l in (self.shared/'guard-ledger.jsonl').read_text().splitlines()]
-        self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'], expected_cycles=2)
+        self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'],
+            expected_cycles=2, install_prune_window=(install_lower, install_upper),
+            expected_probe_rows=[r for r in ledger if r['operation'] == 'deny'])
         assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 10
         self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second), self.owner)
         (self.out/'runtime-events.json').write_text(json.dumps(events, indent=2)+'\n')

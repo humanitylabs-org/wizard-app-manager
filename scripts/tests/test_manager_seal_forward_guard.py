@@ -100,6 +100,44 @@ class Protocol(unittest.TestCase):
                              ('POST', '/containers/'+OWN+'/update'), ('POST', '/commit'), ('PUT', '/containers/'+OWN+'/archive')]:
             with self.subTest(path=path): self.denied(method, path)
 
+    def test_install_prune_exact_synthetic_label_is_typed_but_never_forwarded(self):
+        from urllib.parse import urlencode
+        self.policy.cfg['app_urn'] = 'agent-synthetic:migrated'
+        label = 'runtipi.appurn=agent-synthetic:migrated'
+        for values in ([label], {label: True}):
+            self.rows.clear()
+            self.denied('POST', '/v1.47/containers/prune?'+urlencode({'filters': json.dumps({'label': values})}))
+            self.assertEqual(len(self.rows), 1)
+            self.assertEqual({k: v for k, v in self.rows[0].items() if k != 'sequence'},
+                {'operation': 'deny', 'reason': 'prune_refused', 'route': '/containers/prune',
+                 'filters': {'label': {label: True}}})
+
+    def test_other_prunes_are_generic_and_never_log_caller_data(self):
+        from urllib.parse import urlencode
+        self.policy.cfg['app_urn'] = 'agent-synthetic:migrated'
+        label = 'runtipi.appurn=agent-synthetic:migrated'
+        for filters in (None, {}, {'label': ['private-caller-sentinel']},
+                        {'label': [label, 'private-caller-sentinel']},
+                        {'label': [label], 'until': ['private-caller-sentinel']},
+                        {'label': {label: False}}, {'label': [label], 'unknown': []}):
+            self.rows.clear()
+            path = '/containers/prune'
+            if filters is not None: path += '?'+urlencode({'filters': json.dumps(filters)})
+            self.denied('POST', path)
+            self.assertEqual(len(self.rows), 1)
+            row = self.rows[0]
+            self.assertEqual(set(row), {'sequence', 'operation', 'reason', 'rule_line'})
+            self.assertEqual(row['reason'], 'rule_refused')
+            self.assertNotIn('private-caller-sentinel', json.dumps(row))
+        self.rows.clear()
+        self.denied('POST', '/containers/prune?'+urlencode({'filters': json.dumps({'label': [label]})}),
+                    {'private-caller-sentinel': True})
+        self.assertEqual(set(self.rows[0]), {'sequence', 'operation', 'reason', 'rule_line'})
+        self.policy.cfg.pop('app_urn')
+        self.rows.clear()
+        self.denied('POST', '/containers/prune?'+urlencode({'filters': json.dumps({'label': [label]})}))
+        self.assertEqual(self.rows[0]['reason'], 'rule_refused')
+
     def test_owned_exact_name_rewrites_to_id_and_preserves_response(self):
         self.assertEqual(self.request('GET', '/v1.47/containers/owned/json'), (200, {'real_upstream_marker': True}))
         self.assertEqual(self.raw.calls[-1][1], '/containers/'+OWN+'/json')

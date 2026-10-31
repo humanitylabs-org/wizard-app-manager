@@ -1,5 +1,64 @@
 # Installed synthetic continuation: Rabbit CLI and cleanup recovery
 
+## Install-time prune refusal accounting (QA only)
+
+The failed `5ae46c549e29` ledger is retained verbatim as
+`scripts/tests/fixtures/manager-seal-guard-ledger-5ae46c549e29.jsonl`, SHA-256
+`36b65574d140d9e6e00d60eab5897a8e2ade07dc8d3c60299181e603fff491b2`.
+It contains the nine deliberate pre-activation refusals plus one untyped refusal
+at zero-based row 20 / sequence 21, after activation and before subnet discovery.
+The original accounting's exact-nine assertion fails on those actual bytes.
+
+The product's unchanged `ensureAppDir` calls label-selected `pruneContainers`
+on install, catches refusal as an empty result, then allocates the subnet.
+The retained manager log confirms that order and all three completed
+install/start/restart actions; start/restart disable pruning. **The historical
+row does not retain its route or filters: row 20 being that prune is strongly
+source/log-correlated but remains unproven at the byte level.** A regression
+replacing only this row with the new typed form is explicitly counterfactual,
+not a rewrite of the actual ledger or recovery of missing request bytes.
+
+`POST /containers/prune` is now recognized before generic object lookup and
+still always returns 403 without opening an upstream connection. Only an empty
+body and the exact configured synthetic URN label selector receive a typed
+`deny / prune_refused / /containers/prune` row with canonical map-of-true filters.
+Missing/other/unknown filters, missing configured URN and bodies retain generic
+refusals without caller data in the ledger. No daemon-wide mutation is allowed.
+
+The installed runner captures the ledger sequence bounds immediately before
+and after its one install transaction. Accounting requires the same nine exact
+probe rows before activation, exactly one closed typed prune refusal within
+that install window and before the first network-create intent, no prune
+forwards, and no other refusal anywhere in start/restart. All eight existing
+network-discovery/create pairs remain exact. Regressions reject duplicate and
+untyped extra denials, wrong filters, forwarding, wrong windows and changed
+probe identities; local socket protocol tests prove 403 and zero forwards.
+
+### Audit of assertions after the failed accounting call
+
+Actual retained creation rows contain ten distinct container IDs, five names
+created twice, and four networks created twice. The receipt contains three
+distinct request IDs and terminal install/stopped, start/running and
+restart/running transactions. No change to these assertions is demonstrated.
+`runtime()` already returned twice before the old failure.
+
+The retained safe event projections contain only five of those ten runtime
+container-create IDs (plus the earlier positive sentinel). The raw `events`
+return value was never written: its output write follows the failed accounting
+and event reconciliations. Retrospective event loss and the later exact
+create/connect reconciliation are therefore a concrete continuation risk,
+not an accepted complete event proof; the historical raw shape/reason for
+missing events is unproven. Do not reconstruct raw Docker events from ledger
+projections or weaken the exact-ID/attachment oracle. This repair leaves that
+collector unchanged and requires parent review of this risk before execution.
+
+This runner ends at `completed-first-installed-slice`; it has no subsequent
+update or rollback transactions. Their receipt flags, official-image status,
+`full_acceptance` and `RUNTIPI_ADMITTED` remain false. No such later acceptance
+is claimed. Cleanup is unchanged; the failed run's controller errors and parent
+residuals are empty. The saved backend archive and main.js are reused, never
+rebuilt. Only explicit `QA_DELTA` paths change; product bytes/modes remain equal.
+
 ## First authenticated install: demonstrated request-contract mismatch
 
 The retained `b70c9bbe1095` attempt (`heavy_b7899cc8868249fabbe8db2adc3d2c1a`)

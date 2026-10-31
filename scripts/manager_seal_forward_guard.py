@@ -352,6 +352,15 @@ class Policy:
             # forwarding/persisting; never log unknown actor metadata.
             query['filters'] = json.dumps({'type': ['container', 'network']})
             op = 'events'
+        elif method == 'POST' and path == '/containers/prune':
+            # Daemon-wide mutation: NEVER forward, even with the exact app label.
+            # Only that closed synthetic selector may enter the typed ledger.
+            require(not data and set(query) == {'filters'})
+            urn = self.cfg.get('app_urn')
+            require(type(urn) is str and bool(urn))
+            filters = canonical_filters(query['filters'], {'label'})
+            require(filters == {'label': {'runtipi.appurn='+urn: True}})
+            return 'prune-refused', path, data, filters
         elif method == 'POST' and path == '/containers/create':
             self.create_container(body, query); op = 'create-container'
         elif method == 'POST' and path == '/networks/create':
@@ -514,6 +523,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with p.lock:
                 op, target, data, body = p.authorize(self.command, self.path, data)
                 _, query = p.path(target)
+                if op == 'prune-refused':
+                    p.audit('deny', reason='prune_refused', route='/containers/prune', filters=body)
+                    self.reply(403, b'{"message":"task authority refused"}')
+                    return
                 if op == 'discovery-miss':
                     p.audit('discovery-miss', kind='network', name=target.split('/')[-1], status=404)
                     self.reply(404, b'{"message":"task network not created"}')

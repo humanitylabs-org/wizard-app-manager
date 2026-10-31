@@ -742,4 +742,87 @@ class RabbitFileLimit(unittest.TestCase):
                     if hasattr(r, 'canary_holder'): os.close(r.canary_holder)
 
 
+class RetainedPruneAccounting(unittest.TestCase):
+    """Actual failed ledger, not a constructed approximation of its schema.
+
+    Row 20's historical route was NOT retained. Its typed replacement is a
+    counterfactual regression, never a rewrite or byte-proof of that route.
+    """
+    def setUp(self):
+        path = Path(__file__).with_name('fixtures')/'manager-seal-guard-ledger-5ae46c549e29.jsonl'
+        raw = path.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         '36b65574d140d9e6e00d60eab5897a8e2ade07dc8d3c60299181e603fff491b2')
+        self.actual = [json.loads(line) for line in raw.splitlines()]
+        self.rows = copy.deepcopy(self.actual)
+        self.assertEqual(self.rows[20], {'sequence': 21, 'operation': 'deny',
+                                       'rule_line': 199, 'reason': 'rule_refused'})
+        self.rows[20] = {'sequence': 21, 'operation': 'deny', 'reason': 'prune_refused',
+                         'route': '/containers/prune',
+                         'filters': {'label': {'runtipi.appurn='+rig.URN: True}}}
+        # Historical ledger has no transaction checkpoints. This replay-only
+        # bracket is after activation and before the first network-create intent;
+        # the actual runner captures its lower/upper at the install HTTP seam.
+        self.window = (self.rows[17]['sequence'], self.rows[66]['sequence'])
+        self.probes = copy.deepcopy(self.actual[2:11])
+        self.names = [rig.PROJECT+'_'+name for name in rig.NETS]
+
+    def reconcile(self, rows=None, window=None):
+        return rig.reconcile_guard_accounting(self.rows if rows is None else rows,
+            9, self.names, expected_cycles=2,
+            install_prune_window=self.window if window is None else window,
+            expected_probe_rows=self.probes)
+
+    def test_actual_old_ledger_fails_exact_refusal_count(self):
+        self.assertEqual(sum(r['operation'] == 'deny' for r in self.actual), 10)
+        with self.assertRaisesRegex(AssertionError, 'unexpected guard refusal'):
+            self.reconcile(self.actual)
+
+    def test_only_typed_row_replacement_accepts_all_actual_network_pairs(self):
+        self.assertEqual([i for i, (old, new) in enumerate(zip(self.actual, self.rows)) if old != new], [20])
+        result = self.reconcile()
+        self.assertEqual(result, {'expected_refusals': 10, 'probe_refusals': 9,
+            'install_prune_refusals': 1, 'start_restart_prune_refusals': 0,
+            'network_discovery_misses': 8, 'paired_network_creations': 8})
+        creates = [r for r in self.actual if r['operation'] == 'created' and r.get('kind') == 'container']
+        self.assertEqual(len(creates), 10)
+        self.assertEqual(len({r['id'] for r in creates}), 10)
+        self.assertEqual(len({r['name'] for r in creates}), 5)
+
+    def test_second_prune_or_untyped_extra_refusal_fails(self):
+        for extra in (self.rows[20], self.actual[20]):
+            rows = copy.deepcopy(self.rows)
+            rows.append(dict(extra, sequence=len(rows)+1))
+            with self.assertRaises(AssertionError): self.reconcile(rows)
+
+    def test_wrong_prune_filters_and_forwarding_fail(self):
+        for filters in ({}, {'label': {'runtipi.appurn=other': True}},
+                        {'label': {'runtipi.appurn='+rig.URN: True}, 'until': {'0': True}},
+                        {'label': {'runtipi.appurn='+rig.URN: 1}}):
+            rows = copy.deepcopy(self.rows); rows[20]['filters'] = filters
+            with self.assertRaises(AssertionError): self.reconcile(rows)
+        rows = copy.deepcopy(self.rows)
+        rows.append({'sequence': len(rows)+1, 'operation': 'forward', 'method': 'POST',
+                     'route': '/containers/prune', 'kind': 'plain'})
+        with self.assertRaisesRegex(AssertionError, 'prune forwarded'): self.reconcile(rows)
+
+    def test_install_window_and_activation_are_mandatory(self):
+        for window in ((21, 67), (18, 20), (18, 68)):
+            with self.assertRaises(AssertionError): self.reconcile(window=window)
+        for target in (67, 226):  # first start/restart network-create boundaries
+            rows = copy.deepcopy(self.rows)
+            prune = rows.pop(20); rows.insert(target, prune)
+            for sequence, row in enumerate(rows, 1): row['sequence'] = sequence
+            with self.assertRaises(AssertionError): self.reconcile(rows)
+        with self.assertRaisesRegex(AssertionError, 'prune outside install'):
+            rig.reconcile_guard_accounting(self.rows, 9, self.names, expected_cycles=2)
+        rows = [r for r in self.rows if r['operation'] != 'activated']
+        for sequence, row in enumerate(rows, 1): row['sequence'] = sequence
+        with self.assertRaises(AssertionError): self.reconcile(rows)
+
+    def test_probe_identity_cannot_be_replaced_by_another_deny(self):
+        rows = copy.deepcopy(self.rows); rows[2]['rule_line'] = 999
+        with self.assertRaisesRegex(AssertionError, 'probe refusal identity drift'): self.reconcile(rows)
+
+
 if __name__ == '__main__': unittest.main()
