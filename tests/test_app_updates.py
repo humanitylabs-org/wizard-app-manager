@@ -151,6 +151,25 @@ def test_summary_tells_the_owner_plainly():
     assert au._summary([], [], [], []) is None
 
 
+def test_notice_names_apps_as_the_owner_sees_them(tmp_path):
+    """James: "Why are we still calling this CineQueue?" The notice said "Updated cinequeue (0.2.2)" while the app
+    is called Movies everywhere he looks. The notice uses the store recipe's display name; the id is only a fallback."""
+    recipe = tmp_path / "repos" / "wizardapps" / "apps" / "cinequeue"
+    recipe.mkdir(parents=True)
+    (recipe / "config.json").write_text(json.dumps({"id": "cinequeue", "name": "Movies"}))
+    rows = [{"app": {"appName": "cinequeue", "appStoreSlug": "wizardapps", "version": 7, "status": "running"},
+             "metadata": {"latestVersion": 8, "latestDockerVersion": "0.2.2"}},
+            {"app": {"appName": "norecipe", "appStoreSlug": "wizardapps", "version": 1, "status": "running"},
+             "metadata": {"latestVersion": 2, "latestDockerVersion": "1.0"}}]
+    got = au.candidates(rows, store="wizardapps", runtipi_root=tmp_path, home=tmp_path / "h", release_managed=set())
+    assert {r["id"]: r["name"] for r in got} == {"cinequeue": "Movies", "norecipe": "norecipe"}
+    title, msg, _ = au._summary(got, [], [], [])
+    assert title == "2 apps updated" and msg == "Updated Movies (0.2.2), norecipe (1.0)."
+    assert "cinequeue" not in msg
+    _, msg, _ = au._summary([], [got[0]], [{**got[0], "reason": "x"}], [{**got[0], "reason": "y"}])
+    assert "cinequeue" not in msg and msg.count("Movies") == 3
+
+
 def test_apply_if_auto_respects_ask_and_busy(tmp_path):
     class C:
         home = tmp_path
