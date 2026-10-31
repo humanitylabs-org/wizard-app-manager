@@ -21,6 +21,13 @@ def assert_reuse_closure(reuse, prior_manifest, exceptions):
     return expected
 
 
+def assert_qa_delta_inventory(actual, expected, exceptions):
+    """Keep the historical baseline's exact QA delta inventory, not just totals."""
+    assert actual == sorted(set(actual)) and actual == expected, 'explicit QA delta inventory drift'
+    assert set(actual) <= set(exceptions), 'non-QA delta'
+    return True
+
+
 def source_contract(root):
     """Exact source/line pins; do not mistake snapshot reinput for anchor promotion."""
     root = Path(root)

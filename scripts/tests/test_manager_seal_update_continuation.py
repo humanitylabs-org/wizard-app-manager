@@ -203,6 +203,14 @@ class SourceAndCapture(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'baseline count drift'):
             update.assert_reuse_closure(dict(reuse,unchanged_export_files=2),prior,exceptions)
 
+    def test_exact_qa_delta_inventory_rejects_missing_review_helper(self):
+        path = 'scripts/manager_seal_installed_review.ts'
+        self.assertTrue(update.assert_qa_delta_inventory([path], [path], {path}))
+        with self.assertRaisesRegex(AssertionError, 'inventory drift'):
+            update.assert_qa_delta_inventory([path], [], {path})
+        with self.assertRaisesRegex(AssertionError, 'non-QA delta'):
+            update.assert_qa_delta_inventory([path], [path], set())
+
     def test_reuse_wildcard_and_product_exceptions_refused(self):
         for exception in ('scripts/*.py', 'packages/backend/main.ts'):
             with self.assertRaisesRegex(AssertionError, 'QA exception scope widened'):
