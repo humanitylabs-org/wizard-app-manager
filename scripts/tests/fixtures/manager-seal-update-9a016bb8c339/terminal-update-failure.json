@@ -1,0 +1,15 @@
+{
+  "action": "update",
+  "request_id": "8cceba77-f8a7-4cb4-96c1-03737e3dc57c",
+  "database_status_version": "running|1",
+  "synthetic_failure_log_seen": false,
+  "read_only": true,
+  "manager_http_status": 200,
+  "owned_fixture_ids": [
+    "4a6053e48d60512481921c2289c07816ed78021ac9b1d355da91a0f822599eff",
+    "cd806ba8e71df3cfac5679d7c842751a475a999b0bc2bf7b6937dfaa52453cce",
+    "d4295f0cfbc86816e32c9cbabd083561ddcf317bf4935a2c070726620fa0b5ef",
+    "b9db7e6848aed4280f2fb2a1fadbe2fb3dc4114eaa22b332fa4fbc305bc3f167",
+    "ada73d621fe6e95307519e0774b9b08a5a68d24374d48fb99057bfa985dd5d0d"
+  ]
+}

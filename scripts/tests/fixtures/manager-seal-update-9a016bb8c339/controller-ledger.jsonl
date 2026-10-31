@@ -1,0 +1,61 @@
+{"kind": "intent", "name": "msi-9a016bb8c339-donor"}
+{"kind": "container", "id": "c5dec6f95de48143e696e0686bee6db85ad4004fed653f9c897c8e361ca9bb5f", "name": "msi-9a016bb8c339-donor"}
+{"kind": "intent", "name": "msi-9a016bb8c339-postgres-metadata"}
+{"kind": "container", "id": "6bd4507d05ddbb08031f1fab12e5da03ea0042a0344bb1e4f5da40d76499d9e3", "name": "msi-9a016bb8c339-postgres-metadata"}
+{"kind": "intent", "name": "msi-9a016bb8c339-rabbitmq-metadata"}
+{"kind": "container", "id": "b854ff90fde58168b5de9316dcb41de5a8c3741281b6f8f1dfba6efb208a1f06", "name": "msi-9a016bb8c339-rabbitmq-metadata"}
+{"operation": "creation-intent", "kind": "resource-intent", "object_kind": "network", "name": "msi-9a016bb8c339-infra"}
+{"kind": "network", "id": "24381b0ef628b83961ffc88eb953f563ed43d4c37d6a97981399f875975efdd2", "name": null}
+{"kind": "intent", "name": "msi-9a016bb8c339-canary-negative"}
+{"kind": "container", "id": "4bf1a605568a84ee1efb8e3b836d909cc7944f6cd8166c1b15083abb871f5358", "name": "msi-9a016bb8c339-canary-negative"}
+{"kind": "intent", "name": "msi-9a016bb8c339-canary-positive"}
+{"kind": "container", "id": "60b38fd6ecdca416244c94e0fab4be476ce0e1d18d9d013d5443b38678546681", "name": "msi-9a016bb8c339-canary-positive"}
+{"operation": "creation-intent", "kind": "resource-intent", "object_kind": "volume", "name": "msi-9a016bb8c339-work"}
+{"kind": "volume", "id": "msi-9a016bb8c339-work", "name": null}
+{"operation": "creation-intent", "kind": "resource-intent", "object_kind": "volume", "name": "msi-9a016bb8c339-fixture"}
+{"kind": "volume", "id": "msi-9a016bb8c339-fixture", "name": null}
+{"kind": "intent", "name": "msi-9a016bb8c339-keeper"}
+{"kind": "container", "id": "513a2da67c7d2a9c831b12727530effe30ada1b29d9ca39af4087ca3e99b873c", "name": "msi-9a016bb8c339-keeper"}
+{"operation": "creation-intent", "kind": "resource-intent", "object_kind": "container", "name": "msi-9a016bb8c339-build"}
+{"kind": "container", "id": "cbb5b1f62a9e8289a585a68194eb382c1744f530064f17b1eb43aa8a0fac2cfc", "name": null}
+{"kind": "intent", "name": "msi-9a016bb8c339-init"}
+{"kind": "container", "id": "23c49d6ce1b07c87a35b431367a2d5ab020e078fcaced053210c83dd6c9275fb", "name": "msi-9a016bb8c339-init"}
+{"kind": "intent", "name": "msi-9a016bb8c339-positive"}
+{"kind": "container", "id": "eb0e6d6d0f2624b41ed50ead4b7e34f1c3c82559e844cf9e4230e542770f8d2c", "name": "msi-9a016bb8c339-positive"}
+{"kind": "intent", "name": "msi-9a016bb8c339-unrelated"}
+{"kind": "container", "id": "c46b462c645a0625beed6f1512872da5a178300593ae4f4f7962f1ee8235f737", "name": "msi-9a016bb8c339-unrelated"}
+{"kind": "intent", "name": "msi-9a016bb8c339-guard"}
+{"kind": "container", "id": "b8348a09078f2d504d3d26ac3241001ba7d34227ddd54fe529fe324d3bc0fd4c", "name": "msi-9a016bb8c339-guard"}
+{"kind": "intent", "name": "msi-9a016bb8c339-postgres"}
+{"kind": "container", "id": "e6fa775649ed2c703415308da7926e8adb33f973911cde7563c261b17e61113b", "name": "msi-9a016bb8c339-postgres"}
+{"kind": "intent", "name": "msi-9a016bb8c339-rabbit"}
+{"kind": "container", "id": "37bb0fe2df638b531962e95ee59ad396a68fca96fb4e89b6cdb19ae526c95902", "name": "msi-9a016bb8c339-rabbit"}
+{"kind": "intent", "name": "msi-9a016bb8c339-manager"}
+{"kind": "container", "id": "b3ea9ad2e172e457159993f8fc4b510362e87f3b0722a59d7a316d9d656566a8", "name": "msi-9a016bb8c339-manager"}
+{"kind": "network", "id": "24cdc05e4c4c767ac6f3429edd3ea36e641164acd60a96d99c543466623ab23e", "name": "agent-synthetic_migrated_agent-synthetic-provider"}
+{"kind": "network", "id": "585bea827ca4021f7ed71d6df9c84bbaf80c261421f05e7aac63a38c537ea5ec", "name": "agent-synthetic_migrated_agent-synthetic-seal"}
+{"kind": "network", "id": "799d12c47bf201d1545ea8830c1cc1a009f1c9b49392dacbcca008100ec6e09e", "name": "agent-synthetic_migrated_agent-synthetic-edge-uplink"}
+{"kind": "network", "id": "f4af58e1236435df8c5b65a0c5c87717322aa34a5cc78d6120c52c8aecc1e1ff", "name": "agent-synthetic_migrated_agent-synthetic-keyed"}
+{"kind": "container", "id": "723ff858b247a08745df48517e5994ab7a4f12c761d8d0dbb09a98e30e9a4b96", "name": "msi-9a016bb8c339-agent-synthetic-tinfoil"}
+{"kind": "container", "id": "c27f5fdb6e338895a19b62224c8864ba0fe2fe16d32332a1e47e61b48605e509", "name": "msi-9a016bb8c339-agent-synthetic-search"}
+{"kind": "container", "id": "1ffd8a25d8baf55ec095024a9869c5479c2662e357a082b4a217e5ae39f6b6c6", "name": "msi-9a016bb8c339-agent-synthetic-edge"}
+{"kind": "container", "id": "5e1fc699e77b7cf56253db1ca53ea937a7c9fe88ed19c89e461cb7a6d188bf3b", "name": "msi-9a016bb8c339-agent-synthetic-key"}
+{"kind": "container", "id": "3d6ba75cf323700857566a353fcc4b851b2148100c7f3fc7cdd95ff9b37b4a78", "name": "msi-9a016bb8c339-agent-synthetic"}
+{"kind": "network", "id": "79724518a7aca70177f0eebfda293a164d9af067ebbbeaa3edd287e10da1cc45", "name": "agent-synthetic_migrated_agent-synthetic-keyed"}
+{"kind": "network", "id": "654d91ba203f98c20e77250e905211813093f0fdc255c82badec13d81918eaed", "name": "agent-synthetic_migrated_agent-synthetic-seal"}
+{"kind": "network", "id": "55c4ae132d264e2736f8ba2b292ce9016082b590b6bd02d75f2fb5a32d1c2ddb", "name": "agent-synthetic_migrated_agent-synthetic-edge-uplink"}
+{"kind": "network", "id": "6bad7e95ee8d07dcaa9e27fe1e69b8f1279ddf240376f13c5e33ca485137c5a2", "name": "agent-synthetic_migrated_agent-synthetic-provider"}
+{"kind": "container", "id": "8f4c5524fe30be05c1a554f4fdb4e9d6342383d4e04f0123602ee3c444ce574c", "name": "msi-9a016bb8c339-agent-synthetic-key"}
+{"kind": "container", "id": "2baea95fad9d43f8fd40915620b02f3b8c5a8342a5f62ba8454e47fd1f836832", "name": "msi-9a016bb8c339-agent-synthetic"}
+{"kind": "container", "id": "d433fcb14fa0dbee26318e7207de171268521dae29cf86c6e64e6634effbcd1c", "name": "msi-9a016bb8c339-agent-synthetic-search"}
+{"kind": "container", "id": "fcd84f6e3148ba8131ce7c78f36a890438fa8c689460139f9127d4dc774e1e87", "name": "msi-9a016bb8c339-agent-synthetic-tinfoil"}
+{"kind": "container", "id": "b108a8588bd38bfa70d8a6ce777455f1daffe4094ab821701b8cc5c3259050cf", "name": "msi-9a016bb8c339-agent-synthetic-edge"}
+{"kind": "network", "id": "8bbeb488b595ca9714199ff67930345e1d730592ed111484f0ba4cdb1820809a", "name": "agent-synthetic_migrated_agent-synthetic-keyed"}
+{"kind": "network", "id": "19b62aaf7dec43a99bf96c621f4d01448f7170c1d4085a161ad7f7d424fbe2e2", "name": "agent-synthetic_migrated_agent-synthetic-provider"}
+{"kind": "network", "id": "641e60984faca0d00c88e5b061d05579ce3f3ec4d107658a7d9d65155ca6aca1", "name": "agent-synthetic_migrated_agent-synthetic-edge-uplink"}
+{"kind": "network", "id": "69550289a7de352e06de54ff061766d0fa8ff50f7c4a7d70889dd5df7d71bea3", "name": "agent-synthetic_migrated_agent-synthetic-seal"}
+{"kind": "container", "id": "ada73d621fe6e95307519e0774b9b08a5a68d24374d48fb99057bfa985dd5d0d", "name": "msi-9a016bb8c339-agent-synthetic"}
+{"kind": "container", "id": "b9db7e6848aed4280f2fb2a1fadbe2fb3dc4114eaa22b332fa4fbc305bc3f167", "name": "msi-9a016bb8c339-agent-synthetic-key"}
+{"kind": "container", "id": "d4295f0cfbc86816e32c9cbabd083561ddcf317bf4935a2c070726620fa0b5ef", "name": "msi-9a016bb8c339-agent-synthetic-tinfoil"}
+{"kind": "container", "id": "cd806ba8e71df3cfac5679d7c842751a475a999b0bc2bf7b6937dfaa52453cce", "name": "msi-9a016bb8c339-agent-synthetic-search"}
+{"kind": "container", "id": "4a6053e48d60512481921c2289c07816ed78021ac9b1d355da91a0f822599eff", "name": "msi-9a016bb8c339-agent-synthetic-edge"}

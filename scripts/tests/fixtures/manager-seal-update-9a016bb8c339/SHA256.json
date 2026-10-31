@@ -1,0 +1,32 @@
+{
+  "manager.sanitized.log": {
+    "sha256": "75f9e0a9f90a2b11e02fae3ea9f8cf81d587cb401a3a7f86ab31ad79919aada9",
+    "bytes": 5288,
+    "source_path": "/srv/work/manager-seal-installed-9a016bb8c339/installed-results/manager.sanitized.log"
+  },
+  "terminal-update-failure.json": {
+    "sha256": "397007eb49f050de42fe36eca4f3ed0fe097b97d5705ed7aaa772e61a4660664",
+    "bytes": 602,
+    "source_path": "/srv/work/manager-seal-installed-9a016bb8c339/installed-results/terminal-update-failure.json"
+  },
+  "controller-ledger.jsonl": {
+    "sha256": "2af16a9b6f2a8d1d747c055b23704b05148d6b381a11035db93c5c5573d8d211",
+    "bytes": 7343,
+    "source_path": "/srv/work/manager-seal-installed-9a016bb8c339/installed-results/controller-ledger.jsonl"
+  },
+  "receipt.json": {
+    "sha256": "02c4149e5cf0c42b92dfc2157578b4d07a3672b629ecd6d07eb6f718af8de896",
+    "bytes": 82226,
+    "source_path": "/srv/work/manager-seal-installed-9a016bb8c339/installed-results/receipt.json"
+  },
+  "cleanup.json": {
+    "sha256": "4e866c654759a68e759d84318fe1f39a69153826fda7ec2130428f787099da14",
+    "bytes": 130,
+    "source_path": "/srv/work/manager-seal-installed-9a016bb8c339/parent-cleanup.json"
+  },
+  "old-continuation.py": {
+    "sha256": "f6dd0a08bcb1d7ae765dbde4342150cb9f50aee279ba425d6b60c830bc38dd52",
+    "bytes": 11480,
+    "source_path": "git:9a016bb8c3396176e5b289a56fad3aad412e4351:scripts/manager_seal_update_continuation.py"
+  }
+}

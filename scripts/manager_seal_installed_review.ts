@@ -1,11 +1,13 @@
 // QA-only trusted recipe review. No optional configuration is an enrollment input.
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import * as yaml from 'yaml';
 import { type } from 'arktype';
 import { DockerComposeBuilder } from '../packages/backend/src/modules/docker/builders/compose.builder';
 import { MandatorySeal, validateSeal } from '../packages/backend/src/modules/docker/mandatory-seal';
-import { dynamicComposeSchemaYaml } from '../packages/common/src/schemas';
+import { appInfoSchema, dynamicComposeSchemaYaml } from '../packages/common/src/schemas';
 import { castAppUrn } from '../packages/backend/src/common/helpers/app-helpers';
 
 const [mode, subnet] = process.argv.slice(2);
@@ -17,7 +19,36 @@ const parsed = dynamicComposeSchemaYaml(recipe);
 if (parsed instanceof type.errors) throw new Error('synthetic recipe invalid');
 const revisionCommand = 'import time; time.sleep(1800) # trusted revision 2';
 const seal = new MandatorySeal('/data');
-if (['candidate', 'publish', 'readback'].includes(mode)) {
+const git = (...args: string[]) => execFileSync('git', args, {encoding:'utf8',timeout:10000,maxBuffer:65536}).trim();
+const digest = (raw: string | Buffer) => createHash('sha256').update(raw).digest('hex');
+async function configEvidence(path: string) {
+  const stat = await fs.lstat(path);
+  if (!stat.isFile() || stat.size > 65536) throw new Error('synthetic config file bound');
+  const raw = await fs.readFile(path); const config = JSON.parse(raw.toString());
+  const parsed = appInfoSchema({...config,urn});
+  return {path,sha256:digest(raw),version:config.version,tipi_version:config.tipi_version,
+    schema_valid:!(parsed instanceof type.errors),available:parsed instanceof type.errors?null:parsed.available,
+    schema_error:parsed instanceof type.errors?parsed.summary.slice(0,4096):null};
+}
+if (mode === 'diagnostic') {
+  // Fixed synthetic paths only. No optional config, env, credentials or general file reads.
+  const result: any = {read_only:true,urn};
+  for (const [label,path] of Object.entries({installed:'/data/apps/migrated/agent-synthetic/config.json',
+    repo:'/data/repos/migrated/apps/agent-synthetic/config.json',reviewed:'/data/reviewed-update/config.json'})) {
+    try { result[label] = await configEvidence(path); } catch { result[label] = {read_error:true}; }
+  }
+  try {
+    const path='/data/apps/migrated/agent-synthetic/docker-compose.yml';
+    const info=await fs.lstat(path); if(!info.isFile()||info.size>65536)throw new Error('compose bound');
+    const raw=await fs.readFile(path,'utf8'); const doc=yaml.parse(raw);
+    result.installed_compose={sha256:digest(raw),commands:Object.fromEntries(Object.entries(doc.services).map(([k,v]:any)=>[k,v.command]))};
+  } catch { result.installed_compose={read_error:true}; }
+  for (const [label,dir] of Object.entries({repo:'/data/repos/migrated',upstream:'/data/reviewed-update/served-store/store.git'})) {
+    try { result[label+'_head']=git('-C',dir,'rev-parse','HEAD'); } catch { result[label+'_head']=null; }
+  }
+  const raw=JSON.stringify(result); if(Buffer.byteLength(raw)>16384)throw new Error('diagnostic bound');
+  console.log(raw);
+} else if (['candidate', 'publish', 'readback'].includes(mode)) {
   const current = await seal.read(urn);
   if (!current) throw new Error('missing synthetic enrollment');
   if (mode === 'readback') {
@@ -28,7 +59,8 @@ if (['candidate', 'publish', 'readback'].includes(mode)) {
     if (!isDeepStrictEqual(generated, candidate)) throw new Error('updated generated catalogue differs from review');
     if (Object.values(installed.services).some((s: any) => s.command?.[0] !== revisionCommand)) throw new Error('wrong installed revision');
     console.log(JSON.stringify({sha256:current.sha256, previous_sha256:current.previous?.sha256,
-      installed_version:config.tipi_version, revision_command:revisionCommand}));
+      installed_version:config.tipi_version, installed_config_sha256:(await configEvidence('/data/apps/migrated/agent-synthetic/config.json')).sha256,
+      revision_command:revisionCommand}));
   } else if (mode === 'candidate' && subnet && /^[0-9.]+\/[0-9]+$/.test(subnet)) {
     if (current.previous) throw new Error('anchor already in use');
     const next = structuredClone(recipe); const doc = structuredClone(compiled);
@@ -54,13 +86,33 @@ if (['candidate', 'publish', 'readback'].includes(mode)) {
     if (!isDeepStrictEqual(current.compose, compiledNext) || !isDeepStrictEqual(current.catalogue, catalogueNext)) throw new Error('stage readback mismatch');
     const next = JSON.parse(await fs.readFile('/data/reviewed-update/recipe.json', 'utf8'));
     const config = JSON.parse(await fs.readFile('/data/reviewed-update/config.json', 'utf8'));
-    await fs.writeFile('/data/repos/migrated/apps/agent-synthetic/docker-compose.yml', yaml.stringify(next));
-    await fs.writeFile('/data/repos/migrated/apps/agent-synthetic/config.json', JSON.stringify(config));
+    const candidateConfig = appInfoSchema({...config,urn});
+    if (candidateConfig instanceof type.errors || !candidateConfig.available) throw new Error('candidate config invalid/unavailable');
+    // Publish a committed synthetic upstream, not dirty files in its disposable
+    // consumer clone. Product */15 refresh force-checks out origin/main.
+    const work='/data/reviewed-update/git-work';
+    git('clone','--no-hardlinks','/app/store.git',work);
+    await fs.writeFile(`${work}/apps/agent-synthetic/docker-compose.yml`, yaml.stringify(next));
+    await fs.writeFile(`${work}/apps/agent-synthetic/config.json`, JSON.stringify(config));
+    git('-C',work,'add','apps/agent-synthetic/config.json','apps/agent-synthetic/docker-compose.yml');
+    git('-C',work,'-c','user.name=QA','-c','user.email=qa@example.invalid','commit','-m','Reviewed synthetic revision 2');
+    const commit=git('-C',work,'rev-parse','HEAD');
+    await fs.mkdir('/data/reviewed-update/served-store.next',{mode:0o700});
+    git('clone','--bare','--no-hardlinks',work,'/data/reviewed-update/served-store.next/store.git');
+    await fs.rename('/data/reviewed-update/served-store.next','/data/reviewed-update/served-store');
+    // Exercise the same real HTTP upstream the product refresh consumes.
+    const repo='/data/repos/migrated';
+    git('-C',repo,'fetch','origin','main');
+    if(git('-C',repo,'rev-parse','FETCH_HEAD')!==commit)throw new Error('upstream commit mismatch');
+    git('-C',repo,'reset','--hard',commit);
+    const publication=await configEvidence(`${repo}/apps/agent-synthetic/config.json`);
+    if(!publication.schema_valid||!publication.available||publication.tipi_version!==2||publication.version!=='2.0.0')throw new Error('published version/schema mismatch');
     // Read exact publication back; the manager copies these reviewed store bytes.
     if (!isDeepStrictEqual(yaml.parse(await fs.readFile('/data/repos/migrated/apps/agent-synthetic/docker-compose.yml','utf8')),next) ||
       !isDeepStrictEqual(JSON.parse(await fs.readFile('/data/repos/migrated/apps/agent-synthetic/config.json','utf8')),config))
       throw new Error('publication readback mismatch');
-    console.log(JSON.stringify({reviewed:true,mode,sha256:current.sha256,previous_sha256:current.previous.sha256}));
+    console.log(JSON.stringify({reviewed:true,mode,sha256:current.sha256,previous_sha256:current.previous.sha256,
+      upstream_commit:commit,publication}));
   } else throw new Error('invalid trusted candidate mode');
 } else if (mode === 'schema') {
   const missing = structuredClone(recipe); delete missing['x-runtipi'];

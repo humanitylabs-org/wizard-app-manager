@@ -2,12 +2,14 @@
 """Private loopback synthetic Git smart HTTP, using the real git backend."""
 import http.server
 import os
+from pathlib import Path
 import subprocess
 import urllib.parse
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     project_root = '/app'
+    published_root = '/data/reviewed-update/served-store'
     def log_message(self, *args): pass
     def do_GET(self): self.forward()
     def do_POST(self): self.forward()
@@ -21,7 +23,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if n > 2**20: self.send_error(413); return
         if self.command == 'GET' and p.query != 'service=git-upload-pack': self.send_error(403); return
         if self.command == 'POST' and p.query: self.send_error(403); return
-        env = {'PATH': '/usr/bin:/bin', 'GIT_PROJECT_ROOT': self.project_root, 'GIT_HTTP_EXPORT_ALL': '1',
+        # Candidate bare repo appears atomically; each request serves immutable
+        # committed upstream bytes. A manager refresh can no longer erase v2.
+        root = self.published_root if (Path(self.published_root)/'store.git').is_dir() else self.project_root
+        env = {'PATH': '/usr/bin:/bin', 'GIT_PROJECT_ROOT': root, 'GIT_HTTP_EXPORT_ALL': '1',
                'PATH_INFO': p.path, 'QUERY_STRING': p.query, 'REQUEST_METHOD': self.command,
                'CONTENT_TYPE': self.headers.get('Content-Type', ''), 'CONTENT_LENGTH': str(n),
                'REMOTE_ADDR': '127.0.0.1'}

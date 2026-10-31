@@ -1,0 +1,61 @@
+(node:1) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+09:58:16 - info > 	Generating system env file
+09:58:16 - warn > 	Queue connection not ready, waiting for initialization...
+09:58:16 - warn > 	Queue connection not ready, waiting for initialization...
+09:58:16 - warn > 	Queue connection not ready, waiting for initialization...
+09:58:17 - info > 	Connected to the queue
+09:58:17 - info > 	EventPublisher: Exchange 'app-events-queue' asserted.
+09:58:17 - info > 	EventPublisher: Exchange 'repo-queue' asserted.
+09:58:17 - info > 	EventPublisher: Exchange 'system-events-queue' asserted.
+09:58:18 - info > 	Log level info
+09:58:18 - info > 	Logs flushed
+09:58:18 - info > 	Running version: synthetic-9a016bb8c339
+09:58:18 - info > 	Clearing cache...
+09:58:18 - info > 	Migrating default repo
+09:58:18 - info > 	Cloned repo http://127.0.0.1:8080/store.git to /data/repos/migrated
+09:58:18 - info > 	Cloned repo http://127.0.0.1:8080/store.git to /data/repos/migrated
+09:58:18 - info > 	Creating traefik folders
+09:58:18 - info > 	Copying traefik files
+09:58:18 - info > 	Creating base folders
+09:58:18 - info > 	Creating media folders
+09:58:18 - info > 	Generating TLS certificate for tipi.lan
+09:58:19 - info > 	Writing txt file for tipi.lan
+09:58:21 - info > 	Installing app agent-synthetic:migrated as User ID: 1000, Group ID: 1000
+09:58:21 - info > 	Deleting app agent-synthetic:migrated folder if exists
+09:58:21 - info > 	Creating app agent-synthetic:migrated folder
+09:58:21 - info > 	Creating app agent-synthetic:migrated data folder
+09:58:21 - info > 	Copying app agent-synthetic:migrated from repo migrated
+09:58:21 - info > 	Creating app.env file for app agent-synthetic:migrated
+09:58:21 - info > 	Copying data dir for app agent-synthetic:migrated
+09:58:21 - info > 	Pruned containers: [] Space reclaimed: 0 MB
+09:58:21 - info > 	Allocated subnet 10.128.10.0/24 for app agent-synthetic:migrated
+09:58:21 - info > 	Running docker compose with args --env-file /app-data/migrated/agent-synthetic/app.env --project-name agent-synthetic_migrated -f /data/apps/migrated/agent-synthetic/docker-compose.generated.yml down --remove-orphans
+09:58:21 - info > 	Skipping docker-compose up for app agent-synthetic:migrated as per request
+09:58:21 - info > 	App agent-synthetic:migrated install completed successfully
+09:58:23 - info > 	Starting app agent-synthetic:migrated
+09:58:23 - info > 	Regenerating app.env file for app agent-synthetic:migrated
+09:58:23 - info > 	Running docker compose with args --project-name agent-synthetic_migrated --project-directory /data/apps/migrated/agent-synthetic -f /data/state/mandatory-seal-launches/launch-8WYTFR/effective.json up --detach --force-recreate --remove-orphans
+09:58:24 - info > 	App agent-synthetic:migrated started
+09:58:24 - info > 	App agent-synthetic:migrated start completed successfully
+09:58:25 - info > 	Regenerating app.env file for app agent-synthetic:migrated
+09:58:25 - info > 	Stopping app agent-synthetic:migrated
+09:58:25 - info > 	Running docker compose with args --project-name agent-synthetic_migrated --project-directory /data/apps/migrated/agent-synthetic -f /data/state/mandatory-seal-launches/launch-A78kjq/effective.json down --remove-orphans
+09:59:18 - info > 	Running docker compose with args --project-name agent-synthetic_migrated --project-directory /data/apps/migrated/agent-synthetic -f /data/state/mandatory-seal-launches/launch-A78kjq/effective.json up --detach --force-recreate --remove-orphans
+09:59:19 - info > 	App agent-synthetic:migrated restarted
+09:59:19 - info > 	App agent-synthetic:migrated restart completed successfully
+09:59:21 - info > 	Deleting app agent-synthetic:migrated folder if exists
+09:59:21 - info > 	Creating app agent-synthetic:migrated folder
+09:59:21 - info > 	Creating app agent-synthetic:migrated data folder
+09:59:21 - info > 	Copying app agent-synthetic:migrated from repo migrated
+09:59:22 - info > 	Running docker compose with args --project-name agent-synthetic_migrated --project-directory /data/apps/migrated/agent-synthetic -f /data/state/mandatory-seal-launches/launch-kxKgMu/effective.json pull
+09:59:22 - info > 	Updating app agent-synthetic:migrated
+09:59:22 - info > 	Running docker compose with args --env-file /app-data/migrated/agent-synthetic/app.env --project-name agent-synthetic_migrated -f /data/apps/migrated/agent-synthetic/docker-compose.generated.yml down --remove-orphans
+10:00:14 - info > 	Deleting app agent-synthetic:migrated folder if exists
+10:00:14 - info > 	Creating app agent-synthetic:migrated folder
+10:00:14 - info > 	Creating app agent-synthetic:migrated data folder
+10:00:14 - info > 	Copying app agent-synthetic:migrated from repo migrated
+10:00:14 - info > 	Running docker compose with args --project-name agent-synthetic_migrated --project-directory /data/apps/migrated/agent-synthetic -f /data/state/mandatory-seal-launches/launch-2mOuYO/effective.json up --detach --force-recreate --remove-orphans
+10:00:16 - info > 	Regenerating app.env file for app agent-synthetic:migrated
+10:00:16 - info > 	Pruned containers: [] Space reclaimed: 0 MB
+10:00:16 - info > 	App agent-synthetic:migrated update completed successfully

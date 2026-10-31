@@ -88,8 +88,8 @@ class UpdateSequence(unittest.TestCase):
         self.log = self.out/'manager.sanitized.log'; self.log.write_text('prior startup log\n')
         self.request = '968a12a8-ea68-41e1-a2fd-85186cc1c9a2'
         self.stage_result = {'urn':update.URN, 'sha256':'b'*64, 'previous_sha256':'a'*64}
-        self.readback = {'sha256':'b'*64,'previous_sha256':'a'*64,'installed_version':2,'revision_command':update.COMMAND_V2}
-        self.rig = Mock(out=self.out, manager='owned-manager', receipt={'trusted_update_stage': self.stage_result})
+        self.readback = {'sha256':'b'*64,'previous_sha256':'a'*64,'installed_version':2,'installed_config_sha256':'e'*64,'revision_command':update.COMMAND_V2}
+        self.rig = Mock(out=self.out, manager='owned-manager', receipt={'trusted_update_stage': dict(self.stage_result,publication={'sha256':'e'*64})})
         self.rig.sql.return_value = 'running|2'
         self.rig.owned_fixture_ids.return_value = self.ids
         self.rig.runtime.return_value = self.ids
@@ -97,7 +97,7 @@ class UpdateSequence(unittest.TestCase):
         self.rig.http.side_effect = [(202, {'requestId':self.request}), (200, {'app':{'status':'running','version':2}})]
         def wait(label, predicate, seconds):
             with self.log.open('a') as f:
-                f.write('Running docker compose with args --project-name agent-synthetic_migrated -f /data/state/mandatory-seal-launches/launch-AbCd12/effective.json up --detach --force-recreate --remove-orphans\n')
+                f.write('Running docker compose with args --project-name agent-synthetic_migrated -f /data/state/mandatory-seal-launches/launch-AbCd12/effective.json up --detach --force-recreate --remove-orphans\nApp '+update.URN+' update completed successfully\n')
             self.assertTrue(predicate())
         self.rig.wait.side_effect = wait
 
@@ -124,7 +124,7 @@ class UpdateSequence(unittest.TestCase):
     def test_wait_timeout_never_retries_patch(self):
         self.rig.wait.side_effect = RuntimeError('terminal-update deadline')
         with self.assertRaisesRegex(RuntimeError, 'deadline'): update.transaction(self.rig, self.previous)
-        self.assertEqual(self.rig.http.call_count, 1); self.rig.runtime.assert_not_called()
+        self.assertEqual([c.args[0] for c in self.rig.http.call_args_list], ['PATCH','GET']); self.rig.runtime.assert_not_called()
 
     def test_invalid_request_id_does_not_poll_or_retry(self):
         self.rig.http.side_effect = [(202, {'requestId':'invalid'})]
@@ -157,7 +157,7 @@ class UpdateSequence(unittest.TestCase):
 
     def test_unexpected_database_state_fails_closed(self):
         self.rig.sql.return_value = 'running|3'
-        with self.assertRaises(AssertionError): update.ready(self.rig, set(self.previous), 0, self.request)
+        with self.assertRaisesRegex(RuntimeError,'unexpected update DB state'): update.ready(self.rig, set(self.previous), 0, self.request)
 
     def test_http_old_version_fails(self):
         self.rig.http.side_effect = [(202, {'requestId':self.request}), (200, {'app':{'status':'running','version':1}})]
@@ -174,7 +174,8 @@ class UpdateSequence(unittest.TestCase):
 
     def test_trusted_review_stage_publish_order_and_cas(self):
         self.rig.exec.side_effect = [json.dumps({'reviewed':True,'mode':'candidate','expected_sha256':'a'*64}),
-            json.dumps(self.stage_result),json.dumps({'sha256':'b'*64,'previous_sha256':'a'*64})]
+            json.dumps(self.stage_result),json.dumps({'sha256':'b'*64,'previous_sha256':'a'*64,
+                'upstream_commit':'d'*40,'publication':{'schema_valid':True,'tipi_version':2}})]
         self.assertEqual(update.stage(self.rig,'10.0.0.0/24'), self.stage_result)
         calls = [c.args[1] for c in self.rig.exec.call_args_list]
         self.assertEqual([c[2] for c in calls], ['candidate','stage','publish'])

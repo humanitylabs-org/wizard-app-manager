@@ -92,37 +92,86 @@ def stage(rig, subnet):
     assert re.fullmatch('[0-9a-f]{64}', result['sha256'])
     published = json.loads(rig.exec(rig.manager, ['/tooling/node', '/app/review.mjs', 'publish', subnet]))
     assert published['sha256'] == result['sha256'] and published['previous_sha256'] == expected
-    rig.receipt['trusted_update_stage'] = dict(result, published_source_version=2, hostile_config_used=False)
+    assert re.fullmatch('[0-9a-f]{40}', published['upstream_commit'])
+    assert published['publication']['schema_valid'] and published['publication']['tipi_version'] == 2
+    rig.receipt['trusted_update_stage'] = dict(result, published_source_version=2, hostile_config_used=False,
+        upstream_commit=published['upstream_commit'], publication=published['publication'])
     return result
+
+
+def update_log(rig, log_offset):
+    log = rig.out/'manager.sanitized.log'
+    if not log.exists(): return ''
+    with log.open('rb') as stream:
+        stream.seek(log_offset); raw = stream.read(64*2**20+1)
+    assert len(raw) <= 64*2**20
+    return raw.decode(errors='replace')
+
+
+def terminal_markers(text):
+    failure = any(marker in text for marker in (
+        'Failed to update app '+URN+':', 'Failed to process update result for app '+URN+':',
+        'Failed to restore app '+URN+' after an update error.', 'App '+URN+' update failed:'))
+    success = 'App '+URN+' update completed successfully' in text
+    return success, failure
+
+
+def diagnose(rig, request_id, db, text, reason):
+    """Best-effort bounded read-only evidence; never retries the PATCH."""
+    success, failure = terminal_markers(text)
+    diagnostic = {'action':'update','request_id':request_id,'database_status_version':db,
+        'synthetic_failure_log_seen':failure,'handler_success_log_seen':success,'reason':reason,
+        'read_only':True,'correlation':'single PATCH; synthetic URN; post-request log offset (logs omit requestId)'}
+    def capture(key, callback):
+        try: diagnostic[key] = callback()
+        except Exception as error: diagnostic[key] = {'diagnostic_error':type(error).__name__}
+    capture('manager_http_status', lambda: rig.http('GET','/api/apps/'+URN)[0])
+    def ids():
+        value=rig.owned_fixture_ids()
+        assert len(value)<=5 and all(re.fullmatch('[0-9a-f]{64}',cid) for cid in value)
+        return value
+    capture('owned_fixture_ids',ids)
+    capture('database_row',lambda: rig.sql("select status||'|'||version||'|'||updated_at from app where app_name='agent-synthetic' and app_store_slug='migrated';")[:1024])
+    def metadata():
+        raw=rig.exec(rig.manager,['/tooling/node','/app/review.mjs','diagnostic'],timeout=20)
+        assert len(raw.encode())<=16384
+        return json.loads(raw)
+    capture('synthetic_metadata',metadata)
+    info=diagnostic.get('synthetic_metadata',{}).get('installed',{})
+    diagnostic['finding'] = ('product-version-write-defect' if success and db=='running|1'
+        and info.get('schema_valid') and info.get('available') and info.get('tipi_version')==2
+        else 'stale-installed-metadata' if success and db=='running|1' and info.get('tipi_version')==1
+        else 'unclassified-see-evidence')
+    def tail():
+        log=rig.out/'manager.sanitized.log'
+        with log.open('rb') as stream:
+            stream.seek(max(0,log.stat().st_size-131072)); raw=stream.read(131072)
+        return '\n'.join(raw.decode(errors='replace').splitlines()[-200:])[-65536:]
+    capture('manager_log_last_200_lines',tail)
+    raw=json.dumps(diagnostic,indent=2)+'\n'
+    assert len(raw.encode())<=128*1024
+    rig.receipt['terminal_update_failure']=diagnostic
+    (rig.out/'terminal-update-failure.json').write_text(raw)
+    return diagnostic
 
 
 def ready(rig, previous, log_offset, request_id):
     db = rig.sql("select status||'|'||version from app where app_name='agent-synthetic' and app_store_slug='migrated';")
-    log = rig.out/'manager.sanitized.log'
-    text = ''
-    if log.exists():
-        with log.open('rb') as stream:
-            stream.seek(log_offset); raw = stream.read(64*2**20+1)
-            assert len(raw) <= 64*2**20
-            text = raw.decode(errors='replace')
-    failure = any(marker in text for marker in (
-        'Failed to update app '+URN+':', 'Failed to process update result for app '+URN+':',
-        'Failed to restore app '+URN+' after an update error.', 'App '+URN+' update failed:'))
-    # Running|1 is the shipped handler's terminal recovery status, not success.
-    if failure or (db.split('|')[0] in ('', 'stopped', 'missing')) or db == 'running|1':
-        diagnostic = {'action': 'update', 'request_id': request_id, 'database_status_version': db,
-                      'synthetic_failure_log_seen': failure, 'read_only': True}
-        rig.receipt['terminal_update_failure'] = diagnostic
-        try:
-            diagnostic['manager_http_status'] = rig.http('GET', '/api/apps/'+URN)[0]
-            ids = rig.owned_fixture_ids()
-            assert len(ids) <= 5 and all(re.fullmatch('[0-9a-f]{64}', cid) for cid in ids)
-            diagnostic['owned_fixture_ids'] = ids
-        finally:
-            (rig.out/'terminal-update-failure.json').write_text(json.dumps(diagnostic, indent=2)+'\n')
+    text = update_log(rig,log_offset)
+    success, failure = terminal_markers(text)
+    if success or failure:
+        # The first DB query can precede the success log; sample again after it.
+        db = rig.sql("select status||'|'||version from app where app_name='agent-synthetic' and app_store_slug='migrated';")
+    # Polls may observe the restored old version/status while the handler is
+    # still running or its attached log capture lags. Only a terminal handler
+    # marker in this one-request window makes running|1 a terminal failure.
+    if failure or (success and db != 'running|2'):
+        diagnose(rig,request_id,db,text,'handler-failure' if failure else 'success-with-wrong-db-version')
         raise RuntimeError('terminal update failure; no retry')
-    assert db in ('updating|1', 'updating|2', 'running|2'), 'unexpected update DB state'
-    if db != 'running|2': return False
+    if db not in ('updating|1','updating|2','running|1','running|2','stopped|1','stopped|2','missing|1',''):
+        diagnose(rig,request_id,db,text,'unexpected-db-state')
+        raise RuntimeError('unexpected update DB state; no retry')
+    if not success or db != 'running|2': return False
     # The attached log reader is asynchronous; do not confuse capture lag with
     # a successful launch on unsealed input. Once present, shape is fail-closed.
     up = [line for line in re.findall(r'Running docker compose with args ([^\n]+)', text)
@@ -142,7 +191,14 @@ def transaction(rig, previous):
     assert 200 <= status < 300
     request_id = body['requestId']; assert str(uuid.UUID(request_id)) == request_id
     rig.receipt.setdefault('request_ids', []).append(request_id)
-    rig.wait('terminal-update', lambda: ready(rig, set(previous), offset, request_id), 180)
+    try:
+        rig.wait('terminal-update', lambda: ready(rig, set(previous), offset, request_id), 180)
+    except Exception:
+        if 'terminal_update_failure' not in rig.receipt:
+            try: db=rig.sql("select status||'|'||version from app where app_name='agent-synthetic' and app_store_slug='migrated';")
+            except Exception: db='unreadable'
+            diagnose(rig,request_id,db,update_log(rig,offset),'bounded-wait-or-observer-failure')
+        raise
     status, body = rig.http('GET', '/api/apps/'+URN)
     assert status == 200 and body['app']['status'] == 'running' and body['app']['version'] == 2
     assert rig.sql("select status||'|'||version from app where app_name='agent-synthetic' and app_store_slug='migrated';") == 'running|2'
@@ -162,6 +218,7 @@ def transaction(rig, previous):
     assert readback['sha256'] == rig.receipt['trusted_update_stage']['sha256']
     assert readback['previous_sha256'] == rig.receipt['trusted_update_stage']['previous_sha256']
     assert readback['installed_version'] == 2 and readback['revision_command'] == COMMAND_V2
+    assert readback['installed_config_sha256'] == rig.receipt['trusted_update_stage']['publication']['sha256']
     rig.receipt['accepted_update'] = {'request_id': request_id, 'terminal_database': 'running|2',
         'actual_auth_http_readback': True, 'effective_snapshot_launch': True,
         'effective_snapshot_bytes_retained': False, 'runtime_ids': ids, 'seal_readback': readback}
