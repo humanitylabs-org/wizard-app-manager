@@ -66,7 +66,8 @@ COMPARATORS = ('comparator-setup.sh', 'comparator-cli.tar.gz', 'comparator-cli-t
                'comparator-latest-release.json', 'comparator-upstream-journal.json')
 SEALED = tuple(COPIES) + ('backend.json', 'service.json', 'source.tar', 'source-members.json',
                           'comparator.json') + COMPARATORS
-QA_PREFIXES = ('qa/privsep-storage/', 'tests/test_health_capture')
+QA_PREFIXES = ('qa/privsep-storage/', 'tests/test_health_capture_collector.py',
+               'tests/test_installer_diagnostic_parser.py')   # QA-only test from the fa42a49 lineage
 RESERVE = 217179869184
 PENDING = 60011827200
 MAX_NEW = 8589934592
