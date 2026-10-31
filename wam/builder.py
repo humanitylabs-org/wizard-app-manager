@@ -136,7 +136,10 @@ _SHELL_CALL = re.compile(r'WizardApp\.(nav|chat)\.(\w+)\s*\(')
 def _own_files(root, suffixes):
     """The app's own view files: vendored dirs, kit copies and untouched template files are not the app's."""
     template = REPO / 'templates' / 'hello-wizard' / 'web'
+    development = system_functions._development_roots(Path(root).resolve())
     for p in sorted(root.rglob('*')):
+        if p.relative_to(root).parts[0] in development:
+            continue
         if p.suffix not in suffixes or not p.is_file() or p.is_symlink() or p.name in _KIT_NAMES:
             continue
         if any(part in _VENDORED_DIRS for part in p.relative_to(root).parts) or p.name.endswith('.min.js'):

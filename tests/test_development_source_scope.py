@@ -79,3 +79,14 @@ def test_inline_compose_remains_checked(tmp_path):
     }}}))
     rows = forbidden(root)
     assert any('docker-compose.yml::tests/served.js' in r['detail'] for r in rows)
+
+
+def test_design_warnings_use_the_same_nonserved_scope(tmp_path):
+    from wam import builder
+    root = app(tmp_path)
+    (root / 'tests').mkdir()
+    (root / 'tests/acceptance.mjs').write_text('window.alert("fixture");')
+    assert not builder.design_rows(root)
+    (root / 'web/tests').mkdir()
+    (root / 'web/tests/served.js').write_text('window.alert("runtime");')
+    assert any('web/tests/served.js' in r['detail'] for r in builder.design_rows(root))
