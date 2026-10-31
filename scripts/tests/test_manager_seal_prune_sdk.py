@@ -130,6 +130,8 @@ class CapturedPrune(unittest.TestCase):
             (meta['path'], b'[]'),
             (meta['path'], json.dumps({'filters': {'label': [LABEL, LABEL]}}).encode()),
             (meta['path']+'&filters=%7B%7D', body),
+            (meta['path'], b'['*1200+b'0'+b']'*1200),
+            ('/containers/prune?filters='+('['*1200+'0'+']'*1200), body),
         ]
         for path, data in negatives:
             with self.subTest(path=path, body_length=len(data)):
