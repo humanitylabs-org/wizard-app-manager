@@ -93,7 +93,7 @@ repair. Previous synthetic 19/22/60 proofs remain unchanged and are not new
 installed evidence.
 
 Resource and authority bounds remain: cached image pins; 200 GiB free reserve,
-1 GiB next additional allocation, 3 GiB retained-plus-pending peak; 12 GiB
+1 GiB next additional allocation, 4 GiB retained-plus-pending peak (James-approved task-only expansion; see manager-seal-installed-recovery.md); 12 GiB
 aggregate declared RAM, 8 GiB aggregate tmpfs, 64 MiB fixture, no swap. No raw
 socket is added to Manager; unrelated IDs/resources remain refused. No changes
 to owned cleanup authority, activation, private data, live services, core,

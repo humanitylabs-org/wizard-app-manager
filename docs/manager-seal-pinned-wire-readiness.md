@@ -128,7 +128,7 @@ any separately admitted installed run. The pinned Compose SHA remains
 `bd5835ccbbf06a42dcb5294c65e34a4634b34447afb9ed6fc7adf18a000e0f99`.
 No actual Compose/Docker/Manager run or durable job submission was performed in
 this repair. Old synthetic 19/22/60 evidence is unchanged. All resource/authority
-bounds remain: 200 GiB reserve floor, 1 GiB next additional allocation, 3 GiB
+bounds remain: 200 GiB reserve floor, 1 GiB next additional allocation, 4 GiB (James-approved task-only expansion)
 retained-plus-pending peak, 12 GiB memory, 8 GiB tmpfs, 64 MiB fixture, no swap.
 No installed submission, activation/restart/migration, private data, live changes,
 pulls, key retirement, provider/model/core changes, or merge is authorized here.

@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1]/'manager_seal_installed_capacity.py'
 spec = importlib.util.spec_from_file_location('capacity', SCRIPT)
@@ -20,9 +21,44 @@ class RetainedStageAccounting(unittest.TestCase):
         self.assertEqual(decision['free_required_bytes'], 215822106624)
 
     def test_retained_is_not_double_counted_against_free(self):
-        self.assertTrue(capacity.admission(2*2**30, capacity.RESERVE+2**30)['admitted'])
-        self.assertFalse(capacity.admission(2*2**30+1, capacity.RESERVE+2**30)['admitted'])
+        self.assertTrue(capacity.admission(3*2**30, capacity.RESERVE+2**30)['admitted'])
+        self.assertFalse(capacity.admission(3*2**30+1, capacity.RESERVE+2**30)['admitted'])
         self.assertFalse(capacity.admission(0, capacity.RESERVE+2**30-1)['admitted'])
+
+    def test_approved_task_only_expansion_admits_previously_refused_peak(self):
+        self.assertEqual(capacity.RETAINED_PEAK, 4294967296)
+        retained, free = 2251644928, 299713110016
+        with patch.object(capacity, 'RETAINED_PEAK', 3221225472):
+            old = capacity.admission(retained, free)
+        new = capacity.admission(retained, free)
+        self.assertEqual(old['retained_plus_next_peak_bytes'], 3325386752)
+        self.assertEqual(new['retained_plus_next_peak_bytes'], 3325386752)
+        self.assertFalse(old['admitted'])
+        self.assertEqual(len(old['blockers']), 1)
+        self.assertTrue(new['admitted'])
+        self.assertEqual(new['blockers'], [])
+        self.assertEqual(new['retained_plus_next_peak_limit_bytes'], 4294967296)
+        self.assertEqual(old['free_required_bytes'], new['free_required_bytes'])
+
+    def test_expansion_keeps_one_gib_per_run_max(self):
+        self.assertEqual(capacity.ALLOWANCE, 1073741824)
+        with self.assertRaises(AssertionError):
+            capacity.admission(0, 299713110016, next_peak=1073741825)
+        # Already allocated is a deduction, not permission to raise the run cap.
+        with self.assertRaises(AssertionError):
+            capacity.admission(1, 299713110016, already_allocated=1, next_peak=1073741825)
+
+    def test_expansion_keeps_two_hundred_gib_reserve_and_pending_only(self):
+        self.assertEqual(capacity.RESERVE, 214748364800)
+        own = 4096
+        required = 214748364800 + 1073741824 - own
+        admitted = capacity.admission(2251644928+own, required, already_allocated=own)
+        refused = capacity.admission(2251644928+own, required-1, already_allocated=own)
+        self.assertTrue(admitted['admitted'])
+        self.assertEqual(admitted['free_required_bytes'], required)
+        self.assertEqual(admitted['retained_plus_next_peak_bytes'], 3325386752)
+        self.assertFalse(refused['admitted'])
+        self.assertEqual(refused['blockers'], ['free below 200GiB reserve plus not-yet-allocated footprint'])
 
     def test_newstage_already_deducted_and_retained_is_not_reset(self):
         decision = capacity.admission(2*2**30+100, capacity.RESERVE+2**30-100, already_allocated=100)

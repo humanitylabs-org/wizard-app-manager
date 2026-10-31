@@ -23,6 +23,12 @@ QA_DELTA = frozenset({
     'scripts/manager_seal_forward_guard.py',
     'scripts/manager_seal_installed_capacity.py',
     'scripts/tests/test_manager_seal_network_filters.py',
+    # Exact QA accounting regressions and mirrored envelope docs for approved 4GiB cap.
+    'scripts/tests/test_manager_seal_installed_capacity.py',
+    'docs/manager-seal-installed-first-path.md',
+    'docs/manager-seal-startup-install-handoff.md',
+    'docs/manager-seal-c92d-guard-producer-repair.md',
+    'docs/manager-seal-pinned-wire-readiness.md',
     'scripts/tests/fixtures/manager_seal_wire/public-sources.json',
     'scripts/tests/fixtures/manager_seal_wire/sdk-filter-parse.go',
     'scripts/tests/fixtures/manager_seal_wire/sdk-filter-errors.go',

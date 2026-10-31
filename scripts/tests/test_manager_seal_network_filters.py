@@ -167,11 +167,14 @@ class Continuation(unittest.TestCase):
         self.assertFalse(assessment['smaller_peak_proven'])
         self.assertGreater(assessment['declared_components_without_margin_bytes'], 512*rig.MIB)
         retained = 2251644928  # exact pinned metadata snapshot, not observed output-as-bound
+        with patch.object(rig.capacity, 'RETAINED_PEAK', 3*rig.GIB):
+            historical = rig.capacity.admission(retained, 299713110016)
+        self.assertFalse(historical['admitted'])
         decision = rig.capacity.admission(retained, 299713110016)
-        self.assertFalse(decision['admitted'])
+        self.assertTrue(decision['admitted'])  # James approved total cap only, not a smaller estimate.
         self.assertEqual(decision['next_run_additional_peak_bytes'], rig.capacity.ALLOWANCE)
         self.assertEqual(rig.capacity.ALLOWANCE, rig.GIB)
-        self.assertEqual(rig.capacity.RETAINED_PEAK, 3*rig.GIB)
+        self.assertEqual(rig.capacity.RETAINED_PEAK, 4*rig.GIB)
         self.assertEqual(rig.capacity.RESERVE, 200*rig.GIB)
 
     def test_real_canary_precedes_donor_broker_and_ephemeral_assembly(self):

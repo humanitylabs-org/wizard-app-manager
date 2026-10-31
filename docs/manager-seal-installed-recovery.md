@@ -288,7 +288,8 @@ interpreter's success is not a pinned-runtime claim.
 
 Root remains exactly `/srv/work/manager-seal-installed-<source[:12]>`, without an
 arbitrary suffix. Existing per-run/retained/reserve admission, hard limits and
-one-use controller intent remain enforced: 1 GiB new, 3 GiB retained+peak,
+one-use controller intent remain enforced: 1 GiB new, 4 GiB retained+peak
+(James-approved task-only expansion recorded below),
 200 GiB reserve, 12 GiB aggregate hard RAM, 8 GiB aggregate tmpfs, 64 MiB fixture,
 zero swap; cached images only. No live activation, migration, restart, key
 retirement, model/provider/core change, pulls or merges.
@@ -402,3 +403,32 @@ continuation, not this repair. Backend/common/product/lock/build/runtime assets
 must still match the original complete export byte-for-byte and mode-for-mode.
 The original backend archive and `main.js` hashes above remain mandatory; no
 backend rebuild or broader privacy rerun is introduced.
+
+## James-approved task-only storage expansion ("Expand")
+
+James explicitly approved **only this manager-seal installed test's total
+retained-plus-not-yet-allocated next-peak cap** increasing from **3 GiB
+(3,221,225,472 bytes)** to **4 GiB (4,294,967,296 bytes)** by replying **"Expand"**.
+This supersedes the historical capacity refusal above; it does not rewrite the
+old scan, stage, receipt or blocked decision. The historical retained
+2,251,644,928 plus 1,073,741,824 next peak is still **3,325,386,752 bytes**:
+refused under the old 3 GiB cap, admitted under 4 GiB if the fresh reserve check
+also passes. Fresh stage allocations remain in retained usage and reduce only
+this invocation's unallocated peak. No old stage deletion, accounting reset,
+receipt relabeling or double counting is permitted.
+
+Unchanged: **1,073,741,824 bytes per-run additional maximum** (stage, logs,
+artifacts, tool copies and daemon metadata/overlay included); fresh free space
+must cover **214,748,364,800 bytes plus the not-yet-allocated footprint**. Also
+unchanged: 12 GiB aggregate RAM, 8 GiB aggregate tmpfs, 64 MiB fixture, zero swap,
+cached images only/no pulls, mandatory real-daemon old-400/new-200-empty canary
+before donor/broker/dependency setup, one POST per action and immediate terminal
+failure evidence/abort. Backend archive and main.js pins above remain unchanged;
+the backend is restored, never rebuilt. No live activation/restart/migration,
+private data access, merge, or core/provider/model/key change is authorized.
+
+`QA_DELTA` additionally lists the exact capacity regression and four mirrored
+QA-envelope documents, with no wildcard. All product source/build/runtime inputs
+still require exact original byte/mode equality. A new canonical stage must pass
+isolated source/sidecar inventory and static preflight with the fresh 4 GiB gate;
+only the parent may submit. Capacity/static admission is not installed acceptance.

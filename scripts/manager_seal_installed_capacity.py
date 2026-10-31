@@ -16,7 +16,7 @@ import time
 
 RESERVE = 200 * 2**30
 ALLOWANCE = 2**30  # Per-next-run additional host allocation, NOT a lifetime quota.
-RETAINED_PEAK = 3 * 2**30
+RETAINED_PEAK = 4 * 2**30  # James approved "Expand": this task's retained-plus-pending cap only.
 ROOT = Path('/srv/work')
 IMAGES = [
     'sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc',
@@ -67,7 +67,7 @@ def admission(retained, free, *, already_allocated=0, next_peak=ALLOWANCE):
     pending = next_peak - already_allocated
     blockers = []
     if retained + pending > RETAINED_PEAK:
-        blockers.append('retained allocation plus next unallocated peak exceeds 3GiB')
+        blockers.append('retained allocation plus next unallocated peak exceeds 4GiB')
     if free < RESERVE + pending:
         blockers.append('free below 200GiB reserve plus not-yet-allocated footprint')
     return {'next_run_additional_peak_bytes': next_peak, 'next_run_already_allocated_bytes': already_allocated,

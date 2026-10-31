@@ -13,7 +13,7 @@ REUSE: the existing pinned `manager-seal-early.py` toolchain, real frozen depend
 The current next-job envelope is:
 
 - Additional host allocation at most **1073741824** bytes, including the new source stage, all new logs/artifacts/tool copies, daemon metadata/overlay estimate and margin.
-- Total **retained allocation + not-yet-allocated next peak <= 3221225472** bytes.
+- Total **retained allocation + not-yet-allocated next peak <= 4294967296** bytes.
 - Fresh free >= **214748364800 + not-yet-allocated footprint**. Retained stages already reduce free space: never subtract them twice.
 - Already allocated bytes in THIS source stage reduce the pending portion of the 1GiB next-job cap; they are not erased from retained usage.
 - Source stage <=64MiB; public tool copy <=100MiB; sanitized logs <=64MiB; bundle archive <=128MiB; controls/ledgers <=32MiB; daemon metadata/overlay estimate 256MiB; explicit remaining margin 380MiB. These sum to 1GiB. Allocation is rechecked while waiting, before creation, and after owned cleanup; the 256MiB daemon estimate is never reclaimed early based on a noisy free-space delta.
