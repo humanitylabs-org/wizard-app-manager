@@ -619,3 +619,9 @@ Channel: on latest only.
 ## Phone app pointer
 
 `phone/latest.json` mirrors wizard-os `releases/phone/latest.json` byte for byte. Every box's hourly `wam phone-sync` reads it here because wizard-os is private. Update both together.
+
+## 0.3.101 provenance
+
+Canonical: wizard-os releases/0.3.101.json (release train). SHA256: `819125ff68619c7d2c4f41a4607348ff916b91a4739036e23b64d4852caccfe6`.
+Latest 0.3.100 with Wizard UX 8592bd38 -> 61c11640. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#772 Recommended fix: chat files download from the card; PDFs open in the viewer; humanitylabs-org/wizard-ux#773 Recommended fix: chat file Download/viewer styles use tokens (style check); humanitylabs-org/wizard-ux#777 Recommended fix: desktop Settings from Home stays on Home; humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved); humanitylabs-org/wizard-agent-service#285 Show routed agents' notes paths as their notebook, not [private attachment]. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
