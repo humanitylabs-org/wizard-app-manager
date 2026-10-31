@@ -585,3 +585,9 @@ Fast-tracked as **feature**. Installed upgrade 0.3.90 → 0.3.94 passed: wizard-
 Canonical: wizard-os releases/0.3.95.json (release train). SHA256: `fb9522e0b8922a0d9943078a58da0e9ee10030301aafa6e9ec094cbc904cbac5`.
 Latest 0.3.94 with Wizard UX 7991db03 -> 6f920851. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window. Stable stays 0.3.94 until the installed upgrade test passes.
 Channel: on latest only.
+
+## 0.3.96 provenance
+
+Canonical: wizard-os releases/0.3.96.json (release train). SHA256: `f8695039cc7b3ca041997770609b56a57601e85e71a491eeb3b3b9bd025d533e`.
+Latest 0.3.95 with Wizard UX 6f920851 -> cd54ef60. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
