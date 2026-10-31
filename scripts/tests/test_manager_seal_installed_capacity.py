@@ -102,6 +102,17 @@ class RetainedStageAccounting(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'deadline exceeded'):
                 capacity.inventory(root, time.monotonic()-1)
 
+    def test_metadata_entry_cap_still_refuses_without_partial_totals(self):
+        self.assertEqual(capacity.ENTRY_CAP, 65536)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); stage = root/'manager-seal-a'; stage.mkdir()
+            (stage/'one').write_bytes(b'owned')
+            with patch.object(capacity, 'ENTRY_CAP', 2):
+                self.assertEqual(sum(r['entries'] for r in capacity.inventory(root, time.monotonic()+2)), 2)
+                (stage/'two').write_bytes(b'owned')
+                with self.assertRaisesRegex(RuntimeError, 'entry cap exceeded'):
+                    capacity.inventory(root, time.monotonic()+2)
+
     def test_no_matching_stages_is_empty_not_whole_host_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

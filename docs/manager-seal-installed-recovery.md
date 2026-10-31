@@ -90,6 +90,14 @@ its source through the complete original manifest; backend module audit sources
 must additionally match the retained backend sourcemap. The unsubmitted
 `d230066d3b97` stage failed only that overly broad CLI-in-backend-map assertion;
 it remains untouched and counts in retained storage, alongside `73d719f3c6ce`.
+The subsequent unsubmitted `a4764d9eceb6` stage passed those static source audits,
+then refused the old 50000-entry metadata scan bound: a read-only diagnostic
+counted 52589 task-scoped inode entries across 49 retained roots. Preserve that
+stage too. The metadata-only scan ceiling is now **65536** entries, retaining
+the 12-second deadline, exact namespace, inode deduplication and no-symlink
+traversal. This changes no 4 GiB storage/1 GiB per-run/200 GiB reserve gate and
+never substitutes partial scan totals. A focused cap regression still refuses
+at ceiling+1. The fresh continuation counts both unsubmitted draft stages.
 
 ## Install-time prune refusal accounting (QA only)
 

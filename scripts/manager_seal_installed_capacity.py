@@ -18,6 +18,7 @@ RESERVE = 200 * 2**30
 ALLOWANCE = 2**30  # Per-next-run additional host allocation, NOT a lifetime quota.
 RETAINED_PEAK = 4 * 2**30  # James approved "Expand": this task's retained-plus-pending cap only.
 ROOT = Path('/srv/work')
+ENTRY_CAP = 65536  # Metadata only: retain all historical stages; deadline still 12s.
 IMAGES = [
     'sha256:656a12855a35b53ef9bca65b3d51167a0940cc2d01b29ea5c36cb469495886dc',
     'sha256:4e32174ea7bfa3a979e37493b0b7348eb1f0c46f8201a12fd91c7db8098b0fa4',
@@ -39,7 +40,7 @@ def inventory(root, deadline):
             if (info.st_dev, info.st_ino) in seen:
                 return
             seen.add((info.st_dev, info.st_ino))
-            if len(seen) > 50000:
+            if len(seen) > ENTRY_CAP:
                 raise RuntimeError('task-stage metadata scan entry cap exceeded')
             row['entries'] += 1
             row['allocated_bytes'] += info.st_blocks * 512
