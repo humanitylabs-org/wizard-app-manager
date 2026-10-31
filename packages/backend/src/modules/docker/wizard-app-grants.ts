@@ -390,6 +390,15 @@ export async function reconcileAppGrants(
     endpoints?: Record<string, Record<string, string>>;
   };
   const adopted = new Set(previous.adopted ?? []);
+  // A key to a provider installed from another store (e.g. the router's owner grant to core wizard-claude) is outside
+  // this reconcile: adopt it as it is. Dropping it would cut the connection, since that provider checks its own copy.
+  // It goes only when the owner denies the pair or that provider is no longer installed.
+  const foreign = (from: string, to: string) =>
+    to !== exclude &&
+    !(file.layer2_removing as string[]).includes(to) &&
+    !providers(to, apps).length &&
+    providers(to, installedApps).some((p) => !p.urn.endsWith(':wizardapps')) &&
+    !file.denied.some((g) => sameAppGrant(g, { kind: 'app', from, to }));
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
     await confined(app.data, 'wizard', true);
@@ -405,9 +414,11 @@ export async function reconcileAppGrants(
       old,
       doc: {
         ...old,
-        outgoing: {},
+        outgoing: Object.fromEntries(Object.entries(old.outgoing).filter(([to]) => foreign(app.manifest.id, to))),
         incoming: [...old.incoming],
-        provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing))),
+        provider_endpoints: Object.fromEntries(
+          Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing) || foreign(app.manifest.id, to)),
+        ),
       },
     });
     if (!adopted.has(app.manifest.id)) {
