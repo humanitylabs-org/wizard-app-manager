@@ -579,3 +579,9 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/351 (release train). `releases/stable` → 0.3.94; `promotions/0.3.94.json` sha256 `f3a3d17caa09dfd5371dbc53527b238fade6ef60858e50b99d0e1287d6bf56fe`.
 Fast-tracked as **feature**. Installed upgrade 0.3.90 → 0.3.94 passed: wizard-os docs/acceptance/promote-0.3.94.md.
+
+## 0.3.97 provenance
+
+Canonical: wizard-os releases/0.3.97.json (release train). SHA256: `f3ac792b42d4d514ecd8acb710064238278f052482af1ea9f95e72b4f276ea2d`.
+Latest 0.3.96 with Wizard UX cd54ef60 -> d11ac30f. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
