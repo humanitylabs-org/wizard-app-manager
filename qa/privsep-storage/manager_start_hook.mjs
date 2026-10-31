@@ -3,8 +3,8 @@
 // Mounted read-only at /diag as hook.mjs (+ loader.mjs) and activated ONLY through
 // NODE_OPTIONS=--import=/diag/hook.mjs. The image, its CMD and /app are unchanged.
 // It writes ONLY one finite JSON document per process to /diag-out/diag-<0..7>.json
-// (milestone enum, exit facts, allowlisted counts); never env, argv, paths, messages,
-// stacks or log text. Observation is passive: it never adds an 'uncaughtException' or
+// (milestone enum, exit facts, allowlisted counts, v2 trace below); never env, argv, paths,
+// messages or log text, and stacks only as MAIN line:col numbers. Observation is passive: it never adds an 'uncaughtException' or
 // 'unhandledRejection' listener (either would change crash semantics), never catches
 // an application error, and re-raises nothing itself. Wrapped functions call the
 // original synchronously with the same arguments and return its value unchanged.
@@ -24,10 +24,26 @@
 //                          that createServer (main.ts line after appService.bootstrap())
 //   listen_called          server.listen(...) on that server
 //   listening_3000         that server's 'listening' event with address().port === 3000
+//
+// Trace fields (msq-diag-v2, finite; added after the v1 discriminator showed the bundle body
+// apparently never ran in the container: reflect-metadata absent at main end, ~35 ms eval):
+//   trace.main_file    size + sha256 of MAIN's file as read by this process at preload
+//   trace.main_source  byte length + sha256 of the source the load hook handed to V8 (before
+//                      the QA prefix/suffix), reported by a one-call PREFIX on line 1
+//   trace.prefix_chars length of that prefix (line-1 columns in stacks are shifted by it)
+//   trace.cwd_is_main_dir  boolean only
+//   trace.app_mounts   count of /proc/self/mountinfo mount points at or under MAIN's dir
+//   trace.root_fstype  'overlay' | 'other' | 'unknown' for '/'
+//   trace.pending      at first beforeExit: count of never-resolved promises (async_hooks) and up
+//                      to 8 distinct creation stacks reduced to MAIN 'line:col' frames ('node' /
+//                      'other' for frames outside MAIN). Never messages, paths or values.
+import { createHook } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import { register, syncBuiltinESMExports } from 'node:module';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
 
 const OUT_DIR = process.env.MSQ_DIAG_OUT_FOR_TESTS || '/diag-out';
 const ENV_PATH = process.env.MSQ_DIAG_ENV_FOR_TESTS || '/data/.env';
@@ -49,13 +65,24 @@ const CTORS = ['AbortError', 'AggregateError', 'CircularDependencyException', 'D
 const CODE = /^E[A-Z0-9_]{2,30}$/;
 const MARK = Symbol.for('msq.mark');
 
+const PREFIX = 'globalThis[Symbol.for("msq.src")]?.(';    // loader.mjs builds PREFIX + N + ',"<hex>");'
+const PENDING_CAP = 50000;
+const STACKS = 8;
+const FRAMES = 12;
+const HEX = /^[0-9a-f]{64}$/;
+
 const state = {
-  schema: 'msq-diag-v1', slot: null, node_major: Number(process.versions.node.split('.')[0]) || 0,
+  schema: 'msq-diag-v2', slot: null, node_major: Number(process.versions.node.split('.')[0]) || 0,
   milestones: [], t_ms: {}, loader_hook: 'not_attempted', reflect_hook: 'not_armed',
   exit: { fired: false, code: null },
   before_exit: { fired: false, count: 0, resources: {} },
   uncaught: { count: 0, first: null },
   exit_calls: [], hook_errors: 0,
+  trace: {
+    main_file: { size: null, sha256: null, error: null }, main_source: null, prefix_chars: null,
+    cwd_is_main_dir: false, app_mounts: 0, root_fstype: 'unknown',
+    pending: { armed: false, count: 0, overflow: 0, stacks: [] },
+  },
 };
 let outPath = null;
 const writeSync = fs.writeFileSync;
@@ -121,6 +148,92 @@ function armReflect() {
   state.reflect_hook = 'armed';
 }
 
+// --- trace: identities and pending promises (finite projections only) ---
+const SELF_URL = import.meta.url;
+const MAIN_PATH = (() => { try { return fileURLToPath(MAIN_URL); } catch { return null; } })();
+const MAIN_DIR = MAIN_PATH ? MAIN_PATH.slice(0, MAIN_PATH.lastIndexOf('/')) || '/' : null;
+const MAIN_NAME = MAIN_PATH ? MAIN_PATH.slice(MAIN_PATH.lastIndexOf('/') + 1) : null;
+
+function traceIdentity() {
+  const t = state.trace;
+  try {
+    const raw = fs.readFileSync(MAIN_PATH);
+    t.main_file = { size: raw.length, sha256: createHash('sha256').update(raw).digest('hex'), error: null };
+  } catch (e) {
+    const c = e && typeof e.code === 'string' && CODE.test(e.code) ? e.code : 'OTHER';
+    t.main_file = { size: null, sha256: null, error: c };
+  }
+  try { t.cwd_is_main_dir = process.cwd() === MAIN_DIR; } catch { t.cwd_is_main_dir = false; }
+  try {
+    let n = 0; let root = 'unknown';
+    for (const line of fs.readFileSync('/proc/self/mountinfo', 'latin1').split('\n')) {
+      const f = line.split(' '); const sep = f.indexOf('-');
+      if (f.length < 7 || sep < 6) continue;
+      const mp = f[4];
+      if (mp === MAIN_DIR || mp.startsWith(MAIN_DIR + '/')) n += 1;
+      if (mp === '/') root = f[sep + 1] === 'overlay' ? 'overlay' : 'other';
+    }
+    t.app_mounts = Math.min(n, 64); t.root_fstype = root;
+  } catch { /* stays unknown */ }
+}
+
+// Reduce one captured V8 stack to MAIN 'line:col' frames; nothing else leaves this function.
+function frames(holder) {
+  const out = [];
+  try {
+    const lines = String(holder.stack).split('\n').slice(1).filter((l) => !l.includes(SELF_URL) && !/internal\/async_hooks/.test(l));
+    for (const l of lines) {
+      if (out.length >= FRAMES) break;
+      const m = /([^/\\():\s]+):(\d{1,7}):(\d{1,8})\)?\s*$/.exec(l);
+      if (m && m[1] === MAIN_NAME && l.includes(MAIN_URL)) out.push(m[2] + ':' + m[3]);
+      else if (/\(node:|at node:|\bnode:[a-z_/]+:\d/.test(l)) out.push('node');
+      else out.push('other');
+    }
+  } catch { state.hook_errors = Math.min(state.hook_errors + 1, 99); }
+  return out;
+}
+
+const pending = new Map();
+function armPending() {
+  try {
+    const onInit = function onInit(id, type) {
+      try {
+        if (type !== 'PROMISE') return;
+        if (pending.size >= PENDING_CAP) { state.trace.pending.overflow = Math.min(state.trace.pending.overflow + 1, 999999); return; }
+        const holder = {}; const lim = Error.stackTraceLimit;
+        Error.stackTraceLimit = FRAMES + 4; Error.captureStackTrace(holder); Error.stackTraceLimit = lim;
+        pending.set(id, holder);
+      } catch { state.hook_errors = Math.min(state.hook_errors + 1, 99); }
+    };
+    createHook({ init: onInit, promiseResolve(id) { pending.delete(id); } }).enable();
+    state.trace.pending.armed = true;
+  } catch { state.hook_errors = Math.min(state.hook_errors + 1, 99); }
+}
+
+function snapshotPending() {
+  const p = state.trace.pending;
+  try {
+    p.count = Math.min(pending.size, 999999);
+    const all = [...pending.values()];
+    const seen = new Set(); const distinct = [];
+    for (const h of all) {
+      const f = frames(h); const k = f.join(' ');
+      if (!seen.has(k)) { seen.add(k); distinct.push(f); }
+    }
+    const pick = distinct.length <= STACKS ? distinct : distinct.slice(0, STACKS / 2).concat(distinct.slice(-STACKS / 2));
+    p.stacks = pick;
+  } catch { state.hook_errors = Math.min(state.hook_errors + 1, 99); }
+}
+
+globalThis[Symbol.for('msq.src')] = function src(bytes, hex, prefixChars) {
+  try {
+    if (Number.isInteger(bytes) && bytes >= 0 && bytes <= 268435456 && typeof hex === 'string' && HEX.test(hex) &&
+        Number.isInteger(prefixChars) && prefixChars > PREFIX.length && prefixChars <= 256) {
+      state.trace.main_source = { bytes, sha256: hex }; state.trace.prefix_chars = prefixChars; save();
+    }
+  } catch { /* */ }
+};
+
 // --- slot: first free of diag-0..7 (O_EXCL); after 8 runs nothing is written ---
 try {
   for (let k = 0; k < SLOTS && outPath === null; k++) {
@@ -132,6 +245,8 @@ try {
 try {
   globalThis[MARK] = mark;
   mark('preload_loaded');
+  traceIdentity();
+  armPending();
 
   // process.exit: record the requested code, then the original with the same arguments.
   const origExit = process.exit;
@@ -152,6 +267,7 @@ try {
           counts[k] = Math.min((counts[k] || 0) + 1, 9999);
         }
         state.before_exit.resources = counts;
+        snapshotPending();
       }
       save();
     } catch { state.hook_errors = Math.min(state.hook_errors + 1, 99); }

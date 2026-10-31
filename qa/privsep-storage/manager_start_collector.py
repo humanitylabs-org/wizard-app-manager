@@ -22,8 +22,8 @@ def _module(name, path):
 HC = _module('msq_hc_collector', _HERE / 'hc-collector.py' if (_HERE / 'hc-collector.py').is_file()
              else _HERE / 'health_capture_collector.py')
 
-SCHEMA = 'privsep-manager-start-v1'
-LABEL = 'manager-start-discriminator'
+SCHEMA = 'privsep-manager-trace-v1'
+LABEL = 'manager-start-trace'
 ARMS = ('A', 'B', 'C')
 ARM_NAMES = {'A': 'clean', 'B': 'upstream-premigrated', 'C': 'product-wired'}
 PROJECTS = {'A': 'msq-a', 'B': 'msq-b', 'C': 'runtipi'}   # C: install.sh:116 exact `-p runtipi`
@@ -60,6 +60,9 @@ MIGRATION_CLASSES = ('pinned_only', 'includes_upstream_only', 'unknown_rows', 'e
 ERROR_CODE = re.compile(r'E[A-Z0-9_]{2,30}')
 ID64 = re.compile(r'[0-9a-f]{64}')
 IMAGE_ID = re.compile(r'sha256:[0-9a-f]{64}')
+SHA256 = re.compile(r'[0-9a-f]{64}')
+BUNDLE_SHA256 = 'b824d438aa844d0f1920c0e29a04f8f82986a81bbf812b53b5b8399b9a62ebbe'   # context-proof new-main.mjs == image layer app/main.mjs
+BUNDLE_SIZE = 6908459
 COLLECTOR_ERRORS = ('diag_unreadable', 'events_bound', 'logs_unreadable', 'inspect_failed', 'arm_cleanup_failed',
                     'migration_read_failed', 'identity_changed', 'collector_internal_error')
 MAX_DIE = 8
@@ -120,9 +123,10 @@ def validate_diag(raw):
     except ValueError:
         raise Violation('diag_json') from None
     keys = {'schema', 'slot', 'node_major', 'milestones', 't_ms', 'loader_hook', 'reflect_hook', 'exit',
-            'before_exit', 'uncaught', 'exit_calls', 'hook_errors'}
-    if not isinstance(d, dict) or set(d) != keys or d['schema'] != 'msq-diag-v1':
+            'before_exit', 'uncaught', 'exit_calls', 'hook_errors', 'trace'}
+    if not isinstance(d, dict) or set(d) != keys or d['schema'] != DIAG_SCHEMA:
         raise Violation('diag_keys')
+    trace = validate_trace(d['trace'])
     ok = (_int(d['slot'], 0, MAX_DIAG - 1) and _int(d['node_major'], 0, 99) and
           isinstance(d['milestones'], list) and len(d['milestones']) == len(set(d['milestones'])) and
           all(m in MILESTONES for m in d['milestones']) and
@@ -153,7 +157,69 @@ def validate_diag(raw):
             'before_exit_fired': b['fired'], 'before_exit_count': b['count'],
             'active_resources_at_before_exit': dict(sorted(b['resources'].items())),
             'uncaught_count': u['count'], 'uncaught_first': u['first'], 'process_exit_calls': list(calls),
-            'hook_errors': d['hook_errors']}
+            'hook_errors': d['hook_errors'], 'trace': trace}
+
+
+DIAG_SCHEMA = 'msq-diag-v2'
+FRAME = re.compile(r'(?:[1-9][0-9]{0,6}:[1-9][0-9]{0,7}|node|other)')
+TRACE_KEYS = {'main_file', 'main_source', 'prefix_chars', 'cwd_is_main_dir', 'app_mounts',
+              'root_fstype', 'pending'}
+
+
+def validate_trace(t):
+    """Strict projection of the v2 trace block: sizes, hashes, booleans, enums, MAIN line:col frames."""
+    ok = isinstance(t, dict) and set(t) == TRACE_KEYS
+    f = t.get('main_file') if ok else None
+    ok = ok and isinstance(f, dict) and set(f) == {'size', 'sha256', 'error'} and (
+        (f['error'] is None and _int(f['size'], 0, 268435456) and isinstance(f['sha256'], str) and
+         SHA256.fullmatch(f['sha256']) is not None) or
+        (f['size'] is None and f['sha256'] is None and (f['error'] == 'OTHER' or
+         (isinstance(f['error'], str) and ERROR_CODE.fullmatch(f['error']) is not None))))
+    m = t.get('main_source') if ok else None
+    ok = ok and (m is None or (isinstance(m, dict) and set(m) == {'bytes', 'sha256'} and _int(m['bytes'], 0, 268435456)
+                               and isinstance(m['sha256'], str) and SHA256.fullmatch(m['sha256']) is not None))
+    ok = ok and (t['prefix_chars'] is None if m is None else _int(t['prefix_chars'], 40, 256))
+    ok = ok and type(t['cwd_is_main_dir']) is bool and \
+        _int(t['app_mounts'], 0, 64) and t['root_fstype'] in ('overlay', 'other', 'unknown')
+    pe = t.get('pending') if ok else None
+    ok = ok and isinstance(pe, dict) and set(pe) == {'armed', 'count', 'overflow', 'stacks'} and \
+        type(pe['armed']) is bool and _int(pe['count'], 0, 999999) and _int(pe['overflow'], 0, 999999) and \
+        isinstance(pe['stacks'], list) and len(pe['stacks']) <= 8 and \
+        all(isinstance(st, list) and len(st) <= 12 and all(isinstance(x, str) and FRAME.fullmatch(x) for x in st)
+            for st in pe['stacks'])
+    if not ok:
+        raise Violation('diag_trace')
+    return {'main_file': dict(f), 'main_source': None if m is None else dict(m), 'prefix_chars': t['prefix_chars'],
+            'cwd_is_main_dir': t['cwd_is_main_dir'],
+            'app_mounts': t['app_mounts'], 'root_fstype': t['root_fstype'],
+            'pending': {'armed': pe['armed'], 'count': pe['count'], 'overflow': pe['overflow'],
+                        'stacks': [list(st) for st in pe['stacks']]}}
+
+
+def trace_class(rows, expected_sha):
+    """Finite answer to 'what did node actually evaluate as MAIN' across one arm's starts."""
+    if not rows:
+        return 'NO_DIAG'
+    kinds = set()
+    for r in rows:
+        f = r['trace']['main_file']; m = r['trace']['main_source']
+        if f['error'] is not None:
+            kinds.add('MAIN_UNREADABLE')
+        elif f['sha256'] != expected_sha:
+            kinds.add('MAIN_FILE_DIFFERS_FROM_BUNDLE')
+        elif m is None:
+            kinds.add('MAIN_SOURCE_NOT_SEEN')
+        elif m['sha256'] != expected_sha:
+            kinds.add('MAIN_SOURCE_DIFFERS_FROM_FILE')
+        elif r['reflect_hook'] != 'armed' and 'main_module_evaluated' in r['milestones']:
+            kinds.add('BUNDLE_EVALUATED_WITHOUT_REFLECT')
+        else:
+            kinds.add('BUNDLE_EVALUATED')
+    return kinds.pop() if len(kinds) == 1 else 'MIXED'
+
+
+TRACE_CLASSES = ('NO_DIAG', 'MAIN_UNREADABLE', 'MAIN_FILE_DIFFERS_FROM_BUNDLE', 'MAIN_SOURCE_NOT_SEEN',
+                 'MAIN_SOURCE_DIFFERS_FROM_FILE', 'BUNDLE_EVALUATED_WITHOUT_REFLECT', 'BUNDLE_EVALUATED', 'MIXED')
 
 
 def diag_mechanism(rows):
@@ -350,7 +416,7 @@ def empty_migrations():
 
 
 ARM_KEYS = ('arm', 'name', 'project', 'result', 'insufficient_reason', 'container_ids', 'basis', 'db_healthy',
-            'queue_running', 'upstream', 'manager', 'diag', 'diag_invalid', 'diag_mechanism',
+            'queue_running', 'upstream', 'manager', 'diag', 'diag_invalid', 'diag_mechanism', 'trace_class',
             'migrations_before_manager', 'migrations_after', 'wiring', 'cleanup_absent')
 
 
@@ -358,7 +424,7 @@ def empty_arm(arm):
     return {'arm': arm, 'name': ARM_NAMES[arm], 'project': PROJECTS[arm], 'result': 'INSUFFICIENT',
             'insufficient_reason': 'arm_not_run', 'container_ids': {}, 'basis': None, 'db_healthy': False,
             'queue_running': False, 'upstream': None, 'manager': empty_manager(), 'diag': [], 'diag_invalid': 0,
-            'diag_mechanism': 'NO_DIAG', 'migrations_before_manager': empty_migrations(),
+            'diag_mechanism': 'NO_DIAG', 'trace_class': 'NO_DIAG', 'migrations_before_manager': empty_migrations(),
             'migrations_after': empty_migrations(), 'wiring': None, 'cleanup_absent': False}
 
 
@@ -389,7 +455,9 @@ def _arm(v, arm):
     _req(isinstance(v['diag'], list) and len(v['diag']) <= MAX_DIAG and _int(v['diag_invalid'], 0, MAX_DIAG), w)
     for d in v['diag']:
         _req(isinstance(d, dict) and d['last_milestone'] in MILESTONES + (None,), w + '.diag')
+        validate_trace(d.get('trace'))
     _req(v['diag_mechanism'] in DIAG_MECHANISMS, w)
+    _req(v['trace_class'] in TRACE_CLASSES and v['trace_class'] == trace_class(v['diag'], BUNDLE_SHA256), w + '.trace')
     _mig(v['migrations_before_manager'], w + '.mig_before'); _mig(v['migrations_after'], w + '.mig_after')
     if arm == 'C':
         wi = v['wiring']
@@ -426,9 +494,19 @@ def validate_export(doc):
              (r['id'] is None or IMAGE_ID.fullmatch(r['id'])) and r['id_kind'] in ('manifest', 'config', 'unbound')
              and type(r['chain_verified']) is bool, 'images.' + n)
     b = doc['backend']
-    _req(isinstance(b, dict) and set(b) == {'engine_image_id', 'matches_capture', 'image_env_node_options_present'} and
+    _req(isinstance(b, dict) and set(b) == {'engine_image_id', 'matches_capture', 'image_env_node_options_present',
+                                            'engine_main', 'storage_driver'} and
          type(b['image_env_node_options_present']) is bool and
          IMAGE_ID.fullmatch(b['engine_image_id'] or '') and type(b['matches_capture']) is bool, 'backend')
+    em = b['engine_main']
+    _req(isinstance(em, dict) and set(em) == {'state', 'sha256', 'size', 'matches_bundle'} and
+         em['state'] in ('read', 'failed', 'not_attempted') and type(em['matches_bundle']) is bool and
+         ((em['state'] == 'read' and SHA256.fullmatch(em['sha256'] or '') and _int(em['size'], 0, 268435456) and
+           em['matches_bundle'] == (em['sha256'] == BUNDLE_SHA256 and em['size'] == BUNDLE_SIZE)) or
+          (em['state'] != 'read' and em['sha256'] is None and em['size'] is None and not em['matches_bundle'])),
+         'backend.engine_main')
+    _req(b['storage_driver'] is None or (isinstance(b['storage_driver'], str) and
+         re.fullmatch('[a-z0-9][a-z0-9_.-]{0,31}', b['storage_driver'])), 'backend.storage_driver')
     _req(isinstance(doc['collector_errors'], list) and len(doc['collector_errors']) <= 32 and
          all(e in COLLECTOR_ERRORS for e in doc['collector_errors']), 'collector_errors')
     for k in ('migration_allowlist_sha256', 'template_sha256'):
@@ -442,6 +520,7 @@ def validate_export(doc):
 def finish(arms, images, backend, errors, allow_sha, template_sha, stable):
     for a in ARMS:
         arms[a]['result'] = arm_result(arms[a])
+        arms[a]['trace_class'] = trace_class(arms[a]['diag'], BUNDLE_SHA256)
     results = {a: arms[a]['result'] for a in ARMS}
     doc = {'schema': SCHEMA, 'label': LABEL, 'verdict': verdict(results), 'results': results, 'arms': arms,
            'images': images, 'backend': backend, 'collector_errors': sorted(set(errors))[:32],

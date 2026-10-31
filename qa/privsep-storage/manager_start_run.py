@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""ONE finite three-arm manager-start discriminator over a fresh thin pair on the original 851 baseline.
+"""ONE finite three-arm manager-start TRACE over a fresh thin pair on the original 851 baseline.
 
-Why does the pinned App Manager image (595523fb) exit 0, silently, ~0.2s after start?
-Arms A clean / B upstream-premigrated / C product-wired run sequentially in the guest
-with a read-only /diag Node preload (image, CMD, /app unchanged). Parent-admitted only:
+Why does the pinned App Manager image (595523fb) exit 0, silently, ~0.2s after start? The
+manager-start discriminator (bfff7a39) proved EVENT_LOOP_DRAINED in 21/21 starts, but with
+reflect-metadata absent at main end and ~35 ms preload->main-end: the evaluated MAIN did not
+behave like the 6.9 MB bundle (which locally needs seconds and installs Reflect.getMetadata at
+top-level statement 3462). This trace adds, finite only: the engine's /app/main.mjs sha256/size
+(no node), the storage driver, and per start the sha256/size of MAIN's file and of the source
+handed to V8, /app mount count, root fstype, and never-resolved promise creation stacks at
+beforeExit reduced to MAIN line:col. Same arms A clean / B upstream-premigrated / C
+product-wired with the read-only /diag Node preload (image, CMD, /app unchanged). Parent-admitted only:
 --seal (staging, metadata only), --preflight (read-only), --execute (native, requires the
 heavy worker lease). No install.sh, no image build/rebuild, no tag pulls (non-product images
 come only from sealed digest-bound OCI archives), no retries, no host Docker. Every QEMU
@@ -30,7 +36,8 @@ import time
 import traceback
 
 STAGES = Path('/srv/work/privsep/storage-contract-a')
-SUFFIX = '-manager-start'
+SUFFIX = '-manager-trace'
+DISCRIMINATOR = STAGES / 'bfff7a39c27359c893356a8812e31db810e3174f-manager-start'
 HC = STAGES / 'f8fd700eb950812d3ce4bd26848f39751bc41a7e-health-capture'
 HC_MANIFEST = '139970ced686814af7646636f2c311349bc190b7002a923f94bcce1e3778a1d8'
 PRIOR = Path('/srv/work/privsep/storage-zombie-reap/851c2e6c6ec7c905d1a95ac1aad40f9ad41070d7')
@@ -47,7 +54,7 @@ RETAINED = (OLD / 'evidence', SIGNED, PRIOR / 'evidence',
             STAGES / 'd102279c61a94b25ebd7aef4c6aa97172b6f702e-installer-forensics',
             STAGES / 'fa42a49b7ec68447fb7caa3c356c24553bf49757-classifier-refinement',
             Path('/srv/work/privsep/storage-zombie-reap/398dc28fa0f39e7fd469e52e0eaa309b8dc7af78/evidence'),
-            HC)
+            HC, DISCRIMINATOR)
 BACKEND_ARCHIVE = Path('/srv/work/privsep/integrated/20261029T161239Z-595523fb-context-proof/evidence/new-backend-image.tar.gz')
 BACKEND_ARCHIVE_SHA = 'a953c4ce3590bc1448bacb0b5b259334a99a608fb0377af425daf87c888d49c0'
 BACKEND_ID = 'sha256:1c10570477becada8c613a55ff402f12b49d54e74fd9e16fefba678d57ead426'
@@ -281,8 +288,8 @@ def seal(stage):
     files = {n: member(stage / n) for n in sorted(SEALED + ('retained.json',))}
     assert all(row['mode'] == 0o400 for row in files.values())
     product = hashlib.sha256(json.dumps(product_rows(rows), sort_keys=True).encode()).hexdigest()
-    doc = {'schema': 'privsep-manager-start-v1', 'label': 'manager-start-discriminator',
-           'revision': revision, 'branch': 'qa/storage-contract-a-manager-start',
+    doc = {'schema': 'privsep-manager-trace-v1', 'label': 'manager-start-trace',
+           'revision': revision, 'branch': 'qa/storage-contract-a-manager-trace',
            'product_source_revision': '610716410029f2f70fe4233102584c30e9b9022f',
            'product_lineage': 'f18dd0f -> 0ae73880 (bytes of 61071641)',
            'product_sha256': product, 'product_rows_equal_610': True, 'qa_delta_from_610': delta,
@@ -306,7 +313,7 @@ def validate(stage, expected, key=None, executing=False):
     assert re.fullmatch('[0-9a-f]{64}', expected) and digest(stage / 'manifest.json') == expected
     d = json.loads((stage / 'manifest.json').read_text())
     assert stage == STAGES / (d['revision'] + SUFFIX) and Path.cwd() == stage
-    assert d['schema'] == 'privsep-manager-start-v1' and d['review_required'] and not d['full_acceptance']
+    assert d['schema'] == 'privsep-manager-trace-v1' and d['review_required'] and not d['full_acceptance']
     assert d['retries'] == 0 and d['install_sh_run'] is False
     assert (d['reserve_bytes'], d['pending_bytes'], d['max_new_allocation_bytes']) == (RESERVE, PENDING, MAX_NEW)
     assert not (stage / 'evidence').exists(), 'one-shot stage already entered'
@@ -464,7 +471,10 @@ def make_runner(base, helpers):
             collector.validate_export(export)
             assert export['backend']['engine_image_id'] == BACKEND_ENGINE_ID
             self.receipt['export_sha256'] = digest(self.evidence / 'manager-start-export.json')
-            self.receipt['verdict'] = export['verdict']; self.receipt['results'] = export['results']; self.save()
+            self.receipt['verdict'] = export['verdict']; self.receipt['results'] = export['results']
+            self.receipt['trace_classes'] = {a: export['arms'][a]['trace_class'] for a in collector.ARMS}
+            self.receipt['engine_main'] = export['backend']['engine_main']
+            self.receipt['storage_driver'] = export['backend']['storage_driver']; self.save()
             self.phase('manager-start-export-validated')
             self.receipt['image_identity_after'] = self.attest('backend', 'after')
             assert self.receipt['image_identity_after']['engine_image_id'] == BACKEND_ENGINE_ID
@@ -504,8 +514,8 @@ def main():
     os.environ['TMPDIR'] = str(tmp); os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     r = make_runner(base, helpers)(args.stage, d)
     r.monitor_state = {}
-    r.receipt.update(scope='one finite three-arm manager-start discriminator; no install.sh',
-                     full_acceptance=False, admission=report, retries=0, label='manager-start-discriminator')
+    r.receipt.update(scope='one finite three-arm manager-start trace; no install.sh, no build, no fix',
+                     full_acceptance=False, admission=report, retries=0, label='manager-start-trace')
     r.save()
     stop = threading.Event(); mon = threading.Thread(target=r.monitor, args=(stop,), daemon=True); mon.start()
 
@@ -556,6 +566,7 @@ def main():
                                    r.receipt.get('all_boot_pids_absent'))
         r.save(); signal.alarm(0)
     print(json.dumps({'passed': r.receipt['passed'], 'verdict': r.receipt.get('verdict'),
+                      'trace_classes': r.receipt.get('trace_classes'), 'engine_main': r.receipt.get('engine_main'),
                       'receipt': str(r.evidence / 'receipt.json'), 'full_acceptance': False}))
     return 0 if r.receipt['passed'] else 1
 

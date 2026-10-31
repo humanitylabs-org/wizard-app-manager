@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic fixtures for the finite manager-start discriminator.
+"""Synthetic fixtures for the finite manager-start discriminator and its v2 trace.
 
 No Docker, VM, network, sudo or real home. Runs in the native job BEFORE the VM
 boots (stage layout: tests.py beside collector.py/hook.mjs/source.tar) or from
@@ -57,15 +57,15 @@ boot().catch((e) => { console.error(e); process.exit(1); });
 REFLECT_SHIM = "Reflect.getMetadata = function getMetadata(k) { return undefined; };\n"
 
 
-def run_hook(mode, port=3000):
+def run_hook(mode, port=3000, main=None, shim=True):
     """Fake app under the real preload. Reflect.getMetadata exists BEFORE main evaluates (like reflect-metadata)."""
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
         for d in ('diag', 'out', 'data'):
             (t / d).mkdir()
         shutil.copyfile(HOOK, t / 'diag/hook.mjs'); shutil.copyfile(LOADER, t / 'diag/loader.mjs')
-        (t / 'shim.mjs').write_text(REFLECT_SHIM)
-        (t / 'main.mjs').write_text(FAKE_MAIN)
+        (t / 'shim.mjs').write_text(REFLECT_SHIM if shim else '')
+        (t / 'main.mjs').write_text(FAKE_MAIN if main is None else main)
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'MSQ_FAKE_MODE': mode, 'MSQ_FAKE_PORT': str(port),
                'MSQ_DIAG_OUT_FOR_TESTS': str(t / 'out'), 'MSQ_DIAG_ENV_FOR_TESTS': str(t / 'data/.env'),
                'MSQ_DIAG_MAIN_FOR_TESTS': (t / 'main.mjs').as_uri(),
@@ -132,14 +132,41 @@ class Preload(unittest.TestCase):
 
     def test_hook_records_no_free_text(self):
         src = HOOK.read_text()
-        for banned in ('process.env)', 'process.argv', '.message', '.stack', "on('uncaughtException'",
+        for banned in ('process.env)', 'process.argv', '.message', "on('uncaughtException'",
                        "on('unhandledRejection'"):
             self.assertNotIn(banned, src)
+        # v2: exactly one stack read, inside frames(), reduced to MAIN line:col / 'node' / 'other'
+        self.assertEqual(len(__import__('re').findall(r'\.stack\b', src)), 1)
+        self.assertEqual(src.count('String(holder.stack)'), 1)
+        self.assertIn("out.push(m[2] + ':' + m[3]);", src)
         self.assertIn("'uncaughtExceptionMonitor'", src)
 
     def test_loader_rewrites_only_main(self):
         src = LOADER.read_text()
         self.assertIn("if (url !== MAIN || r.format !== 'module' || r.source == null) return r;", src)
+
+    def test_trace_identities_and_pending_stacks(self):
+        rc, out, err, rows, _ = run_hook('drain')
+        t = rows[0]['trace']
+        want = __import__('hashlib').sha256(FAKE_MAIN.encode()).hexdigest()
+        self.assertEqual(t['main_file'], {'size': len(FAKE_MAIN.encode()), 'sha256': want, 'error': None})
+        self.assertEqual(t['main_source'], {'bytes': len(FAKE_MAIN.encode()), 'sha256': want})
+        self.assertTrue(t['cwd_is_main_dir'] is True and t['pending']['armed'])
+        self.assertGreaterEqual(t['pending']['count'], 1)
+        # the never-settling `await new Promise(() => {})` is FAKE_MAIN line 7 (line 1 is the leading newline)
+        line = FAKE_MAIN.split('\n').index("  if (mode === 'drain') { await new Promise(() => {}); }") + 1
+        self.assertTrue(any(f.split(':')[0] == str(line) for st in t['pending']['stacks'] for f in st if ':' in f), t)
+        self.assertNotIn(b'synthetic', json.dumps(rows).encode())
+
+    def test_empty_main_signature_matches_discriminator(self):
+        # The bfff7a39 native signature: main_module_evaluated, reflect absent, drained, only stdio PipeWraps.
+        rc, out, err, rows, _ = run_hook('drain', main='', shim=False)
+        r = rows[0]
+        self.assertEqual((rc, out, err), (0, b'', b''))
+        self.assertEqual(r['milestones'], ['preload_loaded', 'main_module_evaluated'])
+        self.assertEqual((r['reflect_hook'], C.diag_mechanism(rows)), ('absent', 'EVENT_LOOP_DRAINED'))
+        self.assertEqual(r['trace']['main_file']['size'], 0)
+        self.assertEqual(C.trace_class(rows, C.BUNDLE_SHA256), 'MAIN_FILE_DIFFERS_FROM_BUNDLE')
 
 
 def manager(**kw):
@@ -175,7 +202,10 @@ def export(ma, mb, mc):
             for n, c in (('postgres', 'a'), ('rabbitmq', 'b'), ('upstream', 'c'))}
     return C.finish({'A': arm('A', ma), 'B': arm('B', mb), 'C': arm('C', mc)}, imgs,
                     {'engine_image_id': 'sha256:' + '9' * 64, 'matches_capture': True,
-                     'image_env_node_options_present': False}, [], 'd' * 64, 'e' * 64, True)
+                     'image_env_node_options_present': False,
+                     'engine_main': {'state': 'read', 'sha256': C.BUNDLE_SHA256, 'size': C.BUNDLE_SIZE,
+                                     'matches_bundle': True}, 'storage_driver': 'overlayfs'},
+                    [], 'd' * 64, 'e' * 64, True)
 
 
 class Classification(unittest.TestCase):
@@ -228,11 +258,41 @@ class Classification(unittest.TestCase):
         self.assertEqual(C.basis({'services': {'runtipi': {}}})[1], 'basis_refused')
 
 
+TRACE = {'main_file': {'size': 3, 'sha256': 'a' * 64, 'error': None}, 'main_source': {'bytes': 3, 'sha256': 'a' * 64},
+         'prefix_chars': 110, 'cwd_is_main_dir': True, 'app_mounts': 0, 'root_fstype': 'overlay',
+         'pending': {'armed': True, 'count': 2, 'overflow': 0, 'stacks': [['12:345', 'node'], ['other', '1:200']]}}
+
+
 class Diag(unittest.TestCase):
-    GOOD = {'schema': 'msq-diag-v1', 'slot': 0, 'node_major': 22, 'milestones': ['preload_loaded'],
+    GOOD = {'schema': 'msq-diag-v2', 'slot': 0, 'node_major': 22, 'milestones': ['preload_loaded'],
             't_ms': {'preload_loaded': 5}, 'loader_hook': 'registered', 'reflect_hook': 'not_armed',
             'exit': {'fired': True, 'code': 0}, 'before_exit': {'fired': True, 'count': 1, 'resources': {'TTYWrap': 2}},
-            'uncaught': {'count': 0, 'first': None}, 'exit_calls': [], 'hook_errors': 0}
+            'uncaught': {'count': 0, 'first': None}, 'exit_calls': [], 'hook_errors': 0, 'trace': TRACE}
+
+    def test_trace_projection_is_strict(self):
+        self.assertEqual(C.validate_diag(json.dumps(self.GOOD).encode())['trace'], TRACE)
+        for mutate in (lambda t: t['pending']['stacks'].append(['/app/main.mjs:1:2']),
+                       lambda t: t['pending']['stacks'][0].append('Error: synthetic'),
+                       lambda t: t['main_file'].update(sha256='A' * 64),
+                       lambda t: t['main_file'].update(error='ENOENT'),
+                       lambda t: t.update(root_fstype='ext4'), lambda t: t.update(extra=1),
+                       lambda t: t.update(main_source=None),            # prefix_chars must then be None
+                       lambda t: t['pending'].update(stacks=[['1:1']] * 9)):
+            bad = copy.deepcopy(self.GOOD); mutate(bad['trace'])
+            with self.assertRaises(C.Violation):
+                C.validate_diag(json.dumps(bad).encode())
+        old = copy.deepcopy(self.GOOD); old['schema'] = 'msq-diag-v1'; del old['trace']
+        with self.assertRaises(C.Violation):
+            C.validate_diag(json.dumps(old).encode())
+
+    def test_trace_class(self):
+        row = C.validate_diag(json.dumps(self.GOOD).encode())
+        self.assertEqual(C.trace_class([row], 'a' * 64), 'BUNDLE_EVALUATED')
+        self.assertEqual(C.trace_class([row], 'b' * 64), 'MAIN_FILE_DIFFERS_FROM_BUNDLE')
+        r2 = copy.deepcopy(row); r2['milestones'] = ['preload_loaded', 'main_module_evaluated']; r2['reflect_hook'] = 'absent'
+        self.assertEqual(C.trace_class([r2], 'a' * 64), 'BUNDLE_EVALUATED_WITHOUT_REFLECT')
+        self.assertEqual(C.trace_class([row, r2], 'a' * 64), 'MIXED')
+        self.assertEqual(C.trace_class([], 'a' * 64), 'NO_DIAG')
 
     def test_strict_projection(self):
         self.assertEqual(C.validate_diag(json.dumps(self.GOOD).encode())['last_milestone'], 'preload_loaded')

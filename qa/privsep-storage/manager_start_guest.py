@@ -425,6 +425,39 @@ def remove_project(project):
     return rep['absent']
 
 
+# ------------------------------------------------------------- engine main ---
+def engine_main():
+    """sha256 + size of /app/main.mjs as the engine materialises the pinned image (no node, no network).
+
+    One exact-ID container: created, run attached, removed by full ID with 404 readback. Only the
+    64-hex digest and the decimal size are parsed; nothing else is exported.
+    """
+    res = {'state': 'not_attempted', 'sha256': None, 'size': None, 'matches_bundle': False}
+    rc, out = run('engine-main-create', ['docker', 'create', '--network', 'none', '--entrypoint', '/bin/sh', PINNED,
+                  '-c', 'sha256sum /app/main.mjs && stat -c %s /app/main.mjs'], timeout=60, required=False)
+    raw = (out or b'').decode('ascii', 'replace').strip()
+    if rc != 0 or not re.fullmatch('[0-9a-f]{64}', raw):
+        res['state'] = 'failed'; return res
+    try:
+        rc, out = run('engine-main-start', ['docker', 'start', '-a', raw], timeout=120, required=False, cap=4096)
+        m = re.fullmatch(r'([0-9a-f]{64})  /app/main\.mjs\n([0-9]{1,10})\n', (out or b'').decode('ascii', 'replace'))
+        if rc == 0 and m:
+            res.update(state='read', sha256=m.group(1), size=int(m.group(2)))
+            res['matches_bundle'] = res['sha256'] == C.BUNDLE_SHA256 and res['size'] == C.BUNDLE_SIZE
+        else:
+            res['state'] = 'failed'
+    finally:
+        status, _ = api('DELETE', '/containers/' + raw + '?force=true'); assert status in (204, 404)
+        status, _ = api('GET', '/containers/' + raw + '/json'); assert status == 404
+    return res
+
+
+def storage_driver():
+    status, info = api_json('GET', '/info')
+    d = info.get('Driver') if status == 200 and isinstance(info, dict) else None
+    return d if isinstance(d, str) and re.fullmatch('[a-z0-9][a-z0-9_.-]{0,31}', d) else None
+
+
 # --------------------------------------------------------------------- arms ---
 def run_arm(arm, comp, allow, engine_backend, deadline):
     a = C.empty_arm(arm); a['insufficient_reason'] = 'none'
@@ -546,6 +579,8 @@ def arms(backend_engine_id):
     template_sha = sha((ROOT / 'comparator-cli-template.yml').read_bytes())
     WORK.mkdir(mode=0o755); WORK.chmod(0o755)
     engine = engine_id(); errors = []
+    report['phases'].append('engine-main'); save()
+    main_identity = engine_main(); driver = storage_driver()
     out = {k: C.empty_arm(k) for k in C.ARMS}
     clean = True
     for arm in C.ARMS:
@@ -567,7 +602,8 @@ def arms(backend_engine_id):
     status, img = api_json('GET', '/images/' + urllib.parse.quote(PINNED, safe='') + '/json'); assert status == 200
     env_names = [e.split('=', 1)[0] for e in (img.get('Config') or {}).get('Env') or []]
     backend = {'engine_image_id': img['Id'], 'matches_capture': img['Id'] == backend_engine_id,
-               'image_env_node_options_present': 'NODE_OPTIONS' in env_names}
+               'image_env_node_options_present': 'NODE_OPTIONS' in env_names,
+               'engine_main': main_identity, 'storage_driver': driver}
     doc = C.finish(out, imgs, backend, errors,
                    comp['migration_allowlist_sha256'], template_sha, stable)
     (ROOT / 'manager-start-export.json').write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n')
