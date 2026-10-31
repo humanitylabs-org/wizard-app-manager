@@ -1,5 +1,5 @@
-ARG NODE_VERSION="jod"
-ARG ALPINE_VERSION="3.21"
+ARG NODE_VERSION="22.23.4"
+ARG ALPINE_VERSION="3.23"
 ARG BUN_VERSION="1.3.0"
 
 # The JS build (bun install, frontend, backend bundle) is the same bytes on every architecture, so it always runs

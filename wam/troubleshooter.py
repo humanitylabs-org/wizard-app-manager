@@ -37,11 +37,11 @@ PORT = 9691
 PREFIX = "/troubleshoot"
 MARKER = "# Written by `wam troubleshooter` (wizard-app-manager); rerun the installer to update."
 UNITS = ("wizard-troubleshooter.service", "wizard-guardian.service", "wizard-guardian.timer")
-# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.2/SHASUMS256.txt), only when the box has no Node >= 20.
-NODE_VERSION = "22.23.2"
+# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.4/SHASUMS256.txt), only when the box has no Node >= 20.
+NODE_VERSION = "22.23.4"
 NODE_SHA256 = {
-    "x64": "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
-    "arm64": "fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8",
+    "x64": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce",
+    "arm64": "6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b",
 }
 
 
