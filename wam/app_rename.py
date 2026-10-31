@@ -232,6 +232,106 @@ def rename_compose_override(text: str, old: str, new: str, services: set[str]) -
     return "".join(out)
 
 
+
+# ---------------------------------------------------------------- agent access to the app (Agent Service, #58/#60)
+
+def _rename_list(v, old: str, new: str):
+    return list(dict.fromkeys(new if x == old else x for x in v)) if isinstance(v, list) else v
+
+
+def rename_in_agent(doc: dict, old: str, new: str) -> dict:
+    """An agent's app ticks (agents/<id>/agent.json `permissions`, or `.main-agent.json` at top level) follow the app,
+    so an agent keeps exactly the access the owner gave it: no tick is lost, and none is added."""
+    out = json.loads(json.dumps(doc))
+    target = out.get("permissions") if isinstance(out.get("permissions"), dict) else out
+    for key in ("wizard_apps", "agent_apps"):
+        if key in target:
+            target[key] = _rename_list(target[key], old, new)
+    return out
+
+
+def rename_in_apps_seen(doc: dict, old: str, new: str) -> dict:
+    """agents/.apps-seen.json: the new id was already offered (as the old one). Without this the Agent Service treats
+    it as a brand-new app and ticks it for the main agent (and, if private, every private agent), even where the
+    owner had unticked the old id. The old id stays listed too, so neither id ever reads as fresh mid-move."""
+    out = json.loads(json.dumps(doc))
+    for key in ("apps", "private"):
+        v = out.get(key)
+        if isinstance(v, list) and old in v and new not in v:
+            out[key] = sorted([*v, new])
+    return out
+
+
+def rename_in_bindings(doc: dict, old: str, new: str) -> dict:
+    """app-bindings.json (#60): which agent the app sends its work to."""
+    out = json.loads(json.dumps(doc))
+    apps = out.get("apps")
+    if isinstance(apps, dict) and old in apps and new not in apps:
+        out["apps"] = {(new if k == old else k): v for k, v in apps.items()}
+    return out
+
+
+def rename_in_gateway_keys(doc: dict, old: str, new: str) -> dict:
+    """grants/agent-service.json (spec/PERMISSIONS.md): the gateway's grant key for the app follows its id."""
+    out = json.loads(json.dumps(doc))
+    og = out.get("outgoing")
+    if isinstance(og, dict) and old in og and new not in og:
+        out["outgoing"] = {(new if k == old else k): v for k, v in og.items()}
+    return out
+
+
+def _agent_state_files(c) -> dict:
+    """{key: (path, rewrite)} of Agent Service state that names apps by id. A path under the Runtipi root is written
+    through the runtipi container (as `/data/...`); anything else is a plain file of the owner."""
+    from . import kinds
+    out: dict = {}
+    root = kinds.agents_dir(Path(c.home), Path(c.runtipi_root))
+    if root:
+        try:
+            names = sorted(d.name for d in root.iterdir() if d.is_dir() and ID.fullmatch(d.name))
+        except OSError:
+            names = []
+        for n in names:
+            out[f"agent:{n}"] = (root / n / "agent.json", rename_in_agent)
+        out["agents:main"] = (root / ".main-agent.json", rename_in_agent)
+        out["agents:seen"] = (root / ".apps-seen.json", rename_in_apps_seen)
+        out["agents:bindings"] = (root.parent / "app-bindings.json", rename_in_bindings)
+    out["gateway-keys"] = (Path(c.home) / "grants" / "agent-service.json", rename_in_gateway_keys)
+    return out
+
+
+def _under_runtipi(c, path: Path) -> str | None:
+    try:
+        return "/data/" + str(Path(path).relative_to(Path(c.runtipi_root)))
+    except ValueError:
+        return None
+
+
+def _fread(c, path: Path) -> bytes | None:
+    inner = _under_runtipi(c, path)
+    if inner:
+        return rt_read(inner)
+    try:
+        return Path(path).read_bytes() if Path(path).is_file() else None
+    except OSError as e:
+        raise RenameError(f"cannot read {path}: {e}") from e
+
+
+def _fwrite(c, path: Path, data: bytes) -> None:
+    inner = _under_runtipi(c, path)
+    if inner:
+        rt_write(inner, data)
+        return
+    p = Path(path)
+    t = p.with_name(p.name + ".wam-rename")
+    t.write_bytes(data)
+    try:
+        t.chmod(p.stat().st_mode & 0o777)
+    except OSError:
+        t.chmod(0o600)
+    t.replace(p)
+
+
 # ---------------------------------------------------------------- finding renames the index offers
 
 def _source(runtipi_root: Path, store: str, app_id: str) -> dict:
@@ -241,18 +341,26 @@ def _source(runtipi_root: Path, store: str, app_id: str) -> dict:
         return {}
 
 
-def due(c, rt=None, installed: list[dict] | None = None, fetch=None) -> list[dict]:
+def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly: bool = False) -> list[dict]:
     """Installed apps whose source now publishes them under a new id that names this one in `renamed_from`.
     Public-index apps are checked through their recorded repo's index record (GitHub keeps the old repo name
-    redirecting after a repo rename, and the index re-reads it). Private sources are moved with `wam app-rename`."""
-    from . import cli, index
+    redirecting after a repo rename, and the index re-reads it). Private sources are moved with `wam app-rename`.
+    `nightly`: the unattended run leaves alone what the nightly updates leave alone (an app the owner holds, a
+    system app that moves with the Wizard OS release, an exact owner-pinned selection); a rename installs the new
+    id's current release, so it is an update too. `wam app-rename <old>` still moves any of them on request."""
+    from . import app_updates, cli, index
     rt = rt or c.runtipi()
     rows = installed if installed is not None else rt.installed()
     have = {(r.get("app") or {}).get("appName") for r in rows
             if (r.get("app") or {}).get("appStoreSlug") == cli.STORE}
     fetch = fetch or (lambda repo: index._get(f"{c.index}/v1/apps/{repo}"))
     out = []
+    skip: set = set()
+    if nightly:
+        skip = set(app_updates.holds(c.home)) | set(app_updates.SYSTEM_APPS) | set(app_updates._release_managed())
     for old in sorted(x for x in have if x):
+        if old in skip or (nightly and app_updates._selection_pinned(c.runtipi_root, cli.STORE, old)):
+            continue
         src = _source(c.runtipi_root, cli.STORE, old)
         repo = src.get("repo")
         if not isinstance(repo, str) or src.get("private") or src.get("local") or "/" not in repo:
@@ -462,7 +570,9 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
     saved_files: dict[str, bytes | None] = {k: rt_read(p) for k, p in files.items()}
     local = {"routes": wos / "routes.json", **{f: wos / f for f in CARRY_STATE_FILES + OWNER_UI_FILES}}
     saved_local = {k: (p.read_bytes() if p.is_file() else None) for k, p in local.items()}
-    for k, v in {**saved_files, **saved_local}.items():
+    agent_files = _agent_state_files(c)
+    saved_agent = {k: _fread(c, p) for k, (p, _fn) in agent_files.items()}
+    for k, v in {**saved_files, **saved_local, **{k.replace(":", "-"): v for k, v in saved_agent.items()}}.items():
         if v is not None:
             (bdir / f"{k}.bak").write_bytes(v)
     (bdir / "app.json").write_text(json.dumps({"from": old, "to": new, "port": old_port, "status": old_status,
@@ -482,6 +592,8 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             ("drop new data", lambda: _sh('rm -rf "$1" "$2"', pn["data"], pn["user"])),
             ("restore files", lambda: [rt_write(files[k], v) for k, v in saved_files.items() if v is not None]),
             ("restore owner files", lambda: [local[k].write_bytes(v) for k, v in saved_local.items() if v is not None]),
+            ("restore agent access", lambda: [_fwrite(c, agent_files[k][0], v) for k, v in saved_agent.items()
+                                              if v is not None]),
             ("drop copied passwords", lambda: added["secret"].unlink() if added["secret"] else None),
             ("host access", lambda: network.set_host_access_allowed(c.home, new, False) if added["host_access"] else None),
             ("old port back", lambda: rt.req("PATCH", f"/app-lifecycle/{old_urn}/update-config",
@@ -549,6 +661,20 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
                 if (fixed := rename_in_owner_ui(doc, old, new)) != doc:
                     local[f].write_text(json.dumps(fixed, indent=2) + "\n")
                     log(f"{f} carried")
+        carried = []
+        for k, (path, fn) in agent_files.items():
+            raw = saved_agent[k]
+            if raw is None:
+                continue
+            try:
+                doc = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(doc, dict) and (fixed := fn(doc, old, new)) != doc:
+                _fwrite(c, path, (json.dumps(fixed, indent=2) + "\n").encode())
+                carried.append(k)
+        if carried:
+            log("agent access carried (" + ", ".join(carried) + ")")
         if old in network.host_access_allowed(c.home) and new not in network.host_access_allowed(c.home):
             network.set_host_access_allowed(c.home, new, True)
             added["host_access"] = True
@@ -622,7 +748,7 @@ def rename_due(c=None, rt=None) -> list[dict]:
     c = c or cli.Config()
     rt = rt or c.runtipi()
     out = []
-    for d in due(c, rt):
+    for d in due(c, rt, nightly=True):
         print(f"renaming {d['from']} -> {d['to']}", file=sys.stderr, flush=True)
         try:
             out.append(migrate(c, d["from"], d["to"]))

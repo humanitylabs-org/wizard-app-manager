@@ -356,3 +356,76 @@ def test_owner_ui_state_follows_the_rename():
     out = ar.rename_in_owner_ui(doc, "usuals", "food")
     assert out["desks"][0]["wins"][0] == {"appId": "food", "url": "/usuals/"} and out["desks"][0]["wins"][1] == {"appId": "other"}
     assert out["in_development"] == ["food", "photos"] and out["name"] == "usuals"
+
+
+# ---------------------------------------------------------------- agent access and the nightly run's limits (Oscar review)
+
+def _agents(c, main=None, seen=None, agents=None, bindings=None):
+    root = c.home / "agents"
+    root.mkdir(exist_ok=True)
+    if main is not None:
+        (root / ".main-agent.json").write_text(json.dumps(main))
+    if seen is not None:
+        (root / ".apps-seen.json").write_text(json.dumps(seen))
+    for aid, perms in (agents or {}).items():
+        (root / aid).mkdir()
+        (root / aid / "agent.json").write_text(json.dumps({"schema": 1, "id": aid, "permissions": perms}))
+    if bindings is not None:
+        (c.home / "app-bindings.json").write_text(json.dumps(bindings))
+    return root
+
+
+def test_migrate_keeps_each_agents_access_exactly(box):
+    """The owner unticked the app for the main agent and ticked it for one helper. The new id must neither be ticked
+    for the main agent (the Agent Service ticks an unseen app for it) nor lost by the helper."""
+    c, rt, fs, installs = box
+    root = _agents(c, main={"schema": 1, "wizard_apps": ["notes"], "agent_apps": []},
+                   seen={"schema": 1, "apps": ["cinequeue", "notes"], "private": []},
+                   agents={"helper": {"wizard_apps": ["cinequeue", "notes"], "agent_apps": []},
+                           "other": {"wizard_apps": ["notes"], "agent_apps": []}},
+                   bindings={"schema": 1, "apps": {"cinequeue": {"agent": "helper", "set_at": 1}}})
+    (c.home / "grants").mkdir()
+    (c.home / "grants" / "agent-service.json").write_text(json.dumps({"outgoing": {"cinequeue": "k1", "notes": "k2"}}))
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert res.get("renamed") is True, res
+    assert json.loads((root / "helper" / "agent.json").read_text())["permissions"]["wizard_apps"] == ["movies", "notes"]
+    assert json.loads((root / "other" / "agent.json").read_text())["permissions"]["wizard_apps"] == ["notes"]
+    assert json.loads((root / ".main-agent.json").read_text())["wizard_apps"] == ["notes"]
+    assert "movies" in json.loads((root / ".apps-seen.json").read_text())["apps"]
+    assert json.loads((c.home / "app-bindings.json").read_text())["apps"] == {"movies": {"agent": "helper", "set_at": 1}}
+    assert json.loads((c.home / "grants" / "agent-service.json").read_text())["outgoing"] == {"movies": "k1", "notes": "k2"}
+
+
+def test_rollback_restores_agent_access(box, monkeypatch):
+    from wam import app_updates
+    c, rt, fs, installs = box
+    monkeypatch.setattr(app_updates, "_probe", lambda url, mcp, t: False)
+    root = _agents(c, main={"schema": 1, "wizard_apps": ["cinequeue"], "agent_apps": []},
+                   seen={"schema": 1, "apps": ["cinequeue"], "private": []},
+                   agents={"helper": {"wizard_apps": ["cinequeue"], "agent_apps": []}})
+    before = {f: (root / f).read_text() for f in (".main-agent.json", ".apps-seen.json", "helper/agent.json")}
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert res.get("rolled_back") is True, res
+    assert {f: (root / f).read_text() for f in before} == before
+
+
+def test_nightly_leaves_held_system_and_pinned_apps_alone(tmp_path, monkeypatch):
+    from wam import app_updates
+    c = _box(tmp_path, {"cinequeue": {"repo": "humanitylabs-org/cinequeue"},
+                        "wizard-ux": {"repo": "humanitylabs-org/wizard-ux"}})
+    rt = FakeRT({"cinequeue": {"status": "running"}, "wizard-ux": {"status": "running"}})
+    recs = {"humanitylabs-org/cinequeue": {"id": "movies", "manifest": {"id": "movies", "renamed_from": ["cinequeue"]}},
+            "humanitylabs-org/wizard-ux": {"id": "wizard-shell-next",
+                                           "manifest": {"id": "wizard-shell-next", "renamed_from": ["wizard-ux"]}}}
+    fetch = lambda repo: recs[repo]  # noqa: E731
+    monkeypatch.setattr(app_updates, "_release_managed", lambda: set())
+    # on request (wam app-rename): both are offered
+    assert {d["from"] for d in ar.due(c, rt, fetch=fetch)} == {"cinequeue", "wizard-ux"}
+    # nightly: a system app moves with the Wizard OS release, never on its own
+    assert [d["from"] for d in ar.due(c, rt, fetch=fetch, nightly=True)] == ["cinequeue"]
+    # an app the owner holds is not moved (a rename installs the new id's current release)
+    app_updates.hold("cinequeue", True, home=c.home)
+    assert ar.due(c, rt, fetch=fetch, nightly=True) == []
+    (c.home / "app-updates.json").write_text(json.dumps({"holds": []}))
+    monkeypatch.setattr(app_updates, "_selection_pinned", lambda root, store, app: app == "cinequeue")
+    assert ar.due(c, rt, fetch=fetch, nightly=True) == []
