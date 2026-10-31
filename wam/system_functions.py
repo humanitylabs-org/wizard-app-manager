@@ -129,10 +129,52 @@ def _packed_rows(root):
     return rows
 
 
+def _development_roots(root: Path) -> set[str]:
+    """Top-level harnesses outside an explicit, confined view source are not UI.
+
+    This is not an app-controlled ignore list. Unknown/legacy view layouts keep
+    the full scan, as do served test directories and runtime references to a
+    development tree. Nested web/tests paths and inline Compose are always linted.
+    """
+    development = {'tests', 'test', 'qa', 'ops'}
+    try:
+        from .wizardmd import front_matter
+        source = (front_matter((root / 'wizard.md').read_text()).get('view') or {}).get('source') or {}
+        paths = []
+        for key in ('path', 'dist'):
+            value = source.get(key)
+            if not isinstance(value, str) or not value or value.startswith('/') or '\\' in value:
+                return set()
+            parts = value.split('/')
+            if any(p in {'', '.', '..'} for p in parts):
+                return set()
+            path = root / value
+            if path.is_symlink() or not path.is_dir() or not path.resolve().is_relative_to(root):
+                return set()
+            paths.append(parts[0])
+        development -= set(paths)
+        # A runtime import / URL / server path to a development tree makes that
+        # whole tree runtime source. Do not read or execute the harness itself.
+        for p in root.rglob('*'):
+            rel = p.relative_to(root)
+            if rel.parts[0] in {'tests', 'test', 'qa', 'ops'} or any(part in SKIP for part in rel.parts):
+                continue
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in EXTENSIONS | {'.py', '.yml', '.yaml'}:
+                continue
+            text = p.read_text(encoding='utf-8')
+            for name in tuple(development):
+                if re.search(r'''(?:[/'"`])''' + name + r'''(?:[/"'`])''', text):
+                    development.remove(name)
+        return development
+    except (OSError, ValueError, UnicodeError, AttributeError, TypeError, yaml.YAMLError):
+        return set()
+
+
 def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dict]:
     root = Path(root).resolve()
     approved_assets = approved_assets or {}
     rows = []
+    development = _development_roots(root)
     scanned = 0
     for p in sorted(root.rglob('*')):
         rel = p.relative_to(root)
@@ -140,6 +182,8 @@ def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dic
             continue
         if p.is_symlink():
             rows.append({'rule': 'system functions: confined source', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': symlink cannot hide platform code'})
+            continue
+        if rel.parts[0] in development:
             continue
         if p.suffix.lower() not in EXTENSIONS or not p.is_file():
             continue
