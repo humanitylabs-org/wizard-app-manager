@@ -298,6 +298,26 @@ def _wizard_md(c, new: str) -> dict:
     return {}
 
 
+def _record_source(c, new: str, rec: dict) -> None:
+    """The store fetches an index app by id and records the first repo the index names; when the publisher renamed
+    the repo, record the current name we resolved (same commit), so updates follow the repo, not its redirect."""
+    from . import cli
+    repo = rec.get("repo")
+    git = (rec.get("install") or {}).get("git")
+    if not (isinstance(repo, str) and isinstance(git, str) and git.endswith("/" + repo)):
+        return
+    for d in (f"/data/apps/{cli.STORE}/{new}", f"/data/repos/{cli.STORE}/apps/{new}"):
+        raw = rt_read(d + "/.wizard-source")
+        try:
+            src = json.loads(raw) if raw else None
+        except ValueError:
+            continue
+        if not isinstance(src, dict) or src.get("source") != "standard" or src.get("private") or src.get("repo") == repo:
+            continue
+        src.update(repo=repo, git=git)
+        rt_write(d + "/.wizard-source", (json.dumps(src, separators=(",", ":")) + "\n").encode())
+
+
 def _recipe_services(c, new: str) -> set[str]:
     import yaml
     d = Path(c.runtipi_root) / "repos" / "wizardapps" / "apps" / new
@@ -500,6 +520,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
         res = cli.install(c, new, {k: str(v) for k, v in saved.items() if k.isupper() and v is not None},
                           _record=rec, _form_base=base)
         log(f"new app installed ({res.get('status')})")
+        _record_source(c, new, rec)
         if res.get("status") == "running" and old_status == "stopped":
             cli.app_lifecycle(c, "stop", new)
         problem = _verify(c, rt, new, old_status, settle=settle, probe_seconds=probe_seconds)
