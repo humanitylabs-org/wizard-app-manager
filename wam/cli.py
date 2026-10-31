@@ -2149,11 +2149,13 @@ def main(argv: list[str] | None = None) -> int:
                                            "(wizard.md renamed_from); no args: list the renames that are due")
     rn.add_argument("old", nargs="?"); rn.add_argument("new", nargs="?")
     rn.add_argument("--dry-run", action="store_true", help="check and show the plan; change nothing")
+    rn.add_argument("--repo", metavar="OWNER/NAME", help="take the new release from this repo (the app moved to its own "
+                                                         "repo); default: the old app's own source")
     args = ap.parse_args(argv)
     if args.cmd == "app-rename":
         from . import app_rename
         c = Config()
-        res = (app_rename.migrate(c, args.old, args.new, dry_run=args.dry_run) if args.old
+        res = (app_rename.migrate(c, args.old, args.new, dry_run=args.dry_run, repo=args.repo) if args.old
                else {"due": app_rename.due(c)})
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0
