@@ -169,6 +169,53 @@ describe('app grants layer 2', () => {
     expect(legacy.incoming).toEqual([]);
     expect(legacy.enforce).toBe(true);
   });
+  it('keeps an owner key to a provider installed from another store (router -> core wizard-claude) until denied or removed', async () => {
+    const key = 'c'.repeat(64);
+    const core = path.join(root, 'apps/core/wizard-claude');
+    await fs.mkdir(core, { recursive: true });
+    await fs.writeFile(path.join(core, 'wizard.md'), `---\n${yaml.stringify({ id: 'wizard-claude', provides: ['ai-connection'] })}---\n`);
+    await fs.writeFile(path.join(core, 'docker-compose.yml'), yaml.stringify(comp));
+    installed.push({ appName: 'wizard-claude', appStoreSlug: 'core' });
+    await install('wizard-connection-router');
+    await fs.mkdir(path.join(data('wizard-connection-router'), 'wizard'), { recursive: true });
+    const router = {
+      outgoing: { 'wizard-claude': key },
+      incoming: [],
+      provider_endpoints: { 'wizard-claude': 'http://127.0.0.1:18799', 'wizard-chatgpt': 'http://127.0.0.1:18801' },
+      enforce: true,
+    };
+    await fs.writeFile(path.join(data('wizard-connection-router'), 'wizard/grants.json'), JSON.stringify(router));
+    await store.reconcile();
+    await store.reconcile();
+    const r = await file('wizard-connection-router');
+    expect(r.outgoing).toEqual({ 'wizard-claude': key });
+    expect(r.provider_endpoints).toEqual(router.provider_endpoints);
+    expect((await store.readGrants()).grants).toEqual([
+      expect.objectContaining({ from: 'wizard-connection-router', to: 'wizard-claude', approved: 'owner' }),
+    ]);
+    await store.change({ kind: 'app', from: 'wizard-connection-router', to: 'wizard-claude' }, false);
+    await store.reconcile();
+    expect((await file('wizard-connection-router')).outgoing).toEqual({});
+    expect((await file('wizard-connection-router')).provider_endpoints).toEqual({ 'wizard-chatgpt': 'http://127.0.0.1:18801' });
+  });
+  it('drops a kept cross-store key once that provider is uninstalled', async () => {
+    const core = path.join(root, 'apps/core/wizard-claude');
+    await fs.mkdir(core, { recursive: true });
+    await fs.writeFile(path.join(core, 'wizard.md'), `---\n${yaml.stringify({ id: 'wizard-claude' })}---\n`);
+    await fs.writeFile(path.join(core, 'docker-compose.yml'), yaml.stringify(comp));
+    installed.push({ appName: 'wizard-claude', appStoreSlug: 'core' });
+    await install('wizard-connection-router');
+    await fs.mkdir(path.join(data('wizard-connection-router'), 'wizard'), { recursive: true });
+    await fs.writeFile(
+      path.join(data('wizard-connection-router'), 'wizard/grants.json'),
+      JSON.stringify({ outgoing: { 'wizard-claude': 'd'.repeat(64) }, incoming: [], enforce: true }),
+    );
+    await store.reconcile();
+    expect((await file('wizard-connection-router')).outgoing).toEqual({ 'wizard-claude': 'd'.repeat(64) });
+    installed = installed.filter((a) => a.appName !== 'wizard-claude');
+    await store.reconcile();
+    expect((await file('wizard-connection-router')).outgoing).toEqual({});
+  });
   it('mounts dir read-only and sets env on EVERY service, never changes networks; is idempotent', () => {
     const source = {
       services: { ui: { environment: ['EXISTING=yes'], networks: ['main'] }, broker: { environment: { EXISTING: 'yes' }, network_mode: 'none' } },
