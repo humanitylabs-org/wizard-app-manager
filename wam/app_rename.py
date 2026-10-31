@@ -526,6 +526,12 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root):
         if st != "missing":
             raise RenameError(f"the old app is {st}")
         log("old app uninstalled")
+        # The App Manager's own bookkeeping may have noted the old id again while it was going; point it at the new.
+        g = rt_read(files["grants"])
+        if g is not None:
+            fixed = rename_in_grants(json.loads(g), old, new)
+            if fixed != json.loads(g):
+                rt_write(files["grants"], (json.dumps(fixed, indent=2) + "\n").encode())
     except Exception as e:  # noqa: BLE001 - the new app stays; the old one is left stopped with its data
         if result.get("old_data") and not rt_exists(po["data"]):
             try:
