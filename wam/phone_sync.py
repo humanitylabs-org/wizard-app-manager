@@ -17,7 +17,8 @@ from pathlib import Path
 
 from . import updates
 
-POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-os/main/releases/phone/latest.json"
+# Read from the public App Manager release mirror, beside the box snapshots; wizard-os (canonical) is private.
+POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json"
 SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
 UNIT = "wizard-phone-sync"
 MAX_POINTER = 64 * 1024

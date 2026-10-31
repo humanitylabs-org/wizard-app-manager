@@ -1,0 +1,12 @@
+{
+  "app": "ai.wizards.os",
+  "versionCode": 82,
+  "versionName": "0.10.18",
+  "sha256": "5e8be00bd7161e07786e7d716698d4c12cc8450f12c8ab7f3906a97009d3161d",
+  "bytes": 29114350,
+  "signer": "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd",
+  "asset_url": "https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v0.10.18/wizard-os-0.10.18.apk",
+  "notes": "Saved app passwords stay safe when you cancel the fingerprint prompt, and Settings shows whether your Wizard ID is backed up.",
+  "min_box_snapshot": "0.3.75",
+  "source_commit": "7da6c821c63c48d7156abd9edec86e440fa8f883"
+}
