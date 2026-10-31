@@ -131,11 +131,11 @@ def rename_in_grants(doc: dict, old: str, new: str) -> dict:
         for key in ("managed", "endpoints"):
             m = l2.get(key)
             if isinstance(m, dict):
-                l2[key] = {one(k): ([one(x) for x in v] if isinstance(v, list)
+                l2[key] = {one(k): (list(dict.fromkeys(one(x) for x in v)) if isinstance(v, list)
                                     else {one(kk): vv for kk, vv in v.items()} if isinstance(v, dict) else v)
                            for k, v in m.items()}
         if isinstance(l2.get("adopted"), list):
-            l2["adopted"] = [one(x) for x in l2["adopted"]]
+            l2["adopted"] = list(dict.fromkeys(one(x) for x in l2["adopted"]))
     return out
 
 
