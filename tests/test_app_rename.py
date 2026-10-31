@@ -64,7 +64,7 @@ def test_grants_carry_both_directions_and_bookkeeping():
            "notices": [{"from": "wizard-connectors", "to": "x", "text": "t"}],
            "sensitive": ["wizard-connectors", "connected-accounts"], "seeded": ["wizard-connectors"],
            "layer2": {"managed": {"wizard-calendar": ["wizard-connectors"], "wizard-connectors": ["notes"]},
-                      "adopted": ["wizard-connectors"],
+                      "adopted": ["wizard-connectors", "connected-accounts"],
                       "endpoints": {"wizard-calendar": {"wizard-connectors": "http://x"}}}}
     out = ar.rename_in_grants(doc, "wizard-connectors", "connected-accounts")
     assert out["grants"][0]["to"] == "connected-accounts" and out["grants"][1]["from"] == "connected-accounts"
