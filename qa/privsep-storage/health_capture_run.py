@@ -152,9 +152,26 @@ def product_rows(rows):
     return [r for r in rows if not r['path'].startswith(QA_PREFIXES)]
 
 
+def stat_inventory(root):
+    """Read-only whole-tree stat inventory. Records (never asserts or repairs) mode/uid:
+    some retained forensic stages carry 0664 members and must stay byte/stat-identical."""
+    rows = []
+    for p in sorted(root.rglob('*')):
+        s = p.lstat()
+        rows.append({'path': str(p.relative_to(root)), 'kind': 'symlink' if stat.S_ISLNK(s.st_mode) else
+                     'dir' if stat.S_ISDIR(s.st_mode) else 'file' if stat.S_ISREG(s.st_mode) else 'other',
+                     'mode': stat.S_IMODE(s.st_mode), 'uid': s.st_uid, 'nlink': s.st_nlink, 'dev': s.st_dev,
+                     'ino': s.st_ino, 'size': s.st_size, 'blocks': s.st_blocks,
+                     'mtime_ns': s.st_mtime_ns, 'ctime_ns': s.st_ctime_ns})
+    r = root.lstat()
+    return {'root': {'mode': stat.S_IMODE(r.st_mode), 'uid': r.st_uid, 'ino': r.st_ino, 'mtime_ns': r.st_mtime_ns,
+                     'ctime_ns': r.st_ctime_ns},
+            'allocated_bytes': sum(x['blocks'] * 512 for x in rows if x['kind'] == 'file'), 'files': rows}
+
+
 def retained_snapshot(helpers):
     """Whole retained inventories + the original 851 disk pair (hash/stat) + boot inputs."""
-    return {'allocated': {str(p): helpers.allocated(p) for p in RETAINED},
+    return {'allocated': {str(p): stat_inventory(p) for p in RETAINED},
             'disks': {n: helpers.disk_binding(PRIOR / 'evidence' / n) for n in ('disk.qcow2', 'secondary.qcow2')},
             'prior_files': {n: digest(PRIOR / 'evidence' / n) for n in ('id_ed25519', 'seed.iso')}}
 
