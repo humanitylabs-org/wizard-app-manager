@@ -1,0 +1,37 @@
+{
+  "body_base64": "eyJmaWx0ZXJzIjp7ImxhYmVsIjpbInJ1bnRpcGkuYXBwdXJuPWFnZW50LXN5bnRoZXRpYzptaWdyYXRlZCJdfX0=",
+  "body_utf8": "{\"filters\":{\"label\":[\"runtipi.appurn=agent-synthetic:migrated\"]}}",
+  "headers": {
+    "connection": "keep-alive",
+    "content-length": "65",
+    "content-type": "application/json",
+    "host": "localhost"
+  },
+  "http_version": "HTTP/1.1",
+  "legacy_branch": "            require(not data and set(query) == {'filters'})\n            urn = self.cfg.get('app_urn')\n            require(type(urn) is str and bool(urn))\n            filters = canonical_filters(query['filters'], {'label'})\n            require(filters == {'label': {'runtipi.appurn='+urn: True}})\n            return 'prune-refused', path, data, filters\n",
+  "legacy_branch_first_line": 358,
+  "legacy_source": "18e32355313b1ceb62a3cc86bb2c88ed91016dde",
+  "legacy_source_sha256": "448ebd7da086a3dc722ba068042e6d2fac2920ff55ddc9b2abd7c09632f0aed1",
+  "method": "POST",
+  "node": "v22.22.3",
+  "node_sha256": "e6ec2c188d83d813f81f2de8aea084d74dce603ac1abedd0a30ad941b10087b2",
+  "path": "/containers/prune?filters=%7B%22label%22%3A%5B%22runtipi.appurn%3Dagent-synthetic%3Amigrated%22%5D%7D",
+  "real_sdk_local_peer_not_docker": true,
+  "request_line": "POST /containers/prune?filters=%7B%22label%22%3A%5B%22runtipi.appurn%3Dagent-synthetic%3Amigrated%22%5D%7D HTTP/1.1",
+  "sdk_pins": {
+    "docker-modem": {
+      "tarball_sha256": "cff64aa321a38183868763d6aa431a906143b0a71da36dfbc7f5a45981f3bd45",
+      "tarball_sha512": "sha512-ens7BiayssQz/uAxGzH8zGXCtiV24rRWXdjNha5V4zSOcxmAZsfGVm/PPFbwQdqEkDnhG+SyR9E3zSHUbOKXBQ==",
+      "url": "https://registry.npmjs.org/docker-modem/-/docker-modem-5.0.6.tgz",
+      "version": "5.0.6"
+    },
+    "dockerode": {
+      "tarball_sha256": "a10e09e8a31c9d3af3091b7f5664bed9d5127348d20b0d1eaf507d7778361a51",
+      "tarball_sha512": "sha512-iND4mcOWhPaCNh54WmK/KoSb35AFqPAUWFMffTQcp52uQt36b5uNwEJTSXntJZBbeGad72Crbi/hvDIv6us/6Q==",
+      "url": "https://registry.npmjs.org/dockerode/-/dockerode-4.0.9.tgz",
+      "version": "4.0.9"
+    }
+  },
+  "wire_bytes": 277,
+  "wire_sha256": "32fb827e053c0c056d7ad151e432ba3bb9e8618f8ff51abcfed96897dbaaf197"
+}

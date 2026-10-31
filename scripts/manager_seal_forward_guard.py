@@ -318,7 +318,12 @@ class Policy:
         path, query = self.path(target)
         require(method in ('GET', 'HEAD', 'POST', 'DELETE'))
         require(len(data) <= MAX_BODY)
-        body = decode(data) if data else {}
+        if method == 'POST' and path == '/containers/prune':
+            require(len(data) <= 4096)  # closed SDK selector, not a general body
+            body = json.loads(data.decode('utf-8'), object_pairs_hook=unique_object,
+                              parse_constant=lambda _: require(False)) if data else {}
+        else:
+            body = decode(data) if data else {}
         require(isinstance(body, dict))
         op = None
         if method in ('GET', 'HEAD') and path in ('/_ping', '/version'):
@@ -355,12 +360,17 @@ class Policy:
         elif method == 'POST' and path == '/containers/prune':
             # Daemon-wide mutation: NEVER forward, even with the exact app label.
             # Only that closed synthetic selector may enter the typed ledger.
-            require(not data and set(query) == {'filters'})
+            # docker-modem duplicates opts in the query AND a JSON POST body.
+            # Accept only equivalent, closed selectors; this is still a refusal.
+            require(set(query) == {'filters'})
             urn = self.cfg.get('app_urn')
             require(type(urn) is str and bool(urn))
             filters = canonical_filters(query['filters'], {'label'})
             require(filters == {'label': {'runtipi.appurn='+urn: True}})
-            return 'prune-refused', path, data, filters
+            if data:
+                require(set(body) == {'filters'})
+                require(canonical_filters(json.dumps(body['filters'], allow_nan=False), {'label'}) == filters)
+            return 'prune-refused', path, b'', filters
         elif method == 'POST' and path == '/containers/create':
             self.create_container(body, query); op = 'create-container'
         elif method == 'POST' and path == '/networks/create':
