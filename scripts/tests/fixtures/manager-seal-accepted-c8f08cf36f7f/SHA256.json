@@ -1,0 +1,29 @@
+{
+  "source": "c8f08cf36f7fbc1f102007dcaf68e126aa898f3c",
+  "receipt": "heavy_853d1ed9fced4ba1a7307ddc6c4ab1ba",
+  "source_root": "forum:/srv/work/manager-seal-installed-c8f08cf36f7f",
+  "files": {
+    "ledger.jsonl": {
+      "source_path": "guard-shared/guard-ledger.jsonl",
+      "sha256": "a6eebb315d91bbfcae3b21fb983cbaadf76feab37a6fa8bffab2cf2f8679fb38",
+      "bytes": 53605
+    },
+    "receipt.json": {
+      "source_path": "installed-results/receipt.json",
+      "sha256": "38bff50dbcc952be0af05bf63979b4b8f9de60ad5457c9ea14fc00d2ec2e6dd6",
+      "bytes": 75165
+    },
+    "events.json": {
+      "source_path": "installed-results/runtime-events.json",
+      "sha256": "21d32ccbf114c4dc5c45c9ac495d0e3947625be1cc6bb9f8517ee7c48ec44ffb",
+      "bytes": 73745
+    },
+    "cleanup.json": {
+      "source_path": "parent-cleanup.json",
+      "sha256": "47216d8be86db77b54916e07e579d21105d55f74a8016ec5eab3d5840ce25f83",
+      "bytes": 130
+    }
+  },
+  "read_only_copy": true,
+  "runtime_executed_for_copy": false
+}

@@ -17,6 +17,15 @@ PRIOR_RECEIPT_SHA = '202efaaadc2ca6cf5a791290ac3639daf66d9d725cb43d403904af8a3af
 # have identical Git-export path membership, content and modes before reuse.
 QA_DELTA = frozenset({
     'scripts/manager_seal_installed_path.py',
+    'scripts/manager_seal_update_continuation.py',
+    'scripts/manager_seal_installed_review.ts',
+    'scripts/tests/test_manager_seal_update_continuation.py',
+    'scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/ledger.jsonl',
+    'scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/receipt.json',
+    'scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/events.json',
+    'scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/cleanup.json',
+    'scripts/tests/fixtures/manager-seal-accepted-c8f08cf36f7f/SHA256.json',
+    'docs/manager-seal-update-continuation.md',
     'scripts/manager_seal_runtime_events.py',
     'scripts/manager_seal_installed_recovery.py',
     'scripts/tests/test_manager_seal_installed_path.py',

@@ -30,6 +30,7 @@ from manager_seal_install_evidence import dependency_step, sanitize_line, captur
 from manager_seal_bundle import validate_bundle
 import manager_seal_installed_recovery as recovery
 from manager_seal_runtime_events import RuntimeEventStream
+import manager_seal_update_continuation as update_continuation
 
 GIB = 2**30
 MIB = 2**20
@@ -941,6 +942,7 @@ class Rig:
         self.receipt['auth']['actual_session_readback'] = True
         self.receipt['install_http_source_contract'] = recovery.audit_install_http_contract(self.root)
         self.receipt['update_rollback_source_contract'] = recovery.audit_update_rollback_contract(self.root)
+        self.receipt['update_continuation_contract'] = update_continuation.source_contract(self.root)
         self.receipt['phase'] = 'http-install-skipRun'
         assert self.sql("select count(*) from app where app_name='agent-synthetic' and app_store_slug='migrated';") == '0'
         assert not self.owned_fixture_ids(), 'URN collision before first POST'
@@ -978,9 +980,27 @@ class Rig:
                 and e['Actor']['ID'] == positive for e in rows))
             self.transaction('start', None, 'running'); first = self.runtime()
             self.transaction('restart', None, 'running'); second = self.runtime()
+            first_slice_rows = creation_ledger()
+            self.receipt['first_slice_guard_accounting'] = reconcile_guard_accounting(
+                first_slice_rows, len(probes), cfg['network_names'], expected_cycles=2,
+                install_prune_window=(install_lower, install_upper),
+                expected_probe_rows=[r for r in ledger if r['operation'] == 'deny'])
+            assert len([r for r in first_slice_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 10
+            def first_complete(rows):
+                try: reconcile_runtime_events(rows, first_slice_rows, set(first+second), self.owner)
+                except AssertionError: return False
+                return True
+            stream.barrier(first_complete)
+            self.receipt['first_slice_real_runtime_events'] = reconcile_runtime_events(
+                stream.rows, first_slice_rows, set(first+second), self.owner)
+            self.receipt['first_installed_synthetic_path_pass'] = True
+            self.receipt['phase'] = 'http-single-accepted-update'
+            update_continuation.stage(self, subnet)
+            third = update_continuation.transaction(self, second)
+            assert not set(third).intersection(first+second)
             creation_rows = creation_ledger()
             def complete(rows):
-                try: reconcile_runtime_events(rows, creation_rows, set(first+second), self.owner)
+                try: reconcile_runtime_events(rows, creation_rows, set(first+second+third), self.owner)
                 except AssertionError: return False
                 return True
             stream.drain(complete)
@@ -991,21 +1011,23 @@ class Rig:
         self.receipt['runtime_event_stream'] = {'opened_before_start': True, 'coverage_sentinel': True,
             'drained_and_reader_joined': True, 'byte_cap': stream.byte_cap, 'row_cap': stream.row_cap}
         self.receipt['guard_accounting'] = reconcile_guard_accounting(creation_rows, len(probes), cfg['network_names'],
-            expected_cycles=2, install_prune_window=(install_lower, install_upper),
+            expected_cycles=3, install_prune_window=(install_lower, install_upper),
             expected_probe_rows=[r for r in ledger if r['operation'] == 'deny'])
-        assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 10
-        self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second), self.owner)
+        assert len([r for r in creation_rows if r.get('operation') == 'created' and r.get('kind') == 'container']) == 15
+        self.receipt['real_runtime_events'] = reconcile_runtime_events(events, creation_rows, set(first+second+third), self.owner)
         assert set(first) != set(second) and not set(first) & set(second), 'restart did not really recreate'
-        self.receipt['http_request_ids_distinct'] = len(set(self.receipt['request_ids'])) == 3
+        self.receipt['http_request_ids_distinct'] = len(self.receipt['request_ids']) == len(set(self.receipt['request_ids'])) == 4
         assert self.receipt['http_request_ids_distinct']
         self.receipt['first_runtime_ids'] = first; self.receipt['restarted_runtime_ids'] = second
         self.receipt['first_installed_synthetic_path_pass'] = True
-        self.receipt['phase'] = 'completed-first-installed-slice'
+        self.receipt['updated_runtime_ids'] = third
+        self.receipt['single_accepted_update_pass'] = True
+        self.receipt['phase'] = 'completed-single-accepted-update'
 
     def capture_http(self, method, path, authenticated, value):
         # Only this fixed synthetic endpoint set; no request bodies or headers.
         assert (method, path) in {('GET', '/api/apps/installed'), ('GET', '/api/apps/'+URN),
-            ('POST', '/api/auth/register'), *(('POST', '/api/app-lifecycle/'+URN+'/'+a) for a in ('install', 'start', 'restart'))}
+            ('POST', '/api/auth/register'), ('PATCH', '/api/app-lifecycle/'+URN+'/update'), *(('POST', '/api/app-lifecycle/'+URN+'/'+a) for a in ('install', 'start', 'restart'))}
         clean, parse_error = recovery.sanitized_http_body(value.get('body_text', ''), self.secrets)
         row = {'status': value.get('status', 0), 'body': clean, 'parse_error': parse_error,
                'captured_bytes': value.get('captured_bytes', 0), 'body_truncated': value.get('body_truncated', False),
@@ -1113,13 +1135,13 @@ class Rig:
         value = self.request('GET', '/containers/json?all=1')[1]
         return [r['Id'] for r in value if (r.get('Labels') or {}).get('com.docker.compose.project') == PROJECT]
 
-    def runtime(self):
+    def runtime(self, command=update_continuation.COMMAND_V1):
         ids = self.owned_fixture_ids(); assert len(ids) == 5
         seen = set()
         for cid in ids:
             status, value = self.request('GET', '/containers/'+cid+'/json'); assert status == 200 and value['State']['Running']
             s = value['Config']['Labels']['com.docker.compose.service']; seen.add(s)
-            assert value['Image'] == PYTHON and value['Config']['Cmd'] == ['import time; time.sleep(1800)']
+            assert value['Image'] == PYTHON and value['Config']['Cmd'] == [command]
             assert value['Config']['Entrypoint'] == ['python3', '-c']
             mapping = {MAIN: ['seal'], MAIN+'-tinfoil': ['provider', 'keyed'], MAIN+'-search': ['provider', 'keyed'],
                        MAIN+'-key': ['seal', 'keyed'], MAIN+'-edge': ['seal', 'provider', 'edge-uplink']}
@@ -1182,7 +1204,9 @@ class Rig:
         if self.receipt['reserve_after_cleanup_bytes'] < capacity.RESERVE: self.errors.append('reserve_breached')
         self.receipt['phase_at_exit'] = self.receipt['phase']
         self.receipt['guard_ledger_sha256'] = sha(self.shared/'guard-ledger.jsonl') if (self.shared/'guard-ledger.jsonl').exists() else None
-        if self.errors: self.receipt['first_installed_synthetic_path_pass'] = False
+        if self.errors:
+            self.receipt['first_installed_synthetic_path_pass'] = False
+            self.receipt['single_accepted_update_pass'] = False
         (self.out/'receipt.json').write_text(json.dumps(self.receipt, indent=2)+'\n')
 
 
