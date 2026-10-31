@@ -159,6 +159,7 @@ def _box(tmp_path, apps):
         index = "https://index.invalid"
         private_apps = {}
     C.home = home
+    C.secrets = home / "secrets"
     return C()
 
 
@@ -260,8 +261,11 @@ def box(tmp_path, monkeypatch):
 
 def test_migrate_moves_everything_then_retires_the_old_app(box):
     c, rt, fs, installs = box
+    c.secrets.mkdir()
+    (c.secrets / "cinequeue.json").write_text('{"PW": "x"}')
     res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
     assert res.get("renamed") is True, res
+    assert (c.secrets / "movies.json").read_text() == '{"PW": "x"}' and (c.secrets / "cinequeue.json").is_file()
     # same port, same saved settings
     assert installs[0][2]["port"] == 9234 and installs[0][2]["CINEQUEUE_WATCH_REGION"] == "TH"
     assert installs[0][1] == {"CINEQUEUE_WATCH_REGION": "TH"}
@@ -280,6 +284,8 @@ def test_migrate_rolls_back_when_the_new_app_does_not_answer(box, monkeypatch):
     from wam import app_updates
     c, rt, fs, installs = box
     monkeypatch.setattr(app_updates, "_probe", lambda url, mcp, t: False)
+    c.secrets.mkdir()
+    (c.secrets / "cinequeue.json").write_text("{}")
     grants_before = fs.read("/data/state/wizard-grants.json")
     routes_before = (c.home / "routes.json").read_text()
     res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
@@ -288,6 +294,7 @@ def test_migrate_rolls_back_when_the_new_app_does_not_answer(box, monkeypatch):
     assert fs.read("/data/state/wizard-grants.json") == grants_before
     assert (c.home / "routes.json").read_text() == routes_before
     assert fs.read("/data/app-data/wizardapps/cinequeue/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert not (c.secrets / "movies.json").exists() and (c.secrets / "cinequeue.json").is_file()
 
 
 def test_migrate_refuses_without_renamed_from(box):
