@@ -116,7 +116,7 @@
     },
     "connected-accounts": {
       "name": "Connected accounts",
-      "app": "wizard-connectors",
+      "app": "connected-accounts",
       "repo": "humanitylabs-org/wizard-connectors",
       "required": false,
       "install": "on-demand",
@@ -125,7 +125,7 @@
       "summary": "Connect your Google account. Available when a reviewed release is published.",
       "provides": ["connector-status", "simulated-private-summary"],
       "note": "Account connector broker; Google sign-in stays off on new boxes until a verified Google OAuth app exists.",
-      "gateway": {"path": "/wizard-connectors/", "strip_prefix": true}
+      "gateway": {"path": "/connected-accounts/", "strip_prefix": true}
     },
     "notifications": {
       "name": "Notifications",
