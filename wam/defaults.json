@@ -1,5 +1,9 @@
 {
   "about": "System app slots (parking spots) and the app that fills each by default. Any app that `provides:` a slot can replace the default. null = the spot exists, no default app is published yet. `repo` = where a default comes from before it's in the public index (private; needs a GitHub login that can see it). `provides` = known capabilities copied from that app's wizard.md for offline manifest checking, not extra install slots.",
+  "multi_capabilities": {
+    "about": "Capabilities (not system spots) that a consumer reads from every installed provider at once, like a multi spot: a front end that `uses:` one is linked to each provider's network, not only the owner's active one, and several providers are not a collision. Health reads every wearable connector this way.",
+    "ids": ["health-data"]
+  },
   "slots": {
     "chats": {
       "name": "Chats",

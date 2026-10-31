@@ -104,6 +104,28 @@ describe('app grants layer 2', () => {
     expect((await file('hermes-agent')).outgoing).toEqual({});
     expect((await file('router-new')).incoming).toHaveLength(1);
   });
+  it('lists every provider of a spot in provider_endpoints_all; a removed provider drops out', async () => {
+    const at = (alias: string) => ({ services: { main: { ...comp.services.main, networks: { main: { aliases: [alias] } } } } });
+    await install('wizard-whoop', { provides: ['health-data'] }, at('wizard-whoop'));
+    await install('wizard-oura', { provides: ['health-data'] }, at('wizard-oura'));
+    await install('wizard-health', { uses: ['health-data'] });
+    await store.reconcile();
+    const c = await file('wizard-health');
+    expect(c.provider_endpoints_all['slot:health-data']).toEqual({
+      'wizard-whoop': 'http://wizard-whoop:8799',
+      'wizard-oura': 'http://wizard-oura:8799',
+    });
+    // The single endpoint stays for older consumers.
+    expect(Object.values(c.provider_endpoints_all['slot:health-data'])).toContain(c.provider_endpoints['slot:health-data']);
+    await install('wizard-fitbit', { provides: ['health-data'] }, at('wizard-fitbit'));
+    installed = installed.filter((a) => a.appName !== 'wizard-oura');
+    await store.reconcile();
+    expect((await file('wizard-health')).provider_endpoints_all['slot:health-data']).toEqual({
+      'wizard-whoop': 'http://wizard-whoop:8799',
+      'wizard-fitbit': 'http://wizard-fitbit:8799',
+    });
+    expect((await file('wizard-health')).outgoing['slot:health-data']).toBe(c.outgoing['slot:health-data']);
+  });
   it('uninstall removes both directions, does not re-add while DB deletion is pending', async () => {
     await install('wizard-connectors');
     await install('wizard-calendar', { uses: ['wizard-connectors'] });
@@ -163,7 +185,8 @@ describe('app grants layer 2', () => {
     expect((await file('wizard-connection-router')).outgoing).toEqual(router.outgoing);
     expect((await file('wizard-connection-router')).provider_endpoints).toEqual(router.provider_endpoints);
     expect((await file('wizard-connection-router')).enforce).toBe(true);
-    expect(Object.keys(await file('wizard-connection-router')).sort()).toEqual(Object.keys(router).sort());
+    // Hand-written fields survive; the only new key is the derived provider_endpoints_all.
+    expect(Object.keys(await file('wizard-connection-router')).sort()).toEqual([...Object.keys(router), 'provider_endpoints_all'].sort());
     await store.change({ kind: 'app', from: 'wizard-calendar', to: 'wizard-connectors' }, false);
     const legacy = JSON.parse(await fs.readFile(path.join(root, 'repos/wizardapps/apps/.calendar-grants/provider/grants.json'), 'utf8'));
     expect(legacy.incoming).toEqual([]);

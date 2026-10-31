@@ -1214,7 +1214,7 @@ def build(c, rt=None, extra=(), on: bool | None = None, fresh=()) -> tuple[dict,
                   if isinstance(v, dict)}
     except (OSError, ValueError):
         chosen = {}
-    multi = {k for k, v in _slots.load_defaults().items() if (v or {}).get("multi")}
+    multi = _slots.multi_slots()
     p = plan(apps, grants, ext, on=enabled(c.home) if on is None else on, slot_choice=chosen, multi_slots=multi,
              approved=approved, state=state, mode=connection_mode(state))
     p["state"] = state
