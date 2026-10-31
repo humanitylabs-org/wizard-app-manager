@@ -38,8 +38,13 @@ def test_names_and_staging_labels_pass(app_id, name):
 
 
 def test_legacy_ids_warn_but_do_not_fail():
-    r = _rule({"id": "cinequeue", "name": "Movies"})["app id is the app's name"]
+    r = _rule({"id": "wizard-ux", "name": "Wizard Shell"})["app id is the app's name"]
     assert r["ok"] is True and r["severity"] == "warning"
+
+
+@pytest.mark.parametrize('app_id', ['cinequeue', 'usuals', 'outline-streaming-demo', 'wizard-connectors', 'voice-outline'])
+def test_migrated_app_exceptions_cannot_return(app_id):
+    assert app_id not in app_standard.LEGACY_IDS
 
 
 def test_renamed_from_must_list_other_ids():

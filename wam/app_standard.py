@@ -34,8 +34,7 @@ def _spec(root, value):
 # each moves to its name with a release that sets `renamed_from` (see app_rename). Never add to this list: a new app
 # is named for what it is called.
 LEGACY_IDS = frozenset({
-    "cinequeue", "usuals", "outline-streaming-demo", "wizard-connectors",   # Movies, Food, Outline, Connected accounts
-    "voice-outline", "mizel", "hermes-frontend-3", "smart-home", "wizard-ux",
+    "mizel", "hermes-frontend-3", "smart-home", "wizard-ux",
 })
 # A trailing "(test)", "(preview)", "(agent)"... in a name labels a staging copy, not a different app.
 STAGING = re.compile(r"\s*\((?:[^()]*\s)?(test|preview|next|beta|alpha|agent|demo)\)\s*$", re.I)
