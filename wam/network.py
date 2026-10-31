@@ -386,7 +386,9 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
             "exposed": str(labels.get("traefik.enable", "")).lower() == "true",
         }
     uses = [str(u) for u in (w.get("uses") or []) if isinstance(u, str)]
+    rf = w.get("renamed_from")
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
+           "renamed_from": [str(x) for x in (rf if isinstance(rf, list) else [rf] if isinstance(rf, str) else [])],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
            "host_access": host_access(rdoc, app_id, store), "wizard": kinds.fields(w)}
     taken = sorted({n for s in services.values() for n in s["docker_networks"] if ours(n)})
@@ -424,7 +426,19 @@ def read_apps(runtipi_root: Path, store: str, ids, extra=(), fresh=()) -> list[d
     for app_id in sorted(set(ids) | set(extra)):
         if ID.fullmatch(app_id) and (a := read_app(runtipi_root, store, app_id, fresh=app_id in fresh)):
             out.append(a)
-    return out
+    return follow_renames(out)
+
+
+def follow_renames(apps: list[dict]) -> list[dict]:
+    """An app that still `uses:` a provider by the id it had before app ids followed app names (wizard-connectors)
+    uses the installed app that declares `renamed_from: [that id]` (connected-accounts), until its own next release
+    names the new id. An id that is itself installed is never redirected."""
+    have = {a["id"] for a in apps}
+    moved = {old: a["id"] for a in apps for old in a.get("renamed_from") or [] if old not in have}
+    for a in apps:
+        if any(u in moved for u in a.get("uses") or []):
+            a["uses"] = list(dict.fromkeys(moved.get(u, u) for u in a["uses"]))
+    return apps
 
 
 # ---------------------------------------------------------------- the plan (pure: unit-tested without Docker)
