@@ -1,7 +1,8 @@
 # Phone release mirror
 
 `wam phone-sync` fetches
-`https://raw.githubusercontent.com/humanitylabs-org/wizard-os/main/releases/phone/latest.json` and mirrors the
+`https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json`
+(the public mirror of the canonical wizard-os `releases/phone/latest.json`, beside the box snapshots; wizard-os itself is private, so boxes cannot read it) and mirrors the
 verified public Android release onto this box. It never installs anything, restarts a container, or changes a
 maintenance/update setting. This is independent of DECISIONS #91's `check`/apply policy.
 

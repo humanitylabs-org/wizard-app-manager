@@ -30,6 +30,44 @@ def _spec(root, value):
     return (u.scheme in {'http', 'https'} and bool(u.hostname) and not u.username) or _local(root, value)
 
 
+# Apps published before the naming rule whose id is not their name. Warned, never refused, so they keep updating;
+# each moves to its name with a release that sets `renamed_from` (see app_rename). Never add to this list: a new app
+# is named for what it is called.
+LEGACY_IDS = frozenset({
+    "cinequeue", "usuals", "outline-streaming-demo", "wizard-connectors",   # Movies, Food, Outline, Connected accounts
+    "voice-outline", "mizel", "hermes-frontend-3", "smart-home", "wizard-ux",
+})
+# A trailing "(test)", "(preview)", "(agent)"... in a name labels a staging copy, not a different app.
+STAGING = re.compile(r"\s*\((?:[^()]*\s)?(test|preview|next|beta|alpha|agent|demo)\)\s*$", re.I)
+
+
+def id_rows(doc: dict) -> list[dict]:
+    """The app id is the app's name in kebab-case (Connected accounts -> connected-accounts), optionally prefixed
+    `wizard-`. A staging copy may add its label: movies-next, search-preview, agent-philosopher. A renamed app's
+    `renamed_from` must list ids only."""
+    from .app_rename import ID, kebab
+    app_id, name = str(doc.get("id") or ""), str(doc.get("name") or "")
+    m = STAGING.search(name)
+    base = kebab(STAGING.sub("", name))
+    label = m.group(1).lower() if m else ""
+    ok_ids = {base, f"wizard-{base}"} if base else set()
+    for b in list(ok_ids):
+        ok_ids |= {f"{b}-next", f"{b}-preview", f"{b}-test"} | ({f"{b}-{label}", f"{label}-{b}"} if label else set())
+    rows = []
+    good = app_id in ok_ids
+    rows.append({"rule": "app id is the app's name", "ok": good or app_id in LEGACY_IDS,
+                 "severity": "warning" if app_id in LEGACY_IDS else "error",
+                 "detail": "" if good else f"id {app_id!r} is not the name {name!r} in kebab-case "
+                 f"(use {base or 'a name'!r}; to rename an installed app keep the old id in renamed_from)"})
+    if "renamed_from" in doc:
+        rf = doc["renamed_from"]
+        rf = [rf] if isinstance(rf, str) else rf
+        ok = isinstance(rf, list) and bool(rf) and all(isinstance(x, str) and ID.fullmatch(x) and x != app_id for x in rf)
+        rows.append({"rule": "renamed_from lists earlier app ids", "ok": ok, "severity": "error",
+                     "detail": "" if ok else "renamed_from must be a list of earlier ids, not this app's own id"})
+    return rows
+
+
 def check(root: Path, doc: dict) -> list[dict]:
     rows = []
     def rule(name, ok, detail='', warning=False):

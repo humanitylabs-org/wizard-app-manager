@@ -329,7 +329,10 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
 # ---------------------------------------------------------------- commands
 
 def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: bool = True, _seen: set | None = None,
-            _split: bool = False, _record: dict | None = None, allow_host_access: bool = False) -> dict:
+            _split: bool = False, _record: dict | None = None, allow_host_access: bool = False,
+            _form_base: dict | None = None) -> dict:
+    """`_form_base`: saved App Manager settings that win over the built form (an app moving to a new id keeps its
+    port, exposure flags and values; see app_rename)."""
     release_pins.load()  # also covers callers that supply their own Config
     _seen = _seen if _seen is not None else set()
     if app_id in _seen:
@@ -381,6 +384,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
         _network.set_host_access_allowed(c.home, app_id, True)
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
+    if _form_base:
+        form = {**form, **_form_base}
     role = alongside_role(rec, app_id)
     if role in ("service", "shell") and alongside.LEGACY_BUNDLE in have and not _split:
         raise SystemExit(f"this box runs the {alongside.LEGACY_BUNDLE} bundle (the shell and the Agent Service in one). "
@@ -2140,7 +2145,20 @@ def main(argv: list[str] | None = None) -> int:
     aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
     aug.add_argument("--ensure-timer", action="store_true")
     au.add_argument("--dry-run", action="store_true", help="with --apply: list what would be updated")
+    rn = sub.add_parser("app-rename", help="move an installed app to the new id its source publishes "
+                                           "(wizard.md renamed_from); no args: list the renames that are due")
+    rn.add_argument("old", nargs="?"); rn.add_argument("new", nargs="?")
+    rn.add_argument("--dry-run", action="store_true", help="check and show the plan; change nothing")
+    rn.add_argument("--repo", metavar="OWNER/NAME", help="take the new release from this repo (the app moved to its own "
+                                                         "repo); default: the old app's own source")
     args = ap.parse_args(argv)
+    if args.cmd == "app-rename":
+        from . import app_rename
+        c = Config()
+        res = (app_rename.migrate(c, args.old, args.new, dry_run=args.dry_run, repo=args.repo) if args.old
+               else {"due": app_rename.due(c)})
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     if args.cmd == "phone-sync":
         from . import phone_sync
         c = Config()

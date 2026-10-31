@@ -224,3 +224,15 @@ def test_production_asset_contract(mirror):
     assert ps.validate(pointer) == pointer
     with pytest.raises(ValueError):
         ps.validate(mirror.pointer)
+
+
+def test_default_pointer_is_public_mirror_beside_box_snapshots():
+    # wizard-os is private: a pointer there 404s on every box (regression, 31 Oct 2026).
+    from wam import updates
+    assert ps.POINTER == updates.RELEASE_BASE + '/phone/latest.json'
+
+
+def test_published_mirror_pointer_validates():
+    import json
+    pointer = json.loads((Path(__file__).resolve().parents[1] / 'releases/phone/latest.json').read_text())
+    assert ps.validate(pointer)['app'] == 'ai.wizards.os'

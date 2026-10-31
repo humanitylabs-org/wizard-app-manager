@@ -256,6 +256,7 @@ def check_app(root, proposal=False):
     if wizardmd.passed(approved):
         doc = wizardmd.front_matter((root / 'wizard.md').read_text())
         rows += confinement_rows(root, doc)
+        rows += app_standard.id_rows(doc)
         if proposal:
             rows += app_standard.check(root, doc)
     return {'ok': all(r['ok'] or r['severity'] == 'warning' for r in rows),
