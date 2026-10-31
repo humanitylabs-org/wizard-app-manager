@@ -265,6 +265,28 @@ def _new_record(c, old: str, new: str) -> dict:
         from . import test_catalog
         if not test_catalog.resolve(new) and new not in c.private_apps:
             return private.prepare(c.runtipi_root, cli.STORE, src["repo"], expected_id=new)
+    src_repo = src.get("repo")
+    repo = src_repo if isinstance(src_repo, str) and "/" in src_repo else None
+    if repo and not src.get("private") and not src.get("local"):
+        from . import index
+        try:
+            rec = index.resolve(c.index, repo)   # the same source the old app came from, never a namesake
+        except (index.IndexError_, OSError, ValueError):
+            rec = None
+        if rec and rec.get("id") == new:
+            # The publisher usually renames the repo too (GitHub redirects the old name), so the index may list the
+            # same commit under both names; record the current name.
+            sha = (rec.get("install") or {}).get("commit")
+            for h in (index.search(c.index, id=new) if sha else []):
+                if h.get("repo") in (None, rec.get("repo")):
+                    continue
+                try:
+                    other = index.resolve(c.index, h["repo"])
+                except (index.IndexError_, OSError, ValueError):
+                    continue
+                if (other.get("install") or {}).get("commit") == sha and other.get("id") == new:
+                    return other
+            return rec
     return cli.resolve_any(c, new)
 
 
