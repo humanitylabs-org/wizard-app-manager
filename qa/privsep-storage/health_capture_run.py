@@ -232,7 +232,10 @@ def seal(stage):
         assert comp['files'][n]['sha256'] == digest(stage / n)
     retained = retained_snapshot(helpers)
     put(stage / 'retained.json', retained); (stage / 'retained.json').chmod(0o400)
+    for n in SEALED:
+        (stage / n).chmod(0o400)          # final mode BEFORE recording it
     files = {n: member(stage / n) for n in sorted(SEALED + ('retained.json',))}
+    assert all(row['mode'] == 0o400 for row in files.values())
     product = hashlib.sha256(json.dumps(product_rows(rows), sort_keys=True).encode()).hexdigest()
     doc = {'schema': 'privsep-health-capture-v1', 'label': 'current-upstream-sealed-at-run',
            'revision': revision, 'branch': 'qa/storage-contract-a-health-capture',
@@ -250,8 +253,6 @@ def seal(stage):
            'full_acceptance': False, 'retries': 0, 'files': files}
     raw = json.dumps(doc, sort_keys=True, indent=2) + '\n'
     (stage / 'manifest.json').write_text(raw); (stage / 'manifest.json').chmod(0o400)
-    for n in files:
-        (stage / n).chmod(0o400)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
