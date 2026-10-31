@@ -158,6 +158,15 @@ def _selection_pinned(runtipi_root: Path, store: str, app_id: str) -> bool:
     return (runtipi_root / "repos" / store / "apps" / app_id / ".wizard-selection").is_file()
 
 
+def display_name(runtipi_root: Path, store: str, app_id: str) -> str:
+    """The name the owner knows the app by (its store recipe's `name`, e.g. Movies), never the internal id."""
+    try:
+        name = json.loads((Path(runtipi_root) / "repos" / store / "apps" / app_id / "config.json").read_text()).get("name")
+    except (OSError, ValueError, AttributeError):
+        name = None
+    return name.strip() if isinstance(name, str) and name.strip() else app_id
+
+
 def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: Path | None = None,
                release_managed: set[str] | None = None) -> list[dict]:
     """Every installed app of the Wizard store with a newer version, and why it would be skipped (None = due)."""
@@ -187,7 +196,7 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
             skip = "failed"            # failed lately; waits for a newer version (or RETRY_DAYS)
         elif app.get("status") not in ("running", "stopped"):
             skip = f"busy:{app.get('status')}"
-        out.append({"id": app_id, "from": have, "to": latest, "to_version": meta.get("latestDockerVersion"),
+        out.append({"id": app_id, "name": display_name(runtipi_root, store, app_id), "from": have, "to": latest, "to_version": meta.get("latestDockerVersion"),
                     "status": app.get("status"), "skip": skip})
     return sorted(out, key=lambda r: r["id"])
 
@@ -352,18 +361,23 @@ def _notify(c, title: str, message: str, priority: str = "default", required: bo
 
 
 def _summary(done: list, rolled: list, failed: list, needs: list) -> tuple[str, str, str] | None:
+    """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue)."""
     if not (done or rolled or failed or needs):
         return None
+
+    def nm(r: dict) -> str:
+        return r.get("name") or r["id"]
+
     parts = []
     if done:
-        parts.append("Updated " + ", ".join(f"{d['id']} ({d['to_version'] or d['to']})" for d in done) + ".")
+        parts.append("Updated " + ", ".join(f"{nm(d)} ({d['to_version'] or d['to']})" for d in done) + ".")
     if rolled:
-        parts.append("Kept the previous version of " + ", ".join(r["id"] for r in rolled)
+        parts.append("Kept the previous version of " + ", ".join(nm(r) for r in rolled)
                      + " because the new one did not work; it is tried again when a newer version ships.")
     if needs:
-        parts.append("Waiting for you: " + "; ".join(f"{n['id']}: {n['reason']}" for n in needs) + ".")
+        parts.append("Waiting for you: " + "; ".join(f"{nm(n)}: {n['reason']}" for n in needs) + ".")
     if failed:
-        parts.append("Could not update " + "; ".join(f"{f['id']}: {f['reason']}" for f in failed)
+        parts.append("Could not update " + "; ".join(f"{nm(f)}: {f['reason']}" for f in failed)
                      + ". Ask your Wizard to look at it.")
     bad = rolled or failed or needs
     title = "App updates need a look" if bad else (f"{len(done)} app{'s' if len(done) != 1 else ''} updated")
