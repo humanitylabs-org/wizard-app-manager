@@ -597,3 +597,9 @@ Channel: on latest only.
 Canonical: wizard-os releases/0.3.97.json (release train). SHA256: `f3ac792b42d4d514ecd8acb710064238278f052482af1ea9f95e72b4f276ea2d`.
 Latest 0.3.96 with Wizard UX cd54ef60 -> d11ac30f. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key. Stable stays 0.3.94 until the installed upgrade test passes.
 Channel: on latest only.
+
+## 0.3.98 provenance
+
+Canonical: wizard-os releases/0.3.98.json (release train). SHA256: `773c51f98709385b75c3e76001584c970a819f915e6ac06dd58a119b76134628`.
+Latest 0.3.97 with Wizard UX d11ac30f -> d2bef7dc, Agent Service 9233c199 -> 9cea1291. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved). Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
