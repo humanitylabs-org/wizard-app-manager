@@ -316,3 +316,18 @@ def test_dry_run_changes_nothing(box):
     snap = dict(fs.files)
     res = ar.migrate(c, "cinequeue", "movies", dry_run=True)
     assert res["dry_run"] and res["port"] == 9234 and fs.files == snap and not installs and not rt.calls
+
+
+def test_new_record_prefers_the_renamed_repo_with_the_same_commit(tmp_path, monkeypatch):
+    from wam import index
+    c = _box(tmp_path, {"cinequeue": {"repo": "humanitylabs-org/cinequeue", "index": "x"}})
+    recs = {"humanitylabs-org/cinequeue": {"id": "movies", "repo": "humanitylabs-org/cinequeue", "install": {"commit": "a"}},
+            "humanitylabs-org/movies": {"id": "movies", "repo": "humanitylabs-org/movies", "install": {"commit": "a"}},
+            "someone/movies": {"id": "movies", "repo": "someone/movies", "install": {"commit": "b"}}}
+    monkeypatch.setattr(index, "resolve", lambda idx, ref: recs[ref])
+    monkeypatch.setattr(index, "search", lambda idx, id: [{"repo": "someone/movies"}, {"repo": "humanitylabs-org/cinequeue"},
+                                                           {"repo": "humanitylabs-org/movies"}])
+    assert ar._new_record(c, "cinequeue", "movies")["repo"] == "humanitylabs-org/movies"
+    del recs["humanitylabs-org/movies"]
+    monkeypatch.setattr(index, "search", lambda idx, id: [{"repo": "someone/movies"}])
+    assert ar._new_record(c, "cinequeue", "movies")["repo"] == "humanitylabs-org/cinequeue"   # never a namesake
