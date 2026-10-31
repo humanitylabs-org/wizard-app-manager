@@ -170,6 +170,11 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
     from . import links
     links.apply_to_registry(reg, c.home)   # published apps open at their private-network address, not loopback
+    try:   # each app's own launcher silhouette, asked from the running app (registry.resolve_icons)
+        previous = json.loads((c.home / "apps.json").read_text()) if (c.home / "apps.json").is_file() else {}
+    except (OSError, ValueError):
+        previous = {}
+    registry.resolve_icons(reg, previous)
     try:   # the Connections view: declared connections + a live check of Docker's networks (wam/network.py)
         from . import network
         reg["connections"] = network.report(c, rt)
