@@ -33,8 +33,8 @@ export class AppLifecycleController {
 
   @Post(':urn/restart')
   @ApiResponse({ type: LifecycleRequestDto })
-  async restartApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.restartApp({ appUrn: castAppUrn(urn) });
+  async restartApp(@Param('urn') urn: string, @Body() body?: AppFormBody) {
+    const res = await this.appLifecycleService.restartApp({ appUrn: castAppUrn(urn), skipPull: body?.skipPull });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
