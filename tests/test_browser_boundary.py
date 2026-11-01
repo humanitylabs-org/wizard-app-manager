@@ -50,7 +50,7 @@ def store(tmp_path, monkeypatch):
 
     def request(method, path, extra=None):
         h = http.client.HTTPConnection('127.0.0.1', server.server_port)
-        headers = {'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.example.test',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.example.test',
                    'X-Wizard-Store': '1', 'Content-Type': 'application/json'}
         headers.update(extra or {})
         h.request(method, path, '{}' if method == 'POST' else None, headers)
@@ -67,7 +67,7 @@ def store(tmp_path, monkeypatch):
 def test_all_store_owner_routes_are_gated_before_side_effects(store):
     _, request, calls = store
     for method in ('GET', 'POST'):
-        for path in ('/_recommended', '/_updates', '/_slots/chats', '/_views/reader', '/wisdom'):
+        for path in ('/_recommended', '/_updates', '/_slots/chats', '/_views/reader', '/_connections', '/_remove/demo/plan', '/_remove/demo', '/wisdom'):
             code, body = request(method, path)
             assert code == 401, (method, path, code, body)
             assert b'shell_token_required' in body
@@ -82,6 +82,7 @@ def test_all_store_owner_routes_are_gated_before_side_effects(store):
 def test_token_does_not_replace_owner_or_peer_gate(store, monkeypatch):
     _, request, calls = store
     assert request('POST', '/_recommended', {'X-Wizard-Shell-Token': TOKEN, 'Tailscale-User-Login': 'other@example.test'})[0] == 403
+    assert request('POST', '/_recommended', {'X-Wizard-Shell-Token': TOKEN, 'X-Forwarded-For': '100.64.0.1'})[0] == 403
     monkeypatch.setattr(store_install, 'peer_uid', lambda _: 1000)
     assert request('POST', '/_recommended', {'X-Wizard-Shell-Token': TOKEN})[0] == 403
     assert calls == []
