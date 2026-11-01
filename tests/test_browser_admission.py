@@ -168,3 +168,24 @@ def test_unreadable_grants_never_widen_access(box):
     (box.c.home / 'browser-grants.json').write_text('{not json')
     b = box.app(box.write())
     assert b['granted'] == [] and b['admissible'] is False and b['reason'] == 'grants_unreadable'
+
+
+def test_fixture_tool_uses_the_real_writer_and_never_reuses_installations(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    tool = Path(__file__).resolve().parents[1] / 'tools' / 'browser_admission_fixture.py'
+    run = lambda *a: subprocess.run([sys.executable, str(tool), str(tmp_path), *a], check=True, capture_output=True, text=True)
+    read = lambda: json.loads((tmp_path / 'home' / 'apps.json').read_text())
+    run('install', 'notifications')
+    run('grant', 'notifications', 'notifications.list')
+    first = read()['apps'][0]['browser']
+    assert first['admissible'] and first['granted'] == ['notifications.list']
+    assert json.loads((tmp_path / 'runtipi' / 'app-data' / 'wizard-os' / 'apps.json').read_text())['apps'][0]['browser'] == first
+    run('uninstall', 'notifications')
+    assert read()['apps'] == []
+    run('install', 'notifications')
+    again = read()['apps'][0]['browser']
+    assert again['installation_id'] != first['installation_id'] and again['granted'] == [] and not again['admissible']
+    bad = subprocess.run([sys.executable, str(tool), str(tmp_path), 'grant', 'notifications', 'owner.fetch'], capture_output=True, text=True)
+    assert bad.returncode != 0 and 'declares' in bad.stderr

@@ -57,7 +57,11 @@ def main(argv=None) -> int:
         (d / '.wizard-commit').write_text(a.commit + '\n')
         old = [r for r in rows if r['info']['urn'] == f'{a.app}:wizardapps']
         if a.action == 'install' or not old:
-            serial = max([r['app']['id'] for r in rows] or [0]) + 1
+            # Runtipi row ids are a serial: never reused after uninstall, so a reinstall is a new installation.
+            counter = base / 'next-serial'
+            serial = int(counter.read_text()) if counter.is_file() else 1
+            counter.parent.mkdir(parents=True, exist_ok=True)
+            counter.write_text(str(serial + 1))
             rows = [r for r in rows if r not in old] + [{'app': {'id': serial, 'createdAt': 1761955200 + serial,
                                                                   'status': 'running', 'port': a.port},
                                                          'info': {'urn': f'{a.app}:wizardapps'}}]
