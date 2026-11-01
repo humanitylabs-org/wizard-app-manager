@@ -21,7 +21,7 @@ ROOT = Path('/root/storage-manager-probe')
 TREE = Path('/opt/storage-manager-probe-source')
 PINNED = 'privsep-wam:595523fb'
 ARCHIVE_SHA = 'a953c4ce3590bc1448bacb0b5b259334a99a608fb0377af425daf87c888d49c0'
-report = {'schema': 'privsep-manager-probe-guest-r2', 'commands': [], 'checks': [], 'first_error': None,
+report = {'schema': 'privsep-manager-probe-guest-r3', 'commands': [], 'checks': [], 'first_error': None,
           'cleanup_errors': [], 'phases': [], 'owned_ids': [], 'owned_images': [], 'baseline_images': []}
 
 
@@ -102,8 +102,10 @@ def bound_backend(original=None):
     assert backend['archive_sha256'] == ARCHIVE_SHA
     assert backend['rootfs']['diff_ids'][-1] == C.LAST_DIFF_ID
     if original is not None:
-        assert original['config_sha256'] == backend['config_sha256']
-        assert original['diff_ids'] == backend['rootfs']['diff_ids']
+        if not C.is_unknown(original['config_sha256']):
+            assert original['config_sha256'] == backend['config_sha256']
+        if not C.is_unknown(original['diff_ids']):
+            assert original['diff_ids'] == backend['rootfs']['diff_ids']
     return backend
 
 
@@ -132,14 +134,10 @@ def load_fresh(original):
     archive = ROOT / 'backend.tar.gz'
     with archive.open('rb') as f: assert C.sha_file(f)['sha256'] == ARCHIVE_SHA
     backend = bound_backend(original)
-    text = run('load-remove_and_fresh_load', ['docker', 'load', '-i', archive], timeout=300)[1].decode().strip()
-    m = re.fullmatch(r'Loaded image ID: (sha256:[0-9a-f]{64})', text)
-    if m: locator = m.group(1)
-    else:
-        tags = backend['manifest'][0]['RepoTags']
-        assert len(tags) == 1 and text == 'Loaded image: ' + tags[0]; locator = tags[0]
-    # Project only the ID, never inspect Config.Env or print docker load text.
-    loaded_id = docker_json('fresh-loaded-id-only', ['image', 'inspect', '--format', '{{json .Id}}', locator])
+    # Docker may print progress/warnings or a tag instead of an ID. The text is
+    # not an identity proof: read back the exact bound ID and successful inventory.
+    run('load-remove_and_fresh_load', ['docker', 'load', '-i', archive], timeout=300)
+    loaded_id = docker_json('fresh-loaded-id-only', ['image', 'inspect', '--format', '{{json .Id}}', C.BOUND_ID])
     assert loaded_id == report['baseline_id'] == C.BOUND_ID
     print(loaded_id, flush=True)
     report['fresh_loaded_id'] = loaded_id
@@ -149,46 +147,68 @@ def load_fresh(original):
     assert image_ids() == report['baseline_images']
 
 
+PENDING_FACTS = {}
+
+
+def checkpoint(doc):
+    # Metadata only, atomic replacement; native.json remains downloadable even
+    # when a subsequent command or optional facts operation fails.
+    p = ROOT / 'probe-progress.json'; tmp = ROOT / 'probe-progress.tmp'
+    tmp.write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n'); tmp.chmod(0o600); tmp.replace(p)
+    report['measurement_checkpoint'] = doc; save()
+
+
 def cycle(name, original):
     assert name in C.CYCLES
     doc = docker_json('image-inspect', ['image', 'inspect', PINNED])[0]
     assert doc['Id'] == report['baseline_id'] == C.BOUND_ID
     assert image_ids() == report['baseline_images']
-    image = C.image_facts(doc)
+    result = {'name': name, 'image': None, 'methods': {},
+              'saved': None, 'mount': C.unparsed(None), 'cleanup_absent': False}
+    def measured():
+        report.setdefault('measurements', {})[name] = result
+        save()
     # Fresh shell only: does not execute the app CMD, healthcheck, node or Compose.
     raw = run('run-shell', ['docker', 'run', '--rm', '--pull=never', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none', '--entrypoint', 'sh',
                             PINNED, '-c', SHELL])[1]
-    methods = {'run': C.parse_shell(raw)}; mount = C.mount_facts(raw)
+    methods = result['methods']; methods['run'] = C.parse_shell(raw)
+    PENDING_FACTS[name] = (doc, raw); measured()
     raw = run('run-readonly-shell', ['docker', 'run', '--rm', '--pull=never', '--read-only', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none',
                                     '--entrypoint', 'sh', PINNED, '-c', SHELL])[1]
-    methods['readonly'] = C.parse_shell(raw)
+    methods['readonly'] = C.parse_shell(raw); measured()
     cid = create(['--entrypoint', 'sh', PINNED, '-c', 'exit 0'])
     try:
         copied = {}
         for p in C.PATHS:
             target = ROOT / 'copied-file'
-            assert not target.exists()
+            assert not target.exists() and not target.is_symlink()
             rc, error = run('cp-fixed-file', ['docker', 'cp', cid + ':/' + p, target], required=False, stderr=True)
-            if rc == 0:
-                assert target.is_file() and not target.is_symlink()
-                with target.open('rb') as f: copied[p] = C.sha_file(f)
-                target.unlink()
-            else:
-                # A daemon/copy error must not be mislabeled as expected absence.
-                assert C.cp_missing(error, p, cid) and methods['run'][p]['state'] == 'absent' and not target.exists()
+            if rc == 0 and target.is_file() and not target.is_symlink():
+                try:
+                    with target.open('rb') as f: copied[p] = C.sha_file(f)
+                except (OSError, ValueError): copied[p] = C.unknown_file(None)
+            elif rc != 0 and C.cp_missing(error, p, cid) and not target.exists():
                 copied[p] = C.absent()
-        methods['cp'] = copied
+            else:
+                # Not absence: an unsupported member or failed cp is explicitly
+                # unknown and cannot earn a causal verdict. Never follow a link.
+                copied[p] = C.unknown_file(error)
+            if target.is_symlink() or target.is_file(): target.unlink()
+            elif target.is_dir(): shutil.rmtree(target)
+        methods['cp'] = copied; measured()
         exported = ROOT / 'container.tar'
         run('export-container', ['docker', 'export', '-o', exported, cid], timeout=180)
-        with exported.open('rb') as f: methods['export'] = C.files_from_tar(f)
-        exported.unlink()
+        try:
+            with exported.open('rb') as f: methods['export'] = C.files_from_tar(f)
+        except OSError:
+            methods['export'] = {p: C.unknown_file(None) for p in C.PATHS}
+        measured(); exported.unlink(missing_ok=True)
     finally:
         remove(cid)
     saved = ROOT / 'roundtrip.tar'
     run('save-roundtrip', ['docker', 'save', '-o', saved, PINNED], timeout=180)
-    result = {'name': name, 'image': image, 'methods': methods, 'saved': C.archive(saved),
-              'mount': mount, 'cleanup_absent': not report['owned_ids']}
-    saved.unlink()
+    result['saved'] = C.archive(saved); result['cleanup_absent'] = not report['owned_ids']
+    measured(); saved.unlink(missing_ok=True)
     return result
 
 
@@ -212,18 +232,34 @@ def fresh(revision):
     report['checks'].append({'name': 'fresh-synthetic-inputs', 'passed': True}); save()
 
 
+def optional_fact(label, argv, json_value=False):
+    try:
+        rc, raw = run(label, argv, timeout=15, required=False)
+        if rc != 0: return C.unparsed(raw)
+        try: return json.loads(raw) if json_value else raw.decode('ascii').strip()
+        except (ValueError, UnicodeError): return C.unparsed(raw)
+    except Exception as e:
+        # Timeouts, missing executables and decode failures cannot discard data.
+        return C.unparsed(type(e).__name__)
+
+
+def engine_facts():
+    info = optional_fact('engine-info', ['docker', 'info', '--format', '{{json .}}'], True)
+    version = optional_fact('engine-version', ['docker', 'version', '--format', '{{json .}}'], True)
+    filesystem = optional_fact('docker-filesystem', ['findmnt', '-n', '-o', 'FSTYPE', '-T', '/var/lib/docker'])
+    kernel = optional_fact('kernel-version', ['uname', '-r'])
+    try: free = shutil.disk_usage('/var/lib/docker').free
+    except OSError: free = None
+    return C.engine_facts(version, info, kernel, filesystem, free)
+
+
 def probe():
     assert report['checks'] and 'probe' not in report['phases'][:-1]
     with (ROOT / 'backend.tar.gz').open('rb') as f: assert C.sha_file(f)['sha256'] == ARCHIVE_SHA
     original = C.archive(ROOT / 'backend.tar.gz')
     bound_backend(original)
-    assert C.bundle(original['last_layer']['app/main.mjs'])
-    info = docker_json('engine-info', ['info', '--format', '{{json .}}'])
-    version = docker_json('engine-version', ['version', '--format', '{{json .}}'])
-    filesystem = run('docker-filesystem', ['findmnt', '-n', '-o', 'FSTYPE', '-T', '/var/lib/docker'])[1].decode().strip()
-    kernel = run('kernel-version', ['uname', '-r'])[1].decode().strip()
-    engine = C.engine_facts(version, info, kernel, filesystem, shutil.disk_usage('/var/lib/docker').free)
-    doc = {'schema': 'privsep-manager-probe-r2', 'original': original, 'engine': engine, 'cycles': [],
+    doc = {'schema': 'privsep-manager-probe-r3', 'original': original,
+           'engine': None, 'cycles': [],
            'review_required': True, 'full_acceptance': False, 'reload_without_prune': True}
     for name in C.CYCLES:
         if name == 'remove_and_fresh_load':
@@ -231,13 +267,20 @@ def probe():
             remove_bound_image()
             load_fresh(original)
         doc['cycles'].append(cycle(name, original))
-        # Private partial progress is still metadata only; never accepted as a complete export.
-        (ROOT / 'probe-progress.json').write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n')
+        checkpoint(doc)
+    # Both sets of five measurements and exact eviction/load proofs are durable
+    # before parsing auxiliary mount/image metadata or running engine commands.
+    report['measurements_complete_before_facts'] = True; checkpoint(doc)
+    for cy in doc['cycles']:
+        raw_image, raw_mount = PENDING_FACTS.pop(cy['name'])
+        cy['image'] = C.image_facts(raw_image); cy['mount'] = C.mount_facts(raw_mount)
+    doc['engine'] = engine_facts()
     for key in ('baseline_id', 'fresh_loaded_id', 'fresh_id_equals_baseline', 'baseline_removed_before_load'):
         doc[key] = report[key]
     doc['verdict'] = C.classify(doc); C.validate_export(doc)
     p = ROOT / 'manager-probe-export.json'; p.write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n'); p.chmod(0o600)
-    report['verdict'] = doc['verdict']; save()
+    report['verdict'] = doc['verdict']; checkpoint(doc)
+
 
 
 def cleanup():

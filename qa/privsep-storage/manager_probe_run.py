@@ -46,7 +46,8 @@ RETAINED = (OLD / 'evidence', SIGNED, PRIOR / 'evidence',
             STAGES / 'fa42a49b7ec68447fb7caa3c356c24553bf49757-classifier-refinement',
             Path('/srv/work/privsep/storage-zombie-reap/398dc28fa0f39e7fd469e52e0eaa309b8dc7af78/evidence'),
             HC, DISCRIMINATOR, STAGES / '195b1e6df6f73858f4a1472605374a1207e5ee57-manager-trace',
-            STAGES / 'a6aa893bf5a845f4064447c62c846f9b41d2fe7a-manager-probe')
+            STAGES / 'a6aa893bf5a845f4064447c62c846f9b41d2fe7a-manager-probe',
+            STAGES / 'ce40456e37591ad4e4e5165ffbeb91204ee6a187-manager-probe')
 BACKEND_ARCHIVE = Path('/srv/work/privsep/integrated/20261029T161239Z-595523fb-context-proof/evidence/new-backend-image.tar.gz')
 BACKEND_ARCHIVE_SHA = 'a953c4ce3590bc1448bacb0b5b259334a99a608fb0377af425daf87c888d49c0'
 BACKEND_ID = 'sha256:1c10570477becada8c613a55ff402f12b49d54e74fd9e16fefba678d57ead426'
@@ -230,8 +231,8 @@ def seal(stage):
     files = {n: member(stage / n) for n in sorted(SEALED + ('retained.json',))}
     assert all(row['mode'] == 0o400 for row in files.values())
     product = hashlib.sha256(json.dumps(product_rows(rows), sort_keys=True).encode()).hexdigest()
-    doc = {'schema': 'privsep-manager-probe-r2', 'label': 'manager-import-probe',
-           'revision': revision, 'branch': 'qa/storage-contract-a-manager-probe-r2',
+    doc = {'schema': 'privsep-manager-probe-r3', 'label': 'manager-import-probe',
+           'revision': revision, 'branch': 'qa/storage-contract-a-manager-probe-r3',
            'product_source_revision': '610716410029f2f70fe4233102584c30e9b9022f',
            'product_lineage': 'f18dd0f -> 0ae73880 (bytes of 61071641)',
            'product_sha256': product, 'product_rows_equal_610': True, 'qa_delta_from_610': delta,
@@ -252,7 +253,7 @@ def validate(stage, expected, key=None, executing=False):
     assert re.fullmatch('[0-9a-f]{64}', expected) and digest(stage / 'manifest.json') == expected
     d = json.loads((stage / 'manifest.json').read_text())
     assert stage == STAGES / (d['revision'] + SUFFIX) and Path.cwd() == stage
-    assert d['schema'] == 'privsep-manager-probe-r2' and d['review_required'] and not d['full_acceptance']
+    assert d['schema'] == 'privsep-manager-probe-r3' and d['review_required'] and not d['full_acceptance']
     assert d['retries'] == 0 and d['install_sh_run'] is False
     assert (d['reserve_bytes'], d['pending_bytes'], d['max_new_allocation_bytes']) == (RESERVE, PENDING, MAX_NEW)
     assert not (stage / 'evidence').exists(), 'one-shot stage already entered'
