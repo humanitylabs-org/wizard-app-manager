@@ -93,12 +93,18 @@ def tooling():
 
 
 def source_contracts():
-    run(['node', '--test', 'tests/credential-grants-optout.test.mjs'], cwd=WAM)
+    p = run(['node', '--test', 'tests/credential-grants-optout.test.mjs'], cwd=WAM)
+    (OUT / 'node-injector.log').write_bytes(p.stdout + p.stderr)
+    assert b'# tests 24\n' in p.stdout and b'# pass 24\n' in p.stdout
+    for app in ('chatgpt', 'claude'):
+        p = run(['/usr/bin/python3', '-m', 'unittest', '-q', 'test_private_initialization'], cwd=HERE / 'sources' / app)
+        (OUT / (app + '-source.log')).write_bytes(p.stdout + p.stderr)
+        assert b'Ran 15 tests' in p.stderr and b'OK' in p.stderr
     output = OUT / 'vitest-optout.json'
     run(['bun', 'x', '--no-install', 'vitest', 'run', '--maxWorkers=1', '--reporter=json', '--outputFile=' + str(output),
          'src/modules/docker/__tests__/wizard-grants-optout.test.ts'], cwd=WAM / 'packages/backend')
     d = json.loads(output.read_text()); assert d['success'] and d['numTotalTests'] == d['numPassedTests'] == 28
-    return {'focused_backend_passed': 28, 'receipt': str(output)}
+    return {'injector_passed': 24, 'new_recipe_passed': 30, 'focused_backend_passed': 28, 'receipt': str(output)}
 
 
 def continuity():
@@ -302,8 +308,14 @@ def main():
         for scenario in ['fresh', 'existing', 'wrong-owner', 'populated-root', 'symlink', 'hardlink', 'fifo']:
             case('final-wam/' + scenario, lambda scenario=scenario: scenario_case(scenario))
     finally:
-        case('owned-cleanup', cleanup)
-        case('integrity-after', integrity)
+        try:
+            case('owned-cleanup', cleanup)
+        except Exception:
+            pass  # case records the failure; still write the red acceptance receipt.
+        try:
+            case('integrity-after', integrity)
+        except Exception:
+            pass
         expected = MANIFEST['expected_case_ids']; ids = [x['id'] for x in CASES]
         passed = sum(x['status'] == 'passed' for x in CASES)
         report = {'ok': len(ids) == len(set(ids)) and set(ids) == set(expected) and passed == len(expected),
