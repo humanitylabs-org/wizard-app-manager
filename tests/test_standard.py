@@ -116,6 +116,31 @@ def test_alongside_wiring_and_digest_pin_stay_allowed(tmp_path):
     assert standard.check_app(tmp_path, "demo")["state"] == "standard"
 
 
+def test_listed_private_source_does_not_exempt_local_override(tmp_path):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        "services:\n  demo:\n    pull_policy: never\n",
+        source={"repo": "o/demo", "source": "owner-private"})
+    result = standard.check_app(tmp_path, "demo", listed={"o/demo": "c" * 40})
+    assert result["state"] == "custom"
+    assert any("owner-private" in reason for reason in result["reasons"])
+    assert any("override runs" in reason for reason in result["reasons"])
+
+
+def test_policy_only_unknown_service_reports_without_crashing(tmp_path):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        "services:\n  extra:\n    pull_policy: never\n")
+    result = standard.check_app(tmp_path, "demo")
+    assert result["state"] == "custom"
+    assert "extra: service exists only in this box's override" in result["reasons"]
+
+
+def test_unknown_explicit_source_is_not_normalized(tmp_path):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        source={"repo": "o/demo", "source": "synthetic-unknown"})
+    result = standard.check_app(tmp_path, "demo", listed={"o/demo": "c" * 40})
+    assert result["state"] == "custom"
+
+
 def test_my_release_shell_is_personal(tmp_path):
     app(tmp_path, "wizard-ux", f"services:\n  wizard-ux:\n    image: {PIN}\n", "services:\n  wizard-ux:\n    image: wizard-ux:mine-1\n")
     (tmp_path / "home/bin").mkdir(parents=True)
