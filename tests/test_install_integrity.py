@@ -56,7 +56,7 @@ from pathlib import Path
 S = Path(%(state)r)
 st = json.loads(S.read_text())
 a = sys.argv[1:]
-st['calls'].append(a); 
+st['calls'].append(a)
 def done(code=0, out=''):
     S.write_text(json.dumps(st)); sys.stdout.write(out); sys.exit(code)
 def resolve(x):
