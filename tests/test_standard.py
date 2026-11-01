@@ -1,6 +1,9 @@
 """`wam standard`: names every way a box differs from what the Store ships."""
 import json
 from pathlib import Path
+
+import pytest
+
 from wam import standard
 
 PIN = "ghcr.io/o/app:1@sha256:" + "a" * 64
@@ -55,6 +58,62 @@ def test_index_decides_origin_and_flags_unpublished(tmp_path):
     assert r["mine"]["state"] == "unpublished"
     offline = states(tmp_path)   # no index: a private-labelled install is reported, never silently passed
     assert offline["mine"]["state"] == "custom"
+
+
+@pytest.mark.parametrize("source", ["owner-private", "link", "alpha-test"])
+def test_index_preserves_explicit_nonstandard_source(tmp_path, source):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        source={"repo": "O/Demo", "source": source})
+    result = standard.check_app(tmp_path, "demo", listed={"o/demo": "c" * 40})
+    assert result["state"] == "custom"
+    assert f"installed from a {source} source, not the Store listing" in result["reasons"]
+
+
+@pytest.mark.parametrize("source", ["owner-private", "link", "alpha-test"])
+def test_unlisted_own_app_stays_allowed(tmp_path, source):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        source={"repo": "o/demo", "source": source})
+    result = standard.check_app(tmp_path, "demo", listed={})
+    assert result["state"] == "unpublished"
+
+
+@pytest.mark.parametrize("image", ["ghcr.io/o/app:1", PIN, "${APP_IMAGE:-ghcr.io/o/app:1}"])
+def test_override_never_policy_inherits_recipe_image(tmp_path, image):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {image}\n",
+        "services:\n  demo:\n    pull_policy: never\n")
+    result = standard.check_app(tmp_path, "demo")
+    assert result["state"] == "custom"
+    resolved = standard._resolve(image)
+    assert f"demo: override runs {resolved[:60]} instead of the Store image" in result["reasons"]
+
+
+@pytest.mark.parametrize("policy", ["missing", "always"])
+def test_policy_only_pullable_override_stays_allowed(tmp_path, policy):
+    app(tmp_path, "demo", f"services:\n  demo:\n    image: {PIN}\n",
+        f"services:\n  demo:\n    pull_policy: {policy}\n")
+    assert standard.check_app(tmp_path, "demo")["state"] == "standard"
+
+
+def test_alongside_wiring_and_digest_pin_stay_allowed(tmp_path):
+    app(tmp_path, "demo", "services:\n  demo:\n    image: ghcr.io/o/app:1\n",
+        f"""services:
+  demo:
+    image: {PIN}
+    pull_policy: missing
+    user: '1000:1000'
+    group_add: ['1000']
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    environment:
+      WIZARD_HOST: 127.0.0.1
+      WIZARD_SETUP_MODE: alongside
+    volumes:
+      - /synthetic/media:/media
+    healthcheck:
+      test: ['CMD', 'true']
+""")
+    assert standard.check_app(tmp_path, "demo")["state"] == "standard"
 
 
 def test_my_release_shell_is_personal(tmp_path):

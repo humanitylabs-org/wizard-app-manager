@@ -72,8 +72,9 @@ def check_app(runtipi_root: Path, app_id: str, personal: set[str] | frozenset = 
     own = False
     if listed is not None:
         if repo in listed:
-            # Older installs recorded no source; a repo the index lists is a Store install whatever the label.
-            origin = "standard"
+            # Older installs recorded no source; only those labels can be inferred from the index.
+            if not src.get("source"):
+                origin = "standard"
             if commit and listed[repo] != commit:
                 notes.append(f"Store has a newer release ({listed[repo][:12]}); the nightly update moves it")
         else:
@@ -89,8 +90,10 @@ def check_app(runtipi_root: Path, app_id: str, personal: set[str] | frozenset = 
     override = _load(runtipi_root / "user-config" / STORE / app_id / "docker-compose.yml")
     for name, svc in (override.get("services") or {}).items():
         svc = svc or {}
-        if "image" in svc:
-            img = _resolve(svc["image"])
+        if "image" in svc or svc.get("pull_policy") == "never":
+            # Compose inherits the recipe image when an override changes only its pull policy.
+            base = (recipe.get("services") or {}).get(name) or {}
+            img = _resolve(svc.get("image", base.get("image", "")))
             if _local_image(img, svc.get("pull_policy")) or not REGISTRY_PIN.match(img):
                 reasons.append(f"{name}: override runs {img[:60]} instead of the Store image")
         for key in ("command", "entrypoint", "build"):
