@@ -111,7 +111,8 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         df = repo_path(posixpath.join(ctx or ".", str(b.get("dockerfile") or "Dockerfile")))
         if df is None or (ctx and not df.startswith(ctx + "/")):
             raise PackagingError(f"{name}: build.dockerfile must stay inside the context")
-        b["context"] = str(Path(target) / ctx) if ctx else str(target)
+        # Compose runs inside Runtipi; only daemon bind sources use the host namespace.
+        b["context"] = posixpath.join(_container_path(target), ctx) if ctx else _container_path(target)
         s["build"] = b
         s["image"] = f"wizard-local/{app}-{name}:{commit[:12]}"
         s["pull_policy"] = "build"
@@ -131,11 +132,16 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
 
 
 def _container_path(host: Path) -> str:
-    """<runtipi root>/app-data/... on the host is /data/app-data/... inside the Runtipi container."""
+    """Map the source root to Runtipi's /app-data mount, including external app-data bases.
+
+    Runtipi CLI v4.12.0 internal/assets/docker-compose.yml.tmpl mounts
+    ${RUNTIPI_APP_DATA_PATH:-.}/app-data:/app-data, not /data/app-data.
+    """
     parts = Path(host).parts
-    if "app-data" not in parts:
-        raise PackagingError(f"{host} is not under Runtipi's app-data")
-    return "/data/" + "/".join(parts[parts.index("app-data"):])
+    for i in range(len(parts) - 1):
+        if parts[i:i + 2] == ("app-data", SOURCE_ROOT):
+            return "/" + "/".join(parts[i:])
+    raise PackagingError(f"{host} is not under Runtipi's app-data/{SOURCE_ROOT}")
 
 
 def _copy_as_runtipi(src: Path, target: Path) -> None:
