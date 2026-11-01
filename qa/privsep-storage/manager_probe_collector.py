@@ -10,8 +10,11 @@ BUNDLE_SHA256 = 'b824d438aa844d0f1920c0e29a04f8f82986a81bbf812b53b5b8399b9a62ebb
 EMPTY_SHA256 = hashlib.sha256(b'').hexdigest()
 PATHS = ('app/main.mjs', 'app/main.js')
 METHODS = ('run', 'cp', 'export', 'readonly')
-CYCLES = ('first_load', 'second_load')
-VERDICTS = ('IMPORT_LOSES_CONTENT', 'MOUNT_LOSES_CONTENT', 'INCONSISTENT', 'NOT_REPRODUCED')
+CYCLES = ('as_found', 'remove_and_fresh_load')
+BOUND_ID = 'sha256:94cc09235bd65370eff851207b7ee52335098f078ed4f0a564d38d5aea7a5928'
+LAST_DIFF_ID = 'sha256:4a7d6b8643f5740cfd307bab4e97cec976dcd0a6e8d6facf80fff867a630d482'
+VERDICTS = ('BASELINE_IMAGE_DAMAGED_FRESH_LOAD_OK', 'FRESH_LOAD_ALSO_BAD',
+            'BASELINE_OK_FRESH_OK', 'BASELINE_OK_FRESH_BAD', 'INCONSISTENT')
 CAP = 4 * 1024**3
 
 
@@ -114,7 +117,11 @@ def token(value):
 def engine_facts(version, info, kernel, filesystem, free):
     statuses = dict(info.get('DriverStatus') or [])
     dtype = statuses.get('driver-type', '')
+    components = version['Server'].get('Components', [])
+    containerd = [x['Version'] for x in components if x.get('Name') == 'containerd']
+    need(len(containerd) == 1)
     return {'server_version': token(version['Server']['Version']), 'client_version': token(version['Client']['Version']),
+            'containerd_version': token(containerd[0]),
             'storage_driver': enum(info.get('Driver'), ('overlayfs', 'overlay2', 'overlay', 'vfs', 'btrfs', 'zfs')),
             'driver_status': {'driver_type': enum(dtype, ('io.containerd.snapshotter.v1',)),
                               'backing_filesystem': enum(statuses.get('Backing Filesystem'), ('extfs', 'ext4', 'xfs', 'btrfs', 'zfs', 'tmpfs')),
@@ -153,34 +160,45 @@ def empty(row):
 
 
 def classify(doc):
-    """Only unanimous, complete evidence earns a causal class. Drift is inconsistent."""
+    """Compare merged views before/after eviction; round-trip localizes store damage.
+
+    A correct save with bad merged views is still damage (snapshotter rather than
+    archive content). Mixed merged views, metadata drift, or contradictory saved
+    bytes do not earn a causal verdict. Complete failed commands never get here.
+    """
     original = doc['original']
-    if not bundle(original['last_layer']['app/main.mjs']):
+    if not bundle(original['last_layer']['app/main.mjs']) or original['diff_ids'][-1] != LAST_DIFF_ID:
         return 'INCONSISTENT'
-    per = []
+    if len(doc['cycles']) != 2 or [cy['name'] for cy in doc['cycles']] != list(CYCLES):
+        return 'INCONSISTENT'
+    good = []
     for cy in doc['cycles']:
         image, saved = cy['image'], cy['saved']
+        if (image['id'] != BOUND_ID or image['diff_ids'] != original['diff_ids'] or
+                saved['diff_ids'] != original['diff_ids']):
+            return 'INCONSISTENT'
         rows = [cy['methods'][m]['app/main.mjs'] for m in METHODS]
-        # main.js must have been whiteouted from the merged root, not resurrected.
+        if any(r != rows[0] for r in rows):
+            return 'INCONSISTENT'
         if any(cy['methods'][m]['app/main.js']['state'] != 'absent' for m in METHODS):
-            per.append('INCONSISTENT'); continue
+            return 'INCONSISTENT'
         last = saved['last_layer']['app/main.mjs']
-        if empty(last) and all(empty(r) for r in rows):
-            per.append('IMPORT_LOSES_CONTENT')
-        elif bundle(last) and all(empty(r) for r in rows):
-            per.append('MOUNT_LOSES_CONTENT')
-        elif bundle(last) and all(bundle(r) for r in rows):
-            per.append('NOT_REPRODUCED')
-        else:
-            per.append('INCONSISTENT')
-    return per[0] if len(per) == 2 and len(set(per)) == 1 else 'INCONSISTENT'
+        if last != rows[0] and not bundle(last):
+            return 'INCONSISTENT'
+        good.append(bundle(rows[0]))
+    return {(False, True): 'BASELINE_IMAGE_DAMAGED_FRESH_LOAD_OK',
+            (False, False): 'FRESH_LOAD_ALSO_BAD',
+            (True, True): 'BASELINE_OK_FRESH_OK',
+            (True, False): 'BASELINE_OK_FRESH_BAD'}[tuple(good)]
 
 
 def validate_export(doc):
     """Strict fixed schema; no arbitrary strings, paths, logs, Config.Env or tar members."""
-    need(set(doc) == {'schema', 'original', 'engine', 'cycles', 'verdict', 'review_required', 'full_acceptance', 'reload_without_prune'})
-    need(doc['schema'] == 'privsep-manager-probe-v1' and doc['review_required'] is True and doc['full_acceptance'] is False)
+    need(set(doc) == {'schema', 'original', 'engine', 'cycles', 'verdict', 'review_required', 'full_acceptance', 'reload_without_prune', 'baseline_id', 'fresh_loaded_id', 'fresh_id_equals_baseline', 'baseline_removed_before_load'})
+    need(doc['schema'] == 'privsep-manager-probe-r2' and doc['review_required'] is True and doc['full_acceptance'] is False)
     need(doc['reload_without_prune'] is True)
+    need(doc['baseline_id'] == doc['fresh_loaded_id'] == BOUND_ID)
+    need(doc['fresh_id_equals_baseline'] is True and doc['baseline_removed_before_load'] is True)
     def digest(v, prefix=''):
         need(isinstance(v, str) and re.fullmatch(prefix + '[0-9a-f]{64}', v) is not None)
     def diffs(v):
@@ -192,8 +210,8 @@ def validate_export(doc):
         for x in v['last_layer'].values(): file_row(x)
     arch(doc['original'])
     e = doc['engine']
-    need(set(e) == {'server_version', 'client_version', 'storage_driver', 'driver_status', 'containerd_image_store', 'snapshotter', 'kernel', 'docker_filesystem', 'guest_free_bytes'})
-    for k in ('server_version', 'client_version', 'kernel'): token(e[k])
+    need(set(e) == {'server_version', 'client_version', 'containerd_version', 'storage_driver', 'driver_status', 'containerd_image_store', 'snapshotter', 'kernel', 'docker_filesystem', 'guest_free_bytes'})
+    for k in ('server_version', 'client_version', 'containerd_version', 'kernel'): token(e[k])
     drivers = ('overlayfs', 'overlay2', 'overlay', 'vfs', 'btrfs', 'zfs', 'other')
     need(e['storage_driver'] in drivers and e['snapshotter'] in drivers)
     need(type(e['containerd_image_store']) is bool and type(e['guest_free_bytes']) is int and e['guest_free_bytes'] >= 0)

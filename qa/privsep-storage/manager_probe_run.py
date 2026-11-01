@@ -45,7 +45,8 @@ RETAINED = (OLD / 'evidence', SIGNED, PRIOR / 'evidence',
             STAGES / 'd102279c61a94b25ebd7aef4c6aa97172b6f702e-installer-forensics',
             STAGES / 'fa42a49b7ec68447fb7caa3c356c24553bf49757-classifier-refinement',
             Path('/srv/work/privsep/storage-zombie-reap/398dc28fa0f39e7fd469e52e0eaa309b8dc7af78/evidence'),
-            HC, DISCRIMINATOR, STAGES / '195b1e6df6f73858f4a1472605374a1207e5ee57-manager-trace')
+            HC, DISCRIMINATOR, STAGES / '195b1e6df6f73858f4a1472605374a1207e5ee57-manager-trace',
+            STAGES / 'a6aa893bf5a845f4064447c62c846f9b41d2fe7a-manager-probe')
 BACKEND_ARCHIVE = Path('/srv/work/privsep/integrated/20261029T161239Z-595523fb-context-proof/evidence/new-backend-image.tar.gz')
 BACKEND_ARCHIVE_SHA = 'a953c4ce3590bc1448bacb0b5b259334a99a608fb0377af425daf87c888d49c0'
 BACKEND_ID = 'sha256:1c10570477becada8c613a55ff402f12b49d54e74fd9e16fefba678d57ead426'
@@ -73,7 +74,7 @@ RUN_FLOOR = RESERVE + PENDING                      # 277191696384
 FILE_CAP = 6442450944
 ROOT = '/root/storage-manager-probe'
 TREE = '/opt/storage-manager-probe-source'
-ARMS_TIMEOUT = 1500   # two loads + four independent views per load; no application startup
+ARMS_TIMEOUT = 1500   # as-found + fresh-load views; no application startup
 ALARM = 2400          # + <=420s finally (cleanup/poweroff/stop) stays under the 3600s job timeout
 MONITOR_SECONDS = 2
 
@@ -229,8 +230,8 @@ def seal(stage):
     files = {n: member(stage / n) for n in sorted(SEALED + ('retained.json',))}
     assert all(row['mode'] == 0o400 for row in files.values())
     product = hashlib.sha256(json.dumps(product_rows(rows), sort_keys=True).encode()).hexdigest()
-    doc = {'schema': 'privsep-manager-probe-v1', 'label': 'manager-import-probe',
-           'revision': revision, 'branch': 'qa/storage-contract-a-manager-probe',
+    doc = {'schema': 'privsep-manager-probe-r2', 'label': 'manager-import-probe',
+           'revision': revision, 'branch': 'qa/storage-contract-a-manager-probe-r2',
            'product_source_revision': '610716410029f2f70fe4233102584c30e9b9022f',
            'product_lineage': 'f18dd0f -> 0ae73880 (bytes of 61071641)',
            'product_sha256': product, 'product_rows_equal_610': True, 'qa_delta_from_610': delta,
@@ -239,7 +240,7 @@ def seal(stage):
            'backend_engine_id': BACKEND_ENGINE_ID, 'backend_archive_sha256': BACKEND_ARCHIVE_SHA,
            'inherited': INHERITED, 'reserve_bytes': RESERVE, 'pending_bytes': PENDING,
            'max_new_allocation_bytes': MAX_NEW, 'start_floor_bytes': START_FLOOR, 'run_floor_bytes': RUN_FLOOR,
-           'arms_timeout_s': ARMS_TIMEOUT, 'alarm_s': ALARM, 'cycles': ['first_load', 'second_load'], 'install_sh_run': False, 'review_required': True,
+           'arms_timeout_s': ARMS_TIMEOUT, 'alarm_s': ALARM, 'cycles': ['as_found', 'remove_and_fresh_load'], 'install_sh_run': False, 'review_required': True,
            'full_acceptance': False, 'retries': 0, 'files': files}
     raw = json.dumps(doc, sort_keys=True, indent=2) + '\n'
     (stage / 'manifest.json').write_text(raw); (stage / 'manifest.json').chmod(0o400)
@@ -251,7 +252,7 @@ def validate(stage, expected, key=None, executing=False):
     assert re.fullmatch('[0-9a-f]{64}', expected) and digest(stage / 'manifest.json') == expected
     d = json.loads((stage / 'manifest.json').read_text())
     assert stage == STAGES / (d['revision'] + SUFFIX) and Path.cwd() == stage
-    assert d['schema'] == 'privsep-manager-probe-v1' and d['review_required'] and not d['full_acceptance']
+    assert d['schema'] == 'privsep-manager-probe-r2' and d['review_required'] and not d['full_acceptance']
     assert d['retries'] == 0 and d['install_sh_run'] is False
     assert (d['reserve_bytes'], d['pending_bytes'], d['max_new_allocation_bytes']) == (RESERVE, PENDING, MAX_NEW)
     assert not (stage / 'evidence').exists(), 'one-shot stage already entered'
@@ -365,6 +366,8 @@ def make_runner(base, helpers):
             rc = self.guest('import-materialization-probe', '/usr/bin/python3 -I -B ' + ROOT + '/guest.py probe', ARMS_TIMEOUT, False)
             self.receipt['probe_step_exit'] = rc
             self.receipt['native'] = self.download('native.json', required=False); self.save()
+            # Preserve completed as-found metadata even if fresh import fails.
+            self.download('probe-progress.json', required=False)
             export = self.download('manager-probe-export.json', required=False)
             collector = load('probe_host_collector', self.stage / 'collector.py')
             assert export is not None, 'no manager-probe export'
@@ -408,7 +411,7 @@ def main():
     os.environ['TMPDIR'] = str(tmp); os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     r = make_runner(base, helpers)(args.stage, d)
     r.monitor_state = {}
-    r.receipt.update(scope='one finite two-import probe; no application, compose, install.sh, build or fix',
+    r.receipt.update(scope='as-found baseline then exact removal and fresh import; no app, compose, install.sh, build or fix',
                      full_acceptance=False, admission=report, retries=0, label='manager-import-probe')
     r.save()
     stop = threading.Event(); mon = threading.Thread(target=r.monitor, args=(stop,), daemon=True); mon.start()

@@ -35,7 +35,7 @@ G = load('probe_fixture_guest', GP)
 R = load('probe_fixture_runner', RP)
 GOOD = {'state': 'file', 'size': C.BUNDLE_SIZE, 'sha256': C.BUNDLE_SHA256}
 ZERO = {'state': 'file', 'size': 0, 'sha256': C.EMPTY_SHA256}
-DIFFS = ['sha256:' + 'a' * 64, 'sha256:' + 'b' * 64]
+DIFFS = ['sha256:' + 'a' * 64, C.LAST_DIFF_ID]
 MOUNT = {'fstype': 'overlay', 'read_only': False, 'read_write': True, 'lowerdir_present': True,
          'upperdir_present': True, 'workdir_present': True, 'index_on': False, 'metacopy_on': False}
 
@@ -49,17 +49,19 @@ def arch(main=GOOD):
 
 
 def sample(saved=GOOD, materialized=GOOD):
-    engine = C.engine_facts({'Server': {'Version': '29.0.0'}, 'Client': {'Version': '29.0.0'}},
+    engine = C.engine_facts({'Server': {'Version': '29.0.0', 'Components': [{'Name': 'containerd', 'Version': '2.1.4'}]}, 'Client': {'Version': '29.0.0', 'Components': [{'Name': 'containerd', 'Version': '2.1.4'}]}},
                             {'Driver': 'overlayfs', 'DriverStatus': [['driver-type', 'io.containerd.snapshotter.v1']]},
                             '6.1.0-1-amd64', 'ext4', 10000000000)
     cycles = []
     for name in C.CYCLES:
-        cycles.append({'name': name, 'image': {'id': 'sha256:' + 'd' * 64, 'diff_ids': DIFFS.copy(),
+        cycles.append({'name': name, 'image': {'id': C.BOUND_ID, 'diff_ids': DIFFS.copy(),
                        'layer_count': len(DIFFS), 'last_diff_id': DIFFS[-1], 'graph_driver': 'other', 'rootfs_type': 'layers'},
                        'methods': {m: files(materialized) for m in C.METHODS}, 'saved': arch(saved),
                        'mount': copy.deepcopy(MOUNT), 'cleanup_absent': True})
-    doc = {'schema': 'privsep-manager-probe-v1', 'original': arch(), 'engine': engine, 'cycles': cycles,
-           'review_required': True, 'full_acceptance': False, 'reload_without_prune': True}
+    doc = {'schema': 'privsep-manager-probe-r2', 'original': arch(), 'engine': engine, 'cycles': cycles,
+           'review_required': True, 'full_acceptance': False, 'reload_without_prune': True,
+           'baseline_id': C.BOUND_ID, 'fresh_loaded_id': C.BOUND_ID,
+           'fresh_id_equals_baseline': True, 'baseline_removed_before_load': True}
     doc['verdict'] = C.classify(doc); return doc
 
 
@@ -109,21 +111,37 @@ class ArchiveFixtures(unittest.TestCase):
 
 
 class Classification(unittest.TestCase):
-    def test_four_classes(self):
-        for saved, main, want in ((GOOD, GOOD, 'NOT_REPRODUCED'), (ZERO, ZERO, 'IMPORT_LOSES_CONTENT'),
-                                  (GOOD, ZERO, 'MOUNT_LOSES_CONTENT'), (ZERO, GOOD, 'INCONSISTENT')):
-            doc = sample(saved, main); self.assertEqual(doc['verdict'], want); C.validate_export(doc)
+    def test_five_classes(self):
+        for before, after, want in ((ZERO, GOOD, 'BASELINE_IMAGE_DAMAGED_FRESH_LOAD_OK'),
+                                    (ZERO, ZERO, 'FRESH_LOAD_ALSO_BAD'),
+                                    (GOOD, GOOD, 'BASELINE_OK_FRESH_OK'),
+                                    (GOOD, ZERO, 'BASELINE_OK_FRESH_BAD')):
+            for saved_bad in (False, True):
+                d = sample()
+                for cy, row in zip(d['cycles'], (before, after)):
+                    cy['methods'] = {m: files(row) for m in C.METHODS}
+                    if saved_bad: cy['saved'] = arch(row)
+                d['verdict'] = C.classify(d)
+                self.assertEqual(d['verdict'], want); C.validate_export(d)
+        d = sample(ZERO, GOOD)
+        self.assertEqual(d['verdict'], 'INCONSISTENT'); C.validate_export(d)
+
+    def test_arbitrary_bad_or_absent_is_not_mistaken_for_ok(self):
+        for bad in (C.absent(), {'state': 'file', 'size': 7, 'sha256': 'f' * 64}):
+            d = sample(GOOD, bad)
+            self.assertEqual(d['verdict'], 'FRESH_LOAD_ALSO_BAD'); C.validate_export(d)
 
     def test_view_disagreement(self):
         d = sample(GOOD, ZERO); d['cycles'][0]['methods']['cp'] = files(GOOD)
         self.assertEqual(C.classify(d), 'INCONSISTENT')
 
-    def test_reload_disagreement(self):
+    def test_before_after_difference_is_the_experiment(self):
         d = sample(GOOD, ZERO); d['cycles'][1] = sample()['cycles'][1]
-        self.assertEqual(C.classify(d), 'INCONSISTENT')
+        self.assertEqual(C.classify(d), 'BASELINE_IMAGE_DAMAGED_FRESH_LOAD_OK')
 
-    def test_diff_id_change_is_preserved_not_hidden(self):
+    def test_diff_id_change_is_preserved_and_inconsistent(self):
         d = sample(ZERO, ZERO); d['cycles'][1]['saved']['diff_ids'] = ['sha256:' + 'f' * 64]
+        d['verdict'] = C.classify(d); self.assertEqual(d['verdict'], 'INCONSISTENT')
         C.validate_export(d); self.assertNotEqual(d['cycles'][1]['saved']['diff_ids'], d['original']['diff_ids'])
 
     def test_resurrected_main_js_inconsistent(self):
@@ -136,12 +154,15 @@ class Classification(unittest.TestCase):
 
     def test_schema_refuses_leaks_and_false_pass(self):
         changes = [lambda d: d.update(secret='SECRET_SENTINEL'), lambda d: d.update(full_acceptance=True),
-                   lambda d: d.update(verdict='MOUNT_LOSES_CONTENT'), lambda d: d.update(cycles=d['cycles'][:1]),
+                   lambda d: d.update(verdict='BASELINE_OK_FRESH_BAD'), lambda d: d.update(cycles=d['cycles'][:1]),
                    lambda d: d['engine'].update(Config={'Env': ['SECRET_SENTINEL']}),
                    lambda d: d['cycles'][0]['image'].update(config='SECRET_SENTINEL'),
                    lambda d: d['cycles'][0]['mount'].update(lowerdir='/SECRET_SENTINEL'),
                    lambda d: d['cycles'][0]['methods']['cp']['app/main.mjs'].update(size=0),
-                   lambda d: d['cycles'][0].update(cleanup_absent=False)]
+                   lambda d: d['cycles'][0].update(cleanup_absent=False),
+                   lambda d: d.update(fresh_id_equals_baseline=False),
+                   lambda d: d.update(baseline_removed_before_load=False),
+                   lambda d: d.update(fresh_loaded_id='sha256:' + 'f' * 64)]
         for change in changes:
             d = sample(); change(d)
             with self.assertRaises(ValueError): C.validate_export(d)
@@ -170,7 +191,7 @@ class Projection(unittest.TestCase):
         with self.assertRaises(ValueError): C.mount_facts(raw + raw)
 
     def test_engine_projection_discards_private_fields(self):
-        version = {'Server': {'Version': '29.0.0'}, 'Client': {'Version': '29.0.0'}, 'Name': 'SECRET_SENTINEL'}
+        version = {'Server': {'Version': '29.0.0', 'Components': [{'Name': 'containerd', 'Version': '2.1.4'}]}, 'Client': {'Version': '29.0.0', 'Components': [{'Name': 'containerd', 'Version': '2.1.4'}]}, 'Name': 'SECRET_SENTINEL'}
         info = {'Driver': 'overlayfs', 'DriverStatus': [['driver-type', 'io.containerd.snapshotter.v1'],
                 ['SECRET_SENTINEL', 'private']], 'DockerRootDir': '/private', 'ID': 'SECRET_SENTINEL'}
         got = C.engine_facts(version, info, '6.1.0-amd64', 'ext4', 123)
@@ -183,20 +204,27 @@ class Projection(unittest.TestCase):
 
 
 class GuestFlow(unittest.TestCase):
-    def test_two_imports_exact_removal_no_prune_with_fake_commands(self):
-        # Exercise real guest orchestration against an in-memory fake command seam.
-        # This is synthetic control-flow proof, NOT native Docker evidence.
+    def test_as_found_then_exact_removal_then_fresh_load_with_fake_commands(self):
+        # Real guest orchestration against synthetic commands, NOT native evidence.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); payload = b'SYNTHETIC_ARCHIVE'
             (root / 'backend.tar.gz').write_bytes(payload)
-            image = 'sha256:' + 'e' * 64; cid = 'f' * 64
-            seen = []; present = [False]
-            state = {'owned_ids': [], 'owned_images': [], 'baseline_images': [], 'commands': []}
+            archive_sha = hashlib.sha256(payload).hexdigest()
+            backend = {'archive_sha256': archive_sha, 'config_sha256': arch()['config_sha256'],
+                       'rootfs': {'diff_ids': DIFFS}, 'manifest': [{'RepoTags': ['synthetic:backend']}]}
+            (root / 'backend.json').write_text(json.dumps(backend))
+            image = C.BOUND_ID; cid = 'f' * 64
+            seen = []; present = [True]; removed = [False]
+            state = {'owned_ids': [], 'owned_images': [], 'baseline_images': [image], 'baseline_id': image,
+                     'commands': [], 'checks': [True], 'phases': ['fresh', 'probe']}
             raw = ('10 1 0:1 / / rw - overlay overlay rw,lowerdir=/private,upperdir=/private,workdir=/private\n'
                    'PROBE app/main.mjs 0 ' + C.EMPTY_SHA256 + '\nPROBE app/main.js ABSENT\n').encode()
             def fake_run(label, argv, timeout=120, required=True, stderr=False):
                 seen.append((label, [str(x) for x in argv]))
                 if label.startswith('load-'):
+                    self.assertTrue(removed[0]); self.assertFalse(present[0])
+                    progress = json.loads((root / 'probe-progress.json').read_text())
+                    self.assertEqual([x['name'] for x in progress['cycles']], ['as_found'])
                     present[0] = True; return 0, ('Loaded image ID: ' + image).encode()
                 if label in ('run-shell', 'run-readonly-shell'): return 0, raw
                 if label == 'create-probe': return 0, cid.encode()
@@ -205,25 +233,67 @@ class GuestFlow(unittest.TestCase):
                     return 1, ('Error response from daemon: Could not find the file /app/main.js in container ' + cid).encode()
                 if label == 'export-container':
                     Path(argv[-2]).write_bytes(tar_bytes([('app/main.mjs', b'')])); return 0, b''
-                if label == 'readback-container-absent': return 1, b''
+                if label in ('readback-container-absent', 'readback-baseline-absent'): return 1, b''
                 if label == 'save-roundtrip': Path(argv[-2]).write_bytes(b'SYNTHETIC_SAVE'); return 0, b''
-                if label == 'remove-owned-image': present[0] = False
+                if label == 'remove-exact-baseline-image':
+                    self.assertEqual(argv[-1], C.BOUND_ID)
+                    self.assertEqual([x[0] for x in seen].count('save-roundtrip'), 1)
+                    present[0] = False; removed[0] = True
+                if label == 'docker-filesystem': return 0, b'ext4\n'
+                if label == 'kernel-version': return 0, b'6.1.0-amd64\n'
                 return 0, b''
             def fake_json(label, args):
+                if label.endswith('-id') or label == 'fresh-loaded-id-only': return image
+                if label == 'engine-info':
+                    return {'Driver': 'overlayfs', 'DriverStatus': [['driver-type', 'io.containerd.snapshotter.v1']]}
+                if label == 'engine-version':
+                    return {'Server': {'Version': '29.0.0', 'Components': [{'Name': 'containerd', 'Version': '2.1.4'}]},
+                            'Client': {'Version': '29.0.0'}}
                 self.assertEqual(label, 'image-inspect')
                 return [{'Id': image, 'RootFS': {'Layers': DIFFS, 'Type': 'layers'}}]
             with patch.object(G, 'ROOT', root), patch.object(G, 'report', state), \
-                 patch.object(G, 'ARCHIVE_SHA', hashlib.sha256(payload).hexdigest()), \
+                 patch.object(G, 'ARCHIVE_SHA', archive_sha), \
                  patch.object(G, 'run', fake_run), patch.object(G, 'docker_json', fake_json), \
+                 patch.object(G.shutil, 'disk_usage', lambda p: type('Usage', (), {'free': 123})()), \
                  patch.object(G, 'image_ids', lambda: [image] if present[0] else []), \
                  patch.object(G, 'save', lambda: None), patch.object(G.C, 'archive', lambda p: arch()):
-                first = G.cycle('first_load', arch()); second = G.cycle('second_load', arch())
+                G.probe()
+            exported = json.loads((root / 'manager-probe-export.json').read_text())
+            C.validate_export(exported)
+            first, second = exported['cycles']
             self.assertEqual(first['methods'], {m: files(ZERO) for m in C.METHODS})
             self.assertEqual(second['methods'], first['methods'])
-            self.assertEqual([x[0] for x in seen].count('remove-owned-image'), 1)
+            self.assertEqual([x[0] for x in seen].count('remove-exact-baseline-image'), 1)
+            self.assertEqual([x[0] for x in seen].count('load-remove_and_fresh_load'), 1)
             self.assertEqual([x[0] for x in seen].count('save-roundtrip'), 2)
             self.assertEqual(state['owned_ids'], [])
+            self.assertTrue(exported['fresh_id_equals_baseline'])
             self.assertFalse(any('prune' in args for _, args in seen))
+
+    def test_cannot_load_without_successful_eviction(self):
+        with patch.object(G, 'report', {}), patch.object(G, 'run') as run:
+            with self.assertRaises(AssertionError): G.load_fresh(arch())
+            run.assert_not_called()
+
+    def test_cannot_remove_a_different_baseline(self):
+        state = {'baseline_id': 'sha256:' + 'f' * 64, 'baseline_images': [C.BOUND_ID]}
+        with patch.object(G, 'report', state), patch.object(G, 'run') as run:
+            with self.assertRaises(AssertionError): G.remove_bound_image()
+            run.assert_not_called()
+
+    def test_cannot_remove_with_foreign_container(self):
+        state = {'baseline_id': C.BOUND_ID, 'baseline_images': [C.BOUND_ID], 'owned_ids': []}
+        with patch.object(G, 'report', state), patch.object(G, 'run', return_value=(0, b'a' * 64)) as run:
+            with self.assertRaises(AssertionError): G.remove_bound_image()
+            self.assertEqual(run.call_count, 1)
+
+    def test_cannot_remove_other_pinned_image(self):
+        state = {'baseline_id': C.BOUND_ID, 'baseline_images': [C.BOUND_ID], 'owned_ids': []}
+        with patch.object(G, 'report', state), patch.object(G, 'run', return_value=(0, b'')) as run, \
+             patch.object(G, 'image_ids', return_value=[C.BOUND_ID]), \
+             patch.object(G, 'docker_json', return_value='sha256:' + 'f' * 64):
+            with self.assertRaises(AssertionError): G.remove_bound_image()
+            self.assertEqual(run.call_count, 1)
 
 
 class AdmissionAndScope(unittest.TestCase):

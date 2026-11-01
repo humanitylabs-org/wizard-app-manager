@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable QEMU guest only: two imports, no application/Compose/startup, no prune.
+"""Disposable QEMU guest only: as-found versus fresh import, no app startup or prune.
 
 Only fixed metadata/hash/size projections leave the guest. Raw tool output and copied
 bundle/save/export bytes remain private and are never printed or downloaded.
@@ -21,7 +21,7 @@ ROOT = Path('/root/storage-manager-probe')
 TREE = Path('/opt/storage-manager-probe-source')
 PINNED = 'privsep-wam:595523fb'
 ARCHIVE_SHA = 'a953c4ce3590bc1448bacb0b5b259334a99a608fb0377af425daf87c888d49c0'
-report = {'schema': 'privsep-manager-probe-guest-v1', 'commands': [], 'checks': [], 'first_error': None,
+report = {'schema': 'privsep-manager-probe-guest-r2', 'commands': [], 'checks': [], 'first_error': None,
           'cleanup_errors': [], 'phases': [], 'owned_ids': [], 'owned_images': [], 'baseline_images': []}
 
 
@@ -67,7 +67,7 @@ def image_ids():
 
 def create(args, project='manager_probe'):
     assert project in ('manager_probe', 'notes_wizardapps')
-    out = run('create-probe', ['docker', 'create', '--no-healthcheck', '--network', 'none', '--label',
+    out = run('create-probe', ['docker', 'create', '--pull=never', '--no-healthcheck', '--network', 'none', '--label',
                               'com.docker.compose.project=' + project, *args])[1].decode().strip()
     assert re.fullmatch('[0-9a-f]{64}', out)
     report['owned_ids'].append(out); save(); return out
@@ -97,27 +97,69 @@ done
 '''
 
 
-def cycle(name, original):
+def bound_backend(original=None):
+    backend = json.loads((ROOT / 'backend.json').read_text())
+    assert backend['archive_sha256'] == ARCHIVE_SHA
+    assert backend['rootfs']['diff_ids'][-1] == C.LAST_DIFF_ID
+    if original is not None:
+        assert original['config_sha256'] == backend['config_sha256']
+        assert original['diff_ids'] == backend['rootfs']['diff_ids']
+    return backend
+
+
+def remove_bound_image():
+    # Only the observed, archive-bound baseline ID is eligible, inside the disposable guest.
+    assert report['baseline_id'] == C.BOUND_ID and C.BOUND_ID in report['baseline_images']
+    for cid in list(report['owned_ids']): remove(cid)
+    assert run('pre-eviction-container-inventory', ['docker', 'ps', '-aq', '--no-trunc'])[1] == b''
+    assert image_ids() == report['baseline_images']
+    pinned = docker_json('pre-eviction-pinned-id', ['image', 'inspect', '--format', '{{json .Id}}', PINNED])
+    assert pinned == C.BOUND_ID
+    run('remove-pinned-tag', ['docker', 'image', 'rm', '--no-prune', PINNED], timeout=180)
+    # The tag could have been the only reference: require a successful inventory either way.
+    remaining = image_ids()
+    if C.BOUND_ID in remaining:
+        run('remove-exact-baseline-image', ['docker', 'image', 'rm', '--no-prune', '-f', C.BOUND_ID], timeout=180)
+    expected = sorted(set(report['baseline_images']) - {C.BOUND_ID})
+    assert image_ids() == expected
+    assert run('readback-baseline-absent', ['docker', 'image', 'inspect', C.BOUND_ID], required=False)[0] != 0
+    report['baseline_removed_before_load'] = True; save()
+
+
+def load_fresh(original):
+    assert report.get('baseline_removed_before_load') is True
+    assert C.BOUND_ID not in image_ids()
     archive = ROOT / 'backend.tar.gz'
     with archive.open('rb') as f: assert C.sha_file(f)['sha256'] == ARCHIVE_SHA
-    # Same exact saved archive, never a pull or rebuild. Identify only its single loaded locator.
-    text = run('load-' + name, ['docker', 'load', '-i', archive], timeout=300)[1].decode().strip()
+    backend = bound_backend(original)
+    text = run('load-remove_and_fresh_load', ['docker', 'load', '-i', archive], timeout=300)[1].decode().strip()
     m = re.fullmatch(r'Loaded image ID: (sha256:[0-9a-f]{64})', text)
     if m: locator = m.group(1)
     else:
-        tags = json.loads((ROOT / 'backend.json').read_text())['manifest'][0]['RepoTags']
+        tags = backend['manifest'][0]['RepoTags']
         assert len(tags) == 1 and text == 'Loaded image: ' + tags[0]; locator = tags[0]
-    run('tag-probe', ['docker', 'tag', locator, PINNED])
+    # Project only the ID, never inspect Config.Env or print docker load text.
+    loaded_id = docker_json('fresh-loaded-id-only', ['image', 'inspect', '--format', '{{json .Id}}', locator])
+    assert loaded_id == report['baseline_id'] == C.BOUND_ID
+    print(loaded_id, flush=True)
+    report['fresh_loaded_id'] = loaded_id
+    report['fresh_id_equals_baseline'] = loaded_id == report['baseline_id']
+    report['owned_images'] = [loaded_id]; save()
+    run('tag-fresh-probe', ['docker', 'tag', loaded_id, PINNED])
+    assert image_ids() == report['baseline_images']
+
+
+def cycle(name, original):
+    assert name in C.CYCLES
     doc = docker_json('image-inspect', ['image', 'inspect', PINNED])[0]
-    assert doc['Id'] not in report['baseline_images']
-    assert set(image_ids()) - set(report['baseline_images']) == {doc['Id']}
-    report['owned_images'] = [doc['Id']]; save()
+    assert doc['Id'] == report['baseline_id'] == C.BOUND_ID
+    assert image_ids() == report['baseline_images']
     image = C.image_facts(doc)
     # Fresh shell only: does not execute the app CMD, healthcheck, node or Compose.
-    raw = run('run-shell', ['docker', 'run', '--rm', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none', '--entrypoint', 'sh',
+    raw = run('run-shell', ['docker', 'run', '--rm', '--pull=never', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none', '--entrypoint', 'sh',
                             PINNED, '-c', SHELL])[1]
     methods = {'run': C.parse_shell(raw)}; mount = C.mount_facts(raw)
-    raw = run('run-readonly-shell', ['docker', 'run', '--rm', '--read-only', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none',
+    raw = run('run-readonly-shell', ['docker', 'run', '--rm', '--pull=never', '--read-only', '--no-healthcheck', '--label', 'com.docker.compose.project=manager_probe', '--network', 'none',
                                     '--entrypoint', 'sh', PINNED, '-c', SHELL])[1]
     methods['readonly'] = C.parse_shell(raw)
     cid = create(['--entrypoint', 'sh', PINNED, '-c', 'exit 0'])
@@ -147,10 +189,6 @@ def cycle(name, original):
     result = {'name': name, 'image': image, 'methods': methods, 'saved': C.archive(saved),
               'mount': mount, 'cleanup_absent': not report['owned_ids']}
     saved.unlink()
-    # Explicitly remove only the image this probe just loaded, no system/image prune.
-    if name == 'first_load':
-        run('remove-owned-image', ['docker', 'image', 'rm', '-f', doc['Id']], timeout=180)
-        assert image_ids() == report['baseline_images']; report['owned_images'] = []; save()
     return result
 
 
@@ -160,7 +198,17 @@ def fresh(revision):
     assert not Path('/usr/bin/tailscale').exists() and not Path('/var/lib/tailscale').exists()
     assert run('fresh-container-inventory', ['docker', 'ps', '-aq'])[1] == b''
     report['baseline_images'] = image_ids()
-    assert run('fresh-pinned-absent', ['docker', 'image', 'inspect', PINNED], required=False)[0] != 0
+    bound_backend()
+    assert C.BOUND_ID in report['baseline_images']
+    baseline = docker_json('baseline-id-only', ['image', 'inspect', '--format', '{{json .Id}}', C.BOUND_ID])
+    assert baseline == C.BOUND_ID
+    report['baseline_id'] = baseline; save()
+    rc, _ = run('as-found-pinned-status', ['docker', 'image', 'inspect', PINNED], required=False)
+    if rc == 0:
+        assert docker_json('as-found-pinned-id', ['image', 'inspect', '--format', '{{json .Id}}', PINNED]) == baseline
+    else:
+        run('tag-as-found-probe', ['docker', 'tag', baseline, PINNED])
+    assert image_ids() == report['baseline_images']
     report['checks'].append({'name': 'fresh-synthetic-inputs', 'passed': True}); save()
 
 
@@ -168,18 +216,25 @@ def probe():
     assert report['checks'] and 'probe' not in report['phases'][:-1]
     with (ROOT / 'backend.tar.gz').open('rb') as f: assert C.sha_file(f)['sha256'] == ARCHIVE_SHA
     original = C.archive(ROOT / 'backend.tar.gz')
+    bound_backend(original)
     assert C.bundle(original['last_layer']['app/main.mjs'])
     info = docker_json('engine-info', ['info', '--format', '{{json .}}'])
     version = docker_json('engine-version', ['version', '--format', '{{json .}}'])
     filesystem = run('docker-filesystem', ['findmnt', '-n', '-o', 'FSTYPE', '-T', '/var/lib/docker'])[1].decode().strip()
     kernel = run('kernel-version', ['uname', '-r'])[1].decode().strip()
     engine = C.engine_facts(version, info, kernel, filesystem, shutil.disk_usage('/var/lib/docker').free)
-    doc = {'schema': 'privsep-manager-probe-v1', 'original': original, 'engine': engine, 'cycles': [],
+    doc = {'schema': 'privsep-manager-probe-r2', 'original': original, 'engine': engine, 'cycles': [],
            'review_required': True, 'full_acceptance': False, 'reload_without_prune': True}
     for name in C.CYCLES:
+        if name == 'remove_and_fresh_load':
+            assert [x['name'] for x in doc['cycles']] == ['as_found']
+            remove_bound_image()
+            load_fresh(original)
         doc['cycles'].append(cycle(name, original))
         # Private partial progress is still metadata only; never accepted as a complete export.
         (ROOT / 'probe-progress.json').write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n')
+    for key in ('baseline_id', 'fresh_loaded_id', 'fresh_id_equals_baseline', 'baseline_removed_before_load'):
+        doc[key] = report[key]
     doc['verdict'] = C.classify(doc); C.validate_export(doc)
     p = ROOT / 'manager-probe-export.json'; p.write_text(json.dumps(doc, sort_keys=True, indent=2) + '\n'); p.chmod(0o600)
     report['verdict'] = doc['verdict']; save()
@@ -204,12 +259,13 @@ def cleanup():
     final = json.loads((ROOT / 'container-cleanup.json').read_text())
     status, engine_after = m.daemon_request('GET', '/info')
     assert final['passed'] and final['readback_absent'] and status == 200 and engine_after['ID'] == engine_before['ID']
-    for image in report['owned_images']:
-        assert image not in report['baseline_images']; run('cleanup-owned-image', ['docker', 'image', 'rm', '-f', image], 180)
+    # The freshly loaded ID equals the original baseline; retain it in this disposable
+    # guest so the final inventory is equal. Original host/base disks are never written.
+    assert all(image == C.BOUND_ID for image in report['owned_images'])
     assert image_ids() == report['baseline_images']
     report['owned_images'] = []
     report['exact_cleanup'] = {'negative_survived_owned_cleanup': True, 'negative_removed_by_full_id_absent': True,
-                               'engine_id_stable': True, 'baseline_image_inventory_unchanged': True}
+                               'engine_id_stable': True, 'baseline_image_ids_restored': True}
     save()
 
 
