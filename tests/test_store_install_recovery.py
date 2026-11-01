@@ -56,7 +56,7 @@ def test_trusted_hosts_cover_every_shell_alias(c, monkeypatch):
     monkeypatch.setattr(links, 'gateway_shell_ports', lambda cfg, host, port: [8444, port])
     env = cli.trusted_origin_env(c, 'demo')
     assert env['WIZARD_TRUSTED_HOSTS'].split(',') == ['box.tail.ts.net:8796', 'box.tail.ts.net', 'box.tail.ts.net:8444']
-    assert 'https://box.tail.ts.net:8444' in env['WIZARD_TRUSTED_ORIGINS'].split(',')
+    assert env['WIZARD_TRUSTED_ORIGINS'].split(',') == ['https://box.tail.ts.net:8796', 'https://box.tail.ts.net:8444']
     # No tailscale on the box: the single shell port still works.
     monkeypatch.setattr(links, 'serve_status', lambda: (_ for _ in ()).throw(OSError('no tailscale')))
     assert cli.trusted_origin_env(c, 'demo')['WIZARD_TRUSTED_HOSTS'] == 'box.tail.ts.net:8796,box.tail.ts.net'
