@@ -1,0 +1,16 @@
+{
+  "version": "0.3.76",
+  "latest_since": "2026-10-29T07:37:18Z",
+  "promoted_at": "2026-10-29T07:55:58Z",
+  "upgrade_test": {
+    "from": "0.3.74",
+    "to": "0.3.76",
+    "passed": true,
+    "evidence": "docs/acceptance/promote-0.3.76.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Owner-requested fix release: app picker long-name fix (UX #726/#729, failing-first test) and the Troubleshooter one-tap screen with its repair fixes; installed upgrade 0.3.74 -> 0.3.76 passed on the disposable KVM rig (27 checks, doctors FAIL 0).",
+    "notes": "Troubleshooter #16/#20-#22 change its screen (James's one-tap layout restored, sessions, status line); Miguel classified them as fixes. Page-only risk; #17 lowers background model usage. No new permissions or routes."
+  }
+}

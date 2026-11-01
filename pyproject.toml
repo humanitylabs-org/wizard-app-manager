@@ -13,4 +13,4 @@ wam = "wam.cli:main"
 packages = ["wam", "wam.backup"]
 
 [tool.setuptools.package-data]
-wam = ["release-index.mjs", "defaults.json", "hermes-lock.json"]
+wam = ["release-index.mjs", "defaults.json", "hermes-lock.json", "style-policy.json"]

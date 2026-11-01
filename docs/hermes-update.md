@@ -81,7 +81,9 @@ for manual updating. No service units are installed or rewritten.
   online SQLite snapshot, config, dotenv, optional install stamp, previous commit
   and the venv's package freeze. Backup directories are mode 0700; secret-bearing
   files and receipts are mode 0600. Treat backups as credentials and retain them
-  until the update is accepted.
+  until the update is accepted. After a verified update, wam keeps this update's
+  backup (the newest) and removes its own `hermes-*` backups older than 30 days;
+  a failed or rolled-back update removes none (see `update_backups` in BACKUP.md).
 - Work census includes the Agent Service queue, gateway `active_work`, unexpired
   turn leases, pending/running delegations and running cron executions. Missing
   optional files/tables are idle; unreadable existing state or an unknown

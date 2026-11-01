@@ -23,7 +23,7 @@ import time
 import urllib.request
 import uuid
 
-from . import alongside, updates, hermes_lock
+from . import alongside, updates, hermes_lock, update_backups
 
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -99,8 +99,24 @@ def _installation(home: Path) -> dict:
         raise ValueError('alongside.json needs a loopback Hermes API origin')
     git = ((repo / '.git').exists() and (repo / 'venv/bin/python').is_file()
            and _git(repo, 'rev-parse', '--show-toplevel', check=False) == str(repo.resolve()))
-    return {'install_type': 'git' if git else 'manual', 'hermes_home': str(hh),
+    kind = 'git' if git else 'official' if _self_updating(repo) else 'manual'
+    return {'install_type': kind, 'hermes_home': str(hh),
             'repo': str(repo), 'origin': origin, 'uid': agent.get('uid')}
+
+
+def _self_updating(repo: Path) -> bool:
+    """The official Hermes installer's layout (install.sh, also `--skip-setup`): a launcher at
+    hermes-agent/.hermes/bin/hermes over managed environments, and an install stamp whose updateMechanism is
+    "self". There is no venv to pip into; the supported update is stock `hermes update`."""
+    try:
+        stamp = json.loads((repo / 'install-stamp.json').read_text())
+    except (OSError, ValueError):
+        stamp = {}
+    return (repo / '.hermes/bin/hermes').is_file() or (isinstance(stamp, dict) and stamp.get('updateMechanism') == 'self')
+
+
+OFFICIAL_REASON = ("This Hermes was installed by the official Hermes installer and updates itself: run `hermes update` "
+                   "(as the Hermes owner, outside a chat turn). Wizard OS updates never change its version.")
 
 
 def _health(origin: str) -> str | None:
@@ -153,6 +169,8 @@ def status(home: Path | None = None, base: str | None = None) -> dict:
         if install['install_type'] == 'container':
             return {**out, 'state': 'container', 'reason': "Hermes moves with the release's default app, not this command."}
         out['running_version'] = _health(install['origin'])
+        if install['install_type'] == 'official':
+            return {**out, 'state': 'self_updating', 'command': 'hermes update', 'reason': OFFICIAL_REASON}
         if install['install_type'] == 'manual':
             return {**out, 'state': 'manual', 'reason': 'update this Hermes by hand (not a git checkout with a venv).'}
         repo = Path(install['repo'])
@@ -378,6 +396,24 @@ def update(home: Path | None = None, base: str | None = None, *, dry_run: bool =
         return {'state': 'refused', 'reason': f'Cannot lock or record the Hermes update: {exc}'}
 
 
+def _prune_backups(h: Path, out: dict) -> None:
+    """After a verified update: keep this update's snapshot (and the newest), remove wam's own Hermes snapshots
+    older than the retention age. Best effort; a failure is only a note on the receipt."""
+    try:
+        cfg_file = h / 'app-manager.json'
+        cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
+    except (OSError, ValueError):
+        cfg = {}
+    try:
+        pruned = update_backups.prune_hermes(h / 'backups', update_backups.settings(cfg), protect=out.get('backup'))
+    except Exception as exc:  # noqa: BLE001 - never fail a verified update over cleanup
+        pruned = {'deleted': [], 'errors': [str(exc)]}
+    if pruned['deleted']:
+        out['backups_pruned'] = pruned['deleted']
+    for err in pruned['errors']:
+        out['notes'].append(f'Old Hermes backup not removed: {err}'[:300])
+
+
 def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_timeout: float) -> dict:
     st = status(h, base)
     previous = st.get('receipt') or {}
@@ -394,7 +430,7 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         if not dry_run:
             _save(h / 'hermes-update.json', out)
         return dict(out)
-    if st['state'] in ('no_pin', 'manual', 'container', 'up_to_date'):
+    if st['state'] in ('no_pin', 'manual', 'self_updating', 'container', 'up_to_date'):
         return st
     if st['state'] == 'refused':
         return save('refused', st['reason'])
@@ -486,6 +522,7 @@ def _update(h: Path, base: str | None, dry_run: bool, wait_quiet: float, health_
         if _git(repo, 'rev-parse', 'HEAD') != st['target_commit']:
             raise RuntimeError('Hermes checkout moved during the update.')
         _clear_drain(hh, out['run_id'])
+        _prune_backups(h, out)
         return save('updated', 'Hermes is running at the release pin; /health verified.')
     except Exception as exc:
         error = str(exc)

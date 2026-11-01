@@ -1,0 +1,16 @@
+{
+  "version": "0.3.89",
+  "latest_since": "2026-10-30T01:47:36Z",
+  "promoted_at": "2026-10-30T02:27:55Z",
+  "upgrade_test": {
+    "from": "0.3.88",
+    "to": "0.3.89",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.89.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Owner rule (Miguel, 30 Oct 2026): fixes ship straight to stable. Fixes the fresh-install ChatGPT sign-in (App Manager #357, ChatGPT 0.2.12) and makes Opus the default after a fresh Claude sign-in (Claude 0.2.14). Installed upgrade 0.3.88 -> 0.3.89 on a disposable KVM guest via public os.sh PASSED: 27 checks, 0 failed, Hermes config/.env/SOUL.md identical, wizard doctor and wam doctor FAIL 0.",
+    "notes": "App Manager image unchanged (image inputs identical 016a8cbf..706012e4); Agent Service and Wizard UX unchanged from 0.3.88."
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "version": "0.3.85",
+  "latest_since": "2026-10-29T22:02:13Z",
+  "promoted_at": "2026-10-29T22:47:40Z",
+  "upgrade_test": {
+    "from": "0.3.84",
+    "to": "0.3.85",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/release-0.3.85.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Stable 0.3.84 has Declared-by-default with no migration: an upgrading box can silently cut apps that call another app without declaring it (seen on the owner's box: Music -> YouTube Music, Search -> Tinfoil). 0.3.85 (App Manager #349, 14 failing-first tests) settles existing boxes with owner-installed apps to Open once and notifies the owner; new boxes stay Declared. Installed upgrade 0.3.84 -> 0.3.85 passed on a disposable KVM guest (27/27 checks, 0 doctor FAIL, apps reconnected, one notice). Owner (Miguel, 30 Oct 2026): 'If you're shipping a fix, want it straight to stable.'",
+    "notes": "Only change vs 0.3.84: App Manager host source 89cd51e8 -> 30e3e1ab (#349, wam Python only; images unchanged). Not checked: real Tailscale/Serve, phones; the 0.3.85 upgrade ran from a locally served release JSON before mirroring (disclosed in evidence). Side effect: boxes installed on 0.3.74-0.3.84 with own apps and no recorded mode become Open (more permissive, owner notified)."
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "version": "0.3.82",
+  "latest_since": "2026-10-29T15:37:59Z",
+  "promoted_at": "2026-10-29T16:50:16Z",
+  "upgrade_test": {
+    "from": "0.3.81",
+    "to": "0.3.82",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.82.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Recommended fixes found by a standard fresh install on a bare VPS: wizard-app-manager#341 (fresh install no longer stops at the builder mount), wizard-ux#743 (Welcome asks to connect an AI on a fresh Wizard), wizard-app-store#43 via claude-connection#9/chatgpt-connection#9 (a Claude sign-in on a fresh Wizard becomes the agent's model). Owner rule (Miguel, 29 Oct 2026): his changes are fixes and fast-track. Installed upgrade 0.3.81 -> 0.3.82 passed on a disposable KVM guest (public os.sh): pinned, 0 failed checks, doctors 0 FAIL, Hermes config/.env/SOUL unchanged. (A first train run read releases right after the mirror merged and stayed on 0.3.81; the rerun passed.)",
+    "notes": "Moved default-app pins: claude-connection 0.2.10 -> 0.2.11, chatgpt-connection 0.2.8 -> 0.2.9. Not checked by the rig: real Tailscale/HTTPS, real sign-ins, a fresh install (rehearsed by hand on the demo VPS with WAM_REF, then live by Miguel)."
+  }
+}

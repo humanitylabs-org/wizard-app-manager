@@ -137,6 +137,8 @@ systemctl --user restart wizard-app-manager-api.service
 # Updates (wam/updates.py): Ask me unless the owner chose Automatic. Every install and rerun makes the nightly
 # update timer match that mode (removed under Ask me); it never writes the owner's choice, so an explicit choice is kept.
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
+# Public phone bytes only: always mirror, even when box updates/maintenance are report-only.
+RUNTIPI_ROOT="$RUNTIPI_ROOT" "$HOME/.local/bin/wam" phone-sync --ensure-timer || echo "note: could not set up the hourly phone mirror (wam phone-sync --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
 # happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
@@ -229,8 +231,25 @@ if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
   echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   # Active threads use the supported Hermes HTTP session reader. Keep archive/database sharing opt-in.
-  if ! "$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"} >/dev/null; then
+  # `wam alongside` also recreates connection apps (ChatGPT, Claude) whose agent address changed or whose running
+  # containers still hold an old one (e.g. after a tailnet move); one it could not restart is reported.
+  if ! al_out="$("$HOME/.local/bin/wam" alongside ${WIZARD_SHELL_PORT:+--shell-port "$WIZARD_SHELL_PORT"})"; then
     FAILED+=("could not record alongside mode (wam alongside)")
+  else
+    al_rec="$(printf '%s' "$al_out" | python3 -c 'import json,sys
+r = json.load(sys.stdin).get("recreated") or {}
+print(", ".join(a for a, v in r.items() if v == "recreated"))
+print("; ".join(f"{a} ({v})" for a, v in r.items() if str(v).startswith("error")))' 2>/dev/null || true)"
+    [ -z "$(printf '%s\n' "$al_rec" | sed -n 1p)" ] || echo "Restarted with the current agent address: $(printf '%s\n' "$al_rec" | sed -n 1p)"
+    al_bad="$(printf '%s\n' "$al_rec" | sed -n 2p)"
+    [ -z "$al_bad" ] || DEGRADED+=("these apps still run with an old agent address, so signing in through them may not reach your agent: $al_bad (fix: wam app restart <app>)")
+  fi
+  # One plugin pin for every mode (wam.agent_link.plugin_ref): the release's Agent Service commit, as on fresh boxes.
+  # Without it `wizard link` reinstalled the commit the box was first linked with, so the plugin never moved
+  # forward while the apps that read it did ("Hermes plugin wizard-os >=0.4.0 required").
+  [ -n "${WIZARD_PLUGIN_REF:-}" ] || WIZARD_PLUGIN_REF="$(cd "$HERE" && "$PY" -c 'from wam.agent_link import plugin_ref; print(plugin_ref())' 2>/dev/null || true)"
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    :
   elif ! "$HOME/.local/bin/wizard" link ${RESTART_NOW:+--restart} ${WIZARD_PLUGIN_REF:+--plugin-ref "$WIZARD_PLUGIN_REF"} \
       ${WIZARD_PLUGIN_SOURCE:+--plugin-source "$WIZARD_PLUGIN_SOURCE"}; then
     FAILED+=("'wizard link' failed (its message is above); your Hermes was left as it was. Fix it, then re-run the install")
@@ -242,6 +261,16 @@ elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
     up=0
     for _ in $(seq 1 45); do curl -fsS -o /dev/null "$ORIGIN/health" 2>/dev/null && { up=1; break; }; sleep 2; done
     [ "$up" = 1 ] || DEGRADED+=("your Hermes API ($ORIGIN) did not answer after the restart")
+  fi
+  # `wizard link` refreshes the wizard-os plugin; the host dashboard (the apps' account broker and usage reader)
+  # loads plugins only when it starts, so restart it if it runs. It holds no chats; apps retry on their next read.
+  # Not installed is fine; an installed (enabled) or running dashboard that is not running afterwards is reported,
+  # including one that an earlier restart in `wam alongside` left down.
+  if [ ${#FAILED[@]} -eq 0 ] && { systemctl --user is-enabled --quiet wizard-host-dashboard.service 2>/dev/null \
+      || systemctl --user is-active --quiet wizard-host-dashboard.service 2>/dev/null; }; then
+    systemctl --user restart wizard-host-dashboard.service >/dev/null 2>&1 && sleep 3 \
+      && systemctl --user is-active --quiet wizard-host-dashboard.service \
+      || DEGRADED+=("the agent dashboard (wizard-host-dashboard.service) did not come back after the plugin refresh, so app sign-in and usage may be unavailable; see: systemctl --user status wizard-host-dashboard")
   fi
 fi
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -28,8 +29,24 @@ PREFIX = "/wizard-os-home/store-data"
 UNIT = "wizard-store-data.service"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SERVICE = re.compile(r"^http://127\.0\.0\.1:\d{1,5}$")
-# Sibling-module imports in the adapter: `from './x.mjs'` / `import('./x.mjs')`. Plain names only (no paths).
-LOCAL_IMPORT = re.compile(r"""(?:from|import\s*\(?)\s*['"]\./([A-Za-z0-9_.-]+\.mjs)['"]""")
+# Relative module imports in the adapter: `from './x.mjs'`, `import('./x.mjs')`, `import './x.mjs'`, and modules the
+# adapter shares with the shell such as `from '../web/store/install-link.js'` (wizard-ux #529). Names are kept relative
+# to tools/ and resolved inside the repo; the cache mirrors the repo layout (<sha>/tools, <sha>/web/...).
+LOCAL_IMPORT = re.compile(r"""(?:from|import\s*\(?)\s*['"](\.{1,2}/[A-Za-z0-9_./-]+\.m?js)['"]""")
+
+
+def _resolve(importer: str, spec: str) -> str:
+    """The module `spec` imported by `importer` (both relative to tools/), as a tools/-relative name; it must stay inside
+    the repo (raises ValueError otherwise)."""
+    name = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
+    repo_path = posixpath.normpath(posixpath.join("tools", name))
+    if repo_path.startswith("../") or repo_path == ".." or posixpath.isabs(repo_path):
+        raise ValueError(f"adapter import {spec!r} in {importer} leaves the wizard-ux repo")
+    return name
+
+
+def _imports(importer: str, text: str) -> list[str]:
+    return [_resolve(importer, spec) for spec in LOCAL_IMPORT.findall(text)]
 
 
 def find_node() -> str | None:
@@ -96,7 +113,8 @@ def shell_commit(reg: dict) -> str | None:
 
 
 def _fetch(sha: str, name: str, timeout: int = 20) -> bytes | None:
-    url = f"https://raw.githubusercontent.com/{REPO}/{sha}/tools/{name}"
+    """`name` is relative to tools/ (e.g. `store-data-origin.mjs` or `../web/store/install-link.js`)."""
+    url = f"https://raw.githubusercontent.com/{REPO}/{sha}/{posixpath.normpath(posixpath.join('tools', name))}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - fixed https host, pinned sha
             return r.read(2 * 1024 * 1024)
@@ -105,48 +123,60 @@ def _fetch(sha: str, name: str, timeout: int = 20) -> bytes | None:
 
 
 def _complete(tools: Path) -> bool:
-    """A cached adapter is usable only if the required files AND every sibling module they import are present
-    (a cache written before sibling imports were fetched lacks wizard-alpha.mjs and fails at node start)."""
+    """A cached adapter is usable only if the required files AND every module they import, transitively, are present
+    (a cache written before sibling imports were fetched lacks wizard-alpha.mjs; one written before shared shell
+    modules were followed lacks ../web/store/install-link.js; either fails at node start)."""
     if not all((tools / f).is_file() for f in REQUIRED):
         return False
-    for f in tools.glob("*.mjs"):
+    queue, seen = [f for f in FILES if (tools / f).is_file()], set()
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
         try:
-            text = f.read_text(errors="replace")
-        except OSError:
-            return False
-        if any(not (tools / m).is_file() for m in LOCAL_IMPORT.findall(text)):
+            text = (tools / name).read_text(errors="replace")
+            queue += _imports(name, text)
+        except (OSError, ValueError):
             return False
     return True
 
 
 def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
-    """Download the adapter at `sha` into dest_root/<sha>/tools (idempotent, atomic)."""
+    """Download the adapter at `sha` into dest_root/<sha>/tools (idempotent, atomic). Modules it imports from elsewhere
+    in the repo land at their repo paths under dest_root/<sha>/, so relative imports resolve as in the repo."""
     fetch = fetch or _fetch
     if not SHA.match(sha):
         raise ValueError("shell commit must be a full 40-char sha")
-    final = dest_root / sha / "tools"
+    final_root = dest_root / sha
+    final = final_root / "tools"
     if _complete(final):
         return final
     tmp = dest_root / f".{sha}.partial"
     shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
+    (tmp / "tools").mkdir(parents=True)
     queue, seen = list(FILES), set()
-    while queue:   # the listed files plus every sibling module they import (e.g. wizard-alpha.mjs), at the same sha
-        name = queue.pop(0)
-        if name in seen:
-            continue
-        seen.add(name)
-        body = fetch(sha, name)
-        if body is None:
-            if name in REQUIRED or name not in FILES:   # an imported module is required by its importer
-                shutil.rmtree(tmp, ignore_errors=True)
-                raise RuntimeError(f"wizard-ux {sha[:9]} has no tools/{name}; this shell version has no Store data")
-            continue
-        (tmp / name).write_bytes(body)
-        queue += [m for m in LOCAL_IMPORT.findall(body.decode("utf-8", "replace")) if m not in seen]
-    final.parent.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(final, ignore_errors=True)
-    tmp.rename(final)
+    try:
+        while queue:   # the listed files plus every module they import (e.g. wizard-alpha.mjs), at the same sha
+            name = queue.pop(0)
+            if name in seen:
+                continue
+            seen.add(name)
+            body = fetch(sha, name)
+            if body is None:
+                if name in REQUIRED or name not in FILES:   # an imported module is required by its importer
+                    raise RuntimeError(f"wizard-ux {sha[:9]} has no tools/{name}; this shell version has no Store data")
+                continue
+            dest = tmp / posixpath.normpath(posixpath.join("tools", name))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(body)
+            queue += [m for m in _imports(name, body.decode("utf-8", "replace")) if m not in seen]
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    final_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(final_root, ignore_errors=True)
+    tmp.rename(final_root)
     return final
 
 

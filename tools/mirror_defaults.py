@@ -29,17 +29,26 @@ def run(*args, cwd=None, env=None):
     return subprocess.check_output(args, cwd=cwd, env=env, text=True, stderr=subprocess.PIPE).strip()
 
 
-def collect(root, catalog, defaults_path=None):
-    """Active immutable releases + the indexed commits of today's recommendations."""
+def collect(root, catalog, defaults_path=None, host_only=None):
+    """Active immutable releases + the indexed commits of today's recommendations.
+
+    `host_only`, when given, receives the pins that are host tooling (release components
+    such as the Troubleshooter): source custody only, they have no wizard.md or Compose."""
     pins, images, unpublished = set(), set(), []
+    components = set()  # (repo, commit) of channel components, e.g. host-installed Troubleshooter
     for channel in ("stable", "latest"):
         version = (root / "releases" / channel).read_text().strip()
         if not version or '/' in version or '..' in version:
             raise ValueError("invalid channel pointer")
         release = json.loads((root / "releases" / f"{version}.json").read_text())
         for row in release.get("default_apps", {}).values():
+            if row is None:  # a slot the release deliberately leaves empty (e.g. agent-history)
+                continue
             mirrors.source_ref(row["repo"], row["commit"])
             pins.add((row["repo"], row["commit"]))
+        for row in release.get("components", {}).values():
+            if isinstance(row, dict) and row.get("repo") and row.get("commit"):
+                components.add((row["repo"], row["commit"]))
         for row in [*release.get("images", {}).values(), (release.get("hermes") or {}).get("image")]:
             if row:
                 images.add(row['ref'].split('@')[0] + '@' + row['digest'])
@@ -56,7 +65,19 @@ def collect(root, catalog, defaults_path=None):
             commit = rec['install']['commit']
             mirrors.source_ref(rec['repo'], commit)
             pins.add((rec['repo'], commit))
-        elif not any(repo == row.get('repo') for repo, sha in pins):
+        elif any(repo == row.get('repo') for repo, sha in pins):
+            pass  # an app the channel releases pin in default_apps; its manifest is still read
+        elif any(repo == row.get('repo') for repo, sha in components):
+            # A default that is neither an index app nor a release default app (host tooling
+            # such as the Troubleshooter) is pinned by the channel releases' components; copy
+            # exactly those commits as source only.
+            for repo, sha in components:
+                if repo == row['repo']:
+                    mirrors.source_ref(repo, sha)
+                    pins.add((repo, sha))
+                    if host_only is not None:
+                        host_only.add((repo, sha))
+        else:
             if row.get('install') != 'on-demand':
                 raise ValueError(f"no pinned publication for default {row['app']}")
             unpublished.append(row['app'])
@@ -105,7 +126,7 @@ def source_release():
     return release, assets
 
 
-def ensure_source(repo, commit, work, env, release, assets):
+def ensure_source(repo, commit, work, env, release, assets, compose=True):
     ref = mirrors.source_ref(repo, commit)
     name = mirrors.source_name(repo, commit)
     bundle = work / name
@@ -137,14 +158,16 @@ def ensure_source(repo, commit, work, env, release, assets):
     if head != commit:
         raise ValueError(f"mirror source mismatch: {head} != {commit}")
     run('git', 'fsck', '--full', cwd=cache)
+    record = {'repo': repo, 'commit': commit, 'url': mirrors.source_url(repo, commit),
+              'bundle_sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()}
+    if not compose:  # host tooling pinned by a release component: no app manifest or images
+        return set(), record
     manifest = run('git', 'show', f'{commit}:wizard.md', cwd=cache)
     rt = wizardmd.front_matter(manifest + '\n').get('runtime') or {}
     path = rt.get('compose')
     if not isinstance(path, str) or path.startswith('/') or '..' in path.split('/'):
         raise ValueError(f'invalid compose path for {repo}')
     compose = yaml.safe_load(run('git', 'show', f'{commit}:{path}', cwd=cache))
-    record = {'repo': repo, 'commit': commit, 'url': mirrors.source_url(repo, commit),
-              'bundle_sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()}
     return private.images(compose), record
 
 
@@ -194,13 +217,15 @@ def main():
         args.report.write_text(json.dumps(report, indent=2) + '\n')
     try:
         catalog = index.all_listed(index.DEFAULT_INDEX)
-        pins, images, report['unpublished'] = collect(args.root, catalog, Path(__file__).resolve().parents[1] / 'wam/defaults.json')
+        host_only = set()
+        pins, images, report['unpublished'] = collect(args.root, catalog, Path(__file__).resolve().parents[1] / 'wam/defaults.json', host_only)
         release, assets = source_release()
         report['expected_sources'] = len(pins)
         checkpoint()
         for repo, commit in pins:
             try:
-                refs, record = ensure_source(repo, commit, args.work, private._git_env(os.environ.get('GH_TOKEN', '')), release, assets)
+                refs, record = ensure_source(repo, commit, args.work, private._git_env(os.environ.get('GH_TOKEN', '')), release, assets,
+                                             compose=(repo, commit) not in host_only)
                 images.update(refs)
                 report['sources'].append(record)
             except Exception as e:

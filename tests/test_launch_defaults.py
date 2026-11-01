@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APPS = {
     "voice": ("wizard-voice-service", ["voice"]),
     "connection-router": ("wizard-connection-router", ["connection-router"]),
-    "connected-accounts": ("wizard-connectors", ["connector-status", "simulated-private-summary"]),
+    "connected-accounts": ("connected-accounts", ["connector-status", "simulated-private-summary"]),
     "troubleshooter": ("wizard-troubleshooter", None),
     "agent-history": (None, None),
 }
@@ -29,7 +29,8 @@ def test_launch_default_metadata_and_bootstrap(slot):
     default = slots.load_defaults()[slot]
     assert default["app"] == app_id
     assert default["required"] is False
-    assert default["repo"] == "humanitylabs-org/" + (app_id or "wizard-agent-history")
+    expected_repo_id = 'wizard-connectors' if slot == 'connected-accounts' else (app_id or 'wizard-agent-history')
+    assert default["repo"] == "humanitylabs-org/" + expected_repo_id
     assert default["note"] and "\n" not in default["note"]
     if provides is not None:
         assert default["provides"] == provides
@@ -48,13 +49,13 @@ def test_launch_default_metadata_and_bootstrap(slot):
 def test_connectors_keep_the_main_on_demand_slot_only():
     defaults = slots.load_defaults()
     assert "accounts" not in defaults
-    assert [slot for slot, row in defaults.items() if row.get("app") == "wizard-connectors"] == ["connected-accounts"]
+    assert [slot for slot, row in defaults.items() if row.get("app") == "connected-accounts"] == ["connected-accounts"]
     row = defaults["connected-accounts"]
     assert row["install"] == "on-demand"
     assert row["recommended"] is True
     assert row["prefetch"] is True
-    assert row["gateway"] == {"path": "/wizard-connectors/", "strip_prefix": True}
-    assert "wizard-connectors" not in slots.to_install({"apps": []})
+    assert row["gateway"] == {"path": "/connected-accounts/", "strip_prefix": True}
+    assert "connected-accounts" not in slots.to_install({"apps": []})
 
 
 def test_voice_keeps_transcriber_as_its_engine():

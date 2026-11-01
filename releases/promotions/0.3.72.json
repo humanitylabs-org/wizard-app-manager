@@ -1,0 +1,16 @@
+{
+  "version": "0.3.72",
+  "latest_since": "2026-10-28T04:05:11Z",
+  "promoted_at": "2026-10-28T04:37:29Z",
+  "upgrade_test": {
+    "from": "0.3.68",
+    "to": "0.3.72",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.72.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-requested fix (Miguel, 28 Oct 2026): pinned chats stay the same on every device (wizard-ux #670, UX main 970378b2, image sha256:d1b00210..., push run 40628699290 published + anonymous pull). Classified feature, not fix, because Stable 0.3.68 -> 0.3.72 also takes feature ride-alongs (Notifications wizard10 inbox, Wizard UX features). Installed upgrade 0.3.68 -> 0.3.72 on a disposable KVM guest (root official Hermes v0.22.5, headscale, public os.sh fa9271d0, WIZARD_STRICT=1): pinned 0.3.72, 27 checks 0 failed, wizard/wam doctor 0 FAIL, Hermes config/.env/SOUL hashes unchanged, UX d1b00210 running, Notifications messages kept and mark-read works; the two-context pins race check fails 3/4 on 0.3.68 and passes 4/4 (twice) on 0.3.72.",
+    "notes": "Ride-alongs onto Stable: 0.3.69 App Manager 08b54f65 (WAM #267 fix: upgrades bring default apps to release pins); 0.3.71 Notifications 2.29.0-wizard10 cdce9f18 (inbox feature update, new marks volume, optional read-only cron relay); Wizard UX d53b2b24..970378b2, 59 merges incl. features: desktop heads-up chat (#656/#661/#665/#667), Response style (#631/#659), inline screenshots (#628), live tool steps (#600), Settings as windows (#588), edge peek (#560), inbox tweak (#609/#619), Machines on Home (#642); needs-james-review merges already on main: #604/#600/#588/#560. Agent Service unchanged (b1f8d2c1): Response style, inline screenshots and the diagnosed sign-in path stay inactive until AS moves. Not checked: real Tailscale/HTTPS/Serve, real chats/sign-ins, physical phones, fresh 0.3.72 install, backup/restore."
+  }
+}

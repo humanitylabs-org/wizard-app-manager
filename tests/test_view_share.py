@@ -64,7 +64,7 @@ def test_revert_through_settings_owner_listener_and_readback(tmp_path, monkeypat
     thread = threading.Thread(target=srv.serve_forever, daemon=True); thread.start()
     def request(method, data=None, **extra):
         c = http.client.HTTPConnection('127.0.0.1', srv.server_port)
-        headers = {'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.test', 'Origin': 'https://box.test',
                    'X-Wizard-Store': '1', 'Content-Type': 'application/json', **extra}
         c.request(method, '/_views/habit-tracker', json.dumps(data) if data is not None else None, headers)
         r = c.getresponse(); out = r.status, json.loads(r.read()); c.close(); return out

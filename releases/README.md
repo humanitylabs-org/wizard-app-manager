@@ -11,7 +11,100 @@ This directory publishes only the installer’s release metadata. The canonical 
 
 Never point `stable` at a release without its promotion record: `tests/test_release_channels.py` fails, and boxes on Automatic refuse to install it. 0.3.25 is grandfathered as the first stable.
 
-## stable 0.3.53
+## stable 0.3.63
+
+Promoted under DECISIONS #82/#93 (fast-track, classification **fix**). Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4: the same accounts page as Claude, sign-in through the agent, "Device code sign-in for Codex" named up front) and Claude claude-connection eb434ae → d0b59dd (0.2.6: no Claude Code fallback on alongside boxes, one row per account); both report an unreachable agent with Retry and answer `/api/connection` with `unreachable` instead of an empty inventory (wizard-app-store #32). Installed upgrade 0.3.61 → 0.3.63 passed on the demo box through `os.sh` with `WIZARD_STRICT=1`: pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, Home shows ChatGPT with usage. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.63.md (wizard-os #259 cut, #261 promotion). Rollback: point `stable` back at 0.3.61.
+
+Release JSON SHA256: `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+Promotion JSON SHA256: `80eb7f616dd25b5a2da0548d3284f55d2379a7f06082e1e6f34aea06bddc1534`.
+
+## 0.3.64 provenance
+
+Latest continuity: 0.3.62 (the 0.3.60 runtime pins) plus the same two AI connection app pins as Stable 0.3.63, so Latest never trails Stable. Channel: latest. Canonical: wizard-os #261. SHA256 `0c19f7bd3436fe7c8c00738c8e8cea09af2db62964f2638c05f97c88aea9e8a4`.
+
+## stable 0.3.61 (superseded by 0.3.63)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: approved final wording verbatim, "ship it"). Stable 0.3.59 with only the shell pin changed: wizard-ux 325be039 → 87b35bcb1314961887c06da5f96ad10b50786fe6 (`release/stable-onboarding`; #567 Recommended fix: the orb never freezes in an iPhone Safari tab; #568: three-step guide "Step N of 3" with the owner's words, Hide and Install beats removed; image `sha256:ecaba88e568ff2b6d90c6ca19a5b9bba153fcbb2eb7a4ee1aca3073c9e9acdb6`, official dispatch run 40339463332). Every other pin is identical to 0.3.59. Installed upgrade 0.3.59 → 0.3.61 passed on demo-4 through `os.sh` with `WIZARD_STRICT=1` (mirror-head base disclosed): pinned, 0 failed checks, Hermes files unchanged, doctor 0 FAIL, live WebKit check 61/61. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.61.md (wizard-os #257 cut, #258 promotion). Rollback: point `stable` back at 0.3.59.
+
+Release JSON SHA256: `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+Promotion JSON SHA256: `ce5b9ff2811b108ccfc6d2ffb4744897dea9b5e54985d2c339a70c759174c076`.
+
+## 0.3.63 provenance
+
+Stable 0.3.61 with only the two AI connection apps changed: ChatGPT chatgpt-connection f87d5dd → 476d771 (0.2.4, engine `wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418`) and Claude claude-connection eb434ae → d0b59dd (0.2.6, engine `wizard-claude:0.2.6@sha256:5c7ca0b3b38803794aa3296f69bed11253a4136c26acded9f3298ed115580745`), both from wizard-app-store #32. Channel: stable since wizard-os #261. Canonical: wizard-os #259. SHA256 `11d78db80b6e42bc548a4783014b13b9bcfb88d0204865a9edbd681200f065f5`.
+
+## 0.3.62 provenance
+
+Latest continuity only: exactly the 0.3.60 runtime pins (only version, name and about differ), so Latest never trails Stable. It does not carry the 0.3.61 guide or fix; those reach main through wizard-ux #569. Channel: latest. Canonical: wizard-os #257 (file) and #258 (latest → 0.3.62). SHA256 `c6b9fde9bcd21fbd159ded564f59453b9f0bd8be925488238afef03df10ad057`.
+
+## 0.3.61 provenance
+
+Cut in wizard-os #257 (merge `d1793589`) and promoted to stable in #258 (merge `e094225d`). SHA256 `b049d493c0eea548ce5a987a4cb05985912020b13c80765f4f0071233ebb6665`.
+
+## stable 0.3.59 (superseded by 0.3.61)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-authorized by Miguel, 26 Oct 2026: "Ship it (not limited to just 2 though)"). Stable 0.3.57 plus any number of Claude subscriptions:
+- **Claude app.** claude-connection 3b2d618 → eb434ae (0.2.5; engine `wizard-claude:0.2.5@sha256:4a8f91cfa6abc829d17af533f18d23932a131ca48e2e821e870db0f474a2436f`, wizard-app-store #31).
+- **Shell.** wizard-ux ffa4c636 → 325be039 (#564: #537 + #558 cherry-picked on `release/stable-onboarding`; image `sha256:cd80f6f823cfc2fd74532fbad5d002eebf2b584cdf080ad30a944b97566db06d`, differs only in `core/chat-models.js`).
+- **App Manager.** d926eec → e3f76a68 on `maintenance/stable-0.3.57` (#250 = #249 + #252: alongside host dashboards turn on the account broker and reload after the plugin refresh; image inputs unchanged).
+
+Every other pin is identical to 0.3.57. The upgrade 0.3.57 → 0.3.59 passed at component level: the pinned App Manager steps (`claude_login.ensure`, `host_dashboard.ensure`) plus a Compose recreate of both Claude versions. The original sign-in stayed byte-identical, and rollback was verified. No full `os.sh` run happened on a real box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.59.md (wizard-os #256). Rollback: point `stable` back at 0.3.57.
+
+Release JSON SHA256: `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+Promotion JSON SHA256: `6d6a2c84c0151263179607ddaba9dfcd9aedd7c79580a4c37255bf3d7f11dc36`.
+
+## 0.3.60 provenance
+
+Latest 0.3.58 plus the same multi-account Claude change, so Latest never trails Stable:
+- **Claude app.** claude-connection eb434ae.
+- **App Manager.** 4879531820cec4680ab19ed0a47ee8f094421c8a on `maintenance/latest-0.3.58` (#251).
+- **Shell.** Wizard UX main a0399680 (#558, includes #537; image `sha256:a4b018a26f62ee42b9a5399a52ba6e5371a5ce3f714a16e576ff183b25611223`). 16 other main UX PRs since e0900880 ride along; they are listed in its `about`.
+
+Channel: latest. Canonical: wizard-os #255 (cut) and #256 (latest → 0.3.60). SHA256 `ab3258adb9fe60252550af96a9f62445a4768c0be5a3addca3c43c1e9c93f5d9`.
+
+## 0.3.59 provenance
+
+Cut in wizard-os #255 (merge `109c46b3`) and promoted to stable in #256. SHA256 `27db303e23ac810692c4106152ba230bb33c7f97e8eaef4f73bd12c558993c96`.
+
+## stable 0.3.57 (superseded by 0.3.59)
+
+Promoted under DECISIONS #93 (fast-track, classification **feature**; owner-requested and authorized by Miguel, 26 Oct 2026). It is stable 0.3.55 with only the wizard-ux pin changed: `components.wizard-ux`, `images.wizard-ux` and `default_apps.shell` move from 26c3b20 to ffa4c6366f9267e3ed5ca2fbc710ca9c8ad97686 (wizard-ux #548 on `release/stable-onboarding`), image `sha256:a667cd87f0446dce9e6117ff05adf741df47979d380a31c946cd400e11ed721c`. The phone tour ends with an optional Add to Home Screen beat, replacing the install text removed from os.md (#246). Every other pin is identical to 0.3.55. The upgrade 0.3.55 → 0.3.57 passed at component level, the same standard as 0.3.55. It used the pinned App Manager d926eec `write_shell_override` step with the release pins, a Compose recreate onto the new digest, and a browser matrix on the upgraded container (11/11), with rollback verified. No full `os.sh` installer run happened on a real box (see the evidence). Canonical evidence: wizard-os/docs/acceptance/promote-0.3.57.md (wizard-os #251). Rollback: point `stable` back at 0.3.55.
+
+Release JSON SHA256: `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+Promotion JSON SHA256: `841d522aeb0132d2539d5e61493f7bd8d5f16e422d9d69a88b48bc48e10abc4e`.
+
+## 0.3.58 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250 (file) and PR #251 (cut onto latest), `releases/0.3.58.json`; byte-identical SHA-256 `e9de77dddc22dfe3301f210e4fa276bb5bafd6e80514d6322ce2b88ea5c9405f`.
+- Latest continuity only: exactly the 0.3.56 runtime pins (only version, name and about differ), so Latest testers keep the 0.3.54 backup bundle while stable moves to 0.3.57. It does not carry the 0.3.57 Install beat.
+- Channel: on latest only.
+
+## 0.3.57 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #250, `releases/0.3.57.json`; byte-identical SHA-256 `69d54ea0cf9e2a5361eabedcfe6510071594868803b743cdf268e89dd05544db`.
+- Stable 0.3.55 plus wizard-ux #548 (official maintenance publication run 40292759016). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.57` above.
+
+## stable 0.3.55 (superseded by 0.3.57)
+
+Promoted under DECISIONS #82 (fast-track, classification fix). It is stable 0.3.53 with only the Troubleshooter pin changed: `components.wizard-troubleshooter` 4b1f0ef → c1b4c432fd7b162d23d42fb7d3d8fb049bee764e (wizard-troubleshooter #12 and #13, plus the #10 license). This is host tooling with no image, and every other pin is identical to 0.3.53. Upgrade 0.3.53 → 0.3.55 of the `wam troubleshooter` step passed in a disposable systemd box. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.55.md (wizard-os #249). Rollback: point `stable` back at 0.3.53.
+
+Release JSON SHA256: `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+Promotion JSON SHA256: `7dd2fbedeb54949b388837ccfec91ea9c3d80eabb576b9e46f3ff8487b41428a`.
+
+## 0.3.56 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248 (file) and PR #249 (cut onto latest), `releases/0.3.56.json`; byte-identical SHA-256 `a9d449c424e653c63b905a0d31cb0cee886dce5c696fd4688f9e214a21e028c5`.
+- Latest 0.3.54 plus the same Troubleshooter pin as stable 0.3.55 (c1b4c43). Every image and every other pin is identical to 0.3.54.
+- Channel: on latest only. It keeps the 0.3.54 backup bundle, which still needs its own gates before promotion.
+
+## 0.3.55 provenance
+
+- Canonical source: `humanitylabs-org/wizard-os` PR #248, `releases/0.3.55.json`; byte-identical SHA-256 `f00d8bbd4360acc28144e03dd3bcbcf3c518f026ccdb05cf88598d59aad49000`.
+- Stable 0.3.53 plus Troubleshooter c1b4c43. This adds the bounded owner-approved repair tools shared by Claude, ChatGPT and Tinfoil (#12), and lets Claude fall back to the agent's second Claude sign-in on a usage limit (#13). No trunk features ride along.
+- Channel: promoted to stable 26 Oct 2026; see `## stable 0.3.55` above.
+
+## stable 0.3.53 (superseded by 0.3.55)
 
 Promoted under DECISIONS #82 (fast-track, classification fix: only the wizard-ux Stable onboarding fix vs stable 0.3.39) after a supported strict installer upgrade of the alongside demo from stable 0.3.39. Authorized by Miguel (@mistermizel), 26 Oct 2026. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.53.md (wizard-os #244). Rollback: point `stable` back at 0.3.39.
 
@@ -248,3 +341,287 @@ Channel: on latest only; stable remains 0.3.39 pending installed-demo upgrade ve
 
 Canonical wizard-os PR #233. Channel: on latest only; stable remains 0.3.39.
 Manifest SHA256: `918b984a4ba0bd78cb863ad559adf762752c60d43d058d5288d4e138ca13044f`. Complete 0.3.49 non-UX pins retained; compatible Android/onboarding/Spaces UX is immutable 03b07142. No passed runtime release gate or promotion implied.
+
+## 0.3.65 provenance
+
+Canonical: wizard-os releases/0.3.65.json (wizard-os #262). SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Stable 0.3.63 plus wizard-app-manager #258 on the Stable maintenance branch (#259, `8607981`): installer reruns recreate connection apps on an address/login change or stale running container, HTTPS-off owner step, approved Tailscale login waited for, official-installer Hermes routes to `hermes update`. Other pins unchanged.
+Channel: on latest only; stable remains 0.3.63 pending the upgrade test.
+
+## stable 0.3.65
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after a passed 0.3.63 -> 0.3.65 upgrade test with WIZARD_STRICT=1 on a disposable guest. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.65.md (wizard-os #263). Rollback: point `stable` back at 0.3.63.
+
+Release JSON SHA256: `4407ed7378988ad2d7ae55450ef52bbfca1f7678632264baa4dc30767cdf6fa0`.
+Promotion JSON SHA256: `b66b41d3fcf982410a70c2ff31efba8589cf11a6be87ea32508a63acbc40f50b`.
+
+## 0.3.66 provenance
+
+Canonical: wizard-os releases/0.3.66.json (wizard-os #263). SHA256: `68605bbc445ec12a38f6350a304e91b17773a3bdb289d10dcebebac2d34ab8b7`.
+Latest continuity: 0.3.64 plus wizard-app-manager #258 on the Latest maintenance branch (#260, `da2f01d`). Other pins unchanged.
+Channel: on latest only.
+
+## 0.3.68 provenance
+
+Canonical: wizard-os releases/0.3.68.json (wizard-os #267). SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+0.3.67 plus Agent Service main `b1f8d2c1` (#191, #195, #196 emailHash, #203 identity marker), Wizard UX main `d53b2b24` (#573 model picker refresh), Claude 0.2.8 (`43f6a412`) and ChatGPT 0.2.6 (`f73b8487`). WAM, Troubleshooter, Hermes and other default apps unchanged.
+Channel: on latest only; stable remains 0.3.65 pending the upgrade tests.
+
+## stable 0.3.68
+
+Promoted (fast-tracked fix, DECISIONS #82/#93) after passed 0.3.65 -> 0.3.68 and 0.3.61 -> 0.3.68 upgrade tests with WIZARD_STRICT=1 on disposable guests. Canonical evidence: wizard-os/docs/acceptance/promote-0.3.68.md (wizard-os #270). Rollback: point `stable` back at 0.3.65.
+
+Release JSON SHA256: `29649334a5685cf85ed23f509c78ccdf1235dc55bd85f1e986c7a144eb4e9b04`.
+Promotion JSON SHA256: `0984d62ca0b54ac0e4dab86e26df9b2dee7d2f93ddd89783f29eb8a3f21d3474`.
+
+## 0.3.70 provenance
+
+Canonical: wizard-os releases/0.3.70.json (wizard-os #270). SHA256: `1488db56ff5f4fa1f83105f18700d5f172b926934d201e933533a84f144699b4`.
+0.3.69 (WAM `08b54f65`, #267) with 0.3.68's Agent Service `b1f8d2c1`, Wizard UX `d53b2b24`, Claude 0.2.8 and ChatGPT 0.2.6.
+Channel: on latest only.
+
+## 0.3.71 provenance
+
+Canonical: wizard-os releases/0.3.71.json (wizard-os #287). SHA256: `7f854dbbe2cb15129615f3a2fd3ed1632a46d749219013f890a093fe0812a850`.
+0.3.70 with Notifications 2.29.0-wizard10 (`oscarhenrycollins/notifications` `cdce9f18`, #277); compose images unchanged from 2.29.0-wizard2. Everything else exactly 0.3.70.
+Channel: on latest only.
+
+## 0.3.72 provenance
+
+Canonical: wizard-os releases/0.3.72.json (wizard-os #292). SHA256: `0bf3563ed9d27b24f479819678d982cff036d17c32b246cc8602f1833257c588`.
+0.3.71 with Wizard UX main `970378b2` (wizard-ux #670: pinned chats stay the same on every device; image `sha256:d1b00210…`, push run 40628699290). Everything else exactly 0.3.71.
+Channel: on latest only.
+
+## stable 0.3.72
+
+Canonical: wizard-os #293 (promotion), cut in wizard-os #292. `releases/stable` → 0.3.72 (sha256 `d8c646206043137d6ef9e2a12e9f1de591b37cb026b94f4476c101db0f3338ab`); `promotions/0.3.72.json` sha256 `3911f6babcf670f2d43df22145926e35720c369d1efb0436a4751045ecfc44a7`.
+Fast-tracked under DECISIONS #93 as a **feature** (owner-requested pins fix wizard-ux #670, plus ride-alongs: Notifications 2.29.0-wizard10, Wizard UX main features, App Manager 08b54f65). Installed upgrade 0.3.68 → 0.3.72 passed: wizard-os docs/acceptance/promote-0.3.72.md.
+
+## 0.3.73 provenance
+
+Canonical: wizard-os releases/0.3.73.json (release train). SHA256: `79ee11458bed4df743fda84a0484afc021440f5861043383233e30c9d52a511b`.
+Latest 0.3.72 with Wizard UX 970378b2 -> db361987, Agent Service b1f8d2c1 -> 3773ca0c. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#674 Recommended fix: Spaces and subject order keep every device's edit; humanitylabs-org/wizard-ux#675 Recommended fix (performance): Settings says 'Takes about 2 minutes' when only the interfa; humanitylabs-org/wizard-ux#676 Recommended fix: an unreachable Wizard on Tailscale says what to check instead of 'No inte; humanitylabs-org/wizard-agent-service#205 Recommended fix: serve live run events for model-locked turns (events were 404 for every W; humanitylabs-org/wizard-agent-service#206 Recommended fix: archive window honours the Auto-archive choice; humanitylabs-org/wizard-agent-service#214 Recommended fix: owners choose Summary or Concise replies; humanitylabs-org/wizard-agent-service#219 Recommended fix: bring live fixes onto main: dismissed errors stay dismissed, faster Chats; humanitylabs-org/wizard-agent-service#221 Recommended fix: apps list carries declared type and category; humanitylabs-org/wizard-agent-service#237 Recommended fix: every picture or file an agent sends shows in chats; humanitylabs-org/wizard-agent-service#238 Recommended fix: shared lists keep every device's edit (item operations on ui-preferences); humanitylabs-org/wizard-agent-service#243 Recommended fix: Setup stops saying a phone is connected once the last phone leaves the ta. Stable stays 0.3.72 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.73
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/303 (release train). `releases/stable` → 0.3.73; `promotions/0.3.73.json` sha256 `915e97a34a50a70d4e6d1e3fb38dfedcf3d751a40c02a86eb487b14a2e58747b`.
+Fast-tracked as **feature**. Installed upgrade 0.3.72 → 0.3.73 passed: wizard-os docs/acceptance/promote-0.3.73.md.
+
+## 0.3.74 provenance
+
+Canonical: wizard-os releases/0.3.74.json (wizard-os #299, merge b2c7858d). SHA256: `dea8615dcf89453cc9c0b25fcfa144c2994dc0f464ab5f8397babce1651cbe21`.
+0.3.73 with App Manager main `79272034` (#304 quick interface updates; #311/#312/#320 fixes; everything merged on main since 0.3.67's line, including #305/#307 automatic app updates, app connections, #184, #214); image `v4.10.2-wizard.778-d9e1644` (`sha256:53007625…`, run 40672973160, image inputs unchanged d9e16446..79272034). Everything else exactly 0.3.73.
+Channel: on latest only.
+
+## stable 0.3.74
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/313 (promotion), cut in wizard-os #299. `releases/stable` → 0.3.74; `promotions/0.3.74.json` sha256 `1ca71a372fc2148a22837b02adf224bf951ab034e9924160436472e83b361c10`.
+Fast-tracked as **feature** (DECISIONS #93): App Manager main 79272034 (quick interface updates #304, fixes #311/#312/#320, App Manager main features ride along). Installed upgrade 0.3.73 → 0.3.74 passed: wizard-os docs/acceptance/promote-0.3.74.md.
+
+## 0.3.75 provenance
+
+Canonical: wizard-os releases/0.3.75.json (release train). SHA256: `4667a48cf1dbec17a2b98c13589290bc144f94dcc200e090497cec01c49f879e`.
+Latest 0.3.74 with Wizard UX db361987 -> 91218c83, Agent Service 3773ca0c -> 7269a990. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#416 Recommended fix: Media viewer: long screenshots scroll; humanitylabs-org/wizard-ux#447 Recommended fix: Dictation inserts at the cursor instead of a copy card; humanitylabs-org/wizard-ux#458 Recommended fix: Store's My apps link opens in place instead of reloading Wizard; humanitylabs-org/wizard-ux#487 Recommended fix: Photos backup runs on Wi-Fi when the tailnet VPN is on; humanitylabs-org/wizard-ux#586 Recommended fix: Retry saved first messages after subscription sign-in recovers; humanitylabs-org/wizard-ux#587 Recommended fix: Show saved messages waiting for AI sign-in consistently; humanitylabs-org/wizard-ux#589 Recommended fix: Keep first-launch app discovery from recursively rebuilding the shell; humanitylabs-org/wizard-ux#605 Recommended fix: Share to Wizard picks New chat or one chat, quotes forwarded words, and s; humanitylabs-org/wizard-ux#635 Recommended fix: show times in the phone's own timezone; humanitylabs-org/wizard-ux#636 Recommended fix: every picked image rides an orb send made while it uploads; humanitylabs-org/wizard-ux#641 Recommended fix: Share to Wizard sheet looks like the rest of the OS; humanitylabs-org/wizard-ux#650 Recommended fix: Messenger recovers its own take after a reload and orphaned capture start; humanitylabs-org/wizard-ux#652 Recommended fix: tapping outside a sheet, menu or modal acts as Back across apps and shell; humanitylabs-org/wizard-ux#655 Recommended fix: keep Ready asks visible while helpers continue; humanitylabs-org/wizard-ux#658 Recommended fix: overlays with text are fully opaque in every skin; humanitylabs-org/wizard-ux#679 Recommended fix: status pills get their own colours in every skin; humanitylabs-org/wizard-ux#680 Recommended fix: the app kit follows its own text and touch-size rule; humanitylabs-org/wizard-ux#682 Recommended fix: apps open at once; setup check no longer holds the window; humanitylabs-org/wizard-ux#684 Recommended fix: show notifications when Ready has no chats; humanitylabs-org/wizard-ux#689 Recommended fix: keep saved-message retries out of the connection warning; humanitylabs-org/wizard-ux#690 Recommended fix: keep model picker above tall drafts and keyboard; humanitylabs-org/wizard-ux#691 Recommended fix: Setup and Settings use the shared app style contract; humanitylabs-org/wizard-ux#692 Recommended fix: keep agent replies on their own model and retain their threads; humanitylabs-org/wizard-ux#693 Recommended fix: Keep repeated Back presses inside Wizard at Home; humanitylabs-org/wizard-ux#694 Recommended fix: refresh the model picker on every open without repainting unchanged choic; humanitylabs-org/wizard-ux#696 Recommended fix: a running reply never shows its interim line twice; humanitylabs-org/wizard-ux#704 Recommended fix: Use current-route wording for voice health help; humanitylabs-org/wizard-ux#709 Recommended fix: a chat is in one Space; filed chats read Move to Space…; humanitylabs-org/wizard-ux#710 Recommended fix: Settings rows stay flat lines over the shared kit controls; humanitylabs-org/wizard-ux#713 Recommended fix: owners see Apps, never Wizard apps, on the agent page, Apps sheet and sha; humanitylabs-org/wizard-ux#715 Recommended fix: Screen chat QA fixture uses invented text, not a real team conversation; humanitylabs-org/wizard-ux#720 Recommended fix: show Claude extra enabled when its cap is unavailable; humanitylabs-org/wizard-ux#721 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#723 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#725 Recommended fix: shared-app install links open in the Store again; humanitylabs-org/wizard-ux#726 Recommended fix: launcher shows long one-word app names whole; humanitylabs-org/wizard-ux#728 Recommended fix: Ready Priority ranks every status and shows its groups; humanitylabs-org/wizard-agent-service#155 Recommended fix: owner CLI importer includes python-dotenv; humanitylabs-org/wizard-agent-service#183 Recommended fix: threads know MEDIA sends PDFs and other files up to 256 MB; humanitylabs-org/wizard-agent-service#197 Recommended fix: import older Hermes homes without shared-file or credential leaks; humanitylabs-org/wizard-agent-service#228 Recommended fix: let open owner asks stay Ready during background work; humanitylabs-org/wizard-agent-service#235 Recommended fix: chat pictures and files stay in the owner's browser, and edited files sti; humanitylabs-org/wizard-agent-service#241 Recommended fix: a sent file is a snapshot, so a later rewrite never changes earlier chat ; humanitylabs-org/wizard-agent-service#245 Recommended fix: pointer skills send the agent through the app's own skill, with end-to-en; humanitylabs-org/wizard-agent-service#250 Recommended fix: app workflow changes stay in released apps; humanitylabs-org/wizard-agent-service#254 Recommended fix: a chat is in one Space at a time; humanitylabs-org/wizard-agent-service#256 Recommended fix: Secret scan passes again (the round-10 synthetic placeholder is not a key; humanitylabs-org/wizard-agent-service#257 Recommended fix: the app-skill guard stops blocking reads and verification of installed sk; humanitylabs-org/wizard-agent-service#260 Recommended fix: scheduled notifications use the job's own agent and survive late admissio; humanitylabs-org/wizard-agent-service#263 Recommended fix: Markdown support is a fact, not a formatting push; humanitylabs-org/wizard-agent-service#264 Recommended fix: Secret scan passes again (shared-vault staging test's placeholder PEM is . Stable stays 0.3.74 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.76 provenance
+
+Canonical: wizard-os releases/0.3.76.json (wizard-os #319, merge 4ee0f8af). SHA256: `8f0f4345b784180bd6079decbd7f7578d14ae94366281d819fee657bdb5952b5`.
+Stable 0.3.74 with exactly two pins moved: Wizard UX db361987 -> 25f28781 (`release/stable-onboarding`: db361987 + the app picker long-name fix, wizard-ux #726/#730 via #729; image `sha256:bac45843…`, run 40835930467) and Troubleshooter c1b4c43 -> 3e56f66 (host tooling: James's one-tap screen following the selected skin, sign-in reconnect path, reply probes off by default, Tinfoil check fix).
+
+## 0.3.77 provenance
+
+Canonical: wizard-os releases/0.3.77.json (wizard-os #319). SHA256: `20c10e1c8a2ac9832861b4d8bd10e6e37b3e544e0e451d72aee49d5377abd1fb`.
+Latest 0.3.75 with only the Troubleshooter pin moved to 3e56f66 (same as 0.3.76), so Latest never trails Stable.
+Channel: latest.
+
+## stable 0.3.76
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/320 (promotion), cut in wizard-os #319. `releases/stable` → 0.3.76; `promotions/0.3.76.json` sha256 `2124babafb5e48ccb63e5729638824c57f633278e808bb60e3c0585f13221afc`.
+Fast-tracked as **fix** (owner request, Miguel 29 Oct). Installed upgrade 0.3.74 → 0.3.76 passed: wizard-os docs/acceptance/promote-0.3.76.md.
+
+## 0.3.78 provenance
+
+Canonical: wizard-os releases/0.3.78.json (release train). SHA256: `9f0dff039f5aa72d5af800b3201d2ed2ba2d25f5a9456c09b55f4f0be0b10e40`.
+Latest 0.3.77 with Wizard UX 91218c83 -> 7c92caef. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#416 Recommended fix: Media viewer: long screenshots scroll; humanitylabs-org/wizard-ux#447 Recommended fix: Dictation inserts at the cursor instead of a copy card; humanitylabs-org/wizard-ux#458 Recommended fix: Store's My apps link opens in place instead of reloading Wizard; humanitylabs-org/wizard-ux#487 Recommended fix: Photos backup runs on Wi-Fi when the tailnet VPN is on; humanitylabs-org/wizard-ux#586 Recommended fix: Retry saved first messages after subscription sign-in recovers; humanitylabs-org/wizard-ux#587 Recommended fix: Show saved messages waiting for AI sign-in consistently; humanitylabs-org/wizard-ux#589 Recommended fix: Keep first-launch app discovery from recursively rebuilding the shell; humanitylabs-org/wizard-ux#605 Recommended fix: Share to Wizard picks New chat or one chat, quotes forwarded words, and s; humanitylabs-org/wizard-ux#635 Recommended fix: show times in the phone's own timezone; humanitylabs-org/wizard-ux#636 Recommended fix: every picked image rides an orb send made while it uploads; humanitylabs-org/wizard-ux#641 Recommended fix: Share to Wizard sheet looks like the rest of the OS; humanitylabs-org/wizard-ux#650 Recommended fix: Messenger recovers its own take after a reload and orphaned capture start; humanitylabs-org/wizard-ux#652 Recommended fix: tapping outside a sheet, menu or modal acts as Back across apps and shell; humanitylabs-org/wizard-ux#655 Recommended fix: keep Ready asks visible while helpers continue; humanitylabs-org/wizard-ux#658 Recommended fix: overlays with text are fully opaque in every skin; humanitylabs-org/wizard-ux#679 Recommended fix: status pills get their own colours in every skin; humanitylabs-org/wizard-ux#680 Recommended fix: the app kit follows its own text and touch-size rule; humanitylabs-org/wizard-ux#682 Recommended fix: apps open at once; setup check no longer holds the window; humanitylabs-org/wizard-ux#684 Recommended fix: show notifications when Ready has no chats; humanitylabs-org/wizard-ux#689 Recommended fix: keep saved-message retries out of the connection warning; humanitylabs-org/wizard-ux#690 Recommended fix: keep model picker above tall drafts and keyboard; humanitylabs-org/wizard-ux#691 Recommended fix: Setup and Settings use the shared app style contract; humanitylabs-org/wizard-ux#692 Recommended fix: keep agent replies on their own model and retain their threads; humanitylabs-org/wizard-ux#693 Recommended fix: Keep repeated Back presses inside Wizard at Home; humanitylabs-org/wizard-ux#694 Recommended fix: refresh the model picker on every open without repainting unchanged choic; humanitylabs-org/wizard-ux#696 Recommended fix: a running reply never shows its interim line twice; humanitylabs-org/wizard-ux#704 Recommended fix: Use current-route wording for voice health help; humanitylabs-org/wizard-ux#709 Recommended fix: a chat is in one Space; filed chats read Move to Space…; humanitylabs-org/wizard-ux#710 Recommended fix: Settings rows stay flat lines over the shared kit controls; humanitylabs-org/wizard-ux#713 Recommended fix: owners see Apps, never Wizard apps, on the agent page, Apps sheet and sha; humanitylabs-org/wizard-ux#715 Recommended fix: Screen chat QA fixture uses invented text, not a real team conversation; humanitylabs-org/wizard-ux#720 Recommended fix: show Claude extra enabled when its cap is unavailable; humanitylabs-org/wizard-ux#721 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#723 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#725 Recommended fix: shared-app install links open in the Store again; humanitylabs-org/wizard-ux#726 Recommended fix: launcher shows long one-word app names whole; humanitylabs-org/wizard-ux#728 Recommended fix: Ready Priority ranks every status and shows its groups; humanitylabs-org/wizard-ux#718 Recommended fix: live replies resume after a dropped connection; humanitylabs-org/wizard-ux#719 Recommended fix: Wizard opens offline and shows saved thread copies; humanitylabs-org/wizard-ux#727 Recommended fix: one offline pop-up with three checks (Internet · Tailscale · Wizard); humanitylabs-org/wizard-ux#730 Recommended fix: launcher long-name size from the type token, with a regression test; humanitylabs-org/wizard-agent-service#155 Recommended fix: owner CLI importer includes python-dotenv; humanitylabs-org/wizard-agent-service#183 Recommended fix: threads know MEDIA sends PDFs and other files up to 256 MB; humanitylabs-org/wizard-agent-service#197 Recommended fix: import older Hermes homes without shared-file or credential leaks; humanitylabs-org/wizard-agent-service#228 Recommended fix: let open owner asks stay Ready during background work; humanitylabs-org/wizard-agent-service#235 Recommended fix: chat pictures and files stay in the owner's browser, and edited files sti; humanitylabs-org/wizard-agent-service#241 Recommended fix: a sent file is a snapshot, so a later rewrite never changes earlier chat ; humanitylabs-org/wizard-agent-service#245 Recommended fix: pointer skills send the agent through the app's own skill, with end-to-en; humanitylabs-org/wizard-agent-service#250 Recommended fix: app workflow changes stay in released apps; humanitylabs-org/wizard-agent-service#254 Recommended fix: a chat is in one Space at a time; humanitylabs-org/wizard-agent-service#256 Recommended fix: Secret scan passes again (the round-10 synthetic placeholder is not a key; humanitylabs-org/wizard-agent-service#257 Recommended fix: the app-skill guard stops blocking reads and verification of installed sk; humanitylabs-org/wizard-agent-service#260 Recommended fix: scheduled notifications use the job's own agent and survive late admissio; humanitylabs-org/wizard-agent-service#263 Recommended fix: Markdown support is a fact, not a formatting push; humanitylabs-org/wizard-agent-service#264 Recommended fix: Secret scan passes again (shared-vault staging test's placeholder PEM is . Stable stays 0.3.76 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.79 provenance
+
+Canonical: wizard-os releases/0.3.79.json (release train). SHA256: `08123e1b0059f015e55beff9d9f0df15e1b3b1b6a8f70ed97309ba393b5dfaa8`.
+Latest 0.3.78 with Wizard UX 7c92caef -> 2e316e77, Agent Service 7269a990 -> 24f3cd0a. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#416 Recommended fix: Media viewer: long screenshots scroll; humanitylabs-org/wizard-ux#447 Recommended fix: Dictation inserts at the cursor instead of a copy card; humanitylabs-org/wizard-ux#458 Recommended fix: Store's My apps link opens in place instead of reloading Wizard; humanitylabs-org/wizard-ux#487 Recommended fix: Photos backup runs on Wi-Fi when the tailnet VPN is on; humanitylabs-org/wizard-ux#586 Recommended fix: Retry saved first messages after subscription sign-in recovers; humanitylabs-org/wizard-ux#587 Recommended fix: Show saved messages waiting for AI sign-in consistently; humanitylabs-org/wizard-ux#589 Recommended fix: Keep first-launch app discovery from recursively rebuilding the shell; humanitylabs-org/wizard-ux#605 Recommended fix: Share to Wizard picks New chat or one chat, quotes forwarded words, and s; humanitylabs-org/wizard-ux#635 Recommended fix: show times in the phone's own timezone; humanitylabs-org/wizard-ux#636 Recommended fix: every picked image rides an orb send made while it uploads; humanitylabs-org/wizard-ux#641 Recommended fix: Share to Wizard sheet looks like the rest of the OS; humanitylabs-org/wizard-ux#650 Recommended fix: Messenger recovers its own take after a reload and orphaned capture start; humanitylabs-org/wizard-ux#652 Recommended fix: tapping outside a sheet, menu or modal acts as Back across apps and shell; humanitylabs-org/wizard-ux#655 Recommended fix: keep Ready asks visible while helpers continue; humanitylabs-org/wizard-ux#658 Recommended fix: overlays with text are fully opaque in every skin; humanitylabs-org/wizard-ux#679 Recommended fix: status pills get their own colours in every skin; humanitylabs-org/wizard-ux#680 Recommended fix: the app kit follows its own text and touch-size rule; humanitylabs-org/wizard-ux#682 Recommended fix: apps open at once; setup check no longer holds the window; humanitylabs-org/wizard-ux#684 Recommended fix: show notifications when Ready has no chats; humanitylabs-org/wizard-ux#689 Recommended fix: keep saved-message retries out of the connection warning; humanitylabs-org/wizard-ux#690 Recommended fix: keep model picker above tall drafts and keyboard; humanitylabs-org/wizard-ux#691 Recommended fix: Setup and Settings use the shared app style contract; humanitylabs-org/wizard-ux#692 Recommended fix: keep agent replies on their own model and retain their threads; humanitylabs-org/wizard-ux#693 Recommended fix: Keep repeated Back presses inside Wizard at Home; humanitylabs-org/wizard-ux#694 Recommended fix: refresh the model picker on every open without repainting unchanged choic; humanitylabs-org/wizard-ux#696 Recommended fix: a running reply never shows its interim line twice; humanitylabs-org/wizard-ux#704 Recommended fix: Use current-route wording for voice health help; humanitylabs-org/wizard-ux#709 Recommended fix: a chat is in one Space; filed chats read Move to Space…; humanitylabs-org/wizard-ux#710 Recommended fix: Settings rows stay flat lines over the shared kit controls; humanitylabs-org/wizard-ux#713 Recommended fix: owners see Apps, never Wizard apps, on the agent page, Apps sheet and sha; humanitylabs-org/wizard-ux#715 Recommended fix: Screen chat QA fixture uses invented text, not a real team conversation; humanitylabs-org/wizard-ux#718 Recommended fix: live replies resume after a dropped connection; humanitylabs-org/wizard-ux#719 Recommended fix: Wizard opens offline and shows saved thread copies; humanitylabs-org/wizard-ux#720 Recommended fix: show Claude extra enabled when its cap is unavailable; humanitylabs-org/wizard-ux#721 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#723 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#725 Recommended fix: shared-app install links open in the Store again; humanitylabs-org/wizard-ux#726 Recommended fix: launcher shows long one-word app names whole; humanitylabs-org/wizard-ux#727 Recommended fix: one offline pop-up with three checks (Internet · Tailscale · Wizard); humanitylabs-org/wizard-ux#728 Recommended fix: Ready Priority ranks every status and shows its groups; humanitylabs-org/wizard-ux#730 Recommended fix: launcher long-name size from the type token, with a regression test; humanitylabs-org/wizard-ux#734 Recommended fix: working chats no longer flash into Ready while their history loads; humanitylabs-org/wizard-agent-service#155 Recommended fix: owner CLI importer includes python-dotenv; humanitylabs-org/wizard-agent-service#183 Recommended fix: threads know MEDIA sends PDFs and other files up to 256 MB; humanitylabs-org/wizard-agent-service#197 Recommended fix: import older Hermes homes without shared-file or credential leaks; humanitylabs-org/wizard-agent-service#228 Recommended fix: let open owner asks stay Ready during background work; humanitylabs-org/wizard-agent-service#235 Recommended fix: chat pictures and files stay in the owner's browser, and edited files sti; humanitylabs-org/wizard-agent-service#241 Recommended fix: a sent file is a snapshot, so a later rewrite never changes earlier chat ; humanitylabs-org/wizard-agent-service#245 Recommended fix: pointer skills send the agent through the app's own skill, with end-to-en; humanitylabs-org/wizard-agent-service#250 Recommended fix: app workflow changes stay in released apps; humanitylabs-org/wizard-agent-service#254 Recommended fix: a chat is in one Space at a time; humanitylabs-org/wizard-agent-service#256 Recommended fix: Secret scan passes again (the round-10 synthetic placeholder is not a key; humanitylabs-org/wizard-agent-service#257 Recommended fix: the app-skill guard stops blocking reads and verification of installed sk; humanitylabs-org/wizard-agent-service#260 Recommended fix: scheduled notifications use the job's own agent and survive late admissio; humanitylabs-org/wizard-agent-service#263 Recommended fix: Markdown support is a fact, not a formatting push; humanitylabs-org/wizard-agent-service#264 Recommended fix: Secret scan passes again (shared-vault staging test's placeholder PEM is ; humanitylabs-org/wizard-agent-service#266 Recommended fix: a finished run leaves Working at once. Stable stays 0.3.76 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.80 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/323. SHA256: `5162b9ad74105d6a565120f5540ce2558e962d3a7dca9fb6bcfed17eac446c54`.
+0.3.79 plus the first-run Welcome (wizard-ux #733, feature), App Manager c52f260f (#333 docker-group fix, #321, #331 fixes; #323/#328 Connections), Claude 0.2.10 and ChatGPT 0.2.8 (sign in first, no nickname field). Stable stays 0.3.76 until the 72h soak and an upgrade test.
+Channel: on latest only.
+
+## 0.3.81 provenance
+
+Canonical: wizard-os releases/0.3.81.json (release train). SHA256: `143abe4af3648e37ac1f62c75d72ae2eec030e55b7b0f3d9e5f003c882283173`.
+Latest 0.3.80 with Wizard UX fe269416 -> bc3c1408. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#416 Recommended fix: Media viewer: long screenshots scroll; humanitylabs-org/wizard-ux#447 Recommended fix: Dictation inserts at the cursor instead of a copy card; humanitylabs-org/wizard-ux#458 Recommended fix: Store's My apps link opens in place instead of reloading Wizard; humanitylabs-org/wizard-ux#487 Recommended fix: Photos backup runs on Wi-Fi when the tailnet VPN is on; humanitylabs-org/wizard-ux#586 Recommended fix: Retry saved first messages after subscription sign-in recovers; humanitylabs-org/wizard-ux#587 Recommended fix: Show saved messages waiting for AI sign-in consistently; humanitylabs-org/wizard-ux#589 Recommended fix: Keep first-launch app discovery from recursively rebuilding the shell; humanitylabs-org/wizard-ux#605 Recommended fix: Share to Wizard picks New chat or one chat, quotes forwarded words, and s; humanitylabs-org/wizard-ux#635 Recommended fix: show times in the phone's own timezone; humanitylabs-org/wizard-ux#636 Recommended fix: every picked image rides an orb send made while it uploads; humanitylabs-org/wizard-ux#641 Recommended fix: Share to Wizard sheet looks like the rest of the OS; humanitylabs-org/wizard-ux#650 Recommended fix: Messenger recovers its own take after a reload and orphaned capture start; humanitylabs-org/wizard-ux#652 Recommended fix: tapping outside a sheet, menu or modal acts as Back across apps and shell; humanitylabs-org/wizard-ux#655 Recommended fix: keep Ready asks visible while helpers continue; humanitylabs-org/wizard-ux#658 Recommended fix: overlays with text are fully opaque in every skin; humanitylabs-org/wizard-ux#679 Recommended fix: status pills get their own colours in every skin; humanitylabs-org/wizard-ux#680 Recommended fix: the app kit follows its own text and touch-size rule; humanitylabs-org/wizard-ux#682 Recommended fix: apps open at once; setup check no longer holds the window; humanitylabs-org/wizard-ux#684 Recommended fix: show notifications when Ready has no chats; humanitylabs-org/wizard-ux#689 Recommended fix: keep saved-message retries out of the connection warning; humanitylabs-org/wizard-ux#690 Recommended fix: keep model picker above tall drafts and keyboard; humanitylabs-org/wizard-ux#691 Recommended fix: Setup and Settings use the shared app style contract; humanitylabs-org/wizard-ux#692 Recommended fix: keep agent replies on their own model and retain their threads; humanitylabs-org/wizard-ux#693 Recommended fix: Keep repeated Back presses inside Wizard at Home; humanitylabs-org/wizard-ux#694 Recommended fix: refresh the model picker on every open without repainting unchanged choic; humanitylabs-org/wizard-ux#696 Recommended fix: a running reply never shows its interim line twice; humanitylabs-org/wizard-ux#704 Recommended fix: Use current-route wording for voice health help; humanitylabs-org/wizard-ux#709 Recommended fix: a chat is in one Space; filed chats read Move to Space…; humanitylabs-org/wizard-ux#710 Recommended fix: Settings rows stay flat lines over the shared kit controls; humanitylabs-org/wizard-ux#713 Recommended fix: owners see Apps, never Wizard apps, on the agent page, Apps sheet and sha; humanitylabs-org/wizard-ux#715 Recommended fix: Screen chat QA fixture uses invented text, not a real team conversation; humanitylabs-org/wizard-ux#718 Recommended fix: live replies resume after a dropped connection; humanitylabs-org/wizard-ux#719 Recommended fix: Wizard opens offline and shows saved thread copies; humanitylabs-org/wizard-ux#720 Recommended fix: show Claude extra enabled when its cap is unavailable; humanitylabs-org/wizard-ux#721 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#723 Recommended fix: COMPONENTS.md back under its 14,000-byte budget (npm test red on main); humanitylabs-org/wizard-ux#725 Recommended fix: shared-app install links open in the Store again; humanitylabs-org/wizard-ux#726 Recommended fix: launcher shows long one-word app names whole; humanitylabs-org/wizard-ux#727 Recommended fix: one offline pop-up with three checks (Internet · Tailscale · Wizard); humanitylabs-org/wizard-ux#728 Recommended fix: Ready Priority ranks every status and shows its groups; humanitylabs-org/wizard-ux#730 Recommended fix: launcher long-name size from the type token, with a regression test; humanitylabs-org/wizard-ux#734 Recommended fix: working chats no longer flash into Ready while their history loads; humanitylabs-org/wizard-ux#736 Recommended fix: protect every standalone app below Android status bar; humanitylabs-org/wizard-agent-service#155 Recommended fix: owner CLI importer includes python-dotenv; humanitylabs-org/wizard-agent-service#183 Recommended fix: threads know MEDIA sends PDFs and other files up to 256 MB; humanitylabs-org/wizard-agent-service#197 Recommended fix: import older Hermes homes without shared-file or credential leaks; humanitylabs-org/wizard-agent-service#228 Recommended fix: let open owner asks stay Ready during background work; humanitylabs-org/wizard-agent-service#235 Recommended fix: chat pictures and files stay in the owner's browser, and edited files sti; humanitylabs-org/wizard-agent-service#241 Recommended fix: a sent file is a snapshot, so a later rewrite never changes earlier chat ; humanitylabs-org/wizard-agent-service#245 Recommended fix: pointer skills send the agent through the app's own skill, with end-to-en; humanitylabs-org/wizard-agent-service#250 Recommended fix: app workflow changes stay in released apps; humanitylabs-org/wizard-agent-service#254 Recommended fix: a chat is in one Space at a time; humanitylabs-org/wizard-agent-service#256 Recommended fix: Secret scan passes again (the round-10 synthetic placeholder is not a key; humanitylabs-org/wizard-agent-service#257 Recommended fix: the app-skill guard stops blocking reads and verification of installed sk; humanitylabs-org/wizard-agent-service#260 Recommended fix: scheduled notifications use the job's own agent and survive late admissio; humanitylabs-org/wizard-agent-service#263 Recommended fix: Markdown support is a fact, not a formatting push; humanitylabs-org/wizard-agent-service#264 Recommended fix: Secret scan passes again (shared-vault staging test's placeholder PEM is ; humanitylabs-org/wizard-agent-service#266 Recommended fix: a finished run leaves Working at once; humanitylabs-org/wizard-app-manager#321 Recommended fix: app updates fill newly required settings first (or ask the owner); humanitylabs-org/wizard-app-manager#323 Recommended fix: Connections works on desktop: the phone's list on every screen, two colum; humanitylabs-org/wizard-app-manager#333 Recommended fix: wam picks up the docker group when the user manager predates it. Stable stays 0.3.76 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.81
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/326 (release train). `releases/stable` → 0.3.81; `promotions/0.3.81.json` sha256 `8b68d2b3fa684545d4147507d6293f0f750814f4aefccad6b135ddc887d515ba`.
+Fast-tracked as **feature**. Installed upgrade 0.3.76 → 0.3.81 passed: wizard-os docs/acceptance/promote-0.3.81.md.
+
+## 0.3.82 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/327 and #328 (notes). SHA256: `160895672760666f737975078f3959d1e9dcc5dae02fc07e99f08c743d305f49`.
+0.3.81 plus Recommended fixes from a fresh-install rehearsal: App Manager #341, Wizard UX #743, Claude 0.2.11 / ChatGPT 0.2.9 (wizard-app-store #43).
+Channel: latest; the release train promotes after the upgrade test.
+
+## 0.3.83 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/330. SHA256: `b8f6b93739180b6eb817e43a1d9899c8df98370bd3fe7f05e07a8352606165b2`.
+0.3.82 plus the Recommended fix App Manager #345 (a fresh install's agent gets the wizard gateway).
+Channel: latest; the release train promotes after the upgrade test.
+
+## 0.3.84 provenance
+
+Canonical: wizard-os releases/0.3.84.json (release train). SHA256: `24122c3310acdf25b9f0172763cad39d5180f872d683d52883e2be41c7dd90b9`.
+Latest 0.3.83 with Wizard UX 0a23c082 -> 53d209c5. Owner-approved same-day Stable (DECISIONS #93 feature fast-track): humanitylabs-org/wizard-ux#668 Home & Settings for everyone (owner-approved: Miguel, 29 Oct 2026, 'stable today'). Stable stays 0.3.83 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.84
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/334. `releases/stable` → 0.3.84; `promotions/0.3.84.json` sha256 `48eece5b9a407d3cddb5a185913ea06e4714c8ca79bed111a364f6635328eabc`.
+Fast-tracked as **feature** (owner-approved). Installed upgrade 0.3.83 → 0.3.84 passed: wizard-os docs/acceptance/promote-0.3.84.md.
+
+## 0.3.85 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/333. SHA256: `73a059e3bcc34f15cc78333881228a437240bf3d3c217dd90eae00535417845b`.
+0.3.84 plus the Recommended fix App Manager #349 (upgrading boxes keep their apps connected; new boxes start with apps kept apart). Evidence: wizard-os docs/acceptance/release-0.3.85.md (installed upgrade 0.3.83 -> 0.3.84 -> 0.3.85 on a disposable KVM guest).
+Channel: on latest only. Stable stays 0.3.84 (promoted separately by the release train, wizard-os #334); 0.3.85 waits for James.
+
+## 0.3.86 provenance
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/335. SHA256: `e47f3d9aac054be5b34cb648e18aa38ee7328dea10383e86660eb7d662404a7d`.
+0.3.85 plus App Manager #350 (a fresh install's agent can use the Claude sign-in; new image v4.10.2-wizard.897-016a8cb) and wizard-app-store #44 (Claude sign-in is just a link and a code box: Claude 0.2.12, ChatGPT 0.2.10).
+Channel: latest only; Stable waits for James on #349.
+
+## stable 0.3.86
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/337. `releases/stable` → 0.3.86; `promotions/0.3.86.json` sha256 `1c97ddf50f773ceee10f6ce7596cfff4ac08a0660fd9679b41170488f44a0fa0`.
+Fast-tracked as **feature** on the owner's decision (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"), overruling the James hold on #349. Installed upgrade 0.3.84 → 0.3.86 passed: wizard-os docs/acceptance/promote-0.3.86.md.
+
+## 0.3.87 provenance
+
+Canonical: wizard-os releases/0.3.87.json (release train). SHA256: `c3d29d3e35081bd1db1a46d293afa6fea3322f00129cafc87b130ebd4ee11b8e`.
+Latest 0.3.86 with Wizard UX 53d209c5 -> bc665b42, Agent Service 24f3cd0a -> 44248704. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#712 Recommended fix: the Mac window buttons no longer cover the desktop bar; humanitylabs-org/wizard-ux#745 Recommended fix: keep the mobile reload banner above Chats; humanitylabs-org/wizard-ux#749 fix(landscapes): raise light Chats preview contrast; humanitylabs-org/wizard-ux#750 Recommended fix: Welcome and Settings › Look say "color", not "colour"; humanitylabs-org/wizard-agent-service#272 Recommended fix: refuse history too new for the approved runtime. Stable stays 0.3.86 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.88 provenance
+
+Canonical: wizard-os releases/0.3.88.json (release train). SHA256: `0515ff7605f8d0599c90dac4b1297268a47a582891b14abaa4ed71c87ce1c178`.
+Latest 0.3.87 with Wizard UX bc665b42 -> 7f7a9dd2, Agent Service 44248704 -> 1f78352d. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#712 Recommended fix: the Mac window buttons no longer cover the desktop bar; humanitylabs-org/wizard-ux#745 Recommended fix: keep the mobile reload banner above Chats; humanitylabs-org/wizard-ux#749 fix(landscapes): raise light Chats preview contrast; humanitylabs-org/wizard-ux#750 Recommended fix: Welcome and Settings › Look say "color", not "colour"; humanitylabs-org/wizard-ux#746 fix(chats): align accent controls with active palette; humanitylabs-org/wizard-ux#747 fix(signal): improve Chats list text contrast; humanitylabs-org/wizard-ux#748 fix(sepia): raise Chats status label contrast; humanitylabs-org/wizard-ux#752 Recommended fix: keep multiline drafts editable; humanitylabs-org/wizard-ux#753 Recommended fix: a closed desk no longer comes back from another device; humanitylabs-org/wizard-ux#754 Recommended fix: Escape clears desktop Chats search before navigation; humanitylabs-org/wizard-agent-service#272 Recommended fix: refuse history too new for the approved runtime; humanitylabs-org/wizard-agent-service#274 Recommended fix: a finished queued run leaves Working at once; humanitylabs-org/wizard-agent-service#275 Recommended fix: account changes can be on for one provider (WIZARD_ACCOUNT_CHANGES=chatgp. Stable stays 0.3.86 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.88
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/340 (release train). `releases/stable` → 0.3.88; `promotions/0.3.88.json` sha256 `f0460fcb5fbf7d8fdb82296acca9f26f8438ccae59b4aa5e8afaf72700ccbfb8`.
+Fast-tracked as **fix**. Installed upgrade 0.3.86 → 0.3.88 passed: wizard-os docs/acceptance/promote-0.3.88.md.
+
+## 0.3.89 provenance
+
+Canonical: wizard-os releases/0.3.89.json (humanitylabs-org/wizard-os#341). SHA256: `b52b309ea28a2d1a351312f25b86301a612d2ad7878d69259abfb1e545dd1a9c`.
+0.3.88 plus App Manager #357 (a fresh link installs the wizard-os plugin so ChatGPT sign-in works; image unchanged, v4.10.2-wizard.897-016a8cb), ChatGPT 0.2.12 and Claude 0.2.14 (fresh-Wizard ChatGPT model, Opus default after Claude sign-in). Agent Service 1f78352d and Wizard UX 7f7a9dd2 unchanged from 0.3.88.
+Channel: on latest; Stable stays 0.3.88 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## stable 0.3.89
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/342. `releases/stable` → 0.3.89; `promotions/0.3.89.json` sha256 `aecad83472cd7ccacb57a016b8c050191d24888caa4e2d8fe48012fc2422a206`.
+Fast-tracked as **fix** on the owner's rule (Miguel, 30 Oct 2026: "If you're shipping a fix, ship it straight to stable"). Installed upgrade 0.3.88 → 0.3.89 passed: wizard-os docs/acceptance/promote-0.3.89.md. Fresh install of 0.3.89 on a clean KVM guest passed (27 checks / 0 failed, wizard-os plugin installed and enabled): wizard-os docs/acceptance/fresh-0.3.89.md (humanitylabs-org/wizard-os#343).
+Rollback: point `releases/stable` back to 0.3.88.
+
+## 0.3.90 provenance
+
+Canonical: wizard-os releases/0.3.90.json (humanitylabs-org/wizard-os#344). SHA256: `222679a91c7500a346c59bb7a4184897f1729d4d7a3699c3effe019e576fa3d2`.
+0.3.89 plus App Manager #364 (apps starting, restarting or updating, or a restarting shell, keep their same-origin Wizard path; Messenger no longer opens blank) with #362/#363 (Store removes an installed app); image unchanged, v4.10.2-wizard.897-016a8cb. Everything else unchanged from 0.3.89.
+Channel: on latest; Stable stays 0.3.89 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## stable 0.3.90
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/347. `releases/stable` → 0.3.90; `promotions/0.3.90.json` sha256 `b35c72fcf2fa1488d134cd35f0a5106bda829d581b6fc34add462b763a66145f`.
+Fast-tracked as **fix** on Miguel’s rule (30 Oct 2026: “If you’re shipping a fix, ship it straight to stable”). Installed upgrade 0.3.89 → 0.3.90 passed: wizard-os docs/acceptance/promote-0.3.90.md (#346), 27 checks / 0 failed. Latest remains 0.3.90 on the mirror until the subsequent 0.3.91 mirror is published.
+Rollback: point `releases/stable` back to 0.3.89.
+
+## 0.3.91 provenance
+
+Canonical: wizard-os releases/0.3.91.json (humanitylabs-org/wizard-os#345, release train). SHA256: `4c0a1b8e8cfe64485745c172dbc42808849d2c2ba357b4d4310451797709e8bb`.
+0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80 (wizard-ux#757 Store can remove an installed app; #758 model picker stays clear of draft text).
+Channel: on latest only (superseded by 0.3.92). Supersedes the conflicting mirror PR #366.
+
+## 0.3.92 provenance
+
+Canonical: wizard-os releases/0.3.92.json (humanitylabs-org/wizard-os#348). SHA256: `c267ab1812f52563537511769f2fe4af7bcec7296ed99869e124d0f18da79a26`.
+0.3.91 with App Manager 29c4b831 -> 23a71b5d (#368: an app behind an owner gateway, e.g. Messenger, keeps its Wizard path; a stale Serve read is re-checked). Image unchanged, v4.10.2-wizard.897-016a8cb.
+Channel: on latest; Stable stays 0.3.90 until the installed upgrade test passes (owner rule: fixes then ship straight to stable).
+
+## 0.3.93 provenance
+
+Canonical: wizard-os releases/0.3.93.json (humanitylabs-org/wizard-os#349). SHA256: `76766fd438c248d5316072350777636eaeaae3f8fc699711401d6593c27d3ce2`.
+0.3.92 plus Wizard UX #755 (every skin in one list in Settings and onboarding; tweaks one list, off by default, labelled by author, quick button per author; Notifications in Chats and Machines on Home are ordinary settings); image sha-96f111f0. Everything else unchanged from 0.3.92.
+Channel: on latest; Stable stays 0.3.90 until the installed upgrade test passes.
+
+## 0.3.94 provenance
+
+Canonical: wizard-os releases/0.3.94.json (release train). SHA256: `40530065c763b7f5cde063a28292c2d8220237aaba940df8d0d49afe45b2d2ec`.
+Latest 0.3.93 with Wizard UX 96f111f0 -> 7991db03, Agent Service 1f78352d -> 9233c199. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#757 Recommended fix: Store can remove an installed app; humanitylabs-org/wizard-ux#758 Recommended fix: model picker stays clear of draft text; humanitylabs-org/wizard-ux#761 Recommended fix: the Welcome never switches skin on its own; picking sets only the skin; humanitylabs-org/wizard-ux#762 Recommended fix: model switch recovers when ChatGPT models briefly drop out; humanitylabs-org/wizard-ux#763 Recommended fix: a greyed model or stopped AI reading opens its app at Reconnect; humanitylabs-org/wizard-ux#764 Recommended fix: title-bar tools get search, QR and settings icons and an attention dot; humanitylabs-org/wizard-agent-service#281 Recommended fix: show and change which subscription the agent uses first; humanitylabs-org/wizard-agent-service#282 Recommended fix: an idle subscription's expired sign-in renews instead of blanking its usa; humanitylabs-org/wizard-agent-service#283 Recommended fix: Use first is not offered where stock Hermes cannot apply it; humanitylabs-org/wizard-app-manager#368 Recommended fix: keep an app behind an owner gateway on its Wizard path. Stable stays 0.3.90 until the installed upgrade test passes.
+Channel: on latest only.
+
+## stable 0.3.94
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/351 (release train). `releases/stable` → 0.3.94; `promotions/0.3.94.json` sha256 `f3a3d17caa09dfd5371dbc53527b238fade6ef60858e50b99d0e1287d6bf56fe`.
+Fast-tracked as **feature**. Installed upgrade 0.3.90 → 0.3.94 passed: wizard-os docs/acceptance/promote-0.3.94.md.
+
+## 0.3.95 provenance
+
+Canonical: wizard-os releases/0.3.95.json (release train). SHA256: `fb9522e0b8922a0d9943078a58da0e9ee10030301aafa6e9ec094cbc904cbac5`.
+Latest 0.3.94 with Wizard UX 7991db03 -> 6f920851. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.96 provenance
+
+Canonical: wizard-os releases/0.3.96.json (release train). SHA256: `f8695039cc7b3ca041997770609b56a57601e85e71a491eeb3b3b9bd025d533e`.
+Latest 0.3.95 with Wizard UX 6f920851 -> cd54ef60. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.97 provenance
+
+Canonical: wizard-os releases/0.3.97.json (release train). SHA256: `f3ac792b42d4d514ecd8acb710064238278f052482af1ea9f95e72b4f276ea2d`.
+Latest 0.3.96 with Wizard UX cd54ef60 -> d11ac30f. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.98 provenance
+
+Canonical: wizard-os releases/0.3.98.json (release train). SHA256: `773c51f98709385b75c3e76001584c970a819f915e6ac06dd58a119b76134628`.
+Latest 0.3.97 with Wizard UX d11ac30f -> d2bef7dc, Agent Service 9233c199 -> 9cea1291. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved). Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.99 provenance
+
+Canonical: wizard-os releases/0.3.99.json (release train). SHA256: `e20efdcba0ad4e8fb1f18b067fac317a709bdbe3e358e61642dc36309854f6f2`.
+Latest 0.3.98 with Wizard UX d2bef7dc -> 8592bd38. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#772 Recommended fix: chat files download from the card; PDFs open in the viewer; humanitylabs-org/wizard-ux#773 Recommended fix: chat file Download/viewer styles use tokens (style check); humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved). Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## 0.3.100 provenance
+
+Canonical: wizard-os releases/0.3.100.json (release train). SHA256: `f8a5ac9a2fb694d3be649ad01a55a94cdc156494f02430b60d3f5765346168b2`.
+Latest 0.3.99 with Agent Service 9cea1291 -> 1eaaa4f2. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#772 Recommended fix: chat files download from the card; PDFs open in the viewer; humanitylabs-org/wizard-ux#773 Recommended fix: chat file Download/viewer styles use tokens (style check); humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved); humanitylabs-org/wizard-agent-service#285 Show routed agents' notes paths as their notebook, not [private attachment]. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.
+
+## Phone app pointer
+
+`phone/latest.json` mirrors wizard-os `releases/phone/latest.json` byte for byte. Every box's hourly `wam phone-sync` reads it here because wizard-os is private. Update both together.
+
+## 0.3.101 provenance
+
+Canonical: wizard-os releases/0.3.101.json (release train). SHA256: `819125ff68619c7d2c4f41a4607348ff916b91a4739036e23b64d4852caccfe6`.
+Latest 0.3.100 with Wizard UX 8592bd38 -> 61c11640. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#772 Recommended fix: chat files download from the card; PDFs open in the viewer; humanitylabs-org/wizard-ux#773 Recommended fix: chat file Download/viewer styles use tokens (style check); humanitylabs-org/wizard-ux#777 Recommended fix: desktop Settings from Home stays on Home; humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved); humanitylabs-org/wizard-agent-service#285 Show routed agents' notes paths as their notebook, not [private attachment]. Stable stays 0.3.94 until the installed upgrade test passes.
+Channel: on latest only.

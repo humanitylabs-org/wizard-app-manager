@@ -1,0 +1,16 @@
+{
+  "version": "0.3.88",
+  "latest_since": "2026-10-30T01:07:31Z",
+  "promoted_at": "2026-10-30T01:36:54Z",
+  "upgrade_test": {
+    "from": "0.3.86",
+    "to": "0.3.88",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.88.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Release train: merged Recommended fixes (humanitylabs-org/wizard-ux#712 Recommended fix: the Mac window buttons no longer cover the desktop bar; humanitylabs-org/wizard-ux#745 Recommended fix: keep the mobile reload banner above Chats; humanitylabs-org/wizard-ux#749 fix(landscapes): raise light Chats preview contrast; humanitylabs-org/wizard-ux#750 Recommended fix: Welcome and Settings \u203a Look say \"color\", not \"colour\"; humanitylabs-org/wizard-ux#746 fix(chats): align accent controls with active palette; humanitylabs-org/wizard-ux#747 fix(signal): improve Chats list text contrast; humanitylabs-org/wizard-ux#748 fix(sepia): raise Chats status label contrast; humanitylabs-org/wizard-ux#752 Recommended fix: keep multiline drafts editable; humanitylabs-org/wizard-ux#753 Recommended fix: a closed desk no longer comes back from another device; humanitylabs-org/wizard-ux#754 Recommended fix: Escape clears desktop Chats search before navigation; humanitylabs-org/wizard-agent-service#272 Recommended fix: refuse history too new for the approved runtime; humanitylabs-org/wizard-agent-service#274 Recommended fix: a finished queued run leaves Working at once; humanitylabs-org/wizard-agent-service#275 Recommended fix: account changes can be on for one provider (WIZARD_ACCOUNT_CHANGES=chatgp). Installed upgrade 0.3.86 -> 0.3.88 passed on a disposable KVM guest (public os.sh): 154 s, pinned, 0 failed checks, doctors 0 FAIL, Hermes config/.env/SOUL unchanged.",
+    "notes": "Ride-alongs onto Stable: wizard-ux#712 [fix] Recommended fix: the Mac window buttons no longer cover the desktop bar; wizard-ux#745 [fix] Recommended fix: keep the mobile reload banner above Chats; wizard-ux#746 [fix] fix(chats): align accent controls with active palette; wizard-ux#747 [fix] fix(signal): improve Chats list text contrast; wizard-ux#748 [fix] fix(sepia): raise Chats status label contrast; wizard-ux#749 [fix] fix(landscapes): raise light Chats preview contrast; wizard-ux#750 [fix] Recommended fix: Welcome and Settings \u203a Look say \"color\", not \"colour\"; wizard-ux#752 [fix] Recommended fix: keep multiline drafts editable; wizard-ux#753 [fix] Recommended fix: a closed desk no longer comes back from another device; wizard-ux#754 [fix] Recommended fix: Escape clears desktop Chats search before navigation; wizard-agent-service#272 [fix] Recommended fix: refuse history too new for the approved runtime; wizard-agent-service#274 [fix] Recommended fix: a finished queued run leaves Working at once; wizard-agent-service#275 [fix] Recommended fix: account changes can be on for one provider (WIZARD_ACCOUNT_CHAN. Not checked: real Tailscale/HTTPS/Serve, real chats and sign-ins, phones, a fresh install."
+  }
+}

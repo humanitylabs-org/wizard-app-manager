@@ -337,6 +337,96 @@ class HermesError(RuntimeError):
     pass
 
 
+
+# Two stock `hermes backup` behaviours make a busy, long-lived agent's backup fail every time (seen on a 10 GB
+# state.db with the gateway chatting): the SQLite copy runs in 256-page steps with a 0.1 s sleep and restarts from
+# the start whenever another connection writes, so it never finishes; and a file deleted between the scan and the
+# archive (a rotated log or cron output) marks the whole backup incomplete. Hermes stays stock: this runs it with
+# those two functions replaced for the one run. Its own excludes, file list, zip format and import are unchanged.
+HERMES_BACKUP_PATCH = r"""
+import os as _o, sqlite3 as _sq, sys as _s
+from pathlib import Path as _P
+try:
+    import hermes_cli.backup as _hb
+    try:                                   # newer Hermes moved the copy into its own module; v2026.9.24 has it inline
+        import hermes_cli.backup_sqlite as _hbs
+    except ImportError:
+        _hbs = None
+
+    def _one_step_copy(src, dst, *, timeout_seconds=10.0):
+        s = d = None
+        try:
+            fd = _o.open(dst, _o.O_WRONLY | _o.O_CREAT | getattr(_o, "O_NOFOLLOW", 0), 0o600)
+            _o.fchmod(fd, 0o600)
+            _o.close(fd)
+            s = _sq.connect(_P(src).resolve().as_uri() + "?mode=ro", uri=True, timeout=max(timeout_seconds, 60.0))
+            d = _sq.connect(str(dst))
+            s.backup(d, pages=-1)          # one read transaction: WAL writers carry on, nothing restarts
+            return True
+        except Exception as e:
+            print("wam: SQLite snapshot of %s failed: %s" % (src, e), file=_s.stderr)
+            if d is not None:
+                d.close()
+                d = None
+            _P(dst).unlink(missing_ok=True)
+            return False
+        finally:
+            for c in (d, s):
+                if c is not None:
+                    c.close()
+
+    _orig_entries = _hb._write_zip_entries
+
+    def _entries(*a, on_error=None, **k):
+        def _err(rel, exc):
+            if isinstance(exc, FileNotFoundError):
+                return                     # deleted after the scan: there is nothing left to save
+            if on_error:
+                on_error(rel, exc)
+        return _orig_entries(*a, on_error=_err, **k)
+
+    if callable(getattr(_hb, "_safe_copy_db", None)) and callable(_orig_entries):
+        _hb._safe_copy_db = _one_step_copy
+        if _hbs is not None and callable(getattr(_hbs, "_safe_copy_db", None)):
+            _hbs._safe_copy_db = _one_step_copy
+        _hb._write_zip_entries = _entries
+except Exception as _e:                    # a Hermes without these names: run it stock
+    print("wam: hermes backup runs stock (%s)" % _e, file=_s.stderr)
+"""
+HERMES_MAIN = "from hermes_cli.main import main\nsys.argv[0] = 'hermes'\nsys.exit(main())\n"
+
+
+def hermes_backup_argv(launcher: Path, _depth: int = 0) -> list[str] | None:
+    """[python, ..., '-c', code] that runs `hermes` with HERMES_BACKUP_PATCH; None when the launcher has an unknown
+    shape (the caller then runs it stock). Handles the managed `#!/bin/sh exec <python> -I -c '<code>'` launcher and
+    a plain `#!<python>` console script."""
+    import shlex
+    try:
+        text = launcher.read_text(errors="replace")
+    except OSError:
+        return None
+    w = re.fullmatch(r"#!/bin/sh\nexec (/\S+) \"\$@\"\s*", text)
+    if w and _depth < 3:                   # a thin `exec <launcher> "$@"` wrapper (~/.local/bin/hermes)
+        return hermes_backup_argv(Path(w.group(1)).resolve(), _depth + 1)
+    m = re.match(r"#!/bin/sh\nexec (\S+) (-I )?-c (.*) \"\$@\"\s*$", text, re.S)
+    if m:
+        try:
+            code = shlex.split(m.group(3))
+        except ValueError:
+            return None
+        anchor = "from hermes_cli.main import main"
+        if len(code) != 1 or code[0].count(anchor) != 1:
+            return None
+        return [m.group(1), *(["-I"] if m.group(2) else []), "-c",
+                code[0].replace(anchor, HERMES_BACKUP_PATCH + "\n" + anchor)]
+    first = text.split("\n", 1)[0]
+    if first.startswith("#!") and "python" in first and "from hermes_cli.main import main" in text:
+        parts = first[2:].split()
+        py = parts[1] if parts and Path(parts[0]).name == "env" and len(parts) > 1 else parts[0] if parts else None
+        if py:
+            return [py, "-c", "import sys\n" + HERMES_BACKUP_PATCH + HERMES_MAIN]
+    return None
+
 class HermesRunner:
     """Runs stock Hermes for one agent. Container agents: `docker run` of the agent app's own image with the home
     bind-mounted at /opt/data, no network, as the home's owner (adapted from try-wizard wizard-import-hermes).
@@ -462,7 +552,8 @@ class HermesRunner:
         """Stock `hermes backup` (SQLite backup API, Hermes' own excludes) into out_zip."""
         out_zip.parent.mkdir(parents=True, exist_ok=True)
         if agent.runtime == "host":
-            self._run([self.host_binary(), "backup", "-o", str(out_zip)], env=self._host_env(agent))
+            argv = hermes_backup_argv(Path(self.host_binary()).resolve()) or [self.host_binary()]
+            self._run([*argv, "backup", "-o", str(out_zip)], env=self._host_env(agent))
         else:
             os.chmod(out_zip.parent, 0o777)   # the one-off container runs as the home's owner
             try:

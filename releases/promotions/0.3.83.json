@@ -1,0 +1,15 @@
+{
+  "version": "0.3.83",
+  "latest_since": "2026-10-29T17:32:12Z",
+  "promoted_at": "2026-10-29T18:22:09Z",
+  "upgrade_test": {
+    "from": "0.3.82",
+    "to": "0.3.83",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.83.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Recommended fix wizard-app-manager#345: a fresh install's agent gets the wizard gateway (found by a standard fresh install of 0.3.82 on a bare VPS). Installed upgrade 0.3.82 -> 0.3.83 passed on a disposable KVM guest (public os.sh): pinned, 27 checks, 0 failed, doctors 0 FAIL, Hermes files unchanged. An earlier run (20261029T174923Z) failed after the box re-ran a 0.3.82 install mid-upgrade (runtipi container name conflict); the identical rerun passed, and #345 touches only fresh-mode agent linking, which this alongside rig never runs."
+  }
+}

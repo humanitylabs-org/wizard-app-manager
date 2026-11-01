@@ -1,0 +1,16 @@
+{
+  "version": "0.3.55",
+  "latest_since": "2026-10-26T08:01:20Z",
+  "promoted_at": "2026-10-26T08:06:34Z",
+  "upgrade_test": {
+    "from": "0.3.53",
+    "to": "0.3.55",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.55.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Verified Recommended fixes (Miguel policy, DECISIONS #82): Troubleshooter #12 bounded owner-approved repair tools shared by Claude/ChatGPT/Tinfoil with host-independent paths, #13 Claude falls back to the agent's second Claude sign-in on a usage limit. Troubleshooter CI green, 29/29 tests; live owner-UI acceptance (ChatGPT gpt-6.1-sol, Claude claude-sonnet-5-5) with approved RestartSec write/reload/readback/restore and no service restart; wam troubleshooter upgrade 0.3.53 -> 0.3.55 ready at c1b4c43 in a disposable systemd box.",
+    "notes": "Only components.wizard-troubleshooter changes vs stable 0.3.53 (4b1f0ef -> c1b4c43; host tooling, no image). Ride-along: #10 MIT license. All images, App Manager, Agent Service, Hermes and default apps unchanged; no migrations. Upgrade test was a component-level wam troubleshooter upgrade in a disposable systemd container because no demo box was reachable; full installer upgrade on demo still to run. Older 0.3.26-0.3.31 Automatic updaters skip fast-tracked stable (Update now works)."
+  }
+}

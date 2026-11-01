@@ -19,7 +19,7 @@ def cfg(tmp_path):
 
 def indexed(monkeypatch):
     def resolve(base, repo):
-        app = 'wizard-cloudflare' if repo.endswith('wizard-cloudflare') else 'wizard-connectors'
+        app = 'wizard-cloudflare' if repo.endswith('wizard-cloudflare') else 'connected-accounts'
         return {'id': app, 'repo': repo, 'install': {'commit': SHA}}
     monkeypatch.setattr(index, 'resolve', resolve)
 
@@ -31,9 +31,9 @@ def recipe(url):
 
 def test_bootstrap_excludes_both_recommendations_keeps_agent_logins():
     wanted = slots.to_install({})
-    assert 'wizard-cloudflare' not in wanted and 'wizard-connectors' not in wanted
+    assert 'wizard-cloudflare' not in wanted and 'connected-accounts' not in wanted
     assert {'wizard-chatgpt', 'wizard-claude'} <= set(wanted)
-    assert {d['app'] for d in rec.catalog()} == {'wizard-cloudflare', 'wizard-connectors'}
+    assert {d['app'] for d in rec.catalog()} == {'wizard-cloudflare', 'connected-accounts'}
 
 
 def test_recommendations_survive_old_release_pins(monkeypatch):
@@ -157,7 +157,7 @@ def test_store_recommendations_preserve_owner_and_origin_checks(tmp_path, monkey
             h.request(method, '/_recommended', '{}' if method == 'POST' else None, headers)
             r = h.getresponse(); body = json.loads(r.read()); h.close()
             return r.status, body
-        headers = {'Tailscale-User-Login': 'owner@example.com', 'Origin': 'https://box.example',
+        headers = {'X-Forwarded-For': '100.64.0.9', 'Tailscale-User-Login': 'owner@example.com', 'Origin': 'https://box.example',
                    'Content-Type': 'application/json', 'X-Wizard-Store': '1'}
         assert call('GET', {})[0] == 403
         assert call('GET', headers)[0] == 200

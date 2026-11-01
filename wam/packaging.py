@@ -117,7 +117,43 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         s["pull_policy"] = "build"
     tmp = Path(f"{target}.tmp-{os.getpid()}")
     shutil.rmtree(tmp, ignore_errors=True)
-    copy_source(src, tmp)
+    try:
+        copy_source(src, tmp)
+    except PermissionError:
+        # The source root belongs to Runtipi (root) once Runtipi itself has installed an app there: write the copy
+        # through the Runtipi container instead, as Runtipi's own installs do.
+        shutil.rmtree(tmp, ignore_errors=True)
+        _copy_as_runtipi(src, Path(target))
+        return True
     shutil.rmtree(target, ignore_errors=True)
     tmp.rename(target)
     return True
+
+
+def _container_path(host: Path) -> str:
+    """<runtipi root>/app-data/... on the host is /data/app-data/... inside the Runtipi container."""
+    parts = Path(host).parts
+    if "app-data" not in parts:
+        raise PackagingError(f"{host} is not under Runtipi's app-data")
+    return "/data/" + "/".join(parts[parts.index("app-data"):])
+
+
+def _copy_as_runtipi(src: Path, target: Path) -> None:
+    import subprocess
+    import tarfile
+    import tempfile
+    from .agent_link import _docker
+    with tempfile.TemporaryDirectory() as d:
+        stage = Path(d) / "src"
+        copy_source(src, stage)
+        tar = Path(d) / "src.tar"
+        with tarfile.open(tar, "w") as t:
+            t.add(stage, arcname=".")
+        dst = _container_path(target)
+        p = subprocess.run(_docker() + ["exec", "-i", "runtipi", "sh", "-c",
+                                        't="$1.tmp-$$"; rm -rf "$t"; mkdir -p "$t" && tar -x -C "$t" -f - '
+                                        '&& rm -rf "$1" && mv "$t" "$1" || { rm -rf "$t"; exit 1; }', "_", dst],
+                           stdin=tar.open("rb"), capture_output=True, timeout=600)
+        if p.returncode:
+            raise PackagingError(f"could not write the app source to {dst}: "
+                                 f"{(p.stderr or p.stdout).decode(errors='replace').strip()[:200]}")

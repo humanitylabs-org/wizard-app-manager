@@ -77,16 +77,26 @@ def test_release_rerun_skips_hermes_but_updates_unrelated_app(tmp_path, monkeypa
     (staged / '.wizard-commit').write_text('a' * 40)
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     calls = []
+    from test_installed_default_release_pins import package
     def resolve(_, app):
         calls.append(('resolve', app))
         if app == 'hermes-agent':
             (staged / '.wizard-selection').write_text('poisoned selection\n')
             (staged / '.wizard-commit').write_text('b' * 40)
+        package(tmp_path, app, 'b' * 40, '1', store=True)
+        return {}
+    def update(_, app):
+        calls.append(('update', app))
+        package(tmp_path, app, 'b' * 40, '1')
+        return {'status': 'stopped'}
     monkeypatch.setattr(cli, 'resolve_any', resolve)
-    monkeypatch.setattr(cli, 'app_update', lambda _, app: calls.append(('update', app)) or {})
-    assert cli.release_updates(c, object(), {}) == ['files']
+    monkeypatch.setattr(cli, 'app_update', update)
+    rt = SimpleNamespace(app=lambda _: {'app': {'status': 'stopped', 'config': {'openPort': False, 'exposed': False, 'exposedLocal': False}}})
+    assert cli.release_updates(c, rt, {}) == ['files']
     assert calls == [('resolve', 'files'), ('update', 'files')]
-    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in staged.rglob('*') if p.is_file()} == {
+        p: data for p, data in before.items() if p.parts[:4] == ('repos', cli.STORE, 'apps', 'hermes-agent')}
+    assert (tmp_path / 'apps' / cli.STORE / 'hermes-agent' / '.wizard-commit').read_text() == 'a' * 40
 
 
 def test_release_rerun_authorizes_before_preparing_approved_hermes(tmp_path, monkeypatch):
@@ -102,9 +112,19 @@ def test_release_rerun_authorizes_before_preparing_approved_hermes(tmp_path, mon
     (live / '.wizard-source').write_text(json.dumps({'repo': recipe['repo']}))
     calls = []
     monkeypatch.setattr(hermes_lock, 'authorize', lambda: calls.append('authorize') or 'approved-test')
-    monkeypatch.setattr(cli, 'resolve_any', lambda *a: calls.append('resolve'))
-    monkeypatch.setattr(cli, 'app_update', lambda *a: calls.append('update') or {})
-    assert cli.release_updates(SimpleNamespace(runtipi_root=tmp_path), object(), {}) == ['hermes-agent']
+    from test_installed_default_release_pins import package
+    def prepare(*a):
+        calls.append('resolve')
+        package(tmp_path, 'hermes-agent', row['commit'], '1', store=True)
+        return {}
+    def update(*a):
+        calls.append('update')
+        package(tmp_path, 'hermes-agent', row['commit'], '1')
+        return {'status': 'stopped'}
+    monkeypatch.setattr(cli, 'resolve_any', prepare)
+    monkeypatch.setattr(cli, 'app_update', update)
+    rt = SimpleNamespace(app=lambda _: {'app': {'status': 'stopped', 'config': {'openPort': False, 'exposed': False, 'exposedLocal': False}}})
+    assert cli.release_updates(SimpleNamespace(runtipi_root=tmp_path), rt, {}) == ['hermes-agent']
     assert calls == ['authorize', 'resolve', 'update']
 
 

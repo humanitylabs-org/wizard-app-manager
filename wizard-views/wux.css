@@ -5,19 +5,19 @@
  * Scoped under .wux so they don't collide with the Runtipi/Tabler base. New pieces are marked "added".
  */
 .wux {
-  --ink: #f3efff;
-  --ink-2: #b9b0d8;
-  --ink-3: #7d74a3;
-  --line: rgba(205, 190, 255, 0.13);
-  --line-2: rgba(205, 190, 255, 0.24);
-  --glass: rgba(18, 12, 38, 0.58);
-  --violet: #8f63ff;
-  --violet-2: #b99bff;
-  --pink: #ff5ccf;
-  --cyan: #3fe0ff;
-  --amber: #ffbe55;
-  --green: #4ff0b0;
-  --red: #ff6b86;
+  --ink: var(--wz-text, #f3efff);
+  --ink-2: var(--wz-text-secondary, #b9b0d8);
+  --ink-3: var(--wz-text-muted, #7d74a3);
+  --line: var(--wz-border, rgba(205, 190, 255, 0.13));
+  --line-2: var(--wz-border, rgba(205, 190, 255, 0.24));
+  --glass: var(--wz-surface, rgba(18, 12, 38, 0.58));
+  --violet: var(--wz-accent, #8f63ff);
+  --violet-2: var(--wz-accent, #b99bff);
+  --pink: var(--wz-accent, #ff5ccf);
+  --cyan: var(--wz-accent, #3fe0ff);
+  --amber: var(--wz-warning, #ffbe55);
+  --green: var(--wz-success, #4ff0b0);
+  --red: var(--wz-danger, #ff6b86);
   --ease: cubic-bezier(0.2, 0.9, 0.25, 1);
   --spring: cubic-bezier(0.34, 1.45, 0.5, 1);
   font:
@@ -61,8 +61,8 @@
   min-height: 360px;
   border-radius: 30px;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(26, 16, 56, 0.86), rgba(12, 7, 28, 0.92));
-  border: 1px solid rgba(205, 190, 255, 0.18);
+  background: var(--wz-surface-raised, linear-gradient(180deg, rgba(26, 16, 56, 0.86), rgba(12, 7, 28, 0.92)));
+  border: 1px solid var(--wz-border, rgba(205, 190, 255, 0.18));
   -webkit-backdrop-filter: blur(26px) saturate(1.5);
   backdrop-filter: blur(26px) saturate(1.5);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);

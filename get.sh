@@ -459,7 +459,7 @@ if mode == "end":
                 pick = re.sub(r"(?i)([?&](?:token|key|sig|signature|access_token|auth)=)[^&\s]+", r"\1***", pick)
             st["failure_reason"] = pick[-1000:] if pick else None
         except OSError: pass
-    st["approval_url"] = None
+    st["approval_url"] = st["owner_url"] = None
     if rc == 3 and st.get("admin_command") and st.get("admin_message"):
         st["state"], st["message"] = "needs_admin", st["admin_message"]
         save(st); sys.exit(0)
@@ -489,6 +489,11 @@ def handle(line):
         m = url.search(s)
         st["state"], st["tailscale_login_url"] = "needs_owner", m.group(0) if m else None
         st["message"] = s.split(":", 1)[1].strip()
+    elif s.startswith("[wizard-os] owner-step:"):
+        # An owner action that is not a sign-in (e.g. turn on HTTPS certificates); the runner keeps waiting.
+        m = url.search(s)
+        st["state"], st["owner_url"] = "needs_owner", m.group(0) if m else None
+        st["message"] = s.split(":", 1)[1].replace(m.group(0) if m else "\0", "").strip()
     elif s.startswith("[wizard-os] owner-approval:"):
         m = re.search(r"https?://\S+", s)
         st["state"], st["approval_url"] = "needs_owner", m.group(0) if m else None
@@ -501,7 +506,7 @@ def handle(line):
         st["notice"] = s.split(":", 1)[1].strip()
     elif s.startswith("[wizard-os] owner-action-done"):
         st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
-        st["approval_url"], st["notice"] = None, None
+        st["approval_url"], st["notice"], st["owner_url"] = None, None, None
     elif s.startswith("[wizard-os] wizard-url:"):
         m = url.search(s)
         st["wizard_url"] = m.group(0) if m else None
@@ -565,6 +570,9 @@ if state in ("running", "needs_owner"):
     elif st.get("tailscale_login_url"):
         print("Owner action: Open this link to connect your Wizard to your Tailscale:")
         print(st["tailscale_login_url"])
+    elif st.get("owner_url"):
+        print(f"Owner action: {st.get('message') or 'Open this link:'}")
+        print(st["owner_url"])
     elif state == "needs_owner" and st.get("message"):
         print(f"Owner action: {st['message']}")
 elif state == "done":
@@ -598,7 +606,12 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
   fi
   exec 9>"$INSTALL_LOCK"
   flock -n 9 || { echo "A Wizard OS install is already running." >&2; exit 0; }
-  [ ! -f "$WOS_DIR/install-env" ] || { set -a; . "$WOS_DIR/install-env"; set +a; rm -f "$WOS_DIR/install-env"; }
+  # The settings stay (0600) for this whole run, not just its first read: when Ubuntu's needrestart (after an
+  # automatic upgrade) or a manual restart starts this runner again, it must install the same release, not fall
+  # back to stable halfway through an update. The unit also refuses outside stops (install_start), and the file is
+  # removed when the run ends.
+  [ ! -f "$WOS_DIR/install-env" ] || mv -f "$WOS_DIR/install-env" "$WOS_DIR/install-env.run"
+  [ ! -f "$WOS_DIR/install-env.run" ] || { set -a; . "$WOS_DIR/install-env.run"; set +a; }
   export WIZARD_DETACHED=1 WIZARD_INSTALL_RUNNER_PID=$$
   : > "$INSTALL_LOG"; chmod 600 "$INSTALL_LOG"
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" begin $$
@@ -620,6 +633,7 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
     [ "${codes[1]}" = 0 ] && [ "${codes[2]}" = 0 ] || rc=1
     runuser -u "$H_USER" -- /usr/bin/python3 -c "$STATUS_PY" "$oh/install-status.json" "$oh/install.log" end "$rc"
     python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
+    rm -f "$WOS_DIR/install-env.run"
     return 0
   fi
   bash "$WOS_DIR/get.sh" </dev/null >>"$INSTALL_LOG" 2>&1 9>&- &
@@ -630,6 +644,7 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
   wait "$fpid" || true
   # The final state is written before this runner exits; a deferred Hermes restart waits for that exit.
   python3 -c "$STATUS_PY" "$STATUS_FILE" "$INSTALL_LOG" end "$rc"
+  rm -f "$WOS_DIR/install-env.run"
   exit 0
 }
 install_start() {
@@ -660,10 +675,12 @@ for k in sorted(os.environ):
   local -a run=(); local unit; unit="wizard-os-install-$(date +%s)"
   local xdg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   if command -v systemd-run >/dev/null; then
-    if [ "$(id -u)" -eq 0 ]; then run=(systemd-run --quiet --collect --unit "$unit")
+    # RefuseManualStop: needrestart restarts every service after an automatic upgrade, which killed a running
+    # install mid-way (half-recreated containers) and started it again; an install is never restarted from outside.
+    if [ "$(id -u)" -eq 0 ]; then run=(systemd-run --quiet --collect --unit "$unit" --property=RefuseManualStop=yes)
     elif [ -S "$xdg/bus" ]; then
       run=(env XDG_RUNTIME_DIR="$xdg" DBUS_SESSION_BUS_ADDRESS="unix:path=$xdg/bus" systemd-run --user --quiet --collect
-           --unit "$unit" --setenv=XDG_RUNTIME_DIR="$xdg" --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$xdg/bus")
+           --unit "$unit" --property=RefuseManualStop=yes --setenv=XDG_RUNTIME_DIR="$xdg" --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$xdg/bus")
     fi
   fi
   # Its own unit, outside the agent's process tree: the Hermes restart at the end cannot take the install with it.

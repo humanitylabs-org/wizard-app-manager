@@ -45,7 +45,9 @@ def test_initial_install_prepares_upload_storage_before_container_start(tmp_path
     monkeypatch.setattr(cli.release_pins, 'load', lambda: {})
     monkeypatch.setattr(cli, 'ensure_store', lambda *a: None)
     monkeypatch.setattr(cli, 'installed_ids', lambda *a: set())
-    monkeypatch.setattr(cli.slots, 'load_defaults', lambda: {})
+    # multi_slots forwards the optional defaults path; keep the fixture compatible
+    # without bypassing the real pre-start network preparation.
+    monkeypatch.setattr(cli.slots, 'load_defaults', lambda *args, **kwargs: {})
     monkeypatch.setattr(alongside, 'external_slots', lambda *a: set())
     monkeypatch.setattr(alongside, 'load', lambda *a: st)
     monkeypatch.setattr(alongside, 'docker_rootless', lambda: False)

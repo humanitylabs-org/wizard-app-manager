@@ -1,0 +1,16 @@
+{
+  "version": "0.3.74",
+  "latest_since": "2026-10-29T04:33:07Z",
+  "promoted_at": "2026-10-29T04:57:59Z",
+  "upgrade_test": {
+    "from": "0.3.73",
+    "to": "0.3.74",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.74.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Hand cut: App Manager main 79272034 brings quick interface updates (wizard-app-manager #304) and the upgrade fixes #311, #312, #320. Installed upgrade 0.3.73 -> 0.3.74 passed on a disposable KVM guest (public os.sh): 140 s, pinned, 27 checks 0 failed, doctors 0 FAIL, Hermes config/.env/SOUL unchanged; a following UX-only test release took the quick path in 109 s.",
+    "notes": "Ride-alongs onto Stable (App Manager main since the 08b54f65 maintenance line): features app connections (#271, #283, #288), Connections map/phone controls (#294, #297, #298, #300, #310), Store installs from share links (#232), apps start on shared design rules (#270), Claude account broker on alongside (#249), one-way alerts to Notifications (#184), hourly phone-APK mirror timer (#214), web-search default slot (#274; not active under this release's pins), installer waits for Ubuntu update locks (#242), os.md wording (#253); fixes #212 #243 #252 #258 #267 #273 #275 #278 #280 #284 #286 #290 #292 #293 #301 #302 #303 #304 #305 #307 #311 #312 #316 #320; maintenance mirrors/docs/CI/builder rules (#317, #318, #315 and others). Wizard UX, Agent Service, Hermes and every other pin unchanged from 0.3.73. Not checked: real Tailscale/HTTPS/Serve, real chats and sign-ins, phones, fresh install, named-user owner."
+  }
+}

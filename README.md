@@ -73,6 +73,7 @@ Wizard additions:
 | `wam apps [--json]` | Installed apps with their MCP addresses; writes `~/.wizard-os/apps.json` + `skills/` for agents |
 | `wam doctor [--fix]` | Check the whole chain |
 | `wam updates [--ask\|--auto] [--channel stable\|latest] [--apply]` | Update check and the owner's choice. Ask me is the default; Automatic installs only promoted **stable** releases. `--channel latest` follows every release as it is cut (testers); stable is the default |
+| `wam app-updates [--apply [ids]] [--auto\|--ask] [--hold\|--unhold id]` | New versions of installed apps. **Automatic by default** (separate from the Wizard OS mode): a nightly timer updates each app from the Wizard App Index one at a time, with a backup first, checks it works (same state, version moved, containers up, health or MCP answers) and rolls back from that backup if not. The owner gets one Notifications line. The shell, Agent Service, Hermes and release-pinned apps move only with Wizard OS releases. See [docs/app-updates.md](docs/app-updates.md) |
 | `wam serve` | Box-only HTTP API on `127.0.0.1:7790` (the `wizard-app-manager-api` user service runs it) |
 | `wam backup export\|verify\|import\|undo\|activate\|key\|schedule\|run\|status` | Back up, restore or move the whole Wizard (see below) |
 

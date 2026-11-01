@@ -17,6 +17,13 @@ def load_defaults(path: Path = DEFAULTS_FILE) -> dict[str, dict]:
     return defaults(json.loads(path.read_text())["slots"])
 
 
+def multi_slots(path: Path = DEFAULTS_FILE) -> set[str]:
+    """Spots and capabilities a consumer reaches every provider of: the `multi` system spots (ai-connection, chats)
+    plus defaults.json `multi_capabilities` (e.g. health-data, read by Health from every wearable connector)."""
+    extra = (json.loads(path.read_text()).get("multi_capabilities") or {}).get("ids") or []
+    return {k for k, v in load_defaults(path).items() if (v or {}).get("multi")} | {str(x) for x in extra}
+
+
 # Apps that are no longer a slot default but are still installed on boxes and still updated from their repo.
 # wizard-shell: the pre-split bundle (UX + Agent Service in one image), built from the wizard-agent-service repo.
 RETIRED_REPOS = {"wizard-shell": "humanitylabs-org/wizard-agent-service"}
@@ -97,8 +104,20 @@ def blocks_uninstall(reg: dict, app_id: str, defaults: dict[str, dict] | None = 
     return [s for s, d in defaults.items() if d.get("required") and have.get(s) == [app_id] and s not in external]
 
 
+def system_apps(defaults: dict[str, dict] | None = None) -> set[str]:
+    """System apps are the apps Wizard OS publishes as the default for a spot (wizard-os docs/SYSTEM_APPS.md). On a
+    pinned box the release names them, so this is also the set a Wizard OS update brings to its pinned commits."""
+    defaults = load_defaults() if defaults is None else defaults
+    return {d["app"] for d in defaults.values() if (d or {}).get("app")}
+
+
 def merge_into_registry(reg: dict, defaults: dict[str, dict] | None = None) -> dict:
-    """apps.json gains `parking`: every slot including empty ones, so the UX can show placeholders."""
+    """apps.json gains `parking`: every slot including empty ones, so the UX can show placeholders. Each app also
+    gets `system`, so every shell marks the same apps (the launcher's system ring) without its own id list."""
+    defaults = load_defaults() if defaults is None else defaults
+    system = system_apps(defaults)
+    for a in reg.get("apps") or []:
+        a["system"] = a.get("id") in system
     reg["parking"] = [{k: r[k] for k in ("slot", "name", "required", "default_app", "active", "state", "external") if k in r}
                       for r in table(reg, defaults)]
     return reg

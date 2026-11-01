@@ -1,0 +1,182 @@
+{
+  "version": "0.3.82",
+  "name": "Wizard OS 0.3.82 — 0.3.81 with the fresh-install first run fixed (Welcome, Claude, App Manager)",
+  "date": "2026-10-29",
+  "about": "0.3.81 plus three Recommended fixes found by a standard fresh install on a bare VPS: App Manager #341 (a fresh install no longer stops at the builder mount because of the Hermes override's `networks: !override`), Wizard UX #743 (the Welcome asks to connect an AI on a fresh Wizard instead of skipping to colours) and Claude 0.2.11 / ChatGPT 0.2.9 (wizard-app-store #43: a Claude sign-in on a fresh Wizard becomes the agent's model when it has none).",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "5a802723d9250750a5bedc64beaa4e49581de63f",
+      "branch": "main",
+      "note": "Official main at 5a802723 (merge of #341): c52f260f plus #341 (fix: fresh installs keep the Hermes override's Compose merge tags), #336/#337 and the 0.3.80/0.3.81 mirrors."
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "3e56f66da33a739d8cfae1d442a355280571fe8c",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; c1b4c43 plus #14 (an expired AI sign-in gets one step-by-step reconnect path), #16 (past repair chats are kept), #17 (background reply probes off unless the owner opts in), #18 (Tinfoil check no longer sends an empty tools list), #20 (James's one-tap screen, following the selected skin), #21 (one-sentence status line and recent chats), #22 (Check again; the page CSP allows the shell's same-origin kit and skin stylesheets), #23 (page classes are ts- prefixed so skin stylesheets cannot restyle it)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "24f3cd0acc9d1ebb7d4034bbe259d380124d4453",
+      "branch": "main",
+      "note": "Official main at 24f3cd0a (release train): carries humanitylabs-org/wizard-agent-service#155 Recommended fix: owner CLI importer includes python-dotenv; humanitylabs-org/wizard-agent-service#183 Recommended fix: threads know MEDIA sends PDFs and other files up to 256 MB; humanitylabs-org/wizard-agent-service#197 Recommended fix: import older Hermes homes without shared-file or credential leaks; humanitylabs-org/wizard-agent-service#228 Recommended fix: let open owner asks stay Ready during background work; humanitylabs-org/wizard-agent-service#235 Recommended fix: chat pictures and files stay in the owner's browser, and edited files sti; humanitylabs-org/wizard-agent-service#241 Recommended fix: a sent file is a snapshot, so a later rewrite never changes earlier chat ; humanitylabs-org/wizard-agent-service#245 Recommended fix: pointer skills send the agent through the app's own skill, with end-to-en; humanitylabs-org/wizard-agent-service#250 Recommended fix: app workflow changes stay in released apps; humanitylabs-org/wizard-agent-service#254 Recommended fix: a chat is in one Space at a time; humanitylabs-org/wizard-agent-service#256 Recommended fix: Secret scan passes again (the round-10 synthetic placeholder is not a key; humanitylabs-org/wizard-agent-service#257 Recommended fix: the app-skill guard stops blocking reads and verification of installed sk; humanitylabs-org/wizard-agent-service#260 Recommended fix: scheduled notifications use the job's own agent and survive late admissio; humanitylabs-org/wizard-agent-service#263 Recommended fix: Markdown support is a fact, not a formatting push; humanitylabs-org/wizard-agent-service#264 Recommended fix: Secret scan passes again (shared-vault staging test's placeholder PEM is ; humanitylabs-org/wizard-agent-service#266 Recommended fix: a finished run leaves Working at once"
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "0a23c082bbca34ed7f711eb692a84c87ce777739",
+      "branch": "main",
+      "note": "Official main at 0a23c082 (merge of #743): bc3c1408 plus #743 (Recommended fix: the Welcome asks to connect an AI on a fresh Wizard)."
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.841-9cabb59",
+      "digest": "sha256:7e6c8b4aff3b1631f05222b6a9fcd38c33dab7e5d6a76da2cb9868b255670a44",
+      "built_from": "wizard-app-manager",
+      "source_commit": "9cabb592bca132acc8f6c21ad81fb0f35f6539e2",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        ".dockerignore",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        "wam/hermes-lock.json",
+        "releases/hermes-lock.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/40835831427",
+      "note": "Official multi-arch main image from 9cabb592 (merge of #328), image workflow run 40835831427. Every declared image input is byte-identical from 9cabb592 to 5a802723 (git diff --quiet), so this is the image for the pinned commit."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-0a23c082bbca34ed7f711eb692a84c87ce777739",
+      "digest": "sha256:3fe171d53109c2978f2d9876c06779bd836d7ca8c1f0dbb6173a322183d48fb2",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/40901453511"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-24f3cd0acc9d1ebb7d4034bbe259d380124d4453",
+      "digest": "sha256:0795be214e76f07faf970a101c2c85be0dec067dcbf709496fdfa14caf852605",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/40841234484"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "0a23c082bbca34ed7f711eb692a84c87ce777739",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "24f3cd0acc9d1ebb7d4034bbe259d380124d4453"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.2.9",
+      "commit": "d7af10f769f9561659dc7cc278c165b562b67bc7",
+      "note": "chatgpt-connection #9: engine ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.9@sha256:aa8db34a31fe0fe8b83bb158d671681942ecc7b781daf4e3a61a6f9a1d82ad08 (amd64+arm64, wizard-app-store #43 at dbd2aeb5). 0.2.8 with the pool files shared with Claude 0.2.11; no ChatGPT behaviour change."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.2.11",
+      "commit": "9e91bb39965a0d87f09c0e60a41298bcca77edc7",
+      "note": "claude-connection #9: engine ghcr.io/humanitylabs-org/wizard-claude:0.2.11@sha256:86b258961a5a3c8fb59c5f2b658169992859c98c581d631634f7e101c122e532 (amd64+arm64, wizard-app-store #43 at dbd2aeb5). 0.2.10 plus: on a fresh Wizard a Claude sign-in becomes the agent's main model through the dashboard's POST /api/model/set when no model is chosen yet."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard2",
+      "commit": "8a4dd8ac5189d7d9d8af2bb8a2416936668e90df"
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7…c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard10",
+      "commit": "cdce9f18d10f74e1714ee2284a1c55497b49eef1",
+      "note": "oscarhenrycollins/notifications main cdce9f18 (17 commits after 0428e7c7, PRs #1-#7 plus three direct main commits: skin-scoped minimal inbox, safe markdown/MEDIA thumbnails, phone list|detail with swipe-back, Reply opens an unsent chat handoff, wizard.md /notifications/ view, optional Hermes cron relay, mark read/unread returns to the list). Images unchanged from 0428e7c7, both digest-pinned and anonymously pullable (amd64+arm64): front python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4, engine binwiederhier/ntfy:v2.29.0@sha256:4c599cf0818965782f93f652bd843e92714992e84d6b88ad17713dc0951cda1f; org custody copies ghcr.io/humanitylabs-org/wizard-app-manager:curator-sha256-<digest> and source bundle oscarhenrycollins--notifications--cdce9f18....bundle are present. No migration: ntfy's message cache volume (${APP_DATA_DIR}/data) is unchanged; read/flag/archive marks and cron-relay state are new files in a new ${APP_DATA_DIR}/inbox volume; two optional settings are added (HERMES_CRON_DIR, mounted read-only; CRON_QUIET_JOBS) and none removed."
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "Latest. Exactly 0.3.81 except Wizard UX bc3c1408 -> 0a23c082, App Manager c52f260f -> 5a802723, Claude 0.2.10 -> 0.2.11, ChatGPT 0.2.8 -> 0.2.9. Recommended fixes: the release train promotes it to Stable only after the installed upgrade test passes (promotions/0.3.82.json)."
+}

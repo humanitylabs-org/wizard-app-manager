@@ -7,13 +7,17 @@ service and points those apps at it:
 
 - bound to the box's Tailscale IPv4 only (rootless Docker containers reach it; the public interface does not),
 - stock basic auth required (password generated once, 0600 in ~/.wizard-os/secrets/host-dashboard.env),
-- each consumer app gets the address and password through its Runtipi user-config app.env (kept across updates).
+- each consumer app gets the address and password through its Runtipi user-config app.env (kept across updates),
+- WIZARD_ACCOUNT_CHANGES=1 turns on the wizard-os plugin's account broker (add/reconnect/remove subscriptions via
+  stock `hermes auth`), which the Claude app uses for any number of Claude subscriptions.
 
 A consumer is any installed app whose recipe has the HERMES_DASHBOARD_BASIC_AUTH_PASSWORD form field; its
 dashboard URL variable is whatever `${VAR:-http://hermes-agent:9119}` the recipe compose uses. No Hermes core change.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import secrets
 import shutil
@@ -24,6 +28,7 @@ UNIT = "wizard-host-dashboard.service"
 PORT = 9119
 USER = "hermes"
 PASSWORD_VAR = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"
+ACCOUNT_CHANGES_VAR = "WIZARD_ACCOUNT_CHANGES"
 URL_VAR = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?::-|-)https?://hermes-agent:9119/?\}")
 
 
@@ -41,19 +46,40 @@ def read_env(p: Path) -> dict[str, str]:
     return out
 
 
+def applied_path(wizard_home: Path) -> Path:
+    """sha256 of the environment file the running dashboard was (re)started with."""
+    return wizard_home / "state" / "host-dashboard-env.sha256"
+
+
+def _env_sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ""
+
+
 def credentials(wizard_home: Path) -> dict[str, str]:
-    """The dashboard login (created once, 0600). An existing file is kept as is, so apps keep working."""
+    """The dashboard login (created once, 0600). An existing login is kept as is, so apps keep working."""
+    return _credentials(wizard_home)[0]
+
+
+def _credentials(wizard_home: Path) -> tuple[dict[str, str], bool]:
+    """(dashboard environment, whether the file was written). Adds only what is missing; every existing value,
+    including an owner's explicit WIZARD_ACCOUNT_CHANGES=0, is kept."""
     p = env_path(wizard_home)
     env = read_env(p)
-    if env.get(PASSWORD_VAR) and env.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET"):
-        return env
-    env = {"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": env.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or USER,
-           PASSWORD_VAR: env.get(PASSWORD_VAR) or secrets.token_urlsafe(24),
-           "HERMES_DASHBOARD_BASIC_AUTH_SECRET": secrets.token_hex(32)}
+    want = dict(env)
+    if not (env.get(PASSWORD_VAR) and env.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET")):
+        want.update({"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": env.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or USER,
+                     PASSWORD_VAR: env.get(PASSWORD_VAR) or secrets.token_urlsafe(24),
+                     "HERMES_DASHBOARD_BASIC_AUTH_SECRET": secrets.token_hex(32)})
+    # The Claude app adds, reconnects and removes the agent's own subscriptions (any number) through the wizard-os
+    # plugin's broker, which runs stock `hermes auth add|remove` and ships switched off unless its dashboard host
+    # turns it on. New credentials land in Hermes' own pool; the existing Claude Code sign-in is never touched.
+    want.setdefault(ACCOUNT_CHANGES_VAR, "1")
+    if want == env and p.is_file():
+        return env, False
     p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    p.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    p.write_text("".join(f"{k}={v}\n" for k, v in want.items()))
     p.chmod(0o600)
-    return env
+    return want, True
 
 
 def tailnet_ip() -> str | None:
@@ -65,6 +91,44 @@ def tailnet_ip() -> str | None:
         return None
     ip = out.strip().splitlines()[0].strip() if out.strip() else ""
     return ip if re.fullmatch(r"100\.\d{1,3}\.\d{1,3}\.\d{1,3}", ip) else None
+
+
+def running_env(app_id: str, store: str) -> list[dict[str, str]] | None:
+    """The environment of each running container of an installed app (Runtipi's compose project `<app>_<store>`),
+    or None when Docker can't be read. Values stay in memory; nothing is printed."""
+    docker = shutil.which("docker")
+    if not docker:
+        return None
+    try:
+        ps = subprocess.run([docker, "ps", "-q", "--filter", f"label=com.docker.compose.project={app_id}_{store}"],
+                            capture_output=True, text=True, timeout=30)
+        if ps.returncode:
+            return None
+        ids = ps.stdout.split()
+        if not ids:
+            return []
+        r = subprocess.run([docker, "inspect", "--format", "{{json .Config.Env}}", *ids],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode:
+            return None
+        out = []
+        for line in r.stdout.splitlines():
+            env = {}
+            for kv in json.loads(line) or []:
+                k, _, v = str(kv).partition("=")
+                env[k] = v
+            out.append(env)
+        return out
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def stale_running(app_id: str, store: str, want: dict[str, str]) -> bool:
+    """A running container of the app still carries an older value of a variable it was pointed at (e.g. the
+    dashboard address from before a tailnet move). Runtipi reads app.env only when it (re)creates a container, so
+    such an app needs a recreate even when this run did not change its app.env (wizard-os: Heidi install)."""
+    envs = running_env(app_id, store) or []
+    return any(k in env and env[k] != v for env in envs for k, v in want.items())
 
 
 def consumers(runtipi_root: Path, store: str, installed: set[str]) -> dict[str, list[str]]:
@@ -109,7 +173,7 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
     out = {"state": "ready", "url": url, "apps": sorted(apps), "changed_apps": []}
     if not apply:
         return out
-    creds = credentials(wizard_home)
+    creds, env_changed = _credentials(wizard_home)
     unit_dir = unit_dir or Path.home() / ".config/systemd/user"
     unit = unit_dir / UNIT
     text = unit_text(hermes, hermes_home, host, wizard_home)
@@ -119,9 +183,17 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         unit.write_text(text)
         _systemctl("daemon-reload")
     _systemctl("enable", UNIT)
-    r = _systemctl("restart", UNIT) if changed else _systemctl("start", UNIT)
+    # The environment file is read only at start: a value this run added, or one the owner edited since the last
+    # (re)start (e.g. WIZARD_ACCOUNT_CHANGES=0), needs a restart too.
+    applied = applied_path(wizard_home)
+    env_sha = _env_sha(env_path(wizard_home))
+    stale = env_changed or (applied.read_text().strip() if applied.is_file() else "") != env_sha
+    r = _systemctl("restart", UNIT) if changed or stale else _systemctl("start", UNIT)
     if r.returncode != 0:
         out.update(state="error", error=(r.stderr or r.stdout).strip()[:300])
+    else:
+        applied.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        applied.write_text(env_sha + "\n")
     for app_id, url_vars in apps.items():
         want = {PASSWORD_VAR: creds[PASSWORD_VAR], "HERMES_DASHBOARD_BASIC_AUTH_USERNAME":
                 creds.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or USER, **{v: url for v in url_vars}}
@@ -129,6 +201,8 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         if any(read_env(p).get(k) != v for k, v in want.items()):
             write_user_env(runtipi_root, app_id, want)
             out["changed_apps"].append(app_id)
+        elif stale_running(app_id, store, want):   # address and login, wherever the container carries them
+            out["changed_apps"].append(app_id)   # app.env is current, the running container is not
     return out
 
 

@@ -1,0 +1,11 @@
+# Read-only reviewer source comes from canonical wizard-ux, never from this PR.
+name: Agent review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    uses: humanitylabs-org/wizard-ux/.github/workflows/pr-agent-review.yml@main

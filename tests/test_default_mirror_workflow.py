@@ -10,7 +10,7 @@ def test_scoped_thales_schedule():
     assert set(events) == {'schedule', 'workflow_dispatch'}
     job = workflow['jobs']['mirror']
     assert job['if'] == "github.ref == 'refs/heads/main'"
-    assert job['runs-on'] == ['self-hosted', 'macOS', 'ARM64', 'wizard-app-manager']
+    assert job['runs-on'] == ['self-hosted', 'Linux', 'X64', 'forum', 'wizard-app-manager']
     assert workflow['permissions'] == {'contents': 'write', 'packages': 'write'}
     assert 'secrets.GITHUB_TOKEN' in text
     assert 'secrets.DEFAULT_MIRROR_SSH_KEY' not in text

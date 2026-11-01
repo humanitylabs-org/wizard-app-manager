@@ -91,3 +91,69 @@ def test_unit_points_the_adapter_at_the_boxs_agent_service(tmp_path):
     for bad in ("https://example.com", "http://10.0.0.5:8798", "http://127.0.0.1:8798/x\nExecStart=/bin/sh"):
         assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA, service=bad)
     assert "WIZARD_STORE_SERVICE_ORIGIN" not in store_data.unit_text("/usr/bin/node", tools, SHA)
+
+
+# wizard-ux #529 (in Stable 0.3.72's shell 970378b2): store-link-preview.mjs imports a module the adapter shares with the
+# shell, `../web/store/install-link.js`. Only ./x.mjs siblings were fetched, so every alongside box's Store data service
+# crash-looped with ERR_MODULE_NOT_FOUND (seen on the 0.3.72 -> 0.3.74 upgrade rig) and the Store had no data.
+UX_529 = {
+    "store-data-origin.mjs": b"import {linkPreview} from './store-link-preview.mjs';\nimport {x} from './store-index-views.mjs';",
+    "store-index-views.mjs": b"export const x = 1;",
+    "system-overview.mjs": b"export const y = 2;",
+    "store-link-preview.mjs": b"import {readCapped} from './store-index-views.mjs';\n"
+                              b"import {parseInstallLink} from '../web/store/install-link.js';",
+    "../web/store/install-link.js": b"import {norm} from './link-norm.js';\nexport const parseInstallLink = norm;",
+    "../web/store/link-norm.js": b"export const norm = 1;",
+}
+
+
+def test_modules_shared_with_the_shell_are_fetched_at_their_repo_paths(tmp_path):
+    asked = []
+    tools = store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or UX_529.get(n))
+    root = tmp_path / SHA
+    assert tools == root / "tools"
+    assert (root / "web/store/install-link.js").read_bytes() == UX_529["../web/store/install-link.js"]
+    assert (root / "web/store/link-norm.js").is_file()     # a shared module's own imports are followed too
+    assert set(UX_529) <= set(asked) and len(asked) == len(set(asked))
+    asked.clear()
+    store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: asked.append(n) or UX_529.get(n))
+    assert asked == [], "a complete cache is reused without refetching"
+
+
+def test_a_cache_without_the_shared_shell_module_is_refetched(tmp_path):
+    """The cache a 0.3.72 box already has: tools/ complete by the old rule, web/ never fetched."""
+    tools = tmp_path / SHA / "tools"
+    tools.mkdir(parents=True)
+    for n, body in UX_529.items():
+        if not n.startswith("../"):
+            (tools / n).write_bytes(body)
+    assert not store_data._complete(tools)
+    out = store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: UX_529.get(n))
+    assert (out.parent / "web/store/install-link.js").is_file() and store_data._complete(out)
+
+
+def test_the_real_fetch_reads_shared_modules_from_the_repo_path(monkeypatch):
+    urls = []
+
+    class R:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"x"
+
+    monkeypatch.setattr(store_data.urllib.request, "urlopen", lambda url, timeout: urls.append(url) or R())
+    store_data._fetch(SHA, "../web/store/install-link.js")
+    store_data._fetch(SHA, "store-data-origin.mjs")
+    assert urls == [f"https://raw.githubusercontent.com/humanitylabs-org/wizard-ux/{SHA}/web/store/install-link.js",
+                    f"https://raw.githubusercontent.com/humanitylabs-org/wizard-ux/{SHA}/tools/store-data-origin.mjs"]
+
+
+def test_an_import_that_leaves_the_repo_is_refused(tmp_path):
+    files = {**UX_529, "store-index-views.mjs": b"import '../../etc/evil.js';"}
+    with pytest.raises(ValueError, match="leaves the wizard-ux repo"):
+        store_data.fetch_tools(SHA, tmp_path, fetch=lambda s, n: files.get(n))
+    assert not any(tmp_path.iterdir())

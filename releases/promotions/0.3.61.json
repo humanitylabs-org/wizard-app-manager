@@ -1,0 +1,16 @@
+{
+  "version": "0.3.61",
+  "latest_since": "2026-10-26T14:29:39Z",
+  "promoted_at": "2026-10-26T14:45:27Z",
+  "upgrade_test": {
+    "from": "0.3.59",
+    "to": "0.3.61",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.61.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Owner-authorized (Miguel, 26 Oct 2026: approved final wording verbatim, 'ship it'; DECISIONS #93 launch-phase feature fast-track; stuck-orb repair is a Recommended fix): wizard-ux #567 (orb never freezes in an iPhone Safari tab: browser-bar lift via visual viewport, second tap / 8 s timeout ends a never-opened take visibly, meeting loan returned or kept, orb+Cancel above the tour) and #568 (three-step guide 'Step N of 3': Talk, Reply, Done with the owner's words; Hide and Install beats removed; desktop 'Step N of 2'). UX npm test 769/769 with failing-first tests; Codex clean on both heads; browser matrix 176/176 on source, published image and main candidate; old Stable reproduces the frozen orb (12 failing checks). Installed upgrade on demo-4 0.3.59->0.3.61 via os.sh WIZARD_STRICT=1 (mirror-head base disclosed): pinned, 0 failed checks, Hermes config/env/auth unchanged, doctor 0 FAIL, Hermes API answers, served files = reviewed source, live WebKit check 61/61.",
+    "notes": "Changed pins vs 0.3.59: wizard-ux only (325be039 -> 87b35bcb, image cd80f6f8 -> ecaba88e; content differs only in app.js, core/tour.js, core/tour.css, styles.css). No other pins, no migrations. Feature + fix in one release (classified feature). Risks: default first-run guide changes for every new install (Reply beat asks for a typed reply in Chats; Hide/Install gone); dock lifts in browser tabs when the visual viewport is covered by 6-160 px. Not checked: physical iPhone/Android/Telegram; no fresh install on a clean box (Miguel's final test on the wiped demo is that run). os.md handoff wording shipped separately (WAM #253). Older 0.3.26-0.3.31 Automatic updaters skip fast-tracked stable (Update now works)."
+  }
+}

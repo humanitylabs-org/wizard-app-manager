@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "assets": {
+    "ui.css": {
+      "source": "style/ui.css",
+      "sha256": "5551214c889918e90f7939b695b9434d71407221505d3dce7dacd7b07ebe445f"
+    },
+    "wizard-ui.css": {
+      "source": "style/ui.css",
+      "sha256": "5551214c889918e90f7939b695b9434d71407221505d3dce7dacd7b07ebe445f"
+    },
+    "tokens.css": {
+      "source": "style/tokens.css",
+      "sha256": "958ee7a4d70d7dc3dff3e0172b94cff3caf41999fa1c68b1cde68b57cba4177d"
+    },
+    "wizard-tokens.css": {
+      "source": "style/tokens.css",
+      "sha256": "958ee7a4d70d7dc3dff3e0172b94cff3caf41999fa1c68b1cde68b57cba4177d"
+    },
+    "sheet.js": {
+      "source": "style/sheet.js",
+      "sha256": "fbec58efa89921d2aed824b75c617c38c67e8f767e06ed8dd3b65b2e1f06178a"
+    },
+    "wizard-sheet.js": {
+      "source": "style/sheet.js",
+      "sha256": "fbec58efa89921d2aed824b75c617c38c67e8f767e06ed8dd3b65b2e1f06178a"
+    },
+    "standalone-tokens.css": {
+      "source": "style/standalone-tokens.css",
+      "sha256": "5e1c57ca8338052e066bd487054ef85e0693fc64ecbf7589335b85bae63353de"
+    },
+    "shell-tokens.css": {
+      "source": "style/shell-tokens.css",
+      "sha256": "7a646df6a033334bc9901247a407bafcc028674f8c182a3945411954e114bd2c"
+    },
+    "wizard-controls.css": {
+      "source": "style/controls.css",
+      "sha256": "dd3f01c7c9f02f19a5d9f342c7a33b11ada5e029c8c54f9d7d34f81eada2caa9"
+    },
+    "controls.css": {
+      "source": "style/controls.css",
+      "sha256": "dd3f01c7c9f02f19a5d9f342c7a33b11ada5e029c8c54f9d7d34f81eada2caa9"
+    }
+  },
+  "exceptions": [
+    {
+      "path": "web/core/skins.css",
+      "sha256": "a7a09e969a6d55b6d879fda794d8a913370f0b40eeb01f9f584d4d5eead0e899",
+      "reason": "Robert/James: approved shell skin definitions (not app chrome); appearance transport remains independent."
+    },
+    {
+      "path": "web/core/skins.js",
+      "sha256": "32b009431870b5976efd989c91dc6a1ed7416fd79215ca18d670963611ebbca4",
+      "reason": "Robert/James: approved shell skin definitions (not app chrome); appearance transport remains independent."
+    }
+  ]
+}

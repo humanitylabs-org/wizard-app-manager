@@ -202,7 +202,11 @@ def test_alongside_cmd_schedules_the_claude_app_update(alongside_box, monkeypatc
     class RT:
         def installed(self): return []
         def wait_status(self, urn, want, timeout=0): return "missing"
+        def app(self, urn): return {"app": {"status": "running"}}
+    restarted = []
     monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn, timeout=300: restarted.append((verb, urn)) or
+                        {"status": "running"})
     monkeypatch.setattr(cli, "installed_ids", lambda rt: {"wizard-claude", "files"})
     monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt=None: {})
     monkeypatch.setattr(cli, "host_dashboard_cmd", lambda c, rt=None: {"state": "skipped"})
@@ -211,6 +215,9 @@ def test_alongside_cmd_schedules_the_claude_app_update(alongside_box, monkeypatc
     out = cli.alongside_cmd(c, False, False, str(Path(json.loads(alongside.state_path(c.home).read_text())
                                                           ["agent"]["hermes_home"])), None)
     assert out["claude_login"]["apps"]["wizard-claude"]["folder"] == str(login)
-    assert "wam app update wizard-claude" in out["next"]
+    # The changed Claude app is recreated right away (Runtipi reads app.env/overrides only on create), not left
+    # as a `next` step nobody runs (the installer discards it).
+    assert restarted == [("restart", "wizard-claude:wizardapps")] and out["recreated"] == {"wizard-claude": "recreated"}
+    assert "wizard-claude" not in out.get("next", "")
     off = cli.alongside_cmd(c, False, True, None, None)
     assert "wizard-claude" in off["overrides_removed"] and "wam app update wizard-claude" in off["next"]

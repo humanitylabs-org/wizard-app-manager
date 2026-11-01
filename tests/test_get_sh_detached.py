@@ -98,6 +98,36 @@ def test_start_returns_at_once_and_status_walks_running_owner_action_done(box, t
     assert not (home / ".wizard-os/install-env").exists(), "the runner's settings file is deleted once read"
 
 
+ADMIN_DNS = "https://login.tailscale.com/admin/dns"
+HTTPS_STEP = (
+    "echo '==> Installing the App Manager'\n"
+    "echo '[wizard-os] owner-step: Your Tailscale network needs HTTPS turned on once, so your Wizard gets its private"
+    f" https link. Open this page, turn on MagicDNS and HTTPS Certificates, and the install continues by itself: {ADMIN_DNS}'\n"
+    "while [ ! -f \"$HOME/.https-on\" ]; do sleep 0.2; done\n"
+    "echo '[wizard-os] owner-action-done'\n"
+    f"mkdir -p \"$HOME/.wizard-os\"; printf '{{\"links\":[{{\"url\":\"{WIZ}\"}}]}}' > \"$HOME/.wizard-os/links.json\"\n"
+)
+
+
+def test_https_off_is_a_needs_owner_step_with_the_admin_link(box, tmp_path):
+    """A brand-new tailnet has HTTPS certificates off: status says needs_owner with the plain-language step and the
+    admin link (not the sign-in wording), then done WITH the Wizard link once the owner turned it on."""
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    assert box.run("alice", "start", **_wam(tmp_path, HTTPS_STEP)).returncode == 0
+    st = _wait(home, {"needs_owner"})
+    assert st["owner_url"] == ADMIN_DNS and st["tailscale_login_url"] is None
+    s = box.run("alice", "status").stdout.splitlines()
+    assert s[0] == "Wizard OS install: needs_owner"
+    assert s[2].startswith("Owner action: Your Tailscale network needs HTTPS turned on once") and s[3] == ADMIN_DNS
+    assert ADMIN_DNS not in s[2] and "connect your Wizard to your Tailscale" not in s[2]
+    (home / ".https-on").touch()
+    st = _wait(home, {"done", "failed"})
+    assert st["state"] == "done" and st["owner_url"] is None and st["wizard_url"] == WIZ
+    assert "box-only" not in st["message"]
+
+
 def test_second_start_while_running_does_not_start_another(box, tmp_path):
     box.add_user("alice", 1001)
     box.hermes("alice")
@@ -200,6 +230,40 @@ def test_root_start_uses_a_system_scope_transient_unit(box, tmp_path):
     _wait(home, {"done", "failed"})
     unit = next(l for l in box.log.read_text().splitlines() if "__runner" in l)
     assert unit.startswith("systemd-run --quiet --collect --unit wizard-os-install-") and "--user" not in unit
+    # Ubuntu's needrestart restarts services after an automatic upgrade; an install must refuse that.
+    assert "--property=RefuseManualStop=yes" in unit
+
+
+def test_a_restarted_runner_installs_the_same_release(box, tmp_path):
+    """needrestart killed a running update (0.3.90 -> 0.3.93 on the KVM rig) and systemd started the runner again; the
+    second run had lost the settings file and installed stable instead. A restarted runner keeps the same settings."""
+    import os
+    import signal
+    import subprocess
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    body = ("echo \"release=$WIZARD_RELEASE\" >> \"$HOME/seen\"\n"
+            "while [ ! -f \"$HOME/.go\" ]; do sleep 0.2; done\n")
+    wam = _wam(tmp_path, body)
+    assert box.run("alice", "start", WIZARD_RELEASE="0.3.93", **wam).returncode == 0
+    end = time.time() + 30
+    while time.time() < end and not (home / "seen").exists():
+        time.sleep(0.2)
+    first = _status_json(home)["pid"]
+    os.killpg(os.getpgid(first), signal.SIGKILL)          # what systemd's stop does to the unit's processes
+    time.sleep(0.5)
+    env = box.env("alice", **wam)
+    env.pop("WIZARD_RELEASE", None)                       # the restarted unit has only its own environment
+    subprocess.Popen(["setsid", "bash", str(home / ".wizard-os/get.sh"), "__runner"], env=env,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    end = time.time() + 30
+    while time.time() < end and len((home / "seen").read_text().splitlines()) < 2:
+        time.sleep(0.2)
+    (home / ".go").touch()
+    assert _wait(home, {"done", "failed"})["state"] == "done", (home / ".wizard-os/install.log").read_text()
+    assert (home / "seen").read_text().splitlines() == ["release=0.3.93", "release=0.3.93"]
+    assert not (home / ".wizard-os/install-env.run").exists(), "the settings are removed when the run ends"
 
 
 def test_plain_pipe_install_still_runs_in_the_foreground(box, tmp_path):

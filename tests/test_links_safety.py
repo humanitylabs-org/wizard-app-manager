@@ -37,3 +37,12 @@ def test_success_without_readback_is_not_claimed(tmp_path):
     with patch.object(links, 'tailnet', return_value={"state": "Running", "host": "box.ts.net"}), patch.object(links, 'serve_status', return_value={}), patch.object(links, '_run', return_value=subprocess.CompletedProcess([], 0, '', '')):
         out = links.publish(REG, tmp_path)
     assert not out['links'] and 'readback' in out['errors']['app']
+
+
+def test_owner_unix_gateway_is_kept_as_published_route():
+    config = {'Web': {'box:8444': {'Handlers': {'/messenger': {'Proxy': 'unix:/home/o/.wizard-os/messenger-owner/ingress.sock'}}}}}
+    assert links.route_status(config, 'box', 8444, '/messenger/', 'http://127.0.0.1:9245') == 'conflict'
+    assert links.owner_fronted(config, 'box', 8444, '/messenger/') is True
+    assert links.owner_fronted({**config, 'AllowFunnel': {'box:8444': True}}, 'box', 8444, '/messenger/') is False
+    other = {'Web': {'box:8444': {'Handlers': {'/messenger': {'Proxy': 'http://127.0.0.1:1234'}}}}}
+    assert links.owner_fronted(other, 'box', 8444, '/messenger/') is False

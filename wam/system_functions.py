@@ -7,8 +7,11 @@ The normal builder deliberately supplies no exemptions.
 from __future__ import annotations
 import base64
 import hashlib
+import io
 import json
 import re
+import shlex
+import tokenize
 from pathlib import Path
 
 import yaml
@@ -129,10 +132,102 @@ def _packed_rows(root):
     return rows
 
 
+def _reference_text(path: Path, text: str) -> str:
+    """Strip language comments, retaining quoted paths and plain YAML scalars."""
+    if path.suffix.lower() in {'.yaml', '.yml'}:
+        return json.dumps(yaml.safe_load(text), default=str)
+    if path.suffix.lower() == '.py':
+        return tokenize.untokenize((t.type, t.string) for t in tokenize.generate_tokens(io.StringIO(text).readline)
+                                  if t.type != tokenize.COMMENT)
+    if path.suffix.lower() in {'.sh', '.bash', '.zsh'} or path.name.startswith(('Dockerfile', 'Containerfile', 'Procfile')):
+        lexer = shlex.shlex(text, posix=True)
+        lexer.whitespace_split = True
+        return ' '.join(lexer)
+    return _code(text)
+
+
+def _package_runtime_text(packages: list[dict], entrypoints: str) -> str:
+    """Do not mistake unused npm test scripts for runtime; follow invoked ones."""
+    result = []
+    for package in packages:
+        scripts = package.get('scripts') or {}
+        if not isinstance(scripts, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in scripts.items()):
+            raise ValueError('Unknown package scripts')
+        active = {name for name in scripts if not re.match(r'^(test|lint|check|typecheck|format|qa)(:|$)', name)}
+        while True:
+            text = entrypoints + '\n' + '\n'.join(scripts[name] for name in active)
+            invoked = {name for name in scripts if re.search(
+                r'''\b(?:npm|pnpm|yarn|bun)[\s,"'\[\]]+(?:run[\s,"'\[\]]+)?''' + re.escape(name) + r'''(?=[\s,"'\[\];]|$)''', text)}
+            if invoked <= active:
+                break
+            active |= invoked
+        result.extend(scripts[name] for name in active)
+        result.append(json.dumps({key: package[key] for key in ('main', 'browser', 'exports', 'bin') if key in package}))
+    return '\n'.join(result)
+
+
+def _development_roots(root: Path) -> set[str]:
+    """Top-level harnesses outside an explicit, confined view source are not UI.
+
+    This is not an app-controlled ignore list. Unknown/legacy view layouts keep
+    the full scan, as do served test directories and runtime references to a
+    development tree. Nested web/tests paths and inline Compose are always linted.
+    """
+    development = {name for name in ('tests', 'test', 'qa', 'ops') if (root / name).exists()}
+    if not development:
+        return set()
+    try:
+        from .wizardmd import front_matter
+        source = (front_matter((root / 'wizard.md').read_text()).get('view') or {}).get('source') or {}
+        paths = []
+        for key in ('path', 'dist'):
+            value = source.get(key)
+            if not isinstance(value, str) or not value or value.startswith('/') or '\\' in value:
+                return set()
+            parts = value.split('/')
+            if any(p in {'', '.', '..'} for p in parts):
+                return set()
+            path = root / value
+            if path.is_symlink() or not path.is_dir() or not path.resolve().is_relative_to(root):
+                return set()
+            paths.append(parts[0])
+        development -= set(paths)
+        # Inspect entrypoints too: Dockerfile has no suffix, and Compose can
+        # invoke a package script or use an unquoted YAML command/build path.
+        reference_extensions = EXTENSIONS | {'.py', '.yml', '.yaml', '.json', '.sh', '.bash', '.zsh'}
+        while development:
+            texts, packages = [], []
+            for p in root.rglob('*'):
+                rel = p.relative_to(root)
+                if rel.parts[0] in development or any(part in SKIP for part in rel.parts):
+                    continue
+                if p.is_symlink() or not p.is_file():
+                    continue
+                if p.suffix.lower() not in reference_extensions and not p.name.startswith(('Dockerfile', 'Containerfile', 'Procfile')):
+                    continue
+                text = p.read_text(encoding='utf-8')
+                if p.name == 'package.json':
+                    packages.append(json.loads(text))
+                else:
+                    texts.append(_reference_text(p, text))
+            text = '\n'.join(texts)
+            text += '\n' + _package_runtime_text(packages, text)
+            referenced = {name for name in development if re.search(r'(?<![\w.-])' + name + r'(?![\w.-])', text)}
+            if not referenced:
+                break
+            # A referenced ops/start.sh can itself serve tests/. Follow such
+            # references to a fixed point (at most four development trees).
+            development -= referenced
+        return development
+    except (OSError, ValueError, UnicodeError, AttributeError, TypeError, tokenize.TokenError, IndentationError, yaml.YAMLError):
+        return set()
+
+
 def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dict]:
     root = Path(root).resolve()
     approved_assets = approved_assets or {}
     rows = []
+    development = _development_roots(root)
     scanned = 0
     for p in sorted(root.rglob('*')):
         rel = p.relative_to(root)
@@ -140,6 +235,8 @@ def check(root: Path, approved_assets: dict[str, str] | None = None) -> list[dic
             continue
         if p.is_symlink():
             rows.append({'rule': 'system functions: confined source', 'ok': False, 'severity': 'error', 'detail': str(rel) + ': symlink cannot hide platform code'})
+            continue
+        if rel.parts[0] in development:
             continue
         if p.suffix.lower() not in EXTENSIONS or not p.is_file():
             continue

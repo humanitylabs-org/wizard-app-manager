@@ -5,11 +5,15 @@ Route: `wam serve` answers on its own loopback port (7791). `tailscale serve` ma
 when its local peer socket belongs to root, i.e. tailscaled: the owner's programs (and rootless containers, whose
 root maps to the owner) can't reach it with a forged identity header. Unix-socket serving would need root. A request is accepted only when ALL hold:
   - it came through Tailscale Serve as the box owner (`Tailscale-User-Login` == the owner's tailnet login),
+  - it came from another tailnet device: Serve labels connections from this node's own address with the owner's
+    login, and every app container reaches Serve from that address, so a change from the box itself is refused
+    (reads stay allowed),
   - its Origin is the shell's own tailnet origin (no cross-site posts),
   - it is JSON with the `X-Wizard-Store: 1` header (a simple form or image tag can't send that),
   - an exact selection resolves server-side against a catalog/subscription, or a link's pinned GitHub
-    manifest passes the wizard.md checker and matches the app id. No browser URLs, settings or uninstall.
+    manifest passes the wizard.md checker and matches the app id. No browser URLs or settings.
     A second tap while an install runs joins it instead of starting another.
+Removal ("Remove app") is a separate exact-identity route behind the same gate: store_remove.py.
 """
 from __future__ import annotations
 
@@ -39,12 +43,43 @@ def owner_login() -> str:
         return ""
 
 
-def check_request(headers, owner: str, origins: set[str]) -> str | None:
+def own_ips() -> set[str]:
+    """This node's own Tailscale addresses (empty when Tailscale isn't running)."""
+    if not shutil.which("tailscale"):
+        return set()
+    try:
+        d = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True,
+                                      timeout=15).stdout or "{}")
+        return {str(ip) for ip in ((d.get("Self") or {}).get("TailscaleIPs") or [])}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+
+LOOPBACK = {"127.0.0.1", "::1"}
+FROM_BOX = ("changes are refused from this Wizard itself: its apps reach Tailscale Serve with your identity too. "
+            "Use your phone or computer, or `wam` on the server")
+
+
+def from_box(headers, ips: set[str]) -> bool:
+    """True when the request reached Tailscale Serve from this box itself (or the client is unknown).
+
+    Serve sets X-Forwarded-For to the connecting tailnet address (it replaces whatever the client sent) and sets
+    Tailscale-User-Login for this node's own address to the node's user: the owner. Every program on the box,
+    including every app container (rootless Docker connects out from the host), therefore arrives as the owner,
+    from the node's own address. Only the owner's other devices have another address. Fails closed: without this
+    node's addresses (Tailscale didn't answer) nothing can be told apart, so every request counts as the box's."""
+    hop = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+    return not ips or not hop or hop in LOOPBACK or hop in ips
+
+
+def check_request(headers, owner: str, origins: set[str], ips: set[str] | None = None) -> str | None:
     """None when allowed, else the reason it isn't."""
     if not owner:
         return "store installs need Tailscale (no owner login known)"
     if (headers.get("Tailscale-User-Login") or "").lower() != owner.lower():
         return "only the box owner can install from the Store"
+    if from_box(headers, own_ips() if ips is None else ips):
+        return FROM_BOX
     if (headers.get("Origin") or "") not in origins:
         return "wrong origin"
     if headers.get("X-Wizard-Store") != "1" or "application/json" not in (headers.get("Content-Type") or ""):
@@ -91,12 +126,16 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
         return 200, {"app": app_id, "state": "installed", "note": "already installed"}
     if not selection and not allowed(c, app_id):
         return 404, {"error": f"{app_id} is not in the App Store"}
+    from . import store_remove
+    store_remove.removing(app_id, c)   # read an unknown removal back now, outside the lock
     with _lock:
         job = _jobs.get(app_id)
         if job and job["state"] == "installing":
             if selection and job.get("selection") != {k: selection[k] for k in ("source", "repo", "commit", "operation")}:
                 return 409, {"error": "another release operation is already running for this app"}
             return 202, job
+        if store_remove.removing(app_id):
+            return 409, {"error": "this app is being removed; refresh when that finishes"}
         job = _jobs[app_id] = {"app": app_id, "state": "installing", "started": int(time.time())}
         if selection:
             job["selection"] = {k: selection[k] for k in ("source", "repo", "commit", "operation")}

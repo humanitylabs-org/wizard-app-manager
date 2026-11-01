@@ -83,7 +83,7 @@ def test_the_store_get_gate_is_unchanged_on_a_fresh_box(monkeypatch, tmp_path):
     cli.store_data_cmd(c)
     origins = si.served_origins(HOST)
     assert origins == {f"https://{HOST}:8796"}      # only the shell's own origin, never another app's port
-    good = {"Tailscale-User-Login": "owner@x.com", "Origin": f"https://{HOST}:8796", "X-Wizard-Store": "1",
+    good = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@x.com", "Origin": f"https://{HOST}:8796", "X-Wizard-Store": "1",
             "Content-Type": "application/json"}
     assert si.check_request(good, "owner@x.com", origins) is None
     assert si.check_request({**good, "Origin": f"https://{HOST}:9119"}, "owner@x.com", origins) == "wrong origin"
