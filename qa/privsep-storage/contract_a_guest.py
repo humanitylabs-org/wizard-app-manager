@@ -159,6 +159,18 @@ def fresh():
     report['bootstrap_discovery_exercised']=False
 
 
+def integrity_gate(label, service=True, allow_evict=True):
+    # QA-only: the pinned manager image baked into the retained guest base disk is
+    # content-damaged. Measure, evict exactly that id and reload the pinned archive
+    # if (and only if) it is the empty value, else fail closed. Hash-only export.
+    gate = module('contract_install_integrity', TREE/'qa/privsep-storage/install_integrity_guest.py')
+    try: return gate.gate(label, service=service, allow_evict=allow_evict, root=ROOT)
+    finally:
+        if (ROOT/'image-integrity.json').exists():
+            report['image_integrity'] = json.loads((ROOT/'image-integrity.json').read_text())
+        save()
+
+
 def install():
     revision, backend, service = sys.argv[2:5]
     assert re.fullmatch('[0-9a-f]{40}',revision)
@@ -207,6 +219,7 @@ def install():
                 report['custody_inode']=bound['inode']
                 check('native-socket-before-dependency',lambda:None)
         if event=='call' and any(a.endswith('/install.sh') for a in argv):
+            integrity_gate('before-install-sh')
             assert custody().require_custody()==report['custody_inode']
             clean=dict(v.split('=',1) for v in argv if '=' in v)
             assert clean['WAM_IMAGE']==backend and clean['WIZARD_AGENT_SERVICE_IMAGE']==service
@@ -342,7 +355,7 @@ def cleanup():
 
 def main():
     global report
-    assert sys.argv[1] in ('fresh','install','security','cleanup','cleanup-containers','cleanup-failed')
+    assert sys.argv[1] in ('fresh','install','security','cleanup','cleanup-containers','cleanup-failed','integrity')
     if (ROOT/'native.json').exists():report=json.loads((ROOT/'native.json').read_text())
     lock=os.open(ROOT/'native.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -367,6 +380,9 @@ def main():
             check(CHECKS[3],restart_worker);check(CHECKS[4],forgery);check(CHECKS[5],restart_daemon)
             assert sorted(r['name'] for r in report['checks'])==sorted(CHECKS)
             report['passed']=True
+        elif sys.argv[1]=='integrity':
+            # integrity <label> [verify]: 'verify' never evicts (containers may be running).
+            integrity_gate(sys.argv[2],allow_evict='verify' not in sys.argv[3:])
         elif sys.argv[1]=='cleanup-containers':cleanup_containers()
         elif sys.argv[1]=='cleanup-failed':
             # The exclusive native lock plus orphan-child inventory refuses any
