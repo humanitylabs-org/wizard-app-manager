@@ -56,7 +56,7 @@ def box(tmp_path, monkeypatch):
 
 def test_links_reconciles_existing_app_and_later_alias_without_rewriting_unchanged(box):
     assert cli.main(['links', '--json']) == 0
-    assert 'box.tail.ts.net:8444' in read_env(box.env)['WIZARD_TRUSTED_HOSTS'].split(',')
+    assert {'box.tail.ts.net:8444'}.issubset(set(read_env(box.env)['WIZARD_TRUSTED_HOSTS'].split(',')))
     assert box.calls == [{'skipPull': True}]
     assert box.state['runtime'] == read_env(box.env)
     assert read_env(box.env)['OTHER'] == 'keep'
@@ -68,14 +68,14 @@ def test_links_reconciles_existing_app_and_later_alias_without_rewriting_unchang
     assert len(box.calls) == 1
     box.state['ports'].append(9444)
     assert cli.main(['links', '--json']) == 0
-    assert 'https://box.tail.ts.net:9444' in box.state['runtime']['WIZARD_TRUSTED_ORIGINS'].split(',')
+    assert {'https://box.tail.ts.net:9444'}.issubset(set(box.state['runtime']['WIZARD_TRUSTED_ORIGINS'].split(',')))
     assert len(box.calls) == 2
 
 
 def test_links_stopped_app_saves_trust_without_starting(box):
     box.state['status'] = 'stopped'
     assert cli.main(['links', '--json']) == 0
-    assert 'box.tail.ts.net:8444' in read_env(box.env)['WIZARD_TRUSTED_HOSTS']
+    assert {'box.tail.ts.net:8444'}.issubset(set(read_env(box.env)['WIZARD_TRUSTED_HOSTS'].split(',')))
     assert box.calls == []
 
 
@@ -90,7 +90,7 @@ def test_links_reports_failed_runtime_application_and_retries(box):
 def test_links_repairs_an_install_that_never_saved_trust(box):
     box.env.unlink()
     assert cli.main(['links', '--json']) == 0
-    assert 'box.tail.ts.net:8444' in box.state['runtime']['WIZARD_TRUSTED_HOSTS']
+    assert {'box.tail.ts.net:8444'}.issubset(set(box.state['runtime']['WIZARD_TRUSTED_HOSTS'].split(',')))
     assert box.calls == [{'skipPull': True}]
 
 
@@ -99,7 +99,7 @@ def test_fresh_box_retains_the_apps_own_origin(box, monkeypatch):
     (box.c.home / 'apps.json').write_text(json.dumps({'apps': []}))
     monkeypatch.setattr(store_data, 'fresh_ports', lambda reg: (8796, 8797))
     assert cli.main(['links', '--json']) == 0
-    assert 'https://box.tail.ts.net:8801' in box.state['runtime']['WIZARD_TRUSTED_ORIGINS'].split(',')
+    assert {'https://box.tail.ts.net:8801'}.issubset(set(box.state['runtime']['WIZARD_TRUSTED_ORIGINS'].split(',')))
 
 
 @pytest.mark.parametrize('hold', ['busy', 'skipEnv', 'disabled-config', 'wait-error'])
@@ -118,6 +118,17 @@ def test_links_does_not_claim_runtime_success_on_a_hold(box, monkeypatch, capsys
     if hold != 'disabled-config':
         assert (box.env.parent / '.wizard-trust-pending').exists()
     assert len(box.calls) == (1 if hold == 'wait-error' else 0)
+
+
+def test_links_does_not_echo_backend_exception_details(box, monkeypatch, capsys):
+    sentinel = 'synthetic-sensitive-marker'
+    def unavailable(urn):
+        raise RuntimeError(sentinel)
+    monkeypatch.setattr(box.c.runtipi(), 'app', unavailable)
+    assert cli.main(['links', '--json']) == 1
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert json.loads(output)['errors']['trust:demo'] == 'error: trust not applied; retry `wam links`'
 
 
 def test_links_unreadable_serve_never_removes_trust(box, monkeypatch):

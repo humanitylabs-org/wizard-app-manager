@@ -703,16 +703,16 @@ def reconcile_trusted_origins(c: Config, reg: dict) -> dict[str, str]:
                 out[app_id] = "saved; applies on next start"
                 pending.unlink()
             elif status != "running":
-                out[app_id] = f"error: trust not applied (status {status}); retry `wam links` when settled"
+                out[app_id] = "error: trust not applied; retry `wam links` when the app is settled"
             else:
                 res = app_lifecycle(c, "restart", row["urn"], skip_pull=True)
                 if res.get("error"):
-                    out[app_id] = f"error: {res['error']}; retry `wam links`"
+                    out[app_id] = "error: trust restart did not finish; retry `wam links`"
                 else:
                     out[app_id] = "recreated"
                     pending.unlink()
-        except (Exception, SystemExit) as e:  # per-app failure is a visible hold, never a successful application
-            out[app_id] = f"error: trust not applied ({str(e)[:160]}); retry `wam links`"
+        except (Exception, SystemExit):  # upstream exceptions may include credentials; never copy them to output
+            out[app_id] = "error: trust not applied; retry `wam links`"
     return out
 
 
