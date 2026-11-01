@@ -73,7 +73,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
-      await appFilesManager.setAppDataDirPermissions(appUrn);
+      // No post-start permission reset: the app may already have written secrets.
 
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {

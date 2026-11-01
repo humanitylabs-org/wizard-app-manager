@@ -456,7 +456,7 @@ test('retains the recovery snapshot when the current app folder cannot be remove
   expect(filesystem.removeDirectory).not.toHaveBeenCalled();
 });
 
-test('opens app-data permissions after up so folders a new version adds are writable', async () => {
+test('never resets app-data permissions after up while private writers are running', async () => {
   const { command, dockerService, appFilesManager } = createCommand({ wasRunningBeforeUpdate: true });
   const order: string[] = [];
   dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
@@ -468,5 +468,6 @@ test('opens app-data permissions after up so folders a new version adds are writ
   });
 
   expect((await command.execute(appUrn, {})).success).toBe(true);
-  expect(order.lastIndexOf('chmod')).toBeGreaterThan(order.lastIndexOf('compose:up'));
+  expect(order).toContain('compose:up');
+  expect(order.slice(order.indexOf('compose:up') + 1)).not.toContain('chmod');
 });

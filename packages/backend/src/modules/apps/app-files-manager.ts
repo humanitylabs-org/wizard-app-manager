@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { APP_GENERATED_COMPOSE_FILENAME, APP_REL_COMPOSE_FILENAME } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { execFileAsync } from '@/common/helpers/exec-helpers';
+import { initializeAppDataDirectory, writeAppEnvironment } from '@/core/filesystem/app-data-permissions';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -182,20 +182,20 @@ export class AppFilesManager {
   }
 
   public async createAppDataDir(appUrn: AppUrn) {
-    const { appDataDir } = this.getAppPaths(appUrn);
-    await this.filesystem.createDirectory(appDataDir);
+    const { directories } = this.configuration.getConfig();
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    await initializeAppDataDirectory(directories.appDataDir, appStoreId, appName);
   }
 
   /**
-   * Set the permissions for the app data directory
+   * Compatibility entry point: create missing roots and tighten manager app.env.
+   * Existing modes and owners belong to the app, including live private writers.
+   * Named-volume/share ownership is initialized by WizardStorage; direct binds
+   * needing a different uid must use their recipe's initialization service.
    * @param appUrn - The app id
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
-    const { appDataDir } = this.getAppPaths(appUrn);
-
-    await execFileAsync('chmod', ['-Rf', 'a+rwx', appDataDir]).catch(() => {
-      this.logger.error(`Error setting permissions for app ${appUrn}`);
-    });
+    await this.createAppDataDir(appUrn);
   }
 
   public async getAppEnv(appUrn: AppUrn) {
@@ -215,11 +215,15 @@ export class AppFilesManager {
   }
 
   public async writeAppEnv(appUrn: AppUrn, env: string) {
-    const { appDataDir } = this.getAppPaths(appUrn);
-
-    const envPath = path.join(appDataDir, 'app.env');
-
-    return this.filesystem.writeTextFile(envPath, env);
+    const { directories } = this.configuration.getConfig();
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    try {
+      await writeAppEnvironment(directories.appDataDir, appStoreId, appName, env);
+      return true;
+    } catch {
+      this.logger.error(`Failed to write private app environment for ${appUrn}`);
+      return false;
+    }
   }
 
   /**

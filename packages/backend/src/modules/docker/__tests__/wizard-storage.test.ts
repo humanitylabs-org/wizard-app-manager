@@ -5,6 +5,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import * as yaml from 'yaml';
 import { WizardStorage, rewriteVolumes, validateStorage, confined, COPY_IMAGE, LEGACY_CLAUDE } from '../wizard-storage';
 import { DockerComposeBuilder } from '../builders/compose.builder';
+import { initializeAppDataDirectory } from '../../../core/filesystem/app-data-permissions';
 import type { AppUrn } from '@runtipi/common/types';
 
 let root: string;
@@ -90,6 +91,25 @@ describe('rule 15 and volume compile', () => {
   });
 });
 describe('fresh volume ownership', () => {
+  it('keeps service-owned private modes across repeated lifecycle initialization and prepare', async () => {
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    const source = { services: { main: { ...compose.services.main, user: `${uid}:${gid}`, volumes: ['private:/data'] } }, volumes: { private: {} } };
+    const urn = await install({ id: 'private-app' }, source);
+    const built = new DockerComposeBuilder().getDockerCompose(source as any, {}, urn as AppUrn, '10.1.0.0/24');
+    await store.prepare(urn, built);
+    const folder = path.join(root, 'app-data/wizardapps/private-app/volumes/private');
+    await fs.chmod(folder, 0o700);
+    await fs.writeFile(path.join(folder, 'synthetic-secret'), 'FAKE_ONLY', { mode: 0o600 });
+    for (const phase of ['install', 'restart', 'update']) {
+      await initializeAppDataDirectory(path.join(root, 'app-data'), 'wizardapps', 'private-app');
+      await store.prepare(urn, built);
+      expect((await fs.stat(folder)).mode & 0o777, phase).toBe(0o700);
+      expect((await fs.stat(folder)).uid, phase).toBe(uid);
+      expect((await fs.stat(path.join(folder, 'synthetic-secret'))).mode & 0o777, phase).toBe(0o600);
+    }
+    expect(run.mock.calls.some(([, args]) => args.includes('run'))).toBe(false);
+  });
   it('initialises a new bind for its numeric service user and never chowns existing data', async () => {
     const uid = process.getuid?.() ?? 0;
     const gid = process.getgid?.() ?? 0;
@@ -173,9 +193,7 @@ describe('owner share grants', () => {
     await store.change({ kind: 'share', from: 'claude-reader', to: 'wizard-claude', share: 'claude-login' }, true);
     const out = yaml.parse(await store.prepare(urn, yaml.stringify(side))).services;
     const at = (svc: any) => (svc.volumes ?? []).filter((v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target) === '/claude');
-    expect(at(out.worker)).toEqual([
-      expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' }),
-    ]);
+    expect(at(out.worker)).toEqual([expect.objectContaining({ source: `${root}/app-data/wizardapps/wizard-claude/data/claude`, target: '/claude' })]);
     expect(out.worker.volumes).toContain('${APP_DATA_DIR}/data:/data');
     expect(at(out.web)).toEqual([]);
   });

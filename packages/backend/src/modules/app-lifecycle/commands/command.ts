@@ -69,7 +69,7 @@ export class AppLifecycleCommand {
       throw new Error(`Error generating docker-compose.generated.yml file for app ${appUrn}.`);
     }
 
-    // Set permissions
+    // Initialize only; never reset app-owned permissions (including on restart).
     await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
