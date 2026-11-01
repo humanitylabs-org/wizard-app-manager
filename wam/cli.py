@@ -2140,6 +2140,8 @@ def main(argv: list[str] | None = None) -> int:
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
+    st = sub.add_parser("standard", help="which installed apps differ from what the Store ships (private images, "
+                        "box-only overrides) and why"); st.add_argument("--json", action="store_true")
     sub.add_parser("serve")
     sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
@@ -2306,6 +2308,11 @@ def main(argv: list[str] | None = None) -> int:
             reg = write_registry(c)
             print(json.dumps(reg, indent=2) if args.json else "\n".join(
                 f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
+        elif args.cmd == "standard":
+            from . import standard
+            res = standard.check(c.runtipi_root, c.home, c.index)
+            print(json.dumps(res, indent=2) if args.json else standard.describe(res))
+            return 1 if res["custom"] else 0
         elif args.cmd == "doctor":
             c.api_token()
             res = doctor(c, fix=args.fix)
