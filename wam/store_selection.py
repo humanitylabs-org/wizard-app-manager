@@ -125,7 +125,14 @@ def execute(c, app_id, selection):
     # a later public index response. It is not a remote-catalog field.
     (folder / '.wizard-selection').write_text(json.dumps({'repo': selection['repo'], 'commit': selection['commit']}) + '\n')
     if selection['operation'] == 'install':
-        result = cli.install(c, app_id, _record=record)
+        try:
+            result = cli.install(c, app_id, _record=record)
+        except BaseException:
+            # Nothing got installed: never leave this release pinned, or every later Get replays it even
+            # after the publisher ships a fix.
+            if app_id not in cli.installed_ids(c.runtipi()):
+                (folder / '.wizard-selection').unlink(missing_ok=True)
+            raise
     else:
         result = cli.app_update(c, app_id)
         cli.write_registry(c)

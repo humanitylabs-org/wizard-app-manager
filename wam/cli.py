@@ -343,6 +343,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
+    if _record is None and app_id not in have:
+        drop_stale_selection(c, app_id, (rec.get("install") or {}).get("commit") or rec.get("commit") or "")
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
     defaults = slots.load_defaults()
     for dep in rec.get("uses") or []:
@@ -567,6 +569,24 @@ def _net_brief(res: dict | None) -> dict:
     return {k: res[k] for k in ("created", "removed", "restarted", "pending_restart", "errors") if res.get(k)}
 
 
+def drop_stale_selection(c: Config, app_id: str, commit: str = "") -> bool:
+    """A Store Get pins its exact release in the store copy (`.wizard-selection`) and the App Manager then never
+    looks at the index again for that app. When that install failed, the pin outlives it and every later install
+    replays the broken release, even after the publisher fixed it. Only a pin for an app that is NOT installed,
+    and (when known) for another commit than the one being installed now, is removed; the App Manager then
+    fetches the current release."""
+    pin = c.runtipi_root / "repos" / STORE / "apps" / app_id / ".wizard-selection"
+    try:
+        old = json.loads(pin.read_text()).get("commit")
+    except (OSError, ValueError):
+        return False
+    if commit and old == commit:
+        return False
+    pin.unlink(missing_ok=True)
+    print(f"{app_id}: dropped the pin to {str(old)[:12]} left by an earlier install that did not finish", file=sys.stderr)
+    return True
+
+
 def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
     """Apps built with the Wizard builder answer only hosts/origins they are told to trust
     (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). With Tailscale, trust the shell's tailnet origin so the app
@@ -603,6 +623,16 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
     if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         return {}
     hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
+    # Every owner-configured alias of the shell (another tailnet HTTPS port fronting the same shell) opens apps
+    # too; trusting only the first one answers 403 inside the others.
+    try:
+        from . import links
+        aliases = [p for p in links.gateway_shell_ports(links.serve_status(), host, port) if p != port]
+    except Exception:
+        aliases = []
+    for p in aliases:
+        hosts.append(f"{host}:{p}")
+        origins.append(f"https://{host}:{p}")
     if own:
         hosts.insert(1, f"{host}:{own}")
         origins.append(f"https://{host}:{own}")
