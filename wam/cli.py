@@ -163,7 +163,11 @@ def read_grants(c: Config, rt) -> list:
 
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
-    reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    installed = rt.installed()
+    reg = registry.build(installed, STORE, c.host_ip(), c.runtipi_root)
+    from . import browser_admission
+    if browser_admission.enabled():   # default-off: apps.json is unchanged unless the boundary is on
+        browser_admission.project(reg, installed, STORE, c.host_ip(), c.runtipi_root, c.home)
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
@@ -2112,6 +2116,11 @@ def main(argv: list[str] | None = None) -> int:
     nw.add_argument("--no-restart", action="store_true", help="never restart an app (report it instead)")
     u = sub.add_parser("uninstall"); u.add_argument("id"); u.add_argument("--force", action="store_true")
     sl = sub.add_parser("slots"); sl.add_argument("--json", action="store_true")
+    bg = sub.add_parser("browser-grants", help="owner grants for browser app data/state operations (default-off boundary)")
+    bg.add_argument("action", choices=("list", "grant", "revoke"))
+    bg.add_argument("app", nargs="?")
+    bg.add_argument("--operation", action="append", default=[], help="operation id from the installed browser_contract")
+    bg.add_argument("--json", action="store_true")
     sub.add_parser("bootstrap")
     rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
     rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
@@ -2272,6 +2281,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(rows, indent=2) if args.json else "\n".join(
                 f"{r['name']:<20} {(r['active'] or '-'):<20} {r['state']:<15} default {r['default_app'] or '(none yet)'}"
                 + ("  required" if r["required"] else "") for r in rows))
+        elif args.cmd == "browser-grants":
+            from . import browser_admission as ba
+            if args.action == "list":
+                out = ba.read_grants(c.home)
+            elif not args.app:
+                raise SystemExit("browser-grants grant|revoke needs an app id")
+            else:
+                write_registry(c)   # bind to the CURRENT installation/source, never a cached projection
+                try:
+                    out = ba.grant(c.home, args.app, args.operation) if args.action == "grant" else \
+                        ba.revoke(c.home, args.app, args.operation or None)
+                except ValueError as e:
+                    raise SystemExit(f"browser-grants: {e}") from None
+                write_registry(c)   # republish permission_revision so open bindings are revoked
+            print(json.dumps(out, indent=2))
         elif args.cmd == "bootstrap":
             print(json.dumps(bootstrap(c), indent=2))
         elif args.cmd == "prefetch":
