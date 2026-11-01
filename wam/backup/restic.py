@@ -331,27 +331,38 @@ class Repo:
             p.stdin.close()
             rc = p.wait()
         except BaseException as e:
-            if isinstance(e, KeyboardInterrupt):
-                # Low-disk capture cancellation also unwinds as an interruption. Keep stdin open until restic
-                # has stopped: EOF would authorize publication. Give it time to clear its repository lock.
-                p.send_signal(signal.SIGINT)
-                try:
-                    p.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    p.terminate()
-                    try:
-                        p.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        p.kill()
-            else:
-                p.kill()
-            p.wait()
             try:
-                p.stdin.close()  # Only after exit: closing a partial input before cancellation publishes it.
-            except OSError:
-                pass
-            for t in threads:
-                t.join(10)
+                if isinstance(e, KeyboardInterrupt):
+                    # Keep stdin open until restic stops: EOF would authorize publication.
+                    p.send_signal(signal.SIGINT)
+                    try:
+                        p.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        p.terminate()
+                        try:
+                            p.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass  # Forced cleanup below kills and reaps before the original error propagates.
+                else:
+                    p.kill()
+            finally:
+                # Another Ctrl-C during either grace wait must still reap the child. Ignore further
+                # SIGINT only for forced cleanup, then restore the caller's handler before propagating.
+                main_thread = threading.current_thread() is threading.main_thread()
+                previous = signal.signal(signal.SIGINT, signal.SIG_IGN) if main_thread else None
+                try:
+                    if p.poll() is None:
+                        p.kill()
+                    p.wait()
+                    try:
+                        p.stdin.close()  # Never publish a partial stream by closing a live child's stdin.
+                    except OSError:
+                        pass
+                    for t in threads:
+                        t.join(10)
+                finally:
+                    if main_thread:
+                        signal.signal(signal.SIGINT, previous)
             if isinstance(e, (BrokenPipeError, ConnectionResetError)):
                 raise self._fail("backup", p.returncode or 1, "\n".join(got["err"])) from None
             raise

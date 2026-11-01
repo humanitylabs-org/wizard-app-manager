@@ -344,6 +344,68 @@ def test_restic_cancellation_escalates_and_reaps_child(source, tmp_path, monkeyp
         os.kill(processes[0].pid, 0)
 
 
+@pytest.mark.parametrize("interrupted_wait", [10, 5])
+def test_repeated_interrupt_cannot_leave_restic_running(source, tmp_path, monkeypatch, interrupted_wait):
+    ready = tmp_path / "ready"
+    script = ("import signal,time; from pathlib import Path; "
+              "signal.signal(signal.SIGINT,signal.SIG_IGN); "
+              "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+              f"Path({str(ready)!r}).touch(); time.sleep(10)")
+    processes, waits, eof_while_alive = [], [], []
+    real_popen = subprocess.Popen
+    original_handler = signal.getsignal(signal.SIGINT)
+
+    class Popen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            processes.append(self)
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            if timeout == interrupted_wait:
+                raise KeyboardInterrupt("second interrupt during grace period")
+            if timeout is None:
+                # A further real Ctrl-C during forced cleanup must not interrupt reaping.
+                os.kill(os.getpid(), signal.SIGINT)
+                eof_while_alive.append(self.stdin.closed and self.poll() is None)
+            return super().wait(timeout=0.05 if timeout in (10, 5) else timeout)
+
+    monkeypatch.setattr(restic.subprocess, "Popen", Popen)
+    box = source.box()
+    try:
+        with restic.Repo(box, {"kind": "path", "path": str(tmp_path / "repo")}, "test-only", binary="unused") as repo:
+            monkeypatch.setattr(repo, "_argv", lambda args: [sys.executable, "-c", script])
+
+            def stop(stream):
+                deadline = time.monotonic() + 2
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert ready.exists()
+                raise snapshot.LowDiskStop(tmp_path, 1, 1000)
+
+            with pytest.raises(KeyboardInterrupt):
+                repo.backup_stream(stop, filename="wizard.tar", host="test", tags=[])
+        assert interrupted_wait in waits and None in waits
+        assert processes[0].returncode == -signal.SIGKILL
+        assert processes[0].stdin.closed
+        assert not any(eof_while_alive)
+        assert signal.getsignal(signal.SIGINT) == original_handler
+        with pytest.raises(ProcessLookupError):
+            os.kill(processes[0].pid, 0)
+    finally:
+        # A red regression must not leak its intentionally stubborn fixture child.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                    real_popen.wait(proc, timeout=2)
+                if not proc.stdin.closed:
+                    proc.stdin.close()
+        finally:
+            signal.signal(signal.SIGINT, original_handler)
+
+
 def test_stop_interrupts_blocked_capture_child(source, tmp_path, monkeypatch):
     box = source.box()
     repo = attach_repo(source, tmp_path, monkeypatch)
