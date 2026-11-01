@@ -49,6 +49,7 @@ export const serviceSchemaArk = type({
       .optional(),
   }).optional(),
   addToMainNetwork: type('boolean').optional(),
+  wizardGrants: type('false').optional(),
   addPorts: type({
     containerPort: type('string | 0 < number.integer < 65536').configure({ message: 'CUSTOM_APP_ERROR_CONTAINER_PORT_INVALID' }),
     hostPort: type('string | 0 < number.integer < 65536').configure({ message: 'CUSTOM_APP_ERROR_HOST_PORT_INVALID' }),

@@ -187,7 +187,6 @@ export class DockerComposeBuilder {
       }
 
       inputCopy.services[serviceName] = built;
-      delete inputCopy.services[serviceName]?.['x-runtipi'];
     }
 
     // @ts-expect-error - not needed in the generated compose file
@@ -213,6 +212,9 @@ export class DockerComposeBuilder {
       '\n',
     );
 
-    return header + yaml.stringify(appStoreId === 'wizardapps' ? mountAppGrants(rewriteVolumes(inputCopy, appName)) : inputCopy, { nullStr: '' });
+    // Consume the architecture-resolved attenuation before removing build-only metadata.
+    const result: DynamicComposeSchemaYaml = appStoreId === 'wizardapps' ? mountAppGrants(rewriteVolumes(inputCopy, appName)) : inputCopy;
+    for (const service of Object.values(result.services)) delete service['x-runtipi'];
+    return header + yaml.stringify(result, { nullStr: '' });
   };
 }

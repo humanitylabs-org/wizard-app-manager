@@ -4,6 +4,8 @@ const xRuntipiService = type({
   is_main: 'boolean?',
   internal_port: 'number | string?',
   add_to_main_network: 'boolean?',
+  // Omit for legacy connection mounts. This declaration can only remove access.
+  wizard_grants: 'false?',
 });
 
 export type XRuntipiServiceParams = type.infer<typeof xRuntipiService>;

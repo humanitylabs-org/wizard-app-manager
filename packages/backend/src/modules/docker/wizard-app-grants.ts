@@ -271,9 +271,30 @@ export function providerEndpoint(app: App): string | undefined {
 }
 export function mountAppGrants(input: any): any {
   const doc = structuredClone(input);
-  for (const svc of Object.values(doc.services) as any[]) {
+  for (const [name, svc] of Object.entries(doc.services) as [string, any][]) {
     const target = (v: any) => (typeof v === 'string' ? v.split(':')[1] : v.target);
     const source = (v: any) => (typeof v === 'string' ? v.split(':')[0] : v.source);
+    const declaration = svc['x-runtipi'];
+    if (declaration && Object.hasOwn(declaration, 'wizard_grants')) {
+      if (declaration.wizard_grants !== false) throw new Error(`${name}: wizard_grants must be false or omitted`);
+      // A subtractive declaration, not a general service sandbox. Refuse
+      // contradictions/inheritance rather than silently editing recipe access.
+      if (['env_file', 'extends', 'volumes_from'].some((key) => svc[key] !== undefined))
+        throw new Error(`${name}: wizard_grants opt-out cannot inherit mounts or environment`);
+      const reserved = (p: unknown) => typeof p === 'string' && /^\/wizard(?:-requests)?(?:\/|$)/.test(path.posix.normalize(p));
+      const appSource = (p: unknown) => {
+        if (typeof p !== 'string') return false;
+        const expanded = p.replace(/^\$APP_DATA_DIR(?=\/|$)|^\$\{APP_DATA_DIR\}/, '/app-data');
+        const normalized = path.posix.normalize(expanded);
+        return normalized === '/app-data' || /^\/app-data\/wizard(?:-requests)?(?:\/|$)/.test(normalized);
+      };
+      if ((svc.volumes ?? []).some((v: any) => reserved(target(v)) || appSource(source(v))))
+        throw new Error(`${name}: wizard_grants opt-out conflicts with connection storage`);
+      const envNames = Array.isArray(svc.environment) ? svc.environment.map((e: string) => e.split('=')[0]) : Object.keys(svc.environment ?? {});
+      if (envNames.some((key: string) => key === 'WIZARD_GRANTS_FILE' || key === 'WIZARD_CONNECTION_REQUESTS'))
+        throw new Error(`${name}: wizard_grants opt-out conflicts with connection environment`);
+      continue;
+    }
     if ((svc.volumes ?? []).some((v: any) => target(v) === '/wizard' && source(v) !== '${APP_DATA_DIR}/wizard'))
       throw new Error('Reserved grants mount /wizard');
     if ((svc.volumes ?? []).some((v: any) => target(v) === '/wizard-requests' && source(v) !== '${APP_DATA_DIR}/wizard-requests'))

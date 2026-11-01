@@ -44,6 +44,7 @@ const convertService = (service: Partial<Service>) => {
     healthCheck,
     internalPort,
     addToMainNetwork,
+    wizardGrants,
     isMain,
     networkMode,
     extraHosts,
@@ -138,6 +139,9 @@ const convertService = (service: Partial<Service>) => {
   }
   if (isMain !== undefined) {
     xRuntipiMeta.is_main = isMain;
+  }
+  if (wizardGrants !== undefined) {
+    xRuntipiMeta.wizard_grants = wizardGrants;
   }
 
   const converted: Record<string, unknown> = {
@@ -334,6 +338,7 @@ const convertServiceFromYaml = (name: string, service: Partial<ServiceSchema>): 
     isMain: xRuntipi?.is_main,
     internalPort: xRuntipi?.internal_port,
     addToMainNetwork: xRuntipi?.add_to_main_network,
+    wizardGrants: xRuntipi?.wizard_grants,
   };
 
   Object.keys(converted).forEach((key) => {

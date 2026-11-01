@@ -15,6 +15,7 @@ export const serviceSchemaV1 = type({
     memlock: type.or('number', type({ soft: 'number', hard: 'number' })).optional(),
   }).optional(),
   addToMainNetwork: 'boolean?',
+  wizardGrants: 'false?',
   addPorts: type({
     containerPort: type.or('string', 'number'),
     hostPort: type.or('string', 'number'),
