@@ -10,7 +10,7 @@ from wam import packaging
 
 def test_container_path():
     assert packaging._container_path("/home/u/runtipi/app-data/.wizard-source/wizardapps/food@abc") == \
-        "/data/app-data/.wizard-source/wizardapps/food@abc"
+        "/app-data/.wizard-source/wizardapps/food@abc"
     with pytest.raises(packaging.PackagingError):
         packaging._container_path("/tmp/elsewhere")
 
@@ -40,5 +40,5 @@ def test_root_owned_source_root_copies_through_runtipi(tmp_path, monkeypatch):
     compose = {"services": {"food": {"image": "python:3.12-alpine"}}}
     assert packaging.prepare_package("source", compose, src, target, "food", "abc") is True
     argv, names = calls[0]
-    assert argv[:4] == ["docker", "exec", "-i", "runtipi"] and argv[-1] == "/data/app-data/.wizard-source/wizardapps/food@abc"
+    assert argv[:4] == ["docker", "exec", "-i", "runtipi"] and argv[-1] == "/app-data/.wizard-source/wizardapps/food@abc"
     assert "./app/server.py" in names

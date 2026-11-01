@@ -43,7 +43,7 @@ def test_legacy_and_image_copy_nothing(tmp_path, checkout):
 def test_build_points_at_copy_with_commit_image(tmp_path, checkout):
     c = {"services": {"web": {"build": {"context": "app"}}}}
     packaging.prepare_package("build", c, checkout, target(tmp_path), "demo", SHA)
-    assert c["services"]["web"] == {"build": {"context": str(target(tmp_path) / "app")},
+    assert c["services"]["web"] == {"build": {"context": f"/app-data/.wizard-source/wizardapps/demo@{SHA[:12]}/app"},
                                     "image": f"wizard-local/demo-web:{SHA[:12]}", "pull_policy": "build"}
 
 
