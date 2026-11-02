@@ -282,9 +282,18 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
             cred = listener_credential(home, runtipi_root, st, app_id, out['installation_id'])
             if cred:
                 out['listener_credential'] = cred
+        if out.get('installation_id') and st and app.get('mcp'):
+            gw = gateway_key(home, runtipi_root, st, app_id, out['installation_id'])
+            if gw:
+                out['gateway_key'] = gw
         app['browser'] = out
     prune_listener_credentials(home, {a['browser']['installation_id'] for a in reg.get('apps', [])
                                       if (a.get('browser') or {}).get('listener_credential', {}).get('ref')})
+    try:
+        sync_gateway_keys(home, {a['id']: a['browser']['installation_id'] for a in reg.get('apps', [])
+                                 if (a.get('browser') or {}).get('gateway_key', {}).get('ref')})
+    except OSError:
+        pass   # the gateway keeps its previous keys; gated apps keep failing closed until the next write
     return reg
 
 
@@ -314,7 +323,10 @@ def credential_path(home: Path, inst: str) -> Path:
 
 
 def _ensure_key(home: Path, inst: str) -> str:
-    path = credential_path(home, inst)
+    return _ensure_key_at(credential_path(home, inst))
+
+
+def _ensure_key_at(path: Path) -> str:
     try:
         key = path.read_text().strip()
         if _KEY.fullmatch(key):
@@ -365,6 +377,108 @@ def listener_credential(home: Path, runtipi_root: Path, store: str, app_id: str,
         return {**ref, 'state': 'written'}
     except (OSError, ValueError) as e:
         return {**ref, 'state': 'unavailable', 'error': type(e).__name__}
+
+
+# ---- Per-installation gateway key for box-only MCP services (wizard-os #386, card 5) ----
+# Transcriber, Browser and Voice have no view and no Serve route, but their /mcp (and Browser's DevTools, Transcriber's
+# engine API) answer any process or container on the box. With the boundary on, their listeners answer /mcp only to the
+# Agent Service gateway, which proves itself with this key (spec/PERMISSIONS.md layer 2: "the gateway is a consumer
+# too"; it already sends X-Wizard-Grant from grants/agent-service.json, so the Service needs no change):
+#   - minted per INSTALLATION (reinstall = new key; uninstall removes it), stored 0600 under browser-gateway-keys/;
+#   - written to the gateway's own grants/agent-service.json `outgoing[<app id>]` (0600), keeping unmanaged rows;
+#   - handed to the app through its own Runtipi user env (WIZARD_GATEWAY_KEY), only when its INSTALLED compose
+#     declares that variable, so other apps are untouched;
+#   - never in apps.json, a URL, a browser response or the shell token.
+GATEWAY_ENV = 'WIZARD_GATEWAY_KEY'
+GATEWAY_HEADER = 'X-Wizard-Grant'
+
+
+def gateway_keys_dir(home: Path) -> Path:
+    return Path(home) / 'browser-gateway-keys'
+
+
+def gateway_key_path(home: Path, inst: str) -> Path:
+    if not _INST.fullmatch(inst or ''):
+        raise ValueError('bad installation id')
+    return gateway_keys_dir(home) / f'{inst}.key'
+
+
+def gateway_file(home: Path) -> Path:
+    return Path(home) / 'grants' / 'agent-service.json'
+
+
+def gateway_key(home: Path, runtipi_root: Path, store: str, app_id: str, inst: str) -> dict | None:
+    """Reference (never the value) for apps whose installed compose takes WIZARD_GATEWAY_KEY, else None."""
+    installed = Path(runtipi_root) / 'apps' / store / app_id / 'docker-compose.yml'
+    try:
+        if GATEWAY_ENV not in installed.read_text():
+            return None
+    except OSError:
+        return None
+    ref = {'header': GATEWAY_HEADER, 'ref': f'browser-gateway-keys/{inst}.key', 'env': GATEWAY_ENV}
+    try:
+        key = _ensure_key_at(gateway_key_path(home, inst))
+        env = Path(runtipi_root) / 'user-config' / store / app_id / 'app.env'
+        want = {'WIZARD_BROWSER_BOUNDARY': '1', GATEWAY_ENV: key}
+        have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
+        if any(have.get(k) != v for k, v in want.items()):
+            from .cli import write_user_env
+            write_user_env(Path(runtipi_root), app_id, want)
+        # The running container picks the variable up on its next (re)start; until then its /mcp fails closed.
+        return {**ref, 'state': 'written'}
+    except (OSError, ValueError) as e:
+        return {**ref, 'state': 'unavailable', 'error': type(e).__name__}
+
+
+def sync_gateway_keys(home: Path, live: dict) -> dict:
+    """Make grants/agent-service.json `outgoing` carry each live app's key; drop keys of installations that are gone.
+
+    `live` maps app id -> installation id. Rows WAM never minted (a hand-written operator key) are kept unless the
+    app now has a WAM key. An unreadable or malformed file is left alone ('unavailable'): never widen, never clobber."""
+    d = gateway_keys_dir(home)
+    stale = set()
+    for f in sorted(d.glob('inst-*.key')) if d.is_dir() else []:
+        if f.stem not in live.values():
+            try:
+                stale.add(f.read_text().strip())
+            except OSError:
+                pass
+            f.unlink(missing_ok=True)
+    path = gateway_file(home)
+    try:
+        doc = json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {'state': 'unavailable'}
+    if not isinstance(doc, dict) or not isinstance(doc.get('outgoing', {}), dict):
+        return {'state': 'unavailable'}
+    out = {k: v for k, v in (doc.get('outgoing') or {}).items() if v not in stale and k not in live}
+    for app_id, inst in sorted(live.items()):
+        try:
+            out[app_id] = gateway_key_path(home, inst).read_text().strip()
+        except (OSError, ValueError):
+            pass
+    if out == (doc.get('outgoing') or {}) and path.is_file():
+        return {'state': 'unchanged'}
+    if not out and not path.is_file():
+        return {'state': 'unchanged'}
+    new = {**doc, 'outgoing': dict(sorted(out.items()))}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    fd, tmp = tempfile.mkstemp(prefix='.agent-service.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(new, f, indent=2)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)   # the Service ignores a gateway key file others can read
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    if json.loads(path.read_text()) != new:
+        raise OSError('gateway keys readback mismatch')
+    return {'state': 'written'}
 
 
 def own_tab_env(runtipi_root: Path, store: str, app_id: str, authority: str) -> str:
