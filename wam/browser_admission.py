@@ -286,6 +286,8 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
             gw = gateway_key(home, runtipi_root, st, app_id, out['installation_id'])
             if gw:
                 out['gateway_key'] = gw
+        if st and not out.get('listener_credential') and not out.get('gateway_key') and out.get('isolation') != 'own-tab':
+            boundary_only_env(runtipi_root, st, app_id)
         app['browser'] = out
     prune_listener_credentials(home, {a['browser']['installation_id'] for a in reg.get('apps', [])
                                       if (a.get('browser') or {}).get('listener_credential', {}).get('ref')})
@@ -504,6 +506,32 @@ def own_tab_env(runtipi_root: Path, store: str, app_id: str, authority: str) -> 
         return 'written'   # the running container reads it on its next (re)start
     except (OSError, ValueError):
         return 'unavailable'
+
+
+# Apps whose INSTALLED compose reads only WIZARD_BROWSER_BOUNDARY (an agent-side browser gate with no credential,
+# e.g. Secret Drop's MCP front) get the flag in their user env too; the credential, gateway-key and own-tab writers
+# already set it for theirs. The shell and the Agent Service are never touched here: their boundary needs the shell
+# token wiring, not a bare flag (a bare flag would stop the shell from starting).
+NOT_BARE_FLAG = frozenset({'wizard-ux', 'wizard-agent-service', 'wizard-shell'})
+
+
+def boundary_only_env(runtipi_root: Path, store: str, app_id: str) -> bool:
+    if app_id in NOT_BARE_FLAG:
+        return False
+    try:
+        if 'WIZARD_BROWSER_BOUNDARY' not in (Path(runtipi_root) / 'apps' / store / app_id / 'docker-compose.yml').read_text():
+            return False
+    except OSError:
+        return False
+    env = Path(runtipi_root) / 'user-config' / store / app_id / 'app.env'
+    try:
+        have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
+        if have.get('WIZARD_BROWSER_BOUNDARY') != '1':
+            from .cli import write_user_env
+            write_user_env(Path(runtipi_root), app_id, {'WIZARD_BROWSER_BOUNDARY': '1'})
+    except OSError:
+        return False
+    return True   # the running container picks it up on its next (re)start
 
 
 def prune_listener_credentials(home: Path, live: set) -> list[str]:

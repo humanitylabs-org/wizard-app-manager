@@ -199,6 +199,9 @@ def share_registry(c: Config) -> bool:
         # modes are explicit: a caller's restrictive umask (0600 apps.json) must not hide every app
         # from the Agent Service. The owner's own ~/.wizard-os copy keeps whatever mode it has.
         os.chmod(shared, 0o755)
+        # Empty mount point for the Agent Service's read-only browser-app-credentials mount (alongside.py): Docker
+        # can't create it inside the read-only /wizard-os. Nothing is ever written into it here.
+        (shared / "browser-app-credentials").mkdir(mode=0o700, exist_ok=True)
         tmp = shared / "apps.json.tmp"
         shutil.copyfile(c.home / "apps.json", tmp)
         os.chmod(tmp, 0o644)
