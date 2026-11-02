@@ -4,8 +4,8 @@ The bundle (~/.wizard-os/builder/current, first on PATH in builder sessions) is 
 last installed, while the box's own App Manager (~/.local/bin/wam, the copy its API service and timers run) moves on
 with every update. On 2 Nov 2026 a `wam install` from a builder session ran an Oct 30 bundle that predated the
 owner-gateway fix in links.py and rewrote Messenger's launcher to its raw port. So on a host with a box wam, only the
-builder commands below run from the bundle; install, links, apps, updates, builder-bundle and everything else exec the
-box's wam, and a stale bundle can never write the box's registry, routes or apps. Inside a stock agent container
+builder commands below run from the bundle; install, links, apps, updates, views, builder-bundle and everything else
+exec the box's wam, and a stale bundle can never write the box's registry, routes or apps. Inside a stock agent container
 there is no box wam, and the bundle keeps running every command itself, exactly as before.
 """
 from __future__ import annotations
@@ -17,9 +17,10 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent.parent
 MARKER = 'wizard-builder-bundle-v1'
 GUARD = 'WAM_FROM_BUILDER_BUNDLE'   # set on the exec'd box wam: never delegate twice
-# Source-level work that never touches the box's registry, routes or apps (wam/builder.py, wam/views.py).
-BUILDER_COMMANDS = frozenset({'new', 'check', 'install-local', 'update-local', 'publish', 'builder-skill',
-                              'package-inline', 'views'})
+# Source-level work on the app being built (wam/builder.py): never the box's registry, routes, apps, views state or
+# the builder bundle itself (`builder-skill` installs the bundle and `views` writes ~/.wizard-os/views, so both go to
+# the box's wam).
+BUILDER_COMMANDS = frozenset({'new', 'check', 'install-local', 'update-local', 'publish', 'package-inline'})
 
 
 def bundle_root(source: Path = SOURCE) -> Path | None:

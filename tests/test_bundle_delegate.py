@@ -37,7 +37,8 @@ def _run(argv, root, env):
 
 
 @pytest.mark.parametrize('cmd', ['install', 'links', 'apps', 'app', 'app-updates', 'updates', 'uninstall', 'doctor',
-                                 'builder-bundle', 'alongside', 'network', 'grants', 'bootstrap', 'search'])
+                                 'builder-bundle', 'builder-skill', 'views', 'alongside', 'network', 'grants',
+                                 'bootstrap', 'search'])
 def test_box_commands_from_the_bundle_run_the_box_wam(tmp_path, cmd):
     root, box = _bundle(tmp_path), _box(tmp_path)
     env = {'WAM_BOX_BIN': str(box)}
