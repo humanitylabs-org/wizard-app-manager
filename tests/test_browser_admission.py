@@ -254,3 +254,30 @@ def test_media_tickets_are_their_own_reviewed_grant(box):
     for op in ('media.open', 'notifications.media.*', 'notifications.file', 'files.read'):
         box.rows[:] = [install(box.root, contract=CARD2_CONTRACT.replace('notifications.mark]', op + ']'))]
         assert box.app(box.write())['reason'] == 'invalid_contract', op
+
+
+FILES_CONTRACT = """browser_contract:
+  version: 1
+  isolation: opaque
+  operations: [files.list, files.index, files.thumbnail, files.content, files.upload]
+  state: {schema_version: 1, persistent_bytes: 65536}
+"""
+
+
+def test_wizard_files_operations_are_reviewed_and_each_its_own_grant(box):
+    """First-party Files view (wizard-os #385/#386): listing never implies bytes, and bytes never imply uploads."""
+    box.rows.append(install(box.root, app_id='wizard-files', repo='humanitylabs-org/wizard-files', contract=FILES_CONTRACT, provides='files'))
+    b = box.app(box.write(), 'wizard-files')
+    assert b['contract']['operations'] == sorted(['files.list', 'files.index', 'files.thumbnail', 'files.content', 'files.upload'])
+    assert b['admissible'] is False and b['reason'] == 'no_grant'
+    assert cli.main(['browser-grants', 'grant', 'wizard-files', '--operation', 'files.list']) == 0
+    assert box.app(box.write(), 'wizard-files')['granted'] == ['files.list']
+    assert cli.main(['browser-grants', 'grant', 'wizard-files', '--operation', 'files.upload']) == 0
+    granted = box.app(box.write(), 'wizard-files')
+    assert granted['granted'] == ['files.list', 'files.upload']
+    assert cli.main(['browser-grants', 'revoke', 'wizard-files', '--operation', 'files.upload']) == 0
+    after = box.app(box.write(), 'wizard-files')
+    assert after['granted'] == ['files.list'] and after['permission_revision'] != granted['permission_revision']
+    for op in ('files.*', 'files.read', 'files.upload.chunk', 'files.write', 'Files.list'):
+        box.rows[:] = [install(box.root, app_id='wizard-files', repo='humanitylabs-org/wizard-files', contract=FILES_CONTRACT.replace('files.upload]', op + ']'), provides='files')]
+        assert box.app(box.write(), 'wizard-files')['reason'] == 'invalid_contract', op
