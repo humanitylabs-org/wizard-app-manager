@@ -55,6 +55,14 @@ OPERATIONS = {
     'claude_code.cancel': {'kind': 'write', 'scope': 'self'},
     'claude_code.logout': {'kind': 'write', 'scope': 'self', 'consent': 'owner'},
     'claude_code.test': {'kind': 'write', 'scope': 'self'},
+    # First-party Files view (humanitylabs-org/wizard-files; wizard-os #385/#386): its OWN listener's owner-files reads,
+    # each a separate owner grant. files.content = 60 s Range read tickets (ADAPTER-SKETCH §6); files.upload = one
+    # resumable upload port into the owner's files root (create/chunk/status/commit sha256/abort), per-chunk checks.
+    'files.list': {'kind': 'read', 'scope': 'self'},
+    'files.index': {'kind': 'read', 'scope': 'self'},
+    'files.thumbnail': {'kind': 'read', 'scope': 'self'},
+    'files.content': {'kind': 'media', 'scope': 'self'},
+    'files.upload': {'kind': 'upload', 'scope': 'self'},
 }
 # Narrow sign-in navigation (census label N): an app may declare up to four provider sign-in pages, each one exact
 # https origin + path. Query parameter NAMES may be listed; values come only from the app's upstream at run time and
