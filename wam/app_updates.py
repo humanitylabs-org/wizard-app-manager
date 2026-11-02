@@ -26,6 +26,7 @@ State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {i
 from __future__ import annotations
 
 import fcntl
+from contextlib import contextmanager
 import json
 import os
 import subprocess
@@ -62,19 +63,43 @@ def _state(home: Path | None) -> dict:
     return s if isinstance(s, dict) else {}
 
 
-def _write(home: Path | None, **changes) -> dict:
+@contextmanager
+def _policy_lock(home: Path | None):
+    """Serialize the saved owner choice with each app's mutations and queue admission."""
     h = _home(home)
     h.mkdir(parents=True, exist_ok=True)
-    s = {**_state(h), **changes}
-    tmp = h / (STATE + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1) + "\n")
-    tmp.replace(h / STATE)
-    return s
+    with (h / (STATE + ".lock")).open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield h
+
+
+@contextmanager
+def admission(home: Path | None, automatic: bool):
+    # Release before waiting for completion: Manual can stop the next app in a batch.
+    with _policy_lock(home):
+        yield not automatic or mode(home) == "auto"
+
+
+def _write(home: Path | None, **changes) -> dict:
+    with _policy_lock(home) as h:
+        s = {**_state(h), **changes}
+        tmp = h / (STATE + ".tmp")
+        tmp.write_text(json.dumps(s, indent=1) + "\n")
+        tmp.replace(h / STATE)
+        return s
 
 
 def mode(home: Path | None = None) -> str:
-    m = _state(home).get("mode")
-    return m if m in MODES else DEFAULT_MODE
+    try:
+        state = json.loads((_home(home) / STATE).read_text())
+    except FileNotFoundError:
+        return DEFAULT_MODE
+    except (OSError, ValueError):
+        return "ask"
+    if not isinstance(state, dict):
+        return "ask"
+    m = state.get("mode", DEFAULT_MODE)
+    return m if m in MODES else "ask"
 
 
 def holds(home: Path | None = None) -> list[str]:
@@ -316,7 +341,7 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
 
 # ---------------------------------------------------------------- apply
 
-def reconcile_settings(c, rt, app_id: str) -> list[str]:
+def _reconcile_settings(c, rt, app_id: str, current: dict) -> list[str]:
     """Fill settings the new version newly requires, with the same rules as install (shared secrets from the apps
     it uses, generated passwords, owner origins), keeping every saved value. Runtipi refuses an update whose
     required variable is unset ("Variable ... is required"), so this runs first. Returns what only the owner can
@@ -329,7 +354,6 @@ def reconcile_settings(c, rt, app_id: str) -> list[str]:
         uses = (cli.registry._front((recipe / "wizard.md").read_text()) or {}).get("uses") or []
     except (OSError, ValueError):
         return []   # no prepared recipe to read: let the update itself decide
-    current = (((rt.app(urn) or {}).get("app") or {}).get("config")) or {}
     form, missing = cli.build_form(c, app_id, info, current, uses=uses if isinstance(uses, list) else [])
     if missing:
         return missing
@@ -388,7 +412,8 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
     return title, " ".join(parts), "high" if failed else "default"
 
 
-def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None) -> dict:
+def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
+          automatic: bool = False) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -402,6 +427,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
     try:
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a Wizard OS update is running; next window"}
+        if automatic and mode(c.home) != "auto":
+            return {"app_mode": mode(c.home), "started": False}
         rt = c.runtipi()
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:
@@ -440,17 +467,17 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 due = [r for r in rows if not r["skip"] and r["id"] not in moved]
         fails = _failed(c.home)
         for r in due:
+            if automatic and mode(c.home) != "auto":
+                break
             urn = f"{r['id']}:{cli.STORE}"
             states = _containers(urn)
             before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
-                missing = reconcile_settings(c, rt, r["id"])
-                if missing:   # the new version needs a setting only the owner can give: nothing changed
-                    needs.append({"id": r["id"], "reason": "the new version needs " + "; ".join(missing)[:200]})
-                    continue
-                res = cli.app_update(c, r["id"])
+                res = cli.app_update(c, r["id"], **({"automatic": True} if automatic else {}))
+                if res.get("skipped") == "manual":
+                    break
             except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
                 continue
@@ -502,7 +529,7 @@ def apply_if_auto(c=None, is_busy=None) -> dict:
         return {"app_mode": mode(c.home), "started": False}
     if (is_busy or (lambda: updates.busy(updates.service_origin(c.home))))():
         return {"started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(c)
+    return apply(c, automatic=True)
 
 
 def start_detached(runner=subprocess.run) -> dict:
