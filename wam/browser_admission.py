@@ -181,8 +181,104 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
                 out['reason'] = None if out['admissible'] else ('grants_unreadable' if grants_error else 'no_grant')
         out['contract_digest'] = _digest(out['contract']) if out['contract'] else None
         out['permission_revision'] = 'p-' + _digest([out['contract_digest'], out['granted'], out['grant_revision']])[:24]
+        if out.get('installation_id') and st:
+            cred = listener_credential(home, runtipi_root, st, app_id, out['installation_id'])
+            if cred:
+                out['listener_credential'] = cred
         app['browser'] = out
+    prune_listener_credentials(home, {a['browser']['installation_id'] for a in reg.get('apps', [])
+                                      if (a.get('browser') or {}).get('listener_credential', {}).get('ref')})
     return reg
+
+
+# ---- Per-installation listener credential (wizard-os #386) ----
+# An app whose own listener is reachable straight from the private network (Tailscale Serve publishes its path and
+# port to it, not through the shell) cannot treat the owner's network identity as authority once the boundary is on.
+# Its owner-data paths then answer only the Agent Service adapter, which proves itself with this credential:
+#   - minted here per INSTALLATION (a reinstall is a new installation and a new credential; uninstall removes it);
+#   - stored server-side only, <home>/browser-app-credentials/<installation_id>.key (0600), read by the Service;
+#   - handed to the app through its own Runtipi user env (WIZARD_APP_CREDENTIAL), only when its INSTALLED compose
+#     declares that variable, so apps that don't support the gate are untouched;
+#   - never in apps.json, a browser response, a URL, or the shell token (which never goes to an app upstream).
+CREDENTIAL_HEADER = 'X-Wizard-App-Credential'
+CREDENTIAL_ENV = 'WIZARD_APP_CREDENTIAL'
+_KEY = re.compile(r'[a-f0-9]{64}')
+_INST = re.compile(r'inst-[a-f0-9]{32}')
+
+
+def credentials_dir(home: Path) -> Path:
+    return Path(home) / 'browser-app-credentials'
+
+
+def credential_path(home: Path, inst: str) -> Path:
+    if not _INST.fullmatch(inst or ''):
+        raise ValueError('bad installation id')
+    return credentials_dir(home) / f'{inst}.key'
+
+
+def _ensure_key(home: Path, inst: str) -> str:
+    path = credential_path(home, inst)
+    try:
+        key = path.read_text().strip()
+        if _KEY.fullmatch(key):
+            return key
+    except FileNotFoundError:
+        pass
+    import secrets
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    key = secrets.token_hex(32)
+    fd, tmp = tempfile.mkstemp(prefix='.key.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(key + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    if path.read_text().strip() != key:
+        raise OSError('listener credential readback mismatch')
+    return key
+
+
+def listener_credential(home: Path, runtipi_root: Path, store: str, app_id: str, inst: str) -> dict | None:
+    """Reference (never the value) for apps whose installed compose takes WIZARD_APP_CREDENTIAL, else None."""
+    installed = Path(runtipi_root) / 'apps' / store / app_id / 'docker-compose.yml'
+    try:
+        if CREDENTIAL_ENV not in installed.read_text():
+            return None
+    except OSError:
+        return None
+    ref = {'header': CREDENTIAL_HEADER, 'ref': f'browser-app-credentials/{inst}.key', 'env': CREDENTIAL_ENV}
+    try:
+        key = _ensure_key(home, inst)
+        env = Path(runtipi_root) / 'user-config' / store / app_id / 'app.env'
+        want = {'WIZARD_BROWSER_BOUNDARY': '1', CREDENTIAL_ENV: key}
+        have: dict[str, str] = {}
+        for line in env.read_text().splitlines() if env.is_file() else []:
+            k, _, v = line.partition('=')
+            have[k.strip()] = v
+        if any(have.get(k) != v for k, v in want.items()):
+            from .cli import write_user_env
+            write_user_env(Path(runtipi_root), app_id, want)
+        # The running container picks the variable up on its next (re)start; until then its gate fails closed.
+        return {**ref, 'state': 'written'}
+    except (OSError, ValueError) as e:
+        return {**ref, 'state': 'unavailable', 'error': type(e).__name__}
+
+
+def prune_listener_credentials(home: Path, live: set) -> list[str]:
+    """Remove credentials of installations that no longer exist (uninstall, reinstall); returns removed ids."""
+    removed = []
+    d = credentials_dir(home)
+    for f in sorted(d.glob('inst-*.key')) if d.is_dir() else []:
+        if f.stem not in live:
+            f.unlink(missing_ok=True)
+            removed.append(f.stem)
+    return removed
 
 
 def _current(home: Path, app_id: str) -> dict:
