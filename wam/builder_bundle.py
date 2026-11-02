@@ -356,6 +356,12 @@ def health(os_home, hermes_home=None, runtime=None):
         p = subprocess.run([str(base / 'current/bin/wam'), 'new', '--help'], capture_output=True, text=True, timeout=15)
         if p.returncode:
             raise ValueError('tooling unavailable (Python 3.10+/PyYAML required): ' + p.stderr[-300:])
+        # The App Manager moved on (a checkout update, a hand fix) without reinstalling the bundle: builder sessions
+        # would run older wam code. Box commands are delegated (bundle_delegate.py); this still flags the drift.
+        if not (SOURCE / 'bundle.json').is_file() and (SOURCE / 'wam').is_dir():
+            ours = {'wam/' + k: v for k, v in _files(SOURCE / 'wam').items()}
+            if ours != {k: v for k, v in files.items() if k.startswith('wam/')}:
+                raise ValueError(f'bundle is older than (or differs from) this App Manager at {SOURCE}')
         rows.append(('Wizard builder bundle and host tooling', True, digest))
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
         rows.append(('Wizard builder bundle and host tooling', False, str(e) + '; repair: wam builder-bundle install'))
