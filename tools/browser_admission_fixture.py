@@ -10,6 +10,9 @@ writes instead of an injected resolver. Synthetic data only; never point it at a
   python tools/browser_admission_fixture.py <dir> revoke notifications [op ...]
   python tools/browser_admission_fixture.py <dir> update notifications --commit <40 hex>
   python tools/browser_admission_fixture.py <dir> uninstall notifications
+  python tools/browser_admission_fixture.py <dir> install notifications --wizard-md <app checkout>/wizard.md
+
+--wizard-md installs that exact manifest (the app's own browser_contract) instead of the synthetic one.
 
 Every command rewrites <dir>/home/apps.json (and the shared app-data copy) and prints its path.
 """
@@ -42,6 +45,7 @@ def main(argv=None) -> int:
     p.add_argument('--port', type=int, default=18810)
     p.add_argument('--provides', default='notifications')
     p.add_argument('--no-contract', action='store_true')
+    p.add_argument('--wizard-md', type=Path, help="install this app checkout's own wizard.md verbatim")
     a = p.parse_args(argv)
     base = Path(a.dir).resolve()
     root, home, rows_file = base / 'runtipi', base / 'home', base / 'rows.json'
@@ -49,9 +53,12 @@ def main(argv=None) -> int:
     d = root / 'apps' / 'wizardapps' / a.app
     if a.action in ('install', 'update'):
         d.mkdir(parents=True, exist_ok=True)
-        (d / 'wizard.md').write_text(f'---\nid: {a.app}\nname: {a.app}\ntype: service\nversion: 1.0.0\n'
-                                     f'provides: [{a.provides}]\nview: {{path: /{a.app}/, port: 8080}}\n'
-                                     f"{'' if a.no_contract else CONTRACT}---\n")
+        if a.wizard_md:
+            (d / 'wizard.md').write_text(a.wizard_md.read_text())
+        else:
+            (d / 'wizard.md').write_text(f'---\nid: {a.app}\nname: {a.app}\ntype: service\nversion: 1.0.0\n'
+                                         f'provides: [{a.provides}]\nview: {{path: /{a.app}/, port: 8080}}\n'
+                                         f"{'' if a.no_contract else CONTRACT}---\n")
         (d / 'config.json').write_text(json.dumps({'port': a.port}))
         (d / '.wizard-source').write_text(json.dumps({'repo': a.repo}))
         (d / '.wizard-commit').write_text(a.commit + '\n')
