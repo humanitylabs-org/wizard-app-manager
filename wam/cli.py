@@ -240,6 +240,15 @@ def installed_ids(rt: Runtipi) -> set[str]:
     return out
 
 
+def dashboard_key(c: Config, app_id: str, var: str) -> str | None:
+    """Browser boundary on an alongside box: a consumer app's dashboard-password field gets the app's OWN key for
+    the host dashboard front, never the dashboard password (wizard-os issue 386). None otherwise."""
+    from . import host_dashboard
+    if var != host_dashboard.PASSWORD_VAR or not getattr(c, 'home', None) or not alongside.load(c.home):
+        return None
+    return host_dashboard.login_for(c.home, app_id)
+
+
 def shared_value(c: Config, var: str, uses: list[str]) -> str | None:
     """A secret this app shares with an app it uses, e.g. the shell's WIZARD_HERMES_API_KEY is hermes-agent's
     HERMES_API_KEY: same name, or same name without a WIZARD_ prefix, in that app's Runtipi app.env."""
@@ -304,7 +313,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
             continue
         if var in given:
             form[var] = given[var]
-        elif f.get("required") and (v := shared_value(c, var, uses or [])):
+        elif f.get("required") and (v := dashboard_key(c, app_id, var) or shared_value(c, var, uses or [])):
             form[var] = v
         elif f.get("required") and is_origin_list(f) and (origins := shell_origins(c)):
             # Origin-list configuration is distinct from arbitrary required URLs
@@ -1114,11 +1123,38 @@ def host_dashboard_cmd(c: Config, rt: Runtipi | None = None, apply: bool = True)
     if not al:
         return {"state": "skipped", "note": "not an alongside box (fresh boxes use the Hermes Agent app's dashboard)"}
     rt = rt or c.runtipi()
+    from . import browser_admission
+    boundary = browser_admission.enabled()
+    owner = host_dashboard_owner(c) if boundary and apply else None
     try:
-        return host_dashboard.ensure(c.home, c.runtipi_root, STORE, installed_ids(rt), alongside.hermes_binary(),
-                                     al["agent"]["hermes_home"], write_user_env, apply=apply)
+        out = host_dashboard.ensure(c.home, c.runtipi_root, STORE, installed_ids(rt), alongside.hermes_binary(),
+                                    al["agent"]["hermes_home"], write_user_env, apply=apply, boundary=boundary,
+                                    owner=owner)
     except OSError as e:
         return {"state": "error", "error": str(e)[:200]}
+    if apply and out.get("state") == "ready":
+        # Decision H2 (own tab, like H1): the owner's browser reaches the host dashboard only as its own tab on its
+        # own https origin. Without the boundary there is no such entry (and an earlier one of ours is removed).
+        if boundary and out.get("owner_tab"):
+            serve = host_dashboard.publish_owner_tab()
+            out["owner_tab"] = {"state": serve, "url": f"https://{owner['hosts'][0]}"} \
+                if serve in ("published", "present") else {"state": serve}
+        elif not boundary:
+            host_dashboard.unpublish_owner_tab()
+    return out
+
+
+def host_dashboard_owner(c: Config) -> dict | None:
+    """The own-tab listener's identity: the box's Serve name with the owner-tab port, and the owner's tailnet
+    login(s) (WIZARD_OWNER_LOGINS, else the node's user). None when either is unknown: no owner tab, fail closed."""
+    from . import host_dashboard, links
+    from . import store_install as si
+    host = (links.tailnet() or {}).get("host") or ""
+    logins = [x.strip() for x in os.environ.get("WIZARD_OWNER_LOGINS", "").split(",") if x.strip()] \
+        or [x for x in [si.owner_login()] if x]
+    if not host or not logins:
+        return None
+    return {"hosts": [f"{host}:{host_dashboard.OWNER_PORT}"], "logins": logins}
 
 
 def store_data_cmd(c: Config, apply: bool = True) -> dict:
