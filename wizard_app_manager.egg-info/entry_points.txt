@@ -1,0 +1,2 @@
+[console_scripts]
+wam = wam.cli:main
