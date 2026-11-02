@@ -109,6 +109,42 @@ def enabled(env=None) -> bool:
         return False
 
 
+# ---- Boundary env takes effect immediately (wizard-os 389 O4) ----
+# A container reads its Runtipi user env only when it is (re)created. The rehearsal found Files serving cross-site
+# frames UNGATED after the switch: its own-tab env was written by `wam links` after the switch had restarted it, and
+# nothing restarted it again. Every boundary env write therefore records the app, and the caller restarts each
+# recorded app that is running (cli.restart_changed_envs) before it returns. Unchanged env records nothing, so a
+# steady box never restarts anything.
+ENV_CHANGED: set[str] = set()
+
+
+def _write_env(runtipi_root: Path, app_id: str, want: dict) -> None:
+    from .cli import write_user_env
+    write_user_env(Path(runtipi_root), app_id, want)
+    ENV_CHANGED.add(app_id)
+
+
+def take_env_changes() -> list[str]:
+    out = sorted(ENV_CHANGED)
+    ENV_CHANGED.clear()
+    return out
+
+
+def own_tab_authority(home: Path, app_id: str) -> str | None:
+    """host:port of an own-tab app's own origin from the last `wam links` (links.json), so the projection can write
+    its env BEFORE any restart instead of after it."""
+    try:
+        rows = json.loads((Path(home) / 'links.json').read_text()).get('links') or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    from urllib.parse import urlsplit
+    for r in rows:
+        if isinstance(r, dict) and r.get('id') == app_id and r.get('own_tab') and isinstance(r.get('url'), str):
+            netloc = urlsplit(r['url']).netloc.lower()
+            return netloc if _AUTHORITY.fullmatch(netloc) else None
+    return None
+
+
 def _digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -277,6 +313,9 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
                 # Never admitted to the opaque channel: no bindings, grants or credential. Only the reviewed list.
                 if src and inst and src.partition(':')[0] != 'local' and (app_id, src.partition(':')[2]) in OWN_TAB_EXCEPTIONS:
                     out.update(contract=norm['contract'], isolation='own-tab', reason='own_tab')
+                    authority = own_tab_authority(home, app_id)
+                    if authority:   # known origin: gate it now, not after the next `wam links`
+                        out['own_tab_env'] = own_tab_env(runtipi_root, st, app_id, authority)
                 else:
                     out['reason'] = 'invalid_contract'
                     out['contract_error'] = 'isolation own-tab is only for a reviewed separate-origin exception'
@@ -289,6 +328,9 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
                 declared = set(norm['contract']['operations'])
                 granted = sorted({o for g in mine for o in (g.get('operations') or []) if o in declared})
                 out['granted'] = granted
+                # Declared but not granted (e.g. an update asked for more than the release default granted): the
+                # Store's update prompt shows these; nothing here widens access.
+                out['ungranted'] = sorted(declared - set(granted))
                 out['grant_revision'] = max([int(g.get('revision') or 0) for g in mine] or [0])
                 out['admissible'] = bool(granted) and not grants_error
                 out['reason'] = None if out['admissible'] else ('grants_unreadable' if grants_error else 'no_grant')
@@ -389,8 +431,7 @@ def listener_credential(home: Path, runtipi_root: Path, store: str, app_id: str,
             k, _, v = line.partition('=')
             have[k.strip()] = v
         if any(have.get(k) != v for k, v in want.items()):
-            from .cli import write_user_env
-            write_user_env(Path(runtipi_root), app_id, want)
+            _write_env(runtipi_root, app_id, want)
         # The running container picks the variable up on its next (re)start; until then its gate fails closed.
         return {**ref, 'state': 'written'}
     except (OSError, ValueError) as e:
@@ -440,8 +481,7 @@ def gateway_key(home: Path, runtipi_root: Path, store: str, app_id: str, inst: s
         want = {'WIZARD_BROWSER_BOUNDARY': '1', GATEWAY_ENV: key}
         have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
         if any(have.get(k) != v for k, v in want.items()):
-            from .cli import write_user_env
-            write_user_env(Path(runtipi_root), app_id, want)
+            _write_env(runtipi_root, app_id, want)
         # The running container picks the variable up on its next (re)start; until then its /mcp fails closed.
         return {**ref, 'state': 'written'}
     except (OSError, ValueError) as e:
@@ -517,9 +557,8 @@ def own_tab_env(runtipi_root: Path, store: str, app_id: str, authority: str) -> 
         have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
         if all(have.get(k) == v for k, v in want.items()):
             return 'unchanged'
-        from .cli import write_user_env
-        write_user_env(Path(runtipi_root), app_id, want)
-        return 'written'   # the running container reads it on its next (re)start
+        _write_env(runtipi_root, app_id, want)
+        return 'written'   # restarted by restart_changed_envs() if it is running
     except (OSError, ValueError):
         return 'unavailable'
 
@@ -543,8 +582,7 @@ def boundary_only_env(runtipi_root: Path, store: str, app_id: str) -> bool:
     try:
         have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
         if have.get('WIZARD_BROWSER_BOUNDARY') != '1':
-            from .cli import write_user_env
-            write_user_env(Path(runtipi_root), app_id, {'WIZARD_BROWSER_BOUNDARY': '1'})
+            _write_env(runtipi_root, app_id, {'WIZARD_BROWSER_BOUNDARY': '1'})
     except OSError:
         return False
     return True   # the running container picks it up on its next (re)start
@@ -555,6 +593,14 @@ def boundary_only_env(runtipi_root: Path, store: str, app_id: str) -> bool:
 # finding: Notifications answered 401 to everything once the box was switched back off). Keys on disk are kept:
 # turning the boundary on again re-uses the same per-installation credentials.
 BOUNDARY_ENV = ('WIZARD_BROWSER_BOUNDARY', CREDENTIAL_ENV, 'WIZARD_GATEWAY_KEY', OWN_TAB_ENV)
+
+
+def has_boundary_env(runtipi_root: Path, store: str, app_id: str) -> bool:
+    try:
+        lines = (Path(runtipi_root) / 'user-config' / store / app_id / 'app.env').read_text().splitlines()
+    except OSError:
+        return False
+    return any(l.partition('=')[0].strip() in BOUNDARY_ENV for l in lines)
 
 
 def unproject(runtipi_root: Path, store: str) -> list[str]:
@@ -572,6 +618,7 @@ def unproject(runtipi_root: Path, store: str) -> list[str]:
             env.write_text('\n'.join(keep) + ('\n' if keep else ''))
             env.chmod(0o600)
             changed.append(env.parent.name)
+            ENV_CHANGED.add(env.parent.name)
     return changed
 
 
@@ -637,3 +684,60 @@ def revoke(home: Path, app_id: str, operations: list[str] | None = None) -> dict
             out.append({**g, 'operations': [], 'revision': revision})
     _write_grants(home, {'schema': SCHEMA, 'grants': out})
     return {'app_id': app_id, 'removed': sorted(set(removed)), 'revision': revision}
+
+
+# ---- Release-default grants (wizard-os 389 O5; decided by Miguel, recorded in spec) ----
+# An app the RUNNING RELEASE pins as a default (release default_apps: app + repo + commit, installed from exactly that
+# repo and commit) gets the browser operations its own installed manifest declares, at install/upgrade, with no
+# owner prompt: the release review stands in for the owner's tick. Each grant records where it came from: the
+# release version, the pinned commit, the source id and the permission revision it produced.
+#   - Only while WIZARD_RELEASE_PINS names the release (the installer/upgrade run); a receipt never grants.
+#   - Never re-granted once a row exists for that installation: an owner revoke (tombstone) sticks.
+#   - An update that DECLARES MORE than the recorded release-default grant gets nothing extra here: the increase
+#     waits for the owner (Store update prompt / `wam browser-grants grant`); the projection lists it as `ungranted`.
+#   - Non-default apps (any Store/private/test-pin install) start with no grants and need the owner's approval.
+DEFAULT_GRANT = 'release-default'
+
+
+def release_default_grants(home: Path, installed: list[dict], store: str, runtipi_root: Path, release: dict,
+                           now: float | None = None) -> list[dict]:
+    """Write release-default grants for eligible installed defaults; returns the new grant rows (may be [])."""
+    from .registry import app_meta
+    version = str((release or {}).get('version') or '')
+    rows = {}
+    for row in installed:
+        name, _, st = (((row or {}).get('info') or {}).get('urn') or '').partition(':')
+        if st == store:
+            rows.setdefault(name, []).append(row)
+    doc = read_grants(home)   # unreadable grants raise: never write over them
+    added = []
+    for slot, pin in sorted(((release or {}).get('default_apps') or {}).items()):
+        if not isinstance(pin, dict):
+            continue
+        app_id, repo, commit = pin.get('app'), pin.get('repo'), pin.get('commit')
+        if not (isinstance(app_id, str) and isinstance(repo, str) and isinstance(commit, str)) or len(rows.get(app_id, [])) != 1:
+            continue
+        meta = app_meta(Path(runtipi_root), store, app_id)
+        if not meta or meta.get('commit') != commit or str(meta.get('repo') or '').lower() != repo.lower():
+            continue   # not the release's own pin (owner moved it, or an older/newer source): no default grant
+        norm = normalize_contract(meta['w'])
+        contract = norm.get('contract')
+        if not contract or contract.get('isolation') != 'opaque' or not contract.get('operations'):
+            continue
+        inst, src = installation_id(rows[app_id][0], store, app_id), source_id(meta['source'], meta['repo'])
+        if not inst or not src or src.partition(':')[0] == 'local':
+            continue
+        if any(_match(g, inst, src) for g in doc['grants']):
+            continue   # already decided for this installation (granted, increased by the owner, or revoked)
+        revision = max([int(g.get('revision') or 0) for g in doc['grants']] or [0]) + 1
+        ops = sorted(set(contract['operations']))
+        cdig = _digest(contract)
+        entry = {'app_id': app_id, 'installation_id': inst, 'source_id': src, 'operations': ops,
+                 'revision': revision, 'granted_at': int(now or time.time()), 'by': DEFAULT_GRANT,
+                 'release': version, 'commit': commit, 'contract_digest': cdig,
+                 'permission_revision': 'p-' + _digest([cdig, ops, revision])[:24]}
+        doc = {'schema': SCHEMA, 'grants': doc['grants'] + [entry]}
+        added.append(entry)
+    if added:
+        _write_grants(home, doc)
+    return added
