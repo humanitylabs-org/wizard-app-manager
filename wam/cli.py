@@ -646,6 +646,36 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
     return env
 
 
+def backfill_owner_login(c: Config, app_id: str) -> bool:
+    """A recipe that started declaring WIZARD_OWNER_LOGINS after the app was installed (Files, Tinfoil) gets the
+    box owner's tailnet login on update; install is the only other place it is written, so existing boxes would
+    otherwise keep admitting any tailnet login. Writes only a missing or empty value, never replaces one."""
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
+    if "WIZARD_OWNER_LOGINS" not in text:
+        return False
+    env = c.runtipi_root / "user-config" / STORE / app_id / "app.env"
+    from .runtipi import read_env
+    try:
+        have = read_env(env)        # the same parser Runtipi's env uses: WIZARD_OWNER_LOGINS="" counts as empty
+    except OSError:
+        have = {}
+    if have.get("WIZARD_OWNER_LOGINS"):
+        return False
+    from . import store_install
+    owner = store_install.owner_login()
+    if not owner:
+        return False
+    write_user_env(c.runtipi_root, app_id, {"WIZARD_OWNER_LOGINS": owner})
+    return True
+
+
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
     """Merge KEY=VALUE pairs into the app's Runtipi user-config app.env (kept across updates), owner-only."""
     p = runtipi_root / "user-config" / STORE / app_id / "app.env"
@@ -1978,6 +2008,12 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
+    if store == STORE:
+        try:
+            if backfill_owner_login(c, app):
+                print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
@@ -2013,12 +2049,32 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     return out
 
 
+def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
+    """backfill_owner_login for each named store app, or every installed store app when none is named (--all)."""
+    from types import SimpleNamespace
+    c = SimpleNamespace(runtipi_root=runtipi_root)
+    if targets:
+        ids = [t.split(":", 1)[0] for t in targets if ":" not in t or t.split(":", 1)[1] == STORE]
+    else:
+        root = runtipi_root / "apps" / STORE
+        ids = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    for app in ids:
+        try:
+            if backfill_owner_login(c, app):
+                print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     if args[:2] == ['app', 'update']:
         targets = [arg for arg in args[2:] if not arg.startswith('-')]
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        # The flag-first and bulk forms (`--no-backup <id>`, `--all`) skip app_update(); they still need the owner
+        # login a recipe started declaring, or Files/Tinfoil keep admitting any tailnet login.
+        _backfill_owner_logins(runtipi_root, targets)
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
