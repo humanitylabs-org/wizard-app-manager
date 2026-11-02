@@ -168,6 +168,9 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     from . import browser_admission
     if browser_admission.enabled():   # default-off: apps.json is unchanged unless the boundary is on
         browser_admission.project(reg, installed, STORE, c.host_ip(), c.runtipi_root, c.home)
+    else:   # off again: no app keeps a gate the shell and the Service no longer feed (restart applies it)
+        for app_id in browser_admission.unproject(c.runtipi_root, STORE):
+            print(f"note: browser boundary off: {app_id} needs a restart to drop its gate", file=sys.stderr)
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
