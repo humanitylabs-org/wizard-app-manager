@@ -14,6 +14,9 @@ writes instead of an injected resolver. Synthetic data only; never point it at a
 
 --wizard-md installs that exact manifest (the app's own browser_contract) instead of the synthetic one.
 
+--compose <recipe> (install/update) installs that compose verbatim; a recipe declaring WIZARD_GATEWAY_KEY gets its
+per-installation gateway key (<dir>/home/browser-gateway-keys/, <dir>/home/grants/agent-service.json, app env).
+
 --listener-auth (install/update) gives the app a compose that takes WIZARD_APP_CREDENTIAL, so WAM mints its
 per-installation listener credential (<dir>/home/browser-app-credentials/, app env in <dir>/runtipi/user-config/).
 
@@ -50,6 +53,8 @@ def main(argv=None) -> int:
     p.add_argument('--no-contract', action='store_true')
     p.add_argument('--wizard-md', type=Path, help="install this app checkout's own wizard.md verbatim")
     p.add_argument('--listener-auth', action='store_true')
+    p.add_argument('--compose', type=Path, help="install this app checkout's own runtipi compose verbatim "
+                                                "(e.g. a WIZARD_GATEWAY_KEY recipe: WAM then mints its gateway key)")
     a = p.parse_args(argv)
     base = Path(a.dir).resolve()
     root, home, rows_file = base / 'runtipi', base / 'home', base / 'rows.json'
@@ -70,6 +75,8 @@ def main(argv=None) -> int:
             (d / 'docker-compose.yml').write_text(f'services:\n  {a.app}:\n    environment:\n'
                                                   '      WIZARD_BROWSER_BOUNDARY: ${WIZARD_BROWSER_BOUNDARY:-0}\n'
                                                   '      WIZARD_APP_CREDENTIAL: ${WIZARD_APP_CREDENTIAL:-}\n')
+        if a.compose:
+            (d / 'docker-compose.yml').write_text(a.compose.read_text())
         old = [r for r in rows if r['info']['urn'] == f'{a.app}:wizardapps']
         if a.action == 'install' or not old:
             # Runtipi row ids are a serial: never reused after uninstall, so a reinstall is a new installation.
