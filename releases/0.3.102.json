@@ -1,0 +1,183 @@
+{
+  "version": "0.3.102",
+  "name": "Wizard OS 0.3.102 \u2014 0.3.101 with App Manager 23a71b5d -> 525e9d3d, Notifications wizard10 -> wizard17, Files wizard2 -> wizard3 (security fixes)",
+  "date": "2026-11-02",
+  "about": "Latest 0.3.101 with App Manager 23a71b5d -> 525e9d3d (image v4.10.2-wizard.993-4ef2963), default apps Notifications 2.29.0-wizard10 -> 2.29.0-wizard17 and Files 2.63.23-wizard2 -> 2.63.23-wizard3. Cut by hand for the wizard-os #386 security fixes Miguel approved: oscarhenrycollins/notifications#18 Recommended fix: other websites can't read or publish notifications through ntfy; /mcp handshake box-only; oscarhenrycollins/notifications#19 Recommended fix: Landscapes Light gets the minimal inbox and swipe strip; oscarhenrycollins/files#2 Recommended fix: through Tailscale Serve, Files answers only the box owner; humanitylabs-org/wizard-app-manager#408 Recommended fix: app update writes the owner's tailnet login for recipes that started declaring it. Wizard UX and Agent Service unchanged. Stable stays 0.3.94 until the installed upgrade test passes.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "525e9d3d211b16d1fcc667cf5865c5776aae369f",
+      "branch": "main",
+      "note": "Official main at 525e9d3d (merge of #408: app update writes WIZARD_OWNER_LOGINS for recipes that declare it, including the flag-first and bulk update forms). Between the previous pin 23a71b5d and this commit main also merged #371, #373, #375, #383, #385, #388, #389, #392, #393, #398, #401, #402 and the 0.3.92-0.3.101 release mirrors."
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "3e56f66da33a739d8cfae1d442a355280571fe8c",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; c1b4c43 plus #14 (an expired AI sign-in gets one step-by-step reconnect path), #16 (past repair chats are kept), #17 (background reply probes off unless the owner opts in), #18 (Tinfoil check no longer sends an empty tools list), #20 (James's one-tap screen, following the selected skin), #21 (one-sentence status line and recent chats), #22 (Check again; the page CSP allows the shell's same-origin kit and skin stylesheets), #23 (page classes are ts- prefixed so skin stylesheets cannot restyle it)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "1eaaa4f25d837c693e40e3f5a9accf7f207bb21d",
+      "branch": "main",
+      "note": "Official main at 1eaaa4f2 (release train): carries humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved); humanitylabs-org/wizard-agent-service#285 Show routed agents' notes paths as their notebook, not [private attachment]"
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "61c116404c58f6821284e48467619f13ba75fc5b",
+      "branch": "main",
+      "note": "Official main at 61c11640 (release train): carries humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#772 Recommended fix: chat files download from the card; PDFs open in the viewer; humanitylabs-org/wizard-ux#773 Recommended fix: chat file Download/viewer styles use tokens (style check); humanitylabs-org/wizard-ux#777 Recommended fix: desktop Settings from Home stays on Home"
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.993-4ef2963",
+      "digest": "sha256:f116feb1e4aa2fbd2a84eae9dbdc006e120092cfce80d7e05c9ae4714d0548e9",
+      "built_from": "wizard-app-manager",
+      "source_commit": "4ef296325de2efc47413dad475a5d23f9bdec202",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        ".dockerignore",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        "wam/hermes-lock.json",
+        "releases/hermes-lock.json",
+        ".github/workflows/image.yml"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/41193529416",
+      "note": "Official multi-arch main image built from 4ef29632 (merge of #393), image workflow run 41193529416, anonymously pullable (amd64+arm64). Kept for 525e9d3d: `git diff --quiet 4ef29632 525e9d3d -- <image_inputs>` is clean (#398, #401, #402 and #408 change only wam/ host tooling, tests, docs and releases/), so the image bytes are identical; source_commit stays 4ef29632."
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-61c116404c58f6821284e48467619f13ba75fc5b",
+      "digest": "sha256:b4785d8eef3d1aa9690fc0bafd7fa8de16da45aa67da99f291f26e4d81131efe",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/41183338980"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-1eaaa4f25d837c693e40e3f5a9accf7f207bb21d",
+      "digest": "sha256:d1b9282dad321b20321582f6d7c0e32c88f07330c6e82ff029bd952129424ee4",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/41171086177"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "61c116404c58f6821284e48467619f13ba75fc5b",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "1eaaa4f25d837c693e40e3f5a9accf7f207bb21d"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.2.12",
+      "commit": "37c3bc8924fe304c0a4333e66ee60f6ff97f3e95",
+      "note": "chatgpt-connection #12: engine ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.12@sha256:abe83ddb8fe1e54347f94b5057740ba5da2309691f20b5692db476967638b445 (amd64+arm64, wizard-app-store #47 at bf6fe1a4, run 40984577924). 0.2.10 plus #11 (shared pool: Opus default after a fresh Claude sign-in, masked code) and #12 (after a successful sign-in on a fresh Wizard the agent gets openai-codex as its model when it has none)."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.2.14",
+      "commit": "2e58656b9776cb2c2a4139b7a0d2aab2437111ca",
+      "note": "claude-connection #12: engine ghcr.io/humanitylabs-org/wizard-claude:0.2.14@sha256:e839af7cdc32c875fcefec9189ae4e29509ea78b3b52d922416285c9e2eb81bb (amd64+arm64, wizard-app-store #47 at bf6fe1a4, run 40984577925). 0.2.12 plus #11 (newest Opus becomes the agent default after a fresh Claude sign-in; masked sign-in code) and #12 (shared pool files with ChatGPT 0.2.12, no Claude behaviour change)."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard3",
+      "commit": "623c69118b209452d6f1c82b6392980222004a45",
+      "note": "oscarhenrycollins/files main 623c6911 (merge of #2): requests through Tailscale Serve reach File Browser only as exactly one Tailscale-User-Login, the box owner's when WIZARD_OWNER_LOGINS is set (written at install, and on update by App Manager #408). Images unchanged from 8a4dd8ac."
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7\u2026c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard17",
+      "commit": "46cd17cf6210aea5bb2a5ff4c84c6e9aff8750d4",
+      "note": "oscarhenrycollins/notifications main 46cd17cf (merge of #19; #18 at 266eb343): wizard11-wizard17 after cdce9f18. Images unchanged from cdce9f18 (same digest-pinned front python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4 and engine binwiederhier/ntfy:v2.29.0@sha256:4c599cf0818965782f93f652bd843e92714992e84d6b88ad17713dc0951cda1f). The front now refuses cross-site browser requests to ntfy (ntfy's built-in Access-Control-Allow-Origin: *) and network callers of /mcp without MCP_TOKEN. No migration: volumes unchanged; new optional settings (CRON_FAILURES, CRON_ESCALATE_H, INBOX_MEDIA_1-4, NTFY_EXEMPT_HOSTS) have defaults."
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "Latest. Exactly 0.3.101 except: App Manager 23a71b5d -> 525e9d3d (adds #408 plus already-merged main PRs #371, #373, #375, #383, #385, #388, #389, #392, #393, #398, #401, #402 and release mirrors; image moves to the official 4ef29632 build); default_apps.notifications cdce9f18 -> 46cd17cf (wizard11-wizard17: Reply only where supported, kind agent-app, cron failures go to the agent's Failure responder, inbox marks/sources for app feeds, poll cut-off fix, owner settings, ntfy cross-site gate, Landscapes Light); default_apps.files 8a4dd8ac -> 623c6911 (owner gate). Notifications and Files images are unchanged (same digests)."
+}
