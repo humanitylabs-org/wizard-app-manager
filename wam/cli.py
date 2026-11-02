@@ -2396,9 +2396,11 @@ def main(argv: list[str] | None = None) -> int:
                 rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
                 reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
             else:
+                known = links.registry_addresses(c.home)   # before write_registry can replace them with loopback
                 reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
-            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port,
+                                known=None if args.dry_run else known)
             if not args.dry_run:
                 # The installer calls links last. Rebuild/share after publishing,
                 # otherwise a fresh Agent Service still receives loopback URLs.

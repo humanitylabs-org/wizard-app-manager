@@ -165,8 +165,10 @@ def _links(c) -> None:
     try:
         from . import links
         from .cli import write_registry, share_registry
+        known = links.registry_addresses(c.home)   # before write_registry can replace them with loopback
         reg = write_registry(c)
-        links.publish(reg, c.home, {a["id"] for a in reg.get("apps") or [] if "shell" in (a.get("provides") or [])})
+        links.publish(reg, c.home, {a["id"] for a in reg.get("apps") or [] if "shell" in (a.get("provides") or [])},
+                      known=known)
         links.apply_to_registry(reg, c.home)
         from . import registry
         registry.write(reg, c.home)

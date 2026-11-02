@@ -193,16 +193,156 @@ def test_shell_away_keeps_apps_on_their_wizard_paths(tmp_path, fake_tailscale):
     assert _messenger_view(reg, tmp_path / "home") == "/messenger/"
 
 
-def test_a_real_conflict_still_is_not_papered_over(tmp_path, fake_tailscale, monkeypatch):
-    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
-    """Last known good is only for unreadable Serve: a different (non-owner) route on the path still wins."""
-    reg = _published_once(tmp_path)
+def _conflict_on_messenger(tmp_path, proxy="http://127.0.0.1:1"):
     served = tmp_path / "served"
     d = json.loads(served.read_text())
-    d["Web"]["box.tail1234.ts.net:8796"]["Handlers"]["/messenger/"] = {"Proxy": "http://127.0.0.1:1"}
+    d["Web"]["box.tail1234.ts.net:8796"]["Handlers"]["/messenger/"] = {"Proxy": proxy}
     served.write_text(json.dumps(d))
+
+
+def test_a_conflict_never_silently_downgrades_a_same_origin_app(tmp_path, fake_tailscale, monkeypatch):
+    """2 Nov: a route conflict on /messenger/ (seen as `gateway_skipped ... differs; left untouched`) rewrote
+    Messenger's launcher to its raw :9245 port, a dead screen behind the owner gateway. Any conflict now keeps the
+    Wizard path, leaves the other handler alone and says so in `errors`."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    calls, _ = fake_tailscale
+    reg = _published_once(tmp_path)
+    _conflict_on_messenger(tmp_path)
+    before = calls.read_text()
     res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
-    assert "messenger" not in (res.get("kept") or {})
+    m = next(l for l in res["links"] if l["id"] == "messenger")
+    assert m["open"] == "/messenger/" and res["kept"]["messenger"] == "route conflict"
+    assert "kept /messenger/" in res["errors"]["messenger"] and "differs" in res["errors"]["messenger"]
+    assert "--set-path=/messenger/" not in calls.read_text()[len(before):]       # the other handler is untouched
+    served = json.loads((tmp_path / "served").read_text())
+    assert served["Web"]["box.tail1234.ts.net:8796"]["Handlers"]["/messenger/"] == {"Proxy": "http://127.0.0.1:1"}
+    assert _messenger_view(reg, tmp_path / "home") == "/messenger/"
+    saved = json.loads((tmp_path / "home" / "links.json").read_text())
+    assert saved["errors"]["messenger"].startswith("kept /messenger/")
+
+
+def test_a_persistent_conflict_keeps_the_address_run_after_run_then_recovers(tmp_path, fake_tailscale, monkeypatch):
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    _conflict_on_messenger(tmp_path)
+    for _ in range(3):   # network watcher, installs, the API: every later refresh still sees the conflict
+        res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+        assert next(l for l in res["links"] if l["id"] == "messenger")["open"] == "/messenger/"
+        assert _messenger_view(reg, tmp_path / "home") == "/messenger/"
+    # the owner removes the other handler: the next refresh publishes Messenger normally, no error, nothing kept
+    d = json.loads((tmp_path / "served").read_text())
+    del d["Web"]["box.tail1234.ts.net:8796"]["Handlers"]["/messenger/"]
+    (tmp_path / "served").write_text(json.dumps(d))
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    m = next(l for l in res["links"] if l["id"] == "messenger")
+    assert m["open"] == "/messenger/" and "kept" not in m
+    assert "messenger" not in res["errors"] and "messenger" not in (res.get("kept") or {})
+
+
+@pytest.mark.parametrize("who", ["messenger", "wizard-shell"])
+def test_a_conflict_during_an_app_or_shell_restart_keeps_the_address(tmp_path, fake_tailscale, monkeypatch, who):
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    _conflict_on_messenger(tmp_path)
+    next(a for a in reg["apps"] if a["id"] == who)["status"] = "restarting"
+    links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert _messenger_view(reg, tmp_path / "home") == "/messenger/"
+
+
+def test_a_wam_copy_that_cannot_see_the_owner_gateway_still_keeps_the_address(tmp_path, fake_tailscale, monkeypatch):
+    """The 2 Nov writer: a Builder-bundle wam without 6f9cb93 read the owner's Unix ingress as a conflict."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    _conflict_on_messenger(tmp_path, "unix:/home/o/.wizard-os/messenger-owner/ingress.sock")
+    monkeypatch.setattr(links, "owner_fronted", lambda *a: False)
+    links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert _messenger_view(reg, tmp_path / "home") == "/messenger/"
+
+
+def test_without_links_json_the_registry_address_is_kept(tmp_path, fake_tailscale, monkeypatch):
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    home = tmp_path / "home"
+    (home / "apps.json").write_text(json.dumps({"apps": [{"id": "messenger", "view": {"url": "/messenger/"}}]}))
+    known = links.registry_addresses(home)              # what `wam links` / installs read before write_registry
+    (home / "apps.json").write_text(json.dumps({"apps": [{"id": "messenger", "view": {"url": "http://127.0.0.1:9245/"}}]}))
+    (home / "links.json").unlink()
+    _conflict_on_messenger(tmp_path)
+    res = links.publish(reg, home, {"wizard-shell"}, known=known)
+    m = next(l for l in res["links"] if l["id"] == "messenger")
+    assert m["open"] == "/messenger/" and m["url"] == "https://box.tail1234.ts.net:8796/messenger/"
+    assert m["name"] == "Messenger" and m["port"] == 9245
+
+
+def test_a_held_address_is_advertised_on_the_current_wizard_origin(tmp_path, fake_tailscale, monkeypatch):
+    """The box was renamed (or the shell moved port) since the last good run: the held link uses today's origin."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    saved = json.loads((tmp_path / "home" / "links.json").read_text())
+    for l in saved["links"]:
+        l["url"] = str(l.get("url") or "").replace("box.tail1234", "old-name.tail1234")
+    (tmp_path / "home" / "links.json").write_text(json.dumps(saved))
+    _conflict_on_messenger(tmp_path)
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "messenger")["url"] == "https://box.tail1234.ts.net:8796/messenger/"
+
+
+def test_store_installs_read_the_registry_addresses_before_rebuilding_it(tmp_path, monkeypatch):
+    """store_install._links must capture apps.json addresses before write_registry can overwrite them."""
+    from wam import store_install, cli
+    order = []
+    monkeypatch.setattr(links, "registry_addresses", lambda home: order.append("read") or {"messenger": "/messenger/"})
+    monkeypatch.setattr(cli, "write_registry", lambda c: order.append("write") or {"apps": []})
+    monkeypatch.setattr(cli, "share_registry", lambda c: None)
+    seen = {}
+    monkeypatch.setattr(links, "publish", lambda reg, home, shell_ids, **kw: seen.update(kw) or {"links": [], "errors": {}})
+    monkeypatch.setattr(links, "apply_to_registry", lambda reg, home: reg)
+    from wam import registry as registry_mod
+    monkeypatch.setattr(registry_mod, "write", lambda reg, home: None)
+    store_install._links(type("C", (), {"home": tmp_path})())
+    assert order[:2] == ["read", "write"] and seen["known"] == {"messenger": "/messenger/"}
+
+
+def test_a_conflict_on_a_fresh_app_is_still_reported_with_its_own_port(tmp_path, fake_tailscale, monkeypatch):
+    """Nothing to keep (never opened at a Wizard path): the app keeps its own port, as before."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    d = json.loads((tmp_path / "served").read_text())
+    d["TCP"]["8796"] = {"HTTPS": True}
+    d["Web"]["box.tail1234.ts.net:8796"] = {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8796"},
+                                                        "/messenger/": {"Proxy": "http://127.0.0.1:1"}}}
+    (tmp_path / "served").write_text(json.dumps(d))
+    reg = {"apps": [dict(a) for a in REG["apps"]] + [dict(MESSENGER)]}
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "messenger")["open"].startswith("https://")
+    assert "messenger" not in (res.get("kept") or {}) and res["gateway_skipped"]
+
+
+def test_an_explicit_gateway_conflict_keeps_the_address_instead_of_loopback(tmp_path, fake_tailscale, monkeypatch):
+    """A catalog gateway app whose route write fails used to drop out of links.json, leaving 127.0.0.1 as its view."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    cat = tmp_path / "cat.json"
+    cat.write_text(json.dumps({"schema": 1, "scope": "private-test", "apps": [
+        {"id": "wisdom", "repo": "o/wisdom", "commit": "a" * 40, "gateway": {"path": "/wisdom/", "strip_prefix": True}}]}))
+    monkeypatch.setenv("WAM_PRIVATE_CATALOG", str(cat))
+    reg = {"apps": REG["apps"] + [{"id": "wisdom", "name": "Wisdom", "category": "app", "status": "running",
+                                    "view": {"url": "http://127.0.0.1:9230/"}}]}
+    links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    d = json.loads((tmp_path / "served").read_text())
+    d["Web"]["box.tail1234.ts.net:8796"]["Handlers"]["/wisdom/"] = {"Proxy": "http://127.0.0.1:1"}
+    (tmp_path / "served").write_text(json.dumps(d))
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "wisdom")["open"] == "/wisdom/"
+    assert res["errors"]["wisdom"].startswith("kept /wisdom/")
+    r2 = json.loads(json.dumps(reg))
+    links.apply_to_registry(r2, tmp_path / "home")
+    assert next(a for a in r2["apps"] if a["id"] == "wisdom")["view"]["url"] == "/wisdom/"
+
+
+def test_without_a_shell_nothing_is_held(tmp_path, fake_tailscale, monkeypatch):
+    """The shell uninstalled: a Wizard path means nothing, so apps go back to their own ports."""
+    reg = _published_once(tmp_path)
+    reg["apps"] = [a for a in reg["apps"] if a["id"] != "wizard-shell"]
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
     assert next(l for l in res["links"] if l["id"] == "messenger")["open"].startswith("https://")
 
 
