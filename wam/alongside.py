@@ -583,6 +583,23 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
         volumes += f"\n      - {d}:{d}:ro"
         roots.append(str(d))
     artifact_env = f'\n      WIZARD_AGENT_ARTIFACT_ROOTS: "{":".join(roots + ["/media"])}"' if roots else ""
+    # Browser boundary (wizard-os #386/#389): the packaged Agent Service reads the gateway's grant keys from
+    # <WIZARD_OS_HOME>/grants (/state/wizard-os/grants) and each app's listener credential next to its apps.json
+    # (/wizard-os/browser-app-credentials). App Manager writes both in the owner's Wizard OS home, which the
+    # container doesn't otherwise see, so mount just those two 0700 folders read-only (the shared /wizard-os copy
+    # gets an empty mount point; share_registry makes it). Without them the gateway sends no key (Browser,
+    # Transcriber and Voice tools vanish) and every adapter call lacks its credential. Always mounted, so turning
+    # the boundary on or off never changes this file; the folders hold only keys meant for the Service.
+    if role == "service" and wizard_home is not None:
+        for sub, dst in (("grants", "/state/wizard-os/grants"),
+                         ("browser-app-credentials", "/wizard-os/browser-app-credentials")):
+            src = Path(wizard_home) / sub
+            try:
+                src.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except OSError:
+                continue
+            if _SAFE_PATH.match(str(src)):
+                volumes = (volumes or "\n    volumes:") + f"\n      - {src}:{dst}:ro"
     stt_env = ""
     if stt_origin:
         if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", stt_origin):

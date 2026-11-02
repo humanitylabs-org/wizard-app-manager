@@ -135,3 +135,51 @@ def test_default_off_writes_nothing(box, monkeypatch):
 def test_bad_installation_ids_refused(box):
     with pytest.raises(ValueError):
         ba.gateway_key_path(box.c.home, '../../etc/passwd')
+
+
+def test_service_override_mounts_gateway_keys_and_listener_credentials(tmp_path, monkeypatch):
+    """Rehearsal finding (wizard-os 389): the packaged Agent Service on an alongside box reads the gateway's keys at
+    <WIZARD_OS_HOME>/grants (/state/wizard-os) and listener credentials beside its apps.json (/wizard-os), but App
+    Manager writes both in the owner's Wizard OS home. The Service override mounts exactly those two folders
+    read-only; the UX shell gets neither, and the shared copy gets only an empty mount point."""
+    import yaml
+    from wam import alongside
+    hh = tmp_path / 'hermes'; hh.mkdir()
+    (hh / 'config.yaml').write_text('platforms:\n  api_server:\n    extra:\n      port: 8650\n')
+    wh = tmp_path / 'wos'; wh.mkdir()
+    rt = tmp_path / 'rt'; rt.mkdir()
+    monkeypatch.setattr(alongside, 'hermes_binary', lambda: '/usr/bin/hermes')
+    monkeypatch.setattr(alongside, 'api_up', lambda origin, timeout=3.0: False)
+    monkeypatch.setattr(alongside, 'docker_rootless', lambda: True)
+    alongside.enable(wh, hh, 18796)
+    p = alongside.write_shell_override(rt, 'wizardapps', 'wizard-agent-service', wh, 'service')
+    vols = yaml.safe_load(p.read_text().replace('!reset', ''))['services']['wizard-agent-service']['volumes']
+    assert f"{wh / 'grants'}:/state/wizard-os/grants:ro" in vols
+    assert f"{wh / 'browser-app-credentials'}:/wizard-os/browser-app-credentials:ro" in vols
+    for sub in ('grants', 'browser-app-credentials'):
+        assert stat.S_IMODE((wh / sub).stat().st_mode) == 0o700
+    ux = alongside.write_shell_override(rt, 'wizardapps', 'wizard-ux', wh, 'shell').read_text()
+    assert 'grants' not in ux and 'browser-app-credentials' not in ux
+
+
+def test_share_registry_leaves_an_empty_credentials_mount_point(box):
+    box.rows.append(install(box.root))
+    box.write()
+    shared = box.root / 'app-data' / 'wizard-os' / 'browser-app-credentials'
+    assert shared.is_dir() and not any(shared.iterdir())
+
+
+BARE = "services:\n  {app}:\n    environment:\n      WIZARD_BROWSER_BOUNDARY: ${{WIZARD_BROWSER_BOUNDARY:-0}}\n"
+
+
+def test_bare_boundary_flag_reaches_apps_that_only_declare_it(box):
+    """Secret Drop's agent-side gate reads only WIZARD_BROWSER_BOUNDARY (no credential, no gateway key). The
+    rehearsal found it never turned on; it now gets the flag. The shell and Agent Service never get a bare flag."""
+    box.rows.append(install(box.root, 'secret-drop', serial=11, gated=False, port=8792))
+    (box.root / 'apps' / 'wizardapps' / 'secret-drop' / 'docker-compose.yml').write_text(BARE.format(app='secret-drop'))
+    for i, app in enumerate(('wizard-ux', 'wizard-agent-service')):
+        box.rows.append(install(box.root, app, serial=20 + i, gated=False, port=8796 + i, mcp=False))
+        (box.root / 'apps' / 'wizardapps' / app / 'docker-compose.yml').write_text(BARE.format(app=app))
+    box.write()
+    assert env_of(box.env('secret-drop')) == {'WIZARD_BROWSER_BOUNDARY': '1'}
+    assert not box.env('wizard-ux').exists() and not box.env('wizard-agent-service').exists()
