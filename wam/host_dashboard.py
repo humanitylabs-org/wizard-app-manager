@@ -292,10 +292,23 @@ def front_config(host: str, creds: dict[str, str], keys: dict[str, str], owner: 
     return doc
 
 
-def front_unit_text(wizard_home: Path, python: str | None = None) -> str:
+def fronted_marker() -> str:
+    """The text only a fronted dashboard unit has (Hermes on the host-only upstream address)."""
+    return f"--host {UPSTREAM_HOST} --port {UPSTREAM_PORT} "
+
+
+def front_unit_text(wizard_home: Path, python: str | None = None, unit_dir: Path | None = None) -> str:
+    """The front runs only while the dashboard unit is the fronted one. A release without the front (rollback to
+    0.3.102, or any older App Manager) rewrites the dashboard unit back to the tailnet address and restarts it:
+    PartOf= carries that stop/restart to the front, and ExecCondition= then skips the front because the dashboard
+    no longer listens on the upstream address, so the tailnet :9119 is free for the stock dashboard. The same check
+    keeps a stale front from starting at boot (rehearsal finding, wizard-os 389)."""
     pkg = Path(__file__).resolve().parent.parent
+    dash = (unit_dir or Path.home() / ".config/systemd/user") / UNIT
+    grep = shutil.which("grep") or "/usr/bin/grep"
     return (f"[Unit]\nDescription=Wizard front for the host Hermes dashboard (box apps by their own key; owner tab)\n"
-            f"After=network-online.target tailscaled.service {UNIT}\n\n[Service]\n"
+            f"After=network-online.target tailscaled.service {UNIT}\nPartOf={UNIT}\n\n[Service]\n"
+            f"ExecCondition={grep} -qF -- \"{fronted_marker()}\" {dash}\n"
             f"Environment=PYTHONPATH={pkg}\nEnvironment=PYTHONUNBUFFERED=1\n"
             f"ExecStart={python or sys.executable} -m wam.host_dashboard_front {front_config_path(wizard_home)}\n"
             f"Restart=on-failure\nRestartSec=5\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n")
@@ -408,7 +421,7 @@ def ensure(wizard_home: Path, runtipi_root: Path, store: str, installed: set[str
         relisten = not before or before.get("listen") != doc["listen"] or \
             (before.get("owner") or {}).get("listen") != (doc.get("owner") or {}).get("listen")
         funit = unit_dir / FRONT_UNIT
-        ftext = front_unit_text(wizard_home)
+        ftext = front_unit_text(wizard_home, unit_dir=unit_dir)
         fchanged = not funit.is_file() or funit.read_text() != ftext
         if fchanged:
             funit.write_text(ftext)
