@@ -85,3 +85,22 @@ def test_prune_keeps_current_and_other_apps(tmp_path):
         (root / ".wizard-source" / "wizardapps" / n).mkdir(parents=True)
     packaging.prune(root, "wizardapps", "demo", f"demo@{SHA[:12]}")
     assert sorted(p.name for p in (root / ".wizard-source" / "wizardapps").iterdir()) == [f"demo@{SHA[:12]}", "other@aaaaaaaaaaaa"]
+
+
+def test_runtipi_path_maps_host_copy_to_runtipi_container_view():
+    host = packaging.source_dir(Path("/root/runtipi/app-data"), "wizardapps", "demo", SHA)
+    assert packaging.runtipi_path(host) == f"/app-data/.wizard-source/wizardapps/demo@{SHA[:12]}"
+    custom = packaging.source_dir(Path("/srv/big/app-data"), "wizardapps", "demo", SHA)   # RUNTIPI_APP_DATA_PATH
+    assert packaging.runtipi_path(custom) == f"/app-data/.wizard-source/wizardapps/demo@{SHA[:12]}"
+    for bad in ("/tmp/elsewhere", "/root/runtipi/.wizard-source/x", "/root/runtipi/app-data/other/x"):
+        with pytest.raises(packaging.PackagingError):
+            packaging.runtipi_path(Path(bad))
+
+
+def test_build_context_uses_the_runtipi_view_when_given(tmp_path, checkout):
+    c = {"services": {"web": {"build": {"context": "app", "dockerfile": "Dockerfile"}}, "root": {"build": "."}}}
+    root = packaging.runtipi_path(target(tmp_path))
+    packaging.prepare_package("build", c, checkout, target(tmp_path), "demo", SHA, build_root=root)
+    assert c["services"]["web"]["build"] == {"context": f"{root}/app", "dockerfile": "Dockerfile"}
+    assert c["services"]["root"]["build"] == {"context": root}
+    assert (target(tmp_path) / "app" / "server.py").is_file()   # the copy itself still lands on the host path

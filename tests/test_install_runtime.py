@@ -40,6 +40,28 @@ def test_private_recipe_source_is_bound_to_repository(tmp_path, monkeypatch):
     assert cfg['source']=='https://github.com/org/sample'
 
 
+def test_private_build_app_context_is_runtipi_container_path(tmp_path, monkeypatch):
+    """wizard-os 389 O2: a `package: build` app from a private/test pin got build.context = the HOST path
+    <root>/app-data/.wizard-source/...; Runtipi runs compose in its container (app-data at /app-data), so the
+    install failed in ~1 s with "Docker-compose exited with code 1" on every alongside box."""
+    def fetch(repo, commit, dst, tok):
+        dst.mkdir(parents=True)
+        (dst/'wizard.md').write_text('---\nid: sample\nname: Sample\nruntime:\n  package: build\n  config: config.json\n'
+                                     '  compose: docker-compose.yml\n---\nSample\n')
+        (dst/'config.json').write_text(json.dumps({'id':'sample','port':9000}))
+        (dst/'docker-compose.yml').write_text('services:\n  sample:\n    build:\n      context: app\n')
+        (dst/'app').mkdir()
+        (dst/'app'/'Dockerfile').write_text('FROM scratch\n')
+    monkeypatch.setattr(private,'fetch',fetch)
+    root = tmp_path/'runtipi'
+    root.mkdir()
+    private.prepare(root,'wizardapps','org/sample',tok='test',source_pin={'id':'sample','repo':'org/sample','commit':PIN})
+    import yaml
+    svc = yaml.safe_load((root/'repos/wizardapps/apps/sample/docker-compose.yml').read_text())['services']['sample']
+    assert svc['build']['context'] == f'/app-data/.wizard-source/wizardapps/sample@{PIN[:12]}/app'
+    assert (root/'app-data/.wizard-source/wizardapps'/f'sample@{PIN[:12]}'/'app'/'Dockerfile').is_file()
+
+
 def test_incompatible_release_rejected_before_any_fetch(tmp_path, monkeypatch):
     entry={'id':'sample','repo':'org/sample','commit':PIN,'architectures':['arm64']}
     monkeypatch.setattr(test_catalog.subprocess,'run',lambda *a,**kw:SimpleNamespace(stdout='x86_64\n',returncode=0))
