@@ -189,3 +189,48 @@ def test_fixture_tool_uses_the_real_writer_and_never_reuses_installations(tmp_pa
     assert again['installation_id'] != first['installation_id'] and again['granted'] == [] and not again['admissible']
     bad = subprocess.run([sys.executable, str(tool), str(tmp_path), 'grant', 'notifications', 'owner.fetch'], capture_output=True, text=True)
     assert bad.returncode != 0 and 'declares' in bad.stderr
+
+
+CARD2_CONTRACT = """browser_contract:
+  version: 1
+  isolation: opaque
+  operations: [notifications.inbox, notifications.mark]
+"""
+
+
+def test_card2_notifications_operations_are_reviewed_and_need_their_own_grant(box, capsys):
+    box.rows.append(install(box.root, contract=CARD2_CONTRACT))
+    b = box.app(box.write())
+    assert b['contract']['operations'] == ['notifications.inbox', 'notifications.mark']
+    assert b['admissible'] is False and b['reason'] == 'no_grant'
+    assert cli.main(['browser-grants', 'grant', 'notifications', '--operation', 'notifications.inbox']) == 0
+    b = box.app(box.write())
+    assert b['granted'] == ['notifications.inbox'] and b['admissible'] is True
+    # A card-1 grant id the installed contract does not declare is refused, not silently added.
+    with pytest.raises(ValueError):
+        ba.grant(box.c.home, 'notifications', ['notifications.mark_read'])
+    assert cli.main(['browser-grants', 'grant', 'notifications', '--operation', 'notifications.mark']) == 0
+    assert box.app(box.write())['granted'] == ['notifications.inbox', 'notifications.mark']
+
+
+def test_card2_ids_are_exact_no_wildcards_or_lookalikes(box):
+    for op in ('notifications.*', 'notifications.mark_all', 'Notifications.mark', 'notifications.inbox2', 'notifications.markread'):
+        box.rows[:] = [install(box.root, contract=CARD2_CONTRACT.replace('notifications.mark]', op + ']'))]
+        b = box.app(box.write())
+        assert b['reason'] == 'invalid_contract' and b['admissible'] is False, op
+
+
+def test_fixture_tool_installs_the_apps_own_manifest(tmp_path):
+    import subprocess, sys
+    from pathlib import Path
+    tool = Path(__file__).resolve().parents[1] / 'tools' / 'browser_admission_fixture.py'
+    md = tmp_path / 'wizard.md'
+    md.write_text('---\nwizard: 0.2\nid: notifications\nname: Notifications\ntype: service\nversion: 2.29.0-wizard16\n'
+                  'provides:\n- notifications\nview:\n  path: /notifications/\n  port: 8080\n' + CARD2_CONTRACT + '---\n\n# Notifications\n')
+    run = lambda *a: subprocess.run([sys.executable, str(tool), str(tmp_path / 'box'), *a], check=True, capture_output=True, text=True)
+    run('install', 'notifications', '--wizard-md', str(md))
+    run('grant', 'notifications', 'notifications.inbox', 'notifications.mark')
+    reg = json.loads((tmp_path / 'box' / 'home' / 'apps.json').read_text())
+    b = next(a for a in reg['apps'] if a['id'] == 'notifications')['browser']
+    assert b['contract']['operations'] == ['notifications.inbox', 'notifications.mark']
+    assert b['granted'] == ['notifications.inbox', 'notifications.mark'] and b['admissible'] is True

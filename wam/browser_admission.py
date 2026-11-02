@@ -34,6 +34,10 @@ OPERATIONS = {
     'state.local': {'kind': 'state', 'scope': 'self'},
     'notifications.list': {'kind': 'read', 'scope': 'self', 'slot': 'notifications'},
     'notifications.mark_read': {'kind': 'write', 'scope': 'self', 'slot': 'notifications'},
+    # Card 2 (wizard-os spec/browser-trust-card2-notifications): the real Notifications screens. Full inbox read
+    # (views, counts, marks) and one compare-and-set mark write (read/unread, flag, archive, mark all read).
+    'notifications.inbox': {'kind': 'read', 'scope': 'self', 'slot': 'notifications'},
+    'notifications.mark': {'kind': 'write', 'scope': 'self', 'slot': 'notifications'},
 }
 _REPO = re.compile(r'[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
