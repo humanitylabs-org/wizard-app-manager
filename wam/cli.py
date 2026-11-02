@@ -161,16 +161,16 @@ def read_grants(c: Config, rt) -> list:
         return []
 
 
-def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
+def write_registry(c: Config, rt: Runtipi | None = None, restart_skip=()) -> dict:
     rt = rt or c.runtipi()
     installed = rt.installed()
     reg = registry.build(installed, STORE, c.host_ip(), c.runtipi_root)
     from . import browser_admission
+    release_default_grants(c, installed)
     if browser_admission.enabled():   # default-off: apps.json is unchanged unless the boundary is on
         browser_admission.project(reg, installed, STORE, c.host_ip(), c.runtipi_root, c.home)
-    else:   # off again: no app keeps a gate the shell and the Service no longer feed (restart applies it)
-        for app_id in browser_admission.unproject(c.runtipi_root, STORE):
-            print(f"note: browser boundary off: {app_id} needs a restart to drop its gate", file=sys.stderr)
+    else:   # off again: no app keeps a gate the shell and the Service no longer feed (restarted below)
+        browser_admission.unproject(c.runtipi_root, STORE)
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
@@ -186,9 +186,57 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
+    restart_changed_envs(c, rt, skip=restart_skip)
     # Return the exact owner-route projection we persisted, including staged view IDs.
     # Internal _skill_src remains available for both copy passes, never in API/CLI output.
     return json.loads((c.home / "apps.json").read_text())
+
+
+def release_default_grants(c: Config, installed: list[dict]) -> list[dict]:
+    """wizard-os 389 O5: during a release install/upgrade (WIZARD_RELEASE_PINS set), grant each installed release
+    default its own manifest-declared browser operations, recorded with the release, commit and permission revision.
+    Written whether or not the boundary is on (inert while off), so turning it on later needs no owner step for the
+    defaults. Never fails the registry write."""
+    from . import browser_admission
+    try:
+        rel = release_pins.load() or {}
+    except (ValueError, OSError, SystemExit):
+        return []
+    if not rel.get("default_apps"):
+        return []
+    try:
+        added = browser_admission.release_default_grants(c.home, installed, STORE, c.runtipi_root, rel)
+    except (ValueError, OSError) as e:
+        print(f"note: release-default browser grants not written: {str(e)[:160]}", file=sys.stderr)
+        return []
+    for g in added:
+        print(f"note: release default {g['app_id']}: granted its declared browser operations "
+              f"({', '.join(g['operations'])}) for release {g['release'] or '?'}", file=sys.stderr)
+    return added
+
+
+def restart_changed_envs(c: Config, rt: Runtipi | None = None, skip=()) -> list[dict]:
+    """wizard-os 389 O4: an app whose boundary env WAM just changed is restarted now if it is running, so its gate
+    (or the removal of its gate) matches the box before this command returns; never "on the next restart".
+    `skip`: apps the caller is about to (re)start itself."""
+    from . import browser_admission
+    changed = [a for a in browser_admission.take_env_changes() if a not in skip]
+    out = []
+    for app_id in changed:
+        try:
+            status = (((rt or c.runtipi()).app(f"{app_id}:{STORE}") or {}).get("app") or {}).get("status")
+        except Exception:  # noqa: BLE001 - Runtipi unreadable: the app keeps its env for its next start
+            status = None
+        if status != "running":
+            continue
+        try:
+            res = app_lifecycle(c, "restart", app_id)
+        except BaseException as e:  # noqa: BLE001 - SystemExit from a vanished app: report, never fail the write
+            res = {"id": app_id, "action": "restart", "error": str(e)[:200]}
+        out.append(res)
+        print(f"note: browser boundary env changed for {app_id}: restarted"
+              + (f" (FAILED: {res['error']})" if res.get("error") else ""), file=sys.stderr)
+    return out
 
 
 def share_registry(c: Config) -> bool:
@@ -787,6 +835,8 @@ def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> di
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
+    if verb in ("start", "restart"):
+        boundary_env_before_start(c, rt, urn.partition(":")[0])
     getattr(rt, verb)(urn)
     time.sleep(2)
     status = rt.wait_status(urn, LIFECYCLE_WANT[verb] | {"start_error", "stop_error", "restart_error", "missing"}, timeout)
@@ -794,6 +844,21 @@ def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> di
     if status not in LIFECYCLE_WANT[verb]:
         out["error"] = f"{verb} did not finish (status {status}); see `docker logs runtipi`"
     return out
+
+
+def boundary_env_before_start(c: Config, rt: Runtipi, app_id: str) -> None:
+    """O4: write this app's boundary env (credential, gateway key, own-tab origin, bare flag; or their removal with
+    the boundary off) BEFORE Runtipi recreates its container, so the start itself applies it. The projection is the
+    same one `wam apps` runs; other apps it changes are restarted, this one is not (its own start follows)."""
+    from . import browser_admission
+    if not browser_admission.enabled() and not browser_admission.has_boundary_env(c.runtipi_root, STORE, app_id):
+        return   # boundary off and nothing to remove: a plain start, as before
+    try:
+        write_registry(c, rt, restart_skip={app_id})
+    except Exception as e:  # noqa: BLE001 - a registry problem must not block a start; say so
+        print(f"note: could not refresh {app_id}'s browser boundary env before starting it: {str(e)[:160]}",
+              file=sys.stderr)
+    browser_admission.ENV_CHANGED.discard(app_id)
 
 
 def _app(c: Config, verb: str, app_id: str) -> None:
