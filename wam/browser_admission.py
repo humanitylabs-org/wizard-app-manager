@@ -41,7 +41,30 @@ OPERATIONS = {
     # Card 3 media (wizard-os ADAPTER-SKETCH §6): a 60 s read ticket for one picture inside one of this installation's
     # notifications. The frame names notification + picture index, never a path; the Service resolves it.
     'notifications.media': {'kind': 'media', 'scope': 'self', 'slot': 'notifications'},
+    # Shell intents (wizard-os spec/browser-trust-shell-intents): the ChatGPT and Claude connection pages. Each is the
+    # installation's OWN accounts page (scope self); `consent: owner` ops run only after the trusted-shell confirmation
+    # (bound to exact args, source and permission revision, consumed once). `signin: True` ops may hand the shell a
+    # provider sign-in URL, which the shell opens only if it matches the installed contract's `navigation` entry.
+    'ai_accounts.inventory': {'kind': 'read', 'scope': 'self'},
+    'ai_accounts.change': {'kind': 'write', 'scope': 'self', 'consent': 'owner'},
+    'ai_accounts.progress': {'kind': 'read', 'scope': 'self', 'signin': True},
+    'ai_accounts.step': {'kind': 'write', 'scope': 'self'},
+    'claude_code.status': {'kind': 'read', 'scope': 'self'},
+    'claude_code.connect': {'kind': 'write', 'scope': 'self', 'consent': 'owner', 'signin': True},
+    'claude_code.code': {'kind': 'write', 'scope': 'self'},
+    'claude_code.cancel': {'kind': 'write', 'scope': 'self'},
+    'claude_code.logout': {'kind': 'write', 'scope': 'self', 'consent': 'owner'},
+    'claude_code.test': {'kind': 'write', 'scope': 'self'},
 }
+# Narrow sign-in navigation (census label N): an app may declare up to four provider sign-in pages, each one exact
+# https origin + path. Query parameter NAMES may be listed; values come only from the app's upstream at run time and
+# are re-checked by the Service and the shell. No wildcard, port, userinfo, fragment or credential-shaped name.
+MAX_NAVIGATION = 4
+_NAV_ID = re.compile(r'[a-z][a-z0-9-]{0,31}')
+_NAV_HOST = re.compile(r'(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}')
+_NAV_PATH = re.compile(r'/(?:[A-Za-z0-9._~-]+/?)*')
+_NAV_PARAM = re.compile(r'[a-z][a-z0-9_]{0,31}')
+_NAV_FORBIDDEN = re.compile(r'token|secret|password|passwd|api_?key|session|cookie|assertion|credential|auth_?code$')
 _REPO = re.compile(r'[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 
@@ -59,7 +82,7 @@ def normalize_contract(w: dict) -> dict:
     raw = w.get('browser_contract') if isinstance(w, dict) else None
     if raw is None:
         return {'contract': None}
-    if not isinstance(raw, dict) or set(raw) - {'version', 'isolation', 'operations', 'state'}:
+    if not isinstance(raw, dict) or set(raw) - {'version', 'isolation', 'operations', 'state', 'navigation'}:
         return {'error': 'browser_contract has unknown fields'}
     if raw.get('version') != 1 or raw.get('isolation') != 'opaque':
         return {'error': 'browser_contract needs version 1 and isolation opaque'}
@@ -75,8 +98,46 @@ def normalize_contract(w: dict) -> dict:
     persistent = state.get('persistent_bytes', 0)
     if not isinstance(persistent, int) or isinstance(persistent, bool) or persistent < 0:
         return {'error': 'browser_contract.state.persistent_bytes must be a non-negative integer'}
-    return {'contract': {'version': 1, 'isolation': 'opaque', 'operations': sorted(set(ops)),
-                         'state': {'schema_version': 1, 'persistent_bytes': min(persistent, MAX_PERSISTENT_BYTES)}}}
+    nav = normalize_navigation(raw.get('navigation'), ops)
+    if isinstance(nav, str):
+        return {'error': nav}
+    contract = {'version': 1, 'isolation': 'opaque', 'operations': sorted(set(ops)),
+                'state': {'schema_version': 1, 'persistent_bytes': min(persistent, MAX_PERSISTENT_BYTES)}}
+    if nav:
+        contract['navigation'] = nav
+    return {'contract': contract}
+
+
+def normalize_navigation(raw, ops) -> list | str:
+    """The reviewed sign-in pages, or an error string. Absent = []. A page needs an op that can produce one."""
+    from urllib.parse import urlsplit
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_NAVIGATION:
+        return f'browser_contract.navigation must be a list of at most {MAX_NAVIGATION} sign-in pages'
+    if raw and not any(OPERATIONS.get(o, {}).get('signin') for o in ops):
+        return 'browser_contract.navigation needs an operation that starts a sign-in'
+    out, seen = [], set()
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) - {'id', 'url', 'query'} or not {'id', 'url'} <= set(entry):
+            return 'browser_contract.navigation entries take id, url and optional query only'
+        nid, url, query = entry['id'], entry['url'], entry.get('query') or []
+        if not isinstance(nid, str) or not _NAV_ID.fullmatch(nid) or nid in seen:
+            return 'browser_contract.navigation ids are unique lowercase names'
+        seen.add(nid)
+        if not isinstance(url, str) or len(url) > 300 or any(c in url for c in '*?#@\\ ') :
+            return f'navigation {nid}: url must be one exact https origin and path (no wildcard, query, fragment or userinfo)'
+        u = urlsplit(url)
+        if u.scheme != 'https' or u.port is not None or not u.hostname or u.hostname != u.netloc \
+                or not _NAV_HOST.fullmatch(u.hostname) or not _NAV_PATH.fullmatch(u.path or '/'):
+            return f'navigation {nid}: url must be https://<host>/<path> on the default port'
+        if not isinstance(query, list) or len(query) > 12 or not all(isinstance(q, str) and _NAV_PARAM.fullmatch(q) for q in query):
+            return f'navigation {nid}: query lists at most 12 lowercase parameter names'
+        bad = sorted({q for q in query if _NAV_FORBIDDEN.search(q)})
+        if bad:
+            return f'navigation {nid}: credential-shaped query names are refused: ' + ', '.join(bad)
+        out.append({'id': nid, 'url': f'https://{u.hostname}{u.path or "/"}', 'query': sorted(set(query))})
+    return sorted(out, key=lambda e: e['id'])
 
 
 def source_id(source: str | None, repo: str | None) -> str | None:
