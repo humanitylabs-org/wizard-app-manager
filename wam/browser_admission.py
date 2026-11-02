@@ -38,6 +38,9 @@ OPERATIONS = {
     # (views, counts, marks) and one compare-and-set mark write (read/unread, flag, archive, mark all read).
     'notifications.inbox': {'kind': 'read', 'scope': 'self', 'slot': 'notifications'},
     'notifications.mark': {'kind': 'write', 'scope': 'self', 'slot': 'notifications'},
+    # Card 3 media (wizard-os ADAPTER-SKETCH §6): a 60 s read ticket for one picture inside one of this installation's
+    # notifications. The frame names notification + picture index, never a path; the Service resolves it.
+    'notifications.media': {'kind': 'media', 'scope': 'self', 'slot': 'notifications'},
 }
 _REPO = re.compile(r'[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')

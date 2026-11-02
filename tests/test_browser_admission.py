@@ -234,3 +234,23 @@ def test_fixture_tool_installs_the_apps_own_manifest(tmp_path):
     b = next(a for a in reg['apps'] if a['id'] == 'notifications')['browser']
     assert b['contract']['operations'] == ['notifications.inbox', 'notifications.mark']
     assert b['granted'] == ['notifications.inbox', 'notifications.mark'] and b['admissible'] is True
+
+
+MEDIA_CONTRACT = CARD2_CONTRACT.replace('notifications.mark]', 'notifications.mark, notifications.media]')
+
+
+def test_media_tickets_are_their_own_reviewed_grant(box):
+    """Thumbnails (wizard-os ADAPTER-SKETCH §6): reading the inbox never implies reading its pictures."""
+    box.rows.append(install(box.root, contract=MEDIA_CONTRACT))
+    b = box.app(box.write())
+    assert b['contract']['operations'] == ['notifications.inbox', 'notifications.mark', 'notifications.media']
+    assert cli.main(['browser-grants', 'grant', 'notifications', '--operation', 'notifications.inbox']) == 0
+    assert box.app(box.write())['granted'] == ['notifications.inbox']
+    assert cli.main(['browser-grants', 'grant', 'notifications', '--operation', 'notifications.media']) == 0
+    assert box.app(box.write())['granted'] == ['notifications.inbox', 'notifications.media']
+    assert cli.main(['browser-grants', 'revoke', 'notifications', '--operation', 'notifications.media']) == 0
+    after = box.app(box.write())
+    assert after['granted'] == ['notifications.inbox'] and after['permission_revision'] != b['permission_revision']
+    for op in ('media.open', 'notifications.media.*', 'notifications.file', 'files.read'):
+        box.rows[:] = [install(box.root, contract=CARD2_CONTRACT.replace('notifications.mark]', op + ']'))]
+        assert box.app(box.write())['reason'] == 'invalid_contract', op
