@@ -356,6 +356,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     app_id = rec["id"]
     ensure_store(c, rt)
     have = installed_ids(rt)
+    if _record is None and app_id not in have:
+        drop_stale_selection(c, app_id, (rec.get("install") or {}).get("commit") or rec.get("commit") or "")
     external_apps = {d.get("app") for s_, d in slots.load_defaults().items() if s_ in alongside.external_slots(c.home)}
     defaults = slots.load_defaults()
     for dep in rec.get("uses") or []:
@@ -580,6 +582,24 @@ def _net_brief(res: dict | None) -> dict:
     return {k: res[k] for k in ("created", "removed", "restarted", "pending_restart", "errors") if res.get(k)}
 
 
+def drop_stale_selection(c: Config, app_id: str, commit: str = "") -> bool:
+    """A Store Get pins its exact release in the store copy (`.wizard-selection`) and the App Manager then never
+    looks at the index again for that app. When that install failed, the pin outlives it and every later install
+    replays the broken release, even after the publisher fixed it. Only a pin for an app that is NOT installed,
+    and (when known) for another commit than the one being installed now, is removed; the App Manager then
+    fetches the current release."""
+    pin = c.runtipi_root / "repos" / STORE / "apps" / app_id / ".wizard-selection"
+    try:
+        old = json.loads(pin.read_text()).get("commit")
+    except (OSError, ValueError):
+        return False
+    if commit and old == commit:
+        return False
+    pin.unlink(missing_ok=True)
+    print(f"{app_id}: dropped the pin to {str(old)[:12]} left by an earlier install that did not finish", file=sys.stderr)
+    return True
+
+
 def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> dict[str, str]:
     """Apps built with the Wizard builder answer only hosts/origins they are told to trust
     (WIZARD_TRUSTED_HOSTS / WIZARD_TRUSTED_ORIGINS). With Tailscale, trust the shell's tailnet origin so the app
@@ -616,6 +636,16 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
     if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         return {}
     hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
+    # Every owner-configured alias of the shell (another tailnet HTTPS port fronting the same shell) opens apps
+    # too; trusting only the first one answers 403 inside the others.
+    try:
+        from . import links
+        aliases = [p for p in links.gateway_shell_ports(links.serve_status(), host, port) if p != port]
+    except Exception:
+        aliases = []
+    for p in aliases:
+        hosts.append(f"{host}:{p}")
+        origins.append(f"https://{host}:{p}")
     if own:
         hosts.insert(1, f"{host}:{own}")
         origins.append(f"https://{host}:{own}")
@@ -627,6 +657,36 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
         if owner:
             env["WIZARD_OWNER_LOGINS"] = owner
     return env
+
+
+def backfill_owner_login(c: Config, app_id: str) -> bool:
+    """A recipe that started declaring WIZARD_OWNER_LOGINS after the app was installed (Files, Tinfoil) gets the
+    box owner's tailnet login on update; install is the only other place it is written, so existing boxes would
+    otherwise keep admitting any tailnet login. Writes only a missing or empty value, never replaces one."""
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
+    if "WIZARD_OWNER_LOGINS" not in text:
+        return False
+    env = c.runtipi_root / "user-config" / STORE / app_id / "app.env"
+    from .runtipi import read_env
+    try:
+        have = read_env(env)        # the same parser Runtipi's env uses: WIZARD_OWNER_LOGINS="" counts as empty
+    except OSError:
+        have = {}
+    if have.get("WIZARD_OWNER_LOGINS"):
+        return False
+    from . import store_install
+    owner = store_install.owner_login()
+    if not owner:
+        return False
+    write_user_env(c.runtipi_root, app_id, {"WIZARD_OWNER_LOGINS": owner})
+    return True
 
 
 def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> Path:
@@ -1997,6 +2057,12 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
                              f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
                              f"turn isolation off with `wam network off`")
+    if store == STORE:
+        try:
+            if backfill_owner_login(c, app):
+                print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
@@ -2032,12 +2098,32 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     return out
 
 
+def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
+    """backfill_owner_login for each named store app, or every installed store app when none is named (--all)."""
+    from types import SimpleNamespace
+    c = SimpleNamespace(runtipi_root=runtipi_root)
+    if targets:
+        ids = [t.split(":", 1)[0] for t in targets if ":" not in t or t.split(":", 1)[1] == STORE]
+    else:
+        root = runtipi_root / "apps" / STORE
+        ids = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    for app in ids:
+        try:
+            if backfill_owner_login(c, app):
+                print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     if args[:2] == ['app', 'update']:
         targets = [arg for arg in args[2:] if not arg.startswith('-')]
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        # The flag-first and bulk forms (`--no-backup <id>`, `--all`) skip app_update(); they still need the owner
+        # login a recipe started declaring, or Files/Tinfoil keep admitting any tailnet login.
+        _backfill_owner_logins(runtipi_root, targets)
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)
@@ -2164,6 +2250,8 @@ def main(argv: list[str] | None = None) -> int:
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
     d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true")
+    st = sub.add_parser("standard", help="which installed apps differ from what the Store ships (private images, "
+                        "box-only overrides) and why"); st.add_argument("--json", action="store_true")
     sub.add_parser("serve")
     sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
@@ -2345,6 +2433,11 @@ def main(argv: list[str] | None = None) -> int:
             reg = write_registry(c)
             print(json.dumps(reg, indent=2) if args.json else "\n".join(
                 f"{x['id']:<20} {x['status'] or '?':<9} {(x['mcp'] or {}).get('url', '')}" for x in reg["apps"]) or "nothing installed")
+        elif args.cmd == "standard":
+            from . import standard
+            res = standard.check(c.runtipi_root, c.home, c.index)
+            print(json.dumps(res, indent=2) if args.json else standard.describe(res))
+            return 1 if res["custom"] else 0
         elif args.cmd == "doctor":
             c.api_token()
             res = doctor(c, fix=args.fix)
