@@ -631,3 +631,9 @@ Channel: on latest only.
 Canonical: wizard-os releases/0.3.102.json (hand cut, humanitylabs-org/wizard-os#395). SHA256: `b8dc8e8c2f569b61c4cee4d97148a667375e61dd14bae03be9ea2b50527b5cf7`.
 Latest 0.3.101 with App Manager 23a71b5d -> 525e9d3d (image v4.10.2-wizard.993-4ef2963), default apps Notifications 2.29.0-wizard10 -> 2.29.0-wizard17 and Files 2.63.23-wizard2 -> 2.63.23-wizard3. Cut by hand for the wizard-os #386 security fixes Miguel approved: oscarhenrycollins/notifications#18 Recommended fix: other websites can't read or publish notifications through ntfy; /mcp handshake box-only; oscarhenrycollins/notifications#19 Recommended fix: Landscapes Light gets the minimal inbox and swipe strip; oscarhenrycollins/files#2 Recommended fix: through Tailscale Serve, Files answers only the box owner; humanitylabs-org/wizard-app-manager#408 Recommended fix: app update writes the owner's tailnet login for recipes that started declaring it. Wizard UX and Agent Service unchanged. Stable stays 0.3.94 until the installed upgrade test passes.
 Channel: on latest only.
+
+## stable 0.3.102
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/397 (hand promotion). `releases/stable` → 0.3.102 (sha256 `b4658d6898d42504524ad35fe3e3828f1e0f8807d1bfa562bc57f1e8bea7bef9`); `promotions/0.3.102.json` sha256 `8635307287da03c9432606d0f72a3638b21588b698280e40dc79433f2642cd11`.
+Fast-tracked as **feature** (DECISIONS #93; carries the 0.3.95–0.3.101 Latest changes) for the wizard-os #386 security fixes Miguel approved: notifications#18, notifications#19, files#2, wizard-app-manager#408. Installed upgrade 0.3.94 → 0.3.102 passed: wizard-os docs/acceptance/promote-0.3.102.md.
+Rollback: point `releases/stable` back at 0.3.94 (it already has a valid promotion record) in both repos.
