@@ -59,6 +59,22 @@ def delegate(argv: list[str], source: Path = SOURCE, env=None, execv=os.execv) -
     cmd = box_wam(source)
     if cmd is None:
         return False
+    # The launcher prepends this frozen release to PYTHONPATH. A Python console
+    # script must find its own installed wam, while retaining the owner's paths.
+    if 'PYTHONPATH' in env:
+        root = source.resolve()
+        paths = []
+        for entry in env['PYTHONPATH'].split(os.pathsep):
+            try:
+                if entry and Path(entry).resolve() == root:
+                    continue
+            except (OSError, RuntimeError, ValueError):
+                pass  # An unresolvable unrelated entry is still the owner's to keep.
+            paths.append(entry)
+        if paths:
+            env['PYTHONPATH'] = os.pathsep.join(paths)
+        else:
+            env.pop('PYTHONPATH')  # No owner entries remain: remove the injected variable.
     env[GUARD] = '1'
     execv(str(cmd), [str(cmd), *argv])
     return True   # only reached with a test double for execv

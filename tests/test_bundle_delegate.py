@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,74 @@ def test_a_checkout_wam_is_not_a_bundle(tmp_path, monkeypatch):
     assert _run(['links'], bd.SOURCE, {}) == (False, [])          # the box's own wam runs its own commands
 
 
+@pytest.mark.parametrize('entries, expected', [
+    (None, None),                          # Missing remains unset.
+    ([], []),                              # Preserve the explicitly empty spelling.
+    (['root'], None),                       # Only injected root: unset, not ''.
+    (['root', 'root', 'alias', 'relative'], None),
+    (['root', '', 'other', 'alias', '', 'relative', 'other', 'child', ''],
+     ['', 'other', '', 'other', 'child', '']),
+    (['other', '', 'child', 'other', ''], ['other', '', 'child', 'other', '']),
+    (['root', ''], ['']),                   # Explicit empty survives root removal.
+])
+def test_delegate_removes_only_bundle_pythonpath(tmp_path, monkeypatch, entries, expected):
+    root, box = _bundle(tmp_path), _box(tmp_path)
+    alias = tmp_path / 'current'
+    alias.symlink_to(root, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('WAM_BOX_BIN', str(box))
+    values = {'root': str(root), 'alias': str(alias), 'relative': os.path.relpath(root, tmp_path),
+              'other': 'unrelated/../owner-path', 'child': str(root / 'wam'), '': ''}
+
+    def path_value(items):
+        return os.pathsep.join(values[item] for item in items)
+
+    env = {'OWNER_SETTING': 'preserved'}
+    if entries is not None:
+        env['PYTHONPATH'] = path_value(entries)
+    want = {'OWNER_SETTING': 'preserved', bd.GUARD: '1'}
+    if expected is not None:
+        want['PYTHONPATH'] = path_value(expected)
+    original_sys_path = sys.path[:]
+    original_cwd = Path.cwd()
+
+    def execv(cmd, argv):
+        assert (cmd, argv) == (str(box), [str(box), 'links', '--json'])
+        assert env == want  # Cleaned before exec, including when env is an injected mapping.
+
+    assert bd.delegate(['links', '--json'], source=root, env=env, execv=execv)
+    assert env == want
+    assert sys.path == original_sys_path and Path.cwd() == original_cwd
+
+
+def test_delegate_cleans_real_environment_before_exec(tmp_path, monkeypatch):
+    root, box = _bundle(tmp_path), _box(tmp_path)
+    monkeypatch.setenv('WAM_BOX_BIN', str(box))
+    monkeypatch.setenv('PYTHONPATH', os.pathsep.join([str(root), '', 'owner-path']))
+    # Record ownership even when initially absent: delegate writes os.environ directly.
+    monkeypatch.setenv(bd.GUARD, 'test-owned')
+    monkeypatch.delenv(bd.GUARD, raising=False)
+
+    def execv(cmd, argv):
+        assert os.environ['PYTHONPATH'] == os.pathsep + 'owner-path'
+        assert os.environ[bd.GUARD] == '1'
+
+    assert bd.delegate(['links'], source=root, execv=execv)
+
+
+@pytest.mark.parametrize('reason', ['builder', 'guard', 'missing-box', 'checkout'])
+def test_no_delegation_leaves_environment_untouched(tmp_path, monkeypatch, reason):
+    root, box = _bundle(tmp_path), _box(tmp_path)
+    monkeypatch.setenv('WAM_BOX_BIN', str(box if reason != 'missing-box' else tmp_path / 'missing'))
+    env = {'PYTHONPATH': os.pathsep.join([str(root), '', 'owner-path'])}
+    if reason == 'guard':
+        env[bd.GUARD] = '1'
+    before = env.copy()
+    assert _run(['new' if reason == 'builder' else 'links'],
+                bd.SOURCE if reason == 'checkout' else root, env) == (False, [])
+    assert env == before
+
+
 def test_installed_bundle_launcher_delegates_end_to_end(tmp_path, monkeypatch):
     """The real installed launcher: `wam links --json` from the bundle reaches the box wam with the same arguments."""
     os_home = tmp_path / 'wizard-os'
@@ -91,6 +160,58 @@ def test_installed_bundle_launcher_delegates_end_to_end(tmp_path, monkeypatch):
     p = subprocess.run([str(launcher), 'new', '--help'], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert p.returncode == 0 and not seen.exists()             # builder commands still run from the bundle
     assert out['state'] == 'installed'
+
+
+def test_installed_bundle_launcher_imports_host_console_script(tmp_path):
+    """An actual Python console entry point must import its installed code, not the frozen bundle."""
+    host = tmp_path / 'host'
+    venv.EnvBuilder(with_pip=False).create(host)
+    python = host / 'bin' / 'python'
+    probe = subprocess.run(
+        [str(python), '-I', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
+        capture_output=True, text=True, check=True, timeout=20,
+    )
+    package = Path(probe.stdout.strip()) / 'wam'
+    package.mkdir()
+    (package / '__init__.py').write_text('')
+    (package / 'cli.py').write_text(
+        'import json, os, sys\n'
+        'def main():\n'
+        '    print(json.dumps({"marker": "HOST", "argv": sys.argv[1:],\n'
+        '                      "guard": os.environ.get("WAM_FROM_BUILDER_BUNDLE")}))\n'
+        '    return 0\n'
+    )
+    box = host / 'bin' / 'wam'
+    box.write_text(
+        f'#!{python}\n'
+        # Report import provenance before importing cli: even a dependency-free host venv gives a
+        # precise stale-bundle failure, rather than an incidental missing dependency traceback.
+        'import importlib.util, json, sys\n'
+        'print(json.dumps({"cli": importlib.util.find_spec("wam.cli").origin}), flush=True)\n'
+        'from wam.cli import main\n'
+        'if __name__ == "__main__":\n'
+        '    sys.exit(main())\n'
+    )
+    box.chmod(0o755)
+    env = {**os.environ, 'WAM_BOX_BIN': str(box), 'HOME': str(tmp_path), 'PYTHONNOUSERSITE': '1'}
+    env.pop(bd.GUARD, None)
+    env.pop('PYTHONPATH', None)
+    argv = ['links', '--help', 'argument with spaces', '']
+    # Prove the synthetic installation works independently, without pip or real dependencies.
+    direct = subprocess.run([str(box), *argv], env=env, cwd=tmp_path,
+                            capture_output=True, text=True, timeout=20)
+    assert direct.returncode == 0, direct.stderr
+    assert json.loads(direct.stdout.splitlines()[-1]) == {'marker': 'HOST', 'argv': argv, 'guard': None}
+
+    os_home = tmp_path / 'wizard-os'
+    assert bb.install(os_home)['state'] == 'installed'
+    launcher = os_home / 'builder' / 'current' / 'bin' / 'wam'
+    p = subprocess.run([str(launcher), *argv], env=env, cwd=tmp_path,
+                       capture_output=True, text=True, timeout=20)
+    provenance = json.loads(p.stdout.splitlines()[0])
+    assert Path(provenance['cli']) == package / 'cli.py', 'delegated console script imported the stale bundle'
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout.splitlines()[-1]) == {'marker': 'HOST', 'argv': argv, 'guard': '1'}
 
 
 def test_doctor_flags_a_bundle_older_than_this_app_manager(tmp_path, monkeypatch):
