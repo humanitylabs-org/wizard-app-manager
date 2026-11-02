@@ -2084,6 +2084,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:  # a real command line (python -m wam or the console script), never a programmatic call
+        # A Builder-bundle copy of wam hands every box command to the box's own (current) wam (bundle_delegate.py).
+        from .bundle_delegate import delegate
+        delegate(sys.argv[1:])
         from .docker_group import reexec_with_docker_group
         reexec_with_docker_group()
     argv = sys.argv[1:] if argv is None else argv
