@@ -66,6 +66,14 @@ _NAV_PATH = re.compile(r'/(?:[A-Za-z0-9._~-]+/?)*')
 _NAV_PARAM = re.compile(r'[a-z][a-z0-9_]{0,31}')
 _NAV_FORBIDDEN = re.compile(r'token|secret|password|passwd|api_?key|session|cookie|assertion|credential|auth_?code$')
 _REPO = re.compile(r'[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}')
+# Reviewed separate-origin exceptions (wizard-os #385, Files decision 2 Nov 2026): (app id, recorded source repo).
+# Such an app declares `browser_contract: {version: 1, isolation: own-tab}`. With the boundary on it is published only
+# on its OWN origin (its own port), the shell opens it only as its own tab and never frames it, and its listener refuses
+# frame and cross-/same-site browser requests. It has no browser data operations, state or grants. An app outside this
+# list that declares own-tab is refused (invalid contract), so it can never opt itself out of the opaque frame.
+OWN_TAB_EXCEPTIONS = frozenset({('files', 'oscarhenrycollins/files')})
+OWN_TAB_ENV = 'WIZARD_OWN_HOSTS'
+_AUTHORITY = re.compile(r'(?=.{1,260}$)[a-z0-9.-]{1,253}:[0-9]{1,5}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 
 
@@ -84,6 +92,12 @@ def normalize_contract(w: dict) -> dict:
         return {'contract': None}
     if not isinstance(raw, dict) or set(raw) - {'version', 'isolation', 'operations', 'state', 'navigation'}:
         return {'error': 'browser_contract has unknown fields'}
+    if raw.get('version') == 1 and raw.get('isolation') == 'own-tab':
+        # Own tab: nothing else may be declared (no operations, state or navigation); the exception list decides.
+        if set(raw) != {'version', 'isolation'}:
+            return {'error': 'browser_contract with isolation own-tab takes version and isolation only'}
+        return {'contract': {'version': 1, 'isolation': 'own-tab', 'operations': [],
+                             'state': {'schema_version': 1, 'persistent_bytes': 0}}}
     if raw.get('version') != 1 or raw.get('isolation') != 'opaque':
         return {'error': 'browser_contract needs version 1 and isolation opaque'}
     ops = raw.get('operations') or []
@@ -231,6 +245,13 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
                 out['contract_error'] = norm['error']
             elif not norm['contract']:
                 out['reason'] = 'no_contract'
+            elif norm['contract']['isolation'] == 'own-tab':
+                # Never admitted to the opaque channel: no bindings, grants or credential. Only the reviewed list.
+                if src and inst and src.partition(':')[0] != 'local' and (app_id, src.partition(':')[2]) in OWN_TAB_EXCEPTIONS:
+                    out.update(contract=norm['contract'], isolation='own-tab', reason='own_tab')
+                else:
+                    out['reason'] = 'invalid_contract'
+                    out['contract_error'] = 'isolation own-tab is only for a reviewed separate-origin exception'
             elif not inst or not src or not out['commit']:
                 out['reason'] = 'unattributed_installation'
                 out['contract'] = norm['contract']
@@ -245,7 +266,7 @@ def project(reg: dict, installed: list[dict], store: str, host: str, runtipi_roo
                 out['reason'] = None if out['admissible'] else ('grants_unreadable' if grants_error else 'no_grant')
         out['contract_digest'] = _digest(out['contract']) if out['contract'] else None
         out['permission_revision'] = 'p-' + _digest([out['contract_digest'], out['granted'], out['grant_revision']])[:24]
-        if out.get('installation_id') and st:
+        if out.get('installation_id') and st and out.get('isolation') != 'own-tab':
             cred = listener_credential(home, runtipi_root, st, app_id, out['installation_id'])
             if cred:
                 out['listener_credential'] = cred
@@ -334,6 +355,31 @@ def listener_credential(home: Path, runtipi_root: Path, store: str, app_id: str,
         return {**ref, 'state': 'unavailable', 'error': type(e).__name__}
 
 
+def own_tab_env(runtipi_root: Path, store: str, app_id: str, authority: str) -> str:
+    """Tell an own-tab app's listener its own address (and that the boundary is on), only when its INSTALLED compose
+    takes WIZARD_OWN_HOSTS. Returns 'written', 'unchanged', 'not_declared' or 'unavailable'. Never a secret."""
+    authority = (authority or '').strip().lower()
+    if not _AUTHORITY.fullmatch(authority):
+        return 'unavailable'
+    installed = Path(runtipi_root) / 'apps' / store / app_id / 'docker-compose.yml'
+    try:
+        if OWN_TAB_ENV not in installed.read_text():
+            return 'not_declared'
+    except OSError:
+        return 'not_declared'
+    want = {'WIZARD_BROWSER_BOUNDARY': '1', OWN_TAB_ENV: authority}
+    env = Path(runtipi_root) / 'user-config' / store / app_id / 'app.env'
+    try:
+        have = dict(line.partition('=')[::2] for line in env.read_text().splitlines()) if env.is_file() else {}
+        if all(have.get(k) == v for k, v in want.items()):
+            return 'unchanged'
+        from .cli import write_user_env
+        write_user_env(Path(runtipi_root), app_id, want)
+        return 'written'   # the running container reads it on its next (re)start
+    except (OSError, ValueError):
+        return 'unavailable'
+
+
 def prune_listener_credentials(home: Path, live: set) -> list[str]:
     """Remove credentials of installations that no longer exist (uninstall, reinstall); returns removed ids."""
     removed = []
@@ -362,6 +408,8 @@ def _current(home: Path, app_id: str) -> dict:
 def grant(home: Path, app_id: str, operations: list[str], now: float | None = None) -> dict:
     """Owner grant bound to the CURRENT installation and source. Undeclared operations are refused."""
     b = _current(home, app_id)
+    if b.get('isolation') == 'own-tab':
+        raise ValueError(f'{app_id}: opens only as its own tab (reviewed exception); it has no browser grants')
     ops = sorted(set(operations))
     if not ops or any(o not in b['contract']['operations'] for o in ops):
         raise ValueError(f'{app_id}: grant only operations its installed browser_contract declares')

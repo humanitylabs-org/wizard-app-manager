@@ -233,16 +233,53 @@ def gateway_shell_ports(config: dict, host: str, shell_port: int) -> list[int]:
 
 
 def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True,
-            api_port: int = 7790) -> dict:
+            api_port: int = 7790, runtipi_root: Path | None = None) -> dict:
     """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
     if not apply:
-        return _publish(reg, home, shell_ids, apply, api_port)
+        return _publish(reg, home, shell_ids, apply, api_port, runtipi_root)
     with _publish_lock(home):
-        return _publish(reg, home, shell_ids, apply, api_port)
+        return _publish(reg, home, shell_ids, apply, api_port, runtipi_root)
 
 
-def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int) -> dict:
+def _runtipi_root() -> Path | None:
+    """This box's Runtipi root (only needed for an own-tab app's listener env, i.e. with the boundary on)."""
+    try:
+        from .cli import Config
+        return Config().runtipi_root
+    except Exception:  # noqa: BLE001 - no config: the env stays as it is and links.json says so
+        return None
+
+
+def own_tab_apps(reg: dict) -> set[str]:
+    """Reviewed separate-origin exceptions (wam/browser_admission.py OWN_TAB_EXCEPTIONS), projected only when the
+    browser boundary is on: published on their own origin only, never on the Wizard origin."""
+    return {a.get("id") for a in reg.get("apps") or [] if (a.get("browser") or {}).get("isolation") == "own-tab"}
+
+
+def close_owner_routes(host: str, ports: list[int], path: str, target: str) -> dict:
+    """Remove an own-tab app's old route on the Wizard origin, only where it is exactly ours (same path and target).
+    Anything else on that path is left alone and reported. Readback must show it gone."""
+    out: dict = {"closed": [], "errors": {}}
+    for port in ports:
+        try:
+            status = route_status(serve_status(), host, port, path, target)
+            if status != "match":
+                continue
+            p = _run(["tailscale", "serve", f"--https={port}", f"--set-path={path}", "off"], 60)
+            if p.returncode != 0:
+                raise ValueError((p.stderr or p.stdout).strip() or "Tailscale Serve failed")
+            if route_status(serve_status(), host, port, path, target) != "missing":
+                raise ValueError("Serve readback still shows the Wizard-origin route")
+            out["closed"].append(f"{port}{path}")
+        except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+            out["errors"][str(port)] = str(e)[:200]
+    return out
+
+
+def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int,
+             runtipi_root: Path | None = None) -> dict:
     prev = _previous_links(home)
+    own_tab = own_tab_apps(reg)
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
     gw = gateway_paths(home)
@@ -292,15 +329,16 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                     raise ValueError("Serve route readback did not match requested private proxy")
 
         for r in rows:
-            if shell_away and keep_previous(r, "shell restarting"):
+            own = r["id"] in own_tab   # own origin only: never kept on, or moved back to, a Wizard-origin path
+            if shell_away and not own and keep_previous(r, "shell restarting"):
                 continue
             unreadable = False   # this row hit ServeUnavailable: no verdict about its routes
-            g = gw.get(r["id"]) if shell_port else None
+            g = gw.get(r["id"]) if shell_port and not own else None
             # Old release-pinned recipes still serve at /. Do not route those
             # through /files/ until their matching app update is installed.
             if g and g.get("local_path") and r["path"] != g["local_path"]:
                 g = None
-            implicit = implicit_gateway(r, sids, gw.get(r["id"])) if shell_port and not g else None
+            implicit = implicit_gateway(r, sids, gw.get(r["id"])) if shell_port and not g and not own else None
             port = int(shell_port or r["port"]) if g else int(r["port"])
             path = g["path"] if g else "/"
             target = f"http://127.0.0.1:{r['port']}" + (g["path"] if g and not g["strip"] else "")
@@ -343,7 +381,7 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                                 implicit = None
                                 unreadable = isinstance(e, ServeUnavailable)
                                 break
-            if not implicit and unreadable and keep_previous(r, "serve unreadable"):
+            if not implicit and unreadable and not own and keep_previous(r, "serve unreadable"):
                 continue
             if implicit:
                 result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{implicit['path']}",
@@ -351,8 +389,28 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                                         "gateway_implicit": True, "own": f"https://{ts['host']}:{r['port']}{r['path']}"})
                 continue
             url = f"https://{ts['host']}:{port}{g['path'] if g else r['path']}"
-            result["links"].append({**r, "url": url, "open": g["path"] if g else url,
-                                    **({"gateway_strip": g["strip"]} if g else {})})
+            row = {**r, "url": url, "open": g["path"] if g else url, **({"gateway_strip": g["strip"]} if g else {})}
+            if own:
+                # Separate-origin exception: its own HTTPS port is its origin; the shell opens it only as a tab.
+                row["own_tab"] = True
+                if apply and shell_port:
+                    old = [x for x in (gw.get(r["id"]), implicit_gateway(r, sids, None)) if x]
+                    try:
+                        ports = gateway_shell_ports(serve_status(), ts["host"], int(shell_port))
+                    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+                        ports = []
+                        result.setdefault("own_tab_errors", {})[r["id"]] = str(e)[:200]
+                    for x in old:
+                        closed = close_owner_routes(ts["host"], ports, x["path"],
+                                                    f"http://127.0.0.1:{r['port']}" + ("" if x.get("strip", True) else x["path"]))
+                        row.setdefault("closed_owner_routes", []).extend(closed["closed"])
+                        if closed["errors"]:
+                            result.setdefault("own_tab_errors", {})[r["id"]] = closed["errors"]
+                if apply:
+                    from .browser_admission import own_tab_env
+                    rroot = runtipi_root or _runtipi_root()
+                    row["own_tab_env"] = own_tab_env(Path(rroot), "wizardapps", r["id"], f"{ts['host']}:{port}") if rroot else "unavailable"
+            result["links"].append(row)
         if shell_port:
             from . import resources
             try:
