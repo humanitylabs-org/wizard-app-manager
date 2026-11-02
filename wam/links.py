@@ -241,8 +241,23 @@ def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: boo
         return _publish(reg, home, shell_ids, apply, api_port)
 
 
+def _same_origin_before(home: Path, prev: dict[str, dict]) -> dict[str, dict]:
+    """Apps that already open at a path on the Wizard origin (/messenger/): the last links.json, else the
+    registry's view.url when links.json is missing or unreadable."""
+    out = {i: l for i, l in prev.items() if str(l.get("open") or "").startswith("/")}
+    try:
+        for a in json.loads((home / "apps.json").read_text()).get("apps") or []:
+            url = str(((a or {}).get("view") or {}).get("url") or "")
+            if a.get("id") and a["id"] not in out and url.startswith("/") and not url.startswith("//"):
+                out[a["id"]] = {"id": a["id"], "name": a.get("name") or a["id"], "open": url}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return out
+
+
 def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int) -> dict:
     prev = _previous_links(home)
+    before = _same_origin_before(home, prev)
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
     gw = gateway_paths(home)
@@ -265,6 +280,23 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                 return False
             result["links"].append({**p, "port": r["port"], "kept": why})
             result.setdefault("kept", {})[r["id"]] = why
+            return True
+
+        def hold_address(r: dict, why: str) -> bool:
+            """Never silently downgrade: an app that already opens at a Wizard path keeps that address when this
+            run could not confirm the route for ANY reason (a different handler on the path, Serve refusing the
+            write, a readback mismatch). A raw port can't open inside a Wizard window, and for an app behind an
+            owner gateway (Messenger's ingress) it is a dead screen. The conflicting handler is left untouched and
+            the problem is recorded in `errors`, so `wam links`, doctor and the guardian report it; the next
+            refresh after the route is fixed publishes the app normally again."""
+            p = before.get(r["id"])
+            if not apply or not shell_port or not p:
+                return False
+            link = {**p, **{k: v for k, v in r.items() if k not in p}, "port": r["port"], "kept": "route conflict"}
+            link.setdefault("url", f"https://{ts['host']}:{shell_port}{p['open']}")
+            result["links"].append(link)
+            result.setdefault("kept", {})[r["id"]] = "route conflict"
+            result["errors"][r["id"]] = f"kept {p['open']}: {why}"[:300]
             return True
 
         def ensure(publish_port: int, path: str, target: str, set_path: bool) -> None:
@@ -295,6 +327,7 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
             if shell_away and keep_previous(r, "shell restarting"):
                 continue
             unreadable = False   # this row hit ServeUnavailable: no verdict about its routes
+            skipped = ""         # why the shell-origin route could not be confirmed
             g = gw.get(r["id"]) if shell_port else None
             # Old release-pinned recipes still serve at /. Do not route those
             # through /files/ until their matching app update is installed.
@@ -321,6 +354,8 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                 if r["id"] in result["errors"]:
                     if unreadable:
                         keep_previous(r, "serve unreadable")
+                    else:
+                        hold_address(r, result["errors"][r["id"]])
                     continue
             if implicit:
                 # Also on the shell's origin, so Wizard (same-origin views only) opens it in a window. The app keeps
@@ -332,17 +367,19 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                         iports = gateway_shell_ports(serve_status(), ts["host"], int(shell_port))
                     except (OSError, subprocess.TimeoutExpired, ValueError) as e:
                         iports, implicit = [], None
-                        result.setdefault("gateway_skipped", {})[r["id"]] = str(e)[:200]
+                        result.setdefault("gateway_skipped", {})[r["id"]] = skipped = str(e)[:200]
                         unreadable = isinstance(e, ServeUnavailable)
                     for publish_port in iports:
                         try:
                             ensure(publish_port, implicit["path"], itarget, True)
                         except (OSError, subprocess.TimeoutExpired, ValueError) as e:
-                            result.setdefault("gateway_skipped", {})[f"{r['id']}@{publish_port}"] = str(e)[:200]
+                            result.setdefault("gateway_skipped", {})[f"{r['id']}@{publish_port}"] = skipped = str(e)[:200]
                             if publish_port == int(shell_port):
                                 implicit = None
                                 unreadable = isinstance(e, ServeUnavailable)
                                 break
+                    if not implicit and not unreadable and hold_address(r, skipped):
+                        continue
             if not implicit and unreadable and keep_previous(r, "serve unreadable"):
                 continue
             if implicit:
