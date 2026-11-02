@@ -33,6 +33,7 @@ import html
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import socketserver
@@ -52,6 +53,8 @@ HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", 
 # this keeps apps from ever seeing a forged look-alike).
 STRIP_PREFIXES = ("tailscale-", "x-forwarded-", "x-wizard-", "cf-access-")
 STRIP_NAMES = {"forwarded", "x-real-ip", "remote-user", "proxy", "cf-connecting-ip"}
+_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_CTL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 MAX_BODY = 110 * 1024 * 1024        # the shell's own client_max_body_size
 ACTIVITY_EVERY_S = 15
 BACKEND_RETRY_S = 5.0
@@ -307,8 +310,11 @@ class Handler(BaseHTTPRequestHandler):
             started = True
             self.send_response(resp.status, resp.reason)
             for k, v in resp.getheaders():
-                if k.lower() not in HOP and k.lower() not in ("server", "date"):
-                    self.send_header(k, v)
+                # Relay only well-formed headers: a CR/LF (or a non-token name) from the app never reaches the
+                # browser as a second header or a second response.
+                if k.lower() in HOP or k.lower() in ("server", "date") or not _TOKEN.fullmatch(k) or _CTL.search(v):
+                    continue
+                self.send_header(k, v)
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True

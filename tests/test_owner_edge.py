@@ -228,3 +228,15 @@ def test_registry_lists_only_owner_proof_apps_with_keys(tmp_path):
     ]}))
     assert list(owner_edge.apps_from_registry(tmp_path)) == ["messenger"]          # notes has no key yet
     assert owner_edge.apps_from_registry(tmp_path)["messenger"]["port"] == 9245
+
+
+def test_the_edge_never_relays_a_cr_or_lf_inside_a_header(edge, monkeypatch):
+    """http.client already splits bare CR/LF while parsing, so this pins the edge's own filter (CodeQL
+    py/http-response-splitting): a value that still carried one must be dropped, never written raw."""
+    import http.client
+    real = http.client.HTTPResponse.getheaders
+    monkeypatch.setattr(http.client.HTTPResponse, "getheaders",
+                        lambda self: real(self) + [("X-Bad", "a\r\nSet-Cookie: evil=1"), ("Bad Name", "x")])
+    status, h, body = call(edge, path="/api/status")
+    assert status == 200 and body == b'{"ok":true}'
+    assert "set-cookie" not in h and "x-bad" not in h and "bad name" not in h
