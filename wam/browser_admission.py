@@ -79,7 +79,11 @@ _REPO = re.compile(r'[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}')
 # on its OWN origin (its own port), the shell opens it only as its own tab and never frames it, and its listener refuses
 # frame and cross-/same-site browser requests. It has no browser data operations, state or grants. An app outside this
 # list that declares own-tab is refused (invalid contract), so it can never opt itself out of the opaque frame.
-OWN_TAB_EXCEPTIONS = frozenset({('files', 'oscarhenrycollins/files')})
+# ('hermes-agent', 'oscarhenrycollins/hermes-agent') is PROPOSED as the second exception (wizard-os issue 386, Hermes
+# dashboard): it keeps its own login on its own port and Hermes is not patched. It is on this draft list only for review
+# and needs Miguel's approval before any release enables the boundary.
+OWN_TAB_EXCEPTIONS = frozenset({('files', 'oscarhenrycollins/files'),
+                                ('hermes-agent', 'oscarhenrycollins/hermes-agent')})
 OWN_TAB_ENV = 'WIZARD_OWN_HOSTS'
 _AUTHORITY = re.compile(r'(?=.{1,260}$)[a-z0-9.-]{1,253}:[0-9]{1,5}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
