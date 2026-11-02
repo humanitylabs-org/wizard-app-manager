@@ -2049,12 +2049,32 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
     return out
 
 
+def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
+    """backfill_owner_login for each named store app, or every installed store app when none is named (--all)."""
+    from types import SimpleNamespace
+    c = SimpleNamespace(runtipi_root=runtipi_root)
+    if targets:
+        ids = [t.split(":", 1)[0] for t in targets if ":" not in t or t.split(":", 1)[1] == STORE]
+    else:
+        root = runtipi_root / "apps" / STORE
+        ids = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    for app in ids:
+        try:
+            if backfill_owner_login(c, app):
+                print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     if args[:2] == ['app', 'update']:
         targets = [arg for arg in args[2:] if not arg.startswith('-')]
         if not targets or any(arg.split(':', 1)[0] == 'hermes-agent' for arg in targets):
             from .hermes_lock import authorize
             authorize()  # flag-first and bulk passthrough must not bypass the pause
+        # The flag-first and bulk forms (`--no-backup <id>`, `--all`) skip app_update(); they still need the owner
+        # login a recipe started declaring, or Files/Tinfoil keep admitting any tailnet login.
+        _backfill_owner_logins(runtipi_root, targets)
     exe = runtipi_root / "runtipi-cli"
     if not exe.is_file():
         print(f"error: {exe} not found (set RUNTIPI_ROOT)", file=sys.stderr)

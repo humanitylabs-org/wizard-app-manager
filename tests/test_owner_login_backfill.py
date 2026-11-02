@@ -86,3 +86,24 @@ def test_app_update_writes_it_before_the_update_is_queued(tmp_path, monkeypatch)
     monkeypatch.setattr(cli.time, "sleep", lambda *a: None)
     cli.app_update(c, "files", backup=False)
     assert seen == [f"A=1\nWIZARD_OWNER_LOGINS={OWNER}\n"]
+
+
+def test_flag_first_and_bulk_update_forms_backfill_too(tmp_path, monkeypatch):
+    """`wam app update --no-backup files` and `wam app update --all` go straight to runtipi-cli (Codex P1)."""
+    import subprocess
+    from wam import hermes_lock
+    monkeypatch.setattr(store_install, "owner_login", lambda: OWNER)
+    monkeypatch.setattr(hermes_lock, "authorize", lambda: None)   # --all also passes the Hermes pause gate
+    calls = []
+    monkeypatch.setattr(subprocess, "call", lambda argv, cwd=None: calls.append(argv) or 0)
+    for i, args in enumerate((["app", "update", "--no-backup", "files"], ["app", "update", "--all"])):
+        c = box(tmp_path / str(i), env="A=1\n")
+        (c.runtipi_root / "runtipi-cli").write_text("")
+        (c.runtipi_root / "apps" / cli.STORE / "files").mkdir(parents=True)   # installed; recipe update in repos/
+        other = c.runtipi_root / "apps" / cli.STORE / "other"
+        other.mkdir(parents=True)
+        (other / "docker-compose.yml").write_text("services:\n  other:\n    image: x\n")
+        assert cli.runtipi_cli(c.runtipi_root, args) == 0
+        assert app_env(c).read_text() == f"A=1\nWIZARD_OWNER_LOGINS={OWNER}\n"
+        assert not (c.runtipi_root / "user-config" / cli.STORE / "other" / "app.env").exists()
+    assert len(calls) == 2
