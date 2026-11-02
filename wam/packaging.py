@@ -88,8 +88,29 @@ def prune(app_data: Path, store: str, app: str, keep: str) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str) -> bool:
-    """Validate the compose shape for `pkg`, rewrite build services, copy the source. True when source was copied."""
+RUNTIPI_APP_DATA = "/app-data"   # Runtipi's own container mounts the host app-data folder here (backend APP_DATA_DIR)
+
+
+def runtipi_path(host_target: Path) -> str:
+    """<host app-data>/.wizard-source/... as Runtipi's container sees it: /app-data/.wizard-source/...
+
+    Runtipi runs `docker compose` inside its own container, and compose reads `build.context` there (volume sources
+    go to the daemon, so ${APP_SOURCE_DIR} stays a host path). The backend already writes /app-data contexts
+    (packaging.ts sourceDir(APP_DATA_DIR, ...)); the CLI must do the same or every `package: build` app it prepares
+    (private apps, test pins) fails with "Docker-compose exited with code 1" on a box whose Runtipi root is not
+    mounted at the same path inside the container (every alongside box)."""
+    parts = Path(host_target).parts
+    if SOURCE_ROOT not in parts or parts.index(SOURCE_ROOT) == 0 or parts[parts.index(SOURCE_ROOT) - 1] != "app-data":
+        raise PackagingError(f"{host_target} is not under Runtipi's app-data/{SOURCE_ROOT}")
+    return posixpath.join(RUNTIPI_APP_DATA, *parts[parts.index(SOURCE_ROOT):])
+
+
+def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str,
+                    build_root: str | None = None) -> bool:
+    """Validate the compose shape for `pkg`, rewrite build services, copy the source. True when source was copied.
+
+    `build_root`: where the compose runner sees `target` (runtipi_path(target) when Runtipi builds it); defaults to
+    `target` for callers that build on the host."""
     if pkg is None:
         return False
     kind = str(pkg)
@@ -111,7 +132,8 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         df = repo_path(posixpath.join(ctx or ".", str(b.get("dockerfile") or "Dockerfile")))
         if df is None or (ctx and not df.startswith(ctx + "/")):
             raise PackagingError(f"{name}: build.dockerfile must stay inside the context")
-        b["context"] = str(Path(target) / ctx) if ctx else str(target)
+        root = build_root or str(target)
+        b["context"] = posixpath.join(root, ctx) if ctx else root
         s["build"] = b
         s["image"] = f"wizard-local/{app}-{name}:{commit[:12]}"
         s["pull_policy"] = "build"
