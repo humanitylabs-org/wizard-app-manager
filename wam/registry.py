@@ -226,7 +226,9 @@ def write(reg: dict, root: Path | None = None) -> Path:
     def project(a: dict) -> dict:
         out = {k: v for k, v in a.items() if not k.startswith("_")}
         r = owner.get(a["id"]) or {}
-        if owner_routes_enabled and out.get("view") is not None:
+        # The reviewed own-tab exception (browser boundary on) opens at its own https origin, never a gateway path.
+        own_tab = (a.get("browser") or {}).get("isolation") == "own-tab" and str((out.get("view") or {}).get("url") or "").startswith("https://")
+        if owner_routes_enabled and out.get("view") is not None and not own_tab:
             # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
             out["view"] = {"url": r["view"]} if r.get("view") else None
         if r.get("staged_as") and not a.get('chats_view'):
