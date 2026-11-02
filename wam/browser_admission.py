@@ -89,8 +89,24 @@ _AUTHORITY = re.compile(r'(?=.{1,260}$)[a-z0-9.-]{1,253}:[0-9]{1,5}')
 _ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 
 
+def setting_path(env=None) -> Path:
+    env = os.environ if env is None else env
+    return Path(env.get('WIZARD_OS_HOME') or Path(env.get('HOME') or Path.home()) / '.wizard-os') / 'app-manager.json'
+
+
 def enabled(env=None) -> bool:
-    return (os.environ if env is None else env).get('WIZARD_BROWSER_BOUNDARY') == '1'
+    """WIZARD_BROWSER_BOUNDARY=1/0 in the process env decides; unset, the box's persisted choice decides
+    (`browser_boundary: true` in ~/.wizard-os/app-manager.json). The rehearsal (wizard-os 389) found that with an
+    env-only flag every `wam` run without it (an agent, the installer, a timer) silently rewrote apps.json without
+    browser rows while the shell, the Service and the app gates stayed on: a half-on box."""
+    env = os.environ if env is None else env
+    flag = env.get('WIZARD_BROWSER_BOUNDARY')
+    if flag in ('0', '1'):
+        return flag == '1'
+    try:
+        return json.loads(setting_path(env).read_text()).get('browser_boundary') is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def _digest(value) -> str:
@@ -532,6 +548,31 @@ def boundary_only_env(runtipi_root: Path, store: str, app_id: str) -> bool:
     except OSError:
         return False
     return True   # the running container picks it up on its next (re)start
+
+
+# What WAM writes into an app's user env for the boundary (and nothing else). With the boundary off they are
+# removed again, so an app never keeps its gate on after the shell and the Service turned theirs off (rehearsal
+# finding: Notifications answered 401 to everything once the box was switched back off). Keys on disk are kept:
+# turning the boundary on again re-uses the same per-installation credentials.
+BOUNDARY_ENV = ('WIZARD_BROWSER_BOUNDARY', CREDENTIAL_ENV, 'WIZARD_GATEWAY_KEY', OWN_TAB_ENV)
+
+
+def unproject(runtipi_root: Path, store: str) -> list[str]:
+    """Boundary off: drop the variables above from every app's Runtipi user env. Returns the apps changed (each
+    needs a restart to drop its gate). The shell and the Agent Service are not WAM-env driven and are untouched."""
+    base = Path(runtipi_root) / 'user-config' / store
+    changed = []
+    for env in sorted(base.glob('*/app.env')) if base.is_dir() else []:
+        try:
+            lines = env.read_text().splitlines()
+        except OSError:
+            continue
+        keep = [l for l in lines if l.partition('=')[0].strip() not in BOUNDARY_ENV]
+        if keep != lines:
+            env.write_text('\n'.join(keep) + ('\n' if keep else ''))
+            env.chmod(0o600)
+            changed.append(env.parent.name)
+    return changed
 
 
 def prune_listener_credentials(home: Path, live: set) -> list[str]:
