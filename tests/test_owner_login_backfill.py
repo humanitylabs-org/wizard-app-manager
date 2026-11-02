@@ -38,6 +38,14 @@ def test_missing_owner_login_is_written_and_other_values_kept(tmp_path, monkeypa
     assert app_env(c2).read_text() == f"WIZARD_OWNER_LOGINS={OWNER}\n"
 
 
+def test_quoted_empty_owner_login_counts_as_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_install, "owner_login", lambda: OWNER)
+    for i, empty in enumerate(('WIZARD_OWNER_LOGINS=""', "WIZARD_OWNER_LOGINS=''", "WIZARD_OWNER_LOGINS= ")):
+        c = box(tmp_path / str(i), env=f"A=1\n{empty}\n")
+        assert cli.backfill_owner_login(c, "files") is True
+        assert app_env(c).read_text() == f"A=1\nWIZARD_OWNER_LOGINS={OWNER}\n"
+
+
 def test_never_replaces_an_owner_login_or_touches_other_recipes(tmp_path, monkeypatch):
     monkeypatch.setattr(store_install, "owner_login", lambda: OWNER)
     c = box(tmp_path, env="WIZARD_OWNER_LOGINS=chosen@example.com\n")

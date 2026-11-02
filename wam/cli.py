@@ -661,8 +661,9 @@ def backfill_owner_login(c: Config, app_id: str) -> bool:
     if "WIZARD_OWNER_LOGINS" not in text:
         return False
     env = c.runtipi_root / "user-config" / STORE / app_id / "app.env"
+    from .runtipi import read_env
     try:
-        have = {k.strip(): v.strip() for k, _, v in (l.partition("=") for l in env.read_text().splitlines())}
+        have = read_env(env)        # the same parser Runtipi's env uses: WIZARD_OWNER_LOGINS="" counts as empty
     except OSError:
         have = {}
     if have.get("WIZARD_OWNER_LOGINS"):
