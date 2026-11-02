@@ -233,31 +233,44 @@ def gateway_shell_ports(config: dict, host: str, shell_port: int) -> list[int]:
 
 
 def publish(reg: dict, home: Path, shell_ids: set[str] | None = None, apply: bool = True,
-            api_port: int = 7790) -> dict:
-    """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result."""
+            api_port: int = 7790, known: dict[str, str] | None = None) -> dict:
+    """Serve each app page on the tailnet (when connected) and write home/links.json. Returns the result.
+    `known`: same-origin addresses the registry held before the caller rebuilt it (registry_addresses)."""
     if not apply:
-        return _publish(reg, home, shell_ids, apply, api_port)
+        return _publish(reg, home, shell_ids, apply, api_port, known)
     with _publish_lock(home):
-        return _publish(reg, home, shell_ids, apply, api_port)
+        return _publish(reg, home, shell_ids, apply, api_port, known)
 
 
-def _same_origin_before(home: Path, prev: dict[str, dict]) -> dict[str, dict]:
-    """Apps that already open at a path on the Wizard origin (/messenger/): the last links.json, else the
-    registry's view.url when links.json is missing or unreadable."""
-    out = {i: l for i, l in prev.items() if str(l.get("open") or "").startswith("/")}
+def registry_addresses(home: Path) -> dict[str, str]:
+    """Same-origin launcher addresses in the owner's apps.json right now ({id: "/messenger/"}). Callers that rebuild
+    the registry before publishing (write_registry replaces view.url with loopback when links.json is missing) read
+    this first and hand it to publish(known=...)."""
+    out: dict[str, str] = {}
     try:
         for a in json.loads((home / "apps.json").read_text()).get("apps") or []:
             url = str(((a or {}).get("view") or {}).get("url") or "")
-            if a.get("id") and a["id"] not in out and url.startswith("/") and not url.startswith("//"):
-                out[a["id"]] = {"id": a["id"], "name": a.get("name") or a["id"], "open": url}
+            if a.get("id") and url.startswith("/") and not url.startswith("//"):
+                out[a["id"]] = url
     except (OSError, ValueError, AttributeError, TypeError):
         pass
     return out
 
 
-def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int) -> dict:
+def _same_origin_before(home: Path, prev: dict[str, dict], known: dict[str, str] | None) -> dict[str, dict]:
+    """Apps that already open at a path on the Wizard origin (/messenger/): the last links.json, else the registry's
+    view.url (as the caller saw it before rebuilding the registry, or as apps.json holds it now)."""
+    out = {i: l for i, l in prev.items() if str(l.get("open") or "").startswith("/")}
+    for app_id, url in {**registry_addresses(home), **(known or {})}.items():
+        if app_id not in out:
+            out[app_id] = {"id": app_id, "open": url}
+    return out
+
+
+def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api_port: int,
+             known: dict[str, str] | None = None) -> dict:
     prev = _previous_links(home)
-    before = _same_origin_before(home, prev)
+    before = _same_origin_before(home, prev, known)
     ts = tailnet()
     rows = shell_first(pages(reg), shell_ids or set())
     gw = gateway_paths(home)
@@ -292,8 +305,8 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
             p = before.get(r["id"])
             if not apply or not shell_port or not p:
                 return False
-            link = {**p, **{k: v for k, v in r.items() if k not in p}, "port": r["port"], "kept": "route conflict"}
-            link.setdefault("url", f"https://{ts['host']}:{shell_port}{p['open']}")
+            link = {**r, **{k: v for k, v in p.items() if k not in ("url", "port")}, "port": r["port"],
+                    "url": f"https://{ts['host']}:{shell_port}{p['open']}", "kept": "route conflict"}
             result["links"].append(link)
             result.setdefault("kept", {})[r["id"]] = "route conflict"
             result["errors"][r["id"]] = f"kept {p['open']}: {why}"[:300]

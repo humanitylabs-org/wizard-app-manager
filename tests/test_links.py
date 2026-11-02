@@ -264,11 +264,43 @@ def test_without_links_json_the_registry_address_is_kept(tmp_path, fake_tailscal
     reg = _published_once(tmp_path)
     home = tmp_path / "home"
     (home / "apps.json").write_text(json.dumps({"apps": [{"id": "messenger", "view": {"url": "/messenger/"}}]}))
+    known = links.registry_addresses(home)              # what `wam links` / installs read before write_registry
+    (home / "apps.json").write_text(json.dumps({"apps": [{"id": "messenger", "view": {"url": "http://127.0.0.1:9245/"}}]}))
     (home / "links.json").unlink()
     _conflict_on_messenger(tmp_path)
-    res = links.publish(reg, home, {"wizard-shell"})
+    res = links.publish(reg, home, {"wizard-shell"}, known=known)
     m = next(l for l in res["links"] if l["id"] == "messenger")
     assert m["open"] == "/messenger/" and m["url"] == "https://box.tail1234.ts.net:8796/messenger/"
+    assert m["name"] == "Messenger" and m["port"] == 9245
+
+
+def test_a_held_address_is_advertised_on_the_current_wizard_origin(tmp_path, fake_tailscale, monkeypatch):
+    """The box was renamed (or the shell moved port) since the last good run: the held link uses today's origin."""
+    monkeypatch.setattr(links, "CONFLICT_RECHECK_S", 0)
+    reg = _published_once(tmp_path)
+    saved = json.loads((tmp_path / "home" / "links.json").read_text())
+    for l in saved["links"]:
+        l["url"] = str(l.get("url") or "").replace("box.tail1234", "old-name.tail1234")
+    (tmp_path / "home" / "links.json").write_text(json.dumps(saved))
+    _conflict_on_messenger(tmp_path)
+    res = links.publish(reg, tmp_path / "home", {"wizard-shell"})
+    assert next(l for l in res["links"] if l["id"] == "messenger")["url"] == "https://box.tail1234.ts.net:8796/messenger/"
+
+
+def test_store_installs_read_the_registry_addresses_before_rebuilding_it(tmp_path, monkeypatch):
+    """store_install._links must capture apps.json addresses before write_registry can overwrite them."""
+    from wam import store_install, cli
+    order = []
+    monkeypatch.setattr(links, "registry_addresses", lambda home: order.append("read") or {"messenger": "/messenger/"})
+    monkeypatch.setattr(cli, "write_registry", lambda c: order.append("write") or {"apps": []})
+    monkeypatch.setattr(cli, "share_registry", lambda c: None)
+    seen = {}
+    monkeypatch.setattr(links, "publish", lambda reg, home, shell_ids, **kw: seen.update(kw) or {"links": [], "errors": {}})
+    monkeypatch.setattr(links, "apply_to_registry", lambda reg, home: reg)
+    from wam import registry as registry_mod
+    monkeypatch.setattr(registry_mod, "write", lambda reg, home: None)
+    store_install._links(type("C", (), {"home": tmp_path})())
+    assert order[:2] == ["read", "write"] and seen["known"] == {"messenger": "/messenger/"}
 
 
 def test_a_conflict_on_a_fresh_app_is_still_reported_with_its_own_port(tmp_path, fake_tailscale, monkeypatch):
