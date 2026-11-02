@@ -317,7 +317,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
                 form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
             missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
-    if saved:
+    if saved and not missing:
         c.secrets.mkdir(mode=0o700, exist_ok=True)
         p = c.secrets / f"{app_id}.json"
         p.write_text(json.dumps({**previous, **saved}, indent=2) + "\n")
@@ -1356,18 +1356,11 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             # shared-secret/default rules as install, without resetting any owner settings.
             urn = f"{app_id}:{STORE}"
             before = (rt.app(urn) or {}).get("app") or {}
-            current = before.get("config") or {}
+
             recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
             target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
             if row.get("index_version") and target_version != row["index_version"]:
                 raise RuntimeError("prepared recipe version does not match the release pin")
-            info = json.loads((recipe / "config.json").read_text())
-            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
-            if missing:
-                raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
-            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
-            if form != current:
-                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
             res = app_update(c, app_id)
             if res.get("error"):
                 raise RuntimeError(res["error"])
@@ -1939,7 +1932,20 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+def _update_readback(rt, urn: str) -> dict:
+    """An absent/unknown form is not an empty saved form. Never overwrite it."""
+    response = rt.app(urn)
+    before = response.get("app") if isinstance(response, dict) else None
+    app, store = urn.split(":", 1)
+    if (not isinstance(before, dict) or not isinstance(before.get("config"), dict)
+            or before.get("status") not in ("running", "stopped")
+            or before.get("appName", app) != app or before.get("appStoreSlug", store) != store):
+        raise SystemExit(f"REFUSED: cannot confirm installed settings and identity for {urn}; nothing changed")
+    return before
+
+
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+               *, automatic: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
@@ -1948,39 +1954,51 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
             authorize()
         except (ValueError, OSError) as exc:
             raise SystemExit(str(exc)) from None
+    from .app_updates import admission, _reconcile_settings
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
-    before = ((rt.app(urn) or {}).get("app") or {})
-    if not before:
-        raise SystemExit(f"{app_id} is not installed")
-    was_running = before.get("status") == "running"
     app, store = urn.split(":", 1)
-    if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
-        # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
-        role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
-        alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
-    if store == STORE:
-        # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
-        # that the installed recipe didn't have, unless the owner allowed this app.
-        from . import network as _network
-        new = [r for r in host_access_risks(c, app, "store") if r not in set(host_access_risks(c, app, "installed"))]
-        if new and not allow_host_access and app not in _network.host_access_allowed(c.home):
-            raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
-                             "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
-                             f"  wam app update {app} --allow-host-access")
-        if new:
-            print(f"WARNING: {app} is updated WITH HOST ACCESS (owner flag): " + "; ".join(new), file=sys.stderr)
-            _network.set_host_access_allowed(c.home, app, True)
-        # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
-        pre = network_step(c, rt, restart=False, fresh={app})
-        if _network.enabled(c.home) and (pre or {}).get("errors"):
-            network_step(c, rt, restart=False)   # back to the override for the installed recipe
-            raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
-                             f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`), or "
-                             f"turn isolation off with `wam network off`")
-    started_ms = int(time.time() * 1000)
+    # Saved Manual wins before *any* app mutation, not just before queueing.
+    with admission(c.home, automatic) as admitted:
+        if not admitted:
+            return {"id": app_id, "urn": urn, "skipped": "manual"}
+        before = _update_readback(rt, urn)
+        was_running = before.get("status") == "running"
+        if store == STORE:
+            from .source_integrity import update_block
+            reason = update_block(c.runtipi_root, store, app)
+            if reason:
+                raise SystemExit(f"REFUSED: {urn}: {reason}; source must be verified before updating")
+            from . import network as _network
+            new = [r for r in host_access_risks(c, app, "store")
+                   if r not in set(host_access_risks(c, app, "installed"))]
+            if new and not allow_host_access and app not in _network.host_access_allowed(c.home):
+                raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
+                                 "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
+                                 f"  wam app update {app} --allow-host-access")
+            # Private helper: sole production caller, after policy/readback/source/host gates.
+            missing = _reconcile_settings(c, rt, app, before["config"])
+            if missing:
+                raise SystemExit("new required settings need owner input: " + "; ".join(missing))
+            if app in alongside.PIN_VARS and alongside.load(c.home):
+                role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
+                alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
+            if new:
+                print(f"WARNING: {app} is updated WITH HOST ACCESS (owner flag): " + "; ".join(new), file=sys.stderr)
+                _network.set_host_access_allowed(c.home, app, True)
+            pre = network_step(c, rt, restart=False, fresh={app})
+            if _network.enabled(c.home) and (pre or {}).get("errors"):
+                network_step(c, rt, restart=False)
+                raise SystemExit(f"{app} not updated: its isolated networks could not be prepared for the new version "
+                                 f"({'; '.join(pre['errors'])[:300]}). Fix that and retry (`wam network reconcile`)")
+        started_ms = int(time.time() * 1000)
+        try:
+            rt.update(urn, perform_backup=backup)
+        except BaseException:
+            if store == STORE:
+                network_step(c, rt, restart=False)
+            raise
     try:
-        rt.update(urn, perform_backup=backup)
         time.sleep(3)
         status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException:

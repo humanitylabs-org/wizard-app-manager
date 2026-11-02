@@ -213,7 +213,7 @@ def test_new_required_settings_are_filled_before_the_update(tmp_path, monkeypatc
 
     monkeypatch.setattr(cli, "shared_value", lambda c, var, uses: "shared-pw" if var == "DASH_PW" else None)
     rt = Rt()
-    assert au.reconcile_settings(C(), rt, "wizard-claude") == []
+    assert au._reconcile_settings(C(), rt, "wizard-claude", rt.app("wizard-claude:wizardapps")["app"]["config"]) == []
     path, body = rt.patched[0]
     assert path.endswith("wizard-claude:wizardapps/update-config")
     assert body["DASH_PW"] == "shared-pw" and body["OLD"] == "kept" and body["port"] == 1
@@ -221,5 +221,5 @@ def test_new_required_settings_are_filled_before_the_update(tmp_path, monkeypatc
     (recipe / "config.json").write_text(json.dumps({"form_fields": [
         {"env_variable": "API_KEY", "required": True, "type": "text", "label": "API key"}]}))
     rt.patched.clear()
-    assert au.reconcile_settings(C(), rt, "wizard-claude")[0].startswith("API_KEY")
+    assert au._reconcile_settings(C(), rt, "wizard-claude", rt.app("wizard-claude:wizardapps")["app"]["config"])[0].startswith("API_KEY")
     assert rt.patched == []
