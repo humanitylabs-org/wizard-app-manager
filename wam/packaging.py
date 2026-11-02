@@ -88,8 +88,12 @@ def prune(app_data: Path, store: str, app: str, keep: str) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str) -> bool:
-    """Validate the compose shape for `pkg`, rewrite build services, copy the source. True when source was copied."""
+def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commit: str,
+                    build_root: str | None = None) -> bool:
+    """Validate the compose shape for `pkg`, rewrite build services, copy the source. True when source was copied.
+
+    `build_root`: where the compose runner sees `target`; affects only build contexts, not source copies or
+    APP_SOURCE_DIR volumes. Defaults to `target` for callers that build on the host."""
     if pkg is None:
         return False
     kind = str(pkg)
@@ -111,7 +115,8 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         df = repo_path(posixpath.join(ctx or ".", str(b.get("dockerfile") or "Dockerfile")))
         if df is None or (ctx and not df.startswith(ctx + "/")):
             raise PackagingError(f"{name}: build.dockerfile must stay inside the context")
-        b["context"] = str(Path(target) / ctx) if ctx else str(target)
+        root = build_root or str(target)
+        b["context"] = posixpath.join(root, ctx) if ctx else root
         s["build"] = b
         s["image"] = f"wizard-local/{app}-{name}:{commit[:12]}"
         s["pull_policy"] = "build"
