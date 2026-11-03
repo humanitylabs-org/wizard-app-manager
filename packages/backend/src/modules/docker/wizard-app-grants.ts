@@ -391,9 +391,49 @@ export async function reconcileAppGrants(
   const previous = (file.layer2 ?? {}) as {
     managed?: Record<string, string[]>;
     adopted?: string[];
+    foreign_adopted?: string[];
     endpoints?: Record<string, Record<string, string>>;
   };
   const adopted = new Set(previous.adopted ?? []);
+  const foreignAdopted = new Set(previous.foreign_adopted ?? []);
+  // Other stores publish their own provider-side hashes. Keep an existing key,
+  // never mint one or rewrite that provider's files here. Resolve both slot and
+  // id denials against the full installed inventory, not only this store.
+  const foreignProviders = (from: string, to: string) => {
+    if (!TARGET.test(to)) return [];
+    // Import existing external keys once, including boxes that ran an older
+    // adoption pass. Thereafter the saved grant is authoritative: Restore
+    // defaults removes owner grants before publishing the physical revocation.
+    if (foreignAdopted.has(from) && !file.grants.some((g) => sameAppGrant(g, { kind: 'app', from, to }))) return [];
+    const dests = providers(to, installedApps).filter((p) => p.manifest.id !== from);
+    const denied = file.denied.some(
+      (g) =>
+        appGrant(g) &&
+        g.from === from &&
+        (g.to === to || providers(g.to, installedApps).some((p) => dests.some((d) => d.manifest.id === p.manifest.id))),
+    );
+    if (denied) return [];
+    return dests.filter(
+      (p) =>
+        !p.urn.endsWith(':wizardapps') &&
+        p.manifest.id !== exclude &&
+        !(file.layer2_removing as string[]).includes(p.manifest.id),
+    );
+  };
+  const primaryEndpoint = (from: string, to: string, old: AppFile) => {
+    const primary = old.provider_endpoints?.[to];
+    if (!primary) return undefined;
+    const qualified = Object.entries(old.provider_endpoints_all?.[to] ?? {});
+    const owners = qualified.filter(([, endpoint]) => endpoint === primary).map(([id]) => id);
+    if (!owners.length) return primary; // Legacy single endpoint or explicit owner override.
+    const active = new Set(
+      providers(to, installedApps)
+        .filter((p) => p.manifest.id !== from && p.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(p.manifest.id))
+        .map((p) => p.manifest.id),
+    );
+    if (owners.some((id) => active.has(id))) return primary;
+    return qualified.filter(([id]) => active.has(id)).sort(([a], [b]) => a.localeCompare(b))[0]?.[1];
+  };
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
     await confined(app.data, 'wizard', true);
@@ -403,16 +443,32 @@ export async function reconcileAppGrants(
     const existing = await read(canonical);
     const old = existing ??
       (await Promise.all(legacy.map(read))).find(Boolean) ?? { outgoing: {}, incoming: [], provider_endpoints: {}, enforce: false };
+    const foreign = new Map<string, App[]>(
+      Object.keys(old.outgoing)
+        .map((to): [string, App[]] => [to, foreignProviders(app.manifest.id, to)])
+        .filter(([, ps]) => ps.length),
+    );
     docs.set(app.manifest.id, {
       app,
       paths: [canonical, ...legacy],
       old,
       doc: {
         ...old,
-        outgoing: {},
+        outgoing: Object.fromEntries(Object.entries(old.outgoing).filter(([to]) => foreign.has(to))),
         incoming: [...old.incoming],
-        provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing))),
-        provider_endpoints_all: {},
+        provider_endpoints: Object.fromEntries(
+          Object.entries(old.provider_endpoints ?? {}).flatMap(([to, endpoint]) => {
+            if (!(to in old.outgoing)) return [[to, endpoint]];
+            const primary = foreign.has(to) ? primaryEndpoint(app.manifest.id, to, old) : undefined;
+            return primary ? [[to, primary]] : [];
+          }),
+        ),
+        provider_endpoints_all: Object.fromEntries(
+          [...foreign].flatMap(([to, ps]) => {
+            const entries = Object.entries(old.provider_endpoints_all?.[to] ?? {}).filter(([id]) => ps.some((p) => p.manifest.id === id));
+            return entries.length ? [[to, Object.fromEntries(entries)]] : [];
+          }),
+        ),
       },
     });
     if (!adopted.has(app.manifest.id)) {
@@ -422,6 +478,13 @@ export async function reconcileAppGrants(
           file.grants.push(g);
       }
       adopted.add(app.manifest.id);
+    }
+    if (!foreignAdopted.has(app.manifest.id)) {
+      for (const to of foreign.keys()) {
+        const g = { kind: 'app', from: app.manifest.id, to, reason: 'owner', approved: 'owner', created_at: Math.floor(Date.now() / 1000) };
+        if (!file.grants.some((x) => sameAppGrant(x, g))) file.grants.push(g);
+      }
+      foreignAdopted.add(app.manifest.id);
     }
   }
   const requests = new Map<string, string[]>();
@@ -471,7 +534,7 @@ export async function reconcileAppGrants(
         if (!Object.hasOwn(all, g.to)) all[g.to] = {};
         all[g.to]![provider.manifest.id] = own;
       }
-      const oldEndpoint = consumer.old.provider_endpoints?.[g.to];
+      const oldEndpoint = primaryEndpoint(g.from, g.to, consumer.old);
       const ownerOverride = oldEndpoint && oldEndpoint !== previous.endpoints?.[g.from]?.[g.to];
       const endpoint = ownerOverride ? oldEndpoint : own;
       if (endpoint) {
@@ -491,11 +554,11 @@ export async function reconcileAppGrants(
       [...new Set([...(previous.managed?.[id] ?? []), ...(managed[id] ?? [])])],
     ]),
   );
-  file.layer2 = { managed: pending, adopted: [...adopted], endpoints: previous.endpoints ?? {} };
+  file.layer2 = { managed: pending, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints: previous.endpoints ?? {} };
   await save(file);
   // Providers first: no consumer receives a newly minted key before its hash.
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, { ...d.doc, outgoing: d.old.outgoing });
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, d.doc);
-  file.layer2 = { managed, adopted: [...adopted], endpoints };
+  file.layer2 = { managed, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints };
   await save(file);
 }

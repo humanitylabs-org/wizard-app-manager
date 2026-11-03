@@ -67,6 +67,7 @@ jobs:
             TIPI_VERSION=${{ steps.v.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/humanitylabs-org/wizard-app-manager
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.description=Wizard App Manager (Runtipi v4.10.2 with an index-backed App Store)
             org.opencontainers.image.licenses=GPL-3.0
           outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
