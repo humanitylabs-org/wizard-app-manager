@@ -365,6 +365,7 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
             'command': str(cmd), 'system_skills': str(skill.parent), 'schema': SCHEMA,
             'release': dest.name, 'preserved_modified_release': preserved,
             'preserved_local_copy': str(saved) if local else None,
+            'preserved_local_copy_revision': saved.name if local and saved is not None else None,
             **({'registered': registered} if cfgp is not None else {})}
 
 

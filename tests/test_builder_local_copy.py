@@ -113,6 +113,40 @@ def test_failure_restores_original_local_copy(local, monkeypatch, point):
     assert not (osh / 'builder/current').exists()
 
 
+def test_install_receipt_round_trips_restore_revision(local, monkeypatch):
+    osh, hh, skill, spec = local
+    out = json.loads(json.dumps(bb.install(osh, migrate_local_copy=spec['variant'])))
+    saved = Path(out['preserved_local_copy'])
+    revision = out['preserved_local_copy_revision']
+    # Keep the existing absolute-path field compatible for inspection while the
+    # new revision can go unchanged into restore-local-copy --revision.
+    assert saved.is_absolute() and saved.is_dir()
+    assert revision == saved.name
+    original = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda p, *a, **kw: json.dumps(spec) if p.name == 'builder_local_copy.json' else original(p, *a, **kw))
+    restored = bb.restore_local_copy(osh, revision)
+    assert restored['state'] == 'restored_local_copy'
+    assert bb._local_snapshot(skill) == spec['entries']
+    assert (osh / 'builder/releases' / out['release']).is_dir()
+
+
+def test_cli_install_revision_is_accepted_unchanged(local, monkeypatch, capsys):
+    osh, hh, skill, spec = local
+    assert bb.main(['install', '--migrate-local-copy', spec['variant']]) == 0
+    out = json.loads(capsys.readouterr().out)
+    original = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda p, *a, **kw: json.dumps(spec) if p.name == 'builder_local_copy.json' else original(p, *a, **kw))
+    assert bb.main(['restore-local-copy', '--revision', out['preserved_local_copy_revision']]) == 0
+    assert json.loads(capsys.readouterr().out)['state'] == 'restored_local_copy'
+    assert bb._local_snapshot(skill) == spec['entries']
+
+
+def test_ordinary_install_has_no_local_restore_revision(tmp_path):
+    out = bb.install(tmp_path / 'os')
+    assert out['preserved_local_copy'] is None
+    assert out['preserved_local_copy_revision'] is None
+
+
 def test_local_restore_requires_exact_receipt_and_managed_target(local, monkeypatch):
     osh, hh, skill, spec = local
     out = bb.install(osh, migrate_local_copy=spec['variant'])

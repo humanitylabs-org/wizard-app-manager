@@ -29,7 +29,7 @@ The installer refuses symlink/non-directory `system-skills` and `bin` parents be
 
 The installer rechecks immediately before and after renaming the original tree into `builder/local-copy-local-builder-20261103-<id>`, preserving bytes, modes and ownership, writes a `reviewed-custom-local-copy` receipt alongside it, and only then switches to the verified managed release. Its bounded recovery covers the original tree, prior current pointer, new companion discovery links, launcher bytes/mode, host Python binding and standalone CLI config registration bytes/mode. Existing companion paths are never replaced. Retained releases and empty staging directories may remain after failure. If a second I/O error prevents recovery, the failure includes a `recovery_required` JSON receipt naming the failed paths, original location, backup id and current target; it does not claim atomic success or complete restoration. This is exception recovery for a single writer, not crash/power-loss durability or concurrent-writer protection. On successful migration the original backup remains separate from portable releases, never deleted by install/rollback.
 
-For an explicit return to the original local copy, use the exact backup basename returned in `preserved_local_copy`:
+For an explicit return to the original local copy, pass the exact `preserved_local_copy_revision` string from the install receipt unchanged to `--revision`. The existing `preserved_local_copy` field remains the absolute backup path for inspection and is not a restore revision. Both fields are `null` when no local copy was preserved:
 
 ```sh
 wam builder-bundle restore-local-copy --revision local-copy-local-builder-20261103-<id>
