@@ -394,6 +394,26 @@ export async function reconcileAppGrants(
     endpoints?: Record<string, Record<string, string>>;
   };
   const adopted = new Set(previous.adopted ?? []);
+  // Other stores publish their own provider-side hashes. Keep an existing key,
+  // never mint one or rewrite that provider's files here. Resolve both slot and
+  // id denials against the full installed inventory, not only this store.
+  const foreignProviders = (from: string, to: string) => {
+    if (!TARGET.test(to)) return [];
+    const dests = providers(to, installedApps).filter((p) => p.manifest.id !== from);
+    const denied = file.denied.some(
+      (g) =>
+        appGrant(g) &&
+        g.from === from &&
+        (g.to === to || providers(g.to, installedApps).some((p) => dests.some((d) => d.manifest.id === p.manifest.id))),
+    );
+    if (denied) return [];
+    return dests.filter(
+      (p) =>
+        !p.urn.endsWith(':wizardapps') &&
+        p.manifest.id !== exclude &&
+        !(file.layer2_removing as string[]).includes(p.manifest.id),
+    );
+  };
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
     await confined(app.data, 'wizard', true);
@@ -403,16 +423,28 @@ export async function reconcileAppGrants(
     const existing = await read(canonical);
     const old = existing ??
       (await Promise.all(legacy.map(read))).find(Boolean) ?? { outgoing: {}, incoming: [], provider_endpoints: {}, enforce: false };
+    const foreign = new Map<string, App[]>(
+      Object.keys(old.outgoing)
+        .map((to): [string, App[]] => [to, foreignProviders(app.manifest.id, to)])
+        .filter(([, ps]) => ps.length),
+    );
     docs.set(app.manifest.id, {
       app,
       paths: [canonical, ...legacy],
       old,
       doc: {
         ...old,
-        outgoing: {},
+        outgoing: Object.fromEntries(Object.entries(old.outgoing).filter(([to]) => foreign.has(to))),
         incoming: [...old.incoming],
-        provider_endpoints: Object.fromEntries(Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing))),
-        provider_endpoints_all: {},
+        provider_endpoints: Object.fromEntries(
+          Object.entries(old.provider_endpoints ?? {}).filter(([to]) => !(to in old.outgoing) || foreign.has(to)),
+        ),
+        provider_endpoints_all: Object.fromEntries(
+          [...foreign].flatMap(([to, ps]) => {
+            const entries = Object.entries(old.provider_endpoints_all?.[to] ?? {}).filter(([id]) => ps.some((p) => p.manifest.id === id));
+            return entries.length ? [[to, Object.fromEntries(entries)]] : [];
+          }),
+        ),
       },
     });
     if (!adopted.has(app.manifest.id)) {
