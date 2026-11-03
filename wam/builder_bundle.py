@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -103,7 +104,38 @@ def _legacy_skill(path):
     return _files(path) == expected
 
 
-def install(os_home, source=SOURCE):
+def _local_snapshot(path):
+    """Exact local-copy bytes/modes, including hidden files and empty dirs.
+
+    Unlike release hashing, omit nothing. Links/special files are refused.
+    """
+    entries = {}
+    for p in [path, *sorted(path.rglob('*'))]:
+        st = p.lstat()
+        row: dict = {'mode': stat.S_IMODE(st.st_mode)}
+        if stat.S_ISDIR(st.st_mode):
+            row['kind'] = 'directory'
+        elif stat.S_ISREG(st.st_mode):
+            row.update(kind='file', sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+        else:
+            raise ValueError(f'Local builder copy contains a link or special file: {p}; preserving it')
+        entries[str(p.relative_to(path))] = row
+    return entries
+
+
+def _local_spec(variant):
+    spec = json.loads(Path(__file__).with_name('builder_local_copy.json').read_text())
+    if variant != spec['variant']:
+        raise ValueError('Unknown exact local-copy migration; preserving it')
+    return spec
+
+
+def _matching_local(path, variant):
+    if _local_snapshot(path) != _local_spec(variant)['entries']:
+        raise ValueError('Local builder copy differs from reviewed bytes/modes; preserving it')
+
+
+def install(os_home, source=SOURCE, *, migrate_local_copy=None):
     """Publish an immutable complete release, then atomically activate it.
 
     Retain earlier releases for rollback/in-flight readers. Never delete custom
@@ -115,10 +147,21 @@ def install(os_home, source=SOURCE):
         raise ValueError(f'Unmanaged builder destination: {base}; preserving it')
     skill = home / 'system-skills' / 'wizard-builder'
     expected = base / 'current' / 'system-skills' / 'wizard-builder'
-    legacy = _legacy_skill(skill)
+    legacy = False if migrate_local_copy else _legacy_skill(skill)
+    local = False
+    if migrate_local_copy:
+        _local_spec(migrate_local_copy)
+        _matching_local(skill, migrate_local_copy)
+        local = True
     if skill.exists() or skill.is_symlink():
-        if not legacy and (not skill.is_symlink() or os.readlink(skill) != str(expected)):
+        if not legacy and not local and (not skill.is_symlink() or os.readlink(skill) != str(expected)):
             raise ValueError(f'Unmanaged wizard-builder skill: {skill}; preserving it')
+    current = base / 'current'
+    if current.exists() and not current.is_symlink():
+        raise ValueError(f'Unmanaged builder current: {current}')
+    cmd = home / 'bin/wam'
+    if cmd.exists() and MARKER not in cmd.read_text():
+        raise ValueError(f'Unmanaged command: {cmd}; preserving it')
     for name in ('wam', 'templates/hello-wizard', 'system-skills/wizard-builder', 'wizard-views'):
         if not (source / name).is_dir():
             raise ValueError(f'Incomplete source bundle: missing {name}; reinstall from a complete source release')
@@ -171,16 +214,36 @@ def install(os_home, source=SOURCE):
                              and _files(p) == files), releases / (digest + '-repair-' + uuid.uuid4().hex[:8]))
         if not dest.exists():
             shutil.copytree(stage, dest)
-    current = base / 'current'
-    if current.exists() and not current.is_symlink():
-        raise ValueError(f'Unmanaged builder current: {current}')
-    _switch(current, Path('releases') / dest.name)
     skill.parent.mkdir(parents=True, exist_ok=True)
-    if legacy:
-        saved = base / ('legacy-skill-' + uuid.uuid4().hex[:8])
-        skill.rename(saved)
-    if not skill.is_symlink():
-        _switch(skill, expected)
+    saved = None
+    previous = os.readlink(current) if current.is_symlink() else None
+    try:
+        if legacy or local:
+            if local:
+                _matching_local(skill, migrate_local_copy)
+            prefix = 'local-copy-' + str(migrate_local_copy) if local else 'legacy-skill'
+            saved = base / (prefix + '-' + uuid.uuid4().hex[:8])
+            skill.rename(saved)  # Same filesystem: original bytes, modes and ownership.
+            if local:
+                _matching_local(saved, migrate_local_copy)
+                _atomic(saved.with_suffix('.json'), json.dumps({
+                    'provenance': 'reviewed-custom-local-copy',
+                    'variant': migrate_local_copy, 'entries': _local_snapshot(saved),
+                }, indent=2) + '\n')
+        _switch(current, Path('releases') / dest.name)
+        if not skill.is_symlink():
+            _switch(skill, expected)
+    except BaseException:
+        if saved is not None:
+            if skill.is_symlink() and os.readlink(skill) == str(expected):
+                skill.unlink()
+            if not skill.exists() and not skill.is_symlink():
+                saved.rename(skill)
+            if previous is None:
+                current.unlink(missing_ok=True)
+            else:
+                _switch(current, Path(previous))
+        raise
     # Companion system skills (the onboarding guide) beside wizard-builder. The container mounts the whole
     # release `system-skills`; the host dir holds one managed link per skill. An owner's own folder of the
     # same name is preserved, never replaced.
@@ -202,7 +265,35 @@ def install(os_home, source=SOURCE):
     cmd.chmod(0o755)
     return {'state': 'installed', 'sha256': digest, 'skill': str(skill / 'SKILL.md'),
             'command': str(cmd), 'system_skills': str(skill.parent), 'schema': SCHEMA,
-            'release': dest.name, 'preserved_modified_release': preserved}
+            'release': dest.name, 'preserved_modified_release': preserved,
+            'preserved_local_copy': str(saved) if local else None}
+
+
+def restore_local_copy(os_home, revision):
+    """Undo only a reviewed local migration; retain all managed releases."""
+    spec = json.loads(Path(__file__).with_name('builder_local_copy.json').read_text())
+    if not re.fullmatch(re.escape('local-copy-' + spec['variant'] + '-') + r'[0-9a-f]{8}', revision or ''):
+        raise ValueError('Expected exact preserved local-copy id from install receipt')
+    home = Path(os_home).resolve()
+    base = home / 'builder'
+    if base.is_symlink() or (base / '.owner').read_text().strip() != MARKER:
+        raise ValueError('Unmanaged builder destination; preserving it')
+    saved = base / revision
+    _matching_local(saved, spec['variant'])
+    receipt = json.loads(saved.with_suffix('.json').read_text())
+    if receipt != {'provenance': 'reviewed-custom-local-copy', 'variant': spec['variant'], 'entries': spec['entries']}:
+        raise ValueError('Local-copy preservation receipt differs; restore refused')
+    skill = home / 'system-skills/wizard-builder'
+    expected = base / 'current/system-skills/wizard-builder'
+    if not skill.is_symlink() or os.readlink(skill) != str(expected):
+        raise ValueError('Unmanaged wizard-builder skill; restore refused')
+    skill.unlink()
+    try:
+        saved.rename(skill)
+    except BaseException:
+        _switch(skill, expected)
+        raise
+    return {'state': 'restored_local_copy', 'variant': spec['variant'], 'skill': str(skill)}
 
 
 def rollback(os_home, revision):
@@ -221,7 +312,7 @@ def rollback(os_home, revision):
     return {'state': 'rolled_back', 'sha256': digest, 'release': revision}
 
 
-def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
+def check_collisions(hermes_home, os_home, cfg=None, runtime=None, *, migrate_local_copy=None):
     home, osh = Path(hermes_home), Path(os_home).resolve()
     cfg = cfg if cfg is not None else (yaml.safe_load(_read_text(home / 'config.yaml')) or {} if (home / 'config.yaml').exists() else {})
     if not isinstance(cfg, dict) or not isinstance(cfg.get('skills', {}), dict):
@@ -263,6 +354,10 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
             legacy_alias = named.is_symlink() and named.resolve() == (osh / 'system-skills/wizard-builder').resolve()
             legacy_alias = legacy_alias and (_legacy_skill(osh / 'system-skills/wizard-builder')
                 or (osh / 'system-skills/wizard-builder').is_symlink())
+            if (not legacy_alias and migrate_local_copy and named.is_symlink()
+                    and named.resolve() == (osh / 'system-skills/wizard-builder').resolve()):
+                _matching_local(osh / 'system-skills/wizard-builder', migrate_local_copy)
+                legacy_alias = True
             if named.exists() or named.is_symlink():
                 if not legacy_alias:
                     raise ValueError(f'wizard-builder name collision at {named}; preserving owner skill')
@@ -433,18 +528,23 @@ def runtime_health(c):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog='wam builder-bundle')
-    ap.add_argument('action', choices=['install', 'doctor', 'fresh', 'rollback'])
+    ap.add_argument('action', choices=['install', 'doctor', 'fresh', 'rollback', 'restore-local-copy'])
+    ap.add_argument('--migrate-local-copy', help='install only: reviewed exact custom-copy variant; no arbitrary hashes')
     ap.add_argument('--revision', help='rollback: exact retained release id from install receipt')
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     a = ap.parse_args(argv)
     from .registry import home
     try:
+        if a.migrate_local_copy and a.action != 'install':
+            raise ValueError('--migrate-local-copy is supported only by install')
         if a.action == 'doctor':
             rows = health(home(), a.hermes_home)
             print(json.dumps(rows, indent=2))
             return 0 if all(r[1] for r in rows) else 1
-        if a.action == 'rollback':
+        if a.action == 'restore-local-copy':
+            out = restore_local_copy(home(), a.revision)
+        elif a.action == 'rollback':
             out = rollback(home(), a.revision)
         elif a.action == 'fresh':
             from .cli import Config
@@ -461,8 +561,8 @@ def main(argv=None):
                 out['restarted'] = True
         else:
             if a.hermes_home:
-                check_collisions(a.hermes_home, home())
-            out = install(home())
+                check_collisions(a.hermes_home, home(), migrate_local_copy=a.migrate_local_copy)
+            out = install(home(), migrate_local_copy=a.migrate_local_copy)
             if a.hermes_home:
                 out['registered'] = register(a.hermes_home, home())
         print(json.dumps(out, indent=2))
