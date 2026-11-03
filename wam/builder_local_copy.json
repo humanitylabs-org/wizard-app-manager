@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "variant": "local-builder-20261103",
+  "provenance": "reviewed-custom-local-copy",
+  "description": "Explicit opt-in migration of one reviewed locally customized builder. Not an upstream legacy release. Rules must be preserved in canonical app source and operational owners before activation.",
+  "entries": {
+    ".": {
+      "mode": 509,
+      "kind": "directory"
+    },
+    "SKILL.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "49987bfade641b0e848694429635a61522a29aaa4306f62b6003bfa6e9846265"
+    },
+    "references": {
+      "mode": 509,
+      "kind": "directory"
+    },
+    "references/appearance.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "c4703ff20fdd173aa25ca543218f77f341c717ddc1d641a9d615f70588d42d64"
+    },
+    "references/build.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "3c09201113443d361dcc3acc23042043308bca222f3fd580b787f313420da0a1"
+    },
+    "references/chat.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "8e552a73569a0599e242fa31e932c3b38d226eb31c7776223f310dceabb7a002"
+    },
+    "references/port.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "9458979bbfbf5729335a44e4e49362328fb7f42b55c4c0cb1a17e5d0d473f6cf"
+    },
+    "references/publish.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "24b3885c64634f1acc71b15a7f4327aab465ed19c589877d2fcf0068e3705c4e"
+    },
+    "references/system-functions.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "2a4e27d6993243765191c456d6e18c2e924b43f522e7c7a306287e747c647e89"
+    },
+    "references/views.md": {
+      "mode": 436,
+      "kind": "file",
+      "sha256": "d270f47f758b816efde60ee0a8d9dd9d16efcf0902038797e5c40b13d8bf960f"
+    }
+  }
+}

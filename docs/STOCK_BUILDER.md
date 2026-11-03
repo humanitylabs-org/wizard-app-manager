@@ -7,11 +7,35 @@ Wizard App Manager owns `system-skills/wizard-builder`, its references, Python t
 - `install.sh` installs the bundle before bootstrap. Fresh mode prepares the stock Hermes data config and additive Runtipi override, then adopts changed mounts after bootstrap. Installer failure is explicit rather than claiming a usable builder.
 - `wizard link` provisions it and journals `skills.external_dirs` together with generated app skills. Repeated link refreshes the bundle and an unchanged WAM-managed `wizard-os` plugin. `--plugin-ref <commit>` pins the routing plugin; later repeats preserve an explicit pin unless another is supplied.
 - The first linked plugin's file fingerprint is recorded. Older managed links are compared to their exact recorded upstream Git revision before refresh. Unknown/custom plugins and same-name skills are refused, not silently shadowed. A failed plugin refresh restores the previous tree. Modified/unattested plugins are preserved on unlink.
-- The exact previous manual installer skill (pinned file hashes in `wam/builder_legacy.json`) is migrated automatically; its prior copy and personal symlink are retained. A changed/custom copy is a collision, never overwritten.
+- The exact previous manual installer skill (pinned file hashes in `wam/builder_legacy.json`) is migrated automatically; its prior copy and personal symlink are retained. A changed/custom copy is a collision, never overwritten by ordinary install. The one reviewed custom variant in `wam/builder_local_copy.json` has a separate **explicit opt-in** migration below; it is not attested as upstream legacy.
 - `wizard unlink` reverses only its registrations, preserving later owner-added external skill directories and the OS bundle. Unchanged config is restored byte-for-byte. Generated app-skill deletion/regeneration cannot remove the builder.
 - `wam builder-bundle install` repairs from the complete installed/source release. Modified OS-owned release files are retained, not overwritten; repair creates/reuses a verified sibling release. `wam builder-bundle install --hermes-home DIR` additionally registers a standalone home. Use `wizard link` instead for reversible alongside registration.
 - `wam builder-bundle rollback --revision <release-id>` activates a verified retained release from an install receipt. No source/data or prior releases are deleted. A rollback changes only bundle content, not terminal settings or user app data.
 - `wam builder-bundle doctor [--hermes-home DIR]` checks hashes, schema, assets, executable dependencies and optional discovery/collisions. `wam doctor` also probes the running stock container's actual local/SSH terminal route. `wam doctor --fix` repairs the bundle and fresh configuration; it does not restart an agent implicitly. Use `wam builder-bundle fresh --restart` to adopt a repaired mount. SSH probes require the configured key and trusted known-host entry; they never weaken host-key checking.
+
+## Reviewed custom-copy migration (one exact variant)
+
+`local-builder-20261103` names a locally customized installation, **not an upstream release**. Before replacing its discovery target, its approved behavior is preserved: immediate feedback, write-and-return, outside-tap/long-press handling, cutout handling, live-source parity, reuse/voice/chat/orb/reading-place requirements and installed canonical-entry QA belong in `system-skills/wizard-builder` and its references. Private/public CI placement and local runner provisioning belong to the installation's operational CI authority; authorization to install a new isolated app belongs to its deployment authority. App-specific workflows stay in app source/releases. No local rule is authorized to disappear merely because the installer recognizes its hash.
+
+From a complete **merged and tested** source release:
+
+```sh
+python -m wam builder-bundle install --migrate-local-copy local-builder-20261103 --hermes-home "$HOME/.hermes"
+```
+
+The option accepts only that source-pinned name, not caller-supplied hashes or an allow-all flag. Every file byte and directory/file mode (including root, empty directories, hidden files and caches) must match `wam/builder_local_copy.json`. Extra/missing/changed files, modes, symlinks and special files refuse the migration; normal install still refuses this unmanaged copy. An existing personal discovery symlink is permitted only if it targets the exact reviewed tree; other collisions still fail before installation.
+
+The installer refuses symlink/non-directory `system-skills` and `bin` parents before mutation (also on restore), and preflights command/config publication. Standalone `--hermes-home` registration requires an existing home and an absent or current-user-owned regular config, not a symlink or foreign-owned config; foreign-owner fresh-container provisioning remains a separate path. It exclusively reserves both the backup directory and adjacent receipt name; any occupied name, including a dangling link, refuses migration without replacing owner bytes.
+
+The installer rechecks immediately before and after renaming the original tree into `builder/local-copy-local-builder-20261103-<id>`, preserving bytes, modes and ownership, writes a `reviewed-custom-local-copy` receipt alongside it, and only then switches to the verified managed release. Its bounded recovery covers the original tree, prior current pointer, new companion discovery links, launcher bytes/mode, host Python binding and standalone CLI config registration bytes/mode. Existing companion paths are never replaced. Retained releases and empty staging directories may remain after failure. If a second I/O error prevents recovery, the failure includes a `recovery_required` JSON receipt naming the failed paths, original location, backup id and current target; it does not claim atomic success or complete restoration. This is exception recovery for a single writer, not crash/power-loss durability or concurrent-writer protection. On successful migration the original backup remains separate from portable releases, never deleted by install/rollback.
+
+For an explicit return to the original local copy, use the exact backup basename returned in `preserved_local_copy`:
+
+```sh
+wam builder-bundle restore-local-copy --revision local-copy-local-builder-20261103-<id>
+```
+
+Restore requires the pinned bytes/modes, exact preservation receipt and an unchanged managed discovery link. It refuses modified backups or owner-replaced discovery targets. It retains managed releases and the existing discovery alias/config, which again resolve to the original local tree. Normal `rollback --revision <release-id>` still changes only managed releases. After either operation read back the installed hashes, run doctor and load the skill/reference through fresh discovery; do not claim running-session cache refresh without checking it.
 
 ## Execution contract
 

@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -103,31 +104,125 @@ def _legacy_skill(path):
     return _files(path) == expected
 
 
-def install(os_home, source=SOURCE):
-    """Publish an immutable complete release, then atomically activate it.
+def _local_snapshot(path):
+    """Exact local-copy bytes/modes, including hidden files and empty dirs.
+
+    Unlike release hashing, omit nothing. Links/special files are refused.
+    """
+    entries = {}
+    for p in [path, *sorted(path.rglob('*'))]:
+        st = p.lstat()
+        row: dict = {'mode': stat.S_IMODE(st.st_mode)}
+        if stat.S_ISDIR(st.st_mode):
+            row['kind'] = 'directory'
+        elif stat.S_ISREG(st.st_mode):
+            row.update(kind='file', sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+        else:
+            raise ValueError(f'Local builder copy contains a link or special file: {p}; preserving it')
+        entries[str(p.relative_to(path))] = row
+    return entries
+
+
+def _local_spec(variant):
+    spec = json.loads(Path(__file__).with_name('builder_local_copy.json').read_text())
+    if variant != spec['variant']:
+        raise ValueError('Unknown exact local-copy migration; preserving it')
+    return spec
+
+
+def _matching_local(path, variant):
+    if _local_snapshot(path) != _local_spec(variant)['entries']:
+        raise ValueError('Local builder copy differs from reviewed bytes/modes; preserving it')
+
+
+def _publication_parents(home):
+    # These are fixed, immediate children of the explicitly selected home.
+    # Do not follow an owner redirect while publishing or restoring discovery.
+    for name in ('system-skills', 'bin'):
+        path = home / name
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f'Unmanaged directory: {path}; preserving it')
+
+
+def _publication_snapshot(path):
+    if path.is_symlink():
+        raise ValueError(f'Unmanaged publication file: {path}; preserving it')
+    if not path.exists():
+        return None
+    st = path.stat()
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+        raise ValueError(f'Unmanaged publication file: {path}; preserving it')
+    return path.read_bytes(), stat.S_IMODE(st.st_mode)
+
+
+def _restore_publication(path, before):
+    if before is None:
+        path.unlink(missing_ok=True)
+        return
+    data, mode = before
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None):
+    """Publish a complete release, with bounded recovery of discovery on failure.
 
     Retain earlier releases for rollback/in-flight readers. Never delete custom
     skills or the generated app registry. Refuse unmanaged path collisions.
     """
     home, source = Path(os_home).resolve(), Path(source).resolve()
+    _publication_parents(home)
     base = home / 'builder'
     if base.is_symlink() or (base.exists() and (not (base / '.owner').is_file() or (base / '.owner').read_text().strip() != MARKER)):
         raise ValueError(f'Unmanaged builder destination: {base}; preserving it')
+    releases = base / 'releases'
+    if releases.is_symlink() or (releases.exists() and not releases.is_dir()):
+        raise ValueError(f'Unmanaged release directory: {releases}; preserving it')
     skill = home / 'system-skills' / 'wizard-builder'
     expected = base / 'current' / 'system-skills' / 'wizard-builder'
-    legacy = _legacy_skill(skill)
+    legacy = False if migrate_local_copy else _legacy_skill(skill)
+    local = False
+    if migrate_local_copy:
+        _local_spec(migrate_local_copy)
+        _matching_local(skill, migrate_local_copy)
+        local = True
     if skill.exists() or skill.is_symlink():
-        if not legacy and (not skill.is_symlink() or os.readlink(skill) != str(expected)):
+        if not legacy and not local and (not skill.is_symlink() or os.readlink(skill) != str(expected)):
             raise ValueError(f'Unmanaged wizard-builder skill: {skill}; preserving it')
+    current = base / 'current'
+    if current.exists() and not current.is_symlink():
+        raise ValueError(f'Unmanaged builder current: {current}')
+    cmd = home / 'bin/wam'
+    command_before = _publication_snapshot(cmd)
+    if cmd.exists() and MARKER not in cmd.read_text():
+        raise ValueError(f'Unmanaged command: {cmd}; preserving it')
+    python_before = _publication_snapshot(base / 'python')
+    cfgp, config_before = None, None
+    if hermes_home is not None:
+        cfgp = Path(hermes_home).resolve() / 'config.yaml'
+        if not cfgp.parent.is_dir():
+            raise ValueError('Hermes home must be an existing directory; preserving it')
+        config_before = _publication_snapshot(cfgp)
+        check_collisions(cfgp.parent, home, migrate_local_copy=migrate_local_copy)
+    reservation = None
+    if legacy or local:
+        prefix = 'local-copy-' + str(migrate_local_copy) if local else 'legacy-skill'
+        reservation = base / (prefix + '-' + uuid.uuid4().hex[:8])
+        for path in (reservation, reservation.with_suffix('.json')):
+            if path.exists() or path.is_symlink():
+                raise ValueError(f'Occupied preservation destination: {path}; preserving it')
     for name in ('wam', 'templates/hello-wizard', 'system-skills/wizard-builder', 'wizard-views'):
         if not (source / name).is_dir():
             raise ValueError(f'Incomplete source bundle: missing {name}; reinstall from a complete source release')
     base.mkdir(parents=True, exist_ok=True)
     _atomic(base / '.owner', MARKER + '\n')
-    # Non-login SSH/local terminal shells often omit the installer's venv/PATH.
-    # Keep this host-specific binding outside the portable release; containers
-    # deliberately select their own stock Hermes interpreter instead.
-    _atomic(base / 'python', sys.executable + '\n')
     releases = base / 'releases'
     releases.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.stage-', dir=base) as td:
@@ -171,38 +266,134 @@ def install(os_home, source=SOURCE):
                              and _files(p) == files), releases / (digest + '-repair-' + uuid.uuid4().hex[:8]))
         if not dest.exists():
             shutil.copytree(stage, dest)
-    current = base / 'current'
-    if current.exists() and not current.is_symlink():
-        raise ValueError(f'Unmanaged builder current: {current}')
-    _switch(current, Path('releases') / dest.name)
     skill.parent.mkdir(parents=True, exist_ok=True)
-    if legacy:
-        saved = base / ('legacy-skill-' + uuid.uuid4().hex[:8])
-        skill.rename(saved)
-    if not skill.is_symlink():
-        _switch(skill, expected)
-    # Companion system skills (the onboarding guide) beside wizard-builder. The container mounts the whole
-    # release `system-skills`; the host dir holds one managed link per skill. An owner's own folder of the
-    # same name is preserved, never replaced.
+    saved = None
+    previous = os.readlink(current) if current.is_symlink() else None
+    skill_before = os.readlink(skill) if skill.is_symlink() else None
+    companions = []
+    # Journal only absent links we may create; retain every existing owner path.
     for extra in COMPANION_SKILLS:
-        link, target = skill.parent / extra, base / 'current' / 'system-skills' / extra
-        if not target.is_dir():
-            continue
+        link = skill.parent / extra
         if not link.exists() and not link.is_symlink():
-            _switch(link, target)
-    bindir = home / 'bin'
-    bindir.mkdir(exist_ok=True)
-    cmd = bindir / 'wam'
-    # A wrapper rather than a symlink keeps dirname independent of invocation.
-    import shlex
-    script = '#!/bin/sh\n# ' + MARKER + '\nexec ' + shlex.quote(str(base / 'current/bin/wam')) + ' "$@"\n'
-    if cmd.exists() and MARKER not in cmd.read_text():
-        raise ValueError(f'Unmanaged command: {cmd}; preserving it')
-    _atomic(cmd, script)
-    cmd.chmod(0o755)
+            companions.append((link, base / 'current' / 'system-skills' / extra))
+    reserved_dir = reserved_receipt = False
+    touched_files = []
+    registered = None
+    try:
+        # Keep this host binding outside portable releases, inside recovery.
+        touched_files.append((base / 'python', python_before))
+        _atomic(base / 'python', sys.executable + '\n')
+        if legacy or local:
+            assert reservation is not None
+            if local:
+                _matching_local(skill, migrate_local_copy)
+            # Exclusively reserve BOTH names, including for legacy migration.
+            # Rename replaces only our own empty reservation, never owner bytes.
+            reservation.mkdir()
+            reserved_dir = True
+            with reservation.with_suffix('.json').open('x'):
+                pass
+            reserved_receipt = True
+            skill.rename(reservation)  # Same filesystem: original bytes/modes/ownership.
+            saved = reservation
+            if local:
+                _matching_local(saved, migrate_local_copy)
+                _atomic(saved.with_suffix('.json'), json.dumps({
+                    'provenance': 'reviewed-custom-local-copy',
+                    'variant': migrate_local_copy, 'entries': _local_snapshot(saved),
+                }, indent=2) + '\n')
+            else:
+                reservation.with_suffix('.json').unlink()
+                reserved_receipt = False
+        _switch(current, Path('releases') / dest.name)
+        if not skill.is_symlink():
+            _switch(skill, expected)
+        for link, target in companions:
+            if target.is_dir():
+                _switch(link, target)
+        (home / 'bin').mkdir(exist_ok=True)
+        # A wrapper rather than a symlink keeps dirname independent of invocation.
+        import shlex
+        script = '#!/bin/sh\n# ' + MARKER + '\nexec ' + shlex.quote(str(base / 'current/bin/wam')) + ' "$@"\n'
+        touched_files.append((cmd, command_before))
+        _atomic(cmd, script)
+        cmd.chmod(0o755)
+        if cfgp is not None:
+            touched_files.append((cfgp, config_before))
+            registered = register(cfgp.parent, home)
+    except BaseException as error:
+        failures = []
+        def recover(label, action):
+            try:
+                action()
+            except BaseException:
+                failures.append(str(label))
+        # Attempt every recovery even if storage/permissions prevent one of them.
+        for path, before in reversed(touched_files):
+            recover(path, lambda p=path, b=before: _restore_publication(p, b))
+        for link, target in companions:
+            if link.is_symlink() and os.readlink(link) == str(target):
+                recover(link, link.unlink)
+        def restore_skill():
+            if saved is not None:
+                if skill.is_symlink() and os.readlink(skill) == str(expected):
+                    skill.unlink()
+                if skill.exists() or skill.is_symlink():
+                    raise ValueError('Discovery changed during recovery')
+                saved.rename(skill)
+            elif skill_before is None and skill.is_symlink() and os.readlink(skill) == str(expected):
+                skill.unlink()
+        recover(skill, restore_skill)
+        recover(current, lambda: current.unlink(missing_ok=True) if previous is None else _switch(current, Path(previous)))
+        if reservation is not None and reserved_receipt and (saved is None or not saved.exists()):
+            recover(reservation.with_suffix('.json'), reservation.with_suffix('.json').unlink)
+        if reservation is not None and reserved_dir and saved is None:
+            recover(reservation, reservation.rmdir)
+        if failures:
+            # No promise of atomicity under a second I/O failure: the caller gets
+            # exact recovery targets and the original backup id, even on CLI failure.
+            raise OSError('Incomplete builder recovery: ' + json.dumps({
+                'state': 'recovery_required', 'failed_paths': failures,
+                'preserved_copy': str(saved) if saved is not None else None,
+                'original_location': str(saved if saved is not None and saved.exists() else skill),
+                'previous_current': previous, 'skill': str(skill),
+                'current_target': os.readlink(current) if current.is_symlink() else None,
+                'command': str(cmd), 'config': str(cfgp) if cfgp else None,
+            }, sort_keys=True)) from error
+        raise
     return {'state': 'installed', 'sha256': digest, 'skill': str(skill / 'SKILL.md'),
             'command': str(cmd), 'system_skills': str(skill.parent), 'schema': SCHEMA,
-            'release': dest.name, 'preserved_modified_release': preserved}
+            'release': dest.name, 'preserved_modified_release': preserved,
+            'preserved_local_copy': str(saved) if local else None,
+            **({'registered': registered} if cfgp is not None else {})}
+
+
+def restore_local_copy(os_home, revision):
+    """Undo only a reviewed local migration; retain all managed releases."""
+    spec = json.loads(Path(__file__).with_name('builder_local_copy.json').read_text())
+    if not re.fullmatch(re.escape('local-copy-' + spec['variant'] + '-') + r'[0-9a-f]{8}', revision or ''):
+        raise ValueError('Expected exact preserved local-copy id from install receipt')
+    home = Path(os_home).resolve()
+    _publication_parents(home)
+    base = home / 'builder'
+    if base.is_symlink() or (base / '.owner').read_text().strip() != MARKER:
+        raise ValueError('Unmanaged builder destination; preserving it')
+    saved = base / revision
+    _matching_local(saved, spec['variant'])
+    receipt = json.loads(saved.with_suffix('.json').read_text())
+    if receipt != {'provenance': 'reviewed-custom-local-copy', 'variant': spec['variant'], 'entries': spec['entries']}:
+        raise ValueError('Local-copy preservation receipt differs; restore refused')
+    skill = home / 'system-skills/wizard-builder'
+    expected = base / 'current/system-skills/wizard-builder'
+    if not skill.is_symlink() or os.readlink(skill) != str(expected):
+        raise ValueError('Unmanaged wizard-builder skill; restore refused')
+    skill.unlink()
+    try:
+        saved.rename(skill)
+    except BaseException:
+        _switch(skill, expected)
+        raise
+    return {'state': 'restored_local_copy', 'variant': spec['variant'], 'skill': str(skill)}
 
 
 def rollback(os_home, revision):
@@ -221,7 +412,7 @@ def rollback(os_home, revision):
     return {'state': 'rolled_back', 'sha256': digest, 'release': revision}
 
 
-def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
+def check_collisions(hermes_home, os_home, cfg=None, runtime=None, *, migrate_local_copy=None):
     home, osh = Path(hermes_home), Path(os_home).resolve()
     cfg = cfg if cfg is not None else (yaml.safe_load(_read_text(home / 'config.yaml')) or {} if (home / 'config.yaml').exists() else {})
     if not isinstance(cfg, dict) or not isinstance(cfg.get('skills', {}), dict):
@@ -263,6 +454,10 @@ def check_collisions(hermes_home, os_home, cfg=None, runtime=None):
             legacy_alias = named.is_symlink() and named.resolve() == (osh / 'system-skills/wizard-builder').resolve()
             legacy_alias = legacy_alias and (_legacy_skill(osh / 'system-skills/wizard-builder')
                 or (osh / 'system-skills/wizard-builder').is_symlink())
+            if (not legacy_alias and migrate_local_copy and named.is_symlink()
+                    and named.resolve() == (osh / 'system-skills/wizard-builder').resolve()):
+                _matching_local(osh / 'system-skills/wizard-builder', migrate_local_copy)
+                legacy_alias = True
             if named.exists() or named.is_symlink():
                 if not legacy_alias:
                     raise ValueError(f'wizard-builder name collision at {named}; preserving owner skill')
@@ -433,18 +628,23 @@ def runtime_health(c):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog='wam builder-bundle')
-    ap.add_argument('action', choices=['install', 'doctor', 'fresh', 'rollback'])
+    ap.add_argument('action', choices=['install', 'doctor', 'fresh', 'rollback', 'restore-local-copy'])
+    ap.add_argument('--migrate-local-copy', help='install only: reviewed exact custom-copy variant; no arbitrary hashes')
     ap.add_argument('--revision', help='rollback: exact retained release id from install receipt')
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     a = ap.parse_args(argv)
     from .registry import home
     try:
+        if a.migrate_local_copy and a.action != 'install':
+            raise ValueError('--migrate-local-copy is supported only by install')
         if a.action == 'doctor':
             rows = health(home(), a.hermes_home)
             print(json.dumps(rows, indent=2))
             return 0 if all(r[1] for r in rows) else 1
-        if a.action == 'rollback':
+        if a.action == 'restore-local-copy':
+            out = restore_local_copy(home(), a.revision)
+        elif a.action == 'rollback':
             out = rollback(home(), a.revision)
         elif a.action == 'fresh':
             from .cli import Config
@@ -460,11 +660,7 @@ def main(argv=None):
                 out['restart_required'] = False
                 out['restarted'] = True
         else:
-            if a.hermes_home:
-                check_collisions(a.hermes_home, home())
-            out = install(home())
-            if a.hermes_home:
-                out['registered'] = register(a.hermes_home, home())
+            out = install(home(), migrate_local_copy=a.migrate_local_copy, hermes_home=a.hermes_home)
         print(json.dumps(out, indent=2))
         return 0
     except (OSError, ValueError, yaml.YAMLError) as e:
