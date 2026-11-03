@@ -136,6 +136,43 @@ def voice_names(manifest: dict) -> list[str]:
     return list(names)
 
 
+HOME_SCREEN_KEYS = {"offline", "position_keys", "route_state"}
+HOME_SCREEN_ROUTE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,39}")
+
+
+def home_screen(manifest: dict) -> dict:
+    """Home-screen pin capabilities the app declares for itself; absence is backward compatible.
+
+    Returns only what was declared: offline (true), position_keys (patterns) and route_state (a name).
+    """
+    if "home_screen" not in manifest:
+        return {}
+    hs = manifest["home_screen"]  # a present null is malformed, not absent
+    if not isinstance(hs, dict) or set(hs) - HOME_SCREEN_KEYS:
+        raise ValueError("home_screen must be a mapping with only offline, position_keys and route_state")
+    out: dict = {}
+    if "offline" in hs:
+        if type(hs["offline"]) is not bool:
+            raise ValueError("home_screen.offline must be a boolean")
+        if hs["offline"]:
+            out["offline"] = True
+    if "position_keys" in hs:
+        keys = hs["position_keys"]
+        if (not isinstance(keys, list) or len(keys) > 8 or
+                any(not isinstance(k, str) or len(k) > 120 or any(ord(c) < 32 or ord(c) == 127 for c in k)
+                    or len(k.split("*", 1)[0]) < 3 for k in keys)):
+            raise ValueError("home_screen.position_keys must be at most 8 strings of at most 120 characters, "
+                             "without controls, each with at least 3 literal characters before the first '*'")
+        if keys:
+            out["position_keys"] = list(keys)
+    if "route_state" in hs:
+        rs = hs["route_state"]
+        if not isinstance(rs, str) or not HOME_SCREEN_ROUTE.fullmatch(rs):
+            raise ValueError("home_screen.route_state must be a name matching [A-Za-z_][A-Za-z0-9_]{0,39}")
+        out["route_state"] = rs
+    return out
+
+
 def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
     out: list[tuple[str, bool, str]] = []
 
@@ -159,6 +196,15 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
             rule("voice_names valid", True)
         except ValueError as e:
             rule("voice_names valid", False, str(e))
+    if "home_screen" in d:
+        try:
+            declared = home_screen(d)
+            rule("home_screen valid", True)
+            if declared:
+                hv = d.get("view")
+                rule("home screen has a declared view", isinstance(hv, dict) and bool(hv.get("path")) and bool(hv.get("port")), str(hv))
+        except ValueError as e:
+            rule("home_screen valid", False, str(e))
     from . import chats_views
     try:
         chats_views.validate(repo, d)
