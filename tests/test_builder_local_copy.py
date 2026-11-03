@@ -294,6 +294,35 @@ def test_deterministic_preservation_collision_never_clobbers(local, monkeypatch,
     assert not (base / 'current').is_symlink()
 
 
+@pytest.mark.parametrize('kind', ['original', 'external', 'dangling', 'file'])
+def test_release_parent_refuses_before_mutation(local, kind):
+    osh, hh, skill, spec = local
+    base = osh / 'builder'
+    base.mkdir()
+    (base / '.owner').write_text(bb.MARKER + '\n')
+    releases = base / 'releases'
+    external = osh.parent / 'external-owner'
+    external.mkdir()
+    (external / 'canary').write_bytes(b'owner bytes')
+    if kind == 'file':
+        releases.write_bytes(b'owner release file')
+    else:
+        target = skill if kind == 'original' else external if kind == 'external' else osh / 'missing'
+        releases.symlink_to(target, target_is_directory=True)
+    before_skill = bb._local_snapshot(skill)
+    before_external = bb._local_snapshot(external)
+    before_link = os.readlink(releases) if releases.is_symlink() else None
+    with pytest.raises(ValueError, match='Unmanaged release directory'):
+        bb.install(osh, migrate_local_copy=spec['variant'])
+    assert bb._local_snapshot(skill) == before_skill == spec['entries']
+    assert bb._local_snapshot(external) == before_external
+    assert (os.readlink(releases) if releases.is_symlink() else None) == before_link
+    if kind == 'file':
+        assert releases.read_bytes() == b'owner release file'
+    assert sorted(p.name for p in base.iterdir()) == ['.owner', 'releases']
+    assert not skill.is_symlink()
+
+
 @pytest.mark.parametrize('parent', ['system-skills', 'bin'])
 def test_install_static_ancestor_symlink_refuses_before_mutation(local, parent):
     osh, hh, skill, spec = local

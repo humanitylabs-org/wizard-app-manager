@@ -182,6 +182,9 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
     base = home / 'builder'
     if base.is_symlink() or (base.exists() and (not (base / '.owner').is_file() or (base / '.owner').read_text().strip() != MARKER)):
         raise ValueError(f'Unmanaged builder destination: {base}; preserving it')
+    releases = base / 'releases'
+    if releases.is_symlink() or (releases.exists() and not releases.is_dir()):
+        raise ValueError(f'Unmanaged release directory: {releases}; preserving it')
     skill = home / 'system-skills' / 'wizard-builder'
     expected = base / 'current' / 'system-skills' / 'wizard-builder'
     legacy = False if migrate_local_copy else _legacy_skill(skill)
