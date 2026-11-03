@@ -259,3 +259,24 @@ def collisions(reg: dict, multi: set[str] | None = None) -> list[str]:
         multi = _slots.multi_slots()
     return [f"slot '{s}' has {len(v['candidates'])} apps ({', '.join(v['candidates'])}); default {v['default']}"
             for s, v in reg.get("slots", {}).items() if len(v["candidates"]) > 1 and s not in multi]
+
+
+def slot_choices(reg: dict, multi: set[str] | None = None) -> list[tuple[str, bool, str]]:
+    """Doctor rows for single-app slots that several installed apps provide. That is a supported state, not a fault:
+    the owner installs an alternative before removing the default (`slots.blocks_uninstall`, Store Remove), and the
+    saved `slots.<s>.default` names the active one (kept across registry rewrites; network and Notifications follow
+    it). Only a choice that names no installed provider is broken."""
+    if multi is None:
+        from . import slots as _slots
+        multi = _slots.multi_slots()
+    out = []
+    for s, v in sorted((reg.get("slots") or {}).items()):
+        cands = list(v.get("candidates") or []) if isinstance(v, dict) else []
+        if len(cands) < 2 or s in multi:
+            continue
+        active = v.get("default")
+        others = ", ".join(x for x in cands if x != active)
+        out.append((f"slot '{s}': active app is chosen", active in cands,
+                    f"{active} (also installed: {others}); switch in Apps or remove one in the Store" if active in cands
+                    else f"saved choice {active!r} is not installed ({', '.join(cands)}): pick one in Apps"))
+    return out

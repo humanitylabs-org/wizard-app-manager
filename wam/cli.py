@@ -1546,8 +1546,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
             out.append(("alongside: Hermes home not shared with the shell", True,
                         "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
     if regp.is_file():
-        for col in registry.collisions(json.loads(regp.read_text())):
-            out.append(("slot collision", False, col))
+        out.extend(registry.slot_choices(json.loads(regp.read_text())))
     try:
         from . import network
         rep = network.report(c)
