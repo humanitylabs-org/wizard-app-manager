@@ -8,6 +8,11 @@ import pytest
 from wam import builder_bundle as bb
 
 
+def stable_stat(path):
+    st = path.lstat()
+    return st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns
+
+
 @pytest.fixture
 def local(tmp_path, monkeypatch):
     osh, hh = tmp_path / 'os', tmp_path / 'hermes'
@@ -181,6 +186,190 @@ def test_unmanaged_launcher_refuses_before_migration(local):
     (osh / 'bin/wam').write_text('owner command')
     with pytest.raises(ValueError, match='Unmanaged command'):
         bb.install(osh, migrate_local_copy=spec['variant'])
+    assert bb._local_snapshot(skill) == spec['entries']
+    assert not (osh / 'builder').exists()
+
+
+def test_file_bin_parent_refuses_before_migration(local):
+    osh, hh, skill, spec = local
+    (osh / 'bin').write_bytes(b'owner bin file')
+    with pytest.raises(ValueError, match='Unmanaged directory'):
+        bb.install(osh, migrate_local_copy=spec['variant'])
+    assert bb._local_snapshot(skill) == spec['entries']
+    assert not (osh / 'builder').exists()
+    assert (osh / 'bin').read_bytes() == b'owner bin file'
+
+
+@pytest.mark.parametrize('point', ['companion', 'launcher', 'chmod', 'register'])
+@pytest.mark.parametrize('existing', [False, True])
+def test_required_publication_failure_restores_all_discovery(local, monkeypatch, point, existing):
+    osh, hh, skill, spec = local
+    if existing:
+        original = skill.rename(osh / 'original-local')
+        bb.install(osh)
+        skill.unlink()
+        original.rename(skill)
+        (osh / 'bin/wam').write_text('# ' + bb.MARKER + '\n# prior command\n')
+        (osh / 'bin/wam').chmod(0o750)
+    previous = os.readlink(osh / 'builder/current') if existing else None
+    cmd = osh / 'bin/wam'
+    before_cmd = (cmd.read_bytes(), cmd.stat().st_mode & 0o777) if existing else None
+    cfg = hh / 'config.yaml'
+    cfg.chmod(0o640)
+    before_cfg = cfg.read_bytes(), cfg.stat().st_mode & 0o777
+    companion = osh / 'system-skills/wizard-guide'
+    before_companion = os.readlink(companion) if companion.is_symlink() else None
+    switch, atomic, chmod, register = bb._switch, bb._atomic, Path.chmod, bb.register
+    fired = False
+    def fail_once(label):
+        nonlocal fired
+        if point == label and not fired:
+            fired = True
+            raise OSError('synthetic required publication failure')
+    def fail_switch(link, target):
+        result = switch(link, target)
+        if link == companion:
+            fail_once('companion')
+        return result
+    def fail_atomic(path, text):
+        result = atomic(path, text)
+        if path == cmd:
+            fail_once('launcher')
+        return result
+    def fail_chmod(path, mode, *a, **kw):
+        if path == cmd:
+            fail_once('chmod')
+        return chmod(path, mode, *a, **kw)
+    def fail_register(*a, **kw):
+        result = register(*a, **kw)
+        fail_once('register')
+        return result
+    # Existing companions are deliberately retained. Force their publication
+    # only in the companion fault case, leaving a separate retained-link path.
+    if point == 'companion' and companion.is_symlink():
+        companion.unlink()
+        before_companion = None
+    monkeypatch.setattr(bb, '_switch', fail_switch)
+    monkeypatch.setattr(bb, '_atomic', fail_atomic)
+    monkeypatch.setattr(Path, 'chmod', fail_chmod)
+    monkeypatch.setattr(bb, 'register', fail_register)
+    assert bb.main(['install', '--migrate-local-copy', spec['variant'], '--hermes-home', str(hh)]) == 1
+    assert fired
+    assert not skill.is_symlink() and bb._local_snapshot(skill) == spec['entries']
+    current = osh / 'builder/current'
+    assert (os.readlink(current) if current.is_symlink() else None) == previous
+    assert ((cmd.read_bytes(), cmd.stat().st_mode & 0o777) if cmd.exists() else None) == before_cmd
+    assert (cfg.read_bytes(), cfg.stat().st_mode & 0o777) == before_cfg
+    assert (os.readlink(companion) if companion.is_symlink() else None) == before_companion
+
+
+@pytest.mark.parametrize('target', ['backup', 'receipt'])
+@pytest.mark.parametrize('kind', ['file', 'directory', 'symlink', 'dangling'])
+def test_deterministic_preservation_collision_never_clobbers(local, monkeypatch, target, kind):
+    from types import SimpleNamespace
+    osh, hh, skill, spec = local
+    base = osh / 'builder'
+    base.mkdir()
+    (base / '.owner').write_text(bb.MARKER + '\n')
+    saved = base / ('local-copy-' + spec['variant'] + '-12345678')
+    collision = saved if target == 'backup' else saved.with_suffix('.json')
+    owner = osh / 'owner-bytes'
+    owner.write_bytes(b'owner bytes')
+    if kind == 'file':
+        collision.write_bytes(b'owner collision bytes')
+    elif kind == 'directory':
+        collision.mkdir()
+    else:
+        collision.symlink_to(owner if kind == 'symlink' else osh / 'missing')
+    before = stable_stat(collision), os.readlink(collision) if collision.is_symlink() else None
+    monkeypatch.setattr(bb.uuid, 'uuid4', lambda: SimpleNamespace(hex='12345678' + '0' * 24))
+    with pytest.raises(ValueError, match='preservation destination'):
+        bb.install(osh, migrate_local_copy=spec['variant'])
+    assert not skill.is_symlink() and bb._local_snapshot(skill) == spec['entries']
+    assert stable_stat(collision) == before[0]
+    assert (os.readlink(collision) if collision.is_symlink() else None) == before[1]
+    assert owner.read_bytes() == b'owner bytes'
+    if kind == 'file':
+        assert collision.read_bytes() == b'owner collision bytes'
+    assert not (base / 'current').is_symlink()
+
+
+@pytest.mark.parametrize('parent', ['system-skills', 'bin'])
+def test_install_static_ancestor_symlink_refuses_before_mutation(local, parent):
+    osh, hh, skill, spec = local
+    outside = osh.parent / ('outside-' + parent)
+    if parent == 'system-skills':
+        (osh / parent).rename(outside)
+    else:
+        outside.mkdir()
+        (outside / 'canary').write_bytes(b'owner bytes')
+    (osh / parent).symlink_to(outside, target_is_directory=True)
+    before = bb._local_snapshot(outside)
+    with pytest.raises(ValueError, match='Unmanaged directory'):
+        bb.install(osh, migrate_local_copy=spec['variant'])
+    assert bb._local_snapshot(outside) == before
+    assert not (osh / 'builder').exists()
+    assert (osh / parent).is_symlink()
+
+
+@pytest.mark.parametrize('parent', ['system-skills', 'bin'])
+def test_restore_static_ancestor_symlink_refuses_before_mutation(local, monkeypatch, parent):
+    osh, hh, skill, spec = local
+    out = bb.install(osh, migrate_local_copy=spec['variant'])
+    saved = Path(out['preserved_local_copy'])
+    original = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda p, *a, **kw: json.dumps(spec) if p.name == 'builder_local_copy.json' else original(p, *a, **kw))
+    outside = osh.parent / ('outside-' + parent)
+    (osh / parent).rename(outside)
+    (osh / parent).symlink_to(outside, target_is_directory=True)
+    # Snapshot only exact external directory entries (managed child links are
+    # deliberately not followed by this witness).
+    before = [(p.name, stable_stat(p), os.readlink(p) if p.is_symlink() else p.read_bytes()) for p in outside.iterdir()]
+    with pytest.raises(ValueError, match='Unmanaged directory'):
+        bb.restore_local_copy(osh, saved.name)
+    assert [(p.name, stable_stat(p), os.readlink(p) if p.is_symlink() else p.read_bytes()) for p in outside.iterdir()] == before
+    assert bb._local_snapshot(saved) == spec['entries']
+
+
+def test_second_io_failure_reports_exact_partial_recovery(local, monkeypatch, capsys):
+    osh, hh, skill, spec = local
+    cmd = osh / 'bin/wam'
+    atomic, restore = bb._atomic, bb._restore_publication
+    def fail_publication(path, text):
+        atomic(path, text)
+        if path == cmd:
+            raise OSError('publication failed')
+    def fail_recovery(path, before):
+        if path == cmd:
+            raise OSError('recovery storage failure')
+        return restore(path, before)
+    monkeypatch.setattr(bb, '_atomic', fail_publication)
+    monkeypatch.setattr(bb, '_restore_publication', fail_recovery)
+    assert bb.main(['install', '--migrate-local-copy', spec['variant'], '--hermes-home', str(hh)]) == 1
+    err = capsys.readouterr().err
+    receipt = json.loads(err.split('Incomplete builder recovery: ', 1)[1])
+    assert receipt['state'] == 'recovery_required'
+    assert receipt['failed_paths'] == [str(cmd)]
+    assert receipt['original_location'] == str(skill)
+    assert receipt['current_target'] is None
+    assert receipt['preserved_copy'].startswith(str(osh / 'builder/local-copy-'))
+    assert bb._local_snapshot(skill) == spec['entries']
+    assert cmd.is_file()  # honest partial failure, not an atomicity claim
+
+
+@pytest.mark.parametrize('kind', ['directory', 'symlink', 'dangling'])
+def test_config_publication_conflict_refuses_before_migration(local, kind):
+    osh, hh, skill, spec = local
+    cfg = hh / 'config.yaml'
+    cfg.unlink()
+    if kind == 'directory':
+        cfg.mkdir()
+    else:
+        cfg.symlink_to(hh / ('missing' if kind == 'dangling' else 'owner-config'))
+        if kind == 'symlink':
+            (hh / 'owner-config').write_text('owner config')
+    with pytest.raises(ValueError, match='Unmanaged publication file'):
+        bb.install(osh, migrate_local_copy=spec['variant'], hermes_home=hh)
     assert bb._local_snapshot(skill) == spec['entries']
     assert not (osh / 'builder').exists()
 

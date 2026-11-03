@@ -37,10 +37,10 @@ def main():
         else:
             raise AssertionError('Normal install overwrote custom tree')
         bb.check_collisions(hh, osh, migrate_local_copy=spec['variant'])
-        out = bb.install(osh, migrate_local_copy=spec['variant'])
+        out = bb.install(osh, migrate_local_copy=spec['variant'], hermes_home=hh)
         saved = Path(out['preserved_local_copy'])
         assert bb._local_snapshot(saved) == before == spec['entries']
-        bb.register(hh, osh)
+        assert out['registered'] == str(osh / 'system-skills')
         assert all(r[1] for r in bb.health(osh, hh))
         assert alias.resolve() == skill.resolve()
         for source in (bb.SOURCE / 'system-skills/wizard-builder').rglob('*'):
