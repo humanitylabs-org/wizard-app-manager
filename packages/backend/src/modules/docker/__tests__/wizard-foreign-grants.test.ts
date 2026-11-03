@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as yaml from 'yaml';
 import { WizardStorage } from '../wizard-storage';
 import { reconcileAppGrants } from '../wizard-app-grants';
@@ -21,7 +21,7 @@ const original = (to = provider) => ({
   outgoing: { [to]: key },
   incoming: [{ from: 'unmanaged-gateway', sha256: 'f'.repeat(64) }],
   provider_endpoints: { [to]: endpoint },
-  provider_endpoints_all: { [to]: { [provider]: endpoint, 'stale-provider': 'http://stale:8799' } },
+  provider_endpoints_all: { [to]: { [provider]: endpoint, 'stale-provider': 'http://stale:8799' } as Record<string, string> },
   enforce: true,
   owner_extension: { retained: true },
 });
@@ -143,6 +143,62 @@ describe('existing keys to providers managed by another store', () => {
     expect((await read()).provider_endpoints[provider]).toBe('http://new-owner-endpoint:8800');
     expect((await read()).owner_extension.addedAfterUpgrade).toBe(true);
     expect(JSON.parse(await fs.readFile(legacy, 'utf8'))).toEqual(await read());
+  });
+
+  it('migrates an already-adopted old installation without dropping its existing foreign grant', async () => {
+    await setup();
+    const state = await store.readGrants();
+    state.layer2 = { adopted: [consumer] };
+    await store.writeGrants(state);
+    await store.reconcile();
+    expect((await read()).outgoing[provider]).toBe(key);
+    expect((await store.readGrants()).grants).toContainEqual(expect.objectContaining({ from: consumer, to: provider, approved: 'owner' }));
+    await store.reconcile();
+    expect((await read()).outgoing[provider]).toBe(key);
+  });
+
+  it.each([false, true])('Restore defaults revokes foreign access even after an interrupted reset (interrupted=%s)', async (interrupted) => {
+    await setup();
+    await store.reconcile();
+    if (interrupted) {
+      const write = store.writeGrants.bind(store);
+      let saves = 0;
+      const spy = vi.spyOn(store, 'writeGrants').mockImplementation(async (f) => {
+        if (++saves === 2) throw new Error('fixture interrupted reset before physical revocation');
+        return write(f);
+      });
+      try {
+        await expect(store.resetConnections()).rejects.toThrow('fixture interrupted reset');
+      } finally { spy.mockRestore(); }
+      expect((await read()).outgoing[provider]).toBe(key);
+    } else {
+      await store.resetConnections();
+    }
+    await store.reconcile();
+    await store.reconcile();
+    expect((await read()).outgoing).toEqual({});
+    expect((await read()).provider_endpoints).toEqual({});
+    expect((await read()).provider_endpoints_all).toEqual({});
+    expect((await store.readGrants()).grants.some((g) => g.from === consumer && g.to === provider)).toBe(false);
+  });
+
+  it.each([false, true])('replaces a removed qualified primary without resurrecting it in mixed slots (mixed=%s)', async (mixed) => {
+    await setup(target);
+    await install('second-provider', 'another-store', { provides: ['sample-data'] });
+    if (mixed) await install('managed-provider', 'wizardapps', { provides: ['sample-data'] });
+    const doc = original(target);
+    doc.provider_endpoints_all[target] = { ...doc.provider_endpoints_all[target], 'second-provider': 'http://second-provider:8800' };
+    await fs.writeFile(grantPath(), JSON.stringify(doc));
+    await store.reconcile();
+    installed = installed.filter((a) => a.appName !== provider);
+    await store.reconcile();
+    await store.reconcile();
+    const now = await read();
+    expect(now.outgoing[target]).toBe(key);
+    expect(now.provider_endpoints[target]).not.toBe(endpoint);
+    expect(Object.values(now.provider_endpoints_all[target])).toContain(now.provider_endpoints[target]);
+    expect(now.provider_endpoints_all[target][provider]).toBeUndefined();
+    expect(now.provider_endpoints_all[target]['second-provider']).toBe('http://second-provider:8800');
   });
 
   it('retries an interrupted metadata save without restoring stale keys over newer writes', async () => {
