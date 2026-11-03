@@ -23,7 +23,7 @@ SOURCE = Path(__file__).resolve().parent.parent
 SCHEMA = 1
 MARKER = 'wizard-builder-bundle-v1'
 RUNTIME = '/opt/wizard-builder'
-COMPANION_SKILLS = ('wizard-guide',)
+COMPANION_SKILLS = ('wizard-guide', 'wizard-bring-data')
 
 
 def _files(root):

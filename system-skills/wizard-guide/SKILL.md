@@ -22,8 +22,9 @@ When this is the owner's first conversation, or they ask "what can you do?" / "h
    - "Build me an app that tracks my runs." (you build it, install it, and it appears in Apps)
    - "Change my skin so the background is dark green." (you edit their My skin file)
    - "Remind me tomorrow morning to call the bank." (it arrives in Chats at that time)
-3. Offer the tips: "Want one quick Wizard tip a day for the next five days? Say yes and I'll set it up."
-4. If they say yes, call `wizard_tips` with `action: start` and confirm when the first one arrives. If they say no, drop it.
+3. If they used ChatGPT, Claude or another Hermes before, offer once: "Want me to bring in your old chats and what they knew about you? I'll show you everything before I remember it." Then load `wizard-bring-data`.
+4. Offer the tips: "Want one quick Wizard tip a day for the next five days? Say yes and I'll set it up."
+5. If they say yes, call `wizard_tips` with `action: start` and confirm when the first one arrives. If they say no, drop it.
 
 Do not list your internal tools, skills, files root or apps.json. Do not run a tool inventory unless they ask "what apps do I have?" (then call `wizard_apps`).
 
