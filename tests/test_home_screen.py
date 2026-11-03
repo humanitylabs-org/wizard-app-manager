@@ -19,7 +19,7 @@ def test_valid_is_normalized():
     assert wizardmd.home_screen({'home_screen': {'offline': True}}) == {'offline': True}
 
 
-@pytest.mark.parametrize('value', ['offline', [], {'offline': 'true'}, {'offline': 1}, {'x': True}, {'position_keys': 'a'},
+@pytest.mark.parametrize('value', [None, 'offline', [], {'offline': 'true'}, {'offline': 1}, {'x': True}, {'position_keys': 'a'},
                                    {'position_keys': ['*']}, {'position_keys': ['ab*']}, {'position_keys': ['abc'] * 9},
                                    {'position_keys': ['x' * 121]}, {'position_keys': ['abc\n']}, {'route_state': '1a'}, {'route_state': 3}])
 def test_invalid(value):

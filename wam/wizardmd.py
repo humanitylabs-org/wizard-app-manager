@@ -145,9 +145,9 @@ def home_screen(manifest: dict) -> dict:
 
     Returns only what was declared: offline (true), position_keys (patterns) and route_state (a name).
     """
-    hs = manifest.get("home_screen")
-    if hs is None:
+    if "home_screen" not in manifest:
         return {}
+    hs = manifest["home_screen"]  # a present null is malformed, not absent
     if not isinstance(hs, dict) or set(hs) - HOME_SCREEN_KEYS:
         raise ValueError("home_screen must be a mapping with only offline, position_keys and route_state")
     out: dict = {}
