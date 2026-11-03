@@ -1747,6 +1747,15 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id == MAIN_COMPARE_PATH:   # Settings → About: how far this shell is from main (main_compare.py)
+            if method != "GET":
+                return self._json(405, {"error": "GET only"})
+            from . import main_compare
+            try:
+                commit = (parse_qs(urlparse(self.path).query).get("commit") or [""])[0]
+                return self._json(200, main_compare.compare(commit))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)[:200]})
         if app_id.startswith('_views/'):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
@@ -1935,6 +1944,7 @@ class StoreHandler(BaseHTTPRequestHandler):
 
 
 UPDATES_PATH = "_updates"
+MAIN_COMPARE_PATH = "_main-compare"
 
 
 # ---------------------------------------------------------------- main
