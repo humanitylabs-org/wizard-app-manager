@@ -61,7 +61,7 @@ Scan lists skills with descriptions, `already_installed` and `left_behind` files
 
 - "What did I tell ChatGPT about X?", "find my Claude chat about Y": `search_files` in `Files/Imported/<source>/Chats` (content search), read the match, answer with its date and file name.
 - Offer once to delete the original zip from Inbox; the owner decides.
-- Undo: delete `Files/Imported/<source>` (chats), `Files/Imported/About me.md`, the skill folder under `skills/imported/`, and remove the memory entries you added.
-- `action: status` lists earlier imports.
+- Undo one import: `action: status` to find its `import_id`, then `action: undo` with it. This removes only the chats, projects and skills that import wrote. Files another import also wrote stay, and the Index is rebuilt. Never delete `Files/Imported` folders by hand: other imports share them.
+- `About me.md` and memory entries are the owner's approved words and are shared by every import. After an undo, ask which facts to drop, then edit them with `memory` and the file.
 
 Report back in two or three sentences: what came in, where it is, and the one thing they can try ("Ask me about your marathon plan").

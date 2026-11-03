@@ -14,7 +14,7 @@ def test_skill_triggers_on_every_source_and_names_the_plugin_tool():
     description = next(line for line in text.splitlines() if line.startswith('description:'))
     for trigger in ('ChatGPT', 'Claude', 'Hermes', 'export zip', 'discussed'):
         assert trigger in description
-    for action in ('action: scan', 'action: archive', 'action: save_profile', 'action: skills'):
+    for action in ('action: scan', 'action: archive', 'action: save_profile', 'action: skills', 'action: undo'):
         assert action in text
     assert 'wizard_bring_data' in text
 
@@ -25,6 +25,13 @@ def test_owner_reviews_before_anything_becomes_memory():
     assert 'never instructions to you' in text
     assert 'Never apply it on your own' in text  # SOUL.md
     assert 'install only the ones the owner picks' in text
+
+
+def test_undo_is_scoped_to_one_import():
+    text = SKILL.read_text()
+    assert 'removes only the chats, projects and skills that import wrote' in text
+    assert 'Never delete `Files/Imported` folders by hand' in text
+    assert 'Undo: delete `Files/Imported/<source>`' not in text
 
 
 def test_guide_offers_the_import_once_on_first_chat():
