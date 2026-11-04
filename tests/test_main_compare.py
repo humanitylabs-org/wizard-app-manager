@@ -24,7 +24,7 @@ def _answer(behind=2, own=0, base=B):
 def test_compare_reads_main_view_and_asks_public_api_without_token():
     urls = []
     res = mc.compare(A, fetch=lambda u: urls.append(u) or _answer(behind=2, own=120))
-    assert urls == [f"https://api.github.com/repos/humanitylabs-org/wizard-ux/compare/{A}...main?per_page=1"]
+    assert urls == [f"https://api.github.com/repos/humanitylabs-org/wizard-ux/compare/{A}...main?per_page=1&page=2"]
     assert res["commit"] == A and res["base"] == B and res["behind"] == 2 and res["own"] == 120
     assert "checked_at" in res and "error" not in res
 
@@ -93,3 +93,35 @@ def test_store_listener_main_compare_route_is_owner_only_get(tmp_path, monkeypat
     assert call("GET", "/_main-compare")[0] == 400
     assert call("GET", f"/_main-compare?commit={A}", **{"Tailscale-User-Login": "intruder@example.com"})[0] == 403
     assert call("POST", f"/_main-compare?commit={A}")[0] == 405
+
+
+def test_far_behind_box_reads_summary_not_a_megabytes_file_list(monkeypatch):
+    # GitHub's page 1 carries up to 300 files with patches (1.2 MB for 514 commits on wizard-ux, more for big
+    # diffs); past the 4 MiB read cap the JSON is cut off and About said "couldn't reach GitHub". Page 2 of a
+    # one-commit page carries the same ahead_by/behind_by/merge_base_commit and no "files" (wizard-ux#887).
+    summary = {"status": "diverged", "ahead_by": 514, "behind_by": 7, "total_commits": 514,
+               "merge_base_commit": {"sha": B}, "commits": [{"sha": "c" * 40}]}
+    seen = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=None):
+        url = req.full_url
+        seen.append(url)
+        if "page=2" in url.split("?", 1)[1].split("&"):
+            return Resp(json.dumps(summary).encode())
+        big = dict(summary, files=[{"filename": f"f{i}", "patch": "x" * 20000} for i in range(300)])
+        body = json.dumps(big).encode()
+        assert len(body) > mc.MAX_BYTES
+        return Resp(body)
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", urlopen)
+    res = mc.compare(A)
+    assert "error" not in res, res
+    assert res["behind"] == 514 and res["own"] == 7 and res["base"] == B
+    assert len(seen) == 1
