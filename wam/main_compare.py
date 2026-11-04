@@ -3,6 +3,8 @@
 The shell sends the commit its image was built from (its build.json). This module asks GitHub's public compare
 API with no token, so no credential leaves the box. Each answer is cached for an hour (a failure for ten minutes),
 so About can be opened any number of times and the box still asks at most once an hour per commit.
+It asks for page 2 of a one-commit page: GitHub then sends the ahead/behind summary and merge base but no file
+list, which on page 1 can run to megabytes and overflow the read cap (wizard-ux#887).
 
     compare(commit) -> {"commit", "base", "behind", "own", "checked_at"}   base = the main commit it sits on
                     -> {"commit", "error"}                                 unknown commit / GitHub unreachable
@@ -36,7 +38,7 @@ def compare(commit: str, fetch=None, now=time.monotonic) -> dict:
     if hit and now() < hit[0]:
         return hit[1]
     try:
-        d = (fetch or _fetch)(f"https://api.github.com/repos/{REPO}/compare/{commit}...main?per_page=1")
+        d = (fetch or _fetch)(f"https://api.github.com/repos/{REPO}/compare/{commit}...main?per_page=1&page=2")
         base = d["merge_base_commit"]["sha"]
         behind, own = d["ahead_by"], d["behind_by"]          # main's view: main is ahead of the box by `behind`
         if not (isinstance(base, str) and SHA.fullmatch(base) and type(behind) is int and type(own) is int
