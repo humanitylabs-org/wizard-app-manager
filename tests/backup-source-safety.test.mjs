@@ -217,8 +217,13 @@ test('a failed rollback retains the previous source on disk for recovery', async
   await assert.rejects(f.manager.restoreApp(urn, filename));
   const siblings = await fs.promises.readdir(path.dirname(f.context));
   assert.equal(siblings.length, 1);
-  assert(siblings[0].startsWith(`${path.basename(f.context)}.restore-`));
+  assert(siblings[0].includes('restore-'));
   const previous = path.join(path.dirname(f.context), siblings[0], 'previous');
+  assert.equal(await fs.promises.readFile(path.join(previous, 'Dockerfile'), 'utf8'), 'CURRENT');
+  // Reinstall/update invokes this production cleanup even for the same commit.
+  // Recovery bytes must live outside its app@commit source namespace.
+  const { pruneSources, sourceDirName } = loadProduction(f.root);
+  await pruneSources(path.join(f.root, 'app-data'), 'store', 'demo', sourceDirName('demo', commit));
   assert.equal(await fs.promises.readFile(path.join(previous, 'Dockerfile'), 'utf8'), 'CURRENT');
   assert.equal(await fs.promises.readFile(path.join(previous, 'current-only.txt'), 'utf8'), 'keep me');
   assert.equal(await fs.promises.readFile(path.join(f.appDataDir, 'data.txt'), 'utf8'), 'current data');

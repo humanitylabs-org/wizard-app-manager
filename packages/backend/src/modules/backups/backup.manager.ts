@@ -263,7 +263,8 @@ export class BackupManager {
     }
     // Sibling staging guarantees same-filesystem renames. Keep the previous
     // context until the fully copied replacement has actually been committed.
-    const staging = await fs.promises.mkdtemp(`${context}.restore-`);
+    // Stay outside app@commit: pruneSources must not sweep retained recovery bytes.
+    const staging = await fs.promises.mkdtemp(path.join(path.dirname(context), `.restore-${path.basename(context)}-`));
     const stagedSource = path.join(staging, 'source');
     const previous = path.join(staging, 'previous');
     let movedCurrent = false;
