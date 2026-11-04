@@ -9,7 +9,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { sourceDir } from '../app-stores/packaging';
+import { SOURCE_LIMIT_BYTES, sourceDir } from '../app-stores/packaging';
 
 @Injectable()
 export class BackupManager {
@@ -218,7 +218,12 @@ export class BackupManager {
   // first readlink target, and reject cycles before cp can recurse into them.
   private async validateBackupSource(directory: string) {
     const root = await fs.promises.realpath(this.filesystem.getSafeFilePath(directory));
-    const validateEntry = async (entryPath: string) => {
+    // Count each output path, including aliases: confined directory links can
+    // expand a small checkout into exponentially many portable copies.
+    const admissionBudget = { entries: 0, bytes: 0 };
+    const copyBudget = { entries: 0, bytes: 0 };
+    const validateEntry = async (entryPath: string, budget: { entries: number; bytes: number }) => {
+      if (++budget.entries > 100_000) throw new Error('Backup source exceeds 100000 entry limit');
       const linkStats = await fs.promises.lstat(entryPath);
       if (linkStats.isSymbolicLink()) {
         const target = await fs.promises.readlink(entryPath);
@@ -234,10 +239,14 @@ export class BackupManager {
       if ((!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink > 1)) {
         throw new Error('Backup contains unsupported file types');
       }
+      if (stats.isFile()) {
+        budget.bytes += stats.size;
+        if (budget.bytes > SOURCE_LIMIT_BYTES) throw new Error('Backup source exceeds source byte limit');
+      }
       return { resolved, stats };
     };
     const walk = async (entryPath: string, ancestors: Set<string>): Promise<void> => {
-      const { resolved, stats } = await validateEntry(entryPath);
+      const { resolved, stats } = await validateEntry(entryPath, admissionBudget);
       if (stats.isDirectory()) {
         if (ancestors.has(resolved)) {
           throw new Error('Backup source contains a directory link cycle');
@@ -251,7 +260,7 @@ export class BackupManager {
     await walk(directory, new Set());
     // Recheck each entry as cp visits it, not only during the initial walk.
     return async (entryPath: string) => {
-      await validateEntry(entryPath);
+      await validateEntry(entryPath, copyBudget);
       return true;
     };
   }
