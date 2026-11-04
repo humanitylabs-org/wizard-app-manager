@@ -62,19 +62,25 @@ describe('BackupManager former named-volume data', () => {
     await writeFile(path.join(appDataDir, 'volumes', 'backups', '.login'), 'former-volume-proof');
     await writeFile(path.join(appDataDir, 'data', 'claude', '.credentials.json'), 'provider-owned-proof');
     await writeFile(path.join(appInstalledDir, 'wizard.md'), 'manifest');
+    const commit = 'a'.repeat(40);
+    const sourceRoot = path.join(dataDir, 'sources');
+    await writeFile(path.join(appInstalledDir, '.wizard-commit'), commit);
+    await writeFile(path.join(sourceRoot, '.wizard-source', 'wizardapps', `wizard-claude@${commit.slice(0, 12)}`, 'Dockerfile'), 'FROM scratch\n');
     const logger = createLogger();
     const filesystem = new FilesystemService(logger);
     vi.spyOn(filesystem, 'createTempDirectory').mockResolvedValue(staging);
     const createTarGz = vi.fn(async (source: string, dest: string) => {
       expect(await fs.promises.readFile(path.join(source, 'app-data/volumes/backups/.login'), 'utf8')).toBe('former-volume-proof');
       expect(await fs.promises.readFile(path.join(source, 'app-data/data/claude/.credentials.json'), 'utf8')).toBe('provider-owned-proof');
+      expect(await fs.promises.readFile(path.join(source, 'app-source', 'Dockerfile'), 'utf8')).toBe('FROM scratch\n');
+      expect(await fs.promises.readFile(path.join(source, 'app', '.wizard-commit'), 'utf8')).toBe(commit);
       await writeFile(dest, 'archive-placeholder-only');
       return { stdout: '', stderr: '' };
     });
     const manager = new BackupManager(
       { createTarGz } as unknown as ArchiveService,
       logger,
-      { get: () => ({ dataDir }) } as unknown as ConfigurationService,
+      { get: () => ({ dataDir, appDataDir: sourceRoot }) } as unknown as ConfigurationService,
       filesystem,
       { getAppPaths: () => ({ appDataDir, appInstalledDir }) } as unknown as AppFilesManager,
     );
@@ -229,5 +235,47 @@ describe('BackupManager restore security', () => {
     await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'file.txt'), 'utf8')).resolves.toBe('restored data\n');
     await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.yml'), 'utf8')).resolves.toBe('services: {}\n');
     await expect(fs.promises.readFile(path.join(userConfigDir, 'app.env'), 'utf8')).resolves.toBe('RESTORED=true\n');
+  });
+
+  it('restores the saved source context after an update prunes the old commit', async () => {
+    const commit = 'a'.repeat(40);
+    const context = path.join(rootDir, 'app-data', '.wizard-source', 'test-store', `test-app@${commit.slice(0, 12)}`);
+    listTarGz.mockResolvedValue([
+      { path: './app-data/', type: 'd' },
+      { path: './app/', type: 'd' },
+      { path: './app/.wizard-commit', type: '-' },
+      { path: './app-source/Dockerfile', type: '-' },
+    ]);
+    extractTarGz.mockImplementation(async (_archive: string, destination: string) => {
+      await fs.promises.mkdir(path.join(destination, 'app-data'), { recursive: true });
+      await writeFile(path.join(destination, 'app', '.wizard-commit'), commit);
+      await writeFile(path.join(destination, 'app', 'docker-compose.yml'), `services:\n  app:\n    build: ${context}\n`);
+      await writeFile(path.join(destination, 'app-source', 'Dockerfile'), 'FROM scratch\n');
+      await writeFile(path.join(destination, 'app-source', 'server.py'), 'print("old code")\n');
+      return { stdout: '', stderr: '' };
+    });
+    expect(fs.existsSync(context)).toBe(false);
+    await backupManager.restoreApp(appUrn, 'backup.tar.gz');
+    expect(await fs.promises.readFile(path.join(context, 'Dockerfile'), 'utf8')).toBe('FROM scratch\n');
+    expect(await fs.promises.readFile(path.join(context, 'server.py'), 'utf8')).toBe('print("old code")\n');
+    expect(await fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.yml'), 'utf8')).toContain(context);
+  });
+
+  it('rejects archived source without a valid installed pin before touching live data', async () => {
+    await writeFile(path.join(appDataDir, 'current.txt'), 'keep current data');
+    extractTarGz.mockImplementation(async (_archive: string, destination: string) => {
+      await fs.promises.mkdir(path.join(destination, 'app-data'), { recursive: true });
+      await writeFile(path.join(destination, 'app', '.wizard-commit'), '../../outside');
+      await writeFile(path.join(destination, 'app-source', 'Dockerfile'), 'FROM scratch');
+      return { stdout: '', stderr: '' };
+    });
+    await expect(backupManager.restoreApp(appUrn, 'backup.tar.gz')).rejects.toThrow('no valid installed commit');
+    expect(await fs.promises.readFile(path.join(appDataDir, 'current.txt'), 'utf8')).toBe('keep current data');
+  });
+
+  it('rejects source symlinks before extracting the archive', async () => {
+    listTarGz.mockResolvedValue([{ path: './app-source/Dockerfile', type: 'l' }]);
+    await expect(backupManager.restoreApp(appUrn, 'backup.tar.gz')).rejects.toThrow('unsupported file types');
+    expect(extractTarGz).not.toHaveBeenCalled();
   });
 });
