@@ -2215,6 +2215,14 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    oe = sub.add_parser("owner-edge", help="serve the owner edge for apps that declare owner_proof (systemd unit)")
+    oe.add_argument("action", choices=["serve"])
+    opp = sub.add_parser("owner-proof", help="owner proof keys for apps that declare owner_proof (spec OWNER_PROOF.md)")
+    opp.add_argument("action", choices=["status", "provision"]); opp.add_argument("app", nargs="?")
+    opp.add_argument("--adopt-proof", help="existing private 32-byte proof key to keep (migration)")
+    opp.add_argument("--adopt-wrap", help="existing app wrap key file to keep (migration; read inside a container)")
+    opp.add_argument("--image", help="image for the key-copy container (default: the recipe's main image)")
+    opp.add_argument("--json", action="store_true"); opp.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
     tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
@@ -2402,6 +2410,25 @@ def main(argv: list[str] | None = None) -> int:
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "owner-edge":
+            from . import owner_edge
+            owner_edge.run(c.home)
+            return 0
+        elif args.cmd == "owner-proof":
+            from . import owner_proof
+            if args.action == "status":
+                rows = owner_proof.status(c, json.loads((c.home / "apps.json").read_text()))
+                print(json.dumps(rows, indent=2) if args.json else "\n".join(
+                    f"{r['app']}: keys {'ok' if r['edge_key'] and r['app_keys'] else 'missing'}, "
+                    f"edge {'running' if r['edge'] else 'not running'}" for r in rows) or "No app declares owner_proof.")
+                return 0
+            if not args.app:
+                raise SystemExit("wam owner-proof provision <app>")
+            res = owner_proof.provision(c, args.app, store=STORE, dry_run=args.dry_run, image=args.image,
+                                        adopt_proof=Path(args.adopt_proof) if args.adopt_proof else None,
+                                        adopt_wrap=Path(args.adopt_wrap) if args.adopt_wrap else None)
+            print(json.dumps(res, indent=2))
+            return 0
         elif args.cmd == "links":
             from . import links
             if args.dry_run:
