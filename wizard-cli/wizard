@@ -1074,12 +1074,6 @@ def cmd_link(ns) -> dict:
     try:
         # 1. the one MCP entry (never touches other mcp_servers entries)
         remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url, existing))
-        # 1b. lean long chats (stock Hermes settings, off by default); never overrides an owner's own value
-        for key, value in (("compression.proactive_prune_tokens", 48000), ("compression.threshold_tokens", 250000)):
-            try:
-                raw_get(raw_config(home), key)
-            except KeyError:
-                remember(key, value)
         # 2. app + pointer skills as an extra skills dir
         try:
             dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])

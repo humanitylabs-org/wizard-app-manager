@@ -453,15 +453,3 @@ def test_undo_interrupted_after_restoring_is_replayed_safely(tmp_path):
     assert run_plugin(tmp_path, 'a' * 40) == {'plugin': 'current', 'changed': False, 'managed': True}
     assert 'ref: ' + 'a' * 40 in (tmp_path / 'plugins/wizard-os/plugin.yaml').read_text()
     assert not (tmp_path / 'plugins/.wizard-fresh-link.backup').exists()
-
-
-def test_edit_sets_lean_chat_defaults_once_and_keeps_owner_values(tmp_path):
-    (tmp_path / 'config.yaml').write_text('{}\n')
-    assert json.loads(run_edit(tmp_path).stdout)['config_changed']
-    comp = yaml.safe_load((tmp_path / 'config.yaml').read_text())['compression']
-    assert comp == {'proactive_prune_tokens': 48000, 'threshold_tokens': 250000}
-    assert not json.loads(run_edit(tmp_path).stdout)['config_changed']
-    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({'compression': {'threshold_tokens': None, 'threshold': 0.4}}))
-    run_edit(tmp_path)
-    comp = yaml.safe_load((tmp_path / 'config.yaml').read_text())['compression']
-    assert comp == {'threshold_tokens': None, 'threshold': 0.4, 'proactive_prune_tokens': 48000}

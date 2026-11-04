@@ -219,10 +219,8 @@ def test_link_writes_a_lazy_wizard_entry_and_keeps_an_owner_choice(homes, wizard
     entry = yaml.safe_load((hh / 'config.yaml').read_text())['mcp_servers']['wizard']
     assert entry['lazy'] is True and entry['url'].endswith('/wizard/mcp')
     assert entry['headers'] == {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}
-    comp = yaml.safe_load((hh / 'config.yaml').read_text())['compression']
-    assert comp['proactive_prune_tokens'] == 48000 and comp['threshold_tokens'] == 250000
     w.cmd_unlink(ns(hh))
-    assert (hh / 'config.yaml').read_bytes() == before   # unlink restores the owner's own compression too
+    assert (hh / 'config.yaml').read_bytes() == before
     assert w.mcp_entry('http://x/wizard/mcp', {'url': 'http://x/wizard/mcp', 'lazy': False})['lazy'] is False
     assert w.mcp_entry('http://x/wizard/mcp', {'url': 'http://x/wizard/mcp'})['lazy'] is True
     assert w.mcp_entry('http://x/wizard/mcp')['lazy'] is True
