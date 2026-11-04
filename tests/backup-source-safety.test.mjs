@@ -229,6 +229,45 @@ test('a failed rollback retains the previous source on disk for recovery', async
   assert.equal(await fs.promises.readFile(path.join(f.appDataDir, 'data.txt'), 'utf8'), 'current data');
 });
 
+test('source admission bounds dereferenced bytes before copying a sparse target through aliases', async (t) => {
+  const f = await fixture(t);
+  const { SOURCE_LIMIT_BYTES } = loadProduction(f.root);
+  const target = path.join(f.context, 'sparse.bin');
+  const handle = await fs.promises.open(target, 'w');
+  try { await handle.truncate(Math.floor(SOURCE_LIMIT_BYTES / 2)); } finally { await handle.close(); }
+  await fs.promises.symlink('sparse.bin', path.join(f.context, 'alias-one'));
+  await fs.promises.symlink('sparse.bin', path.join(f.context, 'alias-two'));
+  // Admission only: never materialize the sparse bytes in the control run.
+  await assert.rejects(f.manager.validateBackupSource(f.context), /Backup source exceeds.*byte limit/);
+  await fs.promises.unlink(path.join(f.context, 'alias-one'));
+  await fs.promises.unlink(path.join(f.context, 'alias-two'));
+  const admitCopy = await f.manager.validateBackupSource(f.context);
+  // A distinct copy budget rechecks output, without inheriting the walk's sum.
+  await admitCopy(target);
+  await admitCopy(target);
+  await assert.rejects(admitCopy(target), /Backup source exceeds.*byte limit/);
+});
+
+test('source admission bounds zero-byte expansion (synthetic directory inventory)', async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.context, 'Dockerfile');
+  await fs.promises.writeFile(file, '');
+  const original = Object.fromEntries(['realpath', 'stat', 'lstat', 'readdir'].map((key) => [key, fs.promises[key]]));
+  const directoryStats = await original.stat(f.context);
+  const fileStats = await original.stat(file);
+  t.after(() => Object.assign(fs.promises, original));
+  // This facade tests the production admission counter, not filesystem scale.
+  fs.promises.realpath = async (p, ...rest) => [f.context, file].includes(p) ? p : original.realpath(p, ...rest);
+  fs.promises.stat = async (p, ...rest) => p === f.context ? directoryStats : p === file ? fileStats : original.stat(p, ...rest);
+  fs.promises.lstat = async (p, ...rest) => p === f.context ? directoryStats : p === file ? fileStats : original.lstat(p, ...rest);
+  fs.promises.readdir = async (p, ...rest) => p === f.context ? Array(100001).fill('Dockerfile') : original.readdir(p, ...rest);
+  await assert.rejects(f.manager.validateBackupSource(f.context), /Backup source exceeds.*entry limit/);
+  fs.promises.readdir = async (p, ...rest) => p === f.context ? ['Dockerfile'] : original.readdir(p, ...rest);
+  const admitCopy = await f.manager.validateBackupSource(f.context);
+  for (let i = 0; i < 100000; i++) await admitCopy(file);
+  await assert.rejects(admitCopy(file), /Backup source exceeds.*entry limit/);
+});
+
 test('archive source symlinks and hardlinks remain rejected before extraction', async (t) => {
   const f = await fixture(t);
   const filename = await f.backup();
