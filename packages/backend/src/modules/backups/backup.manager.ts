@@ -9,6 +9,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { sourceDir } from '../app-stores/packaging';
 
 @Injectable()
 export class BackupManager {
@@ -75,6 +76,19 @@ export class BackupManager {
     });
 
     await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
+
+    // Source/build code lives beside per-app data and is pruned on update.
+    // Include the installed pin's context so an offline restore can build/start it.
+    const commit = (await this.filesystem.readTextFile(path.join(appInstalledDir, '.wizard-commit')))?.trim();
+    if (commit && /^[0-9a-f]{40}$/.test(commit)) {
+      const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
+      if (await this.filesystem.isDirectory(context)) {
+        await this.validateRestoreDirectory(context, { allowSymlinks: false, rejectHardLinks: true });
+        if (!(await this.filesystem.copyDirectory(context, path.join(tempDir, 'app-source')))) {
+          throw new Error('Failed to include installed source context in backup');
+        }
+      }
+    }
 
     if (await this.filesystem.isDirectory(userConfigDir)) {
       this.logger.info('Including user configuration in backup...');
@@ -155,6 +169,26 @@ export class BackupManager {
       );
 
       const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+
+      const archivedSource = path.join(restoreDir, 'app-source');
+      await this.validateRestoreDirectory(
+        archivedSource,
+        { allowSymlinks: false, optional: true, rejectHardLinks: true },
+        undefined,
+        runValidationFsOperation,
+      );
+      if (await this.filesystem.isDirectory(archivedSource)) {
+        const commit = (await this.filesystem.readTextFile(path.join(restoreDir, 'app', '.wizard-commit')))?.trim();
+        if (!commit || !/^[0-9a-f]{40}$/.test(commit)) {
+          throw new Error('Backup source context has no valid installed commit');
+        }
+        const { appName, appStoreId } = extractAppUrn(appUrn);
+        const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
+        // Fail before replacing app/data if the saved code cannot be recovered.
+        if (!(await this.filesystem.removeDirectory(context)) || !(await this.filesystem.copyDirectory(archivedSource, context))) {
+          throw new Error('Failed to restore installed source context');
+        }
+      }
 
       // Remove old data directories
       await this.filesystem.removeDirectory(appDataDir);
