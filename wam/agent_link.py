@@ -194,6 +194,18 @@ if have != want:
     servers[name] = want
     cfg['mcp_servers'] = servers
     out['config_changed'] = True
+# Lean long chats (stock Hermes settings, off by default): trim old bulky tool output once re-sent history passes
+# 48k tokens, and compact by 250k tokens whatever the model's window. Only written where the owner set nothing.
+comp = cfg.get('compression')
+if comp is None or isinstance(comp, dict):
+    have_comp = dict(comp or {})
+    comp = dict(have_comp)
+    for k, v in (('proactive_prune_tokens', 48000), ('threshold_tokens', 250000)):
+        if k not in have_comp:
+            comp[k] = v
+    if comp != have_comp:
+        cfg['compression'] = comp
+        out['config_changed'] = True
 sk = cfg.get('skills') or {}
 if not isinstance(sk, dict) or not isinstance(sk.get('external_dirs', []) or [], list):
     raise SystemExit('skills.external_dirs is not a list; left alone')
