@@ -758,8 +758,12 @@ def gateway_url(ns) -> str:
     return f"http://127.0.0.1:{int(port)}/wizard/mcp"
 
 
-def mcp_entry(url: str) -> dict:
-    return {"url": url, "headers": {"Authorization": f"Bearer ${{{TOKEN_ENV}}}"}}
+def mcp_entry(url: str, existing=None) -> dict:
+    """The `wizard` MCP entry. `lazy: true` lets Hermes register the app tools from its schema cache at chat start
+    (the Agent Service's tools/list carries ttlMs/cacheScope) instead of racing the first connect; Hermes falls back
+    to an eager connect when the cache is missing or stale. An owner's own `lazy` choice is kept."""
+    lazy = existing.get("lazy") if isinstance(existing, dict) and isinstance(existing.get("lazy"), bool) else True
+    return {"url": url, "headers": {"Authorization": f"Bearer ${{{TOKEN_ENV}}}"}, "lazy": lazy}
 
 
 def read_record() -> dict | None:
@@ -1069,7 +1073,7 @@ def cmd_link(ns) -> dict:
 
     try:
         # 1. the one MCP entry (never touches other mcp_servers entries)
-        remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url))
+        remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url, existing))
         # 2. app + pointer skills as an extra skills dir
         try:
             dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])

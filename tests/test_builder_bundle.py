@@ -209,6 +209,23 @@ def test_link_repeat_refresh_unlink_and_owner_edits(homes, wizard, tmp_path):
     assert cfg['owner'] == 'kept'
 
 
+def test_link_writes_a_lazy_wizard_entry_and_keeps_an_owner_choice(homes, wizard):
+    """`lazy: true` on the wizard MCP entry: Hermes registers the app tools from its schema cache at chat start (the
+    gateway's tools/list carries ttlMs/cacheScope) and falls back to eager connect when the cache is missing/stale."""
+    _, hh = homes
+    w, _ = wizard
+    before = (hh / 'config.yaml').read_bytes()
+    w.cmd_link(ns(hh))
+    entry = yaml.safe_load((hh / 'config.yaml').read_text())['mcp_servers']['wizard']
+    assert entry['lazy'] is True and entry['url'].endswith('/wizard/mcp')
+    assert entry['headers'] == {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}
+    w.cmd_unlink(ns(hh))
+    assert (hh / 'config.yaml').read_bytes() == before
+    assert w.mcp_entry('http://x/wizard/mcp', {'url': 'http://x/wizard/mcp', 'lazy': False})['lazy'] is False
+    assert w.mcp_entry('http://x/wizard/mcp', {'url': 'http://x/wizard/mcp'})['lazy'] is True
+    assert w.mcp_entry('http://x/wizard/mcp')['lazy'] is True
+
+
 def test_modified_plugin_refresh_is_refused(homes, wizard):
     _, hh = homes
     w, _ = wizard

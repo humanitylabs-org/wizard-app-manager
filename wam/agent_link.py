@@ -4,7 +4,8 @@ Alongside mode does this with `wizard link` against the owner's own Hermes. On a
 the agent had no `wizard` MCP server and no pointer skills, and answered "DeFleur isn't installed" while
 DeFleur was running (release 0.2.2 end-to-end test). This is the same three-part link, for the app:
 
-  1. `mcp_servers.wizard` -> http://wizard-agent-service:8787/wizard/mcp with `Bearer ${WIZARD_MCP_TOKEN}`,
+  1. `mcp_servers.wizard` -> http://wizard-agent-service:8787/wizard/mcp with `Bearer ${WIZARD_MCP_TOKEN}`
+     and `lazy: true` (app tools registered from Hermes' schema cache at chat start, no first-connect race),
      and `WIZARD_MCP_TOKEN` in the agent's `.env`. The token is the Agent Service's own (its env or
      <WIZARD_OS_HOME>/mcp-token); the service's config is never changed.
   2. The service's pointer-skill folder mounted read-only at /opt/wizard-os/skills (additive user-config
@@ -182,10 +183,13 @@ if not isinstance(cfg, dict):
 servers = cfg.get('mcp_servers') or {}
 if not isinstance(servers, dict):
     raise SystemExit('mcp_servers is not a mapping; left alone')
-want = {'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
 have = servers.get(name)
 if have is not None and not (isinstance(have, dict) and '/wizard/mcp' in str(have.get('url', ''))):
     raise SystemExit("an MCP server called '%s' that is not Wizard OS exists; left it alone" % name)
+# lazy: Hermes registers the app tools from its schema cache at chat start (the gateway's tools/list carries
+# ttlMs/cacheScope) and falls back to an eager connect when that cache is missing or stale. An owner's own choice is kept.
+lazy = have.get('lazy') if isinstance(have, dict) and isinstance(have.get('lazy'), bool) else True
+want = {'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}, 'lazy': lazy}
 if have != want:
     servers[name] = want
     cfg['mcp_servers'] = servers
