@@ -1,4 +1,6 @@
-import { promises as fs } from 'node:fs';
+// Use the same real filesystem API as wizard-app-grants and the other Docker tests.
+// The global node:fs mock intentionally only exposes a memfs-backed default export.
+import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { beforeEach, afterEach, expect, it } from 'vitest';
