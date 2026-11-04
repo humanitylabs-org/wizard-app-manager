@@ -109,12 +109,18 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
         port = app.get("port") or cfg.get("port")
         mcp = w.get("mcp") or None
         view = w.get("view") or None
+        from .agent_runtime import agent_runtime
+        runtime_agent = agent_runtime(w)  # malformed runtime declarations must not be admitted
+        if runtime_agent and any(a.get('agent_runtime', {}).get('id') == runtime_agent['id'] for a in apps):
+            raise ValueError('Duplicate installed agent runtime id')
         apps.append({
             "id": name, "name": w.get("name", name), "type": w.get("type"), "category": w.get("category"),
             "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
             "repo": meta["repo"], "commit": meta["commit"], "source": meta["source"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
             "summary": w.get("summary", ""),
+            **({'agent_runtime': {**runtime_agent, 'host_port': port}} if runtime_agent else {}),
+            **({'requires': w['requires']} if 'requires' in w else {}),
             **({"voice_names": spoken} if spoken else {}),
             **({"home_screen": pins} if pins else {}),
             "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],

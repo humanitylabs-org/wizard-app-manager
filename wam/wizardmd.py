@@ -211,6 +211,13 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule('Chats module admission', True)
     except (ValueError, OSError, UnicodeError) as e:
         rule('Chats module admission', False, str(e))
+    if 'agent_runtime' in d:
+        try:
+            from .agent_runtime import agent_runtime
+            agent_runtime(d)
+            rule('agent_runtime valid', True)
+        except ValueError as e:
+            rule('agent_runtime valid', False, str(e))
     rule("spec version known", d.get("wizard") in SPECS, str(d.get("wizard")))
     rule("id valid", bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(d.get("id", "")))), str(d.get("id")))
     t = d.get("type")
@@ -234,10 +241,10 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
             rule("runtipi timestamps not in future", not bad_ts, ", ".join(bad_ts))
         except Exception as e:  # noqa: BLE001
             rule("runtipi config parses", False, str(e))
-    if t in {"agent", "service", "external"}:
+    if (t in {"agent", "service", "external"}) and 'agent_runtime' not in d:
         m = d.get("mcp") or {}
         rule("mcp declared", bool(m.get("path")) and bool(m.get("port")), json.dumps(m))
-    if t != "view":
+    if t != "view" and 'agent_runtime' not in d:
         sk = d.get("skill")
         ok, detail = False, str(sk)
         if sk and (repo / sk).is_file():

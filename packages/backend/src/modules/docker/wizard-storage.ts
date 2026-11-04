@@ -47,6 +47,7 @@ export type Manifest = {
   provides?: string[];
   requires?: { models?: unknown; services?: unknown };
   api?: { endpoint?: string };
+  agent_runtime?: { id: string; label: string; harness: string; port: number; model: { provider: string; model: string } };
 };
 export type Grant = { kind: string; from: string; to: string; share?: string; reason?: string; approved?: string; created_at?: number };
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
