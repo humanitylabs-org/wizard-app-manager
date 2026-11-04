@@ -8,10 +8,24 @@ import * as yaml from 'yaml';
 import { confined, type App, type Grant, type Grants } from './wizard-storage';
 
 const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
+export function validateAgentRuntime(m: App['manifest']) {
+  const r = m.agent_runtime;
+  if (r === undefined) return;
+  if (!r || typeof r !== 'object' || Object.keys(r).sort().join() !== 'harness,id,label,model,port'
+      || typeof r.id !== 'string' || !/^[a-z][a-z0-9-]{1,30}$/.test(r.id) || ['main', 'hermes', 'default', 'new', 'options'].includes(r.id) || typeof r.harness !== 'string' || !ID.test(r.harness)
+      || typeof r.label !== 'string' || !r.label.trim() || r.label.length > 80 || /[\x00-\x1f\x7f]/.test(r.label)
+      || !Number.isInteger(r.port) || r.port < 1024 || r.port > 65535
+      || !r.model || Object.keys(r.model).sort().join() !== 'model,provider'
+      || !Object.values(r.model).every(v => typeof v === 'string' && v.length > 0 && v.length <= 120 && !/[\x00-\x1f\x7f]/.test(v))
+      || (m as any).type !== 'agent' || ((m as any).privacy ?? 'standard') !== 'standard') throw new Error('Invalid agent_runtime');
+}
 export const appGrant = (g: Grant) => !g.kind || g.kind === 'app';
 export const sameAppGrant = (a: Grant, b: Grant) => appGrant(a) && appGrant(b) && a.from === b.from && a.to === b.to;
 const hash = (key: string) => createHash('sha256').update(key).digest('hex');
 export function targets(app: App, apps: App[]): Grant[] {
+  for (const a of apps) validateAgentRuntime(a.manifest);
+  const ids = apps.flatMap(a => a.manifest.agent_runtime ? [a.manifest.agent_runtime.id] : []);
+  if (new Set(ids).size !== ids.length) throw new Error('Duplicate agent_runtime id');
   const uses = app.manifest.uses ?? [];
   if (!Array.isArray(uses) || uses.some((x) => typeof x !== 'string' || !ID.test(x.replace(/^slot:/, '')))) throw new Error('Invalid uses');
   const edges: Grant[] = uses.map((to) => ({
@@ -22,6 +36,12 @@ export function targets(app: App, apps: App[]): Grant[] {
   }));
   if (app.manifest.requires?.models || app.manifest.requires?.services)
     edges.push({ kind: 'app', from: app.manifest.id, to: 'slot:connection-router', reason: 'requires' });
+  // An installed agent runtime is a provider consumed by Agent Service. Reuse layer-2 keys,
+  // revocation and isolated networks, not a second secret-distribution channel.
+  if (app.manifest.provides?.includes('agent-service')) {
+    for (const runtime of apps) if (runtime.manifest.agent_runtime)
+      edges.push({ kind: 'app', from: app.manifest.id, to: runtime.manifest.id, reason: 'agent-runtime' });
+  }
   return edges.filter((g, i) => g.to !== g.from && edges.findIndex((x) => x.to === g.to) === i);
 }
 export function providers(to: string, apps: App[]): App[] {
@@ -245,6 +265,13 @@ export function resetToDefaults(file: Grants): Grant[] {
  * network alias and internal port. Never use a public/owner URL from apps.json.
  */
 export function providerEndpoint(app: App): string | undefined {
+  if (app.manifest.agent_runtime) {
+    validateAgentRuntime(app.manifest);
+    const mains = Object.entries(app.compose.services).filter(([, s]) => s['x-runtipi']?.is_main);
+    if (mains.length !== 1 || Number(mains[0]![1]['x-runtipi'].internal_port) !== app.manifest.agent_runtime.port || mains[0]![1].network_mode)
+      throw new Error('agent_runtime port must match the main service');
+    return `http://${app.manifest.id}:${app.manifest.agent_runtime.port}`;
+  }
   const explicit = app.manifest.api?.endpoint;
   if (explicit != null) {
     const u = new URL(explicit);
@@ -454,6 +481,8 @@ export async function reconcileAppGrants(
       old,
       doc: {
         ...old,
+        // Agent runtime APIs carry conversation/run data and are never anonymous.
+        enforce: app.manifest.agent_runtime ? true : old.enforce,
         outgoing: Object.fromEntries(Object.entries(old.outgoing).filter(([to]) => foreign.has(to))),
         incoming: [...old.incoming],
         provider_endpoints: Object.fromEntries(
