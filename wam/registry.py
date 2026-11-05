@@ -102,6 +102,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             "version": str(w.get("version", "")), "status": app.get("status"), "urn": urn,
             "repo": meta["repo"], "commit": meta["commit"],
             "provides": w.get("provides") or [], "uses": w.get("uses") or [], "needs": w.get("needs") or [],
+            "receives_voice_input": w.get("receives_voice_input") is True,
             "summary": w.get("summary", ""),
             **({"voice_names": spoken} if spoken else {}),
             "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
