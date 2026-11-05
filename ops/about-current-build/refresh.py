@@ -9,7 +9,10 @@ HERE=Path(__file__).resolve().parent
 def sha(b):return hashlib.sha256(b).hexdigest()
 def call(argv,timeout=180):
     r=subprocess.run(argv,capture_output=True,timeout=timeout)
-    assert r.returncode==0,'preparation command failed (output withheld): '+str(argv[0])+' '+sha(r.stderr)
+    if r.returncode:
+        # Fixed assertion diagnostics only; no arbitrary logs/config/env values.
+        diagnostics=[x for x in r.stderr.decode(errors='replace').splitlines() if x.startswith('AssertionError:')]
+        raise AssertionError('preparation failed; stderr_sha256='+sha(r.stderr)+'; '+(diagnostics[-1] if diagnostics else 'non-assertion failure, inspect privately'))
     return r.stdout
 
 def save(p,d):p.write_text(json.dumps(d,indent=2)+'\n')
@@ -32,7 +35,7 @@ def main():
     m=json.loads(initial)
     for n in ['deps-closure.json','playwright-path.txt']:m['inputs'][n]=sha((root/n).read_bytes())
     save(root/'manifest.json',m);digest=sha((root/'manifest.json').read_bytes())
-    for spec in specs.values():spec['argv'][-1]=digest
+    for phase,spec in specs.items():spec['argv']=['python3','-B',worker+'/forum_qa.py','--phase',phase,'--manifest-sha256',digest]
     save(root/'parent-heavy-specs.json',specs)
     call(['scp','-q',str(root/'manifest.json'),str(root/'manifest.source.json'),str(root/'parent-heavy-specs.json'),'forum:'+worker+'/'])
     worker_preflight=json.loads(call(['ssh','forum',*specs['candidate']['argv'],'--preflight-only']))

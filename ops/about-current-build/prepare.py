@@ -55,7 +55,9 @@ def prepare(root,home,revision,reuse=None):
         shutil.copyfile(release/'tools'/n,source/n)
     wam_pid=int(cmd(['systemctl','--user','show','wizard-app-manager-api.service','-p','MainPID','--value']))
     wam_source=Path('/proc',str(wam_pid),'cwd').resolve()
-    assert wam_source.name=='319650ad9976644c63790d505e06ce923a84b3f6','WAM API pin changed'
+    assert re.fullmatch('[0-9a-f]{40}',wam_source.name),'WAM API source has no immutable commit identity'
+    wam_blob=subprocess.check_output(['git','-C',str(home/'workspace/wizard-app-manager'),'show',wam_source.name+':wam/main_compare.py'],timeout=15)
+    assert (wam_source/'wam/main_compare.py').read_bytes()==wam_blob,'deployed main_compare differs from immutable git module'
     shutil.copyfile(wam_source/'wam/main_compare.py',source/'main_compare.py')
     stamp=(root/'metadata.Caddyfile').read_text().replace('__CARRIER__',str(carrier)).replace('__SERVED_SHA_FILE__',str(current/'RELEASE_SHA')).replace('__SERVED_SHA__',commit)
     (root/'metadata.live.Caddyfile').write_text(stamp)
@@ -101,6 +103,7 @@ def prepare(root,home,revision,reuse=None):
         prior=old['web_files']
         receipt['refresh']={'prior_capsule':str(reuse),'prior_commit':old['commit'],'unchanged_web_blobs':sum(prior.get(n)==h for n,h in files.items()),'changed_or_added_web_blobs':[n for n,h in files.items() if prior.get(n)!=h],'removed_web_blobs':sorted(set(prior)-set(files)),'prior_capsule_unmodified':True,'full_runtime_acceptance_reused':False}
     assert all(sha(Path(p).read_bytes())==h for p,h in imports.items()),'gateway import drift during preparation'
+    assert int(cmd(['systemctl','--user','show','wizard-app-manager-api.service','-p','MainPID','--value']))==wam_pid and Path('/proc',str(wam_pid),'cwd').resolve()==wam_source,'WAM moved during preparation'
     (root/'provenance.json').write_text(json.dumps(receipt,indent=2)+'\n')
     inputs={str(p.relative_to(root)):sha(p.read_bytes()) for p in root.rglob('*') if p.is_file()}
     manifest={'inputs':inputs,'commit':commit,'web_tree':tree,'parent_admission_required':True}
