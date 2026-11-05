@@ -165,6 +165,9 @@ def call_helper(action: list[str], runner=subprocess.run, timeout: int = 4000) -
         return {"state": "refused", "reason": "The OS patch helper is not installed (wam maintain setup)."}
     try:
         p = runner(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"state": "error", "helper_may_be_running": True,
+                "reason": "Root helper timed out; it may still be running. Further mutations are deferred."}
     except (OSError, subprocess.SubprocessError) as exc:
         return {"state": "error", "reason": f"OS patch helper failed to run: {exc}"}
     try:
@@ -176,10 +179,18 @@ def call_helper(action: list[str], runner=subprocess.run, timeout: int = 4000) -
     return {"state": "error", "reason": f"OS patch helper exited {p.returncode}: {(p.stderr or p.stdout).strip()[-400:]}"}
 
 
-def setup(runner=subprocess.run, user: str | None = None) -> dict:
+LANE = Path("/etc/sudoers.d/wizard-os-maintenance-restart-lane")
+def lane_ready() -> bool:
+    return os.geteuid() == 0 or _protected(LANE, 0o440)
+
+
+def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, installer: bool = False) -> dict:
     """Install or refresh the root-owned helper plus one sudoers line that allows only it. Needs passwordless sudo
     (fresh boxes have it from get.sh) or root; otherwise reports the one command an owner would run."""
     root = os.geteuid() == 0
+    if installer and _load(_home(None) / "maintenance.json").get("helper_removed"):
+        return {"helper": "removed", "changed": False, "state": "removed_by_owner",
+                "reason": "The owner removed the root helper; rerun 'wam maintain setup' to opt in again."}
     user = user or (os.environ.get("SUDO_USER") if root else None) or (None if root else (os.environ.get("USER") or
             subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()))
     if root and not user:
@@ -195,22 +206,32 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
     if not _install_paths_safe():
         return {"state": "refused", "reason": "Helper or sudoers destination has unsafe ancestry.", "changed": False}
     rule = (f"{user} ALL=(root) NOPASSWD: {HELPER} check, {HELPER} check --refresh, {HELPER} apply, "
-            f"{HELPER} native-off, {HELPER} native-on, {HELPER} restart-check, {HELPER} restart-service *, "
-            f"{HELPER} apply-held, {HELPER} reboot, {HELPER} remove\n")
+            f"{HELPER} native-off, {HELPER} native-on, {HELPER} restart-check, {HELPER} remove\n")
+    lane_rule = (f"{user} ALL=(root) NOPASSWD: {HELPER} restart-service *, {HELPER} apply-held, {HELPER} reboot\n")
     with tempfile.TemporaryDirectory() as td:
         sud = Path(td) / "sudoers"
         sud.write_text(rule)
         sud.chmod(0o644)
+        lane_file = Path(td) / "lane"
+        lane_file.write_text(lane_rule)
+        lane_file.chmod(0o644)
         hp, sp = shlex.quote(str(HELPER.parent)), shlex.quote(str(SUDOERS.parent))
+        lane_script = ""
+        if lane:
+            lane_script = (f"l=$(/usr/bin/mktemp {sp}/.wizard-os-lane.XXXXXX); trap '/usr/bin/rm -f -- \"$h\" \"$s\" \"$l\"' EXIT; "
+                           f"/usr/bin/install -o root -g root -m 0440 {shlex.quote(str(lane_file))} \"$l\"; "
+                           "/usr/sbin/visudo -cqf \"$l\"; ")
         script = (f"set -e; /usr/bin/install -d -o root -g root -m 0755 {hp}; "
                   f"h=$(/usr/bin/mktemp {hp}/.os-patch.XXXXXX); "
                   f"s=$(/usr/bin/mktemp {sp}/.wizard-os-maintenance.XXXXXX); "
                   "trap '/usr/bin/rm -f -- \"$h\" \"$s\"' EXIT; "
+                  + lane_script +
                   f"/usr/bin/install -o root -g root -m 0755 {shlex.quote(str(_source()))} \"$h\"; "
                   f"/usr/bin/install -o root -g root -m 0440 {shlex.quote(str(sud))} \"$s\"; "
                   "/usr/sbin/visudo -cqf \"$s\"; "
                   f"/usr/bin/mv -fT -- \"$h\" {shlex.quote(str(HELPER))}; "
-                  f"/usr/bin/mv -fT -- \"$s\" {shlex.quote(str(SUDOERS))}")
+                  f"/usr/bin/mv -fT -- \"$s\" {shlex.quote(str(SUDOERS))}"
+                  + (f"; /usr/bin/mv -fT -- \"$l\" {shlex.quote(str(LANE))}" if lane else ""))
         p = runner(["/bin/sh", "-c", script] if root else ["sudo", "-n", "/bin/sh", "-c", script],
                    capture_output=True, text=True, timeout=120,
                    env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C"})
@@ -219,6 +240,10 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain setup"}
     state = helper_state()
+    if state in ("ready", "root"):
+        cfg = settings(None)
+        cfg.pop("helper_removed", None)
+        _save(_home(None) / "maintenance.json", cfg)
     return {"helper": state, "changed": True, "user": user,
             **({"state": "error", "reason": "Installed helper failed provenance verification."}
                if state not in ("ready", "root") else {})}
@@ -227,7 +252,7 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
 def remove(runner=subprocess.run) -> dict:
     """Undo `setup`: delete the sudoers rule and the root helper. OS security then stays check-only (unprivileged);
     `wam maintain setup` puts them back. For a box whose owner never wants root maintenance installed."""
-    if not SUDOERS.exists() and not HELPER.exists():
+    if not SUDOERS.exists() and not HELPER.exists() and not LANE.exists():
         return {"helper": "missing", "changed": False}
     argv = _helper(["remove"])
     if argv is None:
@@ -239,7 +264,11 @@ def remove(runner=subprocess.run) -> dict:
         return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
-    gone = not SUDOERS.exists() and not HELPER.exists()
+    gone = not SUDOERS.exists() and not HELPER.exists() and not LANE.exists()
+    if gone:
+        cfg = settings(None)
+        cfg.update(helper_removed=True, changed_at=_now(), quiet_restarts="off", held_platform="off", quiet_reboot="off")
+        _save(_home(None) / "maintenance.json", cfg)
     return {"helper": "missing" if gone else helper_state(), "changed": gone,
             **({} if gone else {"state": "error", "reason": "Helper removal did not verify."})}
 
@@ -294,8 +323,9 @@ def set_os_security(mode: str, home: Path | None = None, runner=subprocess.run, 
     if mode not in MODES:
         return {"error": f"os-security must be one of {', '.join(MODES)}"}
     native = call_helper(["native-off" if mode == "patch" else "native-on"], runner)
-    if mode == "patch" and native.get("state") in ("refused", "error"):
-        return {"error": "Patching needs the OS patch helper first.", "helper": native}
+    if native.get("state") in ("refused", "error", "needs_root_once", "busy") and (
+            mode == "patch" or settings(home)["os_security"] == "patch"):
+        return {"error": "Cannot safely change the native updater until the root helper is repaired.", "helper": native}
     s = settings(home)
     s.update(os_security=mode, changed_at=_now())
     _save(_home(home) / "maintenance.json", s)
@@ -465,11 +495,17 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
             # Updates may launch a long installer. Never restart underneath it.
             def restart_probe():
                 from . import updates
+                if restore_paused(h):
+                    return ["The restored copy remains paused until owner activation."]
+                if os_res.get("helper_may_be_running"):
+                    return ["The root helper may still be running after a timeout."]
                 reasons = list((is_busy or (lambda: busy_reasons(h)))())
                 if up.get("state") == "started" or updates.installing(h):
                     reasons.append("A Wizard OS installer is running.")
                 return reasons
             restarts = qr.safe_step(qr.run, h, os_res, runner, wait, restart_probe, sleep)
+            if restarts.get("helper_may_be_running"):
+                os_res["helper_may_be_running"] = True
             rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(),
                    "seconds": round(time.monotonic() - t0, 1), "os_security": mode, "backup": _slim_backup(bk),
                    "os": os_res, "updates": up, "restarts": restarts, "state": _overall(os_res, bk, up)}
@@ -480,6 +516,11 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
                 rec["state"] = "deferred"
         if with_updates:
             def do_updates():
+                intent = _load(_dir(h) / "reboot.json")
+                reboot = (rec.get("restarts") or {}).get("reboot") or {}
+                if restore_paused(h) or reboot.get("state") == "scheduled" or intent.get("state") in ("intent", "scheduled") \
+                        or os_res.get("helper_may_be_running"):
+                    return {"state": "deferred", "reason": "Restore activation, a pending reboot or the root helper must finish before an update."}
                 quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
                 return updates_step(h, quiet)
             rec["updates"] = qr.safe_step(do_updates)
@@ -516,7 +557,7 @@ def _record(h: Path, rec: dict) -> None:
     except OSError:
         lines = []
     lines.append(json.dumps(rec, separators=(",", ":")))
-    tmp = hist.with_suffix(".tmp")
+    tmp = hist.with_name(f"history.{os.getpid()}.tmp")
     tmp.write_text("\n".join(lines) + "\n")
     os.replace(tmp, hist)
     _save(d / "last.json", rec)
@@ -610,6 +651,8 @@ def _os_item(mode: str, last: dict, now: float) -> dict:
     if age > STALE_SECONDS:
         return {**item, "status": "error", "value": "not running", "detail": "No maintenance run in over 3 days."}
     o = last.get("os") or {}
+    if not o and last.get("state") in ("busy", "deferred"):
+        return {**item, "status": "warn", "value": "waiting", "detail": str(last.get("reason") or "Maintenance was deferred.")[:300]}
     sec, held = o.get("security") or [], o.get("held") or []
     reboot = " A restart is needed to finish." if o.get("reboot_required") else ""
     st = o.get("state")
@@ -635,6 +678,8 @@ def set_restart_option(key: str, value: str, home: Path | None = None) -> dict:
     from .quiet_restart import OPTIONS
     if key not in OPTIONS or value not in OPTIONS[key]:
         return {"error": "Invalid quiet-restart setting."}
+    if value != OPTIONS[key][0] and not lane_ready():
+        return {"error": "Run an attended 'sudo wam maintain setup --restart-lane' before enabling this opt-in."}
     cfg = settings(home)
     cfg.update({key: value, "changed_at": _now()})
     _save(_home(home) / "maintenance.json", cfg)
@@ -651,6 +696,8 @@ def main(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="wam maintain", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", nargs="?", default="status", choices=("status", "run", "setup", "remove", "history", "health"))
+    ap.add_argument("--restart-lane", action="store_true", help="setup: attended opt-in sudoers for restart/reboot/held actions")
+    ap.add_argument("--installer", action="store_true", help="setup: installer rerun; honours an owner's removal")
     ap.add_argument("--os-security", choices=MODES)
     from .quiet_restart import OPTIONS
     for key, choices in OPTIONS.items():
@@ -674,7 +721,7 @@ def main(argv: list[str]) -> int:
     elif a.action == "run":
         res = run(wait=a.wait_quiet)
     elif a.action == "setup":
-        res = setup()
+        res = setup(lane=a.restart_lane, installer=a.installer)
     elif a.action == "remove":
         res = remove()
     elif a.action == "history":

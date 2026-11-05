@@ -48,12 +48,17 @@ def run(home: Path, os_result: dict, runner, wait: float, is_busy, sleep) -> dic
 
     def act(action):
         # Reconfirm before EVERY operation, including each service, not just once per run.
+        if os_result.get("helper_may_be_running"):
+            return {"state": "deferred", "reason": "The root helper may still be running after a timeout."}
         reasons = m.wait_quiet(home, wait, probe, sleep)
         if not reasons:
             reasons = probe()
         if reasons:
             return {"state": "deferred", "reason": " ".join(reasons)}
-        return m.call_helper(action, runner)
+        result = m.call_helper(action, runner)
+        if result.get("helper_may_be_running"):
+            os_result["helper_may_be_running"] = True
+        return result
 
     out = {"held": {"state": "report_only", "pending": os_result.get("held", [])},
            "services": {"state": "report_only", "results": []}, "reboot": {"state": "report_only"}}

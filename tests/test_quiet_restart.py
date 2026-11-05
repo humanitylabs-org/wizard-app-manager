@@ -47,8 +47,9 @@ def test_defaults_report_only_changes_no_external_state(rig):
 
 
 @pytest.mark.parametrize("key,value", [("quiet_restarts", "auto"), ("held_platform", "patch"), ("quiet_reboot", "auto")])
-def test_settings_are_explicit_and_invalid_values_fail_closed(rig, key, value):
+def test_settings_are_explicit_and_invalid_values_fail_closed(rig, key, value, monkeypatch):
     home, *_ = rig
+    monkeypatch.setattr(m, "lane_ready", lambda: True)
     assert m.set_restart_option(key, value, home)[key] == value
     config(home, **{key: "yes"})
     assert m.settings(home)[key] == "off"

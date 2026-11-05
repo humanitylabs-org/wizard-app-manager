@@ -23,6 +23,8 @@ Python 3.6+ and stdlib only: it runs under the host's own python3 (openSUSE Leap
 import fnmatch
 import json
 import os
+import fcntl
+import stat
 import re
 import shutil
 import subprocess
@@ -196,7 +198,8 @@ class Apt(Backend):
 
 
 class Dnf(Backend):
-    family, native, can_apply = "dnf", "dnf-automatic", True
+    # RPM scriptlets may restart services; report-only until a separately accepted suppression route exists.
+    family, native, can_apply = "dnf", "dnf-automatic", False
 
     @property
     def tool(self):
@@ -396,6 +399,8 @@ def apply(rel = None):
     if os.geteuid() != 0:
         return {"state": "refused", "reason": "Applying OS updates needs the root helper (wam maintain setup)."}
     removed = leftover_guard()
+    if POLICY_RC.exists() or POLICY_RC.is_symlink():
+        return {"state": "refused", "reason": "An owner policy-rc.d exists; cannot guarantee no service restarts."}
     before = check(refresh=True, rel=rel)
     if before["state"] not in ("pending", "current"):
         return before
@@ -475,7 +480,7 @@ def restart_service(name):
         return {"state": "current", "service": name, "reason": "Not in needrestart's current list; left alone."}
     # Restarting a user manager can kill this very maintenance runner. IPC/login
     # brokers can tear down work even when their unit comes back. Move them to reboot.
-    if name.startswith("user@") or name in ("dbus.service", "dbus-broker.service", "systemd-logind.service"):
+    if name.startswith(("user@", "systemd-", "docker", "containerd", "podman", "tailscale", "ssh", "dbus", "NetworkManager", "network")):
         return {"state": "report_only", "service": name, "reason": "Login/IPC manager requires an explicit quiet reboot."}
     # Never start a stopped service and never stop a service just to test it.
     if run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode != 0:
@@ -538,7 +543,43 @@ def schedule_reboot():
     return {"state": "scheduled" if p.returncode == 0 else "error", "reason": (p.stderr or p.stdout)[-600:]}
 
 
-def main(argv = None):
+ROOT_LOCK = Path("/run/wizard-os-maintenance.lock")
+LANE = Path("/etc/sudoers.d/wizard-os-maintenance-restart-lane")
+
+
+def lane_enabled():
+    try:
+        parents = [p.lstat() for p in LANE.parents]
+        s = LANE.lstat()
+        return all(stat.S_ISDIR(p.st_mode) and p.st_uid == 0 and not p.st_mode & 0o022 for p in parents) \
+            and stat.S_ISREG(s.st_mode) and s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o440
+    except OSError:
+        return False
+
+
+def _unsafe_lock(s):
+    return s.st_uid != 0 or not stat.S_ISREG(s.st_mode) or bool(s.st_mode & 0o077) or s.st_nlink != 1
+
+
+class _root_lease:
+    """Survives caller timeout: direct sudo calls share one protected, never-unlinked inode."""
+    def __enter__(self):
+        self.fd = os.open(str(ROOT_LOCK), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            s = os.fstat(self.fd)
+            if _unsafe_lock(s):
+                raise OSError("Unsafe root maintenance lock")
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            os.close(self.fd)
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)
+
+
+def _main(argv = None):
     argv = sys.argv[1:] if argv is None else argv
     if os.geteuid() == 0:
         os.environ.clear()
@@ -549,6 +590,8 @@ def main(argv = None):
         res = apply()
     elif argv == ["restart-check"]:
         res = restart_check()
+    elif argv and argv[0] in ("restart-service", "apply-held", "reboot") and os.geteuid() == 0 and not lane_enabled():
+        res = {"state": "refused", "reason": "The attended restart lane has not been enabled."}
     elif len(argv) == 2 and argv[0] == "restart-service":
         res = restart_service(argv[1])
     elif argv == ["apply-held"]:
@@ -562,7 +605,8 @@ def main(argv = None):
             res = {"state": "refused", "reason": "needs root"}
         else:
             native(True)
-            for path in (Path("/etc/sudoers.d/wizard-os-maintenance"),
+            leftover_guard()
+            for path in (Path("/etc/sudoers.d/wizard-os-maintenance"), LANE,
                          Path("/usr/local/libexec/wizard-os/os-patch")):
                 try:
                     path.unlink()
@@ -574,6 +618,20 @@ def main(argv = None):
         return 2
     print(json.dumps(res, indent=2))
     return 0 if res.get("state") not in ("error", "refused", "unsupported") else 1
+
+
+def main(argv=None):
+    if os.geteuid() != 0:
+        return _main(argv)
+    try:
+        with _root_lease():
+            return _main(argv)
+    except BlockingIOError:
+        print(json.dumps({"state": "busy", "reason": "Another root maintenance helper is running."}))
+        return 1
+    except OSError as exc:
+        print(json.dumps({"state": "refused", "reason": str(exc)}))
+        return 1
 
 
 if __name__ == "__main__":
