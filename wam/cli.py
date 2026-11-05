@@ -1568,8 +1568,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
             out.append(("alongside: Hermes home not shared with the shell", True,
                         "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
     if regp.is_file():
-        for col in registry.collisions(json.loads(regp.read_text())):
-            out.append(("slot collision", False, col))
+        out.extend(registry.slot_choices(json.loads(regp.read_text())))
     try:
         from . import network
         rep = network.report(c)
@@ -1770,6 +1769,15 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id == MAIN_COMPARE_PATH:   # Settings → About: how far this shell is from main (main_compare.py)
+            if method != "GET":
+                return self._json(405, {"error": "GET only"})
+            from . import main_compare
+            try:
+                commit = (parse_qs(urlparse(self.path).query).get("commit") or [""])[0]
+                return self._json(200, main_compare.compare(commit))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)[:200]})
         if app_id.startswith('_views/'):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
@@ -2007,6 +2015,7 @@ class StoreHandler(BaseHTTPRequestHandler):
 
 
 UPDATES_PATH = "_updates"
+MAIN_COMPARE_PATH = "_main-compare"
 
 
 # ---------------------------------------------------------------- main
@@ -2157,6 +2166,9 @@ def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:  # a real command line (python -m wam or the console script), never a programmatic call
+        # A Builder-bundle copy of wam hands every box command to the box's own (current) wam (bundle_delegate.py).
+        from .bundle_delegate import delegate
+        delegate(sys.argv[1:])
         from .docker_group import reexec_with_docker_group
         reexec_with_docker_group()
     argv = sys.argv[1:] if argv is None else argv
@@ -2501,9 +2513,11 @@ def main(argv: list[str] | None = None) -> int:
                 rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
                 reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
             else:
+                known = links.registry_addresses(c.home)   # before write_registry can replace them with loopback
                 reg = write_registry(c)
             shell_ids = {a["id"] for a in reg["apps"] if is_shell(a, a["id"])}
-            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port)
+            res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port,
+                                known=None if args.dry_run else known)
             if not args.dry_run:
                 # The installer calls links last. Rebuild/share after publishing,
                 # otherwise a fresh Agent Service still receives loopback URLs.

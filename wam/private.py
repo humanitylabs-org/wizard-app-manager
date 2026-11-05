@@ -266,9 +266,13 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         # Packaging (source | build | image): copy the pinned code where the containers mount or build it.
         from . import packaging
         try:
-            packaging.prepare_package(rt.get("package"), compose, src,
-                                      packaging.source_dir(packaging.app_data_root(runtipi_root), store, app_id, commit),
-                                      app_id, commit)
+            target = packaging.source_dir(packaging.app_data_root(runtipi_root), store, app_id, commit)
+            # Compose builds inside Runtipi at /app-data; source copies and APP_SOURCE_DIR stay host-side.
+            # Derive this view from the logical identity, never from names in the host's ancestor path.
+            build_root = (str(packaging.source_dir(Path('/app-data'), store, app_id, commit))
+                          if rt.get('package') == 'build' else None)
+            packaging.prepare_package(rt.get("package"), compose, src, target, app_id, commit,
+                                      build_root=build_root)
         except packaging.PackagingError as e:
             raise PrivateError(f"{repo}: {e}") from e
         # Runtipi pulls public release images through its normal install path. A fresh

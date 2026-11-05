@@ -14,6 +14,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: '1.3.0'}
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Backup source real-filesystem regression
+        run: nice -n 19 node --test tests/backup-source-safety.test.mjs
       - run: bun run build
         working-directory: packages/common
       - run: bun run test

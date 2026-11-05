@@ -17,7 +17,7 @@ def test_links_cli_shares_final_urls_on_first_install(tmp_path, monkeypatch, cap
     c = SimpleNamespace(home=home, runtipi_root=root, host_ip=lambda: '127.0.0.1', runtipi=lambda: rt, port=7790)
     monkeypatch.setattr(cli, 'Config', lambda: c)
     calls = []
-    def publish(reg, path, shell_ids, apply=True, api_port=7790):
+    def publish(reg, path, shell_ids, apply=True, api_port=7790, known=None):
         calls.append(apply)
         # This is what the already-tested first-party gateway publisher writes.
         result = {'links': [{'id': 'files', 'open': '/files/'}], 'errors': {}}

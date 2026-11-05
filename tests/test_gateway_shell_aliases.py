@@ -47,7 +47,7 @@ def test_last_store_install_shares_rewritten_launcher(tmp_path, monkeypatch):
     c.home.mkdir()
     reg={'schema':2,'apps':[{'id':'sample','view':{'url':'http://127.0.0.1:9000/'}}]}
     monkeypatch.setattr(cli,'write_registry',lambda c:reg)
-    monkeypatch.setattr(links,'publish',lambda *a:None)
+    monkeypatch.setattr(links,'publish',lambda *a, **k: None)
     def apply(reg,home):reg['apps'][0]['view']['url']='/sample/'
     monkeypatch.setattr(links,'apply_to_registry',apply)
     store_install._links(c)

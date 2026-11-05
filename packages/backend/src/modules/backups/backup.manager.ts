@@ -9,6 +9,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { SOURCE_LIMIT_BYTES, sourceDir } from '../app-stores/packaging';
 
 @Injectable()
 export class BackupManager {
@@ -75,6 +76,23 @@ export class BackupManager {
     });
 
     await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
+
+    // Source/build code lives beside per-app data and is pruned on update.
+    // Include the installed pin's context so an offline restore can build/start it.
+    const commit = (await this.filesystem.readTextFile(path.join(appInstalledDir, '.wizard-commit')))?.trim();
+    if (commit && /^[0-9a-f]{40}$/.test(commit)) {
+      const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
+      if (await this.filesystem.isDirectory(context)) {
+        const validateSourceEntry = await this.validateBackupSource(context);
+        const archivedSource = path.join(tempDir, 'app-source');
+        // cp otherwise preserves links (and may rewrite relative targets as absolute
+        // source paths). Archive only independent bytes, never source-bound links.
+        if (!(await this.filesystem.copyDirectory(context, archivedSource, { dereference: true, filter: validateSourceEntry }))) {
+          throw new Error('Failed to include installed source context in backup');
+        }
+        await this.validateRestoreDirectory(archivedSource, { allowSymlinks: false, rejectHardLinks: true });
+      }
+    }
 
     if (await this.filesystem.isDirectory(userConfigDir)) {
       this.logger.info('Including user configuration in backup...');
@@ -156,6 +174,24 @@ export class BackupManager {
 
       const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
 
+      const archivedSource = path.join(restoreDir, 'app-source');
+      await this.validateRestoreDirectory(
+        archivedSource,
+        { allowSymlinks: false, optional: true, rejectHardLinks: true },
+        undefined,
+        runValidationFsOperation,
+      );
+      if (await this.filesystem.isDirectory(archivedSource)) {
+        const commit = (await this.filesystem.readTextFile(path.join(restoreDir, 'app', '.wizard-commit')))?.trim();
+        if (!commit || !/^[0-9a-f]{40}$/.test(commit)) {
+          throw new Error('Backup source context has no valid installed commit');
+        }
+        const { appName, appStoreId } = extractAppUrn(appUrn);
+        const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
+        // Fail before replacing app/data if the saved code cannot be recovered.
+        await this.restoreSourceContext(archivedSource, context);
+      }
+
       // Remove old data directories
       await this.filesystem.removeDirectory(appDataDir);
       await this.filesystem.removeDirectory(appInstalledDir);
@@ -176,6 +212,104 @@ export class BackupManager {
       await this.filesystem.removeDirectory(restoreDir);
     }
   };
+
+  // This admission is only for a local source checkout. Restore archives still
+  // reject every link before extraction. Resolve the full chain, not just the
+  // first readlink target, and reject cycles before cp can recurse into them.
+  private async validateBackupSource(directory: string) {
+    const root = await fs.promises.realpath(this.filesystem.getSafeFilePath(directory));
+    // Count each output path, including aliases: confined directory links can
+    // expand a small checkout into exponentially many portable copies.
+    const admissionBudget = { entries: 0, bytes: 0 };
+    const copyBudget = { entries: 0, bytes: 0 };
+    const validateEntry = async (entryPath: string, budget: { entries: number; bytes: number }) => {
+      if (++budget.entries > 100_000) throw new Error('Backup source exceeds 100000 entry limit');
+      const linkStats = await fs.promises.lstat(entryPath);
+      if (linkStats.isSymbolicLink()) {
+        const target = await fs.promises.readlink(entryPath);
+        if (!this.isPathInsideOrEqual(path.resolve(directory), path.resolve(path.dirname(entryPath), target))) {
+          throw new Error('Backup source link points outside the app');
+        }
+      }
+      const resolved = await fs.promises.realpath(entryPath);
+      if (!this.isPathInsideOrEqual(root, resolved)) {
+        throw new Error('Backup source link points outside the app');
+      }
+      const stats = await fs.promises.stat(entryPath);
+      if ((!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink > 1)) {
+        throw new Error('Backup contains unsupported file types');
+      }
+      if (stats.isFile()) {
+        budget.bytes += stats.size;
+        if (budget.bytes > SOURCE_LIMIT_BYTES) throw new Error('Backup source exceeds source byte limit');
+      }
+      return { resolved, stats };
+    };
+    const walk = async (entryPath: string, ancestors: Set<string>): Promise<void> => {
+      const { resolved, stats } = await validateEntry(entryPath, admissionBudget);
+      if (stats.isDirectory()) {
+        if (ancestors.has(resolved)) {
+          throw new Error('Backup source contains a directory link cycle');
+        }
+        const nextAncestors = new Set(ancestors).add(resolved);
+        for (const name of await fs.promises.readdir(entryPath)) {
+          await walk(path.join(entryPath, name), nextAncestors);
+        }
+      }
+    };
+    await walk(directory, new Set());
+    // Recheck each entry as cp visits it, not only during the initial walk.
+    return async (entryPath: string) => {
+      await validateEntry(entryPath, copyBudget);
+      return true;
+    };
+  }
+
+  private async restoreSourceContext(archivedSource: string, destination: string) {
+    const context = this.filesystem.getSafeFilePath(destination);
+    if (!(await this.filesystem.createDirectory(path.dirname(context)))) {
+      throw new Error('Failed to restore installed source context');
+    }
+    // Sibling staging guarantees same-filesystem renames. Keep the previous
+    // context until the fully copied replacement has actually been committed.
+    // Stay outside app@commit: pruneSources must not sweep retained recovery bytes.
+    const staging = await fs.promises.mkdtemp(path.join(path.dirname(context), `.restore-${path.basename(context)}-`));
+    const stagedSource = path.join(staging, 'source');
+    const previous = path.join(staging, 'previous');
+    let movedCurrent = false;
+    let committed = false;
+    try {
+      if (!(await this.filesystem.copyDirectory(archivedSource, stagedSource))) {
+        throw new Error('Failed to restore installed source context');
+      }
+      const current = await fs.promises.lstat(context).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (current) {
+        await fs.promises.rename(context, previous);
+        movedCurrent = true;
+      }
+      try {
+        await fs.promises.rename(stagedSource, context);
+        committed = true;
+      } catch (error) {
+        if (movedCurrent) {
+          // If even rollback fails, retain previous on disk for recovery. Never
+          // clean up the only surviving copy of the installed context.
+          await fs.promises.rename(previous, context);
+          movedCurrent = false;
+        }
+        throw error;
+      }
+    } finally {
+      if (committed || !movedCurrent) {
+        await this.filesystem.removeDirectory(staging);
+      } else {
+        this.logger.error(`Source rollback failed; previous context retained at ${previous}`);
+      }
+    }
+  }
 
   private validateRestoreArchiveEntries(entries: ArchiveEntry[]) {
     for (const entry of entries) {

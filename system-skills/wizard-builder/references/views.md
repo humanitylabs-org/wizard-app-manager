@@ -27,6 +27,7 @@ Run `wam views update <app>` (the App Manager should call it after every update)
 "Put it back to normal": `wam views revert <app>`. History stays; `wam views reactivate <app>` brings it back.
 
 ## Status and serving
+Keep custom views only in `~/.wizard-os/views/`; change the look through a managed view, leaving the installed app untouched.
 `wam views status <app>`, `wam views index` (the reference door's URLs). `wam views serve` remains the standalone reference door; it is not required by the shell.
 
 ### Shell integration (Skins and Views slice 5)
