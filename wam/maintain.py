@@ -304,11 +304,15 @@ def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, in
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain setup"}
     state = helper_state()
-    if state in ("ready", "root"):
-        _owner_settings(lambda cfg: cfg.pop("helper_removed", None))
-    return {"helper": state, "changed": True, "user": user,
-            **({"state": "error", "reason": "Installed helper failed provenance verification."}
-               if state not in ("ready", "root") else {})}
+    if state not in ("ready", "root"):
+        failure = {"state": "error", "reason": "Installed helper failed provenance verification."}
+    elif _owner_settings(lambda cfg: cfg.pop("helper_removed", None)) is None:
+        # Without this the old removal choice stays on disk and installer reruns skip every future refresh.
+        failure = {"state": "error", "reason": "Helper installed, but the owner's opt-in could not be recorded; "
+                                               "installer reruns will keep skipping it."}
+    else:
+        failure = {}
+    return {"helper": state, "changed": True, "user": user, **failure}
 
 
 def remove(runner=subprocess.run) -> dict:

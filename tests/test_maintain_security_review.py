@@ -1,5 +1,6 @@
 """Regressions from independent Opus privileged-source review (no root actions)."""
 import json
+import subprocess
 import time
 from pathlib import Path
 from wam import maintain as m, os_patch as op
@@ -245,7 +246,22 @@ def test_sudo_owner_settings_failure_is_not_silent(tmp_path, monkeypatch):
 def test_deferred_snapshot_never_requests_reboot(tmp_path, monkeypatch):
     from wam import quiet_restart as qr
     m._save(tmp_path / "maintenance.json", {"quiet_reboot": "auto"})
-    monkeypatch.setattr(m, "call_helper", lambda *a, **k: {"state": "deferred", "reason": "helper busy"})
+    actions = []
+    monkeypatch.setattr(m, "call_helper", lambda action, *a, **k: actions.append(action) or
+                        {"state": "deferred", "reason": "helper busy", "boot_id": "boot-1"})
     monkeypatch.setattr(qr, "reconcile", lambda *a: {"state": "none"})
     out = qr.run(tmp_path, {"state": "current", "reboot_required": True}, lambda *a, **k: None, 0, lambda: [], lambda s: None)
     assert out["reboot"]["state"] == "deferred"
+    assert ["reboot"] not in actions and not (tmp_path / "maintenance" / "reboot.json").exists()
+
+
+def test_setup_reports_when_the_owner_opt_in_cannot_be_recorded(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(m.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(m, "HELPER", tmp_path / "missing-helper")
+    monkeypatch.setattr(m, "_install_paths_safe", lambda: True)
+    monkeypatch.setattr(m, "helper_state", lambda: "ready")
+    monkeypatch.setattr(m, "_owner_settings", lambda update=None: {} if update is None else None)
+    import pwd
+    res = m.setup(lambda argv, **k: subprocess.CompletedProcess(argv, 0, "", ""), user=pwd.getpwuid(os.getuid()).pw_name)
+    assert res["state"] == "error" and "opt-in" in res["reason"] and res["changed"] is True

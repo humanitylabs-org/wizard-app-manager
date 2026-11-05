@@ -262,6 +262,9 @@ def test_remove_deletes_only_the_helper_and_its_sudoers_rule(monkeypatch, tmp_pa
         return subprocess.CompletedProcess(argv, 0, "", "")
     helper, sudoers, lane = (tmp_path / name for name in ("os-patch", "sudoers.d-wizard", "restart-lane"))
     unrelated = tmp_path / "unrelated"
+    # Owner choices are written under WIZARD_OS_HOME; never let an exported real one receive this test's writes.
+    owner_home = tmp_path / "owner-home"
+    monkeypatch.setenv("WIZARD_OS_HOME", str(owner_home))
     for path in (helper, sudoers, lane, unrelated):
         path.write_text("x")
     monkeypatch.setattr(maintain, "HELPER", helper)
@@ -273,6 +276,7 @@ def test_remove_deletes_only_the_helper_and_its_sudoers_rule(monkeypatch, tmp_pa
     assert seen["argv"] == ["sudo", "-n", str(helper), "remove"]
     assert all(not path.exists() for path in (helper, sudoers, lane))
     assert unrelated.read_text() == "x"
+    assert json.loads((owner_home / "maintenance.json").read_text())["helper_removed"] is True
     assert maintain.remove(runner) == {"helper": "missing", "changed": False}
 
 
