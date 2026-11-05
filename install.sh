@@ -139,6 +139,9 @@ systemctl --user restart wizard-app-manager-api.service
 "$HOME/.local/bin/wam" updates --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly update timer (wam updates --ensure-timer)"
 # Public phone bytes only: always mirror, even when box updates/maintenance are report-only.
 RUNTIPI_ROOT="$RUNTIPI_ROOT" "$HOME/.local/bin/wam" phone-sync --ensure-timer || echo "note: could not set up the hourly phone mirror (wam phone-sync --ensure-timer)"
+# Approved removable helper; security remains check-only unless explicitly chosen, restart/reboot options stay off.
+"$HOME/.local/bin/wam" maintain setup >/dev/null 2>&1 || echo "note: OS security patches stay check-only until 'wam maintain setup' can install its root helper"
+"$HOME/.local/bin/wam" maintain --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly maintenance timer (wam maintain --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
 # happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
