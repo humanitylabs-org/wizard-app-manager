@@ -1,5 +1,7 @@
 # About current-build metadata seam
 
+**Current entrypoint: [immutable serving-source repair](ORIGIN.md).** Per-SHA carriers and the refresh loop described below are retired. Preserve their immutable packets as historical evidence; do not admit r14 or run another carrier refresh. The new candidate job does not depend on an unrelated live shell HEAD remaining stationary.
+
 **REUSE:** served `core/box-source.js`, WAM `main_compare.py`, and the exact build.json writer from the served revision's Dockerfile. **EXTEND:** owner-gated delivery with one exact static metadata carrier and runtime proof-header log redaction. **NEW:** no shell implementation, build service, auth verifier, release-channel behavior, or My release selection.
 
 The inherited immutable-shell deployment path generates ux-version/ux-changes but omits Dockerfile's build.json stanza. About consequently never requests its working comparison route. The carrier's commit is derived from RELEASE_SHA + WEB_TREE and every tracked immutable web blob, with the shell container's read-only mount and Service's effective WIZARD_UX_DIR independently checked. Checkout HEAD/dirty status is only an additional observation. Untracked generated owner assets are never opened or copied. My release stays absent.

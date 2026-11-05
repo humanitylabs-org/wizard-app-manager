@@ -20,6 +20,7 @@ def served(home):
     return release,{'service_env_path':str(ux),'service_resolved_web':str(web),'static_source':static['Source'],'static_destination':static['Destination'],'static_readonly':True,'current_locator':str(current)},pid,shell
 
 def prepare(root,home,revision,reuse=None):
+    raise SystemExit('Per-SHA carriers are retired; use prepare_origin.py and ORIGIN.md. Historical sealed packets are unchanged.')
     root.mkdir(parents=True,exist_ok=True)
     assert not (root/'manifest.json').exists(), 'one-shot preparation root'
     current=home/'.local/share/wizard-ux/current'; release,locators,active,mounts=served(home)

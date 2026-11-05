@@ -59,6 +59,7 @@ def reload_gateway(d,label):
     return result
 
 def main():
+    raise SystemExit('Per-SHA carrier activation is retired; use activate_origin.py. Helper functions remain shared and unchanged.')
     a=argparse.ArgumentParser();a.add_argument('action',choices=['preflight','apply','rollback']);args=a.parse_args()
     m,d=inputs();home=state(d)
     lock=home/'.local/state/wizard-app-promotions/wam.lock'
