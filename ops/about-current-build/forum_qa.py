@@ -16,16 +16,49 @@ def seal(expected):
             assert sha((ROOT/n).read_bytes())==h,'dependency drift '+n
     return m
 
+# All sentinels are synthetic and can never authenticate to a live service.
+PROOF='fixture-credential-never-valid-live'
+CONTROL='fixture-visible-control'
+PROBE_HEADERS={'X-Wizard-Owner-Proof':PROOF,'X-Redaction-Control':CONTROL}
+
+def error_headers(event):
+    return {k.lower():v for k,v in event.get('request',{}).get('headers',{}).items()}
+
+def redaction_pair(before,after):
+    """A missing input/snapshot/control is a failure, never evidence of deletion."""
+    for event in [before,after]:
+        assert event.get('logger')=='http.log.error' and event.get('status')==502,'not the actual 502 error event'
+        assert event.get('request',{}).get('uri')=='/error-probe','wrong error path'
+        assert error_headers(event).get('x-redaction-control')==[CONTROL],'nonsecret control missing'
+    assert error_headers(before).get('x-wizard-owner-proof')==[PROOF],'unfiltered proof positive missing'
+    assert 'x-wizard-owner-proof' not in error_headers(after),'filtered proof key retained'
+    assert PROOF not in json.dumps(after),'filtered proof value retained'
+    # Only proof deletion may change the original-request header snapshot.
+    original=dict(error_headers(before));original.pop('x-wizard-owner-proof')
+    assert error_headers(after)==original,'non-proof headers changed'
+    for key in ['method','uri','host','proto']:
+        assert before['request'].get(key)==after['request'].get(key),'request identity changed '+key
+    return True
+
 def fixture(out):
-    checks=[];auth=[];proc=None;servers=[]
+    checks=[];auth=[];upstream=[];proc=None;servers=[];threads=[]
+    def start_server(handler):
+        server=ThreadingHTTPServer(('127.0.0.1',0),handler);servers.append(server)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);threads.append(thread);thread.start()
+        return server
     class Auth(BaseHTTPRequestHandler):
-        def log_message(self,*a):pass
+        def log_message(self,format,*args):pass
         def do_GET(self):
             auth.append({k.lower():v for k,v in self.headers.items()})
             self.send_response(200 if self.headers.get('X-Private-Peer')=='127.0.0.2' else 403)
             self.send_header('Content-Length','0');self.end_headers()
-    server=ThreadingHTTPServer(('127.0.0.1',0),Auth);servers.append(server)
-    threading.Thread(target=server.serve_forever,daemon=True).start()
+    server=start_server(Auth)
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self,format,*args):pass
+        def do_GET(self):
+            upstream.append({k.lower():v for k,v in self.headers.items()})
+            self.send_response(200);self.send_header('Content-Length','0');self.end_headers()
+    producer=start_server(Upstream)
     s=socket.socket();s.bind(('127.0.0.1',0));port=s.getsockname()[1];s.close()
     marker=out/'RELEASE_SHA';commit=json.loads((ROOT/'carrier/build.json').read_text())['commit'];marker.write_text(commit+'\n')
     route=(ROOT/'metadata.Caddyfile').read_text().replace('__CARRIER__',str(ROOT/'carrier')).replace('__SERVED_SHA_FILE__',str(marker)).replace('__SERVED_SHA__',commit).replace('127.0.0.1:19447','127.0.0.1:'+str(server.server_port))
@@ -34,12 +67,51 @@ def fixture(out):
     # Reuse exact candidate default logger text, not a second implementation.
     logger=candidate[candidate.index('    log default {'):candidate.index('    admin off')]
     config=out/'fixture.caddy'
-    config.write_text('{\n'+logger+' admin off\n auto_https off\n}\nhttp://127.0.0.1:'+str(port)+' {\n import '+str(out/'route.caddy')+'\n handle /error-probe {\n request_header X-Wizard-Owner-Proof fixture-credential-never-valid-live\n request_header X-Redaction-Control fixture-visible-control\n reverse_proxy 127.0.0.1:1\n }\n handle /neighbor {\n respond "before" 200\n }\n handle {\n respond "missing" 404\n }\n}\n')
+    # One config generation: change only the default encoder at reload.
+    # /error-probe has explicit CLIENT inputs; /producer-probe separately tests
+    # server mutation with a successful upstream, then the same closed upstream.
+    site=' admin off\n auto_https off\n}\nhttp://127.0.0.1:'+str(port)+' {\n import '+str(out/'route.caddy')+'\n handle /error-probe {\n reverse_proxy 127.0.0.1:1\n }\n handle /producer-probe {\n route {\n request_header X-Wizard-Owner-Proof '+PROOF+'\n request_header X-Redaction-Control '+CONTROL+'\n reverse_proxy 127.0.0.1:'+str(producer.server_port)+'\n }\n }\n handle /neighbor {\n respond "before" 200\n }\n handle {\n respond "missing" 404\n }\n}\n'
+    unfiltered='{\n    log default {\n        format json\n    }\n'+site
+    filtered='{\n'+logger+site
+    (out/'fixture.unfiltered.caddy').write_text(unfiltered)
+    (out/'fixture.filtered.caddy').write_text(filtered)
+    config.write_text(unfiltered)
     def req(path=PREFIX+'build.json',method='GET',owner=True,headers=None):
         c=http.client.HTTPConnection('127.0.0.1',port,timeout=5,source_address=('127.0.0.2' if owner else '127.0.0.1',0));c.request(method,path,headers=headers or {});r=c.getresponse();b=r.read();d=(r.status,b,dict(r.getheaders()));c.close();return d
     def check(n,v):checks.append({'name':n,'pass':bool(v)});assert v,n
     result={'accepted':False,'checks':checks,'synthetic':True}
     log=(out/'fixture.log').open('wb')
+    # Byte-identical request through the same listener before/after encoder reload.
+    probe_wire=('GET /error-probe HTTP/1.1\r\nHost: 127.0.0.1:'+str(port)+'\r\nAccept-Encoding: identity\r\nConnection: close\r\n'+''.join(k+': '+v+'\r\n' for k,v in PROBE_HEADERS.items())+'\r\n').encode('ascii')
+    def probe():
+        with socket.create_connection(('127.0.0.1',port),timeout=5,source_address=('127.0.0.2',0)) as sock:
+            sock.sendall(probe_wire);response=http.client.HTTPResponse(sock);response.begin();response.read();return response.status
+    def entries_since(offset):
+        log.flush();entries=[]
+        for line in (out/'fixture.log').read_bytes()[offset:].splitlines():
+            try:entries.append(json.loads(line))
+            except ValueError:pass
+        return entries
+    def error_event(path,offset):
+        for _ in range(50):
+            events=[x for x in entries_since(offset) if x.get('logger')=='http.log.error' and x.get('request',{}).get('uri')==path]
+            if events:
+                check('one actual 502 event '+path,len(events)==1 and events[0].get('status')==502)
+                return events[0]
+            time.sleep(.1)
+        raise AssertionError('no actual error record '+path)
+    def reload_config(body,label):
+        assert proc is not None
+        offset=(out/'fixture.log').stat().st_size;old=proc.pid
+        config.write_text(body);proc.send_signal(signal.SIGUSR1)
+        for _ in range(80):
+            assert proc.poll() is None,'fixture exited during reload'
+            events=[x for x in entries_since(offset) if x.get('msg')=='successfully reloaded config from file']
+            if events:break
+            time.sleep(.1)
+        else:raise AssertionError('positive fixture reload event missing '+label)
+        check('same binary same PID '+label,proc.pid==old and proc.poll() is None)
+        return {'same_pid':True,'config_sha256':sha(body.encode()),'positive_event':'successfully reloaded config from file'}
     try:
         proc=subprocess.Popen([str(ROOT/'caddy-private-gateway'),'run','--config',str(config),'--adapter','caddyfile'],env={**os.environ,'XDG_CONFIG_HOME':str(out/'xdg'),'XDG_DATA_HOME':str(out/'data')},stdout=log,stderr=subprocess.STDOUT)
         for _ in range(80):
@@ -66,25 +138,51 @@ def fixture(out):
         check('query refused',req(PREFIX+'build.json?x=1')[0]==400)
         for path in [PREFIX+'build.json/',PREFIX+'build.json/other',PREFIX+'my-release.json',PREFIX+'other.json']:
             check('neighbor '+path,req(path)[0]==404)
+        check('encoded query refused',req(PREFIX+'build.json?x=%2F')[0]==400)
+        check('encoded child path refused',req(PREFIX+'build.json%2Fother')[0]==404)
         check('auth never receives proof',all('x-wizard-owner-proof' not in a for a in auth))
-        check('actual reverse-proxy error emitted',req('/error-probe')[0]==502)
-        time.sleep(.3);log.flush();data=(out/'fixture.log').read_bytes()
-        entries=[]
-        for l in data.splitlines():
-            try:entries.append(json.loads(l))
-            except ValueError:pass
-        errors=[x for x in entries if x.get('logger')=='http.log.error']
-        check('runtime error event retained',bool(errors))
-        check('same request mutation remains observable',all(x.get('request',{}).get('headers',{}).get('X-Redaction-Control')==['fixture-visible-control'] for x in errors))
-        check('runtime error proof field deleted',all(not any(k.lower()=='x-wizard-owner-proof' for k in x.get('request',{}).get('headers',{})) for x in errors))
-        # Caddy adaptation messages can include config input, so inspect only actual error records for the canary.
-        check('runtime error proof value absent',all('fixture-credential-never-valid-live' not in json.dumps(x) for x in errors))
-        old=proc.pid;config.write_text(config.read_text().replace('respond "before"','respond "after"'));proc.send_signal(signal.SIGUSR1)
-        for _ in range(80):
-            if req('/neighbor')[1]==b'after':break
-            time.sleep(.1)
-        else:raise AssertionError('fixture reload timeout')
-        check('same binary same PID reload',proc.pid==old and proc.poll() is None)
+        # Negative encoder control: the REAL unfiltered error must expose both
+        # synthetic inputs, otherwise a later absence cannot establish deletion.
+        offset=(out/'fixture.log').stat().st_size
+        check('actual unfiltered reverse-proxy 502',probe()==502)
+        before=error_event('/error-probe',offset)
+        save(out/'error.unfiltered.json',before)
+        check('unfiltered client proof positive',error_headers(before).get('x-wizard-owner-proof')==[PROOF])
+        check('unfiltered nonsecret control positive',error_headers(before).get('x-redaction-control')==[CONTROL])
+        # Independent producer flow. No client proof/control, explicit ordered
+        # request_header, actual successful upstream receipt, then same route and
+        # config with that owned upstream stopped. Log snapshot is observational.
+        check('server-generated proof upstream success',req('/producer-probe')[0]==200)
+        check('upstream really received generated proof and control',len(upstream)==1 and upstream[0].get('x-wizard-owner-proof')==PROOF and upstream[0].get('x-redaction-control')==CONTROL)
+        save(out/'producer-upstream-receipt.json',{'synthetic':True,'headers':upstream[0],'config_sha256':sha(config.read_bytes()),'pid':proc.pid})
+        producer.shutdown();producer.server_close();threads[1].join(timeout=3)
+        check('producer upstream stopped',not threads[1].is_alive())
+        offset=(out/'fixture.log').stat().st_size
+        check('same producer route now returns 502',req('/producer-probe')[0]==502)
+        producer_error=error_event('/producer-probe',offset)
+        check('producer config generation unchanged',config.read_text()==unfiltered)
+        snapshot=error_headers(producer_error)
+        proof_seen=snapshot.get('x-wizard-owner-proof')==[PROOF]
+        control_seen=snapshot.get('x-redaction-control')==[CONTROL]
+        result['producer_flow']={'client_proof_supplied':False,'client_control_supplied':False,'upstream_proof_received':True,'upstream_control_received':True,'same_generation_failure':True,'unfiltered_error_proof_visible':proof_seen,'unfiltered_error_control_visible':control_seen,'snapshot':('mutated-request' if proof_seen and control_seen else 'original-request' if not proof_seen and not control_seen else 'mixed'),'error_sha256':sha(json.dumps(producer_error,sort_keys=True).encode()),'redaction_proof':False}
+        save(out/'producer-flow.json',result['producer_flow'])
+        check('producer snapshot classification consistent',proof_seen==control_seen)
+        result['encoder_reload']=reload_config(filtered,'encoder reload')
+        offset=(out/'fixture.log').stat().st_size
+        check('actual filtered reverse-proxy 502',probe()==502)
+        after=error_event('/error-probe',offset)
+        save(out/'error.filtered.json',after)
+        check('discriminating runtime redaction pair',redaction_pair(before,after))
+        # Feed the real unfiltered event into the filtered oracle: the no-encoder
+        # negative must fail, not just a fabricated unit fixture.
+        try:redaction_pair(before,before)
+        except AssertionError:negative=True
+        else:negative=False
+        check('actual no-encoder negative rejected',negative)
+        result['redaction']={'same_request_bytes_sha256':sha(probe_wire),'byte_identical_client_request':True,'unfiltered_config_sha256':sha(unfiltered.encode()),'filtered_config_sha256':sha(filtered.encode()),'only_encoder_changed':unfiltered.split(' admin off',1)[1]==filtered.split(' admin off',1)[1],'unfiltered_proof_and_control_present':True,'filtered_control_retained':True,'filtered_proof_key_and_value_absent':True,'actual_unfiltered_negative_rejected':negative,'logger_source':'exact Caddyfile.candidate default block'}
+        check('only encoder changes between controls',result['redaction']['only_encoder_changed'])
+        result['neighbor_reload']=reload_config(filtered.replace('respond "before"','respond "after"'),'neighbor reload')
+        check('neighbor change loaded',req('/neighbor')[1]==b'after')
         check('metadata after reload',req()[1]==(ROOT/'carrier/build.json').read_bytes())
         result['accepted']=True
     except Exception as e:result['failure']=type(e).__name__+': '+str(e)
@@ -94,7 +192,10 @@ def fixture(out):
             try:proc.wait(timeout=6)
             except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=3)
         for s in servers:s.shutdown();s.server_close()
-        log.close();result['all_processes_stopped']=proc is None or proc.poll() is not None;result['check_count']=len(checks);result['log_sha256']=sha((out/'fixture.log').read_bytes());save(out/'fixture-results.json',result)
+        for thread in threads:thread.join(timeout=3)
+        log.close();result['all_processes_stopped']=(proc is None or proc.poll() is not None) and all(not t.is_alive() for t in threads);result['check_count']=len(checks);result['log_sha256']=sha((out/'fixture.log').read_bytes())
+        if not result['all_processes_stopped']:result.update(accepted=False,failure='owned fixture process/thread cleanup incomplete')
+        save(out/'fixture-results.json',result)
     assert result['accepted'],result.get('failure')
     return result
 
@@ -150,7 +251,12 @@ def main():
     tmp=ROOT/('t-'+a.phase);tmp.mkdir();os.environ['TMPDIR']=str(tmp)
     report={'accepted':False,'phase':a.phase,'commit':m['commit'],'manifest_sha256':sha((ROOT/'manifest.json').read_bytes())}
     try:
-        if a.phase=='candidate':report['fixture']=fixture(out)
+        if a.phase=='candidate':
+            tests=subprocess.run([sys.executable,'-B',str(ROOT/'test_forum_qa.py')],capture_output=True,timeout=30)
+            (out/'source-regressions.stdout').write_bytes(tests.stdout);(out/'source-regressions.stderr').write_bytes(tests.stderr)
+            assert tests.returncode==0,'synthetic source/oracle regressions failed'
+            report['source_regressions']=json.loads(tests.stdout);assert report['source_regressions']['accepted']
+            report['fixture']=fixture(out)
         report['capture']=capture(out,m,a.phase)
         env={**os.environ,'QA_OUT':str(out),'QA_PHASE':a.phase}
         # Prefer an explicitly pinned parent toolchain; never silently npm install latest.

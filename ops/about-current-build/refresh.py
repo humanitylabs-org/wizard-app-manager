@@ -39,6 +39,9 @@ def main():
     save(root/'parent-heavy-specs.json',specs)
     call(['scp','-q',str(root/'manifest.json'),str(root/'manifest.source.json'),str(root/'parent-heavy-specs.json'),'forum:'+worker+'/'])
     worker_preflight=json.loads(call(['ssh','forum',*specs['candidate']['argv'],'--preflight-only']))
+    source_static=json.loads(call([sys.executable,'-B',str(root/'test_forum_qa.py'),'--static-only']))
+    worker_static=json.loads(call(['ssh','forum','python3','-B',worker+'/test_forum_qa.py','--static-only']))
+    assert source_static==worker_static,'source/worker static contract differs'
     activation=json.loads(call([sys.executable,'-B',str(root/'activate.py'),'preflight']))
     # Public metadata only: current input, deployed module, no fixed count constants.
     url='http://127.0.0.1:7790/api/main-compare?commit='+m['commit']
@@ -51,7 +54,7 @@ def main():
     # Recheck locators and every exact byte after all transfer/hash steps.
     call([sys.executable,'-B',str(root/'activate.py'),'preflight'])
     assert sha((prior/'manifest.json').read_bytes())==old_manifest
-    result={'prepared':True,'revision':a.revision,'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),'served_commit':m['commit'],'web_tree':m['web_tree'],'tracked_web_blobs_equal':len(prov['web_files']),'refresh':prov['refresh'],'serving_locators':prov['serving_locators'],'manifest_sha256':digest,'worker':worker,'worker_metadata':dep,'sealed_preflight':worker_preflight,'activation_preflight':activation,'current_commit_api_probe':{'url':url,'status':status,'comparison':api,'module_comparison':expected,'same_input_deployed_module_equal':True},'prior_manifest_sha256_unchanged':old_manifest,'no_live_mutation':True,'fixtures_browsers_tests_unexecuted':True,'job_submitted':False}
+    result={'prepared':True,'revision':a.revision,'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),'served_commit':m['commit'],'web_tree':m['web_tree'],'tracked_web_blobs_equal':len(prov['web_files']),'refresh':prov['refresh'],'serving_locators':prov['serving_locators'],'manifest_sha256':digest,'worker':worker,'worker_metadata':dep,'sealed_preflight':worker_preflight,'source_static_contract':source_static,'worker_static_contract_equal':True,'activation_preflight':activation,'current_commit_api_probe':{'url':url,'status':status,'comparison':api,'module_comparison':expected,'same_input_deployed_module_equal':True},'prior_manifest_sha256_unchanged':old_manifest,'no_live_mutation':True,'fixtures_browsers_tests_unexecuted':True,'job_submitted':False}
     save(root/'preflight-summary.json',result);call(['scp','-q',str(root/'preflight-summary.json'),'forum:'+worker+'/'])
     print(json.dumps(result))
 if __name__=='__main__':main()

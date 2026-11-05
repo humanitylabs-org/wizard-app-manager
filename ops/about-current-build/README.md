@@ -12,6 +12,14 @@ The inherited immutable-shell deployment path generates ux-version/ux-changes bu
 
 Do not wait for global idle or rerun unrelated UX suites for metadata restoration. If a locator moves before activation, run that same bounded refresh into a fresh revision/root and admit its changed-byte seal; do not rename an unchanged key, relabel a stale receipt or rewind the shell. A release moving during a single preparation fails that packet before any live mutation. The complete original source is captured only as public tracked bytes; generated owner extras never enter the packet. A request-time `current/RELEASE_SHA` response alone is deliberately not substituted: `current` can move while nginx still holds an older bind, so that shortcut cannot prove the actually served source. A future canonical release-writer fix is separate from this finite missing-metadata seam, not a new broad daemon.
 
+## Discriminating synthetic log-redaction control
+
+Caddy's proxy-error logger can retain the original client-request snapshot rather than headers later changed by `request_header`. The canary therefore sends explicit synthetic proof **and** nonsecret control headers as one byte-identical HTTP request before/after a same-PID reload. The unfiltered JSON encoder must expose both in a real `/error-probe` 502; the exact candidate default filter must retain that event/status/path and every non-proof header while deleting the proof key/value. The actual unfiltered event is also fed into the filtered oracle and must fail. Missing proof/control on the unfiltered side is a failed positive control, never redaction evidence.
+
+A separate ordered `/producer-probe` route injects synthetic server-generated headers, records their actual successful upstream receipt, stops only that owned upstream, then repeats the same route/config to generate a 502. Its unfiltered snapshot is classified as original/mutated/mixed without requiring mutation visibility or claiming that absence proves deletion. No real credential or live error request is used. Logs/configs in this fixture contain only never-valid-live synthetic values.
+
+`test_forum_qa.py --static-only` checks source wiring without importing/running the fixture. The parent-admitted candidate runs its 11 synthetic unit regressions, then both native encoder controls, the separate producer flow, all metadata guards, and the unchanged browser matrix. Static preflight is not runtime acceptance. Preserve the failed native packet and original failure alongside the fresh stage; do not rewrite it green.
+
 ## Parent-owned admission
 
 1. Copy the prepared directory to its declared `/srv/work/ab-<served-sha8>-rN` Forum root. Run only `stage_dependencies.py --root <worker-root>` for metadata/copy/module-resolution preflight; this does not run tests, a server or Chromium. It copies the already-pinned Playwright 1.56.1 + Chromium revision 1194 closure into the job-owned stage.
