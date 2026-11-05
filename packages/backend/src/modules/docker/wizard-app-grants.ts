@@ -373,6 +373,146 @@ async function legacyPaths(app: App, dataDir: string): Promise<string[]> {
   }
   return [...new Set(out)];
 }
+// ---- The Agent Service gateway as a consumer (wizard-os spec/PERMISSIONS.md layer 2) ---------------------------
+// The gateway holds one key per app that checks it, in the Agent Service's own grants/agent-service.json (0600,
+// owned by the Service's user); the app's grants file lists the key's hash as `{from: 'host:agent-service'}`. An app
+// opts in with `mcp: {checks_gateway: true}` in its wizard.md. Hand-written keys and rows (an operator's) are kept.
+export const GATEWAY_APP = 'wizard-agent-service';
+export const GATEWAY_FROM = 'host:agent-service';
+/** The Service's WIZARD_OS_HOME is /state/wizard-os, and /state is its app data's `data` folder. */
+export const GATEWAY_HOME = 'data/wizard-os';
+const GATEWAY_KEY = /^[a-f0-9]{64}$/;
+type Docs = Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>;
+type GatewayPlan = { pending: Record<string, string[]>; managed: Record<string, string[]>; publish: () => Promise<void> };
+
+/** The gateway file as found: `null` when there is none yet, `undefined` when it is unsafe or malformed (left alone). */
+async function readGateway(file: string): Promise<{ doc: Record<string, unknown>; outgoing: Record<string, unknown> } | null | undefined> {
+  const st = await fs.lstat(file).catch((e) => {
+    if (e.code !== 'ENOENT') throw e;
+    return null;
+  });
+  if (!st) return null;
+  if (!st.isFile() || st.size > 64 * 1024) return undefined;
+  try {
+    const doc = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return undefined;
+    const out = doc.outgoing ?? {};
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return undefined;
+    return { doc, outgoing: out };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Mode 0700 / 0600 on the grants folder and file when something opened them, through no-follow handles. */
+async function tightenGateway(dir: string, file: string) {
+  for (const [p, mode, flags] of [
+    [dir, 0o700, fs.constants.O_DIRECTORY],
+    [file, 0o600, 0],
+  ] as const) {
+    const fh = await fs.open(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | flags).catch(() => null);
+    if (!fh) continue;
+    try {
+      if ((await fh.stat()).mode & 0o077) await fh.chmod(mode);
+    } finally {
+      await fh.close();
+    }
+  }
+}
+
+async function writeGateway(home: string, owner: { uid: number; gid: number }, doc: Record<string, unknown>) {
+  const dir = path.join(home, 'grants');
+  const file = path.join(dir, 'agent-service.json');
+  const st = await fs.lstat(dir).catch((e) => {
+    if (e.code !== 'ENOENT') throw e;
+    return null;
+  });
+  if (st && (st.isSymbolicLink() || !st.isDirectory())) throw new Error('Gateway grants path is not a real directory');
+  if (!st) {
+    await fs.mkdir(dir, { mode: 0o700 });
+    await fs.chown(dir, owner.uid, owner.gid);
+  }
+  const bytes = `${JSON.stringify(doc, null, 2)}\n`;
+  if ((await fs.readFile(file, 'utf8').catch(() => null)) !== bytes) {
+    const tmp = path.join(dir, `.agent-service.json.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
+    try {
+      const fh = await fs.open(tmp, 'wx', 0o600);
+      try {
+        await fh.writeFile(bytes);
+        // The Service ignores a key file that is not its own user's: same owner as its home folder.
+        await fh.chown(owner.uid, owner.gid);
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+      await fs.rename(tmp, file);
+    } finally {
+      await fs.rm(tmp, { force: true });
+    }
+  }
+  await tightenGateway(dir, file);
+}
+
+/** Plans the gateway's keys and the `host:agent-service` rows into `docs`; `publish` writes the gateway file after
+ * the apps' files (providers first). With no Agent Service, or one that never started, or an unsafe/malformed
+ * gateway file, nothing gateway-related changes. */
+async function planGatewayGrants(apps: App[], docs: Docs, previous: Record<string, string[]> = {}): Promise<GatewayPlan> {
+  const keep: GatewayPlan = { pending: previous, managed: previous, publish: async () => undefined };
+  const gw = apps.find((a) => a.manifest.id === GATEWAY_APP);
+  if (!gw?.data) return keep;
+  let home: string;
+  try {
+    home = await confined(gw.data, GATEWAY_HOME);
+  } catch {
+    return keep;
+  }
+  const homeStat = await fs.lstat(home).catch(() => null);
+  if (!homeStat?.isDirectory()) return keep;
+  const found = await readGateway(path.join(home, 'grants', 'agent-service.json'));
+  if (found === undefined) return keep;
+  const outgoing: Record<string, unknown> = { ...(found?.outgoing ?? {}) };
+  const managed: Record<string, string[]> = {};
+  for (const [id, d] of docs) {
+    if (id === GATEWAY_APP || d.app.manifest.mcp?.checks_gateway !== true) continue;
+    const had = outgoing[id];
+    const key = typeof had === 'string' && GATEWAY_KEY.test(had) ? had : randomBytes(32).toString('hex');
+    outgoing[id] = key;
+    managed[id] = [hash(key)];
+  }
+  // Keys the App Manager wrote for apps that no longer check the gateway (or are gone) go; hand-written ones stay.
+  for (const [id, hashes] of Object.entries(previous)) {
+    const had = outgoing[id];
+    if (!managed[id] && typeof had === 'string' && hashes.includes(hash(had))) delete outgoing[id];
+  }
+  for (const [id, d] of docs) {
+    const want = managed[id]?.[0];
+    const stale = previous[id] ?? [];
+    d.doc.incoming = d.doc.incoming.filter((r) => !(r.from === GATEWAY_FROM && stale.includes(r.sha256) && r.sha256 !== want));
+    if (want && !d.doc.incoming.some((r) => r.from === GATEWAY_FROM && r.sha256 === want)) d.doc.incoming.push({ from: GATEWAY_FROM, sha256: want });
+  }
+  const pending = Object.fromEntries(
+    [...new Set([...Object.keys(previous), ...Object.keys(managed)])].map((id) => [
+      id,
+      [...new Set([...(previous[id] ?? []), ...(managed[id] ?? [])])],
+    ]),
+  );
+  const changed = found === null ? Object.keys(managed).length > 0 : JSON.stringify(outgoing) !== JSON.stringify(found.outgoing);
+  return {
+    pending,
+    managed,
+    publish: async () => {
+      if (!changed && found === null) return;
+      try {
+        const doc = { ...(found?.doc ?? {}), outgoing: Object.fromEntries(Object.entries(outgoing).sort(([a], [b]) => a.localeCompare(b))) };
+        if (changed) await writeGateway(home, { uid: homeStat.uid, gid: homeStat.gid }, doc);
+        else await tightenGateway(path.join(home, 'grants'), path.join(home, 'grants', 'agent-service.json'));
+      } catch (e) {
+        console.warn(`Gateway grants not written: ${(e as Error).message}`);
+      }
+    },
+  };
+}
+
 /** Called only under WizardStorage.serial. Keys exist solely in consumer files.
  * Keep unmanaged incoming rows (e.g. the gateway) and existing enforcement policy.
  * Save hash metadata before publication so retries can remove partial old writes.
@@ -393,6 +533,7 @@ export async function reconcileAppGrants(
     adopted?: string[];
     foreign_adopted?: string[];
     endpoints?: Record<string, Record<string, string>>;
+    gateway?: Record<string, string[]>;
   };
   const adopted = new Set(previous.adopted ?? []);
   const foreignAdopted = new Set(previous.foreign_adopted ?? []);
@@ -414,10 +555,7 @@ export async function reconcileAppGrants(
     );
     if (denied) return [];
     return dests.filter(
-      (p) =>
-        !p.urn.endsWith(':wizardapps') &&
-        p.manifest.id !== exclude &&
-        !(file.layer2_removing as string[]).includes(p.manifest.id),
+      (p) => !p.urn.endsWith(':wizardapps') && p.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(p.manifest.id),
     );
   };
   const primaryEndpoint = (from: string, to: string, old: AppFile) => {
@@ -546,6 +684,7 @@ export async function reconcileAppGrants(
       }
     }
   }
+  const gateway = await planGatewayGrants(apps, docs, previous.gateway);
   file.seeded = [...new Set([...(file.seeded ?? []), ...apps.map((a) => a.manifest.id)])];
   // Retain the previous hash set until every provider has received revocation.
   const pending = Object.fromEntries(
@@ -554,11 +693,18 @@ export async function reconcileAppGrants(
       [...new Set([...(previous.managed?.[id] ?? []), ...(managed[id] ?? [])])],
     ]),
   );
-  file.layer2 = { managed: pending, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints: previous.endpoints ?? {} };
+  file.layer2 = {
+    managed: pending,
+    adopted: [...adopted],
+    foreign_adopted: [...foreignAdopted],
+    endpoints: previous.endpoints ?? {},
+    gateway: gateway.pending,
+  };
   await save(file);
   // Providers first: no consumer receives a newly minted key before its hash.
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, { ...d.doc, outgoing: d.old.outgoing });
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, d.doc);
-  file.layer2 = { managed, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints };
+  await gateway.publish();
+  file.layer2 = { managed, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints, gateway: gateway.managed };
   await save(file);
 }
