@@ -324,7 +324,8 @@ class Handler(BaseHTTPRequestHandler):
                 # browser as a second header or a second response.
                 if k.lower() in HOP or k.lower() in ("server", "date") or not _TOKEN.fullmatch(k) or _CTL.search(v):
                     continue
-                self.send_header(k, v.replace("\r", "").replace("\n", ""))
+                self.send_header(k.replace("\r", "").replace("\n", "").replace(":", ""),
+                                 v.replace("\r", "").replace("\n", ""))
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True

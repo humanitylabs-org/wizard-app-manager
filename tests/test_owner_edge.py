@@ -18,15 +18,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from wam import owner_edge, owner_proof as op  # noqa: E402
 
-BOX = "box.tail1234.ts.net"
+BOX = "box.tailnet.example.test"
 OWNER = "owner@example.com"
-PHONE = "100.64.0.9"
-BOX_IP = "100.64.0.1"
+PHONE = "192.0.2.9"
+BOX_IP = "192.0.2.1"
 
 
 class FakeIdentity:
     def __init__(self, allow_box=False):
-        self.val = {"logins": {OWNER}, "ips": {BOX_IP, "fd7a:115c:a1e0::1"}, "host": BOX, "allow_box": allow_box}
+        self.val = {"logins": {OWNER}, "ips": {BOX_IP, "2001:db8::1"}, "host": BOX, "allow_box": allow_box}
 
     def current(self):
         return self.val
@@ -98,6 +98,38 @@ def serve_headers(**over):
          "X-Forwarded-Proto": "https", "Tailscale-User-Login": OWNER, "Tailscale-User-Name": "Owner"}
     h.update(over)
     return {k: v for k, v in h.items() if v is not None}
+
+
+def test_relay_rejects_malformed_backend_header_names_and_values(edge, monkeypatch):
+    """CodeQL source-to-header sink: invalid bytes never reach a browser response, valid tokens stay identical."""
+    class Response:
+        status = 200
+        def getheaders(self):
+            return [("X-Safe", "kept"), ("X-Bad\r\nInjected", "yes"), ("X-Colon:", "yes"),
+                    ("X-BadValue", "ok\r\nInjected: yes")]
+        def read1(self, n):
+            return b""
+
+    class Connection:
+        def putrequest(self, *a, **k): pass
+        def putheader(self, *a): pass
+        def endheaders(self): pass
+        def getresponse(self): return Response()
+        def close(self): pass
+
+    monkeypatch.setattr(owner_edge.Handler, "_connect", lambda self: Connection())
+    status, headers, _ = call(edge)
+    assert status == 200 and headers["x-safe"] == "kept"
+    assert all(not name.lower().startswith(("x-bad", "x-colon", "injected")) for name in headers)
+
+
+def test_explicit_name_sanitizer_is_identity_for_every_allowed_ascii_token():
+    # The explicit sanitizer helps CodeQL recognize the existing fullmatch guard; it cannot change a name
+    # accepted by that guard. Test the entire character alphabet, not just the one observed alert.
+    for codepoint in range(128):
+        name = "X" + chr(codepoint) + "Y"
+        if owner_edge._TOKEN.fullmatch(name):
+            assert name.replace("\r", "").replace("\n", "").replace(":", "") == name
 
 
 def call(e, method="GET", path="/api/status", headers=None, body=b"", extra_lines=()):
@@ -215,7 +247,7 @@ def test_socket_is_private(edge):
 
 
 def test_identity_uses_the_node_owner_and_refuses_tagged_nodes(tmp_path):
-    status = {"Self": {"UserID": 7, "DNSName": "box.tail1234.ts.net.", "TailscaleIPs": [BOX_IP]},
+    status = {"Self": {"UserID": 7, "DNSName": "box.tailnet.example.test.", "TailscaleIPs": [BOX_IP]},
               "User": {"7": {"LoginName": "Owner@Example.com"}}}
     assert owner_edge.Identity(tmp_path, status=lambda: status).current()["logins"] == {OWNER}
     tagged = json.loads(json.dumps(status)); tagged["Self"]["Tags"] = ["tag:server"]

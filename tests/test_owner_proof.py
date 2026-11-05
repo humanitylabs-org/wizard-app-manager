@@ -217,7 +217,7 @@ def test_without_the_edge_an_owner_proof_app_keeps_its_previous_wizard_path(tmp_
     home = tmp_path / "home"
     home.mkdir()
     prev = {"id": "messenger", "name": "Messenger", "category": "app", "port": 9245, "path": "/",
-            "url": "https://box.tail1234.ts.net:8796/messenger/", "open": "/messenger/", "gateway_strip": True,
+            "url": "https://box.tailnet.example.test:8796/messenger/", "open": "/messenger/", "gateway_strip": True,
             "gateway_implicit": True}
     (home / "links.json").write_text(json.dumps({"links": [prev]}))
     res = links.publish(_reg_with_messenger(), home, {"wizard-shell"})

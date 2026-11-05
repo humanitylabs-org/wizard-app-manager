@@ -24,7 +24,7 @@ RECIPES = {
     "privileged": "services:\n  x:\n    image: a\n    privileged: true\n",
     "docker socket": "services:\n  x:\n    image: a\n    volumes: ['/var/run/docker.sock:/s']\n",
     "containerd socket": "services:\n  x:\n    image: a\n    volumes: ['/run/containerd/containerd.sock:/s']\n",
-    "host /home bind": "services:\n  x:\n    image: a\n    volumes: ['/home/someone:/h']\n",
+    "host /home bind": "services:\n  x:\n    image: a\n    volumes: ['/synthetic-home:/h']\n",
     "host / bind (long form)": "services:\n  x:\n    image: a\n    volumes:\n      - {type: bind, source: /, target: /h}\n",
     "host network": "services:\n  x:\n    image: a\n    network_mode: host\n",
     "host pid": "services:\n  x:\n    image: a\n    pid: host\n",
@@ -40,8 +40,8 @@ RECIPES = {
     "pid through a variable": "services:\n  x:\n    image: a\n    pid: ${P}\n",
     "cap_add through a variable": "services:\n  x:\n    image: a\n    cap_add: ['${C}']\n",
     "volumes_from": "services:\n  x:\n    image: a\n    volumes_from: [other]\n",
-    "named volume bound to a host path": "services:\n  x:\n    image: a\n    volumes: ['v:/h']\nvolumes:\n  v: {driver: local, driver_opts: {type: none, o: bind, device: /home/someone}}\n",
-    "secret read from a host file": "services:\n  x:\n    image: a\nsecrets:\n  k: {file: /home/someone/.ssh/id_ed25519}\n",
+    "named volume bound to a host path": "services:\n  x:\n    image: a\n    volumes: ['v:/h']\nvolumes:\n  v: {driver: local, driver_opts: {type: none, o: bind, device: /synthetic-home}}\n",
+    "secret read from a host file": "services:\n  x:\n    image: a\nsecrets:\n  k: {file: /synthetic-home/.ssh/id_ed25519}\n",
     "cgroup host": "services:\n  x:\n    image: a\n    cgroup: host\n",
     "device_cgroup_rules": "services:\n  x:\n    image: a\n    device_cgroup_rules: ['b *:* rwm']\n    cap_add: [MKNOD]\n",
     "label=disable": "services:\n  x:\n    image: a\n    security_opt: ['label=disable']\n",
@@ -69,7 +69,7 @@ def test_ordinary_recipes_need_no_owner(compose):
     assert net.owner_host_access(compose, "x") == []
 
 
-ROOT = "/home/u/runtipi"
+ROOT = "/synthetic-home/runtipi"
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +122,7 @@ def test_what_wizards_own_recipes_mount_is_not_host_access(app, vol):
     ("notes", "${ROOT_FOLDER_HOST}/repos/wizardapps/apps/tasks/releases/${R}:/app:ro"),              # another app's folder
     ("notes", "${ROOT_FOLDER_HOST}/repos/wizardapps/apps/notes/../tasks/releases/x:/app:ro"),
     ("agent-private", "${ROOT_FOLDER_HOST}/app-data/wizard-os/agents/private/../philosopher/home:/o"),
-    ("notifications", "${INBOX_MEDIA_1:-/home/u}:/m:ro"),
+    ("notifications", "${INBOX_MEDIA_1:-/synthetic-home}:/m:ro"),
     ("x", "${ROOT_FOLDER_HOST}/../../:/m"),
     ("x", "${APP_SOURCE_DIR}/../..:/m"),                                           # a default outside the app
 ])
@@ -139,10 +139,10 @@ def test_own_folder_waivers_do_not_stretch(app, vol):
     "services:\n  x:\n    image: a\n    volumes: ['${APP_DATA_DIR}/${SUB}:/u']\n",
     "services:\n  x:\n    image: a\n    volumes: ['v:/v']\nvolumes:\n  v: {external: true}\n",
     "services:\n  x:\n    image: a\n    volumes: ['v:/v']\nvolumes:\n  v: {name: other_app_data}\n",
-    "services:\n  x:\n    build: {context: /home/u}\n",
+    "services:\n  x:\n    build: {context: /synthetic-home}\n",
     "services:\n  x:\n    build: {context: ., additional_contexts: {c: ../..}}\n",
     "services:\n  x:\n    build: ..\n",
-    "services:\n  x:\n    image: a\n    env_file: [/home/u/.env]\n",
+    "services:\n  x:\n    image: a\n    env_file: [/synthetic-home/.env]\n",
     "services:\n  x:\n    image: a\n    env_file: [{path: ../secret.env}]\n",
 ])
 def test_more_ways_out_of_the_app_are_host_access(compose):
@@ -150,10 +150,10 @@ def test_more_ways_out_of_the_app_are_host_access(compose):
 
 
 def test_a_value_the_installer_was_given_counts_as_what_would_run():
-    """Review P1: `--set INBOX_MEDIA_1=/home/u/.ssh` must not slip past a recipe that is clean by default."""
+    """Review P1: `--set INBOX_MEDIA_1=/synthetic-home/.ssh` must not slip past a recipe that is clean by default."""
     c = "services:\n  x:\n    image: a\n    volumes: ['${MEDIA:-${APP_DATA_DIR}/m}:${MEDIA:-/m}:ro']\n"
     assert net.owner_host_access(c, "x") == []
-    assert net.owner_host_access(c, "x", values={"MEDIA": "/home/u/.ssh"})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "/synthetic-home/.ssh"})
     assert net.owner_host_access(c, "x", values={"MEDIA": "/"})
     assert net.owner_host_access(c, "x", values={"MEDIA": "${ROOT_FOLDER_HOST}/user-config"})
     assert net.owner_host_access(c, "x", values={"MEDIA": "../.."})
@@ -170,7 +170,7 @@ def test_the_install_checks_what_it_was_given(tmp_path, monkeypatch):
     cli.install(cli.Config(), "x")                                                  # clean by default
     for flag in (False, True):
         with pytest.raises(SystemExit, match="owner action"):
-            cli.install(cli.Config(), "x", {"MEDIA": "/home/u/.ssh"}, allow_host_access=flag)
+            cli.install(cli.Config(), "x", {"MEDIA": "/synthetic-home/.ssh"}, allow_host_access=flag)
 
 
 def test_joining_another_containers_namespaces_is_host_access():
@@ -334,7 +334,7 @@ def test_an_app_id_cannot_escape_the_grant_folder(tmp_path):
 
 # ---------------------------------------------------------------- the owner listener (the only writer of a grant)
 
-OWNER, BOX_IP, PHONE, SERVER = "owner@example.com", "100.64.0.1", "100.64.0.10", "100.64.0.20"
+OWNER, BOX_IP, PHONE, SERVER = "owner@example.com", "192.0.2.1", "192.0.2.10", "192.0.2.20"
 
 
 def _node(name, os_):
@@ -401,7 +401,7 @@ def test_the_grant_the_listener_writes_matches_what_the_install_checks(listener)
 @pytest.mark.parametrize("hop,extra,code", [
     (SERVER, None, "owner_device_required"),                  # the owner's other (agent) server
     (BOX_IP, None, None),                                     # the box itself (store_install.from_box)
-    ("100.64.0.99", None, "owner_device_unverified"),         # tailscale cannot resolve the caller
+    ("192.0.2.99", None, "owner_device_unverified"),         # tailscale cannot resolve the caller
     (PHONE, {"Authorization": "Bearer agent-token"}, None),   # an agent's bearer, even from a trusted address
 ])
 def test_nothing_but_an_enrolled_owner_device_can_make_a_grant(listener, hop, extra, code):

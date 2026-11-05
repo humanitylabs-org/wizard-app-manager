@@ -11,12 +11,12 @@ from wam import owner_devices as od, owner_edge  # noqa: E402
 
 from test_owner_edge import BOX, BOX_IP, OWNER, PHONE, FakeIdentity, call, edge, serve_headers  # noqa: E402,F401
 
-SERVER = "100.64.0.20"      # the owner's other, untagged server: the one where agents run
-LAPTOP = "100.64.0.30"
+SERVER = "192.0.2.20"      # the owner's other, untagged server: the one where agents run
+LAPTOP = "192.0.2.30"
 
 
 def node(name, os_="linux", login=OWNER, tags=None, sid="nAAA"):
-    return {"Node": {"ID": 1, "StableID": sid, "Name": f"{name}.tail1234.ts.net.", "Tags": tags,
+    return {"Node": {"ID": 1, "StableID": sid, "Name": f"{name}.tailnet.example.test.", "Tags": tags,
                      "Hostinfo": {"OS": os_, "Hostname": name}}, "UserProfile": {"LoginName": login}}
 
 
@@ -98,7 +98,7 @@ def test_a_server_marked_human_but_registered_as_a_wizard_machine_is_refused(tmp
     assert od.Enrollment(tmp_path, whois).check(SERVER, OWNER) == od.REQUIRED
 
 
-@pytest.mark.parametrize("hop", ["", "not-an-ip", "100.64.0.9, 100.64.0.20", "100.64.0.9:443", "100.64.0.99"])
+@pytest.mark.parametrize("hop", ["", "not-an-ip", "192.0.2.9, 192.0.2.20", "192.0.2.9:443", "192.0.2.99"])
 def test_a_lookup_that_cannot_resolve_one_node_fails_closed(tmp_path, monkeypatch, hop):
     monkeypatch.delenv("WIZARD_DEVICES_FILE", raising=False)
     assert od.Enrollment(tmp_path, whois).check(hop, OWNER) == od.UNVERIFIED
@@ -130,7 +130,7 @@ def test_a_tagged_node_or_another_login_is_not_the_owners_device(tmp_path, monke
 def test_the_real_whois_needs_tailscale_and_a_clean_answer(monkeypatch):
     monkeypatch.setattr(od.shutil, "which", lambda name: None)
     with pytest.raises(od.Unverified):
-        od.tailscale_whois("100.64.0.9")
+        od.tailscale_whois("192.0.2.9")
 
 
 # ---------------------------------------------------------------- the edge asks it
@@ -155,7 +155,7 @@ def test_the_owners_other_server_is_refused_before_anything_is_forwarded(enrolle
 
 
 def test_an_unresolvable_caller_is_refused_with_its_own_code(enrolled):
-    status, _, body = call(enrolled, headers=serve_headers(**{"X-Forwarded-For": "100.64.0.99"}))
+    status, _, body = call(enrolled, headers=serve_headers(**{"X-Forwarded-For": "192.0.2.99"}))
     assert status == 403 and json.loads(body)["error"]["code"] == "owner_device_unverified"
     assert enrolled["seen"] == []
 
