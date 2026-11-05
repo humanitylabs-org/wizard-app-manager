@@ -3,7 +3,7 @@
 Both switches in `app-manager.json` default off (absence also means off):
 
 - `owner_proof_enabled`: gates provisioning, edge serve, registry metadata and routing. **Do not enable until spec
-  follow-up 2 (trusted stable-ID owner enrollment) is complete.**
+  follow-ups 2 and 11 (trusted enrollment and authenticated backend), plus edge custody from 9, are complete.**
 - `owner_host_access_grants`: gates enhanced risk detection and grant enforcement in install/update/network allow.
   **Do not enable until spec follow-ups 2, 5, 6, 7, 8, 9 and 10 are complete.**
 
