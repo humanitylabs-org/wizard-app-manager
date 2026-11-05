@@ -257,15 +257,16 @@ def test_remove_deletes_only_the_helper_and_its_sudoers_rule(monkeypatch, tmp_pa
     seen = {}
     def runner(argv, **k):
         seen["argv"] = argv
+        helper.unlink()
         return subprocess.CompletedProcess(argv, 0, "", "")
     helper, sudoers = tmp_path / "os-patch", tmp_path / "sudoers.d-wizard"
     helper.write_text("x")
     monkeypatch.setattr(maintain, "HELPER", helper)
     monkeypatch.setattr(maintain, "SUDOERS", sudoers)
     monkeypatch.setattr(maintain.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(maintain, "helper_state", lambda: "ready")
     assert maintain.remove(runner)["changed"]
-    assert seen["argv"][:3] == ["sudo", "-n", "sh"] and seen["argv"][-1] == f"set -e; rm -f {sudoers}; rm -f {helper}"
-    helper.unlink()
+    assert seen["argv"] == ["sudo", "-n", str(helper), "remove"]
     assert maintain.remove(runner) == {"helper": "missing", "changed": False}
 
 
@@ -289,6 +290,7 @@ def test_check_mode_without_helper_uses_unprivileged_check(tmp_path, monkeypatch
 
 
 def test_sudoers_rule_allows_only_the_helper(monkeypatch, tmp_path):
+    import os, pwd
     seen = {}
     def runner(argv, **k):
         seen["argv"] = argv
@@ -296,10 +298,11 @@ def test_sudoers_rule_allows_only_the_helper(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(argv, 0, "", "")
     monkeypatch.setattr(maintain.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(maintain, "HELPER", tmp_path / "missing-helper")
-    res = maintain.setup(runner, user="wizard")
+    monkeypatch.setattr(maintain, "_install_paths_safe", lambda: True)
+    res = maintain.setup(runner, user=pwd.getpwuid(os.getuid()).pw_name)
     assert seen["argv"][:2] == ["sudo", "-n"] and res["changed"]
     rule = seen["rule"]
-    assert rule.startswith("wizard ALL=(root) NOPASSWD: ") and "ALL\n" not in rule.split("NOPASSWD:")[1]
+    assert rule.startswith(pwd.getpwuid(os.getuid()).pw_name + " ALL=(root) NOPASSWD: ") and "ALL\n" not in rule.split("NOPASSWD:")[1]
     assert all(part.strip().startswith(str(tmp_path / "missing-helper")) for part in rule.split("NOPASSWD:")[1].split(","))
 
 

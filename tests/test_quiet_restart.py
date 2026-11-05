@@ -88,7 +88,7 @@ def test_rechecks_immediately_before_each_service(rig):
     n = [0]
     def busy():
         n[0] += 1
-        return ["turn arrived"] if n[0] >= 4 else []  # update probe consumes one
+        return ["turn arrived"] if n[0] >= 3 else []  # two quiet samples, then the operation boundary
     rec = run(home, busy)
     assert not any(a[0] == "restart-service" for a in calls)
     assert rec["restarts"]["services"]["state"] == "deferred"
@@ -125,7 +125,7 @@ def test_failed_backup_and_os_do_not_sink_other_steps(rig, monkeypatch):
 def test_installer_blocks_restarts(rig, monkeypatch):
     home, calls, _, _ = rig
     config(home, quiet_restarts="auto", quiet_reboot="auto", os_security="patch", held_platform="patch")
-    monkeypatch.setattr(m, "updates_step", lambda *a: {"state": "started"})
+    monkeypatch.setattr("wam.updates.installing", lambda *a: True)
     rec = run(home)
     assert rec["state"] == "deferred" and all(a == ["restart-check"] for a in calls)
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """OS security patches for any Linux: detect the distribution, then use its own package manager and security channel.
 
 Stdlib only, no imports from the rest of wam: the same file runs as the box's fixed root helper
@@ -40,7 +40,7 @@ TIMEOUT = 3600
 
 
 def run(argv, timeout=600, env=None, check=False):
-    e = {**os.environ, "LC_ALL": "C", "LANG": "C", **(env or {})}
+    e = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C", "LANG": "C", **(env or {})}
     p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
                        timeout=timeout, env=e)
     if check and p.returncode != 0:
@@ -428,7 +428,8 @@ def native(on, rel = None):
         return {"state": "refused", "reason": "needs root"}
     if on:
         changed = APT_NATIVE_OFF.exists()
-        APT_NATIVE_OFF.unlink(missing_ok=True)
+        if APT_NATIVE_OFF.exists():
+            APT_NATIVE_OFF.unlink()
     else:
         changed = not APT_NATIVE_OFF.exists()
         APT_NATIVE_OFF.write_text("// Wizard OS runs security patches itself (wam maintain), without service restarts.\n"
@@ -539,7 +540,10 @@ def schedule_reboot():
 
 def main(argv = None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["check"] and set(argv[1:]) <= {"--refresh"}:
+    if os.geteuid() == 0:
+        os.environ.clear()
+        os.environ.update({"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C", "LANG": "C"})
+    if argv in (["check"], ["check", "--refresh"]):
         res = check(refresh="--refresh" in argv)
     elif argv == ["apply"]:
         res = apply()
@@ -553,6 +557,18 @@ def main(argv = None):
         res = schedule_reboot()
     elif argv in (["native-off"], ["native-on"]):
         res = native(argv[0] == "native-on")
+    elif argv == ["remove"]:
+        if os.geteuid() != 0:
+            res = {"state": "refused", "reason": "needs root"}
+        else:
+            native(True)
+            for path in (Path("/etc/sudoers.d/wizard-os-maintenance"),
+                         Path("/usr/local/libexec/wizard-os/os-patch")):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            res = {"state": "removed"}
     else:
         print("usage: os-patch check [--refresh] | apply | native-off | native-on", file=sys.stderr)
         return 2

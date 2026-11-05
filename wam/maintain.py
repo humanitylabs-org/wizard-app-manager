@@ -30,7 +30,11 @@ import calendar
 import fcntl
 import json
 import os
+import pwd
+import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -106,20 +110,51 @@ def _sha(p: Path) -> str | None:
         return None
 
 
+def _protected(path: Path, mode: int | None = None) -> bool:
+    """Only root-owned regular bytes below root-owned, nonwritable, nonlinked directories are trusted."""
+    try:
+        for parent in reversed(path.parents):
+            s = parent.lstat()
+            if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
+                return False
+        s = path.lstat()
+        return stat.S_ISREG(s.st_mode) and s.st_uid == 0 and not s.st_mode & 0o022 \
+            and (mode is None or stat.S_IMODE(s.st_mode) == mode)
+    except OSError:
+        return False
+
+
 def helper_state() -> str:
     """root: running as root; ready: the installed helper matches this wam; stale: an older helper; missing."""
     if os.geteuid() == 0:
         return "root"
     if not HELPER.exists():
         return "missing"
+    if not _protected(HELPER, 0o755) or not _protected(SUDOERS, 0o440):
+        return "unsafe"
     return "ready" if _sha(HELPER) == _sha(_source()) else "stale"
+
+
+def _install_paths_safe() -> bool:
+    """Provision only through an existing protected root ancestry; never follow a destination link."""
+    for path in (HELPER, SUDOERS):
+        for parent in path.parents:
+            try:
+                s = parent.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
+                return False
+        if path.is_symlink() or (path.exists() and not _protected(path)):
+            return False
+    return True
 
 
 def _helper(action: list[str]) -> list[str] | None:
     st = helper_state()
     if st == "root":
-        return [sys.executable, str(_source()), *action]
-    if st in ("ready", "stale"):
+        return [sys.executable, "-I", str(_source()), *action]
+    if st == "ready":
         return ["sudo", "-n", str(HELPER), *action]
     return None
 
@@ -149,25 +184,44 @@ def setup(runner=subprocess.run, user: str | None = None) -> dict:
             subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()))
     if root and not user:
         return {"helper": "root", "changed": False}   # a root-run box calls os_patch directly
-    if _sha(HELPER) == _sha(_source()) and (SUDOERS.exists() or not root):
-        return {"helper": "ready", "changed": False}
+    if not isinstance(user, str) or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*[$]?", user):
+        return {"state": "refused", "reason": "A local account name is required.", "changed": False}
+    try:
+        account = pwd.getpwnam(user)
+    except KeyError:
+        return {"state": "refused", "reason": "The local account does not exist.", "changed": False}
+    if not root and account.pw_uid != os.getuid():
+        return {"state": "refused", "reason": "Setup may grant only the invoking account.", "changed": False}
+    if not _install_paths_safe():
+        return {"state": "refused", "reason": "Helper or sudoers destination has unsafe ancestry.", "changed": False}
     rule = (f"{user} ALL=(root) NOPASSWD: {HELPER} check, {HELPER} check --refresh, {HELPER} apply, "
             f"{HELPER} native-off, {HELPER} native-on, {HELPER} restart-check, {HELPER} restart-service *, "
-            f"{HELPER} apply-held, {HELPER} reboot\n")
+            f"{HELPER} apply-held, {HELPER} reboot, {HELPER} remove\n")
     with tempfile.TemporaryDirectory() as td:
         sud = Path(td) / "sudoers"
         sud.write_text(rule)
         sud.chmod(0o644)
-        script = (f"set -e; install -d -o root -g root -m 0755 {HELPER.parent}; "
-                  f"install -o root -g root -m 0755 {_source()} {HELPER}; "
-                  f"visudo -cqf {sud}; install -o root -g root -m 0440 {sud} {SUDOERS}")
-        p = runner(["sh", "-c", script] if root else ["sudo", "-n", "sh", "-c", script],
-                   capture_output=True, text=True, timeout=120)
+        hp, sp = shlex.quote(str(HELPER.parent)), shlex.quote(str(SUDOERS.parent))
+        script = (f"set -e; /usr/bin/install -d -o root -g root -m 0755 {hp}; "
+                  f"h=$(/usr/bin/mktemp {hp}/.os-patch.XXXXXX); "
+                  f"s=$(/usr/bin/mktemp {sp}/.wizard-os-maintenance.XXXXXX); "
+                  "trap '/usr/bin/rm -f -- \"$h\" \"$s\"' EXIT; "
+                  f"/usr/bin/install -o root -g root -m 0755 {shlex.quote(str(_source()))} \"$h\"; "
+                  f"/usr/bin/install -o root -g root -m 0440 {shlex.quote(str(sud))} \"$s\"; "
+                  "/usr/sbin/visudo -cqf \"$s\"; "
+                  f"/usr/bin/mv -fT -- \"$h\" {shlex.quote(str(HELPER))}; "
+                  f"/usr/bin/mv -fT -- \"$s\" {shlex.quote(str(SUDOERS))}")
+        p = runner(["/bin/sh", "-c", script] if root else ["sudo", "-n", "/bin/sh", "-c", script],
+                   capture_output=True, text=True, timeout=120,
+                   env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C"})
     if p.returncode != 0:
         return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain setup"}
-    return {"helper": "ready" if _sha(HELPER) == _sha(_source()) else helper_state(), "changed": True, "user": user}
+    state = helper_state()
+    return {"helper": state, "changed": True, "user": user,
+            **({"state": "error", "reason": "Installed helper failed provenance verification."}
+               if state not in ("ready", "root") else {})}
 
 
 def remove(runner=subprocess.run) -> dict:
@@ -175,14 +229,19 @@ def remove(runner=subprocess.run) -> dict:
     `wam maintain setup` puts them back. For a box whose owner never wants root maintenance installed."""
     if not SUDOERS.exists() and not HELPER.exists():
         return {"helper": "missing", "changed": False}
-    script = f"set -e; rm -f {SUDOERS}; rm -f {HELPER}"
-    p = runner(["sh", "-c", script] if os.geteuid() == 0 else ["sudo", "-n", "sh", "-c", script],
+    argv = _helper(["remove"])
+    if argv is None:
+        return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
+                "command": "sudo wam maintain remove"}
+    p = runner(argv,
                capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
-    return {"helper": "missing", "changed": True}
+    gone = not SUDOERS.exists() and not HELPER.exists()
+    return {"helper": "missing" if gone else helper_state(), "changed": gone,
+            **({} if gone else {"state": "error", "reason": "Helper removal did not verify."})}
 
 
 # ---- settings, timer ---------------------------------------------------------------------------------------------
@@ -255,10 +314,9 @@ def _lease(home: Path):
     others: list[int] = []
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        for name in ("hermes-update.lock", "app-updates.lock"):
-            if (home / name).exists():
-                others.append(os.open(home / name, os.O_RDWR))
-                fcntl.flock(others[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name in ("hermes-update.lock", "app-updates.lock", "install.start.lock", "install.lock"):
+            others.append(os.open(home / name, os.O_RDWR | os.O_CREAT, 0o600))
+            fcntl.flock(others[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
         for other in others:
@@ -278,7 +336,7 @@ def busy_reasons(home: Path) -> list[str]:
 
 
 def wait_quiet(home: Path, seconds: float, is_busy=None, sleep=time.sleep, clock=time.monotonic) -> list[str]:
-    """[] once the box is quiet twice in a row (closing the check-then-act race), else the last busy reasons."""
+    """[] once quiet twice; this is not an atomic admission fence against new work."""
     probe = is_busy or (lambda: busy_reasons(home))
     deadline, quiet = clock() + seconds, 0
     while True:
@@ -375,10 +433,25 @@ def updates_step(home: Path, quiet: bool) -> dict:
     return {"state": res.get("skipped") or "current", "installed": res.get("installed"), "note": res.get("note")}
 
 
+def restore_paused(home: Path) -> bool:
+    """Fail closed for an unreadable, in-progress or unactivated restore; never resume the copied jobs."""
+    last = home / "restores" / "last.json"
+    if not last.exists():
+        return False
+    stamp = _load(last).get("stamp")
+    if not isinstance(stamp, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", stamp):
+        return True
+    journal = _load(last.parent / stamp / "journal.json")
+    return journal.get("status") != "undone" and not (
+        journal.get("status") == "restored" and journal.get("activated_at"))
+
+
 def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_busy=None, sleep=time.sleep,
         with_updates: bool = True) -> dict:
     h = _home(home)
     started = _now()
+    if restore_paused(h):
+        return {"state": "deferred", "reason": "The restore is paused until owner activation or successful undo."}
     try:
         with _lease(h):
             from . import quiet_restart as qr
@@ -387,10 +460,8 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
             t0 = time.monotonic()
             bk = qr.safe_step(backup_step, h, runner)
             os_res = qr.safe_step(os_step, mode, h, runner, wait, is_busy, sleep)
-            def do_updates():
-                quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
-                return updates_step(h, quiet) if with_updates else {"state": "skipped"}
-            up = qr.safe_step(do_updates)
+            # Launch updates only after releasing the installer/app-update locks below.
+            up = {"state": "skipped"}
             # Updates may launch a long installer. Never restart underneath it.
             def restart_probe():
                 from . import updates
@@ -407,6 +478,13 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
                 rec["state"] = "error"
             elif rec["state"] == "ok" and any(p.get("state") == "deferred" for p in parts):
                 rec["state"] = "deferred"
+        if with_updates:
+            def do_updates():
+                quiet = os_res.get("state") != "deferred" and not (is_busy or (lambda: busy_reasons(h)))()
+                return updates_step(h, quiet)
+            rec["updates"] = qr.safe_step(do_updates)
+            if rec["updates"].get("state") == "error":
+                rec["state"] = "error"
     except BlockingIOError:
         rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(), "state": "busy",
                "reason": "Another maintenance task holds the box's maintenance lease; nothing was changed."}
@@ -606,4 +684,4 @@ def main(argv: list[str]) -> int:
     else:
         res = status()
     print(json.dumps(res, indent=2))
-    return 1 if isinstance(res, dict) and (res.get("error") or res.get("state") in ("error", "needs_root_once")) else 0
+    return 1 if isinstance(res, dict) and (res.get("error") or res.get("state") in ("error", "refused", "needs_root_once")) else 0
