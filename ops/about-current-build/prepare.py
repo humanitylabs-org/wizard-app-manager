@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only source custody; metadata-only carrier; stage, never execute worker QA."""
-import argparse, hashlib, io, json, os, re, shutil, subprocess, tarfile
+import argparse, glob, hashlib, io, json, os, re, shutil, subprocess, tarfile
 from pathlib import Path
 
 def sha(b): return hashlib.sha256(b).hexdigest()
@@ -47,6 +47,18 @@ def prepare(root,home,revision):
     stamp=(root/'metadata.Caddyfile').read_text().replace('__CARRIER__',str(carrier)).replace('__SERVED_SHA_FILE__',str(current/'RELEASE_SHA')).replace('__SERVED_SHA__',commit)
     (root/'metadata.live.Caddyfile').write_text(stamp)
     controls={'caddy':home/'.config/private-gateway/Caddyfile','route_map':home/'worktrees/private-portfolio/private-routes.json','adapter':home/'worktrees/private-portfolio/private-route-adapter.mjs'}
+    imports={};queue=[controls['caddy']]
+    while queue:
+        path=queue.pop().resolve()
+        if str(path) in imports:continue
+        body=path.read_bytes();imports[str(path)]=sha(body)
+        for token in re.findall(rb'^\s*import\s+([^\s#]+)',body,re.M):
+            name=token.decode().strip('"');pattern=Path(name) if name.startswith('/') else path.parent/name
+            for match in glob.glob(str(pattern)):
+                p=Path(match)
+                if p.is_file():
+                    assert p.name=='Caddyfile' or p.suffix.lower() in ['.caddyfile','.caddy'],'unclassified import'
+                    queue.append(p)
     before=controls['caddy'].read_text()
     logger='    log default {\n        format filter {\n            wrap json\n            fields {\n                request>headers>X-Wizard-Owner-Proof delete\n                request>headers>x-wizard-owner-proof delete\n            }\n        }\n    }\n'
     assert 'log default {' not in before and before.startswith('{\n')
@@ -73,6 +85,8 @@ def prepare(root,home,revision):
     receipt={'commit':commit,'web_tree':tree,'current':str(release),'source_repo':str(repo),'checkout_head':cmd(['git','-C',str(repo),'rev-parse','HEAD']),'checkout_tracked_dirty':bool(cmd(['git','-C',str(repo),'status','--porcelain','--untracked-files=no'])),'all_tracked_web_equal':True,'web_files':files,'web_modes':modes,'generator':{'source':'Dockerfile','blob':cmd(['git','-C',str(repo),'rev-parse',commit+':Dockerfile']),'line_sha256':sha(line.encode()),'output_sha256':sha((carrier/'build.json').read_bytes())},'validation':validation,'controls':{k:{'path':str(p),'sha256':sha(p.read_bytes()),'mode':p.stat().st_mode&511} for k,p in controls.items()},'gateway_pid':pid,'gateway_binary_sha256':sha(binary.read_bytes()),'shell_container':{k:mounts[k] for k in ['Id','Image']},'service_pid':active,'my_release_unmodified_absent':True,'generated_runtime_extras':'not opened, inventoried for contents, copied, or changed'}
     (root/'provenance.json').write_text(json.dumps(receipt,indent=2)+'\n')
     receipt['wam_module']={'source':str(wam_source),'sha256':sha((source/'main_compare.py').read_bytes()),'api_pid':wam_pid}
+    receipt['caddy_imports']=imports
+    assert all(sha(Path(p).read_bytes())==h for p,h in imports.items()),'gateway import drift during preparation'
     (root/'provenance.json').write_text(json.dumps(receipt,indent=2)+'\n')
     inputs={str(p.relative_to(root)):sha(p.read_bytes()) for p in root.rglob('*') if p.is_file()}
     manifest={'inputs':inputs,'commit':commit,'web_tree':tree,'parent_admission_required':True}

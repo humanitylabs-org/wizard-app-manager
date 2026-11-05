@@ -61,6 +61,9 @@ def main():
         fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
         state(d)  # repeat under the established live configuration lock
         caddy=Path(d['controls']['caddy']['path'])
+        for p,h in d['caddy_imports'].items():
+            if Path(p)==caddy:continue
+            assert sha(Path(p).read_bytes())==h,'live imported sibling drift; rebase/restage'
         for k,entry in d['controls'].items():
             if k=='caddy':continue
             assert sha(Path(entry['path']).read_bytes())==entry['sha256'],'sibling control drift '+k
