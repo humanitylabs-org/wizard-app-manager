@@ -174,5 +174,8 @@ if __name__=='__main__':
  if sys.argv[1:]==['--freeze']: freeze()
  elif sys.argv[1:]==['--apply']: apply()
  elif sys.argv[1:]==['--rollback']:
-  d=json.loads((R/'live-freeze.json').read_text());b,o=outputs(d);revert(d,b,o)
+  lock=H/'.local/state/wizard-app-promotions/wam.lock'
+  with lock.open('a') as f:
+   fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+   d=json.loads((R/'live-freeze.json').read_text());b,o=outputs(d);revert(d,b,o)
  else: raise SystemExit('use --freeze, --apply or --rollback')
