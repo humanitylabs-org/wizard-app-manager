@@ -78,7 +78,15 @@ def routes(root: Path | None = None) -> dict:
     return ok
 
 
-def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> dict:
+def _owner_proof(w: dict) -> dict | None:
+    from . import owner_proof
+    try:
+        return owner_proof.parse(w)
+    except ValueError:
+        return None
+
+
+def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, owner_proof_enabled: bool = False) -> dict:
     apps = []
     for row in installed:
         app = row.get("app") or {}
@@ -124,6 +132,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path) -> d
             # Optional tag (James, 23 Oct 2026): `privacy: private` keeps the app off every non-private agent until
             # the owner ticks one. Anything else, or no line at all, is a standard app.
             **({"privacy": "private"} if str(w.get("privacy", "")).strip().lower() == "private" else {}),
+            # Optional (wizard-os spec/OWNER_PROOF.md): the platform's owner edge signs this app's owner requests.
+            # A malformed declaration is dropped here (wam check reports it), so the app keeps its own sign-in.
+            **({"owner_proof": proof} if owner_proof_enabled and (proof := _owner_proof(w)) else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app

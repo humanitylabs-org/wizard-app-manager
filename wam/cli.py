@@ -163,7 +163,8 @@ def read_grants(c: Config, rt) -> list:
 
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
-    reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root,
+                                     owner_proof_enabled=_owner_proof_enabled(c.home))
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
@@ -375,15 +376,28 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    host = host_access_risks(c, app_id)
-    from . import network as _network
-    if host and not allow_host_access and app_id not in _network.host_access_allowed(c.home):
+    host = host_access_risks(c, app_id, "any", given)
+    from . import host_access_gate as _gate, network as _network
+    # With grants enabled, accepting host access is an owner-device action: `allow_host_access` alone accepts
+    # nothing, so neither the flag nor any in-process caller (the Agent Service installs through this function) can.
+    # an allowance already on file never opens an INSTALL: that list is a plain file, and a reinstall is a new
+    # recipe the owner has not looked at. (It is still honoured at start-time enforcement for apps already running.)
+    gated = _gate.enabled(c.home)
+    needs_owner = gated and bool(host)
+    if not gated and host and not allow_host_access and app_id not in _network.host_access_allowed(c.home):
         raise SystemExit(f"REFUSED: {app_id} asks for access that escapes app isolation:\n  - " + "\n  - ".join(host) +
                          f"\nIt could reach every app and the server itself. Install it only if you trust it completely:\n"
                          f"  wam install {app_id} --allow-host-access")
+    rh = recipe_hash(c, app_id, "any", given) if needs_owner else ""
+    if needs_owner and not _gate.valid(c.home, app_id, host, "install", rh):
+        raise SystemExit(_gate.refusal(app_id, host))
     if host:
-        print(f"WARNING: {app_id} is installed WITH HOST ACCESS (owner flag): " + "; ".join(host), file=sys.stderr)
-        # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
+        label = "owner allowed" if gated else "owner flag"
+        print(f"WARNING: {app_id} is installed WITH HOST ACCESS ({label}): " + "; ".join(host), file=sys.stderr)
+        if needs_owner:
+            if not _gate.consume(c.home, app_id, host, "install", rh):
+                raise SystemExit(_gate.refusal(app_id, host))
+            # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
         _network.set_host_access_allowed(c.home, app_id, True)
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     if _form_base:
@@ -483,19 +497,42 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                                     for k in ("created", "removed", "restarted", "pending_restart", "errors")})}
 
 
-def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
-    """Host networking, networks the app does not own, privileged mode or the container runtime socket in the app's
-    recipe. where="any": the store copy the App Manager just fetched, else the installed copy; "store" / "installed":
-    only that copy. wam's own alongside overrides are not recipes and never count."""
-    from . import network
+def _owner_proof_enabled(home: Path) -> bool:
+    from . import owner_proof
+    return owner_proof.enabled(home)
+
+
+def _recipe_text(c: Config, app_id: str, where: str = "any") -> str | None:
     store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml"
     installed = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
     for comp in {"any": (store_copy, installed), "store": (store_copy,), "installed": (installed,)}[where]:
         try:
-            return network.host_access(comp.read_text(), app_id, STORE)
+            return comp.read_text()
         except OSError:
             continue
-    return []
+    return None
+
+
+def host_access_risks(c: Config, app_id: str, where: str = "any", values: dict | None = None) -> list[str]:
+    """What in the app's recipe escapes app isolation (network.host_access). where="any": the store copy the App
+    Manager just fetched, else the installed copy; "store" / "installed": only that copy. wam's own alongside overrides
+    are not recipes and never count. An app's own release folder (read-only) and an agent app's own agent folder are not host access."""
+    from . import network
+    text = _recipe_text(c, app_id, where)
+    from . import host_access_gate
+    if text is None:
+        return []
+    if host_access_gate.enabled(c.home):
+        return network.owner_host_access(text, app_id, STORE, runtipi_root=c.runtipi_root, values=values)
+    return network.host_access(text, app_id, STORE)
+
+
+def recipe_hash(c: Config, app_id: str, where: str = "any", values: dict | None = None) -> str:
+    """What a host-access grant is bound to: the recipe the risks were read from."""
+    import hashlib
+    from . import network
+    text = network.substitute(_recipe_text(c, app_id, where) or "", values)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True, fresh=(),
@@ -1762,6 +1799,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._chats_default(method)
         if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
             return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
+        if app_id.startswith('_host-access/'):   # the owner's own device accepts host access (host_access_gate.py)
+            return self._host_access(method, app_id.removeprefix('_host-access/'))
         if app_id == '_recommended':
             from . import recommended
             if method == 'GET':
@@ -1788,6 +1827,53 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _host_access(self, method: str, app: str) -> None:
+        """`POST /_host-access/<app>` {"for": "install"|"update"|"allow"}: the owner, on one of their enrolled devices,
+        accepts the host access the app asks for. Leaves a one-time grant for exactly the risks listed in the answer;
+        the install / update / `wam network allow` that follows uses it. The generic owner gate in _go already ran
+        (owner login, not this box, the shell's origin); this adds what an agent cannot be: no bearer, and the
+        caller's node is one of the owner's enrolled devices."""
+        from . import host_access_gate as gate, owner_devices, store_install as si
+        if method != "POST":
+            return self._json(405, {"error": "POST only"})
+        if self.headers.get("Authorization") is not None:
+            return self._json(403, {"error": "host access is accepted by the owner on their own device, not by a bearer caller"})
+        if not si.ID.fullmatch(app):
+            return self._json(400, {"error": "bad app id"})
+        if not gate.enabled(self.cfg.home):
+            return self._json(403, {"error": "host-access grants are not turned on on this box", "code": "grants_off"})
+        xff = self.headers.get_all("X-Forwarded-For", [])
+        hop = xff[0].strip() if len(xff) == 1 else ""      # exactly one value, as the owner edge requires
+        why = self.devices().check(hop, self.headers.get("Tailscale-User-Login") or "")
+        if why:
+            return self._json(403, {"error": "accept host access on your own device in Wizard", "code": why})
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(size)) if 0 < size <= 1024 else {}
+            kind = str((body or {}).get("for") or "")
+        except (ValueError, TypeError, AttributeError):
+            return self._json(400, {"error": "invalid body"})
+        c = self.cfg
+        installed = app in installed_ids(c.runtipi())
+        kind = kind or ("update" if installed else "install")
+        if kind == "install" and not installed:
+            where, risks = "any", host_access_risks(c, app, "any")
+        elif kind == "update" and installed:
+            have = set(host_access_risks(c, app, "installed"))
+            where, risks = "store", [r for r in host_access_risks(c, app, "store") if r not in have]
+        elif kind == "allow" and installed:
+            where, risks = "installed", host_access_risks(c, app, "installed")
+        else:
+            return self._json(409, {"error": f"cannot {kind} {app} in its current state"})
+        if not risks:
+            return self._json(409, {"error": f"{app} asks for no host access"})
+        return self._json(200, {"app": app, "risks": risks, **gate.issue(c.home, app, risks, kind, recipe_hash(c, app, where))})
+
+    @classmethod
+    def devices(cls):
+        from . import owner_devices
+        return owner_devices.Enrollment(cls.cfg.home)
 
     def _connections(self, method: str, path: str, query: dict | None = None) -> None:
         """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
@@ -2002,13 +2088,21 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
         # that the installed recipe didn't have, unless the owner allowed this app.
         from . import network as _network
+        from . import host_access_gate as _gate
         new = [r for r in host_access_risks(c, app, "store") if r not in set(host_access_risks(c, app, "installed"))]
-        if new and not allow_host_access and app not in _network.host_access_allowed(c.home):
+        gated = _gate.enabled(c.home)
+        rh = recipe_hash(c, app, "store") if new and gated else ""
+        if not gated and new and not allow_host_access and app not in _network.host_access_allowed(c.home):
             raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
                              "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
                              f"  wam app update {app} --allow-host-access")
+        if gated and new and not _gate.valid(c.home, app, new, "update", rh):
+            raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
         if new:
-            print(f"WARNING: {app} is updated WITH HOST ACCESS (owner flag): " + "; ".join(new), file=sys.stderr)
+            label = "owner allowed" if gated else "owner flag"
+            print(f"WARNING: {app} is updated WITH HOST ACCESS ({label}): " + "; ".join(new), file=sys.stderr)
+            if gated and not _gate.consume(c.home, app, new, "update", rh):
+                raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
             _network.set_host_access_allowed(c.home, app, True)
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
         pre = network_step(c, rt, restart=False, fresh={app})
@@ -2215,6 +2309,14 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    oe = sub.add_parser("owner-edge", help="serve the owner edge for apps that declare owner_proof (systemd unit)")
+    oe.add_argument("action", choices=["serve"])
+    opp = sub.add_parser("owner-proof", help="owner proof keys for apps that declare owner_proof (spec OWNER_PROOF.md)")
+    opp.add_argument("action", choices=["status", "provision"]); opp.add_argument("app", nargs="?")
+    opp.add_argument("--adopt-proof", help="existing private 32-byte proof key to keep (migration)")
+    opp.add_argument("--adopt-wrap", help="existing app wrap key file to keep (migration; read inside a container)")
+    opp.add_argument("--image", help="image for the key-copy container (default: the recipe's main image)")
+    opp.add_argument("--json", action="store_true"); opp.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
     tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
@@ -2333,6 +2435,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.action in ("allow", "deny"):
                 if not args.app:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
+                if args.action == "allow" and args.app not in network.host_access_allowed(c.home):
+                    from . import host_access_gate as gate
+                    if gate.enabled(c.home):
+                        risks = host_access_risks(c, args.app, "installed")
+                        if not gate.consume(c.home, args.app, risks, "allow", recipe_hash(c, args.app, "installed")):
+                            raise SystemExit(gate.refusal(args.app, risks, "allow"))
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
                 stopped = None
                 if args.action == "deny" and host_access_risks(c, args.app, "installed"):
@@ -2402,11 +2510,31 @@ def main(argv: list[str] | None = None) -> int:
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "owner-edge":
+            from . import owner_edge
+            owner_edge.run(c.home)
+            return 0
+        elif args.cmd == "owner-proof":
+            from . import owner_proof
+            if args.action == "status":
+                rows = owner_proof.status(c, json.loads((c.home / "apps.json").read_text()))
+                print(json.dumps(rows, indent=2) if args.json else "\n".join(
+                    f"{r['app']}: keys {'ok' if r['edge_key'] and r['app_keys'] else 'missing'}, "
+                    f"edge {'running' if r['edge'] else 'not running'}" for r in rows) or "No app declares owner_proof.")
+                return 0
+            if not args.app:
+                raise SystemExit("wam owner-proof provision <app>")
+            res = owner_proof.provision(c, args.app, store=STORE, dry_run=args.dry_run, image=args.image,
+                                        adopt_proof=Path(args.adopt_proof) if args.adopt_proof else None,
+                                        adopt_wrap=Path(args.adopt_wrap) if args.adopt_wrap else None)
+            print(json.dumps(res, indent=2))
+            return 0
         elif args.cmd == "links":
             from . import links
             if args.dry_run:
                 rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
-                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root,
+                                     owner_proof_enabled=_owner_proof_enabled(c.home))
             else:
                 known = links.registry_addresses(c.home)   # before write_registry can replace them with loopback
                 reg = write_registry(c)
