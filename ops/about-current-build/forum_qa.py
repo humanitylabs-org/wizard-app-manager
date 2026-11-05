@@ -242,8 +242,12 @@ def capture(out,m,phase):
     save(out/'capture.json',result);return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['candidate','live'],required=True);p.add_argument('--preflight-only',action='store_true');p.add_argument('--manifest-sha256',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['candidate','live'],required=True);p.add_argument('--preflight-only',action='store_true');p.add_argument('--browser-only',action='store_true');p.add_argument('--manifest-sha256',required=True);a=p.parse_args()
     m=seal(a.manifest_sha256)
+    component=None
+    if a.browser_only:
+        from inherit_security import verify
+        component=verify(ROOT)
     if a.preflight_only:
         print(json.dumps({'sealed':True,'input_count':len(m['inputs']),'runtime_unexecuted':True}));return
     assert str(ROOT).startswith('/srv/work/'),'parent-admitted Forum worker only'
@@ -251,12 +255,18 @@ def main():
     tmp=ROOT/('t-'+a.phase);tmp.mkdir();os.environ['TMPDIR']=str(tmp)
     report={'accepted':False,'phase':a.phase,'commit':m['commit'],'manifest_sha256':sha((ROOT/'manifest.json').read_bytes())}
     try:
-        if a.phase=='candidate':
+        if a.phase=='candidate' and not a.browser_only:
             tests=subprocess.run([sys.executable,'-B',str(ROOT/'test_forum_qa.py')],capture_output=True,timeout=30)
             (out/'source-regressions.stdout').write_bytes(tests.stdout);(out/'source-regressions.stderr').write_bytes(tests.stderr)
             assert tests.returncode==0,'synthetic source/oracle regressions failed'
             report['source_regressions']=json.loads(tests.stdout);assert report['source_regressions']['accepted']
             report['fixture']=fixture(out)
+        if component:
+            report['security_component_inheritance']=component
+            report['source_regressions']=component['source_regressions']
+            report['fixture']=component['fixture']
+            report['security_fixture_rerun']=False
+            report['prior_full_receipt_accepted']=False
         report['capture']=capture(out,m,a.phase)
         env={**os.environ,'QA_OUT':str(out),'QA_PHASE':a.phase}
         # Prefer an explicitly pinned parent toolchain; never silently npm install latest.
@@ -265,8 +275,15 @@ def main():
         assert sha(pkg.read_bytes())==tool['package_sha256'],'Playwright package changed'
         env['QA_PLAYWRIGHT']=tool['module'];env['QA_BROWSER']=tool['browser']
         assert sha(Path(tool['browser']).read_bytes())==tool['browser_sha256'],'Chromium executable changed'
+        assert sha(Path(tool['node']).read_bytes())==tool['node_sha256'],'Node executable changed'
+        for rel,h in tool['transport_source_sha256'].items():
+            assert sha((ROOT/rel).read_bytes())==h,'Playwright private transport changed'
+        guard=subprocess.run([tool['node'],str(ROOT/'test_browser_contract.cjs')],capture_output=True,timeout=20)
+        (out/'browser-contract.stdout').write_bytes(guard.stdout);(out/'browser-contract.stderr').write_bytes(guard.stderr)
+        assert guard.returncode==0,'browser-free guard/catalogue regression failed'
+        report['browser_contract']=json.loads(guard.stdout)
         with (out/'browser.stdout').open('wb') as stdout,(out/'browser.stderr').open('wb') as stderr:
-            r=subprocess.Popen(['node',str(ROOT/'browser.cjs')],env=env,stdout=stdout,stderr=stderr,start_new_session=True)
+            r=subprocess.Popen([tool['node'],str(ROOT/'browser.cjs')],env=env,stdout=stdout,stderr=stderr,start_new_session=True)
             try:r.wait(timeout=360)
             finally:
                 try:os.killpg(r.pid,signal.SIGTERM)
@@ -281,10 +298,16 @@ def main():
                 if alive:
                     try:os.killpg(r.pid,signal.SIGKILL)
                     except ProcessLookupError:alive=False
+                    # A successful kill syscall is not absence; re-read the target.
+                    for _ in range(25):
+                        try:os.killpg(r.pid,0)
+                        except ProcessLookupError:alive=False;break
+                        time.sleep(.1)
                 report['browser_process_group_absent']=not alive
         assert r.returncode==0,'browser failed: inspect synthetic result only'
         assert report['browser_process_group_absent'],'browser descendant cleanup not proven'
-        browser=json.loads((out/'browser-results.json').read_text());assert browser['accepted'] and browser['all_browser_processes_stopped']
+        browser=json.loads((out/'browser-results.json').read_text());assert browser['accepted'] and browser['browser_disconnected']
+        browser['all_browser_processes_stopped']=report['browser_process_group_absent']
         report['browser']=browser;report['accepted']=True
     except Exception as e:report['failure']=type(e).__name__+': '+str(e)
     finally:save(out/'receipt.json',report);print(json.dumps({'accepted':report['accepted'],'phase':a.phase,'receipt':str(out/'receipt.json'),'failure':report.get('failure')}))

@@ -79,12 +79,16 @@ def main():
         if args.action=='preflight':
             print(json.dumps({'preflight':True,'commit':d['commit'],'live_unmodified':True,'core_unmodified':True,'validation':validation}));return
         if args.action=='apply':
-            receipt=json.loads((ROOT/'candidate-results/receipt.json').read_text())
+            receipt=json.loads((ROOT/'results-candidate/receipt.json').read_text())
             assert receipt['accepted'] and receipt['phase']=='candidate' and receipt['commit']==d['commit']
             assert receipt['manifest_sha256']==sha((ROOT/'manifest.json').read_bytes())
             assert receipt['fixture']['accepted'] and receipt['fixture']['all_processes_stopped']
             assert receipt['browser']['accepted'] and receipt['browser']['all_browser_processes_stopped']
             assert receipt['browser']['source_commit']==d['commit']
+            if (ROOT/'security-inheritance.json').exists():
+                from inherit_security import verify
+                assert receipt['security_component_inheritance']==verify(ROOT)
+                assert receipt['security_fixture_rerun'] is False and receipt['prior_full_receipt_accepted'] is False
             target=candidate
         else:
             assert caddy.read_bytes()==candidate,'rollback CAS refusal: later sibling changes exist'

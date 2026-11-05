@@ -48,7 +48,7 @@ def prepare(root,home,revision,reuse=None):
     subprocess.run(['sh','-c',generation],env={**os.environ,'WIZARD_UX_COMMIT':commit},check=True,capture_output=True,timeout=5)
     assert json.loads((carrier/'build.json').read_text())=={'commit':commit}
     here=Path(__file__).resolve().parent
-    for n in ['metadata.Caddyfile','prepare.py','activate.py','forum_qa.py','test_forum_qa.py','browser.cjs','security_map.py','stage_dependencies.py','refresh.py']:
+    for n in ['metadata.Caddyfile','prepare.py','activate.py','forum_qa.py','test_forum_qa.py','browser.cjs','request-guard.cjs','test_browser_contract.cjs','inherit_security.py','security_map.py','stage_dependencies.py','refresh.py']:
         shutil.copyfile(here/n,root/n)
     source=root/'source';source.mkdir();(source/'web.tar').write_bytes(archive)
     for n in ['qa-proof-fixture.cjs','qa-synthetic-fence.cjs','qa-playwright.cjs']:
@@ -76,10 +76,14 @@ def prepare(root,home,revision,reuse=None):
                     queue.append(p)
     before=controls['caddy'].read_text()
     logger='    log default {\n        format filter {\n            wrap json\n            fields {\n                request>headers>X-Wizard-Owner-Proof delete\n                request>headers>x-wizard-owner-proof delete\n            }\n        }\n    }\n'
-    assert 'log default {' not in before and before.startswith('{\n')
+    assert before.startswith('{\n')
+    if '    log default {' in before:
+        assert before[before.index('    log default {'):before.index('    admin off')]==logger,'existing logger differs from proven bytes'
+        logged=before
+    else:logged=before.replace('{\n','{\n'+logger,1)
     marker='    handle /wizard-os-home/* {'
     assert before.count(marker)==1
-    candidate=before.replace('{\n','{\n'+logger,1).replace(marker,'    import '+str(root/'metadata.live.Caddyfile')+'\n\n'+marker,1)
+    candidate=logged.replace(marker,'    import '+str(root/'metadata.live.Caddyfile')+'\n\n'+marker,1)
     (root/'Caddyfile.before').write_text(before);(root/'Caddyfile.candidate').write_text(candidate)
     # Only placeholders/paths exist in Caddy source. Never project expanded config/environment/logs.
     pid=int(cmd(['systemctl','--user','show','private-gateway-https.service','-p','MainPID','--value']))

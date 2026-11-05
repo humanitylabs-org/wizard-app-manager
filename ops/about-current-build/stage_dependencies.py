@@ -39,6 +39,15 @@ def main():
     if a.reuse:assert closure==prior_closure,'copied dependency closure changed'
     (root/'deps-closure.json').write_text(json.dumps(closure,sort_keys=True,indent=2)+'\n')
     evidence={'module':str(module),'package_sha256':sha((module/'package.json').read_bytes()),'browser':str(browser),'browser_sha256':sha(browser.read_bytes()),'version':resolved,'registry':chromium,'dependency_files':len(closure),'ldd_sha256':sha(ldd.stdout.encode()),'no_missing_libraries':True,'copy_only_no_runtime_executed':True}
+    transport=root/'node/node_modules/playwright-core/lib/client'
+    fetch=(transport/'fetch.js').read_text();inner=fetch[fetch.index('async _innerFetch'):fetch.index('async storageState',fetch.index('async _innerFetch'))]
+    network=(transport/'network.js').read_text()
+    assert 'this._channel.fetch({' in inner and 'this.fetch(' not in inner
+    assert 'this._context.request._innerFetch({ request: this.request()' in network
+    evidence['transport_source_sha256']={str((transport/n).relative_to(root)):sha((transport/n).read_bytes()) for n in ['fetch.js','network.js']}
+    node=Path(shutil.which('node')).resolve(strict=True)
+    evidence['node']=str(node);evidence['node_sha256']=sha(node.read_bytes())
+    evidence['node_version']=subprocess.check_output([str(node),'--version'],text=True,timeout=10).strip()
     (root/'playwright-path.txt').write_text(json.dumps(evidence,indent=2)+'\n')
     print(json.dumps({'metadata_preflight':True,'dependency_files':len(closure),'module_version':resolved,'chromium_revision':chromium['revision'],'no_browser_launched':True}))
 if __name__=='__main__':main()

@@ -17,7 +17,7 @@ def call(argv,timeout=180):
 
 def save(p,d):p.write_text(json.dumps(d,indent=2)+'\n')
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--revision',required=True);p.add_argument('--prior',type=Path,required=True)
+    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--revision',required=True);p.add_argument('--prior',type=Path,required=True);p.add_argument('--inherit-security-receipt-sha256')
     a=p.parse_args();root=a.root.resolve();prior=a.prior.resolve()
     assert re.fullmatch(r'r[1-9][0-9]*',a.revision) and not root.exists(),'new revision/root required; never mutate old capsules'
     old_manifest=sha((prior/'manifest.json').read_bytes())
@@ -34,8 +34,21 @@ def main():
     initial=(root/'manifest.json').read_bytes();(root/'manifest.source.json').write_bytes(initial)
     m=json.loads(initial)
     for n in ['deps-closure.json','playwright-path.txt']:m['inputs'][n]=sha((root/n).read_bytes())
+    if a.inherit_security_receipt_sha256:
+        assert re.fullmatch('[0-9a-f]{64}',a.inherit_security_receipt_sha256)
+        inherited=json.loads(call(['ssh','forum','python3','-B',worker+'/inherit_security.py','--root',worker,'--prior',oldworker]))
+        call(['scp','-q','forum:'+worker+'/security-inheritance.json',str(root/'security-inheritance.json')])
+        call(['scp','-qr','forum:'+worker+'/inherited',str(root/'inherited')])
+        pin=json.loads((root/'security-inheritance.json').read_text())
+        assert pin['prior_manifest_sha256']==old_manifest,'inherited native manifest differs from pinned prior'
+        assert inherited['prior_receipt_sha256']==pin['artifacts']['results-candidate/receipt.json']==a.inherit_security_receipt_sha256,'inherited native receipt differs from independently verified failure'
+        for n in [root/'security-inheritance.json',*[p for p in (root/'inherited').rglob('*') if p.is_file()]]:
+            m['inputs'][str(n.relative_to(root))]=sha(n.read_bytes())
     save(root/'manifest.json',m);digest=sha((root/'manifest.json').read_bytes())
-    for phase,spec in specs.items():spec['argv']=['python3','-B',worker+'/forum_qa.py','--phase',phase,'--manifest-sha256',digest]
+    for phase,spec in specs.items():
+        spec['argv']=['python3','-B',worker+'/forum_qa.py','--phase',phase,'--manifest-sha256',digest]
+        if a.inherit_security_receipt_sha256:
+            spec['argv'].append('--browser-only');spec['key']+='-browser-only'
     save(root/'parent-heavy-specs.json',specs)
     call(['scp','-q',str(root/'manifest.json'),str(root/'manifest.source.json'),str(root/'parent-heavy-specs.json'),'forum:'+worker+'/'])
     worker_preflight=json.loads(call(['ssh','forum',*specs['candidate']['argv'],'--preflight-only']))
