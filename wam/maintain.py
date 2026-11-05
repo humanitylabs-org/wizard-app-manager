@@ -173,6 +173,8 @@ def call_helper(action: list[str], runner=subprocess.run, timeout: int = 4000) -
     try:
         doc = json.loads(p.stdout)
         if isinstance(doc, dict):
+            if doc.get("state") == "busy":
+                doc["state"] = "deferred"
             return doc
     except ValueError:
         pass
@@ -181,14 +183,38 @@ def call_helper(action: list[str], runner=subprocess.run, timeout: int = 4000) -
 
 LANE = Path("/etc/sudoers.d/wizard-os-maintenance-restart-lane")
 def lane_ready() -> bool:
-    return os.geteuid() == 0 or _protected(LANE, 0o440)
+    return _protected(LANE, 0o440)
+
+
+def _owner_home() -> Path:
+    """Under sudo, owner choices stay in the invoking account's Wizard home, never /root."""
+    user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and user:
+        try:
+            return Path(pwd.getpwnam(user).pw_dir) / ".wizard-os"
+        except KeyError:
+            pass
+    return _home(None)
+
+
+def _save_owner_settings(cfg: dict) -> None:
+    path = _owner_home() / "maintenance.json"
+    _save(path, cfg)
+    user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and user:
+        try:
+            account = pwd.getpwnam(user)
+            os.chown(path, account.pw_uid, account.pw_gid)
+            os.chown(path.parent, account.pw_uid, account.pw_gid)
+        except (KeyError, OSError):
+            pass
 
 
 def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, installer: bool = False) -> dict:
     """Install or refresh the root-owned helper plus one sudoers line that allows only it. Needs passwordless sudo
     (fresh boxes have it from get.sh) or root; otherwise reports the one command an owner would run."""
     root = os.geteuid() == 0
-    if installer and _load(_home(None) / "maintenance.json").get("helper_removed"):
+    if installer and _load(_owner_home() / "maintenance.json").get("helper_removed"):
         return {"helper": "removed", "changed": False, "state": "removed_by_owner",
                 "reason": "The owner removed the root helper; rerun 'wam maintain setup' to opt in again."}
     user = user or (os.environ.get("SUDO_USER") if root else None) or (None if root else (os.environ.get("USER") or
@@ -241,9 +267,9 @@ def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, in
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain setup"}
     state = helper_state()
     if state in ("ready", "root"):
-        cfg = settings(None)
+        cfg = _load(_owner_home() / "maintenance.json")
         cfg.pop("helper_removed", None)
-        _save(_home(None) / "maintenance.json", cfg)
+        _save_owner_settings(cfg)
     return {"helper": state, "changed": True, "user": user,
             **({"state": "error", "reason": "Installed helper failed provenance verification."}
                if state not in ("ready", "root") else {})}
@@ -253,6 +279,9 @@ def remove(runner=subprocess.run) -> dict:
     """Undo `setup`: delete the sudoers rule and the root helper. OS security then stays check-only (unprivileged);
     `wam maintain setup` puts them back. For a box whose owner never wants root maintenance installed."""
     if not SUDOERS.exists() and not HELPER.exists() and not LANE.exists():
+        cfg = _load(_owner_home() / "maintenance.json")
+        cfg.update(helper_removed=True, os_security="check", quiet_restarts="off", held_platform="off", quiet_reboot="off")
+        _save_owner_settings(cfg)
         return {"helper": "missing", "changed": False}
     argv = _helper(["remove"])
     if argv is None:
@@ -266,9 +295,10 @@ def remove(runner=subprocess.run) -> dict:
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
     gone = not SUDOERS.exists() and not HELPER.exists() and not LANE.exists()
     if gone:
-        cfg = settings(None)
-        cfg.update(helper_removed=True, changed_at=_now(), quiet_restarts="off", held_platform="off", quiet_reboot="off")
-        _save(_home(None) / "maintenance.json", cfg)
+        cfg = _load(_owner_home() / "maintenance.json")
+        cfg.update(helper_removed=True, changed_at=_now(), os_security="check",
+                   quiet_restarts="off", held_platform="off", quiet_reboot="off")
+        _save_owner_settings(cfg)
     return {"helper": "missing" if gone else helper_state(), "changed": gone,
             **({} if gone else {"state": "error", "reason": "Helper removal did not verify."})}
 
@@ -386,7 +416,9 @@ def os_step(mode: str, home: Path, runner=subprocess.run, wait: float = 1800, is
         if _helper(["check"]) is not None:
             return call_helper(["check", "--refresh"], runner)
         return os_patch.check(refresh=False)          # unprivileged: the system's own nightly list refresh
-    reasons = wait_quiet(home, wait, is_busy, sleep)
+    base = is_busy or (lambda: busy_reasons(home))
+    probe = lambda: (["The restored copy remains paused."] if restore_paused(home) else []) + list(base())
+    reasons = wait_quiet(home, wait, probe, sleep)
     if reasons:
         return {"state": "deferred", "reason": " ".join(reasons) + " Trying again next night; nothing was changed."}
     return call_helper(["apply"], runner)
@@ -481,7 +513,10 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
     h = _home(home)
     started = _now()
     if restore_paused(h):
-        return {"state": "deferred", "reason": "The restore is paused until owner activation or successful undo."}
+        rec = {"run_id": f"{started}-{os.getpid()}", "started_at": started, "finished_at": _now(), "state": "deferred",
+               "reason": "The restore is paused until owner activation or successful undo."}
+        _record(h, rec)
+        return rec
     try:
         with _lease(h):
             from . import quiet_restart as qr
@@ -594,6 +629,9 @@ def health(home: Path | None = None, last: dict | None = None, now: float | None
     u = _updates_item(last)
     if u:
         items.append(u)
+    if mode != "patch" and os_patch.APT_NATIVE_OFF.exists():
+        items.append({"key": "native-updater", "label": "System updater", "status": "warn", "value": "paused",
+                      "detail": "Wizard paused the system's own security updater, but Wizard patching is not on."})
     from . import quiet_restart
     items.extend(quiet_restart.items(_home(home), last))
     return {"generated_at": _now(), "items": items}

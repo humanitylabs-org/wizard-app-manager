@@ -95,3 +95,81 @@ def test_stale_helper_keeps_mode_and_reports_native_restore_failure(tmp_path, mo
     res = m.set_os_security("check", tmp_path, unit_dir=tmp_path / "units", systemctl=False)
     assert res.get("error")
     assert m.settings(tmp_path)["os_security"] == "patch"
+
+
+def test_helper_busy_is_deferred_not_up_to_date(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(m, "helper_state", lambda: "ready")
+    done = subprocess.CompletedProcess([], 1, json.dumps({"state": "busy", "reason": "other helper"}), "")
+    assert m.call_helper(["check"], lambda *a, **k: done) == {"state": "deferred", "reason": "other helper"}
+
+
+def test_remove_resets_patch_mode_and_records_owner_choice_even_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "_home", lambda home=None: tmp_path)
+    monkeypatch.setattr(m, "HELPER", tmp_path / "none")
+    monkeypatch.setattr(m, "SUDOERS", tmp_path / "none-sudoers")
+    monkeypatch.setattr(m, "LANE", tmp_path / "none-lane")
+    m._save(tmp_path / "maintenance.json", {"os_security": "patch"})
+    m.remove()
+    cfg = m.settings(tmp_path)
+    assert cfg["os_security"] == "check" and cfg["helper_removed"] is True
+
+
+def test_sudo_setup_and_remove_use_invoking_accounts_state(tmp_path, monkeypatch):
+    import pwd
+    me = pwd.getpwuid(__import__("os").getuid())
+    monkeypatch.setattr(m.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("SUDO_USER", me.pw_name)
+    assert m._owner_home() == Path(me.pw_dir) / ".wizard-os"
+
+
+def test_root_lane_requires_lane_file_even_for_root(monkeypatch):
+    monkeypatch.setattr(m.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(m, "_protected", lambda path, mode=None: False)
+    assert m.lane_ready() is False
+
+
+def test_unprotected_network_and_remote_access_units_are_report_only(monkeypatch):
+    monkeypatch.setattr(op.os, "geteuid", lambda: 0)
+    for unit in ("wg-quick@wg0.service", "cloudflared.service", "zerotier-one.service", "k3s.service", "libvirtd.service", "polkit.service"):
+        monkeypatch.setattr(op, "restart_check", lambda unit=unit: {"state": "current", "services": [unit]})
+        monkeypatch.setattr(op, "run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("restart attempted")))
+        assert op.restart_service(unit)["state"] == "report_only"
+
+
+def test_old_needrestart_is_not_run_as_root(monkeypatch):
+    class P:  # noqa
+        returncode, stdout, stderr = 0, "needrestart 3.6 - Restart daemons after library updates.", ""
+    monkeypatch.setattr(op.shutil, "which", lambda name: "/usr/sbin/" + name)
+    monkeypatch.setattr(op, "detect", lambda: type("B", (), {"reboot_required": lambda self: False})())
+    def fake(argv, **kw):
+        if argv[:2] == ["needrestart", "--version"]:
+            return P()
+        if argv == ["systemctl", "is-system-running"]:
+            P2 = type("P2", (), {"returncode": 0, "stdout": "running", "stderr": ""})
+            return P2()
+        raise AssertionError("old needrestart executed")
+    monkeypatch.setattr(op, "run", fake)
+    assert op.restart_check()["state"] == "report_only"
+
+
+def test_native_updater_pause_is_visible_when_not_patching(tmp_path, monkeypatch):
+    marker = tmp_path / "52wizard-os-maintenance"
+    marker.write_text("x")
+    monkeypatch.setattr(m.os_patch, "APT_NATIVE_OFF", marker)
+    m._save(tmp_path / "maintenance.json", {"os_security": "check"})
+    rows = m.health(tmp_path, {"finished_at": m._now(), "os": {"state": "current"}})["items"]
+    assert any(r["key"] == "native-updater" and r["status"] == "warn" for r in rows)
+
+
+def test_restore_started_during_wait_blocks_os_apply(tmp_path, monkeypatch):
+    root = tmp_path / "restores"; (root / "x").mkdir(parents=True)
+    state = {"restored": False}
+    def probe():
+        if not state["restored"]:
+            (root / "last.json").write_text(json.dumps({"stamp": "x"}))
+            (root / "x" / "journal.json").write_text(json.dumps({"status": "restored"}))
+            state["restored"] = True
+        return []
+    monkeypatch.setattr(m, "call_helper", lambda *a, **k: (_ for _ in ()).throw(AssertionError("apply after restore")))
+    assert m.os_step("patch", tmp_path, wait=0, is_busy=probe, sleep=lambda s: None)["state"] == "deferred"

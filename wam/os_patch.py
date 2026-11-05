@@ -444,6 +444,9 @@ def native(on, rel = None):
 
 
 # Quiet restart privilege boundary: no caller-selected unit outside needrestart's fresh list.
+PLATFORM_UNITS = ("user@", "systemd-", "docker", "containerd", "podman", "tailscale", "ssh", "dbus", "NetworkManager",
+                  "network", "wg-quick@", "cloudflared", "zerotier", "netbird", "k3s", "kubelet", "crio", "libvirt",
+                  "polkit", "getty@", "serial-getty@")
 SERVICE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_@:.-]*\.service\Z")
 
 
@@ -457,6 +460,10 @@ def restart_check():
     doc["system_state"] = p.stdout.strip()
     if not shutil.which("needrestart"):
         return dict(doc, state="report_only", reason="needrestart is not installed; no services will be restarted.")
+    ver = run(["needrestart", "--version"], timeout=30)
+    found = re.search(r"needrestart\s+([0-9]+)\.([0-9]+)", (ver.stdout or "") + (ver.stderr or ""))
+    if not found or (int(found[1]), int(found[2])) < (3, 8):
+        return dict(doc, state="report_only", reason="needrestart 3.8 or newer is required before it runs as root.")
     p = run(["needrestart", "-b", "-r", "l"], timeout=180)
     if p.returncode != 0:
         return dict(doc, state="error", reason=(p.stderr or p.stdout)[-600:])
@@ -480,7 +487,7 @@ def restart_service(name):
         return {"state": "current", "service": name, "reason": "Not in needrestart's current list; left alone."}
     # Restarting a user manager can kill this very maintenance runner. IPC/login
     # brokers can tear down work even when their unit comes back. Move them to reboot.
-    if name.startswith(("user@", "systemd-", "docker", "containerd", "podman", "tailscale", "ssh", "dbus", "NetworkManager", "network")):
+    if name.startswith(PLATFORM_UNITS):
         return {"state": "report_only", "service": name, "reason": "Login/IPC manager requires an explicit quiet reboot."}
     # Never start a stopped service and never stop a service just to test it.
     if run(["systemctl", "is-active", "--quiet", name], timeout=30).returncode != 0:
