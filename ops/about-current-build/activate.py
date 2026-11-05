@@ -37,7 +37,7 @@ def validate(home,p,pid):
 def reload_gateway(d,label):
     pid=d['gateway_pid'];start=time.time();os.kill(pid,signal.SIGUSR1)
     events=[];p=None
-    accepted={'config reloaded','Reload succeeded','reload complete','reloaded config','successfully loaded new config'}
+    accepted={'successfully reloaded config from file','config reloaded','Reload succeeded','reload complete','reloaded config','successfully loaded new config'}
     for _ in range(50):
         assert int(val('private-gateway-https.service','MainPID'))==pid,'gateway restart refused'
         # Raw journals stay inside the bounded model-blind process; only fixed event names and hashes leave it.

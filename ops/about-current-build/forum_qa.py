@@ -34,7 +34,7 @@ def fixture(out):
     # Reuse exact candidate default logger text, not a second implementation.
     logger=candidate[candidate.index('    log default {'):candidate.index('    admin off')]
     config=out/'fixture.caddy'
-    config.write_text('{\n'+logger+' admin off\n auto_https off\n}\nhttp://127.0.0.1:'+str(port)+' {\n import '+str(out/'route.caddy')+'\n handle /error-probe {\n request_header X-Wizard-Owner-Proof fixture-credential-never-valid-live\n reverse_proxy 127.0.0.1:1\n }\n handle /neighbor {\n respond "before" 200\n }\n handle {\n respond "missing" 404\n }\n}\n')
+    config.write_text('{\n'+logger+' admin off\n auto_https off\n}\nhttp://127.0.0.1:'+str(port)+' {\n import '+str(out/'route.caddy')+'\n handle /error-probe {\n request_header X-Wizard-Owner-Proof fixture-credential-never-valid-live\n request_header X-Redaction-Control fixture-visible-control\n reverse_proxy 127.0.0.1:1\n }\n handle /neighbor {\n respond "before" 200\n }\n handle {\n respond "missing" 404\n }\n}\n')
     def req(path=PREFIX+'build.json',method='GET',owner=True,headers=None):
         c=http.client.HTTPConnection('127.0.0.1',port,timeout=5,source_address=('127.0.0.2' if owner else '127.0.0.1',0));c.request(method,path,headers=headers or {});r=c.getresponse();b=r.read();d=(r.status,b,dict(r.getheaders()));c.close();return d
     def check(n,v):checks.append({'name':n,'pass':bool(v)});assert v,n
@@ -75,6 +75,7 @@ def fixture(out):
             except ValueError:pass
         errors=[x for x in entries if x.get('logger')=='http.log.error']
         check('runtime error event retained',bool(errors))
+        check('same request mutation remains observable',all(x.get('request',{}).get('headers',{}).get('X-Redaction-Control')==['fixture-visible-control'] for x in errors))
         check('runtime error proof field deleted',all(not any(k.lower()=='x-wizard-owner-proof' for k in x.get('request',{}).get('headers',{})) for x in errors))
         # Caddy adaptation messages can include config input, so inspect only actual error records for the canary.
         check('runtime error proof value absent',all('fixture-credential-never-valid-live' not in json.dumps(x) for x in errors))
@@ -158,9 +159,25 @@ def main():
         assert sha(pkg.read_bytes())==tool['package_sha256'],'Playwright package changed'
         env['QA_PLAYWRIGHT']=tool['module'];env['QA_BROWSER']=tool['browser']
         assert sha(Path(tool['browser']).read_bytes())==tool['browser_sha256'],'Chromium executable changed'
-        r=subprocess.run(['node',str(ROOT/'browser.cjs')],env=env,capture_output=True,timeout=360)
-        (out/'browser.stdout').write_bytes(r.stdout);(out/'browser.stderr').write_bytes(r.stderr)
+        with (out/'browser.stdout').open('wb') as stdout,(out/'browser.stderr').open('wb') as stderr:
+            r=subprocess.Popen(['node',str(ROOT/'browser.cjs')],env=env,stdout=stdout,stderr=stderr,start_new_session=True)
+            try:r.wait(timeout=360)
+            finally:
+                try:os.killpg(r.pid,signal.SIGTERM)
+                except ProcessLookupError:pass
+                try:r.wait(timeout=5)
+                except subprocess.TimeoutExpired:os.killpg(r.pid,signal.SIGKILL);r.wait(timeout=3)
+                alive=True
+                for _ in range(25):
+                    try:os.killpg(r.pid,0)
+                    except ProcessLookupError:alive=False;break
+                    time.sleep(.1)
+                if alive:
+                    try:os.killpg(r.pid,signal.SIGKILL)
+                    except ProcessLookupError:alive=False
+                report['browser_process_group_absent']=not alive
         assert r.returncode==0,'browser failed: inspect synthetic result only'
+        assert report['browser_process_group_absent'],'browser descendant cleanup not proven'
         browser=json.loads((out/'browser-results.json').read_text());assert browser['accepted'] and browser['all_browser_processes_stopped']
         report['browser']=browser;report['accepted']=True
     except Exception as e:report['failure']=type(e).__name__+': '+str(e)

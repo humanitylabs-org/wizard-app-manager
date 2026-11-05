@@ -13,10 +13,21 @@ def inspect(home):
     assert b'const ownerProof = typeof options.ownerProof' in principals
     cfg=home/'.config/private-gateway'
     producers=[]
-    # Enumerate only gateway config sources, never environments, journals or agent homes.
-    for p in sorted(cfg.rglob('*')):
-        if (p.name!='Caddyfile' and p.suffix.lower() not in ['.caddyfile','.caddy']) or not p.is_file():continue
-        b=p.read_bytes()
+    # Follow only actual Caddy imports; never scan agent homes or print source bodies.
+    import glob
+    queue=[cfg/'Caddyfile'];seen=set()
+    while queue:
+        p=queue.pop().resolve()
+        if p in seen:continue
+        seen.add(p);b=p.read_bytes()
+        assert b'PRIVATE KEY-----' not in b and p.suffix not in ['.env','.key','.pem'],'credential file is not Caddy source'
+        for token in re.findall(rb'^\s*import\s+([^\s#]+)',b,re.M):
+            name=token.decode().strip('"');pattern=Path(name) if name.startswith('/') else p.parent/name
+            for q in glob.glob(str(pattern)):
+                q=Path(q)
+                if q.is_file():
+                    assert q.name=='Caddyfile' or q.suffix.lower() in ['.caddyfile','.caddy'],'non-Caddy import requires explicit review'
+                    queue.append(q)
         if b'X-Wizard-Owner-Proof' in b:
             producers.append({'path':str(p),'sha256':sha(b),'file_placeholder_count':len(re.findall(rb'\{file\.[^}]*owner-proof\}',b)),'header_name_mentions':b.lower().count(b'x-wizard-owner-proof')})
     b=proof.read_bytes(); assert len(b.strip())>=32
