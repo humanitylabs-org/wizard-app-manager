@@ -41,6 +41,14 @@ def grants_dir(home: Path) -> Path:
     return Path(home) / "owner-proof" / "host-access-grants"
 
 
+def enabled(home: Path) -> bool:
+    """Grants are OFF until the owner (or the rollout) sets `owner_host_access_grants: true` in app-manager.json, a
+    host file. While off, the listener issues nothing and no key is created: the endpoint is inert (spec: grants must
+    not be turned on before the enrollment record is trustworthy and the grant UI is hardened)."""
+    from . import network
+    return network._cfg(home).get("owner_host_access_grants") is True
+
+
 def _key(home: Path, create: bool) -> bytes:
     path = key_path(home)
     if create:
@@ -79,6 +87,8 @@ def issue(home: Path, app_id: str, risks, kind: str = "", recipe: str = "", *, n
     """Write a grant. ONLY the owner listener calls this, after authenticating the owner's enrolled device."""
     if not risks:
         raise ValueError("nothing to accept: the app asks for no host access")
+    if not enabled(home):
+        raise PermissionError("host-access grants are not turned on")
     key = _key(home, create=True)
     exp = int((time.time() if now is None else now)) + TTL_S
     nonce, digest = secrets.token_hex(12), _digest(risks, kind, recipe)

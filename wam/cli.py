@@ -377,14 +377,14 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    host = host_access_risks(c, app_id)
+    host = host_access_risks(c, app_id, "any", given)   # what the installer was GIVEN (--set) counts: it is what would run
     from . import host_access_gate as _gate, network as _network
     # Accepting host access is an owner-device action (host_access_gate.py): `allow_host_access` alone accepts
     # nothing, so neither the flag nor any in-process caller (the Agent Service installs through this function) can.
     # an allowance already on file never opens an INSTALL: that list is a plain file, and a reinstall is a new
     # recipe the owner has not looked at. (It is still honoured at start-time enforcement for apps already running.)
     needs_owner = bool(host)
-    rh = recipe_hash(c, app_id) if needs_owner else ""
+    rh = recipe_hash(c, app_id, "any", given) if needs_owner else ""
     if needs_owner and not _gate.valid(c.home, app_id, host, "install", rh):
         raise SystemExit(_gate.refusal(app_id, host))
     if host:
@@ -503,19 +503,21 @@ def _recipe_text(c: Config, app_id: str, where: str = "any") -> str | None:
     return None
 
 
-def host_access_risks(c: Config, app_id: str, where: str = "any") -> list[str]:
+def host_access_risks(c: Config, app_id: str, where: str = "any", values: dict | None = None) -> list[str]:
     """What in the app's recipe escapes app isolation (network.host_access). where="any": the store copy the App
     Manager just fetched, else the installed copy; "store" / "installed": only that copy. wam's own alongside overrides
     are not recipes and never count. An app's own release folder (read-only) and an agent app's own agent folder are not host access."""
     from . import network
     text = _recipe_text(c, app_id, where)
-    return network.host_access(text, app_id, STORE, runtipi_root=c.runtipi_root) if text is not None else []
+    return network.host_access(text, app_id, STORE, runtipi_root=c.runtipi_root, values=values) if text is not None else []
 
 
-def recipe_hash(c: Config, app_id: str, where: str = "any") -> str:
+def recipe_hash(c: Config, app_id: str, where: str = "any", values: dict | None = None) -> str:
     """What a host-access grant is bound to: the recipe the risks were read from."""
     import hashlib
-    return hashlib.sha256((_recipe_text(c, app_id, where) or "").encode()).hexdigest()
+    from . import network
+    text = network.substitute(_recipe_text(c, app_id, where) or "", values)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def network_step(c: Config, rt: Runtipi | None = None, extra=(), restart: bool = True, fresh=(),
@@ -1816,6 +1818,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "host access is accepted by the owner on their own device, not by a bearer caller"})
         if not si.ID.fullmatch(app):
             return self._json(400, {"error": "bad app id"})
+        if not gate.enabled(self.cfg.home):
+            return self._json(403, {"error": "host-access grants are not turned on on this box", "code": "grants_off"})
         xff = self.headers.get_all("X-Forwarded-For", [])
         hop = xff[0].strip() if len(xff) == 1 else ""      # exactly one value, as the owner edge requires
         why = self.devices().check(hop, self.headers.get("Tailscale-User-Login") or "")

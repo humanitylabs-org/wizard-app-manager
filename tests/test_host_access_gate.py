@@ -72,6 +72,35 @@ def test_ordinary_recipes_need_no_owner(compose):
 ROOT = "/home/u/runtipi"
 
 
+@pytest.fixture(autouse=True)
+def grants_on(request, monkeypatch):
+    """The gate is off by default (inert); these tests exercise it switched on. test_grants_are_off_by_default doesn't."""
+    if "off_by_default" not in request.node.name:
+        monkeypatch.setattr(gate, "enabled", lambda home: True)
+
+
+def test_grants_are_off_by_default_and_then_nothing_is_issued_or_created(listener, tmp_path):
+    post, home = listener
+    assert gate.enabled(home) is False
+    status, body = post(PHONE, body=b'{"for": "install"}')
+    assert status == 403 and body["code"] == "grants_off"
+    assert not gate.grants_dir(home).exists() and not (home / "owner-proof").exists()
+    with pytest.raises(PermissionError):
+        gate.issue(home, "x", ["x: privileged"], "install", "r")
+    (home / "app-manager.json").write_text(json.dumps({"owner_host_access_grants": True}))
+    assert gate.enabled(home) is True
+
+
+@pytest.mark.parametrize("vol,ok", [
+    ("${APP_SOURCE_DIR}:/app:ro", True), ("${APP_SOURCE_DIR}:/app", False),
+    ("${ROOT_FOLDER_HOST}/app-data/.wizard-source/wizardapps/usuals@30da449e9e38:/app:ro", True),
+    ("${ROOT_FOLDER_HOST}/app-data/.wizard-source/wizardapps/usuals@30da449e9e38:/app", False),
+    ("${APP_SOURCE_DIR}/../x:/app:ro", False),
+])
+def test_source_folders_are_read_only_or_host_access(vol, ok):
+    assert (net.host_access(_svc(vol), "x", "wizardapps", runtipi_root=ROOT) == []) is ok
+
+
 def _svc(vol, extra=""):
     return f"services:\n  x:\n    image: a\n    volumes: ['{vol}']\n{extra}"
 
@@ -99,6 +128,49 @@ def test_what_wizards_own_recipes_mount_is_not_host_access(app, vol):
 ])
 def test_own_folder_waivers_do_not_stretch(app, vol):
     assert net.host_access(_svc(vol), app, "wizardapps", runtipi_root=ROOT)
+
+
+@pytest.mark.parametrize("compose", [
+    "services:\n  x:\n    image: a\n    volumes: ['${ROOT_FOLDER_HOST}/user-config:/u']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['${ROOT_FOLDER_HOST}:/r']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['${ROOT_FOLDER_HOST}/app-data/other/data:/o']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['${ROOT_FOLDER_HOST}/media/../user-config:/u']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['${ROOT_FOLDER_HOST}/${SUB}:/u']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['${APP_DATA_DIR}/${SUB}:/u']\n",
+    "services:\n  x:\n    image: a\n    volumes: ['v:/v']\nvolumes:\n  v: {external: true}\n",
+    "services:\n  x:\n    image: a\n    volumes: ['v:/v']\nvolumes:\n  v: {name: other_app_data}\n",
+    "services:\n  x:\n    build: {context: /home/u}\n",
+    "services:\n  x:\n    build: {context: ., additional_contexts: {c: ../..}}\n",
+    "services:\n  x:\n    build: ..\n",
+    "services:\n  x:\n    image: a\n    env_file: [/home/u/.env]\n",
+    "services:\n  x:\n    image: a\n    env_file: [{path: ../secret.env}]\n",
+])
+def test_more_ways_out_of_the_app_are_host_access(compose):
+    assert net.host_access(compose, "x", "wizardapps", runtipi_root=ROOT)
+
+
+def test_a_value_the_installer_was_given_counts_as_what_would_run():
+    """Review P1: `--set INBOX_MEDIA_1=/home/u/.ssh` must not slip past a recipe that is clean by default."""
+    c = "services:\n  x:\n    image: a\n    volumes: ['${MEDIA:-${APP_DATA_DIR}/m}:${MEDIA:-/m}:ro']\n"
+    assert net.host_access(c, "x") == []
+    assert net.host_access(c, "x", values={"MEDIA": "/home/u/.ssh"})
+    assert net.host_access(c, "x", values={"MEDIA": "/"})
+    assert net.host_access(c, "x", values={"MEDIA": "${ROOT_FOLDER_HOST}/user-config"})
+    assert net.host_access(c, "x", values={"MEDIA": "../.."})
+    assert net.host_access(c, "x", values={"MEDIA": "/var/run/docker.sock"})
+    assert net.host_access(c, "x", values={"MEDIA": "${APP_DATA_DIR}/ok"}) == []
+    # the variables Runtipi sets cannot be overridden by what is given
+    c2 = "services:\n  x:\n    image: a\n    volumes: ['${APP_DATA_DIR}/d:/d']\n"
+    assert net.host_access(c2, "x", values={"APP_DATA_DIR": "/"}) == []
+
+
+def test_the_install_checks_what_it_was_given(tmp_path, monkeypatch):
+    plain = "services:\n  x:\n    image: a\n    volumes: ['${MEDIA:-${APP_DATA_DIR}/m}:/m:ro']\n"
+    cli, installs, _ = gate_env(tmp_path, monkeypatch, plain)
+    cli.install(cli.Config(), "x")                                                  # clean by default
+    for flag in (False, True):
+        with pytest.raises(SystemExit, match="owner action"):
+            cli.install(cli.Config(), "x", {"MEDIA": "/home/u/.ssh"}, allow_host_access=flag)
 
 
 def test_joining_another_containers_namespaces_is_host_access():

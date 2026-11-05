@@ -313,9 +313,19 @@ def _own_path(src: str, mode: str, own) -> bool:
 
 
 # Paths under the variables Runtipi itself sets for every app (never an install-form value). Wizard's own recipes mount
-# the owner's media folders and their own source through these today, so they are the existing store model, not
-# something this gate changes (spec follow-up: bring folder sharing under the owner-device gate). A `..` is refused first.
-_RUNTIPI_PATH = re.compile(r"^\$\{?(APP_DATA_DIR|APP_SOURCE_DIR|ROOT_FOLDER_HOST)\}?(/[^$]*)?$")
+# the owner's media folders and their own source folders through these today, so `media/` and `.wizard-source/` are the
+# existing store model, not something this gate changes (spec follow-up: bring folder sharing under the owner-device
+# gate). Every other path under ROOT_FOLDER_HOST (user-config, apps, state, traefik, other apps' data, the root itself)
+# IS host access: it reaches the policy files and the other apps. A `..` is refused first.
+_RUNTIPI_PATH = re.compile(r"^\$\{?(?:APP_DATA_DIR\}?(?:/[^$]*)?"
+                           r"|ROOT_FOLDER_HOST\}?/media(?:/[^$]*)?)$")
+# Read-only only: a writable source folder lets the app rewrite its own compose file or the source Wizard builds from.
+_RUNTIPI_RO_PATH = re.compile(r"^\$\{?(?:APP_SOURCE_DIR\}?(?:/[^$]*)?|ROOT_FOLDER_HOST\}?/app-data/\.wizard-source(?:/[^$]*)?)$")
+# A recipe built from the source folder Wizard itself pins for it (`<root>/app-data/.wizard-source/<store>/<app>@<sha>`).
+_WIZARD_SOURCE = re.compile(r"^(?:\$\{ROOT_FOLDER_HOST\})?/app-data/\.wizard-source/[a-z0-9-]+/[a-z0-9-]+@[0-9a-f]{6,40}/?$")
+# Shared by wizard-claude and the agent apps by design (the Claude login), named so nothing else is waved through.
+SHARED_VOLUMES = {"claude-login"}
+RESERVED_VARS = {"APP_DATA_DIR", "APP_SOURCE_DIR", "ROOT_FOLDER_HOST"}
 
 
 def _bind_risk(src: str, mode: str, own) -> str | None:
@@ -334,6 +344,8 @@ def _bind_risk(src: str, mode: str, own) -> str | None:
         return f"mounts the host path {src} ({note})"
     if ".." in re.split(r"[/\\]", src):
         return f"mounts {src}, which climbs out of the app's folder"
+    if "$" in src and _RUNTIPI_RO_PATH.match(src) and ".." not in re.split(r"[/\\]", src):
+        return None if "ro" in mode.split(",") else f"mounts {src} read-write (an app could rewrite its own recipe or the source Wizard builds from)"
     if "$" in src and not _RUNTIPI_PATH.match(src) and not _OPTIONAL_FOLDER.match(src):
         return f"mounts {src}, a variable path that cannot be checked"
     return None
@@ -346,7 +358,19 @@ def _deploy_devices(svc: dict) -> bool:
     return bool(isinstance(r, dict) and _plain(r.get("devices")))
 
 
-def host_access(compose: dict | str, app_id: str | None = None, store: str = "wizardapps", runtipi_root=None) -> list[str]:
+def substitute(text: str, values: dict | None) -> str:
+    """Fill `${NAME}` / `${NAME:-default}` / `${NAME-default}` / `$NAME` with the values the installer was GIVEN (an
+    agent's `--set NAME=...`), so what is checked is what would run. The variables Runtipi sets are never overridable."""
+    for name, value in (values or {}).items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)) or name in RESERVED_VARS:
+            continue
+        text = re.sub(r"\$\{" + re.escape(name) + r"(?::?-[^{}]*(?:\$\{[^{}]*\}[^{}]*)*)?\}|\$" + re.escape(name) + r"\b",
+                      lambda m: str(value).replace("\\", "\\\\"), text)
+    return text
+
+
+def host_access(compose: dict | str, app_id: str | None = None, store: str = "wizardapps", runtipi_root=None,
+                values: dict | None = None) -> list[str]:
     """What in a recipe escapes app isolation: host networking and other host namespaces, networks the app does not
     own, privileged mode, the container runtime socket, host folders (including /home), host devices, Linux
     capabilities beyond Docker's defaults, weakened confinement, mounts through another container or a top-level
@@ -354,7 +378,7 @@ def host_access(compose: dict | str, app_id: str | None = None, store: str = "wi
     `runtipi_root`: lets an app mount its OWN release folder read-only and an agent app its own agent folder."""
     if isinstance(compose, str):
         try:
-            compose = load_yaml(compose) or {}
+            compose = load_yaml(substitute(compose, values)) or {}
         except yaml.YAMLError as e:
             return [f"compose does not parse ({str(e)[:80]})"]
     if not isinstance(compose, dict):
@@ -369,6 +393,8 @@ def host_access(compose: dict | str, app_id: str | None = None, store: str = "wi
                 out.append(f"{kind} {key}: reads the host file {f}")
     for key, d in (_plain(compose.get("volumes")) or {}).items() if isinstance(_plain(compose.get("volumes")), dict) else []:
         d = _plain(d)
+        if isinstance(d, dict) and key not in SHARED_VOLUMES and (_plain(d.get("external")) not in (None, False, "false") or d.get("name")):
+            out.append(f"volume {key}: a volume this app does not own (external or fixed name: reaches another app's data)")
         opts = _plain(d.get("driver_opts")) if isinstance(d, dict) else None
         if isinstance(opts, dict) and str(_plain(opts.get("device")) or "").startswith(("/", "~", "$")):
             out.append(f"volume {key}: binds the host path {_plain(opts['device'])}")
@@ -388,6 +414,20 @@ def host_access(compose: dict | str, app_id: str | None = None, store: str = "wi
                 out.append(f"{name}: {k}: {v} (shares the server's or another container's {k} namespace)")
             elif _has_var(s.get(k)):
                 out.append(f"{name}: {k} is a variable (cannot be checked)")
+        b = _plain(s.get("build"))
+        if b:
+            ctxs = [b] if isinstance(b, str) else [_plain(b.get("context")), _plain(b.get("dockerfile")),
+                                                   *[_plain(v) for v in (_plain(b.get("additional_contexts")) or {}).values()
+                                                     if isinstance(_plain(b.get("additional_contexts")), dict)]]
+            for ctx in ctxs:
+                if ctx and not _WIZARD_SOURCE.match(str(ctx)) and (str(ctx).startswith(("/", "~")) or ".." in re.split(r"[/\\]", str(ctx)) or "$" in str(ctx)
+                            or re.match(r"^[a-z][a-z0-9+.-]*://|^(docker-image|service):", str(ctx))):
+                    out.append(f"{name}: build reads {ctx}, outside the app")
+        ef = _plain(s.get("env_file"))
+        for f in ([ef] if isinstance(ef, (str, dict)) else (ef or [])):
+            f = str((_plain(f).get("path") if isinstance(_plain(f), dict) else _plain(f)) or "")
+            if f.startswith(("/", "~")) or ".." in re.split(r"[/\\]", f) or "$" in f:
+                out.append(f"{name}: env_file {f} is outside the app")
         if _plain(s.get("volumes_from")):
             out.append(f"{name}: volumes_from (mounts another container's volumes)")
         for cap in _plain(s.get("cap_add")) or []:

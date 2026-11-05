@@ -667,6 +667,12 @@ def gate_env(tmp_path, monkeypatch, compose):
     return cli, installs, steps
 
 
+@pytest.fixture(autouse=True)
+def _grants_on(monkeypatch):
+    from wam import host_access_gate
+    monkeypatch.setattr(host_access_gate, "enabled", lambda home: True)
+
+
 def _owner_grants(tmp_path, app, kind="install"):
     """What the owner listener leaves after the owner accepted on their own device (cli.StoreHandler._host_access)."""
     from wam import cli, host_access_gate
