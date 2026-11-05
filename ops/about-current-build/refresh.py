@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Finite metadata-only refresh; prepare and seal, NEVER submit/activate/run fixtures."""
-import argparse,hashlib,importlib.util,json,re,subprocess,sys,urllib.request
+import argparse,hashlib,importlib.util,json,re,shutil,subprocess,sys,urllib.request
 from datetime import datetime,timezone
 from pathlib import Path
 sys.dont_write_bytecode=True
@@ -16,6 +16,20 @@ def call(argv,timeout=180):
     return r.stdout
 
 def save(p,d):p.write_text(json.dumps(d,indent=2)+'\n')
+def carry_security(root,prior,expected):
+    """Carry a sealed component chain, not an unrun refresh's nonexistent result."""
+    from inherit_security import verify
+    manifest=json.loads((prior/'manifest.json').read_text())
+    for n,h in manifest['inputs'].items():
+        assert sha((prior/n).read_bytes())==h,'prior capsule input drift '+n
+    evidence=verify(prior)
+    assert evidence['prior_receipt_sha256']==expected,'prior security receipt differs from parent pin'
+    shutil.copyfile(prior/'security-inheritance.json',root/'security-inheritance.json')
+    shutil.copytree(prior/'inherited',root/'inherited')
+    current=verify(root)
+    assert current==evidence,'carried security components differ'
+    return {k:current[k] for k in ['prior_aggregate_accepted','current_ui_inherited','prior_receipt_sha256']} | {'inheritance_verified':True,'fixture_checks':current['fixture']['check_count'],'unit_checks':current['source_regressions']['test_count']}
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--revision',required=True);p.add_argument('--prior',type=Path,required=True);p.add_argument('--inherit-security-receipt-sha256')
     a=p.parse_args();root=a.root.resolve();prior=a.prior.resolve()
@@ -36,11 +50,16 @@ def main():
     for n in ['deps-closure.json','playwright-path.txt']:m['inputs'][n]=sha((root/n).read_bytes())
     if a.inherit_security_receipt_sha256:
         assert re.fullmatch('[0-9a-f]{64}',a.inherit_security_receipt_sha256)
-        inherited=json.loads(call(['ssh','forum','python3','-B',worker+'/inherit_security.py','--root',worker,'--prior',oldworker]))
-        call(['scp','-q','forum:'+worker+'/security-inheritance.json',str(root/'security-inheritance.json')])
-        call(['scp','-qr','forum:'+worker+'/inherited',str(root/'inherited')])
+        if (prior/'security-inheritance.json').exists():
+            inherited=carry_security(root,prior,a.inherit_security_receipt_sha256)
+            call(['scp','-q',str(root/'security-inheritance.json'),'forum:'+worker+'/'])
+            call(['scp','-qr',str(root/'inherited'),'forum:'+worker+'/'])
+        else:
+            inherited=json.loads(call(['ssh','forum','python3','-B',worker+'/inherit_security.py','--root',worker,'--prior',oldworker]))
+            call(['scp','-q','forum:'+worker+'/security-inheritance.json',str(root/'security-inheritance.json')])
+            call(['scp','-qr','forum:'+worker+'/inherited',str(root/'inherited')])
+            assert json.loads((root/'security-inheritance.json').read_text())['prior_manifest_sha256']==old_manifest,'inherited native manifest differs from pinned prior'
         pin=json.loads((root/'security-inheritance.json').read_text())
-        assert pin['prior_manifest_sha256']==old_manifest,'inherited native manifest differs from pinned prior'
         assert inherited['prior_receipt_sha256']==pin['artifacts']['results-candidate/receipt.json']==a.inherit_security_receipt_sha256,'inherited native receipt differs from independently verified failure'
         for n in [root/'security-inheritance.json',*[p for p in (root/'inherited').rglob('*') if p.is_file()]]:
             m['inputs'][str(n.relative_to(root))]=sha(n.read_bytes())
