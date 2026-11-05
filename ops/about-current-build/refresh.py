@@ -32,7 +32,7 @@ def main():
     for n in ['deps-closure.json','playwright-path.txt']:
         call(['scp','-q','forum:'+worker+'/'+n,str(root/n)])
     initial=(root/'manifest.json').read_bytes();(root/'manifest.source.json').write_bytes(initial)
-    m=json.loads(initial)
+    m=json.loads(initial);inherited=None
     for n in ['deps-closure.json','playwright-path.txt']:m['inputs'][n]=sha((root/n).read_bytes())
     if a.inherit_security_receipt_sha256:
         assert re.fullmatch('[0-9a-f]{64}',a.inherit_security_receipt_sha256)
@@ -62,12 +62,17 @@ def main():
     spec=importlib.util.spec_from_file_location('actual_deployed_compare',root/'source/main_compare.py')
     assert spec and spec.loader;mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
     expected=mod.compare(m['commit']);fields=['commit','base','behind','own']
+    from inherit_security import comparison_proof
+    comparison_evidence=comparison_proof(root,api,expected)
+    expected=comparison_evidence['expected']
     assert all(api.get(k)==expected.get(k) for k in fields) and 'error' not in api,'actual same-input comparison mismatch'
     prov=json.loads((root/'provenance.json').read_text())
     # Recheck locators and every exact byte after all transfer/hash steps.
     call([sys.executable,'-B',str(root/'activate.py'),'preflight'])
     assert sha((prior/'manifest.json').read_bytes())==old_manifest
     result={'prepared':True,'revision':a.revision,'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),'served_commit':m['commit'],'web_tree':m['web_tree'],'tracked_web_blobs_equal':len(prov['web_files']),'refresh':prov['refresh'],'serving_locators':prov['serving_locators'],'manifest_sha256':digest,'worker':worker,'worker_metadata':dep,'sealed_preflight':worker_preflight,'source_static_contract':source_static,'worker_static_contract_equal':True,'activation_preflight':activation,'current_commit_api_probe':{'url':url,'status':status,'comparison':api,'module_comparison':expected,'same_input_deployed_module_equal':True},'prior_manifest_sha256_unchanged':old_manifest,'no_live_mutation':True,'fixtures_browsers_tests_unexecuted':True,'job_submitted':False}
+    result['current_commit_api_probe']['comparison_evidence']=comparison_evidence
+    if a.inherit_security_receipt_sha256:result['security_component_inheritance']=inherited
     save(root/'preflight-summary.json',result);call(['scp','-q',str(root/'preflight-summary.json'),'forum:'+worker+'/'])
     print(json.dumps(result))
 if __name__=='__main__':main()

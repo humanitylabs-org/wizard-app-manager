@@ -236,9 +236,13 @@ def capture(out,m,phase):
     spec=importlib.util.spec_from_file_location('deployed_main_compare',ROOT/'source/main_compare.py');assert spec and spec.loader
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     expected=module.compare(m['commit'])
+    from inherit_security import comparison_proof
+    comparison_evidence=comparison_proof(ROOT,comparison,expected)
+    expected=comparison_evidence['expected']
     save(out/'module-comparison.json',expected)
     assert {k:comparison[k] for k in ['commit','base','behind','own']}=={k:expected.get(k) for k in ['commit','base','behind','own']},'public main/cache changed between identical-input reads; preserve evidence, do not hardcode a count'
     result={'static':captured,'build':build,'my_release':mine,'comparison':comparison,'module_comparison':expected,'same_input_module_equal':True,'source_commit':m['commit'],'web_tree':m['web_tree'],'all_public_tracked_assets':len(captured),'tls_verified':True,'credentials_injected':False,'owner_dynamic_reads':False}
+    result['comparison_evidence']=comparison_evidence
     save(out/'capture.json',result);return result
 
 def main():

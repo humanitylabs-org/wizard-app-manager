@@ -45,7 +45,8 @@ def main():
     assert 'this._channel.fetch({' in inner and 'this.fetch(' not in inner
     assert 'this._context.request._innerFetch({ request: this.request()' in network
     evidence['transport_source_sha256']={str((transport/n).relative_to(root)):sha((transport/n).read_bytes()) for n in ['fetch.js','network.js']}
-    node=Path(shutil.which('node')).resolve(strict=True)
+    executable=shutil.which('node');assert executable
+    node=Path(executable).resolve(strict=True)
     evidence['node']=str(node);evidence['node_sha256']=sha(node.read_bytes())
     evidence['node_version']=subprocess.check_output([str(node),'--version'],text=True,timeout=10).strip()
     (root/'playwright-path.txt').write_text(json.dumps(evidence,indent=2)+'\n')

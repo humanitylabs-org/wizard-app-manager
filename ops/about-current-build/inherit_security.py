@@ -53,13 +53,34 @@ def verify(root):
 
 def prepare(root,prior):
     old=root/'inherited/r10';old.mkdir(parents=True,exist_ok=False)
-    names=['manifest.json','forum_qa.py','test_forum_qa.py','metadata.Caddyfile','Caddyfile.candidate','provenance.json','caddy-private-gateway','results-candidate/receipt.json','results-candidate/fixture-results.json','results-candidate/source-regressions.stdout','results-candidate/fixture.log']
+    names=['manifest.json','forum_qa.py','test_forum_qa.py','metadata.Caddyfile','Caddyfile.candidate','provenance.json','source/main_compare.py','caddy-private-gateway','results-candidate/receipt.json','results-candidate/fixture-results.json','results-candidate/source-regressions.stdout','results-candidate/fixture.log']
     for n in names:
         p=old/n;p.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(prior/n,p)
     pin={'prior_root':str(prior),'prior_manifest_sha256':sha((old/'manifest.json').read_bytes()),'artifacts':{n:sha((old/n).read_bytes()) for n in names},'unchanged_security_closure':{'security_function_bytes':sha(security_code(old/'forum_qa.py')),'default_logger_bytes':sha(logger(old/'Caddyfile.candidate')),'auth_route_template_bytes':sha((old/'metadata.Caddyfile').read_bytes()),'caddy_binary_bytes':sha((old/'caddy-private-gateway').read_bytes()),'unit_source_bytes':sha((old/'test_forum_qa.py').read_bytes())}}
     (root/'security-inheritance.json').write_text(json.dumps(pin,indent=2)+'\n')
     result=verify(root)
     return {'inheritance_verified':result['accepted'],'prior_aggregate_accepted':False,'fixture_checks':43,'unit_checks':11,'current_ui_inherited':False,'prior_receipt_sha256':result['prior_receipt_sha256']}
+
+def comparison_proof(root,actual,fresh):
+    """Match actual cached metadata, not a different instant of mutable GitHub main.
+
+    Prefer the fresh deployed-module result. Otherwise accept ONLY the identical
+    live cached response independently proven by that same module in r10. Never
+    rebuild a GitHub response from desired counts or inherit rendering evidence.
+    """
+    fields=['commit','base','behind','own']
+    if 'error' not in actual and 'error' not in fresh and all(actual.get(k)==fresh.get(k) for k in fields):
+        return {'mode':'fresh-deployed-module','expected':fresh,'same_input_module_equal':True}
+    component=verify(root);old=root/'inherited/r10';m=read(old/'manifest.json')
+    h=m['inputs']['source/main_compare.py']
+    assert sha((old/'source/main_compare.py').read_bytes())==h==sha((root/'source/main_compare.py').read_bytes()),'comparison module differs from cached snapshot proof'
+    previous=read(old/'results-candidate/receipt.json')['capture']
+    assert previous['same_input_module_equal'] is True
+    assert actual==previous['comparison'],'live comparison is not the exact previously module-proven cached response'
+    expected=previous['module_comparison']
+    assert 'error' not in actual and all(actual.get(k)==expected.get(k) for k in fields)
+    assert actual['commit']==read(root/'manifest.json')['commit']==previous['source_commit']
+    return {'mode':'identical-live-cache-with-prior-exact-module-proof','expected':expected,'same_input_module_equal':True,'fresh_uncached_module':fresh,'prior_receipt_sha256':component['prior_receipt_sha256'],'module_sha256':h,'live_cached_response_unchanged_including_checked_at':True,'current_ui_inherited':False}
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--prior',type=Path);a=p.parse_args()
     x=prepare(a.root,a.prior) if a.prior else verify(a.root)
