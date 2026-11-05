@@ -24,7 +24,8 @@ handle /wizard-os-home/build.json {
         @buildQuery expression `{http.request.uri.query} != ""`
         respond @buildQuery 400
         # Fail closed if another deploy moves the live source after this carrier was proved.
-        @sourceStampMoved expression `{file.__SERVED_SHA_FILE__} != "__SERVED_SHA__" && {file.__SERVED_SHA_FILE__} != "__SERVED_SHA__\n"`
+        vars about_build_stamp {file.__SERVED_SHA_FILE__}
+        @sourceStampMoved expression `{http.vars.about_build_stamp} != "__SERVED_SHA__" && {http.vars.about_build_stamp} != "__SERVED_SHA__\n"`
         respond @sourceStampMoved "Build metadata requires restaging for the current shell" 503
         header Cache-Control "private, no-store"
         header X-Content-Type-Options nosniff
