@@ -65,5 +65,8 @@ Serve must be able to add `unix:` handlers (root, or the tailnet operator); `wam
 ```
 
 Without `owner_logins` the owner is the tailnet user who owns this node (a tagged node then has no owner and every
-request is refused). `allow_requests_from_this_box` exists only for a box whose owner browses on the box itself; it
-lets every program on the box act as the owner and stays off by default.
+request is refused). The host-user-writable `allow_requests_from_this_box` option skips both local-box refusal and
+device enrollment for local callers; every program on the box can act as owner. It defaults false and is unsupported
+for rollout: follow-up 2 must remove/reject it and protect config custody before enabling the owner-device boundary.
+The edge reads its switch only at startup; changing the file does not stop a running service. No service changes
+are authorized or performed by this PR.

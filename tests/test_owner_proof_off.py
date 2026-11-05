@@ -42,15 +42,20 @@ def observe(call, path, events, steps):
             result = ("return", call())
         except SystemExit as exc:
             result = ("exit", str(exc))
+        except json.JSONDecodeError as exc:
+            # Main's Config already rejects malformed JSON. Preserve that error rather than changing it here;
+            # the enabled() assertions separately exercise tolerant switch reads before Config construction.
+            result = ("json_error", str(exc))
     files = {str(p.relative_to(path)): p.read_bytes() for p in path.rglob("*") if p.is_file()}
     return result, out.getvalue(), err.getvalue(), list(events), list(steps), files
 
 
-@pytest.mark.parametrize("setting", [None, False])
+@pytest.mark.parametrize("setting", [None, False, "absent", "malformed", "edge-on"])
 @pytest.mark.parametrize("recipe", sorted(RECIPES))
-@pytest.mark.parametrize("flag,allowed", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("flag,allowed", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("given", [None, {"MEDIA": "/synthetic/.ssh"}])
 @pytest.mark.parametrize("operation", ["install", "app_update"])
-def test_off_is_byte_identical_to_main(tmp_path, monkeypatch, setting, recipe, flag, allowed, operation):
+def test_off_is_byte_identical_to_main(tmp_path, monkeypatch, setting, recipe, flag, allowed, given, operation):
     path = tmp_path / "lane"
     observations = []
     for old in (True, False):
@@ -64,23 +69,29 @@ def test_off_is_byte_identical_to_main(tmp_path, monkeypatch, setting, recipe, f
             else:
                 _, events, steps = update_env(path, mp, RECIPES["plain"], RECIPES[recipe])
                 home = path / "home"
-            settings = {} if setting is None else {"owner_host_access_grants": setting, "owner_proof_enabled": setting}
+            settings = {} if setting is None else {"owner_host_access_grants": False, "owner_proof_enabled": False}
+            if setting == "edge-on":
+                settings["owner_proof_enabled"] = True
             if allowed:
                 settings["host_access_allowed"] = ["x"]
-            (home / "app-manager.json").write_text(json.dumps(settings))
-            assert not gate.enabled(home) and not owner_proof.enabled(home)
+            if setting != "absent":
+                (home / "app-manager.json").write_text("{bad" if setting == "malformed" else json.dumps(settings))
+            assert not gate.enabled(home)
+            assert owner_proof.enabled(home) is (setting == "edge-on")
             # Any accidental call into the enabled-only path is a regression, even if it returns a refusal.
             for method in ("valid", "consume", "issue"):
                 mp.setattr(gate, method, lambda *a, **k: pytest.fail("grant path reached with switch off"))
             mp.setattr(network, "owner_host_access", lambda *a, **k: pytest.fail("enhanced detection reached while off"))
             fn = baseline(operation) if old else getattr(cli, operation)
-            observations.append(observe(lambda: fn(cli.Config(), "x", allow_host_access=flag), path, events, steps))
+            kwargs = {"given": given} if operation == "install" else {}
+            observations.append(observe(lambda: fn(cli.Config(), "x", allow_host_access=flag, **kwargs), path, events, steps))
     assert observations[0] == observations[1]
 
 
-def test_legacy_detector_is_verbatim_main():
+@pytest.mark.parametrize("name", ["host_access", "network_escapes", "_plain", "load_yaml", "_cfg"])
+def test_legacy_detector_is_verbatim_main(name):
     import inspect
-    assert inspect.getsource(network.host_access).strip() == BASELINE["network.host_access"].strip()
+    assert inspect.getsource(getattr(network, name)).strip() == BASELINE["network." + name].strip()
 
 
 @pytest.mark.parametrize("allowed", [False, True])
