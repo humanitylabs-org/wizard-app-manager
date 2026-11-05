@@ -93,6 +93,9 @@ def run(home: Path, os_result: dict, runner, wait: float, is_busy, sleep) -> dic
     if "pending" in out["services"]:
         out["services"]["pending"] = snapshot.get("services", out["services"]["pending"])
     required = snapshot.get("reboot_required", os_result.get("reboot_required", False))
+    if snapshot.get("state") == "deferred":
+        required = False
+        out["reboot"].update(state="deferred", reason=snapshot.get("reason", "The root helper is busy."))
     out["reboot"]["required"] = required
     if previous:
         out["reboot"]["receipt"] = previous

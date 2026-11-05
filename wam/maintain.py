@@ -197,36 +197,62 @@ def _owner_home() -> Path:
     return _home(None)
 
 
-def _save_owner_settings(cfg: dict) -> None:
-    """Under sudo, write as the invoking account so a planted symlink cannot steer root writes."""
+def _owner_settings(update=None) -> dict | None:
+    """Read (and optionally update) the owner's settings as that account, never as root.
+
+    Returns the settings, or None when the owner-account write/read could not be completed.
+    """
     path = _owner_home() / "maintenance.json"
     user = os.environ.get("SUDO_USER")
+
+    def work() -> dict:
+        cfg = _load(path)
+        if update is not None:
+            update(cfg)
+            _save(path, cfg)
+        return cfg
+
     if os.geteuid() != 0 or not user:
-        _save(path, cfg)
-        return
+        return work()
     try:
         account = pwd.getpwnam(user)
     except KeyError:
-        return
+        return None
+    r, w = os.pipe()
     pid = os.fork()
     if pid == 0:
         code = 1
         try:
-            os.setgroups([])
+            os.close(r)
+            os.initgroups(user, account.pw_gid)
             os.setgid(account.pw_gid)
             os.setuid(account.pw_uid)
-            _save(path, cfg)
+            os.write(w, json.dumps(work()).encode())
             code = 0
         finally:
             os._exit(code)
-    os.waitpid(pid, 0)
+    os.close(w)
+    data = b""
+    while chunk := os.read(r, 65536):
+        data += chunk
+    os.close(r)
+    if os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) != 0:
+        return None
+    try:
+        return json.loads(data or b"{}")
+    except ValueError:
+        return None
 
 
 def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, installer: bool = False) -> dict:
     """Install or refresh the root-owned helper plus one sudoers line that allows only it. Needs passwordless sudo
     (fresh boxes have it from get.sh) or root; otherwise reports the one command an owner would run."""
     root = os.geteuid() == 0
-    if installer and _load(_owner_home() / "maintenance.json").get("helper_removed"):
+    owner = _owner_settings()
+    if owner is None:
+        return {"helper": helper_state(), "changed": False, "state": "error",
+                "reason": "Could not read the owner's maintenance choices."}
+    if installer and owner.get("helper_removed"):
         return {"helper": "removed", "changed": False, "state": "removed_by_owner",
                 "reason": "The owner removed the root helper; rerun 'wam maintain setup' to opt in again."}
     user = user or (os.environ.get("SUDO_USER") if root else None) or (None if root else (os.environ.get("USER") or
@@ -279,9 +305,7 @@ def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, in
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain setup"}
     state = helper_state()
     if state in ("ready", "root"):
-        cfg = _load(_owner_home() / "maintenance.json")
-        cfg.pop("helper_removed", None)
-        _save_owner_settings(cfg)
+        _owner_settings(lambda cfg: cfg.pop("helper_removed", None))
     return {"helper": state, "changed": True, "user": user,
             **({"state": "error", "reason": "Installed helper failed provenance verification."}
                if state not in ("ready", "root") else {})}
@@ -291,10 +315,9 @@ def remove(runner=subprocess.run) -> dict:
     """Undo `setup`: delete the sudoers rule and the root helper. OS security then stays check-only (unprivileged);
     `wam maintain setup` puts them back. For a box whose owner never wants root maintenance installed."""
     if not SUDOERS.exists() and not HELPER.exists() and not LANE.exists():
-        cfg = _load(_owner_home() / "maintenance.json")
-        cfg.update(helper_removed=True, os_security="check", quiet_restarts="off", held_platform="off", quiet_reboot="off")
-        _save_owner_settings(cfg)
-        return {"helper": "missing", "changed": False}
+        ok = _owner_settings(lambda cfg: cfg.update(helper_removed=True, os_security="check", quiet_restarts="off",
+                                                    held_platform="off", quiet_reboot="off")) is not None
+        return {"helper": "missing", "changed": False, **({} if ok else {"state": "error", "reason": "Could not record the removal choice."})}
     argv = _helper(["remove"])
     if argv is None:
         return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
@@ -313,10 +336,11 @@ def remove(runner=subprocess.run) -> dict:
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
     gone = not SUDOERS.exists() and not HELPER.exists() and not LANE.exists()
     if gone:
-        cfg = _load(_owner_home() / "maintenance.json")
-        cfg.update(helper_removed=True, changed_at=_now(), os_security="check",
-                   quiet_restarts="off", held_platform="off", quiet_reboot="off")
-        _save_owner_settings(cfg)
+        ok = _owner_settings(lambda cfg: cfg.update(helper_removed=True, changed_at=_now(), os_security="check",
+                                                    quiet_restarts="off", held_platform="off", quiet_reboot="off")) is not None
+        if not ok:
+            return {"helper": "missing", "changed": True, "state": "error",
+                    "reason": "Helper removed, but the owner's removal choice could not be recorded; do not rerun the installer until it is."}
     return {"helper": "missing" if gone else helper_state(), "changed": gone,
             **({} if gone else {"state": "error", "reason": "Helper removal did not verify."})}
 

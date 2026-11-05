@@ -192,19 +192,39 @@ def test_restart_lane_deferred_snapshot_is_not_current(tmp_path, monkeypatch):
     assert out["services"]["state"] == "deferred"
 
 
-def test_sudo_owner_write_drops_to_invoking_account_before_touching_files(tmp_path, monkeypatch):
+def test_sudo_owner_settings_run_in_dropped_child_and_parent_waits(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setenv("SUDO_USER", "alice")
     monkeypatch.setattr(m.os, "geteuid", lambda: 0)
     monkeypatch.setattr(m.pwd, "getpwnam", lambda n: type("A", (), {"pw_uid": 1234, "pw_gid": 2345, "pw_dir": str(tmp_path)})())
     monkeypatch.setattr(m.os, "fork", lambda: 0)
-    monkeypatch.setattr(m.os, "setgroups", lambda g: calls.append("groups"))
+    monkeypatch.setattr(m.os, "initgroups", lambda u, g: calls.append("groups"))
     monkeypatch.setattr(m.os, "setgid", lambda g: calls.append("gid"))
     monkeypatch.setattr(m.os, "setuid", lambda u: calls.append("uid"))
+    monkeypatch.setattr(m, "_load", lambda path: calls.append("load") or {})
     monkeypatch.setattr(m, "_save", lambda path, cfg: calls.append("save"))
+    monkeypatch.setattr(m.os, "write", lambda fd, data: calls.append("report"))
     monkeypatch.setattr(m.os, "_exit", lambda c: (_ for _ in ()).throw(SystemExit(c)))
     try:
-        m._save_owner_settings({"x": 1})
+        m._owner_settings(lambda cfg: cfg.update(x=1))
     except SystemExit as e:
         assert e.code == 0
-    assert calls == ["groups", "gid", "uid", "save"]
+    assert calls == ["groups", "gid", "uid", "load", "save", "report"]
+
+
+def test_sudo_owner_settings_failure_is_not_silent(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUDO_USER", "alice")
+    monkeypatch.setattr(m.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(m.pwd, "getpwnam", lambda n: type("A", (), {"pw_gid": 2345, "pw_dir": str(tmp_path)})())
+    monkeypatch.setattr(m.os, "fork", lambda: 4242)
+    monkeypatch.setattr(m.os, "waitpid", lambda pid, flags: (pid, 256))
+    assert m._owner_settings(lambda cfg: None) is None
+
+
+def test_deferred_snapshot_never_requests_reboot(tmp_path, monkeypatch):
+    from wam import quiet_restart as qr
+    m._save(tmp_path / "maintenance.json", {"quiet_reboot": "auto"})
+    monkeypatch.setattr(m, "call_helper", lambda *a, **k: {"state": "deferred", "reason": "helper busy"})
+    monkeypatch.setattr(qr, "reconcile", lambda *a: {"state": "none"})
+    out = qr.run(tmp_path, {"state": "current", "reboot_required": True}, lambda *a, **k: None, 0, lambda: [], lambda s: None)
+    assert out["reboot"]["state"] == "deferred"
