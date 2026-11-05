@@ -3,7 +3,7 @@
 Two kinds of agent read this file:
 
 - **Installing Wizard OS on a machine?** Go straight to [Installing Wizard OS apps on this machine](#installing-wizard-os-apps-on-this-machine-instructions-for-an-ai-agent) at the bottom.
-- **Changing this repo?** Read "This repo" and the team rules first.
+- **Changing this repo?** Read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (layout, tests, required CI checks and how to reproduce them, browser checks, how a change reaches users), "This repo", the [Team workflow](#team-workflow) and the team rules.
 
 ## This repo
 
@@ -22,6 +22,19 @@ Machine-specific paths and hosts come from env vars: `WIZARD_WORK_ROOT`,
 (`WIZARD_HEAVY_ROOT` where the shared heavy lane is used). Never commit personal
 paths or tailnet hostnames; the tracked-file portable-paths guard in the normal
 test/CI command enforces this. Historical evidence/receipts are explicitly exempt.
+
+## Team workflow
+
+Agreed 5 Nov 2026 and being rolled out by Miguel; tracking issue: [wizard-ux#887](https://github.com/humanitylabs-org/wizard-ux/issues/887). This is agreed policy, not a claim that every label, switch or release job already enforces it. Where it disagrees with the older "Wizard OS team rules" block below, **this section wins**. Void from that block: an author merging their own PR (including "fix" tier PRs), `needs: ... review` gating, `preview only` and developer-mode branches on a box. Tier labels and title prefixes may still describe a change but give no merge rights. Branch naming, PR body, cross-repo order and safety from that block still apply.
+
+- **Humans file issues, agents write PRs.** Every PR links an issue. If none exists, the agent files one from the human's request.
+- **Two issue kinds.** *Goals* are big and closable with a done-list; only humans open and close them; there is no permanent catch-all Goal. *Bugs* are small: a core-team human's bug is accepted; outside reports and agent-drafted issues wait for a human yes. Bugs need no parent Goal.
+- **Priority:** labels P1–P3 (older `priority: 1/2/3` labels are the same levels). Agents take P1 first. Triage is weekly and async.
+- **`main` is the only truth.** Everyone's box runs plain `main` (**Latest**). Users get a **Stable** release cut from approved work after a soak. A breaking or data-loss fix is labelled `hotfix` and skips the soak once tests pass.
+- **New features ship behind off-by-default switches** (the existing Look switches). A "works" from a human who did not build the feature makes it the default and removes the switch. A big redesign that cannot be switched gets a temporary preview link, never a device branch.
+- **Review:** a non-author agent reviews "is it safe and sound" and merges the same day. **Authors never merge their own PRs.** Never change branch protection, settings, boxes or deployments as part of a change.
+- A single company implementer agent is being trialled; until then the existing team agents implement under these rules. Put knowledge in the repo, not in an agent's memory.
+
 
 <!-- wizard-os-team-rules v4 (24 Oct 2026). Same text in every Wizard OS repo; the canonical copy is humanitylabs-org/wizard-os AGENTS.md. Change it there first, then copy the block to every repo in one round of PRs. -->
 ## Wizard OS team rules (identical in every repo)
