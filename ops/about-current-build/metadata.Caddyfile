@@ -1,0 +1,36 @@
+# Narrow generated build stamp. My release remains absent/unselected.
+handle /wizard-os-home/build.json {
+    route {
+        request_header -X-Wizard-Owner-Proof
+        request_header -Tailscale-User-Login
+        request_header -Tailscale-User-Name
+        request_header -X-Private-Peer
+        forward_auth 127.0.0.1:19447 {
+            uri /verify?
+            header_up X-Private-Peer {http.request.remote.host}
+            header_up -Origin
+            header_up -Sec-Fetch-Site
+            copy_headers Tailscale-User-Login
+            transport http {
+                keepalive off
+            }
+        }
+        @badBuildMethod not method GET
+        respond @badBuildMethod 405
+        @foreignBuildOrigin expression `{http.request.header.Origin} != "" && {http.request.header.Origin} != "https://wizard.tailc0f369.ts.net"`
+        respond @foreignBuildOrigin 403
+        @crossSiteBuild header Sec-Fetch-Site cross-site
+        respond @crossSiteBuild 403
+        @buildQuery expression `{http.request.uri.query} != ""`
+        respond @buildQuery 400
+        # Fail closed if another deploy moves the live source after this carrier was proved.
+        @sourceStampMoved expression `{file.__SERVED_SHA_FILE__} != "__SERVED_SHA__" && {file.__SERVED_SHA_FILE__} != "__SERVED_SHA__\n"`
+        respond @sourceStampMoved "Build metadata requires restaging for the current shell" 503
+        header Cache-Control "private, no-store"
+        header X-Content-Type-Options nosniff
+        header X-Robots-Tag "noindex, nofollow"
+        root * __CARRIER__
+        rewrite * /build.json
+        file_server
+    }
+}
