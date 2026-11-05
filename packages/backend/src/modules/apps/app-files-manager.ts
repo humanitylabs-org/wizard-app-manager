@@ -1,3 +1,4 @@
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { APP_GENERATED_COMPOSE_FILENAME, APP_REL_COMPOSE_FILENAME } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -9,6 +10,64 @@ import { Injectable } from '@nestjs/common';
 import { appInfoSchema, convertLegacyToYaml, dynamicComposeSchemaYaml } from '@runtipi/common/schemas';
 import type { AppUrn } from '@runtipi/common/types';
 import { type } from 'arktype';
+
+/**
+ * Folders inside an app's data folder that hold owner-only secrets, relative to it. setAppDataDirPermissions never
+ * opens them to everyone. `data/wizard-os/grants`: the Agent Service gateway's grant keys
+ * (`grants/agent-service.json`, wizard-os spec/PERMISSIONS.md layer 2), which the gateway ignores unless the file is
+ * 0600; opening it on every start or update took every gateway-verified app's tools away from the agents.
+ */
+export const PRIVATE_APP_DATA_DIRS = ['data/wizard-os/grants'];
+
+/** Normalize owner permissions and remove group/other access: directory 0700, regular files 0600; owners unchanged. */
+async function tightenPrivateDir(appDataDir: string, relativeDir: string, warn: (message: string) => void) {
+  const NOFOLLOW = fsp.constants.O_RDONLY | fsp.constants.O_NOFOLLOW | fsp.constants.O_NONBLOCK;
+  const anchor = await fsp.open(appDataDir, NOFOLLOW | fsp.constants.O_DIRECTORY);
+  const handles = [anchor];
+  try {
+    // Linux procfd anchoring is required. Fail closed if unavailable; never fall back to resolving app paths.
+    const pinned = await anchor.stat();
+    const proc = await fsp.stat(`/proc/self/fd/${anchor.fd}`);
+    if (pinned.dev !== proc.dev || pinned.ino !== proc.ino) throw new Error('Private permissions require a verified procfd anchor');
+
+    let directory = anchor;
+    for (const name of relativeDir.split('/')) {
+      if (!name || name === '.' || name === '..') throw new Error('Invalid private directory component');
+      const next = await fsp.open(`/proc/self/fd/${directory.fd}/${name}`, NOFOLLOW | fsp.constants.O_DIRECTORY).catch((error: NodeJS.ErrnoException) => {
+        // Missing directories and links (including the grants leaf) are safe no-ops.
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'ELOOP') return null;
+        throw error;
+      });
+      if (!next) return;
+      handles.push(next);
+      directory = next;
+    }
+
+    if (((await directory.stat()).mode & 0o7777) !== 0o700) await directory.chmod(0o700);
+    let warnedHardlink = false;
+    for (const entry of await fsp.readdir(`/proc/self/fd/${directory.fd}`, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = await fsp.open(`/proc/self/fd/${directory.fd}/${entry.name}`, NOFOLLOW).catch(() => null);
+      // O_RDONLY may fail for unreadable files; leave them unchanged rather than resolve an unpinned path.
+      if (!file) continue;
+      try {
+        const st = await file.stat();
+        if (!st.isFile()) continue;
+        if (st.nlink !== 1) {
+          if (!warnedHardlink) warn('Skipped hardlinked private grant files; permissions unchanged');
+          warnedHardlink = true;
+          continue;
+        }
+        if ((st.mode & 0o7777) !== 0o600) await file.chmod(0o600);
+      } finally {
+        await file.close();
+      }
+    }
+  } finally {
+    // Start every close even if another close fails, including partial walks and procfd verification errors.
+    await Promise.all(handles.map((handle) => handle.close()));
+  }
+}
 
 @Injectable()
 export class AppFilesManager {
@@ -187,15 +246,26 @@ export class AppFilesManager {
   }
 
   /**
-   * Set the permissions for the app data directory
+   * Set the permissions for the app data directory: everything a+rwx (Runtipi's `chmod -Rf a+rwx`), except the
+   * owner-only secret folders in PRIVATE_APP_DATA_DIRS, which are skipped and brought back to 0700 / 0600.
+   * Private normalization uses pinned descriptors and does not follow links. The ordinary-data find/exec
+   * stage below remains path-based and is not protected against concurrent directory replacement.
    * @param appUrn - The app id
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
+    const glob = (p: string) => p.replace(/[[\]*?\\]/g, '\\$&');
+    const skip = PRIVATE_APP_DATA_DIRS.flatMap((rel, i) => [...(i ? ['-o'] : []), '-path', glob(path.join(appDataDir, rel))]);
+    const open = ['!', '-type', 'l', '-exec', 'chmod', '-f', 'a+rwx', '{}', '+'];
 
-    await execFileAsync('chmod', ['-Rf', 'a+rwx', appDataDir]).catch(() => {
+    await execFileAsync('find', ['-H', appDataDir, '(', ...skip, ')', '-prune', '-o', ...open]).catch(() => {
       this.logger.error(`Error setting permissions for app ${appUrn}`);
     });
+    for (const rel of PRIVATE_APP_DATA_DIRS) {
+      await tightenPrivateDir(appDataDir, rel, (message) => this.logger.warn(message)).catch(() => {
+        this.logger.error(`Error restoring private permissions for app ${appUrn}`);
+      });
+    }
   }
 
   public async getAppEnv(appUrn: AppUrn) {
