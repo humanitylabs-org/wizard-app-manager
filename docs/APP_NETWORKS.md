@@ -119,14 +119,17 @@ app, notices are shown only in the Connections view ("Recent connection changes"
 A recipe that attaches networks the app does not own is refused the same way and never isolated: a reserved
 `wizard-link-*`/`wizard-gw-*`/`wizard-core` network, any `external` network (for example a logical network whose
 `name:` is `runtipi_tipi_main_network` or another app's compose network), a fixed Docker `name:` outside the app's own
-compose project (`<id>_wizardapps_*`), a non-bridge driver, and `network_mode: host|bridge|container:<x>`. The owner
-can allow one app explicitly (`wam install <id> --allow-host-access`, `wam app update <id> --allow-host-access` or
-`wam network allow <id>`; `wam network deny <id>` takes it back and stops the app if it is running with that access). If isolation is on and an app's networks can't be prepared (for example the address pool is full),
+compose project (`<id>_wizardapps_*`), a non-bridge driver, and `network_mode: host|bridge|container:<x>`. Allowing it is an owner-device action
+(wizard-os `spec/OWNER_PROOF.md`, DECISIONS #107): the owner accepts on their own enrolled device in Wizard, which leaves a
+single-use grant (`wam/host_access_gate.py`) bound to that app, purpose, risk list and recipe; `wam install <id>
+--allow-host-access`, `wam app update <id> --allow-host-access` and `wam network allow <id>` proceed only with it, so no
+agent, command line or in-process caller can accept host access by itself. `wam network deny <id>` takes it back and
+stops the app if it is running with that access. If isolation is on and an app's networks can't be prepared (for example the address pool is full),
 `wam install` stops before the first start rather than start it on the shared network. `wam app update` writes the
 override for the incoming recipe before Runtipi applies it, and `wam grants grant|revoke` reconciles at once.
 
 Apps whose recipe uses `network_mode: host` get a refusal from `wam install` unless the owner passes
-`--allow-host-access`, which prints a loud warning. The same applies to `privileged: true` and to a mounted
+an owner grant (see above), and then print a loud warning. The same applies to `privileged: true` and to a mounted
 Docker/containerd/podman socket. Apps installed that way, and apps with hand-written networks in their user-config
 override, stay as they are. The service an app publishes through Runtipi's reverse proxy keeps the shared network, because
 Traefik reaches it there, so every app can still reach that service; the app's other services leave it. It also gets its declared links. The Connections view flags all of
@@ -175,7 +178,7 @@ Reconcile runs automatically:
 - in `wam serve` after every Wizard app start (installs and updates from the UI included), see above.
 
 `wam app update` refuses an update that brings in host access or foreign networks the installed version didn't have,
-unless the owner allows it, and stops before the update when its networks can't be prepared (isolation on).
+unless the owner accepted exactly those new risks on their device (an earlier allowance never covers them), and stops before the update when its networks can't be prepared (isolation on).
 
 ## Commands
 

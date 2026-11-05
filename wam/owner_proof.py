@@ -149,28 +149,47 @@ def _private_dir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def publish_key_once(path: Path, raw: bytes) -> bool:
+    """Publish `raw` at `path` only if nothing is there yet, atomically: the key is written to a private temporary
+    file and hard-linked into place, and link(2) fails if the name exists, so two callers racing to create the same
+    key can never replace each other's (`os.replace` would). True when this call published it, False when someone
+    else already had."""
+    tmp = path.with_name(f".key-{secrets.token_hex(6)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            os.write(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def ensure_edge_key(home: Path, app_id: str, adopt: Path | None = None) -> bool:
     """Create the edge key once (or adopt an existing private key file, e.g. Messenger's hand-built ingress key, so
-    the app keeps its remembered unlock). Never replaces an existing key. Returns True when a key was written."""
+    the app keeps its remembered unlock). Never replaces an existing key, also when two callers provision at the
+    same moment: the loser validates the winner's key (a different key than the one it was asked to adopt is
+    refused) and returns False. Returns True when this call wrote the key."""
     d = key_dir(home, app_id)
     _private_dir(d.parent)
     _private_dir(d)
     path = edge_key_path(home, app_id)
-    if path.exists():
-        current = read_private_key(path)
-        if adopt is not None and not hmac.compare_digest(current, read_private_key(adopt)):
-            raise ValueError(f"{app_id}: a different owner proof key already exists; refusing to replace it")
-        return False
-    raw = read_private_key(adopt) if adopt is not None else secrets.token_bytes(KEY_BYTES)
-    tmp = path.with_name(f".edge-{secrets.token_hex(6)}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        os.write(fd, raw)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
-    return True
+    wanted = read_private_key(adopt) if adopt is not None else None
+    if not path.exists() and publish_key_once(path, wanted if wanted is not None else secrets.token_bytes(KEY_BYTES)):
+        return True
+    current = read_private_key(path)   # the key that is there now, whoever wrote it
+    if wanted is not None and not hmac.compare_digest(current, wanted):
+        raise ValueError(f"{app_id}: a different owner proof key already exists; refusing to replace it")
+    return False
 
 
 _SAFE = re.compile(r"^[A-Za-z0-9._/@:+-]+$")

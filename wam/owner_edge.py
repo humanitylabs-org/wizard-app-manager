@@ -8,7 +8,9 @@ that serves every owner-proof app the same way:
                                 ▼  (Serve handler `unix:<wizard-os>/owner-edge/<app>.sock`, published by `wam links`)
                        owner edge (this file, host user)
                                 │  1. kernel peer credentials: the connecting process IS tailscaled (root, its PID)
-                                │  2. Serve identity: the owner's tailnet login, not this box's own address
+                                │  2. Serve identity: the owner's tailnet login, from one of the owner's enrolled devices
+                │     (owner_devices.py: resolved with tailscale whois, listed in the Devices record), not this box
+                │     and not the owner's other servers
                                 │  3. Host is this box's tailnet name, same-origin writes, no bearer
                                 │  4. strips every identity/proof header a client sent, signs the request
                                 ▼
@@ -45,7 +47,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from . import owner_proof as op
+from . import owner_devices, owner_proof as op
 
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
        "transfer-encoding", "upgrade"}
@@ -191,10 +193,18 @@ class Handler(BaseHTTPRequestHandler):
         if not login or login.lower() not in ident["logins"]:
             return "authenticated_owner_required"
         hop = (self._one("X-Forwarded-For") or "").strip()
-        if not ident.get("allow_box") and (not hop or hop in ident["ips"] or hop in ("127.0.0.1", "::1")):
+        if not hop or hop in ident["ips"] or hop in ("127.0.0.1", "::1"):
             # Serve labels this node's own address with the node owner's login, so every program on the box would
             # otherwise pass as the owner (wam store_install.from_box, same rule).
-            return "owner_device_required"
+            if not ident.get("allow_box"):
+                return "owner_device_required"
+        else:
+            # The owner's login is on every untagged node they are signed in to, including their other servers where
+            # agents run. Only a device in the Wizard's own device record is "the owner's device" (owner_devices.py).
+            # A caller Tailscale cannot resolve, or a record that cannot be read, is refused.
+            why = self.server.devices.check(hop, login)
+            if why:
+                return why
         if self.headers.get_all("Authorization") is not None:
             return "bearer_owner_handoff_denied"
         origin = self._one("Origin")
@@ -308,13 +318,13 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
             resp = backend.getresponse()
             started = True
-            self.send_response(resp.status, resp.reason)
+            self.send_response(resp.status)      # the standard phrase, never the app's own text
             for k, v in resp.getheaders():
                 # Relay only well-formed headers: a CR/LF (or a non-token name) from the app never reaches the
                 # browser as a second header or a second response.
                 if k.lower() in HOP or k.lower() in ("server", "date") or not _TOKEN.fullmatch(k) or _CTL.search(v):
                     continue
-                self.send_header(k, v)
+                self.send_header(k, v.replace("\r", "").replace("\n", ""))
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
@@ -341,21 +351,28 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class _KeyCache:
-    """Re-reads the edge key when its file changes (rotation), never on every request."""
+    """Re-reads the edge key when its file changes (rotation), never on every request. The permission policy is
+    checked on every use, and a permission change (which moves ctime) also invalidates the cached key: a key that
+    became group/other readable stops signing at once."""
 
     def __init__(self, path: Path):
         self.path, self._sig, self._key = path, None, b""
 
     def __call__(self) -> bytes:
         st = os.stat(self.path, follow_symlinks=False)
-        sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+        if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077:
+            self._key, self._sig = b"", None
+            raise ValueError(f"{self.path}: not a private key file")
+        sig = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_mode)
         if sig != self._sig:
+            self._key, self._sig = b"", None
             self._key, self._sig = op.read_private_key(self.path), sig
         return self._key
 
 
-def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_peer) -> _UnixHTTPServer:
-    """Bind <home>/owner-edge/<app>.sock (0600 in a 0700 folder) for one app; returns the server (not started)."""
+def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_peer, devices=None) -> _UnixHTTPServer:
+    """Bind <home>/owner-edge/<app>.sock (0600 in a 0700 folder) for one app; returns the server (not started).
+    `devices.check(hop, login)` says whether the caller is one of the owner's enrolled devices (default: the real one)."""
     d = op.socket_dir(home)
     d.mkdir(mode=0o700, exist_ok=True)
     info = d.lstat()
@@ -373,6 +390,7 @@ def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_p
         os.umask(old)
     os.chmod(path, 0o600)
     server.home, server.app, server.identity, server.peer_check = Path(home), app, identity, peer_check
+    server.devices = devices or owner_devices.Enrollment(home)
     server.key = _KeyCache(op.edge_key_path(home, app["id"]))
     return server
 
@@ -402,6 +420,7 @@ def run(home: Path, stop: threading.Event | None = None, every: float = 10.0, pe
     """Serve every owner-proof app; follow installs, removals and port changes from apps.json."""
     stop = stop or threading.Event()
     identity = identity or Identity(home)
+    devices = owner_devices.Enrollment(home)
     live: dict[str, tuple[dict, _UnixHTTPServer]] = {}
 
     def close(app_id: str) -> None:
@@ -418,7 +437,7 @@ def run(home: Path, stop: threading.Event | None = None, every: float = 10.0, pe
             for app_id, app in want.items():
                 if app_id not in live:
                     try:
-                        srv = serve_app(home, app, identity, peer_check)
+                        srv = serve_app(home, app, identity, peer_check, devices)
                     except (OSError, ValueError):
                         continue
                     threading.Thread(target=srv.serve_forever, daemon=True, name=f"owner-edge-{app_id}").start()

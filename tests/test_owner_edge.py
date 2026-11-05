@@ -32,6 +32,12 @@ class FakeIdentity:
         return self.val
 
 
+class EnrolledPhone:
+    """The device record, for the edge tests that are about something else: every resolvable caller is enrolled."""
+    def check(self, hop, login):
+        return None
+
+
 class Backend(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
@@ -78,7 +84,7 @@ def edge():
     app = {"id": "messenger", "name": "Messenger", "port": backend.server_address[1], "activity": ["/api/drafts"],
            "strip": ["x-messenger-owner-proof"]}
     state = {"peer": True}
-    srv = owner_edge.serve_app(home, app, FakeIdentity(), peer_check=lambda conn: state["peer"])
+    srv = owner_edge.serve_app(home, app, FakeIdentity(), peer_check=lambda conn: state["peer"], devices=EnrolledPhone())
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield {"home": home, "seen": seen, "srv": srv, "backend": backend, "state": state, "app": app,
            "key": op.edge_key_path(home, "messenger").read_bytes()}
