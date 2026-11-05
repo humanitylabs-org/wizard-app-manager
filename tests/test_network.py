@@ -667,23 +667,6 @@ def gate_env(tmp_path, monkeypatch, compose):
     return cli, installs, steps
 
 
-@pytest.fixture(autouse=True)
-def _grants_on(monkeypatch):
-    from wam import host_access_gate
-    monkeypatch.setattr(host_access_gate, "enabled", lambda home: True)
-
-
-def _owner_grants(tmp_path, app, kind="install"):
-    """What the owner listener leaves after the owner accepted on their own device (cli.StoreHandler._host_access)."""
-    from wam import cli, host_access_gate
-    c = cli.Config()
-    where = {"install": "any", "update": "store", "allow": "installed"}[kind]
-    risks = cli.host_access_risks(c, app, where)
-    if kind == "update":
-        risks = [r for r in risks if r not in set(cli.host_access_risks(c, app, "installed"))]
-    host_access_gate.issue(c.home, app, risks, kind, cli.recipe_hash(c, app, where))
-
-
 def test_installer_refuses_host_access_unless_the_owner_flags_it(tmp_path, monkeypatch):
     import pytest
     cli, installs, steps = gate_env(tmp_path, monkeypatch,
@@ -691,7 +674,6 @@ def test_installer_refuses_host_access_unless_the_owner_flags_it(tmp_path, monke
     with pytest.raises(SystemExit, match="REFUSED: x asks for access that escapes app isolation"):
         cli.install(cli.Config(), "x")
     assert installs == [] and steps == []
-    _owner_grants(tmp_path, "x")
     res = cli.install(cli.Config(), "x", allow_host_access=True)
     assert installs == ["x:wizardapps"] and res["status"] == "running"
 
@@ -838,7 +820,6 @@ def test_allow_host_access_is_recorded_for_the_app_managers_start_gate(tmp_path,
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("WIZARD_OS_HOME", str(home))
-    _owner_grants(tmp_path, "x")
     cli.install(cli.Config(), "x", allow_host_access=True)
     assert installs == ["x:wizardapps"] and net.host_access_allowed(home) == {"x"}
     c = type("C", (), {"home": home, "runtipi_root": tmp_path / "runtipi"})()
@@ -934,7 +915,6 @@ def test_update_that_adds_host_access_needs_the_owner(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: the update of x asks for access"):
         cli.app_update(cli.Config(), "x")
     assert updates == [] and steps == []
-    _owner_grants(tmp_path, "x", "update")
     assert cli.app_update(cli.Config(), "x", allow_host_access=True)["status"] == "running"
     assert updates == ["x:wizardapps"] and net.host_access_allowed(tmp_path / "home") == {"x"}
     # an unchanged risk the installed recipe already had is not asked again
@@ -1207,10 +1187,6 @@ def test_network_deny_stops_a_running_app_that_still_has_the_access(tmp_path, mo
     assert cli.main(["network", "deny", "x"]) == 0
     assert calls == [("stop", "x"), "reconcile"] and net.host_access_allowed(home) == set()
     calls.clear()
-    with pytest.raises(SystemExit, match="owner action"):         # re-allowing needs the owner's grant too
-        cli.main(["network", "allow", "x"])
-    assert calls == [] and net.host_access_allowed(home) == set()
-    _owner_grants(tmp_path, "x", "allow")
     assert cli.main(["network", "allow", "x"]) == 0 and calls == ["reconcile"]   # allowing never stops anything
 
 

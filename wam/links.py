@@ -337,7 +337,7 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                     raise ValueError("Serve route readback did not match requested private proxy")
 
         from . import owner_proof
-        proofs = owner_proof.declared(reg)
+        proofs = owner_proof.declared(reg) if owner_proof.enabled(home) else {}
         for r in rows:
             if shell_away and keep_previous(r, "shell restarting"):
                 continue

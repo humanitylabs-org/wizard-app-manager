@@ -56,7 +56,7 @@ RECIPES = {
 
 @pytest.mark.parametrize("name", sorted(RECIPES))
 def test_every_kind_of_host_access_is_detected(name):
-    assert net.host_access(RECIPES[name], "x"), name
+    assert net.owner_host_access(RECIPES[name], "x"), name
 
 
 @pytest.mark.parametrize("compose", [
@@ -66,7 +66,7 @@ def test_every_kind_of_host_access_is_detected(name):
     "services:\n  x:\n    image: a\n    volumes:\n      - {type: bind, source: '${APP_DATA_DIR}/q', target: /q}\n      - {type: tmpfs, target: /t}\n",
 ])
 def test_ordinary_recipes_need_no_owner(compose):
-    assert net.host_access(compose, "x") == []
+    assert net.owner_host_access(compose, "x") == []
 
 
 ROOT = "/home/u/runtipi"
@@ -98,7 +98,7 @@ def test_grants_are_off_by_default_and_then_nothing_is_issued_or_created(listene
     ("${APP_SOURCE_DIR}/../x:/app:ro", False),
 ])
 def test_source_folders_are_read_only_or_host_access(vol, ok):
-    assert (net.host_access(_svc(vol), "x", "wizardapps", runtipi_root=ROOT) == []) is ok
+    assert (net.owner_host_access(_svc(vol), "x", "wizardapps", runtipi_root=ROOT) == []) is ok
 
 
 def _svc(vol, extra=""):
@@ -114,7 +114,7 @@ def _svc(vol, extra=""):
     ("movies", "${APP_SOURCE_DIR}:/app:ro"),
 ])
 def test_what_wizards_own_recipes_mount_is_not_host_access(app, vol):
-    assert net.host_access(_svc(vol), app, "wizardapps", runtipi_root=ROOT) == []
+    assert net.owner_host_access(_svc(vol), app, "wizardapps", runtipi_root=ROOT) == []
 
 
 @pytest.mark.parametrize("app,vol", [
@@ -127,7 +127,7 @@ def test_what_wizards_own_recipes_mount_is_not_host_access(app, vol):
     ("x", "${APP_SOURCE_DIR}/../..:/m"),                                           # a default outside the app
 ])
 def test_own_folder_waivers_do_not_stretch(app, vol):
-    assert net.host_access(_svc(vol), app, "wizardapps", runtipi_root=ROOT)
+    assert net.owner_host_access(_svc(vol), app, "wizardapps", runtipi_root=ROOT)
 
 
 @pytest.mark.parametrize("compose", [
@@ -146,22 +146,22 @@ def test_own_folder_waivers_do_not_stretch(app, vol):
     "services:\n  x:\n    image: a\n    env_file: [{path: ../secret.env}]\n",
 ])
 def test_more_ways_out_of_the_app_are_host_access(compose):
-    assert net.host_access(compose, "x", "wizardapps", runtipi_root=ROOT)
+    assert net.owner_host_access(compose, "x", "wizardapps", runtipi_root=ROOT)
 
 
 def test_a_value_the_installer_was_given_counts_as_what_would_run():
     """Review P1: `--set INBOX_MEDIA_1=/home/u/.ssh` must not slip past a recipe that is clean by default."""
     c = "services:\n  x:\n    image: a\n    volumes: ['${MEDIA:-${APP_DATA_DIR}/m}:${MEDIA:-/m}:ro']\n"
-    assert net.host_access(c, "x") == []
-    assert net.host_access(c, "x", values={"MEDIA": "/home/u/.ssh"})
-    assert net.host_access(c, "x", values={"MEDIA": "/"})
-    assert net.host_access(c, "x", values={"MEDIA": "${ROOT_FOLDER_HOST}/user-config"})
-    assert net.host_access(c, "x", values={"MEDIA": "../.."})
-    assert net.host_access(c, "x", values={"MEDIA": "/var/run/docker.sock"})
-    assert net.host_access(c, "x", values={"MEDIA": "${APP_DATA_DIR}/ok"}) == []
+    assert net.owner_host_access(c, "x") == []
+    assert net.owner_host_access(c, "x", values={"MEDIA": "/home/u/.ssh"})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "/"})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "${ROOT_FOLDER_HOST}/user-config"})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "../.."})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "/var/run/docker.sock"})
+    assert net.owner_host_access(c, "x", values={"MEDIA": "${APP_DATA_DIR}/ok"}) == []
     # the variables Runtipi sets cannot be overridden by what is given
     c2 = "services:\n  x:\n    image: a\n    volumes: ['${APP_DATA_DIR}/d:/d']\n"
-    assert net.host_access(c2, "x", values={"APP_DATA_DIR": "/"}) == []
+    assert net.owner_host_access(c2, "x", values={"APP_DATA_DIR": "/"}) == []
 
 
 def test_the_install_checks_what_it_was_given(tmp_path, monkeypatch):
@@ -175,10 +175,10 @@ def test_the_install_checks_what_it_was_given(tmp_path, monkeypatch):
 
 def test_joining_another_containers_namespaces_is_host_access():
     for k in ("network_mode", "pid", "ipc", "uts", "userns_mode"):
-        assert net.host_access(f"services:\n  x:\n    image: a\n    {k}: 'container:victim'\n", "x"), k
+        assert net.owner_host_access(f"services:\n  x:\n    image: a\n    {k}: 'container:victim'\n", "x"), k
     for k in ("pid", "ipc", "uts", "userns_mode"):       # another app's service (not in this compose) is the same thing
-        assert net.host_access(f"services:\n  x:\n    image: a\n    {k}: 'service:victim'\n", "x"), k
-    assert net.host_access("services:\n  x:\n    image: a\n  y:\n    image: b\n    pid: 'service:x'\n", "x") == []
+        assert net.owner_host_access(f"services:\n  x:\n    image: a\n    {k}: 'service:victim'\n", "x"), k
+    assert net.owner_host_access("services:\n  x:\n    image: a\n  y:\n    image: b\n    pid: 'service:x'\n", "x") == []
 
 
 @pytest.mark.parametrize("name", sorted(RECIPES))

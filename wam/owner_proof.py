@@ -354,11 +354,19 @@ def main_service(recipe: dict) -> tuple[str, str, str]:
     raise ValueError("the recipe has no main service")
 
 
+def enabled(home: Path) -> bool:
+    """Opt-in rollout; complete trusted enrollment (spec follow-up 2) before enabling."""
+    from .network import _cfg
+    return _cfg(home).get("owner_proof_enabled") is True
+
+
 def provision(c, app_id: str, *, store: str = "wizardapps", adopt_proof: Path | None = None,
               adopt_wrap: Path | None = None, image: str | None = None, dry_run: bool = False,
               run=subprocess.run) -> dict:
     """Mint (or adopt) the keys of one installed owner-proof app and write its override block. The app picks the
     keys up on its next start; nothing is restarted here."""
+    if not enabled(c.home):
+        raise ValueError("owner proof is off; complete follow-up 2 before enabling owner_proof_enabled")
     from .network import load_yaml, override_path
     root = Path(c.runtipi_root)
     d = root / "apps" / store / app_id

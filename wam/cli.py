@@ -12,10 +12,8 @@ Wizard additions:
   wam search [query]            search the index (apps.aiwizards.com)
   wam install <app>             install by id (plus the apps it `uses`), passwords generated + saved 0600
         [--set KEY=VALUE ...]   install-form values
-        [--allow-host-access]   no longer accepts anything by itself: an app that asks for host access (host
-                                networking, networks it does not own, privileged mode, the Docker socket, host folders,
-                                risky capabilities) is accepted only from the owner's own device in Wizard, which
-                                leaves a one-time grant that this command then uses (host_access_gate.py)
+        [--allow-host-access]   install an app that asks for host networking, networks it does not own,
+                                privileged mode or the Docker socket (also: wam app update <id> --allow-host-access)
   wam uninstall <id>            remove (backups are kept unless you delete them)
   wam apps [--json]             what is installed, with each app's MCP address (writes ~/.wizard-os/apps.json)
   wam slots [--json]            system app parking spots: which app fills each, which are empty
@@ -29,7 +27,7 @@ Wizard additions:
                                 access, and a live check of Docker's networks against the declarations
   wam network reconcile [--dry-run] [--json]   make the app networks match the declarations (idempotent)
   wam network off|on            rollback / redo app isolation (off: every app back on Runtipi's shared network)
-  wam network allow|deny <app>  let one app keep host access / networks it does not own (allow needs the owner's grant from their device), or stop
+  wam network allow|deny <app>  let one app keep host access / networks it does not own (the owner's call), or stop
   wam hermes status [--json]    host Hermes version vs the box's release pin
   wam hermes update [--json] [--dry-run] [--wait-quiet SECONDS]  explicit owner update, with backup and rollback
   wam alongside [--detect|--off] [--hermes-home DIR] [--shell-port N] [--share-history|--no-share-history]
@@ -165,7 +163,8 @@ def read_grants(c: Config, rt) -> list:
 
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
-    reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+    reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root,
+                                     owner_proof_enabled=_owner_proof_enabled(c.home))
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     if ext:
@@ -377,23 +376,29 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     info = (rt.app(urn) or {}).get("info") or {}   # the App Manager fetches and checks this one app now
     if not info:
         raise SystemExit(f"{app_id}: the App Manager could not fetch it from the index (see its logs)")
-    host = host_access_risks(c, app_id, "any", given)   # what the installer was GIVEN (--set) counts: it is what would run
+    host = host_access_risks(c, app_id, "any", given)
     from . import host_access_gate as _gate, network as _network
-    # Accepting host access is an owner-device action (host_access_gate.py): `allow_host_access` alone accepts
+    # With grants enabled, accepting host access is an owner-device action: `allow_host_access` alone accepts
     # nothing, so neither the flag nor any in-process caller (the Agent Service installs through this function) can.
     # an allowance already on file never opens an INSTALL: that list is a plain file, and a reinstall is a new
     # recipe the owner has not looked at. (It is still honoured at start-time enforcement for apps already running.)
-    needs_owner = bool(host)
+    gated = _gate.enabled(c.home)
+    needs_owner = gated and bool(host)
+    if not gated and host and not allow_host_access and app_id not in _network.host_access_allowed(c.home):
+        raise SystemExit(f"REFUSED: {app_id} asks for access that escapes app isolation:\n  - " + "\n  - ".join(host) +
+                         f"\nIt could reach every app and the server itself. Install it only if you trust it completely:\n"
+                         f"  wam install {app_id} --allow-host-access")
     rh = recipe_hash(c, app_id, "any", given) if needs_owner else ""
     if needs_owner and not _gate.valid(c.home, app_id, host, "install", rh):
         raise SystemExit(_gate.refusal(app_id, host))
     if host:
-        print(f"WARNING: {app_id} is installed WITH HOST ACCESS (owner allowed): " + "; ".join(host), file=sys.stderr)
+        label = "owner allowed" if gated else "owner flag"
+        print(f"WARNING: {app_id} is installed WITH HOST ACCESS ({label}): " + "; ".join(host), file=sys.stderr)
         if needs_owner:
             if not _gate.consume(c.home, app_id, host, "install", rh):
                 raise SystemExit(_gate.refusal(app_id, host))
             # the App Manager enforces the same allowance at every start (user-config/wizard-app-networks.json)
-            _network.set_host_access_allowed(c.home, app_id, True)
+        _network.set_host_access_allowed(c.home, app_id, True)
     form, missing = build_form(c, app_id, info, given or {}, uses=rec.get("uses") or [])
     if _form_base:
         form = {**form, **_form_base}
@@ -492,6 +497,11 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
                                     for k in ("created", "removed", "restarted", "pending_restart", "errors")})}
 
 
+def _owner_proof_enabled(home: Path) -> bool:
+    from . import owner_proof
+    return owner_proof.enabled(home)
+
+
 def _recipe_text(c: Config, app_id: str, where: str = "any") -> str | None:
     store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml"
     installed = c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"
@@ -509,7 +519,12 @@ def host_access_risks(c: Config, app_id: str, where: str = "any", values: dict |
     are not recipes and never count. An app's own release folder (read-only) and an agent app's own agent folder are not host access."""
     from . import network
     text = _recipe_text(c, app_id, where)
-    return network.host_access(text, app_id, STORE, runtipi_root=c.runtipi_root, values=values) if text is not None else []
+    from . import host_access_gate
+    if text is None:
+        return []
+    if host_access_gate.enabled(c.home):
+        return network.owner_host_access(text, app_id, STORE, runtipi_root=c.runtipi_root, values=values)
+    return network.host_access(text, app_id, STORE)
 
 
 def recipe_hash(c: Config, app_id: str, where: str = "any", values: dict | None = None) -> str:
@@ -2075,12 +2090,18 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         from . import network as _network
         from . import host_access_gate as _gate
         new = [r for r in host_access_risks(c, app, "store") if r not in set(host_access_risks(c, app, "installed"))]
-        rh = recipe_hash(c, app, "store") if new else ""
-        if new and not _gate.valid(c.home, app, new, "update", rh):    # an earlier allowance never covers new access
+        gated = _gate.enabled(c.home)
+        rh = recipe_hash(c, app, "store") if new and gated else ""
+        if not gated and new and not allow_host_access and app not in _network.host_access_allowed(c.home):
+            raise SystemExit(f"REFUSED: the update of {app} asks for access that escapes app isolation:\n  - " +
+                             "\n  - ".join(new) + f"\nNothing changed. Update it only if you trust it completely:\n"
+                             f"  wam app update {app} --allow-host-access")
+        if gated and new and not _gate.valid(c.home, app, new, "update", rh):
             raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
         if new:
-            print(f"WARNING: {app} is updated WITH HOST ACCESS (owner allowed): " + "; ".join(new), file=sys.stderr)
-            if not _gate.consume(c.home, app, new, "update", rh):
+            label = "owner allowed" if gated else "owner flag"
+            print(f"WARNING: {app} is updated WITH HOST ACCESS ({label}): " + "; ".join(new), file=sys.stderr)
+            if gated and not _gate.consume(c.home, app, new, "update", rh):
                 raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
             _network.set_host_access_allowed(c.home, app, True)
         # the override must match the recipe the update applies (a renamed/removed service would make Compose refuse it)
@@ -2263,7 +2284,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("search"); s.add_argument("query", nargs="?", default=""); s.add_argument("--json", action="store_true")
     i = sub.add_parser("install"); i.add_argument("app"); i.add_argument("--set", action="append", default=[]); i.add_argument("--no-wait", action="store_true")
     i.add_argument("--allow-host-access", action="store_true",
-                   help="use the owner's one-time host-access grant (given on the owner's device in Wizard); the flag alone accepts nothing")
+                   help="the owner accepts an app with host networking, privileged mode or the Docker socket")
     cn = sub.add_parser("connections", help="what each app can reach, the gateway path and a live network check")
     cn.add_argument("--json", action="store_true")
     nw = sub.add_parser("network", help="app-to-app networks: reconcile | status | off (rollback) | on | mode open|declared")
@@ -2416,9 +2437,10 @@ def main(argv: list[str] | None = None) -> int:
                     raise SystemExit(f"usage: wam network {args.action} <app>")
                 if args.action == "allow" and args.app not in network.host_access_allowed(c.home):
                     from . import host_access_gate as gate
-                    risks = host_access_risks(c, args.app, "installed")
-                    if not gate.consume(c.home, args.app, risks, "allow", recipe_hash(c, args.app, "installed")):
-                        raise SystemExit(gate.refusal(args.app, risks, "allow"))
+                    if gate.enabled(c.home):
+                        risks = host_access_risks(c, args.app, "installed")
+                        if not gate.consume(c.home, args.app, risks, "allow", recipe_hash(c, args.app, "installed")):
+                            raise SystemExit(gate.refusal(args.app, risks, "allow"))
                 network.set_host_access_allowed(c.home, args.app, args.action == "allow")
                 stopped = None
                 if args.action == "deny" and host_access_risks(c, args.app, "installed"):
@@ -2511,7 +2533,8 @@ def main(argv: list[str] | None = None) -> int:
             from . import links
             if args.dry_run:
                 rt = Runtipi.from_install(c.runtipi_root)  # no operator creation or registry writes on a dry run
-                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root)
+                reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root,
+                                     owner_proof_enabled=_owner_proof_enabled(c.home))
             else:
                 known = links.registry_addresses(c.home)   # before write_registry can replace them with loopback
                 reg = write_registry(c)

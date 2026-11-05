@@ -6,7 +6,8 @@ not own (wam/network.py host_access()). Before this gate `wam install --allow-ho
 --allow-host-access` and `wam network allow` accepted it from whoever could run `wam`, and agents can: the agent
 container has the `wam` command, and the Agent Service installs through wam in-process.
 
-Now the flag alone never accepts anything. Acceptance needs a GRANT, and a grant is written only by the App Manager's
+With owner_host_access_grants enabled, the flag alone accepts nothing. With it off, legacy main behaviour is
+unchanged, including the owner flag and stored allowances. Enabled acceptance needs a GRANT, written only by the App Manager's
 owner listener (cli.StoreHandler `POST /_host-access/<app>`) after it authenticated the request as the owner's own
 enrolled device (Tailscale identity, not this box, same origin, no bearer, owner_devices.Enrollment). A grant is:
   - MACed with a host-only key (`<wizard-os>/owner-proof/host-access.key`, 0600, never mounted into an app or agent

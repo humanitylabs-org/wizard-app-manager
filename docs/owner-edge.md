@@ -1,5 +1,18 @@
 # Owner edge (draft, not installed by default)
 
+Both switches in `app-manager.json` default off (absence also means off):
+
+- `owner_proof_enabled`: gates provisioning, edge serve, registry metadata and routing. **Do not enable until spec
+  follow-up 2 (trusted stable-ID owner enrollment) is complete.**
+- `owner_host_access_grants`: gates enhanced risk detection and grant enforcement in install/update/network allow.
+  **Do not enable until spec follow-ups 2, 5, 6, 7, 8, 9 and 10 are complete.**
+
+Off means main-compatible behaviour, not deny-all: the existing `--allow-host-access` path, stored allowances,
+network policy and recipe mount handling remain unchanged, including Connection Router. The listener refuses
+`grants_off`, creates no key, and no edge/provisioning/lifecycle/migration is activated by merging this code.
+
+The following commands/routing description applies only after the corresponding switch is enabled.
+
 Spec: wizard-os `spec/OWNER_PROOF.md` (Decision #106, proposed). Code: `wam/owner_edge.py`, `wam/owner_proof.py`.
 
 Apps that declare `owner_proof` in `wizard.md` get passphrase-free owner access: the edge authenticates the owner

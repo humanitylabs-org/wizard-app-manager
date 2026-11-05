@@ -193,7 +193,8 @@ def short_home():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def test_owner_proof_app_is_published_through_its_edge_socket(short_home, fake_tailscale):
+def test_owner_proof_app_is_published_through_its_edge_socket(short_home, fake_tailscale, monkeypatch):
+    monkeypatch.setattr(op, "enabled", lambda home: True)
     calls, _ = fake_tailscale
     home = short_home
     sock_path = op.socket_path(home, "messenger")
@@ -210,7 +211,8 @@ def test_owner_proof_app_is_published_through_its_edge_socket(short_home, fake_t
     assert "messenger" not in res["errors"]
 
 
-def test_without_the_edge_an_owner_proof_app_keeps_its_previous_wizard_path(tmp_path, fake_tailscale):
+def test_without_the_edge_an_owner_proof_app_keeps_its_previous_wizard_path(tmp_path, fake_tailscale, monkeypatch):
+    monkeypatch.setattr(op, "enabled", lambda home: True)
     calls, _ = fake_tailscale
     home = tmp_path / "home"
     home.mkdir()

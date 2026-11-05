@@ -418,6 +418,8 @@ def apps_from_registry(home: Path) -> dict[str, dict]:
 def run(home: Path, stop: threading.Event | None = None, every: float = 10.0, peer_check=tailscaled_peer,
         identity: Identity | None = None) -> None:
     """Serve every owner-proof app; follow installs, removals and port changes from apps.json."""
+    if not op.enabled(home):
+        raise ValueError("owner proof is off; complete follow-up 2 before enabling owner_proof_enabled")
     stop = stop or threading.Event()
     identity = identity or Identity(home)
     devices = owner_devices.Enrollment(home)
