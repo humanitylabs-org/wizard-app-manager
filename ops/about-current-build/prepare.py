@@ -6,10 +6,23 @@ from pathlib import Path
 def sha(b): return hashlib.sha256(b).hexdigest()
 def cmd(a): return subprocess.check_output(a,timeout=60).decode().strip()
 
-def prepare(root,home,revision):
+def served(home):
+    """Discover actual serving locators before choosing an immutable baseline."""
+    current=home/'.local/share/wizard-ux/current'
+    pid=int(cmd(['systemctl','--user','show','wizard-mobile.service','-p','MainPID','--value']))
+    env=dict(x.split('=',1) for x in Path('/proc',str(pid),'environ').read_bytes().decode().split('\0') if '=' in x)
+    ux=Path(env['WIZARD_UX_DIR']); web=ux.resolve(strict=True)
+    shell=json.loads(subprocess.check_output(['docker','inspect','wizard-interface-candidate'],timeout=20))[0]
+    static=next(m for m in shell['Mounts'] if m['Destination']=='/usr/share/nginx/wizard-ux')
+    assert not static['RW'] and Path(static['Source']).resolve(strict=True)==web,'Service/static served-source split; no mutation'
+    release=web.parent
+    assert web.name=='web' and current.resolve(strict=True)==release,'current is not the actual served release'
+    return release,{'service_env_path':str(ux),'service_resolved_web':str(web),'static_source':static['Source'],'static_destination':static['Destination'],'static_readonly':True,'current_locator':str(current)},pid,shell
+
+def prepare(root,home,revision,reuse=None):
     root.mkdir(parents=True,exist_ok=True)
     assert not (root/'manifest.json').exists(), 'one-shot preparation root'
-    current=home/'.local/share/wizard-ux/current'; release=current.resolve()
+    current=home/'.local/share/wizard-ux/current'; release,locators,active,mounts=served(home)
     commit=(release/'RELEASE_SHA').read_text().strip()
     assert re.fullmatch('[0-9a-f]{40}',commit)
     repo=Path((release/'SOURCE_REPO').read_text().strip())
@@ -35,7 +48,7 @@ def prepare(root,home,revision):
     subprocess.run(['sh','-c',generation],env={**os.environ,'WIZARD_UX_COMMIT':commit},check=True,capture_output=True,timeout=5)
     assert json.loads((carrier/'build.json').read_text())=={'commit':commit}
     here=Path(__file__).resolve().parent
-    for n in ['metadata.Caddyfile','prepare.py','activate.py','forum_qa.py','browser.cjs','security_map.py','stage_dependencies.py']:
+    for n in ['metadata.Caddyfile','prepare.py','activate.py','forum_qa.py','browser.cjs','security_map.py','stage_dependencies.py','refresh.py']:
         shutil.copyfile(here/n,root/n)
     source=root/'source';source.mkdir();(source/'web.tar').write_bytes(archive)
     for n in ['qa-proof-fixture.cjs','qa-synthetic-fence.cjs','qa-playwright.cjs']:
@@ -76,16 +89,17 @@ def prepare(root,home,revision):
         validation.append({'name':n,'returncode':p.returncode,'stdout_sha256':sha(p.stdout),'stderr_sha256':sha(p.stderr)})
         assert p.returncode==0,'redacted Caddy validation failed '+n
     shutil.copyfile(binary,root/'caddy-private-gateway');os.chmod(root/'caddy-private-gateway',0o755)
-    mounts=json.loads(subprocess.check_output(['docker','inspect','wizard-interface-candidate'],timeout=20))[0]
-    static=next(m for m in mounts['Mounts'] if m['Destination']=='/usr/share/nginx/wizard-ux')
-    assert Path(static['Source']).resolve()==release/'web' and not static['RW']
-    active=int(cmd(['systemctl','--user','show','wizard-mobile.service','-p','MainPID','--value']))
-    service_env=dict(x.split('=',1) for x in Path('/proc',str(active),'environ').read_bytes().decode().split('\0') if '=' in x)
-    assert Path(service_env['WIZARD_UX_DIR']).resolve()==release/'web'
+    final,final_locators,final_active,final_mounts=served(home)
+    assert (final,final_locators,final_active,final_mounts['Id'])==(release,locators,active,mounts['Id']),'served source moved during preparation'
     receipt={'commit':commit,'web_tree':tree,'current':str(release),'source_repo':str(repo),'checkout_head':cmd(['git','-C',str(repo),'rev-parse','HEAD']),'checkout_tracked_dirty':bool(cmd(['git','-C',str(repo),'status','--porcelain','--untracked-files=no'])),'all_tracked_web_equal':True,'web_files':files,'web_modes':modes,'generator':{'source':'Dockerfile','blob':cmd(['git','-C',str(repo),'rev-parse',commit+':Dockerfile']),'line_sha256':sha(line.encode()),'output_sha256':sha((carrier/'build.json').read_bytes())},'validation':validation,'controls':{k:{'path':str(p),'sha256':sha(p.read_bytes()),'mode':p.stat().st_mode&511} for k,p in controls.items()},'gateway_pid':pid,'gateway_binary_sha256':sha(binary.read_bytes()),'shell_container':{k:mounts[k] for k in ['Id','Image']},'service_pid':active,'my_release_unmodified_absent':True,'generated_runtime_extras':'not opened, inventoried for contents, copied, or changed'}
     (root/'provenance.json').write_text(json.dumps(receipt,indent=2)+'\n')
     receipt['wam_module']={'source':str(wam_source),'sha256':sha((source/'main_compare.py').read_bytes()),'api_pid':wam_pid}
     receipt['caddy_imports']=imports
+    receipt['serving_locators']=locators
+    if reuse:
+        old=json.loads((reuse/'provenance.json').read_text())
+        prior=old['web_files']
+        receipt['refresh']={'prior_capsule':str(reuse),'prior_commit':old['commit'],'unchanged_web_blobs':sum(prior.get(n)==h for n,h in files.items()),'changed_or_added_web_blobs':[n for n,h in files.items() if prior.get(n)!=h],'removed_web_blobs':sorted(set(prior)-set(files)),'prior_capsule_unmodified':True,'full_runtime_acceptance_reused':False}
     assert all(sha(Path(p).read_bytes())==h for p,h in imports.items()),'gateway import drift during preparation'
     (root/'provenance.json').write_text(json.dumps(receipt,indent=2)+'\n')
     inputs={str(p.relative_to(root)):sha(p.read_bytes()) for p in root.rglob('*') if p.is_file()}
@@ -98,4 +112,4 @@ def prepare(root,home,revision):
     (root/'parent-heavy-specs.json').write_text(json.dumps(specs,indent=2)+'\n')
     print(json.dumps({'prepared':True,'commit':commit,'web_tree':tree,'all_tracked_web_equal':len(files),'carrier':str(carrier),'worker':worker,'parent_specs':str(root/'parent-heavy-specs.json'),'validation':validation}))
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--home',type=Path,default=Path.home());p.add_argument('--revision',default='r1');a=p.parse_args();assert re.fullmatch('r[1-9][0-9]*',a.revision);prepare(a.root,a.home,a.revision)
+    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--home',type=Path,default=Path.home());p.add_argument('--revision',default='r1');p.add_argument('--reuse',type=Path);a=p.parse_args();assert re.fullmatch('r[1-9][0-9]*',a.revision);prepare(a.root,a.home,a.revision,a.reuse)

@@ -24,6 +24,11 @@ def state(d):
     assert sha((home/'.local/bin/caddy-private-gateway').read_bytes())==d['gateway_binary_sha256']
     shell=json.loads(subprocess.check_output(['docker','inspect','wizard-interface-candidate'],timeout=20))[0]
     assert {k:shell[k] for k in ['Id','Image']}==d['shell_container'],'serving shell changed'
+    env=dict(x.split('=',1) for x in Path('/proc',str(d['service_pid']),'environ').read_bytes().decode().split('\0') if '=' in x)
+    loc=d['serving_locators']
+    assert env['WIZARD_UX_DIR']==loc['service_env_path'] and Path(env['WIZARD_UX_DIR']).resolve(strict=True)==Path(loc['service_resolved_web']),'effective Service source changed'
+    mount=next(m for m in shell['Mounts'] if m['Destination']==loc['static_destination'])
+    assert not mount['RW'] and mount['Source']==loc['static_source'] and Path(mount['Source']).resolve(strict=True)==Path(loc['service_resolved_web']),'actual static bind changed'
     assert all(sha((Path(d['current'])/'web'/n).read_bytes())==h for n,h in d['web_files'].items()),'immutable served bytes changed'
     return home
 
