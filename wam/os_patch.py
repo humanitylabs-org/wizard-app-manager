@@ -446,7 +446,7 @@ def native(on, rel = None):
 # Quiet restart privilege boundary: no caller-selected unit outside needrestart's fresh list.
 PLATFORM_UNITS = ("user@", "systemd-", "docker", "containerd", "podman", "tailscale", "ssh", "dbus", "NetworkManager",
                   "network", "wg-quick@", "cloudflared", "zerotier", "netbird", "k3s", "kubelet", "crio", "libvirt",
-                  "polkit", "getty@", "serial-getty@")
+                  "polkit", "getty@", "serial-getty@", "openvpn", "firewalld", "nftables", "ufw", "netfilter-persistent")
 SERVICE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_@:.-]*\.service\Z")
 
 

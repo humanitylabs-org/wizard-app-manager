@@ -173,3 +173,38 @@ def test_restore_started_during_wait_blocks_os_apply(tmp_path, monkeypatch):
         return []
     monkeypatch.setattr(m, "call_helper", lambda *a, **k: (_ for _ in ()).throw(AssertionError("apply after restore")))
     assert m.os_step("patch", tmp_path, wait=0, is_busy=probe, sleep=lambda s: None)["state"] == "deferred"
+
+
+def test_busy_native_off_does_not_save_patch_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "call_helper", lambda *a, **k: {"state": "deferred", "reason": "other helper"})
+    assert m.set_os_security("patch", tmp_path, unit_dir=tmp_path / "units", systemctl=False).get("error")
+    assert m.settings(tmp_path)["os_security"] == "check"
+
+
+def test_restart_lane_deferred_snapshot_is_not_current(tmp_path, monkeypatch):
+    from wam import quiet_restart as qr
+    monkeypatch.setattr(m, "restore_paused", lambda h: False)
+    monkeypatch.setattr(m, "wait_quiet", lambda *a, **k: [])
+    m._save(tmp_path / "maintenance.json", {"quiet_restarts": "auto"})
+    monkeypatch.setattr(m, "call_helper", lambda *a, **k: {"state": "deferred", "reason": "helper busy", "services": []})
+    monkeypatch.setattr(qr, "reconcile", lambda *a: {"state": "none"})
+    out = qr.run(tmp_path, {"state": "current"}, lambda *a, **k: None, 0, lambda: [], lambda s: None)
+    assert out["services"]["state"] == "deferred"
+
+
+def test_sudo_owner_write_drops_to_invoking_account_before_touching_files(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("SUDO_USER", "alice")
+    monkeypatch.setattr(m.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(m.pwd, "getpwnam", lambda n: type("A", (), {"pw_uid": 1234, "pw_gid": 2345, "pw_dir": str(tmp_path)})())
+    monkeypatch.setattr(m.os, "fork", lambda: 0)
+    monkeypatch.setattr(m.os, "setgroups", lambda g: calls.append("groups"))
+    monkeypatch.setattr(m.os, "setgid", lambda g: calls.append("gid"))
+    monkeypatch.setattr(m.os, "setuid", lambda u: calls.append("uid"))
+    monkeypatch.setattr(m, "_save", lambda path, cfg: calls.append("save"))
+    monkeypatch.setattr(m.os, "_exit", lambda c: (_ for _ in ()).throw(SystemExit(c)))
+    try:
+        m._save_owner_settings({"x": 1})
+    except SystemExit as e:
+        assert e.code == 0
+    assert calls == ["groups", "gid", "uid", "save"]

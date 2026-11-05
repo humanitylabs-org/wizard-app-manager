@@ -198,16 +198,28 @@ def _owner_home() -> Path:
 
 
 def _save_owner_settings(cfg: dict) -> None:
+    """Under sudo, write as the invoking account so a planted symlink cannot steer root writes."""
     path = _owner_home() / "maintenance.json"
-    _save(path, cfg)
     user = os.environ.get("SUDO_USER")
-    if os.geteuid() == 0 and user:
+    if os.geteuid() != 0 or not user:
+        _save(path, cfg)
+        return
+    try:
+        account = pwd.getpwnam(user)
+    except KeyError:
+        return
+    pid = os.fork()
+    if pid == 0:
+        code = 1
         try:
-            account = pwd.getpwnam(user)
-            os.chown(path, account.pw_uid, account.pw_gid)
-            os.chown(path.parent, account.pw_uid, account.pw_gid)
-        except (KeyError, OSError):
-            pass
+            os.setgroups([])
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+            _save(path, cfg)
+            code = 0
+        finally:
+            os._exit(code)
+    os.waitpid(pid, 0)
 
 
 def setup(runner=subprocess.run, user: str | None = None, lane: bool = False, installer: bool = False) -> dict:
@@ -290,6 +302,12 @@ def remove(runner=subprocess.run) -> dict:
     p = runner(argv,
                capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
+        try:
+            busy = json.loads(p.stdout or "{}")
+        except ValueError:
+            busy = {}
+        if isinstance(busy, dict) and busy.get("state") == "busy":
+            return {"helper": helper_state(), "changed": False, "state": "deferred", "reason": busy.get("reason", "Helper busy.")}
         return {"helper": helper_state(), "changed": False, "state": "needs_root_once",
                 "reason": (p.stderr or p.stdout).strip()[-300:] or "sudo needs a password",
                 "command": f"sudo {shutil.which('wam') or 'wam'} maintain remove"}
@@ -353,7 +371,7 @@ def set_os_security(mode: str, home: Path | None = None, runner=subprocess.run, 
     if mode not in MODES:
         return {"error": f"os-security must be one of {', '.join(MODES)}"}
     native = call_helper(["native-off" if mode == "patch" else "native-on"], runner)
-    if native.get("state") in ("refused", "error", "needs_root_once", "busy") and (
+    if native.get("state") in ("refused", "error", "needs_root_once", "busy", "deferred") and (
             mode == "patch" or settings(home)["os_security"] == "patch"):
         return {"error": "Cannot safely change the native updater until the root helper is repaired.", "helper": native}
     s = settings(home)
@@ -535,7 +553,7 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
                 if os_res.get("helper_may_be_running"):
                     return ["The root helper may still be running after a timeout."]
                 reasons = list((is_busy or (lambda: busy_reasons(h)))())
-                if up.get("state") == "started" or updates.installing(h):
+                if updates.installing(h):
                     reasons.append("A Wizard OS installer is running.")
                 return reasons
             restarts = qr.safe_step(qr.run, h, os_res, runner, wait, restart_probe, sleep)

@@ -75,7 +75,7 @@ def run(home: Path, os_result: dict, runner, wait: float, is_busy, sleep) -> dic
         snapshot = inspect()
     out["services"]["pending"] = snapshot.get("services", [])
     if cfg["quiet_restarts"] == "auto":
-        if snapshot.get("state") in BAD + ("report_only",):
+        if snapshot.get("state") in BAD + ("report_only", "deferred"):
             out["services"] = {**snapshot, "available": False}
         else:
             results = [safe_step(act, ["restart-service", name]) for name in snapshot.get("services", [])]
@@ -83,7 +83,7 @@ def run(home: Path, os_result: dict, runner, wait: float, is_busy, sleep) -> dic
                      "deferred" if any(r.get("state") == "deferred" for r in results) else
                      "pending" if any(r.get("state") == "report_only" for r in results) else "current")
             out["services"].update(state=state, results=results)
-    elif snapshot.get("state") in BAD + ("report_only",):
+    elif snapshot.get("state") in BAD + ("report_only", "deferred"):
         out["services"].update(state=snapshot["state"], reason=snapshot.get("reason", ""), available=False)
 
     snapshot = inspect() if any(cfg[k] != "off" for k in ("quiet_restarts", "held_platform")) else snapshot
