@@ -87,6 +87,8 @@ def test_root_helper_uses_isolated_fixed_interpreter():
 
 
 def test_helper_rejects_repeated_or_extra_check_arguments(monkeypatch):
+    # Argument validation does not need the real root lock or environment boundary.
+    monkeypatch.setattr(os_patch.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(os_patch, "check", lambda **kw: pytest.fail("invalid args reached check"))
     assert os_patch.main(["check", "--refresh", "--refresh"]) == 2
     assert os_patch.main(["check", "--refresh", "--anything"]) == 2

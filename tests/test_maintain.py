@@ -257,16 +257,22 @@ def test_remove_deletes_only_the_helper_and_its_sudoers_rule(monkeypatch, tmp_pa
     seen = {}
     def runner(argv, **k):
         seen["argv"] = argv
-        helper.unlink()
+        for path in (helper, sudoers, lane):
+            path.unlink()
         return subprocess.CompletedProcess(argv, 0, "", "")
-    helper, sudoers = tmp_path / "os-patch", tmp_path / "sudoers.d-wizard"
-    helper.write_text("x")
+    helper, sudoers, lane = (tmp_path / name for name in ("os-patch", "sudoers.d-wizard", "restart-lane"))
+    unrelated = tmp_path / "unrelated"
+    for path in (helper, sudoers, lane, unrelated):
+        path.write_text("x")
     monkeypatch.setattr(maintain, "HELPER", helper)
     monkeypatch.setattr(maintain, "SUDOERS", sudoers)
+    monkeypatch.setattr(maintain, "LANE", lane)
     monkeypatch.setattr(maintain.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(maintain, "helper_state", lambda: "ready")
     assert maintain.remove(runner)["changed"]
     assert seen["argv"] == ["sudo", "-n", str(helper), "remove"]
+    assert all(not path.exists() for path in (helper, sudoers, lane))
+    assert unrelated.read_text() == "x"
     assert maintain.remove(runner) == {"helper": "missing", "changed": False}
 
 

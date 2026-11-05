@@ -59,11 +59,32 @@ def test_restart_opt_in_requires_attended_lane(tmp_path, monkeypatch):
     assert m.settings(tmp_path)["quiet_reboot"] == "off"
 
 
-def test_root_helper_refuses_lane_actions_without_root_owned_lane(monkeypatch, capsys):
-    monkeypatch.setattr(op.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(op, "lane_enabled", lambda: False)
-    monkeypatch.setattr(op, "schedule_reboot", lambda: (_ for _ in ()).throw(AssertionError("must not reboot")))
-    assert op._main(["reboot"]) == 1
+def test_root_helper_refuses_lane_actions_without_root_owned_lane(monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    # _main deliberately clears the root process environment. Run that boundary in a
+    # disposable child, not pytest itself: otherwise HOME=/root and the fixed PATH
+    # leak into later Config() and Node tests, and erase fixture-managed variables.
+    monkeypatch.setenv("WAM_TEST_PARENT_ENV", "must survive")
+    before = dict(os.environ)
+    code = """
+import os
+from wam import os_patch as op
+op.os.geteuid = lambda: 0
+op.lane_enabled = lambda: False
+op.schedule_reboot = lambda: (_ for _ in ()).throw(AssertionError("must not reboot"))
+assert op._main(["reboot"]) == 1
+assert dict(os.environ) == {
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C", "LANG": "C"
+}
+"""
+    done = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["state"] == "refused"
+    assert dict(os.environ) == before
 
 
 def test_direct_helper_calls_share_one_non_blocking_root_lease(tmp_path, monkeypatch, capsys):
