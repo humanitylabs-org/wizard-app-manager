@@ -202,8 +202,8 @@ export class AppFilesManager {
     return 'private_data' in content && content.private_data === true;
   }
 
-  public async setAppDataDirPermissions(appUrn: AppUrn, preservePermissions = false) {
-    if (preservePermissions || (await this.hasPrivateData(appUrn))) return;
+  public async setAppDataDirPermissions(appUrn: AppUrn) {
+    if (await this.hasPrivateData(appUrn)) return;
     const { appDataDir } = this.getAppPaths(appUrn);
 
     await execFileAsync('chmod', ['-Rf', 'a+rwx', appDataDir]).catch(() => {

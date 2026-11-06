@@ -71,7 +71,7 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
   const { InstallAppCommand } = load('modules/app-lifecycle/commands/install-app-command');
   const { UpdateAppCommand } = load('modules/app-lifecycle/commands/update-app-command');
   const dirs = { dataDir: root, appDataDir: path.join(root, 'app-data') };
-  const configuration = { getConfig: () => ({ directories: dirs }), get: (key) => key === 'directories' ? dirs : 'amd64' };
+  const configuration = { getConfig: () => ({ directories: dirs }), get: (key) => key === 'directories' ? dirs : key === 'userSettings' ? { maxBackups: 5 } : 'amd64' };
   const filesystem = new FilesystemService(logger);
   filesystem.createTempDirectory = () => fs.promises.mkdtemp(path.join(root, 'staging-'));
   const manager = new AppFilesManager(configuration, filesystem, logger);
@@ -91,7 +91,10 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
   const modes = async () => [(await fs.promises.stat(path.dirname(secret))).mode & 0o777, (await fs.promises.stat(secret)).mode & 0o777];
   const backup = new BackupManager(new ArchiveService(logger), logger, configuration, filesystem, manager);
   const backups = [];
-  const backupService = { backupApp: async (...args) => { backups.push(await modes()); return backup.backupApp(...args); } };
+  const backupService = {
+    backupApp: async (...args) => { backups.push(await modes()); return backup.backupApp(...args); },
+    cleanupOldBackups: (...args) => backup.cleanupOldBackups(...args),
+  };
   const operations = [];
   let failUp = false;
   const dockerService = {
@@ -112,6 +115,7 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
     'core/logger/logger.service': ['LoggerService', logger],
     'modules/docker/docker.service': ['DockerService', dockerService],
     'modules/apps/app.helpers': ['AppHelpers', appHelpers],
+    'modules/apps/apps.repository': ['AppsRepository', { getAppByUrn: async () => ({ id: 1, subnet: '10.0.0.0/24', maxBackups: 5 }), updateAppById: async () => {} }],
     'modules/marketplace/marketplace.service': ['MarketplaceService', marketplace],
     'modules/env/env.utils': ['EnvUtils', { envStringToMap: () => new Map() }],
     'modules/network/subnet-manager.service': ['SubnetManagerService', { allocateSubnet: async () => '10.0.0.0/24' }],
@@ -120,20 +124,22 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
   const moduleRef = { get: (key) => { assert.ok(services.has(key), 'unexpected DI dependency'); return services.get(key); } };
   const docker = { pruneContainers: async () => ({ ContainersDeleted: [], SpaceReclaimed: 0 }) };
   const install = new InstallAppCommand(moduleRef, docker);
-  const update = new UpdateAppCommand(moduleRef, docker, { status: 'running' });
+  const update = new UpdateAppCommand(moduleRef, docker, true, true);
   return { root, paths, modes, manager, backups, install, update, failNextUp: () => { failUp = true; } };
 }
 
 test('private install preserves init-owned 0700/0600 after compose up', async (t) => {
   const f = await fixture(t, true, true);
-  assert.equal((await f.install.execute(urn, {})).success, true);
+  const result = await f.install.execute(urn, {});
+  assert.equal(result.success, true, result.message);
   assert.deepEqual(await f.modes(), [0o700, 0o600]);
 });
 
 for (const [name, oldPolicy, nextPolicy] of [['existing opt-in', true, true], ['first opt-in', undefined, true], ['old opt-in cannot be removed in-flight', true, false]]) {
   test(`private update and its real archive preserve 0700/0600: ${name}`, async (t) => {
     const f = await fixture(t, oldPolicy, nextPolicy);
-    assert.equal((await f.update.execute(urn, {})).success, true);
+    const result = await f.update.execute(urn, {});
+    assert.equal(result.success, true, result.message);
     assert.deepEqual(f.backups, [[0o700, 0o600]]);
     assert.deepEqual(await f.modes(), [0o700, 0o600]);
     const backupDir = path.join(f.root, 'backups/store/demo');
