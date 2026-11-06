@@ -171,6 +171,7 @@ def test_old_needrestart_is_not_run_as_root(monkeypatch):
             P2 = type("P2", (), {"returncode": 0, "stdout": "running", "stderr": ""})
             return P2()
         raise AssertionError("old needrestart executed")
+    monkeypatch.setattr(op, "os_release", lambda: {"ID": "unknown", "VERSION_ID": "12"})
     monkeypatch.setattr(op, "run", fake)
     assert op.restart_check()["state"] == "report_only"
 

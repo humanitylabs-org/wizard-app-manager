@@ -450,6 +450,42 @@ PLATFORM_UNITS = ("user@", "systemd-", "docker", "containerd", "podman", "tailsc
 SERVICE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_@:.-]*\.service\Z")
 
 
+def needrestart_supported():
+    """Allow upstream fixes or explicitly known security backports; never guess from ID_LIKE."""
+    try:
+        ver = run(["needrestart", "--version"], timeout=30)
+        found = re.search(r"needrestart\s+([0-9]+)\.([0-9]+)", (ver.stdout or "") + (ver.stderr or ""))
+        if ver.returncode != 0 or not found:
+            return False
+        if (int(found[1]), int(found[2])) >= (3, 8):
+            return True
+        rel = os_release()
+        # USN-7117-1; DSA-5815-1 and DSA-5816-1. Both packages are required:
+        # needrestart fixes CVE-2024-48990/48991/48992/11003; ScanDeps fixes 10224.
+        # Exact revision families exclude epochs, pre-releases and unknown local builds.
+        floors = {
+            ("ubuntu", "24.04"): ((r"3\.6-7ubuntu4\.[0-9]+", "3.6-7ubuntu4.3"),
+                                  (r"1\.35-1ubuntu0\.24\.04\.[0-9]+", "1.35-1ubuntu0.24.04.1")),
+            ("debian", "12"): ((r"3\.6-4\+deb12u[0-9]+", "3.6-4+deb12u2"),
+                                (r"1\.31-2\+deb12u[0-9]+", "1.31-2+deb12u1")),
+        }.get((rel.get("ID"), rel.get("VERSION_ID")))
+        if not floors or (int(found[1]), int(found[2])) != (3, 6):
+            return False
+        for package, (pattern, minimum) in zip(("needrestart", "libmodule-scandeps-perl"), floors):
+            p = run(["dpkg-query", "-W", "-f=${Status}\t${Version}\n", package], timeout=30)
+            fields = p.stdout.rstrip("\n").split("\t")
+            if p.returncode != 0 or len(fields) != 2 or fields[0] != "install ok installed":
+                return False
+            version = fields[1]
+            if not re.fullmatch(pattern, version):
+                return False
+            if run(["dpkg", "--compare-versions", version, "ge", minimum], timeout=30).returncode != 0:
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def restart_check():
     b = detect()
     doc = {"boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
@@ -460,10 +496,8 @@ def restart_check():
     doc["system_state"] = p.stdout.strip()
     if not shutil.which("needrestart"):
         return dict(doc, state="report_only", reason="needrestart is not installed; no services will be restarted.")
-    ver = run(["needrestart", "--version"], timeout=30)
-    found = re.search(r"needrestart\s+([0-9]+)\.([0-9]+)", (ver.stdout or "") + (ver.stderr or ""))
-    if not found or (int(found[1]), int(found[2])) < (3, 8):
-        return dict(doc, state="report_only", reason="needrestart 3.8 or newer is required before it runs as root.")
+    if not needrestart_supported():
+        return dict(doc, state="report_only", reason="needrestart requires upstream 3.8+ or a verified Debian 12 / Ubuntu 24.04 security backport (including ScanDeps).")
     p = run(["needrestart", "-b", "-r", "l"], timeout=180)
     if p.returncode != 0:
         return dict(doc, state="error", reason=(p.stderr or p.stdout)[-600:])
