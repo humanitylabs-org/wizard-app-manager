@@ -211,6 +211,13 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
         rule('Chats module admission', True)
     except (ValueError, OSError, UnicodeError) as e:
         rule('Chats module admission', False, str(e))
+    if "owner_proof" in d:
+        from . import owner_proof
+        try:
+            owner_proof.parse(d)
+            rule("owner_proof valid", True)
+        except ValueError as e:
+            rule("owner_proof valid", False, str(e))
     rule("spec version known", d.get("wizard") in SPECS, str(d.get("wizard")))
     rule("id valid", bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(d.get("id", "")))), str(d.get("id")))
     t = d.get("type")

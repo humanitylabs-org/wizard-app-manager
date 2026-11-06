@@ -336,6 +336,8 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                 if route_status(serve_status(), ts["host"], publish_port, path, target) != "match":
                     raise ValueError("Serve route readback did not match requested private proxy")
 
+        from . import owner_proof
+        proofs = owner_proof.declared(reg) if owner_proof.enabled(home) else {}
         for r in rows:
             if shell_away and keep_previous(r, "shell restarting"):
                 continue
@@ -350,6 +352,14 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
             port = int(shell_port or r["port"]) if g else int(r["port"])
             path = g["path"] if g else "/"
             target = f"http://127.0.0.1:{r['port']}" + (g["path"] if g and not g["strip"] else "")
+            if g and r["id"] in proofs:
+                # Same rule as the implicit Wizard path below: through the owner edge, or left as it was.
+                edge = owner_proof.edge_target(home, r["id"])
+                if edge is None or not g["strip"]:
+                    result["errors"][r["id"]] = "owner edge not running; Wizard path left as it was"
+                    keep_previous(r, "owner edge unavailable")
+                    continue
+                target = edge
             if apply:
                 try:
                     publish_ports = gateway_shell_ports(serve_status(), ts["host"], port) if g else [port]
@@ -375,6 +385,17 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                 # its own port too. A different route already on the shell's own port means the app keeps opening
                 # at its own address, exactly as before; other shell aliases are best effort.
                 itarget = f"http://127.0.0.1:{r['port']}" + ("" if implicit["strip"] else implicit["path"])
+                if r["id"] in proofs:
+                    # Owner-proof app (owner_proof.py): its Wizard path goes through the owner edge, which
+                    # authenticates the owner and signs each request. Without a live edge socket it is NOT
+                    # downgraded to its raw port (the app would refuse every owner request there): the previous
+                    # address is kept and the reason is reported.
+                    edge = owner_proof.edge_target(home, r["id"])
+                    if edge is None or not implicit["strip"]:
+                        result["errors"][r["id"]] = "owner edge not running; Wizard path left as it was"
+                        keep_previous(r, "owner edge unavailable")   # else unpublished until the edge is up
+                        continue
+                    itarget = edge
                 if apply:
                     try:
                         iports = gateway_shell_ports(serve_status(), ts["host"], int(shell_port))
@@ -398,7 +419,8 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
             if implicit:
                 result["links"].append({**r, "url": f"https://{ts['host']}:{shell_port}{implicit['path']}",
                                         "open": implicit["path"], "gateway_strip": implicit["strip"],
-                                        "gateway_implicit": True, "own": f"https://{ts['host']}:{r['port']}{r['path']}"})
+                                        "gateway_implicit": True, "own": f"https://{ts['host']}:{r['port']}{r['path']}",
+                                        **({"owner_proof": "edge"} if r["id"] in proofs else {})})
                 continue
             url = f"https://{ts['host']}:{port}{g['path'] if g else r['path']}"
             result["links"].append({**r, "url": url, "open": g["path"] if g else url,
