@@ -202,13 +202,13 @@ PORT = 7791
 # trusts, so that gate can never admit it, and it stays exactly as it is. The gateway reaches Store Get through this
 # second listener instead. It admits a request only when ALL hold:
 #   - it carries the gateway's own proof header, equal to a secret file only the gateway and this service read
-#     (`<wizard home>/store-gateway-proof`, 0600). The gateway sets the header itself after its verified-owner check
+#     (`<wizard home>/owner-proof/store-gateway-proof`, 0600). The gateway sets the header itself after its verified-owner check
 #     and strips any client copy, so a browser, an app container or an agent cannot supply it;
 #   - the app path is a plain app id (no `_` control paths: updates, removals, connections stay on :7791);
 #   - then the same owner / other-device / origin / JSON / catalog checks as :7791 (check_request, start).
 # No proof file, no listener.
 GATEWAY_PORT = 7792
-GATEWAY_PROOF_FILE = "store-gateway-proof"
+GATEWAY_PROOF_FILE = "owner-proof/store-gateway-proof"   # beside the host-access key: never mounted into an app or agent
 
 
 def gateway_proof(home) -> str:

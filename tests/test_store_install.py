@@ -177,6 +177,7 @@ def _gateway(monkeypatch, tmp_path, proof=PROOF):
     from http.server import ThreadingHTTPServer
     from wam import cli
     if proof:
+        (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(exist_ok=True)
         (tmp_path / si.GATEWAY_PROOF_FILE).write_text(proof + "\n")
     (tmp_path / "settings.json").write_text(_j.dumps({"network": {"base_url": "https://box.tail1.ts.net"}}))
     monkeypatch.setattr(si, "owner_login", lambda: "owner@x.com")
@@ -238,6 +239,7 @@ def test_gateway_listener_starts_an_install_for_the_owner_on_another_device(monk
 
 def test_gateway_proof_is_off_without_a_long_secret_and_origins_come_from_settings(tmp_path):
     assert si.gateway_proof(tmp_path) == ""
+    (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(exist_ok=True)
     (tmp_path / si.GATEWAY_PROOF_FILE).write_text("short\n")
     assert si.gateway_proof(tmp_path) == "" and not si.gateway_proof_ok({"X-Wizard-Store-Proof": "short"}, tmp_path)
     (tmp_path / si.GATEWAY_PROOF_FILE).write_text(PROOF + "\n")
