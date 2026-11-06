@@ -384,13 +384,6 @@ export async function reconcileAppGrants(
   save: (file: Grants) => Promise<void>,
   exclude?: string,
 ) {
-  // A settled update must not rewrite grant state, rotate keys or touch registry mirrors.
-  let saved = JSON.stringify(file);
-  const saveChanged = async () => {
-    if (JSON.stringify(file) === saved) return;
-    await save(file);
-    saved = JSON.stringify(file);
-  };
   const prepareDirectory = async (app: App, relative: string, mode: number) => {
     const dir = path.join(app.data, relative);
     const existed = await fs.lstat(dir).catch((e) => {
@@ -571,10 +564,10 @@ export async function reconcileAppGrants(
     ]),
   );
   file.layer2 = { managed: pending, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints: previous.endpoints ?? {} };
-  await saveChanged();
+  await save(file);
   // Providers first: no consumer receives a newly minted key before its hash.
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, { ...d.doc, outgoing: d.old.outgoing });
   for (const d of docs.values()) for (const p of d.paths) await atomic(p, d.doc);
   file.layer2 = { managed, adopted: [...adopted], foreign_adopted: [...foreignAdopted], endpoints };
-  await saveChanged();
+  await save(file);
 }

@@ -83,10 +83,20 @@ describe('existing keys to providers managed by another store', () => {
     const before = await snapshot();
     const state = await fs.readFile(store.grantsPath, 'utf8');
     const keys = await fs.readFile(grantPath(), 'utf8');
-    await store.prepare(`${consumer}:wizardapps`, generated);
-    const save = vi.fn(async () => {});
-    await reconcileAppGrants(await store.apps(), await store.readGrants(), root, save);
-    expect(save).not.toHaveBeenCalled();
+    const writes = vi.spyOn(fs, 'writeFile');
+    const renames = vi.spyOn(fs, 'rename');
+    const chmods = vi.spyOn(fs, 'chmod');
+    try {
+      await store.prepare(`${consumer}:wizardapps`, generated);
+      await reconcileAppGrants(await store.apps(), await store.readGrants(), root, (f) => store.writeGrants(f));
+      expect(writes).not.toHaveBeenCalled();
+      expect(renames).not.toHaveBeenCalled();
+      expect(chmods).not.toHaveBeenCalled();
+    } finally {
+      writes.mockRestore();
+      renames.mockRestore();
+      chmods.mockRestore();
+    }
     expect(await snapshot()).toEqual(before);
     expect(await fs.readFile(store.grantsPath, 'utf8')).toBe(state);
     expect(await fs.readFile(grantPath(), 'utf8')).toBe(keys);

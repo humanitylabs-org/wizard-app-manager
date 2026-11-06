@@ -194,11 +194,21 @@ export class WizardStorage {
     return file;
   }
   async writeGrants(file: Grants) {
-    file.updated_at = Math.floor(Date.now() / 1000);
-    await fs.mkdir(path.dirname(this.grantsPath), { recursive: true });
-    const tmp = `${this.grantsPath}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(tmp, this.grantsPath);
+    const existing = await fs.readFile(this.grantsPath, 'utf8').catch((e) => {
+      if (e.code !== 'ENOENT') throw e;
+      return null;
+    });
+    const previous = existing === null ? null : JSON.parse(existing);
+    const changed = !previous || JSON.stringify({ ...previous, updated_at: 0 }) !== JSON.stringify({ ...file, updated_at: 0 });
+    if (changed) {
+      file.updated_at = Math.floor(Date.now() / 1000);
+      await fs.mkdir(path.dirname(this.grantsPath), { recursive: true });
+      const tmp = `${this.grantsPath}.tmp`;
+      await fs.writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+      await fs.rename(tmp, this.grantsPath);
+    } else {
+      file.updated_at = previous.updated_at;
+    }
     // Preserve the registry's other fields and do not publish keys.
     const mirrors = new Set([
       path.join(process.env.WIZARD_OS_HOME ?? path.join(this.dirs.dataDir, 'state', 'wizard-os'), 'apps.json'),
@@ -210,7 +220,10 @@ export class WizardStorage {
         return null;
       });
       if (reg) {
-        await fs.writeFile(`${mirror}.tmp-grants`, `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`);
+        const bytes = `${JSON.stringify({ ...JSON.parse(reg), grants: file.grants }, null, 2)}\n`;
+        // Repair a stale projection after interruption even if authority is unchanged.
+        if (bytes === reg) continue;
+        await fs.writeFile(`${mirror}.tmp-grants`, bytes);
         await fs.rename(`${mirror}.tmp-grants`, mirror);
       }
     }
