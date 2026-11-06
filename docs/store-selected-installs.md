@@ -54,3 +54,20 @@ Verification:
 - `cd packages/common && bun run build`
 - `cd packages/backend && bun x vitest run && bun run tsc`
 - Companion `wizard-ux/tools/qa-store-installs.cjs` exercises negative-control prompts, exact source installs, updates/switches, wrong receipts, denied owners and missing manager routes. Every write is intercepted and service workers are disabled.
+
+## Gateway listener (private-gateway boxes)
+
+`:7791` admits only a peer socket owned by root, i.e. a root `tailscaled` Serve mount. A box whose browser path is a
+user-owned Caddy + userspace `tailscaled` (the private gateway) can never satisfy that, so Get used to end in a bare
+`403 Not allowed.` from the shell's static nginx (which has no store-install route at all). `wam serve` therefore also
+opens `127.0.0.1:7792` **when `<wizard home>/owner-proof/store-gateway-proof` (0600, >= 32 chars) exists**:
+
+- admitted only with that secret in `X-Wizard-Store-Proof`; the gateway sets it from the file after its verified-owner
+  `forward_auth` and strips any client copy (and deletes it from its request log);
+- only a plain app id path (`GET` status / `POST` Get). `_updates`, `_remove`, `_connections`, `_slots`, … stay on `:7791`;
+- then the same owner / not-this-box / own-origin (`network.base_url` + aliases) / JSON / catalog checks as `:7791`;
+- the gateway route is one exact matcher `^/wizard-os-home/store-install/<app id>$`, `GET POST`, with
+  `uri strip_prefix /wizard-os-home/store-install` — never a `store-install/*` wildcard.
+
+The owner login and this node's addresses come from the tailscale CLI; set `WAM_TAILSCALE_BIN` / `WAM_TAILSCALE_SOCKET`
+in the service unit when it is not on `PATH` or talks to a non-default daemon socket.
