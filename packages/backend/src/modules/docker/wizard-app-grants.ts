@@ -388,6 +388,11 @@ export async function reconcileAppGrants(
   const apps = installedApps.filter(
     (a) => a.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(a.manifest.id) && a.urn.endsWith(':wizardapps'),
   );
+  const involvesLink = (g: Grant) =>
+    installedApps.some((a) => a.source === 'link' && a.manifest.id === g.from) || providers(g.to, installedApps).some((a) => a.source === 'link');
+  // Installing a link is not approval for its declared capabilities. Remove old
+  // automatic app/share rows too, without touching explicit owner decisions.
+  file.grants = file.grants.filter((g) => g.approved === 'owner' || !involvesLink(g));
   const previous = (file.layer2 ?? {}) as {
     managed?: Record<string, string[]>;
     adopted?: string[];
@@ -474,7 +479,11 @@ export async function reconcileAppGrants(
     if (!adopted.has(app.manifest.id)) {
       for (const to of Object.keys(old.outgoing)) {
         const g = { kind: 'app', from: app.manifest.id, to, reason: 'owner', approved: 'owner', created_at: Math.floor(Date.now() / 1000) };
-        if ((ID.test(to) || /^slot:[a-z0-9][a-z0-9-]{1,40}$/.test(to)) && ![...file.grants, ...file.denied].some((x) => sameAppGrant(x, g)))
+        if (
+          !involvesLink(g) &&
+          (ID.test(to) || /^slot:[a-z0-9][a-z0-9-]{1,40}$/.test(to)) &&
+          ![...file.grants, ...file.denied].some((x) => sameAppGrant(x, g))
+        )
           file.grants.push(g);
       }
       adopted.add(app.manifest.id);
@@ -496,6 +505,8 @@ export async function reconcileAppGrants(
     if (asked.length) requests.set(app.manifest.id, asked);
   }
   applyConnectionPolicy(apps, file, requests, new Set(file.seeded ?? []));
+  // Link install is not owner approval, including runtime requests or pending promotion.
+  file.grants = file.grants.filter((g) => g.approved === 'owner' || !involvesLink(g));
   const managed: Record<string, string[]> = {};
   const endpoints: Record<string, Record<string, string>> = {};
   const adoptedHashes: Record<string, string[]> = {};

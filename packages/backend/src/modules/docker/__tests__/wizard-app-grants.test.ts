@@ -4,7 +4,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, describe, it, expect } from 'vitest';
 import * as yaml from 'yaml';
-import { WizardStorage } from '../wizard-storage';
+import { WizardStorage, LEGACY_CLAUDE } from '../wizard-storage';
 import { mountAppGrants, providerEndpoint } from '../wizard-app-grants';
 
 let root: string;
@@ -37,6 +37,114 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 describe('app grants layer 2', () => {
+  const markSource = (id: string, source: string) =>
+    fs.writeFile(path.join(root, 'apps/wizardapps', id, '.wizard-source'), JSON.stringify({ source }));
+
+  it('link install never auto-approves uses or Router access; owner may approve and revoke', async () => {
+    await install('wizard-connectors');
+    await install('connection-router', { provides: ['connection-router'] });
+    await install('link-consumer', { uses: ['wizard-connectors'], requires: { models: ['chat'] } });
+    await markSource('link-consumer', 'link');
+    await store.reconcile();
+    await store.reconcile();
+    expect((await store.apps()).find((a) => a.manifest.id === 'link-consumer')?.source).toBe('link');
+    expect((await store.readGrants()).grants).toEqual([]);
+    expect((await file('link-consumer')).outgoing).toEqual({});
+    expect((await file('wizard-connectors')).incoming).toEqual([]);
+    expect((await file('connection-router')).incoming).toEqual([]);
+    expect(await store.proposed('link-consumer')).toHaveLength(2);
+    const grant = { kind: 'app', from: 'link-consumer', to: 'wizard-connectors' };
+    await store.change(grant, true);
+    await store.reconcile();
+    expect((await file('link-consumer')).outgoing['wizard-connectors']).toMatch(/^[0-9a-f]{64}$/);
+    expect((await store.readGrants()).grants).toEqual([expect.objectContaining({ ...grant, approved: 'owner' })]);
+    await store.change(grant, false);
+    await store.reconcile();
+    expect((await file('link-consumer')).outgoing).toEqual({});
+    expect((await store.readGrants()).denied).toEqual([expect.objectContaining(grant)]);
+  });
+
+  it('link provider receives no automatic direct or slot grant from trusted consumers', async () => {
+    await install('link-provider', { provides: ['connection-router'] });
+    await markSource('link-provider', 'link');
+    await install('standard-consumer', { uses: ['link-provider'], requires: { services: ['transcribe'] } });
+    await store.reconcile();
+    expect((await store.readGrants()).grants).toEqual([]);
+    expect((await file('standard-consumer')).outgoing).toEqual({});
+    expect((await file('link-provider')).incoming).toEqual([]);
+  });
+
+  it('previous automatic link app and share grants are removed, not re-adopted as owner approvals', async () => {
+    await install('wizard-connectors', { shares: [{ id: 'private-data', path: 'private-data' }] });
+    await install('link-consumer', { uses: ['wizard-connectors'] });
+    await store.reconcile();
+    expect((await file('link-consumer')).outgoing['wizard-connectors']).toBeTruthy();
+    const grants = await store.readGrants();
+    grants.grants.push({ kind: 'share', from: 'link-consumer', to: 'wizard-connectors', share: 'private-data', approved: 'install' });
+    // Force the pre-adoption state too: stale outgoing keys are not owner consent.
+    delete grants.layer2;
+    await store.writeGrants(grants);
+    await markSource('link-consumer', 'link');
+    await store.reconcile();
+    expect((await store.readGrants()).grants).toEqual([]);
+    expect((await file('link-consumer')).outgoing).toEqual({});
+    expect((await file('wizard-connectors')).incoming).toEqual([]);
+  });
+
+  it.each(['hermes-agent', 'wizard-claude'])('legacy Claude migration grants nothing when %s came from a link', async (linked) => {
+    const legacy = { ...comp, volumes: { login: { name: LEGACY_CLAUDE } } };
+    await install('wizard-claude', {}, legacy);
+    await install('hermes-agent', {}, legacy);
+    await markSource(linked, 'link');
+    store = new WizardStorage(
+      { dataDir: root, appDataDir: path.join(root, 'app-data') },
+      async () => installed,
+      async () => ({ stdout: LEGACY_CLAUDE + '\n' }),
+    );
+    await store.prepare('hermes-agent:wizardapps', yaml.stringify(legacy));
+    expect((await store.readGrants()).grants).toEqual([]);
+    expect((await store.readGrants()).claude_share_upgrade_v1).not.toBe(true);
+  });
+
+  it('explicit link owner approval and denial survive reconciliation', async () => {
+    await install('wizard-connectors');
+    await install('link-consumer', { uses: ['wizard-connectors'] });
+    await markSource('link-consumer', 'link');
+    await store.change({ kind: 'app', from: 'link-consumer', to: 'wizard-connectors' }, true);
+    await store.reconcile();
+    expect((await store.readGrants()).grants[0]?.approved).toBe('owner');
+    expect((await file('wizard-connectors')).incoming).toHaveLength(1);
+  });
+
+  it('Standard, owner-private, Alpha and legacy metadata retain existing default grants', async () => {
+    await install('wizard-connectors');
+    for (const [id, source] of [['standard-consumer', 'standard'], ['private-consumer', 'owner-private'], ['alpha-consumer', 'alpha-team']] as const) {
+      await install(id, { uses: ['wizard-connectors'] });
+      await markSource(id, source);
+    }
+    await install('legacy-consumer', { uses: ['wizard-connectors'] });
+    await fs.writeFile(path.join(root, 'apps/wizardapps/legacy-consumer/.wizard-source'), '{"repo":"team/legacy"}');
+    await store.reconcile();
+    expect((await store.readGrants()).grants).toHaveLength(4);
+    expect((await store.readGrants()).grants.every((g) => g.approved === 'install')).toBe(true);
+  });
+
+  it('invalid or symlinked provenance refuses reconciliation instead of granting as a legacy app', async () => {
+    await install('wizard-connectors');
+    await install('link-consumer', { uses: ['wizard-connectors'] });
+    const metadata = path.join(root, 'apps/wizardapps/link-consumer/.wizard-source');
+    for (const text of ['{', 'null', '[]', '{"source":false}', '{"source":"LINK"}']) {
+      await fs.writeFile(metadata, text);
+      await expect(store.reconcile()).rejects.toThrow();
+    }
+    await fs.rm(metadata);
+    const target = path.join(root, 'source.json');
+    await fs.writeFile(target, '{"source":"standard"}');
+    await fs.symlink(target, metadata);
+    await expect(store.reconcile()).rejects.toThrow('Unsafe app source metadata');
+    expect((await store.readGrants()).grants).toEqual([]);
+  });
+
   it('seeds uses with unique 32-byte keys, endpoints, hashes; boot/restart retains keys and mirrors only metadata', async () => {
     await install('wizard-connectors');
     await install('wizard-calendar', { uses: ['wizard-connectors'] });
