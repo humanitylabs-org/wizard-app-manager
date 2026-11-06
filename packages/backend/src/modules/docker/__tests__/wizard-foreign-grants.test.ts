@@ -54,6 +54,47 @@ beforeEach(async () => {
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
 describe('existing keys to providers managed by another store', () => {
+  it('an unchanged private-app update is a filesystem no-op for grants, registry mirrors and existing modes', async () => {
+    await install(consumer);
+    await install(provider, 'wizardapps', { provides: ['sample-data'] });
+    for (const id of [consumer, provider]) {
+      await fs.writeFile(path.join(root, 'apps/wizardapps', id, 'config.json'), JSON.stringify({ private_data: true }));
+    }
+    const mirror = path.join(root, 'app-data/wizard-os/apps.json');
+    await fs.mkdir(path.dirname(mirror), { recursive: true });
+    await fs.writeFile(mirror, JSON.stringify({ apps: [], preserved: 'fixture' }));
+    await store.change({ kind: 'app', from: consumer, to: provider }, true);
+    const generated = yaml.stringify({ services: { main: { image: 'example', 'x-runtipi': { is_main: true } } } });
+    await store.prepare(`${consumer}:wizardapps`, generated);
+    // A private runtime is allowed to tighten even the manager bridge paths.
+    const paths = [store.grantsPath, mirror];
+    for (const id of [consumer, provider]) {
+      const wizard = path.join(data(id), 'wizard');
+      const requests = path.join(data(id), 'wizard-requests');
+      await fs.chmod(wizard, 0o700);
+      await fs.chmod(requests, 0o700);
+      await fs.chmod(grantPath(id), 0o600);
+      paths.push(wizard, requests, grantPath(id));
+    }
+    const snapshot = async () => Promise.all(paths.map(async (p) => {
+      const st = await fs.stat(p, { bigint: true });
+      return [p, st.ino, st.mtimeNs, st.ctimeNs, st.mode];
+    }));
+    const before = await snapshot();
+    const state = await fs.readFile(store.grantsPath, 'utf8');
+    const keys = await fs.readFile(grantPath(), 'utf8');
+    await store.prepare(`${consumer}:wizardapps`, generated);
+    const save = vi.fn(async () => {});
+    await reconcileAppGrants(await store.apps(), await store.readGrants(), root, save);
+    expect(save).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    expect(await fs.readFile(store.grantsPath, 'utf8')).toBe(state);
+    expect(await fs.readFile(grantPath(), 'utf8')).toBe(keys);
+    // The optimisation must never hide an actual revocation.
+    await store.change({ kind: 'app', from: consumer, to: provider }, false);
+    expect((await read()).outgoing).toEqual({});
+  });
+
   it.each([provider, target])('preserves the key and provider-qualified endpoint for %s on migration and restart', async (to) => {
     const external = await setup(to);
     await store.reconcile();

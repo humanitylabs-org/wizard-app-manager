@@ -47,6 +47,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let deploymentMayHaveChanged = false;
     let deploymentMayHaveStopped = false;
     let recoverySucceeded = true;
+    // Privacy is sticky for this transaction, including recovery to an older recipe.
+    let preservePermissions = false;
+    const permissionOptions = () => preservePermissions ? { preservePermissions: true } : {};
 
     const restorePreviousApp = async () => {
       if (!previousAppDirectory || !appInstalledDir || !previousEnvPath || !previousEnvSnapshotPath) {
@@ -94,6 +97,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     };
 
     try {
+      preservePermissions = await appFilesManager.hasPrivateData(appUrn);
       const composeToInstall = await marketplaceService.getSourceDockerComposeYaml(appUrn);
       const compose = dynamicComposeSchemaYaml(composeToInstall.content);
 
@@ -130,7 +134,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // The previous files and compose are restored immediately after the target images are pulled.
       deploymentMayHaveChanged = true;
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
-      await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false });
+      preservePermissions = (await appFilesManager.hasPrivateData(appUrn)) || preservePermissions;
+      await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false, ...permissionOptions() });
       await appHelpers.generateEnvFile(appUrn, form);
       // Refuse invalid target storage/shares/legacy bridges while the old
       // deployment is still running, before backup stop or compose down.
@@ -157,14 +162,14 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, 'down --remove-orphans');
 
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
-      await this.ensureAppDir(appUrn, form, { pruneContainers: false });
+      await this.ensureAppDir(appUrn, form, { pruneContainers: false, ...permissionOptions() });
       await appHelpers.generateEnvFile(appUrn, form);
 
       if (this.wasRunningBeforeUpdate) {
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
         // Docker creates bind-mount folders a new version adds during `up`, after ensureAppDir's chmod; open them
         // here too (as install does) so a non-root container can write them before the app's next restart.
-        await appFilesManager.setAppDataDirPermissions(appUrn);
+        if (!preservePermissions) await appFilesManager.setAppDataDirPermissions(appUrn);
       }
 
       return { success: true, message: `App ${appUrn} updated successfully` };
@@ -183,7 +188,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         }
 
         if (previousFilesStaged && deploymentMayHaveChanged && deploymentMayHaveStopped && this.wasRunningBeforeUpdate) {
-          await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false });
+          await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false, ...permissionOptions() });
           await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
         }
       } catch (rollbackError) {

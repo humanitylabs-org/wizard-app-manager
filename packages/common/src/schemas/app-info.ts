@@ -80,6 +80,8 @@ export const appInfoSchema = type({
   uid: 'number?',
   gid: 'number?',
   dynamic_config: 'boolean = false',
+  // The app's init/runtime, not App Manager, owns its app-data permissions.
+  private_data: 'boolean?',
   min_tipi_version: 'string?',
   created_at: type('number.integer >= 0')
     .narrow((v, ctx) => (v < Date.now() ? true : ctx.mustBe('a timestamp before now')))

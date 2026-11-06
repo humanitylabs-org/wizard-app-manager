@@ -190,7 +190,20 @@ export class AppFilesManager {
    * Set the permissions for the app data directory
    * @param appUrn - The app id
    */
-  public async setAppDataDirPermissions(appUrn: AppUrn) {
+  public async hasPrivateData(appUrn: AppUrn): Promise<boolean> {
+    const { content } = await this.getConfigJson(appUrn);
+    // Never interpret an unreadable/invalid privacy declaration as permission to widen.
+    if (!content || typeof content !== 'object' || Array.isArray(content)) {
+      throw new Error(`Cannot determine data permission policy for app ${appUrn}`);
+    }
+    if ('private_data' in content && typeof content.private_data !== 'boolean') {
+      throw new Error(`Invalid private_data policy for app ${appUrn}`);
+    }
+    return 'private_data' in content && content.private_data === true;
+  }
+
+  public async setAppDataDirPermissions(appUrn: AppUrn, preservePermissions = false) {
+    if (preservePermissions || (await this.hasPrivateData(appUrn))) return;
     const { appDataDir } = this.getAppPaths(appUrn);
 
     await execFileAsync('chmod', ['-Rf', 'a+rwx', appDataDir]).catch(() => {
