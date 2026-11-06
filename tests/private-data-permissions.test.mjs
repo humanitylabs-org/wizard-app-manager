@@ -14,6 +14,7 @@ const backend = path.join(repo, 'packages/backend');
 const require = createRequire(path.join(backend, 'package.json'));
 const ts = require('typescript');
 const common = require('@runtipi/common/schemas');
+const yaml = require('yaml');
 const logger = { info() {}, debug() {}, error() {}, warn() {} };
 const urn = 'demo:store';
 const compose = common.convertLegacyToYaml({ schemaVersion: 2, services: [{ name: 'app', image: 'example:1', isMain: true, internalPort: 80 }] });
@@ -43,7 +44,7 @@ function loadProduction(root) {
       if (specifier === '@nestjs/common') return { Injectable: () => (value) => value };
       if (specifier === '@sentry/nestjs') return { captureException() {} };
       if (specifier === '@/common/constants') return { DATA_DIR: root, APP_DATA_DIR: path.join(root, 'app-data'), APP_DIR: root, APP_REL_COMPOSE_FILENAME: 'docker-compose.yml', APP_GENERATED_COMPOSE_FILENAME: 'docker-compose.generated.yml' };
-      if (specifier === '@/modules/docker/builders/compose.builder') return { DockerComposeBuilder: class { getDockerCompose() { return compose; } } };
+      if (specifier === '@/modules/docker/builders/compose.builder') return { DockerComposeBuilder: class { getDockerCompose() { return yaml.stringify(compose); } } };
       const resolved = specifier.startsWith('@/') ? specifier.slice(2)
         : specifier.startsWith('.') ? path.posix.normalize(path.posix.join(path.posix.dirname(name), specifier)) : null;
       if (resolved && real.has(resolved)) return load(resolved);
@@ -80,7 +81,7 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
   const config = (privateData) => ({ id: 'demo', available: true, name: 'Synthetic demo', tipi_version: 1, short_desc: 'Synthetic', author: 'Test', source: 'https://example.com', ...(privateData === undefined ? {} : { private_data: privateData }) });
   const recipe = async (policy) => {
     await write(path.join(paths.appInstalledDir, 'config.json'), JSON.stringify(config(policy)));
-    await write(path.join(paths.appInstalledDir, 'docker-compose.yml'), compose);
+    await write(path.join(paths.appInstalledDir, 'docker-compose.yml'), yaml.stringify(compose));
   };
   await recipe(oldPolicy);
   await write(path.join(paths.appDataDir, 'app.env'), 'APP_PORT=8000\n');
