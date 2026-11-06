@@ -20,6 +20,8 @@ def test_adoption_prepares_new_install_at_actual_media_root(tmp_path, monkeypatc
     actual = tmp_path / 'host'
     (rt / '.env').write_text(f'ROOT_FOLDER_HOST={actual}\n')
     calls = []
+    from wam.backup import dockercli
+    monkeypatch.setattr(dockercli, 'docker', lambda: ['docker'])  # route selection is tested separately
     monkeypatch.setattr(subprocess, 'run', lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, '', ''))
     assert alongside.adopt_media(rt, 'image:pin', '1001:1001') is True
     cmd = calls[-1]
