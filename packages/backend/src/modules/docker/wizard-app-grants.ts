@@ -384,6 +384,17 @@ export async function reconcileAppGrants(
   save: (file: Grants) => Promise<void>,
   exclude?: string,
 ) {
+  const prepareDirectory = async (app: App, relative: string, mode: number) => {
+    const dir = path.join(app.data, relative);
+    const existed = await fs.lstat(dir).catch((e) => {
+      if (e.code !== 'ENOENT') throw e;
+      return null;
+    });
+    await confined(app.data, relative, true);
+    // Private apps own existing modes, including the manager's bridge folders.
+    // New bridge folders retain their established cross-container access mode.
+    if ((!app.privateData || !existed) && ((await fs.stat(dir)).mode & 0o777) !== mode) await fs.chmod(dir, mode);
+  };
   file.layer2_removing = ((file.layer2_removing as string[]) ?? []).filter((id) => installedApps.some((a) => a.manifest.id === id));
   const apps = installedApps.filter(
     (a) => a.manifest.id !== exclude && !(file.layer2_removing as string[]).includes(a.manifest.id) && a.urn.endsWith(':wizardapps'),
@@ -436,8 +447,7 @@ export async function reconcileAppGrants(
   };
   const docs = new Map<string, { app: App; paths: string[]; doc: AppFile; old: AppFile }>();
   for (const app of apps) {
-    await confined(app.data, 'wizard', true);
-    await fs.chmod(path.join(app.data, 'wizard'), 0o755);
+    await prepareDirectory(app, 'wizard', 0o755);
     const canonical = path.join(app.data, 'wizard/grants.json');
     const legacy = (await legacyPaths(app, dataDir)).filter((p) => p !== canonical);
     const existing = await read(canonical);
@@ -490,8 +500,7 @@ export async function reconcileAppGrants(
   const requests = new Map<string, string[]>();
   for (const app of apps) {
     // The app's own requests folder (mounted read-write at /wizard-requests): where it may ask for a connection.
-    await confined(app.data, REQUESTS_DIR, true);
-    await fs.chmod(path.join(app.data, REQUESTS_DIR), 0o777);
+    await prepareDirectory(app, REQUESTS_DIR, 0o777);
     const asked = await readRequests(app);
     if (asked.length) requests.set(app.manifest.id, asked);
   }

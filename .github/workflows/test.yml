@@ -18,6 +18,8 @@ jobs:
         run: nice -n 19 node --test tests/backup-source-safety.test.mjs
       - run: bun run build
         working-directory: packages/common
+      - name: Private app permissions real-filesystem lifecycle regression
+        run: nice -n 19 node --test tests/private-data-permissions.test.mjs
       - run: bun run test
         working-directory: packages/backend
       - run: bun x tsgo --noEmit

@@ -17,7 +17,7 @@ export class AppLifecycleCommand {
     protected docker: Dockerode,
   ) {}
 
-  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options: { pruneContainers?: boolean; persistSubnet?: boolean } = {}) {
+  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options: { pruneContainers?: boolean; persistSubnet?: boolean; preservePermissions?: boolean } = {}) {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -70,7 +70,7 @@ export class AppLifecycleCommand {
     }
 
     // Set permissions
-    await appFilesManager.setAppDataDirPermissions(appUrn);
+    if (!options.preservePermissions) await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<{ success: false; message: string }> => {
