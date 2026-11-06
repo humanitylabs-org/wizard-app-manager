@@ -23,6 +23,7 @@ fi
 
 if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   echo "No install at $RUNTIPI_ROOT; installing the base (Runtipi) first, box-only"
+  source "$HERE/scripts/ensure-base-docker.sh"
   # Box-only from the very first start: dashboard and proxy listen on loopback, never on the public interface.
   # Reach them later through Cloudflare Tunnel or Tailscale.
   mkdir -p "$RUNTIPI_ROOT/user-config"
