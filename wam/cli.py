@@ -1767,14 +1767,23 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     _json = Handler._json
 
+    gateway = False   # GatewayStoreHandler: admitted by the gateway's proof header, not by tailscaled's peer uid
+
     def _go(self, method: str) -> None:
         from . import store_install as si
-        if si.peer_uid(self.client_address[1]) != 0:
-            return self._json(403, {"error": "only reachable through tailscale serve"})
         c = self.cfg
-        lp = c.home / "links.json"
-        ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
-        origins = si.served_origins(ts) if ts else set()
+        if self.gateway:
+            if not si.gateway_proof_ok(self.headers, c.home):
+                return self._json(403, {"error": "only reachable through the owner gateway"})
+            if not si.ID.fullmatch(urlparse(self.path).path.strip("/")):
+                return self._json(404, {"error": "not found"})
+            origins = si.gateway_origins(c.home)
+        else:
+            if si.peer_uid(self.client_address[1]) != 0:
+                return self._json(403, {"error": "only reachable through tailscale serve"})
+            lp = c.home / "links.json"
+            ts = (json.loads(lp.read_text()) if lp.is_file() else {}).get("host")
+            origins = si.served_origins(ts) if ts else set()
         owner = si.owner_login()
         if method == "POST":
             why = si.check_request(self.headers, owner, origins)
@@ -2030,6 +2039,11 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         self._go("POST")
+
+
+class GatewayStoreHandler(StoreHandler):
+    """Store Get for the private gateway on loopback :7792 (store_install.py: gateway listener). App ids only."""
+    gateway = True
 
 
 UPDATES_PATH = "_updates"
@@ -2566,6 +2580,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"store installs on 127.0.0.1:{store_install.PORT} (tailscaled only, owner only)", flush=True)
             except OSError as e:
                 print(f"note: store install listener not started ({e})", file=sys.stderr)
+            if store_install.gateway_proof(c.home):
+                try:
+                    GatewayStoreHandler.cfg = c
+                    gsrv = ThreadingHTTPServer(("127.0.0.1", store_install.GATEWAY_PORT), GatewayStoreHandler)
+                    threading.Thread(target=gsrv.serve_forever, daemon=True).start()
+                    print(f"gateway store installs on 127.0.0.1:{store_install.GATEWAY_PORT} (proof header, owner only)", flush=True)
+                except OSError as e:
+                    print(f"note: gateway store install listener not started ({e})", file=sys.stderr)
             start_network_watch(c)
             start_connections_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)

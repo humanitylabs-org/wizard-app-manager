@@ -165,3 +165,92 @@ def test_installed_is_reported_only_after_links_published(monkeypatch):
         threading.Event().wait(0.02)
     assert job["state"] == "installed"
     assert seen and seen[0]["state"] == "installing"
+
+
+# ---- gateway listener (:7792): the private gateway's userspace Caddy/tailscaled cannot satisfy the :7791 root-peer gate
+
+PROOF = "p" * 48
+
+
+def _gateway(monkeypatch, tmp_path, proof=PROOF):
+    import json as _j
+    from http.server import ThreadingHTTPServer
+    from wam import cli
+    if proof:
+        (tmp_path / si.GATEWAY_PROOF_FILE).write_text(proof + "\n")
+    (tmp_path / "settings.json").write_text(_j.dumps({"network": {"base_url": "https://box.tail1.ts.net"}}))
+    monkeypatch.setattr(si, "owner_login", lambda: "owner@x.com")
+    monkeypatch.setattr(si, "peer_uid", lambda p: (_ for _ in ()).throw(AssertionError("gateway must not use the peer gate")))
+    class C: index = "x"; home = tmp_path
+    monkeypatch.setattr(cli.GatewayStoreHandler, "cfg", C(), raising=False)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.GatewayStoreHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _post(srv, path, headers, body=None):
+    import http.client, json as _j
+    body = _j.dumps(body or {"source": "standard", "repo": "org/app", "commit": "a" * 40, "operation": "install"})
+    h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    h.request("POST", path, body, {**headers, "Content-Length": str(len(body))})
+    r = h.getresponse()
+    return r.status, _j.loads(r.read() or b"{}")
+
+
+GW = {**GOOD, "Origin": "https://box.tail1.ts.net", "X-Forwarded-For": "100.64.0.9", "X-Wizard-Store-Proof": PROOF}
+
+
+def test_gateway_listener_needs_the_proof_and_a_plain_app_id(monkeypatch, tmp_path):
+    srv = _gateway(monkeypatch, tmp_path)
+    monkeypatch.setattr(si, "start", lambda c, a, *x, **k: (_ for _ in ()).throw(AssertionError("must not install")))
+    try:
+        for hdrs in ({k: v for k, v in GW.items() if k != "X-Wizard-Store-Proof"}, {**GW, "X-Wizard-Store-Proof": "x" * 48}):
+            st, j = _post(srv, "/wizard-mail", hdrs)
+            assert st == 403 and "owner gateway" in j["error"]
+        for path in ("/_updates", "/_remove/wizard-mail", "/_connections/", "/a/b", "/Bad_ID"):   # control paths stay on :7791
+            assert _post(srv, path, GW)[0] == 404, path
+    finally:
+        srv.shutdown()
+
+
+def test_gateway_listener_keeps_every_owner_check(monkeypatch, tmp_path):
+    srv = _gateway(monkeypatch, tmp_path)
+    monkeypatch.setattr(si, "start", lambda c, a, *x, **k: (_ for _ in ()).throw(AssertionError("must not install")))
+    try:
+        assert "this Wizard itself" in _post(srv, "/wizard-mail", {**GW, "X-Forwarded-For": "100.64.0.1"})[1]["error"]
+        assert _post(srv, "/wizard-mail", {**GW, "Origin": "https://evil.example"})[1]["error"] == "wrong origin"
+        assert "owner" in _post(srv, "/wizard-mail", {**GW, "Tailscale-User-Login": "guest@x.com"})[1]["error"]
+        assert _post(srv, "/wizard-mail", {k: v for k, v in GW.items() if k != "X-Wizard-Store"})[1]["error"] == "bad request"
+    finally:
+        srv.shutdown()
+
+
+def test_gateway_listener_starts_an_install_for_the_owner_on_another_device(monkeypatch, tmp_path):
+    srv = _gateway(monkeypatch, tmp_path)
+    from wam import store_selection
+    monkeypatch.setattr(store_selection, "resolve", lambda c, a, sel: sel)
+    monkeypatch.setattr(si, "start", lambda c, a, *x, selection=None, **k: (202, {"app": a, "state": "installing"}))
+    try:
+        assert _post(srv, "/wizard-mail", GW) == (202, {"app": "wizard-mail", "state": "installing"})
+    finally:
+        srv.shutdown()
+
+
+def test_gateway_proof_is_off_without_a_long_secret_and_origins_come_from_settings(tmp_path):
+    assert si.gateway_proof(tmp_path) == ""
+    (tmp_path / si.GATEWAY_PROOF_FILE).write_text("short\n")
+    assert si.gateway_proof(tmp_path) == "" and not si.gateway_proof_ok({"X-Wizard-Store-Proof": "short"}, tmp_path)
+    (tmp_path / si.GATEWAY_PROOF_FILE).write_text(PROOF + "\n")
+    assert si.gateway_proof_ok({"X-Wizard-Store-Proof": PROOF}, tmp_path)
+    assert not si.gateway_proof_ok({}, tmp_path)
+    assert si.gateway_origins(tmp_path) == set()
+    (tmp_path / "settings.json").write_text('{"network": {"base_url": "https://box.ts.net/", "aliases": ["http://plain.example", 5]}}')
+    assert si.gateway_origins(tmp_path) == {"https://box.ts.net"}
+
+
+def test_tailscale_cli_can_target_the_gateway_daemon(monkeypatch):
+    monkeypatch.setenv("WAM_TAILSCALE_BIN", "/x/tailscale")
+    monkeypatch.setenv("WAM_TAILSCALE_SOCKET", "/run/ts.sock")
+    assert si.tailscale_cmd("status", "--json") == ["/x/tailscale", "--socket", "/run/ts.sock", "status", "--json"]
+    monkeypatch.delenv("WAM_TAILSCALE_SOCKET")
+    assert si.tailscale_cmd("status") == ["/x/tailscale", "status"]

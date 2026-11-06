@@ -17,12 +17,15 @@ Removal ("Remove app") is a separate exact-identity route behind the same gate: 
 """
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import re
 import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 PREFIX = "/wizard-os-home/store-install"
@@ -30,29 +33,36 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
+def tailscale_cmd(*args: str) -> list[str]:
+    """argv for the tailscale CLI, [] when there is none. `WAM_TAILSCALE_SOCKET` points it at an isolated userspace
+    daemon (the private gateway's) and `WAM_TAILSCALE_BIN` at a binary that is not on the service's PATH."""
+    binary = os.environ.get("WAM_TAILSCALE_BIN") or shutil.which("tailscale") or ""
+    if not binary:
+        return []
+    sock = os.environ.get("WAM_TAILSCALE_SOCKET") or ""
+    return [binary, *(["--socket", sock] if sock else []), *args]
+
+
+def _status() -> dict:
+    cmd = tailscale_cmd("status", "--json")
+    if not cmd:
+        return {}
+    try:
+        return json.loads(subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+
+
 def owner_login() -> str:
     """The tailnet login of this box's owner (the node's user), or '' when Tailscale isn't running."""
-    if not shutil.which("tailscale"):
-        return ""
-    try:
-        d = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True,
-                                      timeout=15).stdout or "{}")
-        uid = str((d.get("Self") or {}).get("UserID") or "")
-        return str(((d.get("User") or {}).get(uid) or {}).get("LoginName") or "")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return ""
+    d = _status()
+    uid = str((d.get("Self") or {}).get("UserID") or "")
+    return str(((d.get("User") or {}).get(uid) or {}).get("LoginName") or "")
 
 
 def own_ips() -> set[str]:
     """This node's own Tailscale addresses (empty when Tailscale isn't running)."""
-    if not shutil.which("tailscale"):
-        return set()
-    try:
-        d = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True,
-                                      timeout=15).stdout or "{}")
-        return {str(ip) for ip in ((d.get("Self") or {}).get("TailscaleIPs") or [])}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return set()
+    return {str(ip) for ip in ((_status().get("Self") or {}).get("TailscaleIPs") or [])}
 
 
 LOOPBACK = {"127.0.0.1", "::1"}
@@ -90,7 +100,8 @@ def check_request(headers, owner: str, origins: set[str], ips: set[str] | None =
 def served_origins(host: str) -> set[str]:
     """Only owner-configured Serve mounts to this listener, not arbitrary browser ports."""
     try:
-        r = subprocess.run(['tailscale', 'serve', 'status', '--json'], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(tailscale_cmd('serve', 'status', '--json') or ['tailscale', 'serve', 'status', '--json'],
+                           capture_output=True, text=True, timeout=15)
         web = json.loads(r.stdout).get('Web', {})
         return {f'https://{authority}' for authority, site in web.items()
                 if authority.rsplit(':', 1)[0] == host
@@ -185,6 +196,43 @@ def status(app_id: str) -> tuple[int, dict]:
 
 
 PORT = 7791
+
+# --- Gateway listener (loopback :7792) --------------------------------------------------------------------------
+# The private gateway (a user-owned Caddy + userspace tailscaled) is not the root-owned tailscaled the :7791 peer gate
+# trusts, so that gate can never admit it, and it stays exactly as it is. The gateway reaches Store Get through this
+# second listener instead. It admits a request only when ALL hold:
+#   - it carries the gateway's own proof header, equal to a secret file only the gateway and this service read
+#     (`<wizard home>/store-gateway-proof`, 0600). The gateway sets the header itself after its verified-owner check
+#     and strips any client copy, so a browser, an app container or an agent cannot supply it;
+#   - the app path is a plain app id (no `_` control paths: updates, removals, connections stay on :7791);
+#   - then the same owner / other-device / origin / JSON / catalog checks as :7791 (check_request, start).
+# No proof file, no listener.
+GATEWAY_PORT = 7792
+GATEWAY_PROOF_FILE = "store-gateway-proof"
+
+
+def gateway_proof(home) -> str:
+    """The shared secret, '' when the gateway listener is not set up (missing, empty or too short to trust)."""
+    try:
+        v = (Path(home) / GATEWAY_PROOF_FILE).read_text().strip()
+    except OSError:
+        return ""
+    return v if len(v) >= 32 else ""
+
+
+def gateway_proof_ok(headers, home) -> bool:
+    want, got = gateway_proof(home), (headers.get("X-Wizard-Store-Proof") or "").strip()
+    return bool(want) and hmac.compare_digest(want.encode(), got.encode())
+
+
+def gateway_origins(home) -> set[str]:
+    """The Wizard's own browser origin(s): settings `network.base_url` and its aliases. Nothing else is ever allowed."""
+    try:
+        net = (json.loads((Path(home) / "settings.json").read_text()).get("network") or {})
+    except (OSError, ValueError, AttributeError):
+        return set()
+    urls = [net.get("base_url"), *(net.get("aliases") or [])]
+    return {u.rstrip("/") for u in urls if isinstance(u, str) and re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d{1,5})?/?", u)}
 
 
 def peer_uid(peer_port: int, local_port: int = PORT) -> int | None:
