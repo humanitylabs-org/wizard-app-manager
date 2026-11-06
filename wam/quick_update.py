@@ -412,14 +412,14 @@ def _lock(home: Path) -> list[int] | None:
     """Hold install.lock like the installer's runner (taken under install.start.lock, get.sh's order)."""
     fds: list[int] = []
     try:
-        for name in ("install.start.lock", "install.lock"):
+        for name in ("app-updates.lock", "install.start.lock", "install.lock"):
             fds.append(os.open(home / name, os.O_RDWR | os.O_CREAT, 0o600))
             fcntl.flock(fds[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         for fd in fds:
             os.close(fd)
         return None
-    os.close(fds.pop(0))                   # keep only install.lock: a later `os.sh start` sees "already running"
+    os.close(fds.pop(1))                   # hold app-updates + install locks; release only start admission
     return fds
 
 
