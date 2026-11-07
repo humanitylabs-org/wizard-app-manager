@@ -47,6 +47,9 @@ export type Manifest = {
   provides?: string[];
   requires?: { models?: unknown; services?: unknown };
   api?: { endpoint?: string };
+  /** `checks_gateway: true`: the app tells the Agent Service gateway from other callers by the gateway's
+   * `host:agent-service` row in its grants file (wizard-os spec/PERMISSIONS.md layer 2); the App Manager writes it. */
+  mcp?: { checks_gateway?: boolean };
 };
 export type Grant = { kind: string; from: string; to: string; share?: string; reason?: string; approved?: string; created_at?: number };
 export type Grants = { schema: number; updated_at: number; seeded: string[]; grants: Grant[]; denied: Grant[]; [key: string]: unknown };
