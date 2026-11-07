@@ -1724,7 +1724,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, bootstrap(c))
             if path == "/api/registry":
                 return self._json(200, write_registry(c))
-            if path == "/api/updates":            # {"mode": "auto"|"ask"} or {"channel": "stable"|"latest"}
+            if path == "/api/updates":            # {"mode": "auto"} ("ask" = auto) or {"channel": "stable"|"latest"}
                 from . import updates
                 body = self._body()
                 if set(body) == {"channel"}:
@@ -2027,7 +2027,7 @@ class StoreHandler(BaseHTTPRequestHandler):
         if body.get("action") == "apply" and set(body) == {"action"}:
             res = updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
-        if set(body) == {"mode"} and body["mode"] in updates.MODES:
+        if set(body) == {"mode"} and body["mode"] in updates.MODES + updates.LEGACY_MODES:
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
             return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
@@ -2351,12 +2351,12 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
     phone = sub.add_parser("phone-sync", help="mirror the public phone APK; never installs or restarts anything")
     phone.add_argument("--ensure-timer", action="store_true", help="installer: enable the independent hourly mirror")
-    up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
-                                        "(--channel stable default, or latest)")
+    up = sub.add_parser("updates", help="update check (always automatic; --auto/--ask are kept for old scripts and "
+                                        "both mean automatic) and channel (--channel stable default, or latest)")
     upg = up.add_mutually_exclusive_group()
     upg.add_argument("--auto", action="store_true"); upg.add_argument("--ask", action="store_true")
     upg.add_argument("--apply", action="store_true"); upg.add_argument("--apply-if-auto", action="store_true")
-    upg.add_argument("--ensure-timer", action="store_true", help="installer: make the nightly timer match the mode")
+    upg.add_argument("--ensure-timer", action="store_true", help="installer: make sure the nightly Automatic run exists")
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")

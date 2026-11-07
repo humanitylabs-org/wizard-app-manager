@@ -525,11 +525,9 @@ def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> 
 def updates_step(home: Path, quiet: bool) -> dict:
     """The owner's Automatic Wizard OS update (the box's channel release: promoted stable, or the newest Latest),
     formerly its own 03:30 timer.
-    Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
+    Every box is Automatic (a saved "ask" included). Hermes updates stay explicit (`wam hermes update`, never automatic)."""
     from . import updates
     try:
-        if updates.mode(home) != "auto":
-            return {"state": "ask", "mode": "ask"}
         if not quiet:
             return {"state": "deferred", "reason": "The box was busy; the update waits for the next quiet night."}
         res = updates.apply_if_auto(home)
