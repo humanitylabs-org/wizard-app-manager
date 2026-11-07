@@ -342,7 +342,8 @@ ssh_pwauth: false
     boot(VARS_ON, TPM_A)
     if not wait_ssh(900):
         return verdict("setup", False, "no SSH after first boot")
-    rc, out = ssh("sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update && sudo DEBIAN_FRONTEND=noninteractive "
+    rc, out = ssh("echo 'linux-base linux-base/removing-running-kernel boolean false' | sudo debconf-set-selections; "
+                  "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update && sudo DEBIAN_FRONTEND=noninteractive "
                   "apt-get -qq install -y linux-image-amd64 cryptsetup-bin tpm2-tools libtss2-tcti-device0t64 systemd-cryptsetup python3-yaml e2fsprogs "
                   ">/dev/null && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y 'linux-image-*-cloud-amd64' "
                   "linux-image-cloud-amd64 >/dev/null; echo 'GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT "
@@ -353,12 +354,14 @@ ssh_pwauth: false
     boot(VARS_ON, TPM_A)
     if not wait_ssh(600):
         return verdict("setup", False, "no SSH after the kernel switch")
-    rc, info = ssh("uname -r; cat /sys/class/tpm/tpm0/tpm_version_major; od -An -tx1 "
-                   "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c; systemctl --version | head -1")
-    report["checks"]["box"] = info
-    log("box", info.replace("\n", " | "))
-    if "\n2\n" not in f"\n{info}\n" or not re.search(r"\b01\s*$", info.splitlines()[2] if len(info.splitlines()) > 2 else ""):
-        return verdict("setup", False, "no TPM 2.0 or Secure Boot off: " + info)
+    rc, info = ssh("echo kernel=$(uname -r); echo tpm=$(cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null); "
+                   "echo sb=$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c "
+                   "2>/dev/null | tr -d ' '); echo systemd=$(systemctl --version | head -1 | cut -d' ' -f2)")
+    facts = dict(l.split("=", 1) for l in info.splitlines() if "=" in l)
+    report["checks"]["box"] = facts
+    log("box", facts)
+    if facts.get("tpm") != "2" or facts.get("sb") != "1" or "cloud" in facts.get("kernel", "cloud"):
+        return verdict("setup", False, f"need the generic kernel, TPM 2.0 and Secure Boot on: {facts}")
     subprocess.run(["scp", "-q", "-i", KEY, "-P", str(PORT), "-o", "StrictHostKeyChecking=no", "-o",
                     "UserKnownHostsFile=/dev/null", tarball, "owner@127.0.0.1:/tmp/wam.tar"], check=True)
     rc, out = ssh(f"""set -e
@@ -378,7 +381,7 @@ sudo loginctl enable-linger owner
     log("plant", rc, out[-200:])
     if "PLANTED" not in out or not canary_ok():
         return verdict("setup", False, "could not plant the fake Wizard: " + out[-300:])
-    verdict("setup", True, info.replace("\n", " | "))
+    verdict("setup", True, str(facts))
 
     # ---- move: at the box's screen (the trusted serial console)
     con = VM["con"]
