@@ -66,6 +66,17 @@ def resolve(c, app_id, body):
     return {'source': source, 'repo': repo, 'commit': pin, 'operation': operation, 'entry': entry}
 
 
+def _private_to_standard(existing, selection):
+    """The one allowed repository change: an installed owner-private test build moves onto the public Standard
+    release of the same app id, when both repositories belong to the same GitHub owner and the owner explicitly
+    chose a release change. Everything else (other owner, link, Standard->other repo, plain install) stays refused."""
+    def owner(repo):
+        return str(repo).split('/', 1)[0].lower() if isinstance(repo, str) and '/' in repo else ''
+    return (existing.get('source') == 'owner-private' and selection['source'] == 'standard'
+            and selection['operation'] != 'install'
+            and bool(owner(existing.get('repo'))) and owner(existing.get('repo')) == owner(selection['repo']))
+
+
 def execute(c, app_id, selection):
     from . import cli, private
     source, entry = selection['source'], selection['entry']
@@ -88,7 +99,7 @@ def execute(c, app_id, selection):
             existing = json.loads((c.runtipi_root / 'apps' / cli.STORE / app_id / '.wizard-source').read_text())
         except (OSError, ValueError):
             raise ValueError('installed repository identity unavailable; nothing changed') from None
-        if existing.get('repo') != selection['repo']:
+        if existing.get('repo') != selection['repo'] and not _private_to_standard(existing, selection):
             raise ValueError('installed repository conflict; nothing changed')
         if source == 'link' and existing.get('source') != 'link':
             raise ValueError('installed source is not link; nothing changed')
