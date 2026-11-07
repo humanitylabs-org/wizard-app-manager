@@ -49,8 +49,9 @@ def test_unactivated_restore_defers_every_step(tmp_path, monkeypatch):
     assert rec["state"] == "deferred" and "restore" in rec["reason"].lower()
 
 
-def test_unset_update_choice_remains_unset(tmp_path):
-    assert maintain.updates_step(tmp_path, True)["state"] == "ask"
+def test_unset_update_choice_remains_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": False})   # every box is Automatic
+    assert maintain.updates_step(tmp_path, True)["state"] == "current"
     assert updates._choice(tmp_path) is None
     assert not (tmp_path / "updates.json").exists()
     assert not (tmp_path / "maintenance.json").exists()

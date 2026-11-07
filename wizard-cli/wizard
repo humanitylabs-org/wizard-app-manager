@@ -1551,7 +1551,7 @@ def cmd_report(ns):
                         "mismatches": sum(isinstance(c, dict) and c.get("ok") is False for c in checks),
                         "identities": observed},
             "expected_pins": expected, "services": services, "recent_errors": errors,
-            "updates": {"mode": policy.get("mode") if policy.get("mode") in ("ask", "auto") else "ask",
+            "updates": {"mode": "auto",  # updates are always automatic (a saved legacy "ask" or no choice reads as auto)
                         "channel": policy.get("channel") if policy.get("channel") in ("stable", "latest") else "stable"},
             "privacy": "allowlisted-identities-and-enums-only; no raw logs or content; not uploaded"}
 
