@@ -727,6 +727,65 @@ def write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str]) -> P
     return p
 
 
+def reconcile_trusted_origins(c: Config, reg: dict) -> dict[str, str]:
+    """Explicit `wam links` only: extend installed Wizard apps' trust and apply it through Runtipi.
+
+    Keep owner entries (also the last known aliases when Serve is unreadable). A durable marker means a failed
+    recreation is retried even though app.env is already saved. Never start an app the owner stopped.
+    """
+    from .runtipi import read_env
+    out = {}
+    for row in reg.get("apps") or []:
+        app_id = row["id"]
+        if row.get("urn") != f"{app_id}:{STORE}" or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", app_id):
+            continue
+        try:
+            if not trusted_origin_env(c, app_id):
+                continue
+            app = ((c.runtipi().app(row["urn"]) or {}).get("app") or {})
+            if not app:
+                continue
+            if app.get("userConfigEnabled") is False:
+                out[app_id] = "error: trust not applied: owner disabled user configuration"
+                continue
+            desired = trusted_origin_env(c, app_id, app.get("port"))
+            if not desired:
+                continue
+            env_path = c.runtipi_root / "user-config" / STORE / app_id / "app.env"
+            current = read_env(env_path) if env_path.exists() else {}
+            values = {}
+            for key in ("WIZARD_TRUSTED_HOSTS", "WIZARD_TRUSTED_ORIGINS"):
+                old = [v.strip() for v in current.get(key, "").split(",") if v.strip()]
+                missing = [v for v in desired[key].split(",") if v not in old]
+                if missing:
+                    values[key] = ",".join(old + missing)
+            pending = env_path.parent / ".wizard-trust-pending"
+            if values:
+                pending.parent.mkdir(parents=True, exist_ok=True)
+                pending.touch(mode=0o600)
+                write_user_env(c.runtipi_root, app_id, values)
+            if not pending.exists():
+                continue
+            status = app.get("status")
+            if (app.get("config") or {}).get("skipEnv"):
+                out[app_id] = "error: trust not applied: owner skipEnv prevents environment regeneration"
+            elif status == "stopped":
+                out[app_id] = "saved; applies on next start"
+                pending.unlink()
+            elif status != "running":
+                out[app_id] = "error: trust not applied; retry `wam links` when the app is settled"
+            else:
+                res = app_lifecycle(c, "restart", row["urn"], skip_pull=True)
+                if res.get("error"):
+                    out[app_id] = "error: trust restart did not finish; retry `wam links`"
+                else:
+                    out[app_id] = "recreated"
+                    pending.unlink()
+        except (Exception, SystemExit):  # upstream exceptions may include credentials; never copy them to output
+            out[app_id] = "error: trust not applied; retry `wam links`"
+    return out
+
+
 def port_free(port: int) -> bool:
     """Nothing listens on this TCP port on any local address (loopback, tailnet, all)."""
     import socket
@@ -801,14 +860,17 @@ def carry_bundle_state(runtipi_root: Path, app_id: str, store: str = STORE, uid:
 LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stopped"}}
 
 
-def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
+def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300, *, skip_pull: bool = False) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
     runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
     rt = c.runtipi()
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
-    getattr(rt, verb)(urn)
+    if verb == "restart" and skip_pull:
+        rt.restart(urn, skip_pull=True)
+    else:
+        getattr(rt, verb)(urn)
     time.sleep(2)
     status = rt.wait_status(urn, LIFECYCLE_WANT[verb] | {"start_error", "stop_error", "restart_error", "missing"}, timeout)
     out = {"id": app_id, "urn": urn, "action": verb, "status": status}
@@ -2548,6 +2610,11 @@ def main(argv: list[str] | None = None) -> int:
             res = links.publish(reg, c.home, shell_ids, apply=not args.dry_run, api_port=c.port,
                                 known=None if args.dry_run else known)
             if not args.dry_run:
+                trust = reconcile_trusted_origins(c, reg)
+                if trust:
+                    res["trusted_origins"] = trust
+                    res["errors"].update({f"trust:{app_id}": value for app_id, value in trust.items()
+                                         if value.startswith("error:")})
                 # The installer calls links last. Rebuild/share after publishing,
                 # otherwise a fresh Agent Service still receives loopback URLs.
                 write_registry(c)
