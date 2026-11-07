@@ -17,10 +17,11 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent.parent
 MARKER = 'wizard-builder-bundle-v1'
 GUARD = 'WAM_FROM_BUILDER_BUNDLE'   # set on the exec'd box wam: never delegate twice
-# Source-level work on the app being built (wam/builder.py): never the box's registry, routes, apps, views state or
+# Source-level work on the app being built (wam/builder.py, wam/verify.py's throwaway loopback container): never the
+# box's registry, routes, apps, views state or
 # the builder bundle itself (`builder-skill` installs the bundle and `views` writes ~/.wizard-os/views, so both go to
 # the box's wam).
-BUILDER_COMMANDS = frozenset({'new', 'check', 'install-local', 'update-local', 'publish', 'package-inline'})
+BUILDER_COMMANDS = frozenset({'new', 'check', 'verify', 'install-local', 'update-local', 'publish', 'package-inline'})
 
 
 def bundle_root(source: Path = SOURCE) -> Path | None:
