@@ -193,6 +193,8 @@ def set_schedule(box: Box, *, s3: str | None = None, path: str | None = None, sf
            "at": at or cur.get("at") or "03:30", "retention": ret, "verify": ver,
            "prune_by": prune_by or cur.get("prune_by") or "box",
            "box_id": cur.get("box_id") or uuid.uuid4().hex[:12], "target": cur.get("target")}
+    if "min_free_bytes" in cur:
+        cfg["min_free_bytes"] = snapshot.validate_floor(cur["min_free_bytes"])
     if cfg["every"] not in EVERY:
         raise ScheduleError("--every must be hourly, daily or weekly")
     if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", cfg["at"]):
@@ -241,7 +243,8 @@ def public(cfg: dict | None) -> dict:
         return {"configured": False, "enabled": False}
     return {"configured": True, "enabled": bool(cfg.get("enabled")), "every": cfg.get("every"), "at": cfg.get("at"),
             "retention": retention(cfg), "verify": verify_cfg(cfg), "prune_by": cfg.get("prune_by") or "box",
-            "box_id": cfg.get("box_id"), "target": cfg.get("target"), "engine": "restic"}
+            "box_id": cfg.get("box_id"), "target": cfg.get("target"), "engine": "restic",
+            "min_free_bytes": cfg.get("min_free_bytes")}
 
 
 def show(box: Box) -> dict:
@@ -458,13 +461,14 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
                 "engine": "restic", "restic_version": restic.VERSION}
     host = snapshot.host_name(cfg.get("box_id") or "box")
     try:
+        floor = snapshot.validate_floor(cfg.get("min_free_bytes"))
         key = keylib.stored_key(box.home)
         if not key:
             raise ScheduleError("this box has no stored recovery key (`wam backup key new`)")
         with open_repo(box, t, key) as repo:
             st["repository_created"] = repo.open_or_init()["initialized"]
             log("capturing into the repository (only changed data is uploaded)")
-            bk = snapshot.backup(box, repo, host)
+            bk = snapshot.backup(box, repo, host, min_free_bytes=floor)
             st.update({k: bk[k] for k in ("snapshot", "short_id", "data_added", "data_added_packed", "capture_bytes",
                                           "entries", "agents", "apps", "peak_extra_disk_bytes", "restic_cache_bytes")})
             st["backup_seconds"] = bk["seconds"]
@@ -484,6 +488,10 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
             st["repository_uncompressed_bytes"] = stats.get("total_uncompressed_size")
             st["snapshots"] = stats.get("snapshots_count")
         st.update({"ok": True, "verified": True, "size": human(st.get("data_added") or 0), "error": None})
+    except snapshot.LowDiskStop as e:
+        st.update({"ok": False, "verified": False, "error": "stopped: free disk below floor",
+                   "stopped_low_disk": True, "free_bytes": e.free, "min_free_bytes": e.floor,
+                   "message": str(e), "kind": "LowDiskStop"})
     except Exception as e:  # noqa: BLE001 - every failure is reported in the status file
         st.update({"ok": False, "verified": False, "error": str(e)[:500], "kind": type(e).__name__})
     finally:
