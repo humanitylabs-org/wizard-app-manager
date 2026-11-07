@@ -238,3 +238,41 @@ def test_bundle_doctor_end_to_end_with_an_older_box_wam(tmp_path):
                        capture_output=True, text=True, timeout=60)
     assert p.returncode == 0, p.stderr
     assert json.loads(p.stdout)['state'] == 'kept_newer' and _current(os_home) == before
+
+
+@pytest.mark.parametrize('offered', ['unresolved', 'equal-time'])
+def test_unknown_order_keeps_installed_bytes_until_explicit_override(tmp_path, monkeypatch, offered):
+    os_home, root = _bundle(tmp_path)
+    before = _current(os_home)
+    before_bytes = (root / 'wam' / 'links.py').read_bytes()
+    stamp = ('3' * 40, NEW[1]) if offered == 'equal-time' else NEW
+    source = _source(tmp_path, 'unknown-source', stamp)
+    if offered == 'unresolved':
+        (source / bb.STAMP).write_text('$Format:%H %ct$\n')
+    (source / 'wam' / 'links.py').write_bytes(before_bytes + b'\n# distinct offered bytes\n')
+    assert bb.order(bb.stamp(source), bb.stamp(root)) is None
+    receipt = bb.install(os_home, source)
+    assert receipt['state'] == 'kept_unknown', receipt
+    assert '--allow-downgrade' in receipt['note']
+    assert _current(os_home) == before
+    assert (os_home / 'builder/current/wam/links.py').read_bytes() == before_bytes
+    monkeypatch.setattr(bb, 'SOURCE', source)
+    ok, detail = bb.health(os_home)[0][1:]
+    assert ok and 'order unknown, kept' in detail and 'builder-bundle install' not in detail
+    explicit = bb.install(os_home, source, allow_downgrade=True)
+    assert explicit['state'] == 'installed'
+    assert (os_home / 'builder/current/wam/links.py').read_bytes() != before_bytes
+
+
+def test_unknown_box_source_is_not_delegated_without_explicit_override(tmp_path):
+    os_home, root = _bundle(tmp_path)
+    before = _current(os_home)
+    cmd, _ = _box(tmp_path, OLD)
+    cmd.write_text('#!/bin/sh\nexec /usr/bin/python3 -m wam "$@"\n')
+    out, calls, printed = _delegate(['builder-bundle', 'install'], root, cmd)
+    assert out is True and calls == []
+    assert json.loads(printed[0])['state'] == 'kept_unknown'
+    assert _current(os_home) == before
+    out, calls, printed = _delegate(['builder-bundle', 'install', '--allow-downgrade'], root, cmd)
+    assert out is True and printed == [] and len(calls) == 1
+    assert calls[0][1][1:] == ['builder-bundle', 'install', '--allow-downgrade']

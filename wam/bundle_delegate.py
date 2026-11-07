@@ -81,12 +81,10 @@ def _bundle_args(argv, source, cmd, out):
         return argv
     from .builder_bundle import _keep_newer, stamp
     box = box_source(cmd)
-    if box is None:
-        return argv
-    theirs = stamp(box)
+    theirs = stamp(box) if box is not None else None
     kept = _keep_newer(source.parent.parent / 'current', theirs, '--allow-downgrade' in argv)
     if kept is not None:
-        kept['box_app_manager'] = str(box)
+        kept['box_app_manager'] = str(box) if box is not None else None
         out(json.dumps(kept, indent=2))
         return None
     if theirs == 'pre':   # that wam predates the flag; it would refuse the whole command

@@ -428,20 +428,23 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
 
 
 def _keep_newer(current, new, allow_downgrade):
-    """The receipt for keeping a newer installed bundle, or None when installing `new` is not a downgrade."""
+    """Keep an installed bundle unless the offered version is demonstrably equal/newer or explicitly allowed."""
     if allow_downgrade or not current.is_symlink() or not (current / 'bundle.json').is_file():
         return None
     have = stamp(current)
-    if order(new, have) != -1:
+    relation = order(new, have)
+    if relation in (0, 1):
         return None
     try:
         digest = json.loads((current / 'bundle.json').read_text()).get('sha256')
     except (OSError, ValueError):
         digest = None
-    return {'state': 'kept_newer', 'sha256': digest, 'release': os.readlink(current).rsplit('/', 1)[-1],
+    reason = ('The installed builder bundle is newer than this App Manager' if relation == -1
+              else 'The offered builder bundle cannot be ordered against the installed bundle')
+    return {'state': 'kept_newer' if relation == -1 else 'kept_unknown',
+            'sha256': digest, 'release': os.readlink(current).rsplit('/', 1)[-1],
             'installed': describe(have), 'offered': describe(new),
-            'note': 'The installed builder bundle is newer than this App Manager; nothing changed. '
-                    'Pass --allow-downgrade to replace it anyway.'}
+            'note': reason + '; nothing changed. Pass --allow-downgrade to replace it anyway.'}
 
 
 def restore_local_copy(os_home, revision):
@@ -723,7 +726,7 @@ def main(argv=None):
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     ap.add_argument('--allow-downgrade', action='store_true',
-                    help='install/fresh: replace an installed bundle that is newer than this App Manager')
+                    help='install/fresh: explicitly replace a newer or unorderable installed bundle')
     a = ap.parse_args(argv)
     from .registry import home
     try:

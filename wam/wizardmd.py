@@ -28,13 +28,7 @@ def front_matter(text: str) -> dict:
     m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
     if not m:
         raise ValueError("no YAML front matter")
-    try:
-        data = yaml.safe_load(m.group(1))
-    except yaml.YAMLError:
-        fixed = quote_colons(text)
-        if fixed == text:
-            raise
-        data = yaml.safe_load(re.match(r"^---\n(.*?)\n---\n", fixed, re.S).group(1))
+    data = yaml.safe_load(m.group(1))
     if not isinstance(data, dict):
         raise ValueError("front matter is not a mapping")
     return data
@@ -48,8 +42,8 @@ def quote_colons(text: str) -> str:
     """wizard.md with any top-level plain value containing `: ` quoted, when that is what breaks its front matter.
 
     `summary: To-dos: one list for the house` is not YAML (the second `: ` starts a mapping), and writers type it
-    all the time. The builder reads it as the quoted string; `wam package-inline` writes the quotes into the file,
-    so the published wizard.md stays plain YAML for every other reader. Anything else stays an error.
+    all the time. `wam package-inline` writes the quotes into the file before checking, so the published wizard.md
+    stays plain YAML for every reader. Read-only checks never apply this repair; anything else stays an error.
     """
     m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
     if not m:
