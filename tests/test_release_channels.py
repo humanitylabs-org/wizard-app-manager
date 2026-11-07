@@ -1,5 +1,6 @@
 """Release channels (James, 21 Oct 2026): latest = every release as cut; stable = soaked 72h on latest and passed an
-upgrade test, recorded in releases/promotions/<version>.json. Automatic installs only promoted stable releases."""
+upgrade test, recorded in releases/promotions/<version>.json. Automatic installs the box's channel release: only
+promoted stable releases on stable, each new Latest release on latest (#458)."""
 import json
 import subprocess
 from pathlib import Path
@@ -175,15 +176,91 @@ def test_update_button_installs_the_channel_release_it_checked(tmp_path):
     assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.27 bash -s start"]]
 
 
-def test_automatic_installs_only_a_promoted_stable_release(tmp_path):
+def test_automatic_on_stable_installs_only_a_promoted_stable_release(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.25")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)   # channel: stable (the default)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
+    assert res["started"] is True and res["latest"] == "0.3.26"
+    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.26 bash -s start"]]
+
+
+# #458: Automatic + Latest installs each new Latest release (it used to install Stable only).
+
+def test_automatic_on_latest_installs_the_newest_latest_release(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.26")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    updates.set_channel("latest", h)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
+    assert res["started"] is True and res["latest"] == "0.3.28" and res["channel"] == "latest"
+    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.28 bash -s start"]]
+
+
+def test_automatic_on_latest_needs_no_promotion_record_for_a_latest_only_release(tmp_path):
     h = tmp_path / "wos"
     _pin(h, "0.3.25")
     updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
-    updates.set_channel("latest", h)                         # even a latest box: Automatic means stable only
+    updates.set_channel("latest", h)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28", promote=False), _runner(calls),
+                                is_busy=lambda: False)
+    assert res["started"] is True and calls[0][-1].endswith("WIZARD_RELEASE=0.3.28 bash -s start")
+
+
+def test_automatic_on_latest_still_gates_the_stable_release_when_latest_names_it(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.25")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    updates.set_channel("latest", h)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.26", promote=False), _runner(calls),
+                                is_busy=lambda: False)
+    assert res["started"] is False and res["skipped"] == "unpromoted" and calls == []
+
+
+def test_automatic_on_latest_falls_back_to_stable_without_a_latest_pointer(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.25")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    updates.set_channel("latest", h)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26"), _runner(calls), is_busy=lambda: False)
+    assert res["started"] is True and res["latest"] == "0.3.26"
+
+
+def test_automatic_on_latest_is_current_when_it_runs_the_newest_latest(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.28")
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    updates.set_channel("latest", h)
     calls = []
     res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
-    assert res["started"] is True
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.26 bash -s start"]]
+    assert res["started"] is False and "skipped" not in res and calls == []
+
+
+def test_automatic_on_latest_waits_while_a_chat_runs_and_ask_me_never_installs(tmp_path):
+    h = tmp_path / "wos"
+    _pin(h, "0.3.26")
+    updates.set_channel("latest", h)
+    base = _mirror(tmp_path, "0.3.26", latest="0.3.28")
+    calls = []
+    assert updates.apply_if_auto(h, base, _runner(calls), is_busy=lambda: False)["started"] is False   # Ask me
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    res = updates.apply_if_auto(h, base, _runner(calls), is_busy=lambda: True)
+    assert res["started"] is False and res["skipped"] == "busy" and calls == []
+
+
+def test_automatic_on_latest_never_moves_an_unpinned_box(tmp_path):
+    h = tmp_path / "wos"
+    h.mkdir()
+    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
+    updates.set_channel("latest", h)
+    calls = []
+    res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
+    assert res["started"] is False and calls == []
 
 
 def test_automatic_skips_a_stable_pointer_without_a_promotion(tmp_path):
