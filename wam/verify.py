@@ -224,7 +224,7 @@ def skins(source):
 
 
 class _SkinProxy(ThreadingHTTPServer):
-    """GET /s/<skin>/<path> -> the app's /<path>; the page's <html> gets data-skin=<skin>. Loopback only."""
+    """GET /s/<skin>/<path> -> the app's /<path>; the page's <html> gets data-skin=<skin>, as in the shell. Loopback only."""
     daemon_threads = True
 
     def __init__(self, app_port):
@@ -245,7 +245,8 @@ class _SkinHandler(BaseHTTPRequestHandler):
             body = r.read()
             kind = r.getheader('Content-Type', 'application/octet-stream')
             if kind.startswith('text/html'):
-                body = re.sub(rb'<html\b', b'<html data-skin="' + skin.encode() + b'"', body, count=1)
+                # What the shell's appearance message sets: the skin and its (dark) colour scheme.
+                body = re.sub(rb'<html\b', b'<html data-skin="' + skin.encode() + b'" data-color-scheme="dark"', body, count=1)
             self.send_response(r.status)
             self.send_header('Content-Type', kind)
             self.send_header('Content-Length', str(len(body)))

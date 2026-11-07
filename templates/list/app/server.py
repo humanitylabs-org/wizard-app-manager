@@ -344,10 +344,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, list_items(args))
             if url.path == '/openapi.json':
                 return self.send(200, (ROOT / 'openapi.json').read_bytes())
-            name = 'index.html' if url.path == '/' else url.path[1:]
-            kind = STATIC_TYPES.get(Path(name).suffix)
-            if kind and '/' not in name and not name.startswith('.') and (ROOT / 'web' / name).is_file():
-                return self.send(200, (ROOT / 'web' / name).read_bytes(), kind)
+            # The view: only files that exist directly in web/ with an allowlisted type; the request picks a key, never a path.
+            view = {p.name: p for p in (ROOT / 'web').iterdir() if p.is_file() and not p.name.startswith('.') and p.suffix in STATIC_TYPES}
+            found = view.get('index.html' if url.path == '/' else url.path[1:])
+            if found is not None:
+                return self.send(200, found.read_bytes(), STATIC_TYPES[found.suffix])
             self.send(405 if url.path == '/mcp' else 404, {'error': 'Use POST /mcp.' if url.path == '/mcp' else 'Not found.'})
         except Problem as e:
             self.send(e.code, {'error': e.message})
