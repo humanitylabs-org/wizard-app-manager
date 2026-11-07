@@ -468,7 +468,10 @@ def adopt_media(runtipi_root: Path, image: str, user: str) -> bool:
         return False
     if not _SAFE_PATH.match(str(media)):
         raise SystemExit(f"media path {str(media)!r} has characters a command can't carry safely")
-    r = subprocess.run(["docker", "run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
+    # A sudo-capable existing Hermes owner may not belong to docker at all. install.sh already uses
+    # sudo for that case; reuse the noninteractive, local-socket selector rather than granting a group.
+    from .backup.dockercli import docker
+    r = subprocess.run(docker() + ["run", "--rm", "--pull", "missing", "--network", "none", "--user", "0:0",
                         "--entrypoint", "sh", "-v", f"{media}:/media", image, "-c",
                         "mkdir -p /media/Inbox /media/.wizard-uploads"
                         " && chgrp 1000 /media && chmod g+rwx /media"

@@ -64,12 +64,18 @@ def docker(env: dict | None = None) -> list[str]:
         if (env.get("DOCKER_CONTEXT", "") not in ("", "default")
                 or any(env.get(k) for k in ("DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_TLS"))):
             return ["docker"]
+        # Competing context/host settings must not redirect sudo to a daemon
+        # different from the failed direct call. Refuse rather than guess.
+        if env.get("DOCKER_CONTEXT") and env.get("DOCKER_HOST"):
+            return ["docker"]
         host = "" if env.get("DOCKER_CONTEXT") else env.get("DOCKER_HOST", "")
         if not host:
             try:
-                context = run(["docker", "context", "show"]).stdout
+                # Docker 20.10 (Debian 12) has ls/.Current, but not show.
+                context = run(["docker", "context", "ls", "--format",
+                               "{{if .Current}}{{.Name}}{{end}}"]).stdout
                 if isinstance(context, bytes):
-                    context = context.decode()
+                    context = context.decode(errors="replace")
                 if context.strip() != "default":
                     return ["docker"]
             except (OSError, subprocess.SubprocessError):

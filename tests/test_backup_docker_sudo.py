@@ -21,7 +21,7 @@ def fake(monkeypatch, *, plain=False, sudo=True, context="default"):
         calls.append((argv, kw))
         assert kw["stdin"] == subprocess.DEVNULL
         assert kw["timeout"] == 20
-        if argv[1:3] == ["context", "show"]:
+        if argv[1:3] == ["context", "ls"]:
             return subprocess.CompletedProcess(argv, 0, context.encode(), b"")
         if (argv[0] == "docker" and plain) or (argv[0] == "sudo" and sudo):
             return subprocess.CompletedProcess(argv, 0, b"daemon", b"")
@@ -72,9 +72,10 @@ def test_never_sudo_a_remote_or_custom_context(monkeypatch, extra):
     assert not any(argv[0] == "sudo" for argv, _ in calls)
 
 
-def test_explicit_default_context_takes_precedence_over_docker_host(monkeypatch):
-    fake(monkeypatch)
-    assert dockercli.docker({"DOCKER_CONTEXT": "default", "DOCKER_HOST": "unix:///run/ignored.sock"})[-1] == "unix:///var/run/docker.sock"
+def test_explicit_default_context_and_host_do_not_guess_client_precedence(monkeypatch):
+    calls = fake(monkeypatch)
+    assert dockercli.docker({"DOCKER_CONTEXT": "default", "DOCKER_HOST": "unix:///run/ignored.sock"}) == ["docker"]
+    assert len(calls) == 1
 
 
 def test_configured_nondefault_context_does_not_switch_daemons(monkeypatch):
