@@ -1,8 +1,8 @@
-"""Feature switches (formerly Settings › Tweaks) for one box, for the Wizard OS Tracker app (Miguel, 7 Nov 2026).
+"""Feature switches for one box: the Wizard OS Tracker app's 'Try it' and Settings' "Try new features" (Miguel, 7 Nov 2026).
 
-Feature switches left Settings: an owner turns new features on or off only in the Wizard OS Tracker app
-(app id `wizard-os-tracker`), and only on the For testers channel (`latest`). On For everyone (`stable`) every switch
-stays off and none can be turned on (the shell enforces the same: wizard-ux core/experience.js).
+Feature switches live in Settings › Appearance ("Try new features", For testers only) and in the Wizard OS Tracker
+app, one shared state. Only on the For testers channel (`latest`): on For everyone (`stable`) every switch stays off
+and none can be turned on (the shell enforces the same: wizard-ux core/experience.js).
 
 Where the state lives (unchanged; this module adds no second copy):
   the owner's Files, Pages/wizard-look/look.json, read and written through the Agent Service Pages file API on the
@@ -14,34 +14,29 @@ Which switches exist: the running shell's own catalog (`<wizard-ux>/wizard-os-ho
   `<id>/manifest.json`), minus built-in features (catalog `defaults`) and shell views (manifest `view`), which are not
   feature switches.
 
-Who may call (two callers, nothing else):
-  - the owner on the server (`wam feature-switches`, or `Authorization: Bearer <~/.wizard-os/api-token>`);
-  - an app holding a key minted for it by `wam feature-switches --grant <app>`. Only apps in APPS may get one. The
-    key (32 random bytes, hex) is written to the app's `<app-data>/wizard/feature-switches.key`, which its services
-    already mount read-only at /wizard (spec/PERMISSIONS.md layer 2); the box keeps only its SHA-256 in
-    `~/.wizard-os/grants/feature-switches.json` (0600). The caller sends it as `X-Wizard-Grant`; identity comes from
-    the hash match, never from the request. `--revoke <app>` removes it at once.
+Who may call (the owner, nothing else; no app key, no container networking, nothing to install):
+  - in a browser: the Tracker's page runs inside the owner's Wizard on the shell's origin
+    (`https://<box>:8444/wizard-os-tracker/`), so it calls the same owner-only, same-origin route Settings › Updates
+    already uses: `/wizard-os-home/store-install/_feature-switches`, which Tailscale Serve proxies to the wam store
+    listener (`StoreHandler`, :7791) with the owner's Tailscale identity. POST needs the shell's Origin,
+    `X-Wizard-Store: 1` and JSON (store_install.check_request), like every other owner change there.
+  - on the server: `wam feature-switches [--on ID|--off ID]`, or `Authorization: Bearer <~/.wizard-os/api-token>` on
+    `wam serve` (127.0.0.1:7790) `/api/feature-switches`.
 
-HTTP (`wam serve`): GET /api/feature-switches -> listing(); POST /api/feature-switches {"id": "<author>/<id>",
-"on": true|false} -> set_switch(). 401 without a credential, 403 for an app not allowed, 409 on For everyone.
+Both HTTP routes: GET -> listing(); POST {"id": "<author>/<id>", "on": true|false} -> set_switch().
+401/403 without the owner, 409 on For everyone.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import os
 import re
-import secrets
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-APPS = ("wizard-os-tracker",)      # apps that may hold a feature-switch key
+STORE_PATH = "_feature-switches"     # under /wizard-os-home/store-install/ (StoreHandler)
 ID = re.compile(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*")
-APP = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOOK = "/wizard/v1/pages/wizard-look/look.json"
-KEYFILE = "feature-switches.key"
 
 
 class SwitchError(RuntimeError):
@@ -53,66 +48,6 @@ class SwitchError(RuntimeError):
 def _home(home: Path | None) -> Path:
     from .updates import _home as h
     return h(home)
-
-
-# --- who may call ------------------------------------------------------------------------------------------------
-
-def _grants(home: Path | None) -> Path:
-    return _home(home) / "grants" / "feature-switches.json"
-
-
-def _read_grants(home: Path | None) -> list[dict]:
-    try:
-        rows = json.loads(_grants(home).read_text()).get("incoming")
-    except (OSError, ValueError, AttributeError):
-        return []
-    return [r for r in rows or [] if isinstance(r, dict) and r.get("from") in APPS
-            and isinstance(r.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", r["sha256"])]
-
-
-def _write_grants(home: Path | None, rows: list[dict]) -> None:
-    p = _grants(home)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump({"incoming": rows}, f, indent=2)
-    tmp.replace(p)
-
-
-def caller(key: str | None, home: Path | None = None) -> str | None:
-    """The app a presented X-Wizard-Grant belongs to, or None. Constant-time compare on the hash."""
-    if not key or not re.fullmatch(r"[0-9a-f]{64}", key):
-        return None
-    got = hashlib.sha256(key.encode()).hexdigest()
-    for r in _read_grants(home):
-        if hmac.compare_digest(got, r["sha256"]):
-            return r["from"]
-    return None
-
-
-def grant(app: str, key_dir: Path, home: Path | None = None) -> dict:
-    """Mint a key for an allowed app: the hash stays on the box, the key goes to the app's /wizard mount."""
-    if app not in APPS:
-        raise SwitchError(f"only {', '.join(APPS)} may switch features", 403)
-    key = secrets.token_hex(32)
-    key_dir.mkdir(parents=True, exist_ok=True)
-    kf = key_dir / KEYFILE
-    tmp = kf.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)   # read-only inside the app's own mount
-    with os.fdopen(fd, "w") as f:
-        f.write(key + "\n")
-    tmp.replace(kf)
-    rows = [r for r in _read_grants(home) if r["from"] != app]
-    _write_grants(home, rows + [{"from": app, "sha256": hashlib.sha256(key.encode()).hexdigest()}])
-    return {"app": app, "granted": True, "key_file": str(kf)}
-
-
-def revoke(app: str, key_dir: Path | None = None, home: Path | None = None) -> dict:
-    _write_grants(home, [r for r in _read_grants(home) if r["from"] != app])
-    if key_dir is not None:
-        (key_dir / KEYFILE).unlink(missing_ok=True)
-    return {"app": app, "granted": False}
 
 
 # --- what exists and what is on ----------------------------------------------------------------------------------

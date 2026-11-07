@@ -1,7 +1,8 @@
-"""Feature switches for the Wizard OS Tracker app (wam/feature_switches.py; Miguel, 7 Nov 2026): list and turn one on or
-off for this box, only on For testers, only for the owner or an app holding a minted key. No real box is touched: the
-shell catalog and the Agent Service Pages API are fakes."""
-import hashlib
+"""Feature switches for Settings and the Wizard OS Tracker app (wam/feature_switches.py; Miguel, 7 Nov 2026): list and
+turn one on or off for this box, only on For testers, only for the owner (Tailscale owner login on the same-origin store
+route, or the owner token on wam serve). No app key exists. No real box is touched: the shell catalog and the Agent
+Service Pages API are fakes."""
+import io
 import json
 import threading
 import urllib.error
@@ -124,33 +125,16 @@ def test_unknown_builtin_view_or_malformed_ids_are_refused(box):
     assert pages.puts == []
 
 
-def test_only_the_tracker_can_get_a_key_and_only_its_hash_stays_on_the_box(box, tmp_path):
-    kdir = tmp_path / "app-data" / "wizard-os-tracker" / "wizard"
-    res = fs.grant("wizard-os-tracker", kdir, box)
-    key = (kdir / fs.KEYFILE).read_text().strip()
-    rec = json.loads((box / "grants" / "feature-switches.json").read_text())
-    assert res["granted"] and len(key) == 64 and key not in json.dumps(rec)
-    assert rec == {"incoming": [{"from": "wizard-os-tracker", "sha256": hashlib.sha256(key.encode()).hexdigest()}]}
-    assert ((box / "grants" / "feature-switches.json").stat().st_mode & 0o077) == 0
-    assert fs.caller(key, box) == "wizard-os-tracker"
-    assert fs.caller("0" * 64, box) is None and fs.caller(None, box) is None and fs.caller("short", box) is None
-    with pytest.raises(fs.SwitchError) as e:
-        fs.grant("money", tmp_path / "m", box)
-    assert e.value.code == 403
-    fs.grant("wizard-os-tracker", kdir, box)                    # re-minting replaces the old key
-    assert fs.caller(key, box) is None
-    fs.revoke("wizard-os-tracker", kdir, box)
-    assert not (kdir / fs.KEYFILE).exists() and fs.caller(key, box) is None
+def test_no_app_key_path_exists():
+    assert not hasattr(fs, "grant") and not hasattr(fs, "caller") and not hasattr(fs, "APPS")
+    with pytest.raises(SystemExit):
+        cli.main(["feature-switches", "--grant", "wizard-os-tracker"])
 
 
-def test_http_gate_owner_token_or_tracker_key_and_nothing_else(box, tmp_path, monkeypatch):
+def test_http_gate_is_the_owner_token_and_nothing_else(box, monkeypatch):
     calls = []
     monkeypatch.setattr(fs, "listing", lambda *a, **k: {"switches": [], "locked": False})
     monkeypatch.setattr(fs, "set_switch", lambda tid, on, *a, **k: calls.append((tid, on, k.get("by"))) or {"ok": True})
-    key = None
-    kdir = tmp_path / "kd"
-    fs.grant("wizard-os-tracker", kdir, box)
-    key = (kdir / fs.KEYFILE).read_text().strip()
     c = cli.Config()
     cli.Handler.cfg, cli.Handler.token = c, c.api_token()
     srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.Handler)
@@ -168,19 +152,63 @@ def test_http_gate_owner_token_or_tracker_key_and_nothing_else(box, tmp_path, mo
             return e.code, json.loads(e.read())
     try:
         assert call("GET", {})[0] == 401
-        assert call("GET", {"X-Wizard-Grant": "f" * 64})[0] == 403
+        assert call("GET", {"X-Wizard-Grant": "f" * 64})[0] == 401, "an app grant header opens nothing"
+        assert call("POST", {"X-Wizard-Grant": "f" * 64}, {"id": "miguel/send-and-go", "on": True})[0] == 401
         assert call("POST", {"Authorization": "Bearer nope"}, {"id": "miguel/send-and-go", "on": True})[0] == 401
-        assert call("GET", {"X-Wizard-Grant": key}) == (200, {"switches": [], "locked": False})
-        assert call("POST", {"X-Wizard-Grant": key}, {"id": "miguel/send-and-go", "on": True})[0] == 200
-        assert call("POST", {"Authorization": f"Bearer {c.api_token()}"}, {"id": "miguel/send-and-go", "on": False})[0] == 200
-        assert calls == [("miguel/send-and-go", True, "wizard-os-tracker"), ("miguel/send-and-go", False, "owner")]
-        # The key opens only this route, never the owner's other changes.
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/install", b"{}", method="POST", headers={"X-Wizard-Grant": key})
-        with pytest.raises(urllib.error.HTTPError) as e:
-            urllib.request.urlopen(req)
-        assert e.value.code == 401
+        auth = {"Authorization": f"Bearer {c.api_token()}"}
+        assert call("GET", auth) == (200, {"switches": [], "locked": False})
+        assert call("POST", auth, {"id": "miguel/send-and-go", "on": False})[0] == 200
+        assert calls == [("miguel/send-and-go", False, "owner")]
     finally:
         srv.shutdown()
+
+
+def test_same_origin_store_route_is_owner_only_like_settings_updates(box, monkeypatch):
+    """The Tracker page runs on the shell's origin (https://<box>:8444/wizard-os-tracker/), so it calls
+    /wizard-os-home/store-install/_feature-switches, which Serve proxies to the store listener with the owner's login."""
+    from wam import store_install as si
+    (box / "links.json").write_text(json.dumps({"host": "box.ts.net"}))
+    monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 0)
+    monkeypatch.setattr(si, "owner_login", lambda: "owner@example.com")
+    monkeypatch.setattr(si, "served_origins", lambda host: {"https://box.ts.net:8444"})
+    monkeypatch.setattr(si, "own_ips", lambda: {"100.64.0.1"})
+    calls = []
+    monkeypatch.setattr(fs, "listing", lambda *a, **k: {"switches": [{"id": "miguel/send-and-go", "on": False}], "locked": False})
+
+    def setter(tid, on, *a, **k):
+        if tid == "miguel/locked":
+            raise fs.SwitchError("Feature switches are for testers", 409)
+        calls.append((tid, on, k.get("by")))
+        return {"ok": True}
+    monkeypatch.setattr(fs, "set_switch", setter)
+
+    class C:
+        home = box
+    sent = []
+
+    def call(method, body=None, **hdr):
+        raw = json.dumps(body).encode() if body is not None else b""
+        hd = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@example.com",
+              "Origin": "https://box.ts.net:8444", "X-Wizard-Store": "1", "Content-Type": "application/json",
+              "Content-Length": str(len(raw)), **hdr}
+        o = cli.StoreHandler.__new__(cli.StoreHandler)
+        o.cfg, o.path, o.client_address = C(), "/_feature-switches", ("127.0.0.1", 5555)
+        o.headers = {k: v for k, v in hd.items() if v is not None}
+        o.rfile = io.BytesIO(raw)
+        o._json = lambda code, b: sent.append((code, b))
+        o._go(method)
+        return sent[-1]
+
+    assert call("GET")[0] == 200 and call("GET")[1]["switches"][0]["id"] == "miguel/send-and-go"
+    assert call("GET", **{"Tailscale-User-Login": "intruder@example.com"})[0] == 403
+    assert call("POST", {"id": "miguel/send-and-go", "on": True})[0] == 200
+    assert calls == [("miguel/send-and-go", True, "owner")]
+    for bad in ({"Origin": "https://evil.example"}, {"X-Wizard-Store": None}, {"Tailscale-User-Login": "x@y.z"},
+                {"Content-Type": "text/plain"}):
+        assert call("POST", {"id": "miguel/send-and-go", "on": False}, **bad)[0] == 403, bad
+    assert call("POST", {"id": "miguel/locked", "on": True})[0] == 409
+    assert call("POST", ["nope"])[0] == 400
+    assert calls == [("miguel/send-and-go", True, "owner")], "refused calls never reach look.json"
 
 
 def test_http_maps_for_everyone_to_409(box, tmp_path, monkeypatch):
