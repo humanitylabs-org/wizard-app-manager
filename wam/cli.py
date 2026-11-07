@@ -1629,6 +1629,23 @@ class Handler(BaseHTTPRequestHandler):
         self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         return False
 
+    def _feature_switches(self, method: str):
+        """GET/POST /api/feature-switches: the owner's token, or an allowed app's X-Wizard-Grant (wam/feature_switches)."""
+        from . import feature_switches as fs
+        owner = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {self.token}".encode())
+        key = self.headers.get("X-Wizard-Grant")
+        app = None if owner else fs.caller(key)
+        if not owner and not app:
+            return self._json(403 if key else 401, {"error": "send X-Wizard-Grant (an allowed app's feature-switch key) "
+                                                             "or the owner's Authorization: Bearer token"})
+        try:
+            if method == "GET":
+                return self._json(200, fs.listing())
+            b = self._body()
+            return self._json(200, fs.set_switch(b.get("id"), b.get("on"), by=app or "owner"))
+        except fs.SwitchError as e:
+            return self._json(e.code, {"error": str(e)})
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         if n > 65536:
@@ -1710,9 +1727,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+        if u.path == "/api/feature-switches":
+            return self._feature_switches("GET")
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
+        if urlparse(self.path).path == "/api/feature-switches":   # its own gate: owner token or an allowed app's key
+            return self._feature_switches("POST")
         if not self._authorized():
             return
         c, path = self.cfg, urlparse(self.path).path
@@ -2349,6 +2370,12 @@ def main(argv: list[str] | None = None) -> int:
     aug = au.add_mutually_exclusive_group()
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the Wizard OS "
+                                                  "Tracker app's API")
+    fsg = fsw.add_mutually_exclusive_group()
+    fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
+    fsg.add_argument("--grant", metavar="APP", help="mint an app's key (only wizard-os-tracker)")
+    fsg.add_argument("--revoke", metavar="APP")
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
     aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
     aug.add_argument("--ensure-timer", action="store_true")
@@ -2377,6 +2404,18 @@ def main(argv: list[str] | None = None) -> int:
             print("phone-sync failed:timer_setup")
             return 1
         print(f"phone-sync {outcome}")
+        return 0
+    if args.cmd == "feature-switches":
+        from . import feature_switches as fs
+        c = Config()
+        kdir = lambda a: c.runtipi_root / "app-data" / STORE / a / "wizard"   # the app's own /wizard mount
+        try:
+            res = (fs.set_switch(args.on, True) if args.on else fs.set_switch(args.off, False) if args.off
+                   else fs.grant(args.grant, kdir(args.grant)) if args.grant
+                   else fs.revoke(args.revoke, kdir(args.revoke)) if args.revoke else fs.listing())
+        except fs.SwitchError as e:
+            print(json.dumps({"error": str(e)}, indent=2)); return 1
+        print(json.dumps(res, indent=2))
         return 0
     if args.cmd == "updates" and args.quick_apply:
         from . import quick_update
