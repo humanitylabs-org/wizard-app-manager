@@ -1622,12 +1622,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    FEATURE_SWITCHES = "/api/feature-switches"
+
     def _authorized(self) -> bool:
         got = self.headers.get("Authorization", "")
         if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
             return True
         self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         return False
+
+    def _feature_switches(self, method: str):
+        """GET/POST /api/feature-switches with the owner's token (wam/feature_switches). Browsers use the store
+        listener's same-origin `_feature-switches` route instead (StoreHandler)."""
+        from . import feature_switches as fs      # caller already passed _authorized()
+        try:
+            if method == "GET":
+                return self._json(200, fs.listing())
+            b = self._body()
+            return self._json(200, fs.set_switch(b.get("id"), b.get("on"), by="owner"))
+        except fs.SwitchError as e:
+            return self._json(e.code, {"error": str(e)})
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
@@ -1710,12 +1724,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+        if u.path == self.FEATURE_SWITCHES:      # owner token only
+            return self._feature_switches("GET") if self._authorized() else None
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
         if not self._authorized():
             return
         c, path = self.cfg, urlparse(self.path).path
+        if path == self.FEATURE_SWITCHES:
+            return self._feature_switches("POST")
         try:
             if path == "/api/install":
                 b = self._body()
@@ -1796,6 +1814,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
+            return self._feature_switches(method)
         if app_id == MAIN_COMPARE_PATH:   # Settings → About: how far this shell is from main (main_compare.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -2007,6 +2027,26 @@ class StoreHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError) as e:
             return self._json(400, {'error': str(e)[:200]})
 
+    def _feature_switches(self, method: str) -> None:
+        """GET: every feature switch and whether it is on. POST {"id": "<author>/<id>", "on": bool} turns one on or off.
+        Reached from the owner's browser at /wizard-os-home/store-install/_feature-switches (the Tracker page runs on
+        the shell's origin); _go already checked the owner's Tailscale login and, for POST, Origin + X-Wizard-Store."""
+        from . import feature_switches as fs
+        try:
+            if method == "GET":
+                return self._json(200, fs.listing())
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise ValueError("expected an object")
+            return self._json(200, fs.set_switch(body.get("id"), body.get("on"), by="owner"))
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        except fs.SwitchError as e:
+            return self._json(e.code, {"error": str(e)})
+
     def _updates(self, method: str) -> None:
         """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
         POST {"channel": "stable"|"latest"} saves the channel;
@@ -2048,6 +2088,7 @@ class GatewayStoreHandler(StoreHandler):
 
 
 UPDATES_PATH = "_updates"
+FEATURE_SWITCHES_PATH = "_feature-switches"
 MAIN_COMPARE_PATH = "_main-compare"
 
 
@@ -2368,6 +2409,10 @@ def main(argv: list[str] | None = None) -> int:
     aug = au.add_mutually_exclusive_group()
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the same state "
+                                                  "as Settings and the Wizard OS Tracker")
+    fsg = fsw.add_mutually_exclusive_group()
+    fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
     aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
     aug.add_argument("--ensure-timer", action="store_true")
@@ -2396,6 +2441,15 @@ def main(argv: list[str] | None = None) -> int:
             print("phone-sync failed:timer_setup")
             return 1
         print(f"phone-sync {outcome}")
+        return 0
+    if args.cmd == "feature-switches":
+        from . import feature_switches as fs
+        try:
+            res = (fs.set_switch(args.on, True) if args.on else fs.set_switch(args.off, False) if args.off
+                   else fs.listing())
+        except fs.SwitchError as e:
+            print(json.dumps({"error": str(e)}, indent=2)); return 1
+        print(json.dumps(res, indent=2))
         return 0
     if args.cmd == "updates" and args.quick_apply:
         from . import quick_update
