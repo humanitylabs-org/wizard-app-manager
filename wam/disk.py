@@ -26,6 +26,7 @@ from pathlib import Path
 DISK_DIR = Path("/etc/wizard/disk")
 INSTALL_INFO = Path("/etc/wizard/install-info")
 MAC_HOST_FILE = Path("/run/wizard-host/disk.json")
+MAC_GUEST_MARK = Path("/var/lib/wizard/mac-files")   # try-wizard's guest mounts the Mac's files here
 BIOS_VERSION = Path("/sys/class/dmi/id/bios_version")
 TPM = Path("/sys/class/tpm/tpm0")
 EFIVARS = Path("/sys/firmware/efi/efivars")
@@ -192,6 +193,8 @@ def _kind(wizard_home: Path | None) -> str:
     except Exception:  # noqa: BLE001 - status must answer even if alongside state is unreadable
         pass
     rc, virt = _run(["systemd-detect-virt", "--vm"])
+    if virt.strip() == "apple" or MAC_GUEST_MARK.exists():
+        return "mac-guest"   # try-wizard's Linux VM on a Mac: the Mac's FileVault protects it, not this guest
     if rc == 0 and virt.strip() and virt.strip() != "none":
         return "vps"
     return "linux"

@@ -23,6 +23,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(disk, "EFIVARS", efi)
     monkeypatch.setattr(disk, "INSTALL_INFO", info)
     monkeypatch.setattr(disk, "MAC_HOST_FILE", tmp_path / "no-mac-host.json")
+    monkeypatch.setattr(disk, "MAC_GUEST_MARK", tmp_path / "no-mac-files")
     monkeypatch.setattr(disk, "BIOS_VERSION", tmp_path / "bios_version")
     monkeypatch.setattr(sys, "platform", "linux")
     calls = []
@@ -222,3 +223,13 @@ def test_gateway_admits_the_disk_route_only_as_get_settings_route():
     from wam import store_install as si
     assert si.gateway_path_ok("/_disk") and "_disk" in si.GATEWAY_CONTROL
     assert not si.gateway_path_ok("/_disk/anything")
+
+
+def test_try_wizard_guest_on_a_mac_is_never_called_a_vps(box, tmp_path, monkeypatch):
+    """Apple's VM (try-wizard) without the host's FileVault file yet: say plainly it could not check, not 'provider'."""
+    box.info.unlink(); box.fake["virt"] = "apple"
+    st = disk.status(allow_sudo=False)
+    assert st["platform"] == "mac-guest" and st["line"] == "Couldn't check FileVault on this Mac"
+    box.fake["virt"] = "kvm"
+    (tmp_path / "no-mac-files").mkdir()
+    assert disk.status(allow_sudo=False)["platform"] == "mac-guest"
