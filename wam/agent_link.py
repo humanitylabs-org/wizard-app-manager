@@ -182,10 +182,14 @@ if not isinstance(cfg, dict):
 servers = cfg.get('mcp_servers') or {}
 if not isinstance(servers, dict):
     raise SystemExit('mcp_servers is not a mapping; left alone')
-want = {'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
 have = servers.get(name)
 if have is not None and not (isinstance(have, dict) and '/wizard/mcp' in str(have.get('url', ''))):
     raise SystemExit("an MCP server called '%s' that is not Wizard OS exists; left it alone" % name)
+# WAM437 (oscarhenrycollins): request lazy discovery, retaining the owner's options.
+# Runtime cache/reconnect compatibility is a separate release acceptance gate.
+want = dict(have or {})
+want.update(url=url, headers={'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'})
+want.setdefault('lazy', True)
 if have != want:
     servers[name] = want
     cfg['mcp_servers'] = servers
