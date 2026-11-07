@@ -1622,22 +1622,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    FEATURE_SWITCHES = "/api/feature-switches"
+
     def _authorized(self) -> bool:
+        """The owner's bearer token. On /api/feature-switches only, also an allowed app's X-Wizard-Grant key
+        (wam/feature_switches: hash match, wizard-os-tracker only); self.caller_app then names that app."""
+        self.caller_app = None
         got = self.headers.get("Authorization", "")
         if hmac.compare_digest(got.encode(), f"Bearer {self.token}".encode()):
             return True
+        key = self.headers.get("X-Wizard-Grant")
+        if urlparse(self.path).path == self.FEATURE_SWITCHES and key:
+            from . import feature_switches as fs
+            self.caller_app = fs.caller(key)
+            if self.caller_app:
+                return True
+            self._json(403, {"error": "this X-Wizard-Grant key is not allowed to change feature switches"})
+            return False
         self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         return False
 
     def _feature_switches(self, method: str):
         """GET/POST /api/feature-switches: the owner's token, or an allowed app's X-Wizard-Grant (wam/feature_switches)."""
-        from . import feature_switches as fs
-        owner = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {self.token}".encode())
-        key = self.headers.get("X-Wizard-Grant")
-        app = None if owner else fs.caller(key)
-        if not owner and not app:
-            return self._json(403 if key else 401, {"error": "send X-Wizard-Grant (an allowed app's feature-switch key) "
-                                                             "or the owner's Authorization: Bearer token"})
+        from . import feature_switches as fs      # caller already passed _authorized()
+        app = getattr(self, "caller_app", None)
         try:
             if method == "GET":
                 return self._json(200, fs.listing())
@@ -1727,16 +1735,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
-        if u.path == "/api/feature-switches":
-            return self._feature_switches("GET")
+        if u.path == self.FEATURE_SWITCHES:      # owner token, or the Tracker's key (only here)
+            return self._feature_switches("GET") if self._authorized() else None
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if urlparse(self.path).path == "/api/feature-switches":   # its own gate: owner token or an allowed app's key
-            return self._feature_switches("POST")
         if not self._authorized():
             return
         c, path = self.cfg, urlparse(self.path).path
+        if path == self.FEATURE_SWITCHES:
+            return self._feature_switches("POST")
+        if self.caller_app:      # an app key opens only the feature-switch route
+            return self._json(401, {"error": "send Authorization: Bearer <token from ~/.wizard-os/api-token>"})
         try:
             if path == "/api/install":
                 b = self._body()
