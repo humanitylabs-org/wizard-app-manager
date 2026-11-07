@@ -1666,6 +1666,16 @@ class Handler(BaseHTTPRequestHandler):
         c, u = self.cfg, urlparse(self.path)
         if u.path == "/healthz":
             return self._json(200, {"ok": True})
+        if u.path == "/api/main-compare":
+            # Public GitHub metadata, like the existing loopback read-only updates API. The front gateway
+            # owner-gates its one exact About URL; this route grants no Store or API write authority.
+            from . import main_compare
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
+            match = re.fullmatch(r"commit=([0-9a-f]{40})", u.query)
+            if not match or u.scheme or u.netloc or u.fragment:
+                return self._json(400, {"error": "send exactly one full lowercase commit SHA"})
+            return self._json(200, main_compare.compare(match[1]))
         if u.path == "/api/system/load":
             # Exact read-only numeric projection; never proxy arbitrary manager paths or credentials.
             from . import resources
