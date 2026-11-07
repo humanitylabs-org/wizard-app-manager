@@ -147,6 +147,11 @@ elif a[0] == "run":
             entry, image, rest = a[i + 1], a[i + 2], a[i + 3:]; break
         else:
             i += 1
+    if entry == "node" and rest[0] == "-e" and rest[1].startswith("// wam restore volume budget"):
+        assert "--read-only" in a
+        assert all(a[i + 1].endswith(":ro") for i, x in enumerate(a) if x == "-v")
+        script = rest[1].replace("'/v/'", json.dumps(os.environ["FAKE_VOLUMES"] + "/"))
+        sys.exit(subprocess.run(["node", "-e", script, rest[2]], stdin=sys.stdin).returncode)
     if entry == "tar":      # busybox tar -cf - -C /w NAMES... (appdata archive), as root with numeric owners
         assert image == os.environ.get("FAKE_HELPER_IMAGE", "example/wam:helper"), image
         import stat as _st, tarfile

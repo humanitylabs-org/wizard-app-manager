@@ -353,6 +353,47 @@ class AppData:
         except AppDataError:
             return False
 
+    def volume_usage(self, volumes: list[str]) -> list[dict]:
+        """Read-only logical size and free space through Docker's own volume mounts.
+
+        lstat counts sparse logical sizes (tar may materialize holes), never follows
+        symlinks, and can read root-owned database data without widening host roots.
+        """
+        if not volumes:
+            return []
+        cmd = [*docker(self.box.child_env), "run", "--rm", "--read-only", "--network", "none", "-u", "0:0"]
+        for v in volumes:
+            if not VOLUME_NAME.match(v):
+                raise AppDataError(f"bad volume name {v[:60]!r}")
+            cmd += ["-v", f"{v}:/v/{v}:ro"]
+        script = '''// wam restore volume budget
+const fs = require('node:fs');
+function size(p) {
+  const s = fs.lstatSync(p);
+  if (s.isSymbolicLink()) return 1024;
+  if (s.isFile()) return s.size + 1024;
+  if (!s.isDirectory()) return 0;
+  return 1024 + fs.readdirSync(p).reduce((n, f) => n + size(p + '/' + f), 0);
+}
+console.log(JSON.stringify(JSON.parse(process.argv[1]).map(name => {
+  const p = '/v/' + name, f = fs.statfsSync(p);
+  return {name, bytes: size(p), device: fs.statSync(p).dev, free: f.bavail * f.bsize};
+})));
+'''
+        text = self._run([*cmd, "--entrypoint", "node", self.image(), "-e", script, json.dumps(volumes)])
+        try:
+            rows = json.loads(text)
+            if len(rows) != len(volumes) or {r["name"] for r in rows} != set(volumes):
+                raise ValueError("missing volume size")
+            if any(not isinstance(r[k], int) or r[k] < 0 for r in rows for k in ("bytes", "free", "device")):
+                raise ValueError("invalid volume size")
+            return rows
+        except (ValueError, TypeError, KeyError):
+            raise AppDataError("could not measure the undo copies of this backup's named volumes") from None
+
+    def volume_bytes(self, volumes: list[str]) -> int:
+        return sum(r["bytes"] for r in self.volume_usage(volumes))
+
     def keep_in_place(self, store: str, app_id: str) -> list[str]:
         """Parts of this app's data that stay on this box (relative to its app-data folder): fixed per app, plus the
         agents root when it lives inside this app's data."""
