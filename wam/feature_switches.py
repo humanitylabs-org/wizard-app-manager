@@ -126,8 +126,10 @@ class Pages:
             try:
                 doc = json.loads(j["text"])
             except ValueError:
-                doc = {}
-            return (doc if isinstance(doc, dict) and doc.get("version") == 1 else {"version": 1}), j.get("version")
+                doc = None
+            # Unreadable or another schema version: hand back an UNREADABLE marker so set_switch refuses to write
+            # over it (the owner's skin, views and backdrop live in this file); listing reads it as "nothing on".
+            return (doc if _readable(doc) else UNREADABLE), j.get("version")
         if code == 404 and j.get("error") == "file_not_found":
             return {"version": 1}, None
         raise SwitchError(f"can't read look.json (HTTP {code})", 503)
@@ -141,9 +143,22 @@ class Pages:
             try:
                 newer = json.loads(cur.get("text") or "{}") if cur.get("exists") else {"version": 1}
             except ValueError:
-                newer = {"version": 1}
-            return False, newer, cur.get("version")
+                newer = None
+            return False, (newer if _readable(newer) else UNREADABLE), cur.get("version")
         raise SwitchError(f"can't save look.json (HTTP {code})", 503)
+
+
+UNREADABLE = {"version": None, "unreadable": True}   # look.json exists but is not a version-1 document we understand
+
+
+def _readable(doc) -> bool:
+    return isinstance(doc, dict) and doc.get("version") == 1
+
+
+def _refuse_unreadable(doc) -> None:
+    if not _readable(doc):
+        raise SwitchError("look.json is unreadable or from a newer Wizard OS, so it was left alone; "
+                          "fix or update it first", 409)
 
 
 def _pages(home: Path | None) -> Pages:
@@ -177,7 +192,7 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None) ->
     chan = _channel(home)
     locked = chan != "latest"
     doc, _ = (pages or _pages(home)).get()
-    saved = _tweaks(doc)
+    saved = _tweaks(doc) if _readable(doc) else {}
     rows = [{**t, "on": (not locked) and saved.get(t["id"], {}).get("on") is True, "locked": locked}
             for t in catalog(home, fetch)]
     return {"channel": chan, "channel_name": "For testers" if chan == "latest" else "For everyone", "locked": locked,
@@ -199,6 +214,7 @@ def set_switch(tid: str, on: bool, home: Path | None = None, fetch=_get, pages: 
     p = pages or _pages(home)
     doc, version = p.get()
     for _ in range(4):                                  # a device saved meanwhile: merge onto its newer text, retry
+        _refuse_unreadable(doc)                         # never overwrite the owner's skin/views with an empty file
         doc = {**doc, "version": 1}
         doc["tweaks"] = {**_tweaks(doc), tid: {"on": on, "at": _revision(doc) + 1}}
         ok, newer, version = p.put(doc, version)

@@ -236,3 +236,23 @@ def test_catalog_reads_the_running_shell_and_fails_plainly_without_one(box):
     with pytest.raises(fs.SwitchError) as e:
         fs.catalog(box, fetch)
     assert e.value.code == 503
+
+
+def test_an_unreadable_or_newer_look_json_is_never_overwritten(box):
+    updates.set_channel("latest", box)
+    for bad in ({"version": 2, "skin": {"id": "nebula", "at": 9}}, fs.UNREADABLE):
+        pages = FakePages(bad)
+        pages.get = lambda d=bad: ((d if fs._readable(d) else fs.UNREADABLE), "v1")
+        assert all(t["on"] is False for t in fs.listing(box, fetch, pages)["switches"])
+        with pytest.raises(fs.SwitchError) as e:
+            fs.set_switch("miguel/snooze-someday", True, box, fetch, pages)
+        assert e.value.args and pages.puts == [], "nothing was written over the owner's look.json"
+
+
+def test_pages_get_marks_malformed_and_other_versions_unreadable(monkeypatch):
+    p = fs.Pages("http://127.0.0.1:1")
+    for text in ("{not json", json.dumps({"version": 2}), json.dumps([1])):
+        monkeypatch.setattr(p, "_req", lambda m, b=None, t=text: (200, {"text": t, "version": "v9"}))
+        assert p.get() == (fs.UNREADABLE, "v9")
+    monkeypatch.setattr(p, "_req", lambda m, b=None: (200, {"text": json.dumps({"version": 1, "x": 1}), "version": "v9"}))
+    assert p.get() == ({"version": 1, "x": 1}, "v9")
