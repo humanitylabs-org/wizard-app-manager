@@ -10,6 +10,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -292,7 +293,11 @@ def check_app(root, proposal=False):
     rows += design_rows(root)
     rows += style_rows(root)
     if wizardmd.passed(approved):
-        doc = wizardmd.front_matter((root / 'wizard.md').read_text())
+        text = (root / 'wizard.md').read_text()
+        if wizardmd.quote_colons(text) != text:
+            rows.append({'rule': 'wizard.md front matter is plain YAML', 'ok': False, 'severity': 'warning',
+                         'detail': 'a value containing ": " is read as quoted text; `wam package-inline <source>` writes the quotes'})
+        doc = wizardmd.front_matter(text)
         rows += confinement_rows(root, doc)
         rows += app_standard.id_rows(doc)
         if proposal:
@@ -361,6 +366,10 @@ def new_app(app_id, dev_root=None, request='', *, name=None, kind='hello'):
         raise ValueError('Source bundle missing templates/hello-wizard or templates/' + KINDS[kind] + '; use the complete source checkout.')
     validate_style_snapshot(template)
     display = name or app_id.replace('-', ' ').title()
+    if not app_standard.id_rows({'id': app_id, 'name': display})[0]['ok']:
+        from .app_rename import kebab
+        raise ValueError(f'The app id must be its name in kebab-case: for {display!r} run '
+                         f"`wam new {kebab(display) or '<id>'} --name {shlex.quote(display)}`.")
     scratch = Path(tempfile.mkdtemp(prefix='.builder-', dir=dev_root))
     try:
         # Every kind shares hello-wizard's kit, Dockerfile and packaging; a kind overlays only its product files.
