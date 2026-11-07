@@ -2296,6 +2296,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv[:2] == ["disk", "encrypt"]:   # wizard-os spec/DISK_ENCRYPTION.md: opt-in, at the box, as root
+        from . import disk_encrypt
+        return disk_encrypt.main(argv[2:])
+    if argv[:2] == ["disk", "unlock"]:
+        from . import disk_encrypt
+        return disk_encrypt.unlock()
+    if argv[:2] == ["disk", "reseal"]:
+        from . import disk_encrypt
+        return disk_encrypt.reseal()
     if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
         from .backup.cli import main as backup_main
         return backup_main(argv[1:])
@@ -2356,7 +2365,10 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
     dk = sub.add_parser("disk", help="disk encryption: status (read-only: encrypted, sealed to the security chip, "
-                                     "recovery key; wizard-os spec/DISK_ENCRYPTION.md)")
+                                     "recovery key); encrypt (sudo, at the box: move Wizard data onto a new "
+                                     "TPM-sealed volume; --confirm, --rollback); unlock (recovery key at the box); "
+                                     "reseal (after a deliberate firmware or Secure Boot change, at the box). "
+                                     "wizard-os spec/DISK_ENCRYPTION.md")
     dk.add_argument("action", choices=("status",)); dk.add_argument("--json", action="store_true")
     phone = sub.add_parser("phone-sync", help="mirror the public phone APK; never installs or restarts anything")
     phone.add_argument("--ensure-timer", action="store_true", help="installer: enable the independent hourly mirror")
