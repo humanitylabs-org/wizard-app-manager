@@ -1,0 +1,11 @@
+{
+  "title": "My List",
+  "item": {"one": "item", "many": "items", "placeholder": "Add an item"},
+  "group": {"one": "group", "many": "groups", "default": "List"},
+  "fields": [
+    {"name": "note", "label": "Note", "type": "text", "max": 240}
+  ],
+  "done": {"filter": "Done", "heading": "Done"},
+  "empty": {"title": "Nothing here yet", "copy": "Tap Add below. One item per line; Enter adds the next."},
+  "title_max": 240
+}

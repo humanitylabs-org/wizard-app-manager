@@ -1,0 +1,41 @@
+{
+  "round_trip": [
+    {
+      "do": "POST /api/habits",
+      "name": "create",
+      "body": {
+        "name": "Verify {{run}}"
+      },
+      "status": 201,
+      "save": {
+        "hid": "habits.-1.id"
+      }
+    },
+    {
+      "do": "GET /api/habits",
+      "name": "list",
+      "expect": {
+        "habits.-1.name": "Verify {{run}}",
+        "habits.-1.done": false
+      }
+    },
+    {
+      "do": "POST /api/habits/{{hid}}/today",
+      "name": "update",
+      "body": {
+        "done": true
+      }
+    },
+    {
+      "restart": true
+    },
+    {
+      "do": "GET /api/habits",
+      "name": "read back after restart",
+      "expect": {
+        "habits.-1.name": "Verify {{run}}",
+        "habits.-1.done": true
+      }
+    }
+  ]
+}

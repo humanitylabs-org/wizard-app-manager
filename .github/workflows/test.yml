@@ -44,3 +44,28 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: '1.3.0'}
       - run: bun test tests/curator-mirrors.test.ts
+  builder-verify:
+    # The platform is tested once: every template kind passes the same `wam verify` an owner's agent runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pyyaml
+      - name: wam verify, list kind (receipt with elapsed time and memory)
+        run: |
+          python -m wam new verify-todo --kind list --dev-root "$RUNNER_TEMP/dev" --request 'a to-do list'
+          python -m wam.style_check "$RUNNER_TEMP/dev/verify-todo" --policy wam/style-policy.json --strict
+          python -m wam verify "$RUNNER_TEMP/dev/verify-todo" --out "$RUNNER_TEMP/shots/list"
+          ls -la "$RUNNER_TEMP/shots/list"
+      - name: wam verify, hello kind (declared verify.json)
+        run: |
+          python -m wam new verify-hello --dev-root "$RUNNER_TEMP/dev" --request 'hello'
+          python -m wam verify "$RUNNER_TEMP/dev/verify-hello" --no-screenshot
+      - name: nothing left behind
+        run: |
+          test -z "$(docker ps -aq --filter name=wam-verify)" && test -z "$(docker images -q --filter 'reference=wam-verify-*')"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: wam-verify-screenshots, path: "${{ runner.temp }}/shots", if-no-files-found: ignore}

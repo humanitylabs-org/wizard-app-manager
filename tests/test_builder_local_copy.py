@@ -442,10 +442,12 @@ def test_preserved_rule_coverage_in_canonical_source():
     for rule in ['both pointerdown and click', 'long-press', '--wos-cutout', 'app-parity-gate',
                  'source serving live today', 'reuse-check-app.yml@main', 'WizardApp.capture',
                  'WizAppReadingPosition', 'inventory pasted', '?open=<app-id>', 'authenticated same-origin',
-                 'Android-UA/touch', 'native bridge capability selection', 'Every tap registers before I/O',
-                 'before awaiting the write', 'App changes ship in the app']:
+                 'Every tap registers before I/O', 'before awaiting the write', 'App changes ship in the app',
+                 '--kind list', 'wam verify <source>', 'Five failed `wam verify` runs', 'Never write new test harnesses',
+                 'openThread']:
         assert rule in text
     assert 'forum-ci-runner-add' not in text  # personal infrastructure, not app source
+    assert len(text.split()) < 1500, 'the builder skill stays short; detail belongs in references'
     views = (bb.SOURCE / 'system-skills/wizard-builder/references/views.md').read_text()
     assert 'Keep custom views only in `~/.wizard-os/views/`' in views
 

@@ -10,9 +10,9 @@ def package_inline(root):
     # Every file of the view ships, so a new kit file or app asset can never be silently left out.
     # Text view files the template server can serve; anything else fails loudly instead of vanishing.
     view = [p for p in (root / 'web').iterdir() if p.is_file() and not p.name.startswith('.')]
-    odd = [p.name for p in view if p.suffix not in {'.html', '.js', '.css', '.svg'}]
+    odd = [p.name for p in view if p.suffix not in {'.html', '.js', '.css', '.svg', '.json'}]
     if odd:
-        raise ValueError('Inline packaging ships text view files only (html, js, css, svg); found: ' + ', '.join(sorted(odd)))
+        raise ValueError('Inline packaging ships text view files only (html, js, css, svg, json); found: ' + ', '.join(sorted(odd)))
     files = ['app/server.py', 'openapi.json'] + sorted('web/' + p.name for p in view)
     payload = {p: (root / p).read_text() for p in files}
     blob = base64.b64encode(json.dumps(payload, sort_keys=True).encode()).decode()

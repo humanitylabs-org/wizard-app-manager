@@ -267,7 +267,7 @@ def test_exact_legacy_manual_skill_is_migrated_with_alias_preserved(homes):
     result = bb.install(osh)
     bb.register(hh, osh)
     assert target.is_symlink() and alias.is_symlink()
-    assert 'version: 0.2.0' in (alias / 'SKILL.md').read_text()
+    assert 'version: 0.3.0' in (alias / 'SKILL.md').read_text()
     assert len(list((osh / 'builder').glob('legacy-skill-*'))) == 1
     assert bb.install(osh)['sha256'] == result['sha256']
     assert all(r[1] for r in bb.health(osh, hh))

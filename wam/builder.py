@@ -6,6 +6,7 @@ bundle). No public writes, signing, agent restart or global registry mutation.
 from __future__ import annotations
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -131,11 +132,22 @@ _RULES_URL = 'https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-
 # Shell features that reach outside the app's window (Chats, navigation). Newer Wizards add them, so an app
 # that calls one unguarded breaks on every older Wizard. Guarded = feature-detected before use.
 _SHELL_CALL = re.compile(r'WizardApp\.(nav|chat)\.(\w+)\s*\(')
+# A homemade root Back: the app listens to popstate or pushes history entries itself. Back belongs to WizardApp.back
+# (register for in-app steps, useHistory for routes); a private sentinel either exits the app or traps the owner.
+_HISTORY = re.compile(r'''addEventListener\s*\(\s*['"]popstate['"]|\bonpopstate\s*=|\bhistory\s*\.\s*pushState\s*\(''')
+# A hand-rolled pop-up: a <dialog>/role=dialog without the shared sheet class, modal/overlay/backdrop markup, or a
+# direct showModal() (WzSheet.open adds tap-outside, Back, Esc and swipe close; a homemade one misses some).
+_HAND_MODAL = re.compile(r'''<dialog\b(?![^>]*\bwz-sheet\b)[^>]*>|\brole\s*=\s*['"]?(?:alert)?dialog\b(?![^>]*\bwz-sheet\b)|\baria-modal\b|'''
+                         r'''\b(?:class|className)\s*=\s*['"`][^'"`]*(?<![\w-])(?:modal|backdrop|overlay|popup|lightbox|bottom-sheet)(?![\w-])|'''
+                         r'''\bclassList\s*\.\s*(?:add|toggle)\s*\(\s*['"](?:modal|backdrop|overlay|popup|lightbox|bottom-sheet)['"]|'''
+                         r'''(?<!WzSheet)\.\s*showModal\s*\(''')
+_TEST_DIRS = {'tests', 'test', 'qa', '__tests__'}
+_MODAL_CSS = re.compile(r'''(?<![\w-])\.(?:modal|backdrop|overlay|popup|lightbox|bottom-sheet|sheet)(?![\w-])''')
 
 
 def _own_files(root, suffixes):
     """The app's own view files: vendored dirs, kit copies and untouched template files are not the app's."""
-    template = REPO / 'templates' / 'hello-wizard' / 'web'
+    templates = [REPO / 'templates' / t / 'web' for t in ('hello-wizard', 'list')]
     development = system_functions._development_roots(Path(root).resolve())
     for p in sorted(root.rglob('*')):
         if p.relative_to(root).parts[0] in development:
@@ -144,8 +156,7 @@ def _own_files(root, suffixes):
             continue
         if any(part in _VENDORED_DIRS for part in p.relative_to(root).parts) or p.name.endswith('.min.js'):
             continue
-        same = template / p.name
-        if p.name != 'index.html' and same.is_file() and same.read_bytes() == p.read_bytes():
+        if p.name != 'index.html' and any((t / p.name).is_file() and (t / p.name).read_bytes() == p.read_bytes() for t in templates):
             continue
         yield p
 
@@ -170,6 +181,7 @@ def design_rows(root):
     """Warnings for app/design rule breaks (wizard-os style/APP-DESIGN-RULES.md). Never errors."""
     root = Path(root)
     frame, capped, colours, dialogs, unguarded = _frame_tokens(root), [], [], [], []
+    history, modals, strict = [], [], _strict_rules(root)
     for p in _own_files(root, {'.css', '.scss', '.less'}):
         css = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         for sel, decl in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
@@ -181,11 +193,26 @@ def design_rows(root):
                         capped.append(f'{p.relative_to(root)}: {one.strip()}')
             if _COLOUR.search(decl):
                 colours.append(str(p.relative_to(root)))
-    for p in _own_files(root, {'.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.html'}):
+            if _MODAL_CSS.search(sel):
+                modals.append(f'{p.relative_to(root)}: {sel.strip()[:60]}')
+    views = list(_own_files(root, {'.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.html'}))
+    routed = any(re.search(r'\bback\s*\.\s*useHistory\s*\(', v.read_text(errors='replace')) for v in views)
+    for p in views:
+        if p.relative_to(root).parts[0] in _TEST_DIRS:
+            continue
         text = re.sub(r'/\*.*?\*/', '', p.read_text(errors='replace'), flags=re.S)
         text = re.sub(r'(?m)^\s*//.*$', '', text)
         if any(not re.search(r'function\s*$', text[max(0, m.start() - 40):m.start()]) for m in _DIALOG.finditer(text)):
             dialogs.append(str(p.relative_to(root)))
+        if p.relative_to(root).parts[0] in _TEST_DIRS:
+            continue  # test fixtures may quote alert() or markup; only shipped view code counts
+        code = system_functions._code(p.read_text(errors='replace'))
+        for rx, found in ((_HISTORY, history), (_HAND_MODAL, modals)):
+            if rx is _HISTORY and routed:
+                continue  # routes through WizardApp.back.useHistory own their history; sentinels are root-history-bounce
+            m = rx.search(code)
+            if m:
+                found.append(f'{p.relative_to(root)}:{code.count(chr(10), 0, m.start()) + 1}')
         for m in _SHELL_CALL.finditer(text):
             fn = m.group(2)
             if not re.search(r'(\?\.\s*' + fn + r'\b)|(typeof\s+[\w.?]*\b' + fn + r'\b)|([\'"]' + fn + r'[\'"]\s+in\b)', text):
@@ -199,8 +226,19 @@ def design_rows(root):
         rows.append({'rule': 'design: colours come from the kit', 'ok': False, 'severity': 'warning',
                      'detail': 'hex/rgb/hsl colour literals in ' + ', '.join(sorted(set(colours))[:5])
                                + '. Use the kit variables (var(--ink), var(--accent)...) so every skin applies. See ' + _RULES_URL})
+    # Builder-made apps fail on these; older apps keep a warning until they are next touched.
+    level = 'error' if strict else 'warning'
+    if history:
+        rows.append({'rule': 'back: one Back, WizardApp.back', 'ok': False, 'severity': level,
+                     'detail': 'app code handles popstate or pushes history (' + '; '.join(history[:5]) + '). Register in-app '
+                               'steps with WizardApp.back.register({canGoBack, back}) and routes with WizardApp.back.useHistory; '
+                               'Back never exits and the app never keeps its own history sentinel.'})
+    if modals:
+        rows.append({'rule': 'design: pop-ups are the shared sheet', 'ok': False, 'severity': level,
+                     'detail': 'hand-rolled modal or sheet (' + '; '.join(modals[:5]) + '). Create <dialog class="wz-sheet"> and '
+                               'open it with WzSheet.open(dialog) (wizard-sheet.js): tap outside, ×, Esc, swipe and Back close it.'})
     if dialogs:
-        rows.append({'rule': 'design: one pop-up, the sheet', 'ok': False, 'severity': 'warning',
+        rows.append({'rule': 'design: one pop-up, the sheet', 'ok': False, 'severity': level,
                      'detail': 'window.alert/confirm/prompt in ' + ', '.join(dialogs[:5]) + '. Use <dialog class="wz-sheet"> '
                                'with WzSheet.open (wizard-sheet.js), or .wz-status for messages. See ' + _RULES_URL})
     if unguarded:
@@ -221,7 +259,7 @@ def style_rows(root):
     root = Path(root).resolve()
     marker = root / '.builder.json'
     try:
-        strict = marker.is_file() and json.loads(marker.read_text()).get('template') == 'hello-wizard'
+        strict = _strict(root)
         base = None
         if not strict:
             for candidate in ('origin/main', 'HEAD'):
@@ -282,38 +320,82 @@ def validate_style_snapshot(template):
             raise ValueError('Canonical style/ snapshot drifted: ' + dst)
 
 
-def new_app(app_id, dev_root=None, request='', *, name=None):
+KINDS = {'hello': 'hello-wizard', 'list': 'list'}
+STRICT_TEMPLATES = {'hello-wizard', 'list'}
+
+
+RULES_VERSION = 2  # 2: Back, pop-up and alert rules fail instead of warn
+
+
+def _marker(root):
+    try:
+        data = json.loads((Path(root) / '.builder.json').read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _strict(root):
+    """Apps the builder generated from a current template are held to the canonical style from day one."""
+    return _marker(root).get('template') in STRICT_TEMPLATES
+
+
+def _strict_rules(root):
+    """Apps made since rules v2 fail on the Back/pop-up rules; older apps keep warnings until migrated."""
+    v = _marker(root).get('rules', 1)
+    return _strict(root) and isinstance(v, int) and v >= RULES_VERSION
+
+
+def new_app(app_id, dev_root=None, request='', *, name=None, kind='hello'):
     _id(app_id)
+    if kind not in KINDS:
+        raise ValueError(f'Unknown kind {kind!r}; choose one of: ' + ', '.join(sorted(KINDS)))
     dev_root = Path(dev_root) if dev_root is not None else _home() / 'dev'
     dev_root.mkdir(parents=True, exist_ok=True)
     target = dev_root / app_id
     if target.exists() or target.is_symlink():
         raise ValueError(f'{target} already exists; preserving it.')
     template = REPO / 'templates' / 'hello-wizard'
-    if not template.is_dir():
-        raise ValueError('Source bundle missing templates/hello-wizard; use the complete source checkout.')
+    overlay = REPO / 'templates' / KINDS[kind] if kind != 'hello' else None
+    if not template.is_dir() or (overlay is not None and not overlay.is_dir()):
+        raise ValueError('Source bundle missing templates/hello-wizard or templates/' + KINDS[kind] + '; use the complete source checkout.')
     validate_style_snapshot(template)
     display = name or app_id.replace('-', ' ').title()
     scratch = Path(tempfile.mkdtemp(prefix='.builder-', dir=dev_root))
     try:
+        # Every kind shares hello-wizard's kit, Dockerfile and packaging; a kind overlays only its product files.
         shutil.copytree(template, scratch, dirs_exist_ok=True)
+        if overlay is not None:
+            shutil.copytree(overlay, scratch, dirs_exist_ok=True)
+            (scratch / 'verify.json').unlink(missing_ok=True)  # the list round trip is built into wam verify
         # Replacement is restricted to identifiers in source files. User prose
         # stays metadata; it is never evaluated as source or shell arguments.
         for p in source_files(scratch):
             if p.suffix in {'.py', '.json', '.md', '.yml', '.html', '.js'}:
-                p.write_text(p.read_text().replace('hello-wizard', app_id))
+                text = p.read_text().replace('hello-wizard', app_id)
+                if kind == 'list':
+                    text = text.replace('wizard-list', app_id).replace('wizard_list', app_id.replace('-', '_'))
+                p.write_text(text)
         wm = scratch / 'wizard.md'
         doc = wizardmd.front_matter(wm.read_text())
         doc['name'] = display
         doc['source'] = 'https://github.com/owner/' + app_id  # placeholder, publication preparation patches in snapshot
-        if 'habit' in request.lower():
+        if kind == 'hello' and 'habit' in request.lower():
             doc['summary'] = 'Track daily habits through a screen, documented HTTP API and MCP.'
             doc['provides'] = ['habit-tracking']
-        wm.write_text('---\n' + yaml.safe_dump(doc, sort_keys=False) + '---\n\n' + wizardmd.body(wm.read_text()) + '\n')
+        body = wizardmd.body(wm.read_text())
+        if kind == 'list':
+            body = body.replace('# My List', '# ' + display, 1)
+            cfgl = scratch / 'web/list.json'
+            lc = json.loads(cfgl.read_text()); lc['title'] = display
+            _json(cfgl, lc)
+            (scratch / 'web/index.html').write_text((scratch / 'web/index.html').read_text().replace('<title>My List</title>', f'<title>{html.escape(display)}</title>'))
+        wm.write_text('---\n' + yaml.safe_dump(doc, sort_keys=False) + '---\n\n' + body + '\n')
         cfgp = scratch / 'runtipi/config.json'
-        cfg = json.loads(cfgp.read_text()); cfg.update(name=display, source=doc['source'], short_desc=doc['summary'])
+        cfg = json.loads(cfgp.read_text()); cfg.update(name=display, source=doc['source'], short_desc=doc['summary'][:80])
         _json(cfgp, cfg)
-        _json(scratch / '.builder.json', {'request': request, 'template': 'hello-wizard', 'state': 'local_draft', 'name': display})
+        _json(scratch / '.builder.json', {'request': request, 'template': KINDS[kind], 'kind': kind, 'rules': RULES_VERSION,
+                                             'state': 'local_draft', 'name': display})
         from .builder_assets import package_inline
         package_inline(scratch)
         report = check_app(scratch, proposal=True)
@@ -487,6 +569,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog='wam builder', description=__doc__)
     sub = ap.add_subparsers(dest='cmd', required=True)
     n = sub.add_parser('new'); n.add_argument('id'); n.add_argument('--request', default=''); n.add_argument('--name'); n.add_argument('--dev-root', type=Path)
+    n.add_argument('--kind', choices=sorted(KINDS), default='hello', help='Start from the closest kind: list (groups, items, done/undo) or hello (the minimal reference).')
     c = sub.add_parser('check'); c.add_argument('source', type=Path); c.add_argument('--proposal', action='store_true')
     i = sub.add_parser('install-local'); i.add_argument('source', type=Path); i.add_argument('--stage-only', action='store_true'); i.add_argument('--run', action='store_true'); i.add_argument('--port', type=int, default=18799); i.add_argument('--trust-origin', action='append', default=[], help='Extra exact origin allowed to call the app, e.g. a private preview proxy.')
     p = sub.add_parser('publish'); p.add_argument('source', type=Path); p.add_argument('--repo', required=True); p.add_argument('--output', type=Path); p.add_argument('--execute', action='store_true')
@@ -496,7 +579,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'new':
-            out = {'source': str(new_app(a.id, a.dev_root, a.request, name=a.name)), 'state': 'local_draft'}
+            out = {'source': str(new_app(a.id, a.dev_root, a.request, name=a.name, kind=a.kind)), 'state': 'local_draft'}
         elif a.cmd == 'check':
             out = check_app(a.source, a.proposal)
             print(json.dumps(out, indent=2)); return 0 if out['ok'] else 1

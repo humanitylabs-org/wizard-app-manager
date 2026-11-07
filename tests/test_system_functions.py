@@ -179,11 +179,12 @@ def test_installed_portable_skill_retains_mandatory_qa_and_reference(tmp_path):
     assert receipt['generated_skills_touched'] is False
     text = skill.read_text()
     assert 'references/system-functions.md' in text
-    assert '**Mandatory QA before handoff:**' in text
+    assert 'wam verify <source>' in text and 'Never write new test harnesses' in text
+    assert '**Mandatory QA before handoff:**' not in text
     assert 'Nebula (default), Grove, Tide, Ember, Signal' in text
     reference = skill.parent / 'references/system-functions.md'
     assert reference.read_bytes() == (builder.REPO / 'system-skills/wizard-builder/references/system-functions.md').read_bytes()
-    assert 'Executable and browser gate (required before staging)' in reference.read_text()
+    assert 'Executable gate (wam verify)' in reference.read_text()
     assert 'wam check <source>' in reference.read_text()
     assert 'system-functions-browser.cjs' in reference.read_text()
     # The installed instructions point at a real executable admission path.
