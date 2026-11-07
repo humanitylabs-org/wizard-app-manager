@@ -220,6 +220,16 @@ def gateway_proof(home) -> str:
     return v if len(v) >= 32 else ""
 
 
+GATEWAY_CONTROL = ("_updates", "_main-compare", "_connections")   # what Settings needs behind the gateway; owner gate unchanged
+
+
+def gateway_path_ok(path: str) -> bool:
+    """The gateway listener answers a plain app id and the Settings routes (Updates, About's main compare, Connections),
+    nothing else: removal, host-access and view reverts stay on the root-peer :7791 listener."""
+    p = path.strip("/")
+    return bool(ID.fullmatch(p)) or p in GATEWAY_CONTROL[:2] or p == "_connections" or p.startswith("_connections/")
+
+
 def gateway_proof_ok(headers, home) -> bool:
     want, got = gateway_proof(home), (headers.get("X-Wizard-Store-Proof") or "").strip()
     return bool(want) and hmac.compare_digest(want.encode(), got.encode())

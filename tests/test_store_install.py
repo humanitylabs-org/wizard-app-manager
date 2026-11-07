@@ -208,7 +208,8 @@ def test_gateway_listener_needs_the_proof_and_a_plain_app_id(monkeypatch, tmp_pa
         for hdrs in ({k: v for k, v in GW.items() if k != "X-Wizard-Store-Proof"}, {**GW, "X-Wizard-Store-Proof": "x" * 48}):
             st, j = _post(srv, "/wizard-mail", hdrs)
             assert st == 403 and "owner gateway" in j["error"]
-        for path in ("/_updates", "/_remove/wizard-mail", "/_connections/", "/a/b", "/Bad_ID"):   # control paths stay on :7791
+        for path in ("/_remove/wizard-mail", "/_host-access/wizard-mail", "/_views/x", "/_slots/chats", "/_recommended",
+                     "/a/b", "/Bad_ID", "/_connectionsX"):   # removal, host access and the rest stay on :7791
             assert _post(srv, path, GW)[0] == 404, path
     finally:
         srv.shutdown()
@@ -233,6 +234,41 @@ def test_gateway_listener_starts_an_install_for_the_owner_on_another_device(monk
     monkeypatch.setattr(si, "start", lambda c, a, *x, selection=None, **k: (202, {"app": a, "state": "installing"}))
     try:
         assert _post(srv, "/wizard-mail", GW) == (202, {"app": "wizard-mail", "state": "installing"})
+    finally:
+        srv.shutdown()
+
+
+def _get(srv, path, headers):
+    import http.client, json as _j
+    h = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    h.request("GET", path, headers=headers)
+    r = h.getresponse()
+    raw = r.read()
+    try:
+        return r.status, _j.loads(raw or b"{}")
+    except ValueError:
+        return r.status, raw
+
+
+def test_gateway_listener_serves_the_settings_routes_to_the_owner_only(monkeypatch, tmp_path):
+    srv = _gateway(monkeypatch, tmp_path)
+    from wam import main_compare, updates, network
+    monkeypatch.setattr(updates, "status", lambda: {"mode": "ask", "update_available": False})
+    monkeypatch.setattr(main_compare, "compare", lambda commit: {"commit": commit, "ahead_by": 0})
+    monkeypatch.setattr(network, "report", lambda cfg: {"apps": []})
+    owner = {"Tailscale-User-Login": "owner@x.com", "X-Wizard-Store-Proof": PROOF}
+    try:
+        assert _get(srv, "/_updates", owner) == (200, {"mode": "ask", "update_available": False})
+        assert _get(srv, "/_main-compare?commit=" + "a" * 40, owner)[1]["ahead_by"] == 0
+        assert _get(srv, "/_connections/api/connections", owner) == (200, {"apps": []})
+        for path in ("/_updates", "/_main-compare", "/_connections/api/connections"):
+            assert _get(srv, path, {k: v for k, v in owner.items() if k != "X-Wizard-Store-Proof"})[0] == 403, path
+            assert _get(srv, path, {**owner, "Tailscale-User-Login": "guest@x.com"})[0] == 403, path
+        # a write keeps every POST check (other device, shell origin, JSON + X-Wizard-Store) and the proof
+        monkeypatch.setattr(updates, "set_mode", lambda m: {"mode": m})
+        assert _post(srv, "/_updates", GW, {"mode": "auto"})[0] == 200
+        assert _post(srv, "/_updates", {**GW, "Origin": "https://evil.example"}, {"mode": "auto"})[1]["error"] == "wrong origin"
+        assert "this Wizard itself" in _post(srv, "/_updates", {**GW, "X-Forwarded-For": "100.64.0.1"}, {"mode": "auto"})[1]["error"]
     finally:
         srv.shutdown()
 

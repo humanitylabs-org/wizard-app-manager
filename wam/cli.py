@@ -1775,7 +1775,7 @@ class StoreHandler(BaseHTTPRequestHandler):
         if self.gateway:
             if not si.gateway_proof_ok(self.headers, c.home):
                 return self._json(403, {"error": "only reachable through the owner gateway"})
-            if not si.ID.fullmatch(urlparse(self.path).path.strip("/")):
+            if not si.gateway_path_ok(urlparse(self.path).path):
                 return self._json(404, {"error": "not found"})
             origins = si.gateway_origins(c.home)
         else:
@@ -2042,7 +2042,8 @@ class StoreHandler(BaseHTTPRequestHandler):
 
 
 class GatewayStoreHandler(StoreHandler):
-    """Store Get for the private gateway on loopback :7792 (store_install.py: gateway listener). App ids only."""
+    """Store Get and the three Settings routes (_updates, _main-compare, _connections) for the private gateway on
+    loopback :7792 (store_install.py: gateway listener). Everything else (remove, host access, views) stays on :7791."""
     gateway = True
 
 
