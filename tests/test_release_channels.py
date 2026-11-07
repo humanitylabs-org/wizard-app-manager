@@ -142,8 +142,8 @@ def test_channel_defaults_to_stable_and_is_saved_beside_the_mode(tmp_path):
     updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
     updates.set_channel("latest", h)
     assert updates.channel(h) == "latest" and updates.mode(h) == "auto"
-    updates.set_mode("ask", h, tmp_path / "u", systemctl=False)
-    assert updates.channel(h) == "latest" and updates.mode(h) == "ask"
+    updates.set_mode("ask", h, tmp_path / "u", systemctl=False)          # an older shell's Ask me: still automatic
+    assert updates.channel(h) == "latest" and updates.mode(h) == "auto"
     with pytest.raises(SystemExit):
         updates.set_channel("nightly", h)
 
@@ -241,14 +241,12 @@ def test_automatic_on_latest_is_current_when_it_runs_the_newest_latest(tmp_path)
     assert res["started"] is False and "skipped" not in res and calls == []
 
 
-def test_automatic_on_latest_waits_while_a_chat_runs_and_ask_me_never_installs(tmp_path):
+def test_automatic_on_latest_waits_while_a_chat_runs(tmp_path):
     h = tmp_path / "wos"
     _pin(h, "0.3.26")
     updates.set_channel("latest", h)
     base = _mirror(tmp_path, "0.3.26", latest="0.3.28")
     calls = []
-    assert updates.apply_if_auto(h, base, _runner(calls), is_busy=lambda: False)["started"] is False   # Ask me
-    updates.set_mode("auto", h, tmp_path / "u", systemctl=False)
     res = updates.apply_if_auto(h, base, _runner(calls), is_busy=lambda: True)
     assert res["started"] is False and res["skipped"] == "busy" and calls == []
 
