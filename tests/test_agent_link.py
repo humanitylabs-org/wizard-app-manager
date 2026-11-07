@@ -33,7 +33,8 @@ def test_edit_adds_gateway_skills_and_token_then_is_idempotent(tmp_path):
     assert cfg['model'] == {'provider': 'p', 'default': 'm'}
     assert cfg['mcp_servers']['other'] == {'url': 'http://x/mcp'}
     assert cfg['mcp_servers']['wizard'] == {'url': agent_link.GATEWAY_URL,
-                                            'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
+                                            'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'},
+                                            'lazy': True}
     assert cfg['skills']['external_dirs'] == ['/opt/wizard-builder/current/system-skills', str(tmp_path / 'skills-view')]
     assert (tmp_path / '.env').read_text() == 'KEEP=1\nWIZARD_MCP_TOKEN=tok-1\n'
     assert oct((tmp_path / '.env').stat().st_mode & 0o777) == '0o600'
@@ -48,6 +49,25 @@ def test_edit_rotates_token_without_duplicates(tmp_path):
     out = json.loads(run_edit(tmp_path, 'b').stdout)
     assert out['env_changed'] and not out['config_changed']
     assert (tmp_path / '.env').read_text() == 'WIZARD_MCP_TOKEN=b\n'
+
+
+def test_edit_upgrades_an_eager_wizard_entry_to_lazy(tmp_path):
+    """Boxes linked before `lazy` get it on the next run (the gateway's tools/list carries ttlMs, so Hermes can
+    register the app tools from its cache at chat start instead of racing the first connect)."""
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({'mcp_servers': {'wizard': {
+        'url': agent_link.GATEWAY_URL, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}}}))
+    out = json.loads(run_edit(tmp_path).stdout)
+    assert out['config_changed']
+    assert yaml.safe_load((tmp_path / 'config.yaml').read_text())['mcp_servers']['wizard']['lazy'] is True
+    assert not json.loads(run_edit(tmp_path).stdout)['config_changed']
+
+
+def test_edit_keeps_the_owners_own_lazy_choice(tmp_path):
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({'mcp_servers': {'wizard': {
+        'url': agent_link.GATEWAY_URL, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}, 'lazy': False}}}))
+    assert run_edit(tmp_path).returncode == 0
+    assert yaml.safe_load((tmp_path / 'config.yaml').read_text())['mcp_servers']['wizard']['lazy'] is False
+    assert not json.loads(run_edit(tmp_path).stdout)['config_changed']
 
 
 def test_edit_refuses_foreign_wizard_server(tmp_path):
