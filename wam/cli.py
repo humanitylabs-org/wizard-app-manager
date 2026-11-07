@@ -1796,6 +1796,11 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
             return self._updates(method)
+        if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
+            if method != "GET":
+                return self._json(405, {"error": "GET only"})
+            from . import disk
+            return self._json(200, disk.public(disk.status(c.home, allow_sudo=False)))
         if app_id == MAIN_COMPARE_PATH:   # Settings → About: how far this shell is from main (main_compare.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -2049,6 +2054,7 @@ class GatewayStoreHandler(StoreHandler):
 
 UPDATES_PATH = "_updates"
 MAIN_COMPARE_PATH = "_main-compare"
+DISK_PATH = "_disk"
 
 
 # ---------------------------------------------------------------- main
@@ -2349,6 +2355,9 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    dk = sub.add_parser("disk", help="disk encryption: status (read-only: encrypted, sealed to the security chip, "
+                                     "recovery key; wizard-os spec/DISK_ENCRYPTION.md)")
+    dk.add_argument("action", choices=("status",)); dk.add_argument("--json", action="store_true")
     phone = sub.add_parser("phone-sync", help="mirror the public phone APK; never installs or restarts anything")
     phone.add_argument("--ensure-timer", action="store_true", help="installer: enable the independent hourly mirror")
     up = sub.add_parser("updates", help="update check, the owner's choice (--ask default, --auto) and channel "
@@ -2378,6 +2387,11 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--repo", metavar="OWNER/NAME", help="take the new release from this repo (the app moved to its own "
                                                          "repo); default: the old app's own source")
     args = ap.parse_args(argv)
+    if args.cmd == "disk":
+        from . import disk, registry
+        res = disk.status(registry.home())
+        print(json.dumps(res, indent=2) if args.json else disk.describe(res))
+        return 0
     if args.cmd == "app-rename":
         from . import app_rename
         c = Config()
