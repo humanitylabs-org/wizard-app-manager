@@ -177,8 +177,9 @@ def _gateway(monkeypatch, tmp_path, proof=PROOF):
     from http.server import ThreadingHTTPServer
     from wam import cli
     if proof:
-        (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(exist_ok=True)
+        (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(mode=0o700, exist_ok=True)
         (tmp_path / si.GATEWAY_PROOF_FILE).write_text(proof + "\n")
+        (tmp_path / si.GATEWAY_PROOF_FILE).chmod(0o600)
     (tmp_path / "settings.json").write_text(_j.dumps({"network": {"base_url": "https://box.tail1.ts.net"}}))
     monkeypatch.setattr(si, "owner_login", lambda: "owner@x.com")
     monkeypatch.setattr(si, "peer_uid", lambda p: (_ for _ in ()).throw(AssertionError("gateway must not use the peer gate")))
@@ -326,10 +327,11 @@ def test_gateway_feature_switches_reuses_owner_gate_and_exact_route(monkeypatch,
 
 def test_gateway_proof_is_off_without_a_long_secret_and_origins_come_from_settings(tmp_path):
     assert si.gateway_proof(tmp_path) == ""
-    (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(exist_ok=True)
+    (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(mode=0o700, exist_ok=True)
     (tmp_path / si.GATEWAY_PROOF_FILE).write_text("short\n")
     assert si.gateway_proof(tmp_path) == "" and not si.gateway_proof_ok({"X-Wizard-Store-Proof": "short"}, tmp_path)
     (tmp_path / si.GATEWAY_PROOF_FILE).write_text(PROOF + "\n")
+    (tmp_path / si.GATEWAY_PROOF_FILE).chmod(0o600)
     assert si.gateway_proof_ok({"X-Wizard-Store-Proof": PROOF}, tmp_path)
     assert not si.gateway_proof_ok({}, tmp_path)
     assert si.gateway_origins(tmp_path) == set()
@@ -343,3 +345,147 @@ def test_tailscale_cli_can_target_the_gateway_daemon(monkeypatch):
     assert si.tailscale_cmd("status", "--json") == ["/x/tailscale", "--socket", "/run/ts.sock", "status", "--json"]
     monkeypatch.delenv("WAM_TAILSCALE_SOCKET")
     assert si.tailscale_cmd("status") == ["/x/tailscale", "status"]
+
+
+def _private_proof(home):
+    proof = home / si.GATEWAY_PROOF_FILE
+    proof.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    proof.write_text(PROOF + "\n")
+    proof.chmod(0o600)
+    return proof
+
+
+def test_gateway_proof_rechecks_modes_and_ownership(monkeypatch, tmp_path):
+    proof = _private_proof(tmp_path)
+    assert si.gateway_proof(tmp_path) == PROOF
+    for mode in (0o644, 0o640, 0o666, 0o700):
+        proof.chmod(mode)
+        assert si.gateway_proof(tmp_path) == "", oct(mode)
+        assert not si.gateway_proof_ok({"X-Wizard-Store-Proof": PROOF}, tmp_path)
+    proof.chmod(0o600)
+    assert si.gateway_proof(tmp_path) == PROOF
+    monkeypatch.setattr(si.os, "geteuid", lambda: proof.stat().st_uid + 1)
+    assert si.gateway_proof(tmp_path) == ""
+
+
+def test_gateway_proof_rejects_linked_paths_and_hardlinks(tmp_path):
+    import os
+    proof = _private_proof(tmp_path)
+    target = tmp_path / "target"
+    proof.rename(target)
+    proof.symlink_to(target)
+    assert si.gateway_proof(tmp_path) == ""
+    proof.unlink()
+    os.link(target, proof)
+    assert si.gateway_proof(tmp_path) == ""
+    proof.unlink()
+    target.rename(proof)
+    actual = tmp_path / "actual"
+    proof.parent.rename(actual)
+    proof.parent.symlink_to(actual, target_is_directory=True)
+    assert si.gateway_proof(tmp_path) == ""
+    alias = tmp_path.parent / (tmp_path.name + "-alias")
+    try:
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        assert si.gateway_proof(alias) == ""
+    finally:
+        alias.unlink()
+
+
+def test_gateway_proof_rejects_nonfiles_and_bad_bytes(tmp_path):
+    proof = _private_proof(tmp_path)
+    proof.write_bytes(b"\xff" * 48)
+    assert si.gateway_proof(tmp_path) == ""
+    proof.write_text("p" * 4097)
+    assert si.gateway_proof(tmp_path) == ""
+    proof.unlink()
+    proof.mkdir()
+    assert si.gateway_proof(tmp_path) == ""
+    # Opening a FIFO must not wait for a writer.
+    proof.rmdir()
+    si.os.mkfifo(proof, 0o600)
+    assert si.gateway_proof(tmp_path) == ""
+
+
+def test_gateway_proof_rejects_writable_parent(tmp_path):
+    proof = _private_proof(tmp_path)
+    for mode in (0o777, 0o770):
+        proof.parent.chmod(mode)
+        assert si.gateway_proof(tmp_path) == ""
+    proof.parent.chmod(0o700)
+    assert si.gateway_proof(tmp_path) == PROOF
+
+
+def test_gateway_proof_exact_mode_size_and_home_boundary(tmp_path):
+    home = tmp_path / "home"
+    proof = _private_proof(home)
+    home.chmod(0o755)
+    proof.parent.chmod(0o755)
+    proof.write_text("p" * 4096)
+    assert si.gateway_proof(home) == "p" * 4096
+    for mode in (0o400, 0o4600):
+        proof.chmod(mode)
+        assert si.gateway_proof(home) == ""
+    proof.chmod(0o600)
+    home.chmod(0o770)
+    assert si.gateway_proof(home) == ""
+    home.chmod(0o755)
+    alias = tmp_path / "alias"
+    alias.symlink_to(home, target_is_directory=True)
+    assert si.gateway_proof(str(alias) + "/") == ""
+
+
+def test_gateway_proof_checks_file_owner_and_closes_handles(monkeypatch, tmp_path):
+    import errno
+    proof = _private_proof(tmp_path)
+    inode = proof.stat().st_ino
+    real_fstat, real_open = si.os.fstat, si.os.open
+    opened = []
+
+    def track_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def wrong_file_owner(fd):
+        result = real_fstat(fd)
+        if result.st_ino == inode:
+            fields = list(result)
+            fields[4] += 1
+            return si.os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(si.os, "open", track_open)
+    monkeypatch.setattr(si.os, "fstat", wrong_file_owner)
+    assert si.gateway_proof(tmp_path) == ""
+    assert len(opened) == 3
+    monkeypatch.setattr(si.os, "fstat", real_fstat)
+    for fd in opened:
+        try:
+            real_fstat(fd)
+        except OSError as error:
+            assert error.errno == errno.EBADF
+        else:
+            raise AssertionError("proof reader leaked a descriptor")
+    opened.clear()
+    monkeypatch.setattr(si.os, "read", lambda *a: (_ for _ in ()).throw(OSError("injected read failure")))
+    assert si.gateway_proof(tmp_path) == ""
+    assert len(opened) == 3
+    for fd in opened:
+        try:
+            real_fstat(fd)
+        except OSError as error:
+            assert error.errno == errno.EBADF
+        else:
+            raise AssertionError("proof read failure leaked a descriptor")
+
+
+def test_gateway_listener_rejects_proof_after_permission_drift(monkeypatch, tmp_path):
+    srv = _gateway(monkeypatch, tmp_path)
+    monkeypatch.setattr(si, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not install")))
+    try:
+        (tmp_path / si.GATEWAY_PROOF_FILE).chmod(0o644)
+        assert _post(srv, "/wizard-mail", GW)[0] == 403
+    finally:
+        srv.shutdown()
+        srv.server_close()
