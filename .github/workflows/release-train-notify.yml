@@ -1,7 +1,9 @@
 # Tells the Wizard OS release train (humanitylabs-org/wizard-os .github/workflows/release-cut.yml) that main has a
 # new publishable commit, so it reaches For testers (latest) within minutes (at most one cut per 30 min there).
 # Release mirror merges (`*-mirror-train` branches) are skipped: they only copy releases/.
-# Runs after a green `test` or `image` run on main; never checks out or runs this repo's code. Uses the org secret
+# Runs after a green `test` or `image` run on main, and dispatches only once every `test`/`image` run for that commit
+# has finished green (image-affecting commits wait for their image; whichever finishes last dispatches); never checks
+# out or runs this repo's code. Uses the org secret
 # RELEASE_TRAIN_TOKEN (the release train's one token; wizard-os docs/RELEASE_AUTOMATION.md "Owner setup"). Without
 # it the step says so and passes: the train's daily sweep still picks the commit up.
 name: Release train notify
@@ -10,7 +12,8 @@ on:
     workflows: [test, image]
     types: [completed]
     branches: [main]
-permissions: {}
+permissions:
+  actions: read
 concurrency:
   group: release-train-notify
   cancel-in-progress: false
@@ -24,7 +27,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Wait for every test/image run on this commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "test" or .name == "image")]')
+          pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+          failed=$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' <<<"$runs")
+          if [ "$failed" != 0 ]; then echo "::notice::a test/image run for $SHA did not pass; not dispatching"; echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "$pending" != 0 ]; then echo "::notice::$pending test/image run(s) for $SHA still running; the last one to finish dispatches"; echo "go=false" >> "$GITHUB_OUTPUT"
+          else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Dispatch component-published to wizard-os
+        if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TRAIN_TOKEN }}
           SHA: ${{ github.event.workflow_run.head_sha }}
