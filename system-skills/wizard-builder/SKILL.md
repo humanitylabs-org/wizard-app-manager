@@ -1,7 +1,7 @@
 ---
 name: wizard-builder
 description: Use when building, porting or changing apps for Wizard OS (wizard.md packages).
-version: 0.2.0
+version: 0.3.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -12,85 +12,119 @@ metadata:
 ---
 # Build an app for Wizard OS
 
-**Visual authority:** [wizard-os/style/APP-DESIGN-RULES.md](https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md). Use the mirrored kit classes and `--wz-*` roles, not app-local colour/type literals. `wam check` is strict for new generated apps; legacy debt warns, while new/changed style violations and changed stale kit copies fail. See `references/appearance.md` for immutable pin refresh and justified exception handling.
+Build from tested parts; the platform is tested once, not per app. A new app targets **about 20 minutes and 30 tool
+calls**. Never write new test harnesses, Playwright scripts or release packets for a single app: `wam verify` is the
+whole pre-install check, and the owner using the app is the final one.
 
-Owner-facing words (wizard-os DECISIONS #84): an app with a screen is an **app**; a screenless app agents use is an **agent app**. Never say "Wizard app" to the owner.
-
-Use the smallest artifact that finishes the owner's job. This system skill lives outside generated app skills, so installs and removals preserve it. Candidate capabilities are source scaffolding, checking, isolated local staging and publication preparation. Production install and public execution remain separate gates.
-
-## When to use
-- An owner asks to build a small app, wrap an existing app, change its screen, or prepare sharing.
-- Start with an installed app's shipped skill for ordinary use; reach for the builder when code or packaging must change.
+Owner-facing words: an app with a screen is an **app**; a screenless app agents use is an **agent app**. Never say
+"Wizard app" to the owner. Visual authority: [APP-DESIGN-RULES.md](https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md).
 
 ## Prerequisites
-Wizard OS installs a complete, matching skill/tooling/templates bundle automatically. In `terminal`, run `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor` before building. This works with the stock local container terminal and the VM's configured SSH terminal: SSH executes on the host and uses its own `$HOME`, not a container-only path. Do not change the owner's terminal backend. Python 3.10+ and PyYAML are installed by Wizard OS (the container uses stock Hermes' Python); Docker with Compose is needed only to run a local app. If doctor fails, report the missing capability and repair with the Wizard installer, not a private checkout or personal skill. Use the configured build worker for sustained builds/tests. Keep the owner's active apps intact.
+In `terminal`: `export PATH="${WIZARD_BUILDER_ROOT:-$HOME/.wizard-os/builder}/current/bin:$PATH"; wam builder-bundle doctor`.
+This works in the stock container terminal and over the VM's SSH terminal; do not change the owner's terminal backend.
+`wam verify` needs Docker; a headless Chromium is optional (screenshots are skipped with a note without one). If doctor
+fails, report the missing piece and repair with the Wizard installer, not a private checkout. Keep the owner's apps intact.
 
 ## Choose the lightest level
-1. Shell setting/theme/layout: use the shell's supported configuration.
+1. Shell setting/theme/layout: the shell's own settings.
 2. Report/dashboard: a page under `media/Pages/<slug>/`.
-3. Small change to an installed app's screen ("move this", "hide that"): an overlay with `wam views customize <app> --mode overlay`. See `references/views.md`.
-4. Redesign of an installed app's screen: an own version with `wam views customize <app>`, edited, then `wam views apply <app>`; it survives app updates. See `references/views.md`.
-5. Independent process/database or install on another Wizard: app source under `dev/<id>/`.
-6. Existing upstream app: add metadata, packaging, MCP and a skill in a wrapper; see `references/port.md`.
+3. Small change to an installed app's screen: `wam views customize <app> --mode overlay` (`references/views.md`).
+4. Redesign of an installed app's screen: `wam views customize <app>`, edit, `wam views apply <app>`.
+5. A new app with its own data: `wam new` (below).
+6. Wrapping an existing upstream app: `references/port.md`.
 
-## Supported shell skins
-Use the shell registry as the source of truth. The accepted set is **Nebula (default), Grove, Tide, Ember, Signal**. Paper is retired by the owner. Generated apps inherit the active shell appearance; keep skin selection in the shell. Use the accepted set for examples and QA, and map any saved Paper choice to Nebula.
+## Build
+1. **One sentence and 2–4 visible actions.** Check installed apps first; maybe one already does the job. Pick a lowercase id.
+2. **Start from the closest kind:**
+   - `wam new <id> --kind list --request '<sentence>'`: groups that fold, one item per line, tap to edit, Enter adds
+     the next line below, done/undo, saved order, SQLite, HTTP API, MCP and skill. To-do, shopping, reading, packing,
+     gift, chore lists: most of the job is editing `web/list.json` (title, item and group nouns, two or three extra
+     fields, empty-screen words). Change code only for behaviour the config cannot express.
+   - `wam new <id> --request '<sentence>'` (kind `hello`, the default): the minimal reference (daily habits, API, MCP,
+     vanilla view) for jobs no kind covers. Declare the app's round trip in `verify.json`.
+3. **Edit with `read_file`/`patch`.** Keep the shared kit untouched: `boot.js`, `wizard-tokens.css`, `wizard-ui.css`,
+   `wizard-sheet.js` and `/wizard-os-home/core/app-client.js` (the `WizardApp` client). App styles go in `styles.css`
+   with kit variables only, never literal colours. The window is the page: no `max-width` on the frame, `.wz-grid` for
+   columns. Every view action uses the documented API; expose the same job through narrow MCP tools and the app's
+   `skill/SKILL.md`. Keep user text as data. After source edits run `wam package-inline <source>`.
+4. **`wam verify <source>`.** One fixed command: builds the container, starts it on loopback, runs the API round trip
+   (create, list, update, restart the container, read back; built in for `--kind list`, from `verify.json` otherwise),
+   checks MCP lists tools, runs `wam check`, and saves one phone-width screenshot per skin. It cleans up after itself,
+   prints elapsed time and memory, and exits non-zero on failure. Look at the screenshots. Run heavy builds on the
+   configured build worker when the installation names one.
+5. **If it passes, install and hand over.** Install through the installation's App Manager lifecycle with its
+   authenticated same-origin route (for a local proof, `wam install-local <source> --run`), open it in Wizard at
+   `?open=<app-id>`, and give the owner the link. The owner
+   using it is the final check; fix what he reports in the app and ship the fix the same way.
+6. **Stop rule.** Five failed `wam verify` runs in total ends the loop: stop and report what works, what fails (the
+   last receipt) and the one decision or fix needed. Do not build a harness to investigate.
 
-## Chat is the Chats thread (James, 22 Oct 2026; mandatory)
-Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant", "chat about this") opens the real Chats thread over the app window with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping. The `wizard-ui.css` kit is styling, never a licence to build a composer or transcript. Isolation requirements are met with an agent bound to the app, not a separate UI. `wam check` fails `app-chat` markup. Read `references/chat.md` before planning any conversational feature; its parity + fault-injection gate is the definition of done.
+## Chat is the Chats thread (James, 22 Oct 2026)
+Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant") opens the real Chats thread over the
+app with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping.
+Never build a composer or transcript. `wam check` fails `app-chat` markup. Read `references/chat.md` before planning a
+conversational feature.
 
+## Every tap registers before I/O
+Update visible state synchronously in the handler, before awaiting network, storage, a poll or a render guard; then
+reconcile in the background. Keep pending state across stale refreshes, deduplicate repeat taps (one `operation_id` per
+change), and on failure restore the state and show one plain error with Retry. For irreversible or external actions
+(send, pay, publish) show honest pending feedback, never a false "Sent". The list kind already does this; keep its
+`enqueue` pattern. This is how the code must behave, not an automatic cross-app lint or release blocker, and not a
+reason to write a per-app harness (`references/system-functions.md`).
 
-## Every tap registers before I/O (every app, widget and build)
-A tap/click registers in the UX on the same frame: update visible task state synchronously before awaiting network, storage, a bridge, a poll or a render guard. A pressed flash alone is not meaningful feedback. Reversible actions apply their optimistic result immediately, then reconcile in the background; preserve pending state across stale refreshes and deduplicate repeated taps. On failure restore the correct state and show one visible plain-language error with retry, even after navigation. For irreversible or external actions (send, pay, publish, permanent deletion), show honest pending feedback immediately, not false Sent/Saved/completed state before confirmation. Reuse existing shared pending/error components where applicable; apps still own domain state. Read the held-I/O acceptance in `references/system-functions.md`; this is required behavioral acceptance, not an automatic cross-app lint or release blocker.
+## Finishing actions leave the screen (James, 25 Oct 2026)
+Dismiss, archive, reversible delete, mark done, save-and-close: one tap updates local state and returns the owner to
+where he came from before awaiting the write (in a framed app feature-detect `WizardApp.nav.back()` and call it in the
+same handler). In a list the item changes in place. Undo lives in a toast or in the app, never as a step before leaving.
 
-## Finishing actions leave the screen (James, 25 Oct 2026; every build)
-Dismiss, hide, skip, archive, reversible delete, mark done, save-and-close: the one tap updates local state AND returns the owner to the screen he came from synchronously, before awaiting the write. Never leave him on a confirmation view that needs a second tap (Back, ✕, Done). In a framed app feature-detect and call `WizardApp.nav.back()` in that same handler, before awaiting the write (it runs the shell's Back past the app's own views; it returns false when the app is hidden or unfocused, then show feedback on the visible surface instead). In a list, the item disappears in place. Keep reconciliation and error delivery alive after leaving; restore state and expose one visible error/retry on failure, not a toast trapped in an unfocused frame. Undo lives in a toast or inside the app, never as a step before leaving. Irreversible/external completion follows the honest pending rule above. QA holds the write unresolved and asserts one tap lands on the previous screen (navigation model: wizard-ux `tools/qa-app-done-returns.cjs`).
+## Back never exits; tap outside closes
+Register in-app steps with `WizardApp.back.register({canGoBack, back})` or `back.push`; routed apps use
+`back.useHistory`. Never listen to `popstate` or push history entries yourself. Every pop-up is
+`<dialog class="wz-sheet">` opened with `WzSheet.open` (tap outside, ×, Esc, swipe and Back close it), never
+`alert/confirm/prompt` or a homemade modal; `wam check` fails all three in builder-made apps. If an app must own a
+`<dialog>`, close it only when both pointerdown and click land outside the panel, and swallow the release click of the
+long-press that opened it.
 
-## App changes ship in the app (James, 29 Oct 2026; every app)
-An app is self-contained: the same version gives the same result on every Wizard, whoever drives it. Any approved workflow, style, preset, prompt rule or validator for an installed app goes into the app's source (its `SKILL.md`, `wizard.md`, presets, and validators that reject off-spec output), then out through the normal release path (with the owner's approval wherever publication below needs it). Once installs are updated, check the installed app's version and every file you changed against the release, not only `~/.wizard-os/skills/<app>/SKILL.md`. Never record it in an agent's own skills, notes or memory, and never edit the installed copy: App Manager replaces that copy on every registry write and no other Wizard ever sees it. If the app can't enforce something yet, the fix is to make the app enforce it. An unmerged side branch is not shipped; report it as not in the app.
+## App changes ship in the app (James, 29 Oct 2026)
+Approved workflows, styles, presets, prompt rules and validators go into the app's source (`SKILL.md`, `wizard.md`,
+config, validators), then out through the normal release path, with the owner's approval wherever publication needs it.
+Once installs update, check the installed app's version and every file you changed against the release. Never record
+them in an agent's own skills, notes or memory, and never edit an installed copy: App Manager replaces it. An unmerged
+side branch is not shipped.
 
-## Tap outside closes (every app, every overlay)
-Any sheet, menu, modal, popover or picker closes on an outside tap using the same handler and history step as Back. Use the shared sheet helper rather than a second platform implementation. For an app-owned `<dialog>`, close only when both pointerdown and click land outside the panel rect; swallow the release click of the long-press that opened it. QA opens by long-press, releases and asserts still open, then taps outside and asserts closed with the app still mounted.
-
-## Pinned home-screen apps and the status bar
-A pinned app runs in the shell's `?app-session=` frame. The shell pads the frame by the status bar unless the app CSS mentions `--wos-cutout`; the vendored kit does (`.wz-head`). Apps using that kit must include `var(--wos-cutout,0px)` in their own top bars so headers do not sit under the status bar. Verify both pinned fullscreen and windowed entry.
-
-## Port from live, prove parity
-Porting or rebuilding an existing app starts from the source serving live today, not merely GitHub main or an old folder. Preserve deployed features and approved behavior and pass the release owner's `app-parity-gate <live-source> <candidate>` before cutover. Do not invent a passing gate if this tool is unavailable: inventory retained behavior and resolve the missing release capability with the release owner before activation.
-
-## Reuse check (mandatory, before writing code)
-App PRs must install and pass `humanitylabs-org/wizard-ux/.github/workflows/reuse-check-app.yml@main` (caller contract: wizard-ux `docs/app-reuse-gate.md`). Use shared voice (`WizardApp.capture`/`.voice`/`.voiceInput`), chat (`WizardApp.nav.openThread`), orb (`Orb.create`) and scroll (`WizAppReadingPosition`) services. Runner provisioning and private/public CI placement belong to the installation's operational authority, not this portable app workflow.
-
-One implementation per capability. Before planning, read the Wizard OS component inventory (`docs/COMPONENTS.md` in wizard-ux; its App section is the `WizardApp` facade). List every capability the job needs (chat, draft, back, theme, share, capture, upload, settings, auth, markdown, errors, model picker, reading place, anything drawn or animated) and write one line each in the plan, worker brief, PR body and completion report:
+## Reuse check, before writing code
+One implementation per capability. Read the component inventory (`docs/COMPONENTS.md` in wizard-ux; its App section is
+the `WizardApp` facade) and write one line per capability in the plan and report; delegated workers get this block and
+the inventory pasted into their brief:
 ```
 Reuse:
 - <capability>: REUSE <entry point from its row>
-- <capability>: EXTEND <module> because <row> lacks <thing> (row updated)
-- <capability>: NEW because no row covers it (lands in the shell's web/core with a row, never in the app)
-Visual: <side-by-side screenshot of the existing element and yours, for anything drawn or animated>
+- <capability>: EXTEND <module> because <row> lacks <thing>
+- <capability>: NEW because no row covers it (lands in shared core with a row, never in the app)
 ```
-Tests for a REUSE line exercise the shared path named in its row, not only the outcome. Delegated workers get this block and the inventory pasted into their brief. Why: an app's homemade Ask AI chat and a PNG orb were rebuilt beside polished shared components.
-## Shared system functions (James-approved, mandatory)
-Read `references/system-functions.md` **before** editing any view. Always reuse `WizardApp` from `/wizard-os-home/core/app-client.js`; apps own task state/domain callbacks, never capture, sharing, root exit guards, system theme storage, SW or install implementations. This reference and its executable gate ship in the installed builder skill, so future agents load the rule automatically. No new `wizard.md` field is approved by this work.
+Use shared voice (`WizardApp.capture`/`.voice`/`.voiceInput`), chat (`WizardApp.nav.openThread`), orb (`Orb.create`)
+and reading position (`WizAppReadingPosition`). App PRs run `humanitylabs-org/wizard-ux/.github/workflows/reuse-check-app.yml@main`.
+Shared system functions (capture, share, Back, theme, updates) come only from `WizardApp`; see
+`references/system-functions.md`.
 
-## Build and verify
-1. Recover one user sentence and 2–4 visible actions. Inspect installed capabilities before making a new app. Choose a lowercase id; source is separate from `media/`.
-2. `terminal(command="wam new habit-tracker --request 'Build me a habit tracker'")` creates local source from hello-wizard. This template already includes daily habits, diagnostics, API, MCP and vanilla view. Other jobs require actual source edits; the request is recorded, not magically implemented by the CLI.
-3. Use `read_file`, `write_file` and `patch` to adapt that source to the named job. Build the screen from the canonical Wizard OS `style/` snapshot (`wizard-tokens.css`, `wizard-ui.css`, `wizard-sheet.js`, `boot.js`), pinned offline by `appearance-provenance.json`; never edit those generated files and keep its `boot.js` + shared `/wizard-os-home/core/app-client.js` inclusion: the app then looks like Chats in every skin, follows live skin changes, and paints no background of its own when hosted (the window glass is its canvas). Put only app-specific styles in `styles.css`, using the kit's variables, never literal colours. Follow the [app design rules](https://github.com/humanitylabs-org/wizard-os/blob/main/style/APP-DESIGN-RULES.md): the window is the page (no `max-width` on the frame; more columns via `.wz-grid` as it widens), layout by window width (container queries, never device), one pop-up (`.wz-sheet` via `WzSheet.open`, never `alert/confirm/prompt`), connector apps use status card + accounts + one action, no hex colours. Register domain-only Back callbacks with `WizardApp.back.register/push`; routed apps use `back.useHistory`. Real route history is allowed, app root history sentinels are not. See references/appearance.md. Keep user text as data, use a documented API for every view action, and expose the same job through narrow MCP tools. Record copied dependency origin/license. Read `references/build.md` for the contract.
-4. `terminal(command="wam check <source>")` runs the unchanged approved manifest checker **plus the mandatory shared-system-function source gate**. Its `design:` warnings flag rule breaks (frame `max-width`, colour literals, `alert/confirm/prompt`); fix them. `terminal(command="wam check <source> --proposal")` additionally applies PR24 API/view-source rules explicitly. Missing API is a transition warning in 0.2. Future 0.3 remains unapproved/unknown.
-5. `terminal(command="wam install-local <source> --stage-only --run --port 18799")` builds/runs only a loopback local developer container. The result is a staging manifest, **not** the production apps registry. Run on the configured worker; record hostname, exact source hash and image id.
-6. **Mandatory QA before handoff:** follow the executable and browser gate in `references/system-functions.md`, not only `wam check`. Inventory every new/changed mutating or I/O control from the real click/submit/gesture handlers and call sites: control → handler → surface → executable held-I/O test → pass receipt. Include each applicable widget/ready-card, standalone and in-shell surface; a missing test or receipt leaves behavioral acceptance incomplete. Run the first-frame action cases with I/O unresolved, stale poll, double tap, success/readback, failure and late failure after navigation. On the configured worker record candidate/source hashes, exact commands and receipts for phone + desktop, light + dark, window + fullscreen, state-preserving live theme, root/nested/overlay Back and on-screen close parity. Exercise sharing/capture when the app uses them, including cancelled/unsupported/denied/busy/recovery and held updates. Exercise add → list → mark → readback → undo through both screen and MCP/API, then restart and read back saved data. Back stays inside the app; Home exits the device app. A successful build or source lint alone does not finish the user's job.
-7. Finish through the release authority's approved lifecycle, not a staging manifest alone. For an authorized new isolated app, install the verified container through App Manager, configure its authenticated same-origin route and app registry, and exercise the exact `?open=<app-id>` path inside Wizard OS. Verify cold canonical entry on Android-UA/touch and desktop: wait for exact installed IDs rather than fuzzy-matching an unrelated native app before registry arrival. Exercise native bridge capability selection as well as real-provider speech where applicable; browser capture alone does not establish Android bridge compatibility. Deliver its in-shell app link, use a separate-browser preview only when specifically requested, distinguish installed from staged behavior and real remaining native/device limitations, and do not reimplement shared system functions. The owner's deployment authority decides when installation is authorized; this portable skill neither adds a redundant go-live gate nor grants shared/public release authority. New task-specific shared extraction outside the agreed API remains separate optional scope.
+## Port from live
+Porting or rebuilding an existing app starts from the source serving live today and keeps every deployed feature; pass
+the release owner's `app-parity-gate <live-source> <candidate>` before cutover.
+
+## Skins and pinned apps
+The shell registry is the source of truth: Nebula (default), Grove, Tide, Ember, Signal. Paper is retired. Apps inherit
+the shell's skin; never add a skin switch. Pinned apps: top bars include `var(--wos-cutout, 0px)` (the kit's `.wz-head`
+already does).
 
 ## Share
-`terminal(command="wam publish <source> --repo owner/name --output <outside-source-plan.json>")` prepares the exact source hash, files, source patch, public GitHub settings/topic, catalog request and separate signing handoff. Read `references/publish.md`. Public repo creation, pushing, catalog publication and signing require the owner's explicit approval of that prepared artifact. `--execute` refuses: this candidate has no public executor. Never call prepared publication published.
+`wam publish <source> --repo owner/name --output <plan.json>` prepares the exact source hash, files, GitHub settings,
+catalogue request and signing handoff (`references/publish.md`). Public repos, pushes, catalogue publication and
+signing require the owner's explicit approval of that prepared artifact. `--execute` refuses. Never call a prepared plan published.
 
 ## Pitfalls
-- Generated app skills are managed by the registry. The OS builder is separately registered through `skills.external_dirs`; `wizard link` handles alongside installs, and the installer prepares stock containers. `wam builder-bundle install` repairs the bundle; `wam builder-bundle fresh` prepares the stock container mount/discovery (restart the agent to adopt a new mount). Do not manually copy it into personal skills.
-- `<source>` placeholders are arguments the agent resolves, not commands to paste literally.
-- Local stage is a developer proof; production install, launcher refresh and same-origin routing belong to the lifecycle integration.
-- The installed content-addressed bundle includes all templates, references, UI assets and Python modules; a source checkout is not needed during use. Bare third-party wheels without these assets are not a supported provisioning source.
-- Proposed view machinery, cheap-model evaluation and public publication stay open until their own evidence exists.
-
-## Verification
-Read the real tool outputs, check persisted state after each mutation, load this skill through stock Hermes in a fresh profile, and rehearse the complete source bundle on a second isolated box. Finish with preview, candidate revision, verified behavior and one real remaining gate.
+- `wam check` is strict for builder-made apps: new style, Back and pop-up violations fail; older apps get warnings.
+- Generated app skills are managed by the registry; the builder skill is registered separately. Repair the bundle with
+  `wam builder-bundle install`; never copy it into personal skills.
+- `<source>` and `<id>` are placeholders you resolve, not text to paste.
+- `install-local` is a developer proof; production install and same-origin routing belong to App Manager.

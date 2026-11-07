@@ -74,21 +74,35 @@ Never force reload due to a timer. Recording and unsaved state survive Back, bac
 
 Hosted apps contain no SW/install handling. The shared gateway installer must return before scheduling service-worker lookup/registration or install listeners in any iframe; do not inject per-app exceptions. This suppression is not privileged host detection and does not unregister workers. Top-level standalone keeps standard shared-resource fallback and gateway-managed installation where available. Central migration cleans **only** explicit known legacy scope/cache names recorded for a registered app path; no runtime prefix guesses, root shell or unrelated registration removal. Standalone updates still use shared policy and must respect holds; this does not authorize an app-owned worker.
 
-## First-frame action acceptance (required behavioral evidence)
+## First-frame action acceptance (how the code must behave)
 
-This is behavioral acceptance, not an automatic cross-app lint or release blocker implemented by `wam check` or the existing browser harness. Those tools do not discover and prove arbitrary domain handlers. Do not claim all apps are covered or released because their source lint passes. Apply this evidence requirement to new/changed controls and their applicable surfaces; no all-app sweep or new action framework is required.
+This is the behaviour every mutating control must have. It is not an automatic cross-app lint or release blocker, and
+it is **not a per-app test plan**: the shared kit and the `--kind` templates implement it and are tested once in the
+platform (`tests/test_builder_list.py`, the shared-client suites). For a single app, start from a kind, keep its
+`enqueue` pattern and run `wam verify`. Never write new test harnesses or release packets for one app.
 
-1. Inspect the real click/submit/gesture handlers and their API/storage/bridge call sites. Record every new/changed mutating or I/O control in the build/PR evidence as `control | handler path:symbol | surface | held-I/O test command/case | pass receipt`. Include widget/ready-card, standalone and in-shell variants when present; mark a surface not applicable with a reason. A full-app-only test does not establish widget behavior. Missing rows, executable cases or receipts mean incomplete behavioral acceptance, even if build/source lint passes.
-2. Exercise the actual control/handler, not a replica. Intercept its real request or hold its actual dependency Promise unresolved (e.g. Playwright route interception with an explicit release barrier). Do not fulfill it immediately or use a fixed sleep as proof. While it remains unresolved, assert meaningful visible task feedback within two requestAnimationFrame callbacks and no later than 100 ms after the tap; record elapsed time and outstanding request state. The implementation still updates synchronously in the tap handler: this measurement is a test allowance, not permission to wait two frames. A generic pressed flash/spinner disconnected from the operation does not pass.
-3. For reversible finish actions assert the local state change and previous-screen navigation before releasing I/O; for a list assert removal/update in place. For irreversible/external effects assert immediate honest pending/locked feedback and no Sent/Saved/completed claim before confirmed success. Preserve required user activation for shared capture/share calls; do not defer them behind unrelated awaits.
-4. While I/O is held, deliver a stale poll/refresh with pre-action state: pending state must survive. A double tap produces one logical operation with no duplicate side effect. Release success, then perform durable readback; assert no flicker, duplication or resurrection and release durability/update holds only after confirmation.
-5. Reject the operation in a separate case: restore the correct state, retain retryable input and show one visible plain-language error with retry. Also navigate away/close the widget before rejecting: verify late failure is delivered on the currently visible authorized surface (not an invisible frame toast) and restored state is present on return. A late success must not reopen the view or resurrect a removed item. Exercise retry without duplicate effects. Keep reconciliation alive beyond the initiating view's lifetime; a success-only test is insufficient.
-6. Record candidate/source hashes, host, exact commands/cases and pass/fail output for every inventory row. Sustained browser acceptance runs on forum via `wizard_heavy_submit host="forum"`; fixture-only, full-shell and real app/widget receipts remain distinct. Review `await` before feedback as a useful warning sign, never as a source heuristic that proves behavioral compliance.
+1. The handler changes visible task state synchronously, before any await; meaningful feedback, not a pressed flash.
+   (Platform suites measure it within two requestAnimationFrame callbacks and no later than 100 ms, with I/O unresolved.)
+2. Reversible finish actions update in place or return to the previous screen before I/O resolves; irreversible or
+   external effects show honest pending feedback and no Sent/Saved claim before confirmed success.
+3. Pending state survives a stale poll or refresh; a double tap is one logical operation (one `operation_id`).
+4. After success the app reads back and shows no flicker, duplication or resurrection.
+5. On failure, including a late failure after navigation, the correct state is restored, input kept, and one visible
+   plain-language error with retry appears on the visible surface; retry has no duplicate effect.
+6. These apply to every surface the control appears on (in-shell, standalone, widget/ready-card).
 
-## Executable and browser gate (required before staging)
+## Executable gate (wam verify)
 
-1. `wam check <source>` always runs `wam.system_functions.check` in addition to unchanged manifest admission and builder confinement. `--proposal` alone adds the still-proposed API/view-source checks. New/scaffold, stage, update-local and publication preparation all pass through this gate. No new manifest field is required.
-2. The lint checks inline HTML/SVG and JS/TS/component/CSS source, plus the builder's known shipped inline Runtipi payload (decode-only; never execute it) for raw getUserMedia/MediaRecorder/AudioContext, navigator.share, CloseWatcher, SW lifecycle, install prompts, app theme switches/storage and root history guards. A filename is **not** a trusted exemption. The normal builder has none. A release-owner supplied absolute path plus SHA256 can exempt exact shared core bytes during a platform audit; the app cannot supply this map. Fixtures test approved core versus an app-local same-name copy and valid route/overlay callbacks.
-3. Browser checklist: phone + desktop, dark + light, window + fullscreen; document/draft/scroll survive appearance changes, transparent canvas, no duplicate title. Open nested route/overlay, press Back and on-screen close, assert same step and app still open; root Back stays. Test text/file sharing and cancelled/unsupported without success toast. Test capture permission denial, busy, levels, stop/cancel, background/visibility, reload recovery, durable upload readback before ack. An update never reloads held/recording state. Explicit legacy cleanup preserves unrelated/root workers.
-4. `python3 -m pytest -q tests/test_system_functions.py tests/test_builder.py` tests lint and its CLI/staging wiring. `node qa/builder/system-functions-browser.cjs --source <generated-source> --core <approved-core-directory> --out <receipt-directory>` runs generated view + real shared client/host/Appearance resources against an isolated real local task API, with a clearly labelled test host registry/DOM. It is not the full production shell matrix; the parent/platform owner still runs that checklist. Fixture and actual shared-resource receipts must be labelled separately; no production POST/agent writes.
-5. Record execution host, exact candidate SHA/resource hashes, commands and receipts. Sustained Linux build/browser runs on forum via `wizard_heavy_submit host="forum"`; use Thales only for macOS/Apple-silicon work. Stage only; public pushes, merging and daily deployment need parent/release authority.
+1. `wam check <source>` always runs `wam.system_functions.check` in addition to manifest admission and builder
+   confinement; builder-made apps also fail on homemade Back (`popstate`/`pushState` outside `WizardApp.back`),
+   hand-rolled modals instead of `WzSheet`, and `alert/confirm/prompt`. `--proposal` adds the proposed API/view-source checks.
+2. The lint checks inline HTML/SVG and JS/TS/component/CSS source, plus the builder's shipped inline Runtipi payload
+   (decode-only; never execute it) for raw getUserMedia/MediaRecorder/AudioContext, navigator.share, CloseWatcher, SW
+   lifecycle, install prompts, app theme switches/storage and root history guards. A filename is not a trusted
+   exemption; only a release-owner path plus SHA256 can exempt exact shared core bytes during a platform audit.
+3. `wam verify <source>` is the whole per-app pre-install check: container build, loopback start, API round trip with a
+   container restart and readback, MCP tools/list, `wam check`, one phone-width screenshot per skin. If it passes,
+   install and hand over; the owner using the app is the final check.
+4. Platform owners (not app builders) keep the shared-resource browser suite: `node qa/builder/system-functions-browser.cjs
+   --source <generated-source> --core <approved-core-directory> --out <receipt-directory>` and the shell's own matrix.
+   Sustained Linux build/browser runs go to the configured build worker.

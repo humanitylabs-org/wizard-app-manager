@@ -2281,6 +2281,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "builder-bundle":
         from .builder_bundle import main as bundle_main
         return bundle_main(argv[1:])
+    if argv and argv[0] == "verify":   # one fixed pre-install check: build, API round trip, restart, check, screenshots
+        from .verify import main as verify_main
+        return verify_main(argv[1:])
     if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}:
         from .builder import main as builder_main
         return builder_main(argv)

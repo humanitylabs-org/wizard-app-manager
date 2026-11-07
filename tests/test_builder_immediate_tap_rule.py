@@ -17,7 +17,7 @@ def test_builder_requires_feedback_before_io_and_no_false_completion():
     assert 'before awaiting the write' in text
     assert 'irreversible or external' in text
     assert 'not an automatic cross-app lint or release blocker' in text
-    assert 'control → handler → surface → executable held-I/O test → pass receipt' in text
+    assert 'wam verify' in text and 'not a reason to write a per-app harness' in ' '.join(text.split())
 
 
 def test_behavioral_acceptance_names_real_surfaces_and_adversarial_outcomes():
@@ -29,6 +29,7 @@ def test_behavioral_acceptance_names_real_surfaces_and_adversarial_outcomes():
         'late failure', 'retry', 'not an automatic cross-app lint or release blocker',
     ):
         assert requirement in text
+    assert 'not a per-app test plan' in text and 'Never write new test harnesses' in text
 
 
 def test_bundle_upgrade_delivers_both_instruction_files_and_rollback(tmp_path):

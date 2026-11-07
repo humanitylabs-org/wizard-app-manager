@@ -45,6 +45,9 @@ Refresh requires a matching source HEAD, committed runtime files and a passing J
 
 ## Acceptance
 
-Exercise a fresh app inside the actual shell in window and fullscreen. Switch all accepted skins, inspect screenshots and assert transparent backgrounds from the app body through the frame. Compare the tokens/window material to Chats. Preserve a saved record, unsent input and scroll position across the change. Check nested/root Back and cold canonical entry. Use a synthetic light context to test generic light support; it is a transport fixture, not an extra skin choice. Source lint and a compatible manifest do not prove hosted appearance.
+For one app: `wam verify <source>` saves a phone-width screenshot per accepted skin; look at them (kit classes, no
+literal colours, readable in every skin), then install and hand over. The hosted-appearance matrix (window and
+fullscreen, live skin switches preserving input and scroll, transparent backgrounds through the frame, synthetic light
+context) belongs to the platform's shared-kit suites, run when the kit or shell changes, not per app.
 
 Daily Wizard already supplies the appearance host. This PR changes the source template only; it does not deploy apps or change the manifest admission policy.

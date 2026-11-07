@@ -1,0 +1,212 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Wizard list",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/items": {
+      "get": {
+        "summary": "List items in saved order with groups and a revision",
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "active",
+                "completed"
+              ]
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 240
+            }
+          },
+          {
+            "name": "include_deleted",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{items:[{id,title,fields,completed,deleted,group_id,position,version}], groups:[{id,name,position,version}], revision}"
+          },
+          "400": {
+            "description": "Invalid query"
+          }
+        }
+      }
+    },
+    "/api/items/change": {
+      "post": {
+        "summary": "Create, edit, complete/reopen, delete/undo or move one item. Idempotent per operation_id.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "operation_id",
+                  "id"
+                ],
+                "properties": {
+                  "operation_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "create": {
+                    "type": "boolean"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "fields": {
+                    "type": "object",
+                    "description": "Only the fields configured in web/list.json; null or \"\" clears one."
+                  },
+                  "group_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "after_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "completed": {
+                    "type": "boolean"
+                  },
+                  "deleted": {
+                    "type": "boolean"
+                  },
+                  "expected_version": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{item, revision}"
+          },
+          "400": {
+            "description": "Invalid change"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Conflict: stale version, moved anchor or reused operation_id"
+          },
+          "503": {
+            "description": "Storage unavailable; nothing discarded"
+          }
+        }
+      }
+    },
+    "/api/groups/change": {
+      "post": {
+        "summary": "Create or rename a group; after_id orders it. Idempotent per operation_id.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "operation_id",
+                  "id",
+                  "name"
+                ],
+                "properties": {
+                  "operation_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "create": {
+                    "type": "boolean"
+                  },
+                  "after_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "expected_version": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{group, revision}"
+          },
+          "400": {
+            "description": "Invalid change"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Conflict: stale version, moved anchor or reused operation_id"
+          },
+          "503": {
+            "description": "Storage unavailable; nothing discarded"
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "summary": "Stateless streamable HTTP JSON-RPC MCP; initialize, tools/list, tools/call, ping",
+        "responses": {
+          "200": {
+            "description": "JSON-RPC response"
+          },
+          "202": {
+            "description": "Notification acknowledged"
+          }
+        }
+      }
+    }
+  }
+}

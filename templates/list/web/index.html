@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" data-app="wizard-list">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>My List</title>
+  <script src="boot.js"></script>
+  <link rel="stylesheet" href="wizard-tokens.css">
+  <link rel="stylesheet" href="wizard-ui.css">
+  <link rel="stylesheet" href="standalone.css">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="/wizard-os-home/core/app-client.js"></script>
+  <script defer src="wizard-sheet.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main class="wz-app" aria-label="List">
+    <div class="wz-scroll" id="list-scroll">
+      <section class="wz-sec" aria-labelledby="list-heading">
+        <h2 class="wz-sec-h" id="list-heading">To do <span id="count" class="wz-count"></span></h2>
+        <p id="loading" class="wz-status" role="status">Loading…</p>
+        <div id="groups" aria-busy="true"></div>
+        <button type="button" id="add-group" class="wz-button secondary add-group" hidden>+ Add group</button>
+        <div id="empty" class="wz-empty" hidden><strong id="empty-title"></strong><p id="empty-copy"></p></div>
+      </section>
+    </div>
+    <div class="controls">
+      <div class="tools">
+        <div class="filters" role="group" aria-label="Show">
+          <button type="button" class="wz-chip" data-filter="active" aria-pressed="true">Active</button>
+          <button type="button" class="wz-chip" data-filter="completed" aria-pressed="false">Done</button>
+          <button type="button" class="wz-chip" data-filter="all" aria-pressed="false">All</button>
+        </div>
+        <input type="search" id="search" class="wz-input" aria-label="Search" placeholder="Search" maxlength="240">
+      </div>
+    </div>
+    <div id="feedback" class="feedback">
+      <div id="load-error" class="wz-status" role="alert" hidden><span></span><button type="button" class="wz-button secondary" id="load-retry">Try again</button></div>
+      <div id="failures" role="alert"></div>
+      <div id="undo-area" class="undo-area" hidden><span id="undo-copy"></span><button type="button" class="wz-button secondary" id="undo">Undo</button></div>
+      <p id="announcement" class="wz-sr" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+</body>
+</html>
