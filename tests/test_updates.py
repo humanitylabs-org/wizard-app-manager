@@ -93,6 +93,7 @@ def test_updates_are_always_automatic_and_a_saved_ask_me_reads_as_automatic(tmp_
     assert updates.mode(h) == "auto" and st["mode"] == "auto" and st["always_auto"] is True
     # Every box gets the nightly run, including one whose owner never chose.
     assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
+    assert json.loads((h / "updates.json").read_text()) == {"mode": "auto"}   # persisted, so a rollback stays auto
     timer = (ud / "wizard-os-update.timer").read_text()
     assert "OnCalendar=*-*-* 03:30" in timer and "RandomizedDelaySec=1h" in timer and "Persistent=true" in timer
     assert "updates --apply-if-auto" in (ud / "wizard-os-update.service").read_text()

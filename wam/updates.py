@@ -445,12 +445,12 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
     """Make sure the nightly Automatic run exists (the maintain timer, or the legacy wizard-os-update timer).
 
     Updates are always automatic, so this installs the timer on every box, including one whose updates.json still
-    says "ask"; that file is normalised to "auto" (keeping the channel) so an older App Manager after a rollback
+    says "ask" or that has no choice saved; that file is normalised to "auto" (keeping the channel) so an older App Manager after a rollback
     stays automatic too. The installer calls this on every install and rerun."""
     m = mode(home)
-    if _settings(home).get("mode") in LEGACY_MODES:
+    if _settings(home).get("mode") != "auto":         # legacy "ask", or no choice saved (the old default was ask)
         try:
-            _save(home)                               # {"mode": "ask", ...} -> {"mode": "auto", ...}
+            _save(home)                               # {"mode": "ask", ...} / no file -> {"mode": "auto", ...}
         except OSError:
             pass                                      # read-only home: mode() already reads it as auto
     ud = unit_dir or Path.home() / ".config/systemd/user"
