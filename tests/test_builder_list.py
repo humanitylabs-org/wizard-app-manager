@@ -58,6 +58,15 @@ def test_list_kind_generates_a_checked_app(list_app):
     assert not [r for r in report['rules'] if not r['ok']], 'the list template is clean, not just passing'
 
 
+def test_list_empty_copy_claims_no_direction(list_app):
+    # The Add row sits above the empty-state text, so the copy must not say "below" (or "above").
+    copy = json.loads((list_app / 'web/list.json').read_text())['empty']['copy']
+    assert copy == 'Tap Add to start. One item per line; Enter adds the next.'
+    fallback = (list_app / 'web/app.js').read_text().split("C.empty.copy ||", 1)[1].split(')', 1)[0]
+    for text in (copy, fallback):
+        assert 'below' not in text and 'above' not in text
+
+
 def test_hello_stays_the_default_kind(tmp_path):
     root = builder.new_app('plain-app', tmp_path, 'hello')
     assert json.loads((root / '.builder.json').read_text())['template'] == 'hello-wizard'
