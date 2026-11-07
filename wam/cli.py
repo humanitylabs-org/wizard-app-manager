@@ -1816,6 +1816,11 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
             return self._feature_switches(method)
+        if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
+            if method != "GET":
+                return self._json(405, {"error": "GET only"})
+            from . import disk
+            return self._json(200, disk.public(disk.status(c.home, allow_sudo=False)))
         if app_id == MAIN_COMPARE_PATH:   # Settings → About: how far this shell is from main (main_compare.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -2090,6 +2095,7 @@ class GatewayStoreHandler(StoreHandler):
 UPDATES_PATH = "_updates"
 FEATURE_SWITCHES_PATH = "_feature-switches"
 MAIN_COMPARE_PATH = "_main-compare"
+DISK_PATH = "_disk"
 
 
 # ---------------------------------------------------------------- main
@@ -2332,6 +2338,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "views":
         from .views import main as views_main
         return views_main(argv[1:])
+    if argv[:2] == ["disk", "reseal"]:   # wizard-os spec/DISK_ENCRYPTION.md: at the box, as root
+        from . import disk_reseal
+        return disk_reseal.main(argv[2:])
     if argv and argv[0] == "backup":   # docs/BACKUP.md: encrypted backup, restore, move, scheduled backups
         from .backup.cli import main as backup_main
         return backup_main(argv[1:])
@@ -2391,6 +2400,10 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    dk = sub.add_parser("disk", help="disk encryption: status (read-only: encrypted, sealed to the security chip, "
+                                     "recovery key); reseal (sudo, at the box, after a deliberate firmware or Secure "
+                                     "Boot change). wizard-os spec/DISK_ENCRYPTION.md")
+    dk.add_argument("action", choices=("status",)); dk.add_argument("--json", action="store_true")
     phone = sub.add_parser("phone-sync", help="mirror the public phone APK; never installs or restarts anything")
     phone.add_argument("--ensure-timer", action="store_true", help="installer: enable the independent hourly mirror")
     up = sub.add_parser("updates", help="update check (always automatic; --auto/--ask are kept for old scripts and "
@@ -2424,6 +2437,11 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--repo", metavar="OWNER/NAME", help="take the new release from this repo (the app moved to its own "
                                                          "repo); default: the old app's own source")
     args = ap.parse_args(argv)
+    if args.cmd == "disk":
+        from . import disk, registry
+        res = disk.status(registry.home())
+        print(json.dumps(res, indent=2) if args.json else disk.describe(res))
+        return 0
     if args.cmd == "app-rename":
         from . import app_rename
         c = Config()
