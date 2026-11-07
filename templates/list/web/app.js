@@ -113,7 +113,7 @@ function render() {
   el('list-heading').firstChild.textContent = ({active: C.title + ' ', completed: (C.done.heading || 'Done') + ' ', all: 'All ' + C.item.many + ' '})[filter];
   el('empty').hidden = !loaded || shown.length > 0;
   el('empty-title').textContent = query ? 'No matching ' + C.item.many : filter === 'completed' ? 'Nothing done yet' : items.length ? 'All clear' : (C.empty.title || 'Nothing here yet');
-  el('empty-copy').textContent = query ? 'Try another search or switch the filter.' : filter === 'completed' ? 'Finished ' + C.item.many + ' wait here.' : (C.empty.copy || 'Tap Add below.');
+  el('empty-copy').textContent = query ? 'Try another search or switch the filter.' : filter === 'completed' ? 'Finished ' + C.item.many + ' wait here.' : (C.empty.copy || 'Tap Add to start. One ' + C.item.one + ' per line; Enter adds the next.');
   // Keep the exact input node, value and caret; a refresh must never replace an IME target.
   if (editing?.field.isConnected) editing.field.remove();
   const list = el('groups'); list.replaceChildren();
