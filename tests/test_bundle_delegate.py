@@ -231,3 +231,8 @@ def test_doctor_flags_a_bundle_older_than_this_app_manager(tmp_path, monkeypatch
     assert row[1] is False and 'older than' in row[2] and 'wam builder-bundle install' in row[2]
     bb.install(os_home)                                         # the repair doctor --fix runs
     assert bb.health(os_home)[0][1] is True
+
+
+def test_wam_verify_runs_from_the_bundle():
+    """The builder skill's one pre-install check must not hand off to an older box wam that lacks it."""
+    assert {'new', 'check', 'verify'} <= bd.BUILDER_COMMANDS

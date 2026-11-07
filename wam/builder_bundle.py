@@ -218,7 +218,7 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
         for path in (reservation, reservation.with_suffix('.json')):
             if path.exists() or path.is_symlink():
                 raise ValueError(f'Occupied preservation destination: {path}; preserving it')
-    for name in ('wam', 'templates/hello-wizard', 'system-skills/wizard-builder', 'wizard-views'):
+    for name in ('wam', 'templates/hello-wizard', 'templates/list', 'system-skills/wizard-builder', 'wizard-views'):
         if not (source / name).is_dir():
             raise ValueError(f'Incomplete source bundle: missing {name}; reinstall from a complete source release')
     base.mkdir(parents=True, exist_ok=True)
