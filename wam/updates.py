@@ -8,15 +8,16 @@ mode the box already has (get.sh). Two channels (James, 21 Oct 2026):
   (releases/promotions/<version>.json); a fix or feature release with a passed upgrade test may skip the soak (DECISIONS #82, #93)
   (`fast_track`, wizard-os DECISIONS #82). Every box is on stable unless its owner chose latest.
 
-Automatic updates install stable releases only, whatever the channel: a latest box gets newer releases when its
-owner presses Update. This module adds only the things an owner needs on top of the installer:
+Automatic installs the box's channel release: a stable box takes only promoted stable releases, a latest box takes
+each new Latest release as soon as it is cut (#458). This module adds only the things an owner needs on top of the
+installer:
 
 - a check: which release runs here (~/.wizard-os/release.json) vs the current stable, so a shell can show
   "Update available" with an Update button;
 - a channel, saved in ~/.wizard-os/updates.json as "channel" (default "stable");
 - a choice, saved in ~/.wizard-os/updates.json: "ask" (the default for every box whose owner never chose:
-  nothing runs by itself, the shell shows "Update available") or "auto" (a nightly systemd user timer applies a
-  new stable). An explicit choice is always kept; the installer never writes updates.json.
+  nothing runs by itself, the shell shows "Update available") or "auto" (the nightly run applies the channel's
+  new release). An explicit choice is always kept; the installer never writes updates.json.
 
 Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`). The one exception is a release that
 moves ONLY the Wizard UX shell's pins on an alongside box that read back cleanly: wam/quick_update.py swaps that one
@@ -367,7 +368,8 @@ def _retry_target(home: Path | None, run: str | None, have: str | None) -> str |
 
 
 def status(home: Path | None = None, base: str | None = None, fresh: bool = False) -> dict:
-    """`latest` is what Update moves this box to (its channel's release); `stable` is what Automatic installs."""
+    """`latest` is what Update moves this box to (its channel's release); `stable` is the promoted release.
+    Automatic installs the channel's release too (auto_target): stable on stable, the newest Latest on latest."""
     from . import hermes_update
     run = install_state(home)
     chan = channel(home)
@@ -478,7 +480,7 @@ def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, s
 
 def set_channel(new: str, home: Path | None = None) -> dict:
     """Save the owner's channel: stable (tested releases, the default) or latest (every release, for testers).
-    Leaves the mode alone; Automatic keeps installing stable releases only."""
+    Leaves the mode alone; Automatic then installs that channel's releases (#458)."""
     if new not in CHANNELS:
         raise SystemExit(f"updates channel must be one of {', '.join(CHANNELS)}")
     _save(home, channel=new)
@@ -491,7 +493,7 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
 
     The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
-    narrows that to the stable release. `force` is the only way to rerun the installer on an unpinned box (it then
+    names the channel release apply_if_auto checked. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
     st = status(home, base, fresh=True)
     retry = st["retry_target"]
@@ -613,36 +615,52 @@ def _auto_retry_clear(home: Path | None) -> None:
         pass
 
 
+def auto_target(st: dict, base: str | None = None) -> str | None:
+    """The release Automatic installs on this box: its channel's release (#458).
+
+    A stable box takes the stable release (which must carry a valid promotion record, checked by apply_if_auto); a
+    latest box takes the newest Latest release (which never trails stable). Unlike `status()["latest"]`, this is the
+    channel pointer itself, never an interrupted retry target, so a newer release still supersedes a failed one."""
+    if st.get("channel") != "latest":
+        return st.get("stable")
+    return latest(base, chan="latest") or st.get("stable")   # the cache status(fresh=True) just filled
+
+
 def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
-    """The nightly timer: apply only in Automatic, only a stable release (whatever the channel), never on an unpinned
-    box, and not while the agent is working (skipped; the next nightly window tries again)."""
+    """The nightly timer: apply only in Automatic, only this box's channel release (stable: a promoted stable
+    release; latest: the newest Latest release, #458), never on an unpinned box, and not while the agent is working
+    (skipped; the next nightly window tries again)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
     stable = st["stable"]
+    target = auto_target(st, base)
     retry = st["retry_target"]
     if retry is None and _auto_retried(home):
         _auto_retry_clear(home)        # the failed release was repaired or replaced: re-arm for the next one
-    if retry and stable and _key(stable) < _key(retry):
+    if retry and target and _key(target) < _key(retry):
         return {**st, "started": False, "skipped": "interrupted-target",
-                "note": "retry the incomplete release with Update now; Automatic installs stable only"}
+                "note": f"retry the incomplete release with Update now; Automatic installs the {st['channel']} "
+                        f"release ({target}), which is older"}
     # Retrying the same failed release (capped below; a reboot-interrupted run is not the release's fault).
-    # A newer stable supersedes it and is a fresh install.
-    retrying = bool(retry) and retry == stable and st["failed"] and not st["interrupted"]
-    newer = bool(stable) and ((st["installed"] is not None and _key(stable) > _key(st["installed"]))
-                              or (retry is not None and _key(stable) >= _key(retry)))
-    st = {**st, "latest": stable, "update_available": newer}
+    # A newer channel release supersedes it and is a fresh install.
+    retrying = bool(retry) and retry == target and st["failed"] and not st["interrupted"]
+    newer = bool(target) and ((st["installed"] is not None and _key(target) > _key(st["installed"]))
+                              or (retry is not None and _key(target) >= _key(retry)))
+    st = {**st, "latest": target, "update_available": newer}
     if not newer:
         return {**st, "started": False}
-    if retrying and _auto_retried(home) == stable:
+    if retrying and _auto_retried(home) == target:
         return {**st, "started": False, "skipped": "retry-cap",
-                "note": f"Automatic already retried {stable} once; Update now retries it, a newer release replaces it"}
-    if not promoted(stable, base):
+                "note": f"Automatic already retried {target} once; Update now retries it, a newer release replaces it"}
+    # The promotion gate guards the stable channel (and a latest box whose channel release is the stable one).
+    # A Latest-only release has no promotion record by design: testers take it as soon as it is cut.
+    if (st["channel"] != "latest" or target == stable) and not promoted(target, base):
         return {**st, "started": False, "skipped": "unpromoted",
-                "note": f"stable {stable} has no valid promotion record; Automatic waits for a tested release"}
+                "note": f"stable {target} has no valid promotion record; Automatic waits for a tested release"}
     if (is_busy or (lambda: busy(service_origin(home))))():
         return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    res = apply(home, base, runner, target=stable)
+    res = apply(home, base, runner, target=target)
     if res.get("started") and retrying:
-        _auto_retry_mark(home, stable)
+        _auto_retry_mark(home, target)
     return res

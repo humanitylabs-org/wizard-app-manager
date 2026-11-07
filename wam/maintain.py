@@ -523,7 +523,8 @@ def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> 
 
 
 def updates_step(home: Path, quiet: bool) -> dict:
-    """The owner's Automatic Wizard OS update (stable, promoted releases only), formerly its own 03:30 timer.
+    """The owner's Automatic Wizard OS update (the box's channel release: promoted stable, or the newest Latest),
+    formerly its own 03:30 timer.
     Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
     from . import updates
     try:
