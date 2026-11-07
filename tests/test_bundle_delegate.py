@@ -214,23 +214,7 @@ def test_installed_bundle_launcher_imports_host_console_script(tmp_path):
     assert json.loads(p.stdout.splitlines()[-1]) == {'marker': 'HOST', 'argv': argv, 'guard': '1'}
 
 
-def test_doctor_flags_a_bundle_older_than_this_app_manager(tmp_path, monkeypatch):
-    os_home = tmp_path / 'wizard-os'
-    bb.install(os_home)
-    assert bb.health(os_home)[0][1] is True
-    stale = os_home / 'builder' / 'current' / 'wam' / 'links.py'
-    stale.chmod(0o644)
-    stale.write_text(stale.read_text() + '\n# older\n')
-    manifest = json.loads((os_home / 'builder/current/bundle.json').read_text())
-    files = bb._files(os_home / 'builder/current')
-    import hashlib
-    manifest['files'] = files
-    manifest['sha256'] = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
-    (os_home / 'builder/current/bundle.json').write_text(json.dumps(manifest))
-    row = bb.health(os_home)[0]
-    assert row[1] is False and 'older than' in row[2] and 'wam builder-bundle install' in row[2]
-    bb.install(os_home)                                         # the repair doctor --fix runs
-    assert bb.health(os_home)[0][1] is True
+# Doctor's older/newer bundle verdicts (and why a newer bundle is kept): tests/test_builder_bundle_order.py.
 
 
 def test_wam_verify_runs_from_the_bundle():

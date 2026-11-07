@@ -1,0 +1,2 @@
+# Fill in the commit a release was archived from: builder bundles are ordered by it (wam/builder_bundle.py).
+wam/_source.txt export-subst

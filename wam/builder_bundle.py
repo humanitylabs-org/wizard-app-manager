@@ -24,6 +24,57 @@ SCHEMA = 1
 MARKER = 'wizard-builder-bundle-v1'
 RUNTIME = '/opt/wizard-builder'
 COMPANION_SKILLS = ('wizard-guide',)
+# Which commit a bundle or App Manager source was built from. In git it reads `$Format:%H %ct$` (git archive fills it
+# in, .gitattributes export-subst); a checkout falls back to `git log`, and install writes the resolved value into the
+# release. 7 Nov 2026: an older box wam called a newer bundle "older than this App Manager" (any difference counted)
+# and its `builder-bundle install` put its own older code back. Bundles are content-addressed, so this is their order.
+STAMP = 'wam/_source.txt'
+_STAMP = re.compile(r'([0-9a-f]{40}) ([0-9]{9,11})')
+
+
+def stamp(root):
+    """(commit, commit time) of a source tree or bundle release; 'pre' when its wam predates stamps (so it is older
+    than anything stamped); None when the order cannot be told (an unfilled stamp outside git, or no wam at all)."""
+    root = Path(root)
+    try:
+        text = (root / STAMP).read_text().strip()
+    except FileNotFoundError:
+        return 'pre' if (root / 'wam' / '__init__.py').is_file() else None
+    except OSError:
+        return None
+    m = _STAMP.fullmatch(text)
+    if m:
+        return m.group(1), int(m.group(2))
+    if (root / '.git').exists() and shutil.which('git'):
+        try:
+            p = subprocess.run(['git', '-C', str(root), 'log', '-1', '--format=%H %ct'],
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        m = _STAMP.fullmatch(p.stdout.strip())
+        if p.returncode == 0 and m:
+            return m.group(1), int(m.group(2))
+    return None
+
+
+def order(a, b):
+    """-1 when stamp a is older than b, 1 when newer, 0 for the same commit, None when it cannot be told."""
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        if a[0] == b[0]:
+            return 0
+        return None if a[1] == b[1] else (-1 if a[1] < b[1] else 1)
+    if a == 'pre' and isinstance(b, tuple):
+        return -1
+    if b == 'pre' and isinstance(a, tuple):
+        return 1
+    return None
+
+
+def describe(s):
+    if isinstance(s, tuple):
+        import datetime
+        return s[0][:12] + ' (' + datetime.datetime.fromtimestamp(s[1], datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC') + ')'
+    return 'a build from before bundle ordering' if s == 'pre' else 'an unknown build'
 
 
 def _files(root):
@@ -171,13 +222,17 @@ def _restore_publication(path, before):
             os.unlink(tmp)
 
 
-def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None):
+def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None, allow_downgrade=False):
     """Publish a complete release, with bounded recovery of discovery on failure.
 
     Retain earlier releases for rollback/in-flight readers. Never delete custom
     skills or the generated app registry. Refuse unmanaged path collisions.
+    Never replace a newer installed bundle with older source unless allow_downgrade.
     """
     home, source = Path(os_home).resolve(), Path(source).resolve()
+    kept = _keep_newer(home / 'builder' / 'current', stamp(source), allow_downgrade)
+    if kept is not None:
+        return kept
     _publication_parents(home)
     base = home / 'builder'
     if base.is_symlink() or (base.exists() and (not (base / '.owner').is_file() or (base / '.owner').read_text().strip() != MARKER)):
@@ -247,6 +302,9 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
                             'fi\n'
                             'exec "$PY" -m wam "$@"\n')
         launcher.chmod(0o755)
+        resolved = stamp(source)
+        if isinstance(resolved, tuple):   # a checkout's unfilled `$Format` stamp becomes its real commit in the release
+            (stage / STAMP).write_text(f'{resolved[0]} {resolved[1]}\n')
         files = _files(stage)
         digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
         manifest = {'owner': MARKER, 'schema': SCHEMA, 'sha256': digest, 'files': files}
@@ -367,6 +425,23 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
             'preserved_local_copy': str(saved) if local else None,
             'preserved_local_copy_revision': saved.name if local and saved is not None else None,
             **({'registered': registered} if cfgp is not None else {})}
+
+
+def _keep_newer(current, new, allow_downgrade):
+    """The receipt for keeping a newer installed bundle, or None when installing `new` is not a downgrade."""
+    if allow_downgrade or not current.is_symlink() or not (current / 'bundle.json').is_file():
+        return None
+    have = stamp(current)
+    if order(new, have) != -1:
+        return None
+    try:
+        digest = json.loads((current / 'bundle.json').read_text()).get('sha256')
+    except (OSError, ValueError):
+        digest = None
+    return {'state': 'kept_newer', 'sha256': digest, 'release': os.readlink(current).rsplit('/', 1)[-1],
+            'installed': describe(have), 'offered': describe(new),
+            'note': 'The installed builder bundle is newer than this App Manager; nothing changed. '
+                    'Pass --allow-downgrade to replace it anyway.'}
 
 
 def restore_local_copy(os_home, revision):
@@ -495,13 +570,13 @@ def register(hermes_home, os_home, runtime=None):
     return path
 
 
-def fresh(c, app_id='hermes-agent', store='wizardapps'):
+def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False):
     """Prepare the stock Runtipi Hermes data directory and additive override.
 
     Does not replace the terminal backend: VM factory SSH still runs host tools;
     local terminals use the read-only mounted bundle and stock Python environment.
     """
-    receipt = install(c.home)
+    receipt = install(c.home, allow_downgrade=allow_downgrade)
     data = c.runtipi_root / 'app-data' / store / app_id / 'data'
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
     before = (override.read_bytes() if override.exists() else None,
@@ -553,12 +628,25 @@ def health(os_home, hermes_home=None, runtime=None):
         if p.returncode:
             raise ValueError('tooling unavailable (Python 3.10+/PyYAML required): ' + p.stderr[-300:])
         # The App Manager moved on (a checkout update, a hand fix) without reinstalling the bundle: builder sessions
-        # would run older wam code. Box commands are delegated (bundle_delegate.py); this still flags the drift.
-        if not (SOURCE / 'bundle.json').is_file() and (SOURCE / 'wam').is_dir():
-            ours = {'wam/' + k: v for k, v in _files(SOURCE / 'wam').items()}
-            if ours != {k: v for k, v in files.items() if k.startswith('wam/')}:
-                raise ValueError(f'bundle is older than (or differs from) this App Manager at {SOURCE}')
-        rows.append(('Wizard builder bundle and host tooling', True, digest))
+        # would run older wam code. Box commands are delegated (bundle_delegate.py); this still flags the drift. Run
+        # from the bundle, compare with the box's App Manager. Only a provably older bundle is drift: a bundle newer
+        # than this App Manager is kept (installing from here would downgrade it).
+        detail = digest
+        if (SOURCE / 'bundle.json').is_file():
+            from .bundle_delegate import box_source
+            other = box_source()
+        else:
+            other = SOURCE if (SOURCE / 'wam').is_dir() else None
+        if other is not None:
+            ours = {'wam/' + k: v for k, v in _files(other / 'wam').items() if 'wam/' + k != STAMP}
+            if ours != {k: v for k, v in files.items() if k.startswith('wam/') and k != STAMP}:
+                have, theirs = stamp(base / 'current'), stamp(other)
+                rel = order(have, theirs)
+                if rel == -1:
+                    raise ValueError(f'bundle {describe(have)} is older than the App Manager at {other}, {describe(theirs)}')
+                detail += (f'; newer than the App Manager at {other} ({describe(theirs)}), kept' if rel == 1 else
+                           f'; differs from the App Manager at {other}, order unknown, kept')
+        rows.append(('Wizard builder bundle and host tooling', True, detail))
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
         rows.append(('Wizard builder bundle and host tooling', False, str(e) + '; repair: wam builder-bundle install'))
     if hermes_home:
@@ -634,6 +722,8 @@ def main(argv=None):
     ap.add_argument('--revision', help='rollback: exact retained release id from install receipt')
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
+    ap.add_argument('--allow-downgrade', action='store_true',
+                    help='install/fresh: replace an installed bundle that is newer than this App Manager')
     a = ap.parse_args(argv)
     from .registry import home
     try:
@@ -650,7 +740,7 @@ def main(argv=None):
         elif a.action == 'fresh':
             from .cli import Config
             c = Config()
-            out = fresh(c)
+            out = fresh(c, allow_downgrade=a.allow_downgrade)
             if a.restart and out['restart_required']:
                 rt = c.runtipi()
                 rt.req('POST', '/app-lifecycle/hermes-agent:wizardapps/stop', {}, timeout=300)
@@ -661,7 +751,8 @@ def main(argv=None):
                 out['restart_required'] = False
                 out['restarted'] = True
         else:
-            out = install(home(), migrate_local_copy=a.migrate_local_copy, hermes_home=a.hermes_home)
+            out = install(home(), migrate_local_copy=a.migrate_local_copy, hermes_home=a.hermes_home,
+                          allow_downgrade=a.allow_downgrade)
         print(json.dumps(out, indent=2))
         return 0
     except (OSError, ValueError, yaml.YAMLError) as e:

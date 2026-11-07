@@ -34,7 +34,8 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
 6. Wrapping an existing upstream app: `references/port.md`.
 
 ## Build
-1. **One sentence and 2–4 visible actions.** Check installed apps first; maybe one already does the job. Pick a lowercase id.
+1. **One sentence and 2–4 visible actions.** Check installed apps first; maybe one already does the job. The id is the app's name in kebab-case
+   (`wam check` enforces it): name `To-dos` means `wam new to-dos --name 'To-dos'`.
 2. **Start from the closest kind:**
    - `wam new <id> --kind list --request '<sentence>'`: groups that fold, one item per line, tap to edit, Enter adds
      the next line below, done/undo, saved order, SQLite, HTTP API, MCP and skill. To-do, shopping, reading, packing,
@@ -51,7 +52,9 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
    (create, list, update, restart the container, read back; built in for `--kind list`, from `verify.json` otherwise),
    checks MCP lists tools, runs `wam check`, and saves one phone-width screenshot per skin. It cleans up after itself,
    prints elapsed time and memory, and exits non-zero on failure. Look at the screenshots. Run heavy builds on the
-   configured build worker when the installation names one.
+   configured build worker when the installation names one: copy the bundle alongside the source
+   (`rsync -a "$(readlink -f ~/.wizard-os/builder/current)/" worker:wizard-builder/`) and run
+   `wizard-builder/bin/wam verify <source>` there by path.
 5. **If it passes, install and hand over.** Install through the installation's App Manager lifecycle with its
    authenticated same-origin route (for a local proof, `wam install-local <source> --run`), open it in Wizard at
    `?open=<app-id>`, and give the owner the link. The owner
@@ -125,6 +128,7 @@ signing require the owner's explicit approval of that prepared artifact. `--exec
 ## Pitfalls
 - `wam check` is strict for builder-made apps: new style, Back and pop-up violations fail; older apps get warnings.
 - Generated app skills are managed by the registry; the builder skill is registered separately. Repair the bundle with
-  `wam builder-bundle install`; never copy it into personal skills.
+  `wam builder-bundle install` only when doctor fails; it keeps a newer bundle. Never copy it into personal skills.
+- A `summary` containing `: ` is fine; `wam package-inline` quotes it.
 - `<source>` and `<id>` are placeholders you resolve, not text to paste.
 - `install-local` is a developer proof; production install and same-origin routing belong to App Manager.

@@ -22,7 +22,12 @@ def package_inline(root):
             "for name,text in files.items():\n"
             " p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\n"
             "runpy.run_path(str(root/'app/server.py'),run_name='__main__')\n")
-    doc = yaml.safe_load((root / 'wizard.md').read_text().split('---', 2)[1])
+    from .wizardmd import front_matter, quote_colons
+    text = (root / 'wizard.md').read_text()
+    fixed = quote_colons(text)
+    if fixed != text:   # `summary: To-dos: ...` written by hand: store it quoted, as plain YAML
+        (root / 'wizard.md').write_text(fixed)
+    doc = front_matter(fixed)
     compose = {'services': {doc['id']: {'image': 'python:3.12-alpine', 'user': '1000:1000',
         'cap_drop': ['ALL'], 'security_opt': ['no-new-privileges:true'],
         'mem_limit': '128m', 'tmpfs': ['/tmp'],

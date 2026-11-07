@@ -28,10 +28,58 @@ def front_matter(text: str) -> dict:
     m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
     if not m:
         raise ValueError("no YAML front matter")
-    data = yaml.safe_load(m.group(1))
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        fixed = quote_colons(text)
+        if fixed == text:
+            raise
+        data = yaml.safe_load(re.match(r"^---\n(.*?)\n---\n", fixed, re.S).group(1))
     if not isinstance(data, dict):
         raise ValueError("front matter is not a mapping")
     return data
+
+
+# A top-level `key: plain value` line (plus its indented continuation lines), not a quoted, flow or block value.
+_PLAIN = re.compile(r"^([A-Za-z_][\w-]*):[ \t]+(?![\'\"\[{|>&*!%@`#])(.*\S)[ \t]*$")
+
+
+def quote_colons(text: str) -> str:
+    """wizard.md with any top-level plain value containing `: ` quoted, when that is what breaks its front matter.
+
+    `summary: To-dos: one list for the house` is not YAML (the second `: ` starts a mapping), and writers type it
+    all the time. The builder reads it as the quoted string; `wam package-inline` writes the quotes into the file,
+    so the published wizard.md stays plain YAML for every other reader. Anything else stays an error.
+    """
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return text
+    try:
+        yaml.safe_load(m.group(1))
+        return text
+    except yaml.YAMLError:
+        pass
+    lines, out, i = m.group(1).split("\n"), [], 0
+    while i < len(lines):
+        pm = _PLAIN.match(lines[i])
+        if pm:
+            value, j = pm.group(2), i + 1
+            while j < len(lines) and lines[j][:1] in (" ", "\t") and lines[j].strip():
+                value, j = value + " " + lines[j].strip(), j + 1   # a plain scalar folds its continuation lines
+            value, hash_, comment = value.partition(" #")
+            if ": " in value or value.endswith(":"):
+                out.append(f"{pm.group(1)}: {json.dumps(value.rstrip(), ensure_ascii=False)}"
+                           + (f" #{comment}" if hash_ else ""))
+                i = j
+                continue
+        out.append(lines[i])
+        i += 1
+    fixed = "\n".join(out)
+    try:
+        yaml.safe_load(fixed)
+    except yaml.YAMLError:
+        return text
+    return text[:m.start(1)] + fixed + text[m.end(1):]
 
 
 def compose_risks(text: str) -> list[str]:

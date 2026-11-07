@@ -43,7 +43,7 @@ Enter adds the next line below, done and undo, saved order, SQLite in app-data, 
 ## Customise by editing text
 
 `web/list.json` holds the words and fields. Both the server and the screen read it; change it, then run
-`wam builder package-inline .` and `wam verify .`.
+`wam package-inline .` and `wam verify .`.
 
 - `title`: the heading.
 - `item.one` / `item.many` / `item.placeholder`: what one entry is called ("task", "book", "gift").
