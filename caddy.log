@@ -1,0 +1,3 @@
+{"level":"info","ts":1794041796.3059025,"msg":"maxprocs: Leaving GOMAXPROCS=8: CPU quota undefined"}
+{"level":"info","ts":1794041796.305956,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":11596411699,"previous":9223372036854775807}
+Error: reading config from file: open Caddyfile: no such file or directory
