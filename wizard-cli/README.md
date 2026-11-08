@@ -22,3 +22,13 @@ environment or host/user names, and never uploads. A missing probe is `unavailab
 Expected/observed pins are the installer's recorded readback, not a new Docker
 inspect: the report intentionally does not query container configuration or auth
 stores. Review before sharing. Tests: `python3 -m unittest tests/test_launch_audit_cli.py`.
+
+## Gateway token repair (feature switch, off by default)
+
+With the feature switch `wizard/link-token-repair` on (Settings, Try new features, For testers), a repeat
+`wizard link` on an already-linked box puts this box's gateway token (`$WIZARD_OS_HOME/mcp-token`) back into the
+Hermes `.env` when `WIZARD_MCP_TOKEN` is missing or stale, for example after a setup step rewrote the file. That
+mismatch is what makes `hermes mcp test wizard` return `401 unauthorized` (wizard-ux#974). Only that one line
+changes; other keys stay, `unlink` still removes only what link added, and it never mints a new token. `wizard
+doctor` then also shows "gateway token matches this box", comparing short sha256 prefixes and never the values.
+Restart Hermes afterwards (`wizard link --restart`). Tests: `tests/test_link_token_repair.py`.
