@@ -2087,8 +2087,8 @@ class StoreHandler(BaseHTTPRequestHandler):
 
 
 class GatewayStoreHandler(StoreHandler):
-    """Store Get and the three Settings routes (_updates, _main-compare, _connections) for the private gateway on
-    loopback :7792 (store_install.py: gateway listener). Everything else (remove, host access, views) stays on :7791."""
+    """Store Get and the allowlisted Settings/Tracker routes for the private gateway on loopback :7792
+    (store_install.py: gateway listener). Everything else (remove, host access, views) stays on :7791."""
     gateway = True
 
 

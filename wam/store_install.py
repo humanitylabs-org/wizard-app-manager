@@ -220,15 +220,15 @@ def gateway_proof(home) -> str:
     return v if len(v) >= 32 else ""
 
 
-GATEWAY_CONTROL = ("_updates", "_main-compare", "_connections", "_disk")   # what Settings needs behind the gateway; owner gate unchanged
+GATEWAY_CONTROL = ("_updates", "_main-compare", "_connections", "_disk", "_feature-switches")   # owner gate unchanged
 
 
 def gateway_path_ok(path: str) -> bool:
-    """The gateway listener answers a plain app id and the Settings routes (Updates, About's main compare, Connections,
-    the disk encryption line),
+    """The gateway listener answers a plain app id and the Settings/Tracker routes (Updates, About's main compare,
+    Connections, the disk encryption line and feature switches),
     nothing else: removal, host-access and view reverts stay on the root-peer :7791 listener."""
     p = path.strip("/")
-    return bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk") or p == "_connections" or p.startswith("_connections/")
+    return bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches") or p == "_connections" or p.startswith("_connections/")
 
 
 def gateway_proof_ok(headers, home) -> bool:

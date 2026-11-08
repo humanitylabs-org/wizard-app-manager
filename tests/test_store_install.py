@@ -273,6 +273,57 @@ def test_gateway_listener_serves_the_settings_routes_to_the_owner_only(monkeypat
         srv.shutdown()
 
 
+def test_gateway_feature_switches_reuses_owner_gate_and_exact_route(monkeypatch, tmp_path):
+    """The Tracker's existing endpoint must work on the private edge without widening that edge."""
+    import http.client
+    from wam import feature_switches as fs
+
+    srv = _gateway(monkeypatch, tmp_path)
+    calls = []
+    listing = {"switches": [], "locked": False}
+    monkeypatch.setattr(fs, "listing", lambda: listing)
+    monkeypatch.setattr(fs, "set_switch", lambda tid, on, **kw:
+                        calls.append((tid, on, kw)) or {"ok": True})
+    body = {"id": "miguel/send-and-go", "on": True}
+    try:
+        assert si.gateway_path_ok("/_feature-switches")
+        assert _get(srv, "/_feature-switches", GW) == (200, listing)
+        assert _post(srv, "/_feature-switches", GW, body) == (200, {"ok": True})
+        assert calls == [(body["id"], True, {"by": "owner"})]
+        calls.clear()
+        for overrides in ({"X-Wizard-Store-Proof": None}, {"X-Wizard-Store-Proof": "forged"},
+                          {"Tailscale-User-Login": None}, {"Tailscale-User-Login": "guest@x.com"}):
+            headers = {k: v for k, v in {**GW, **overrides}.items() if v is not None}
+            assert _get(srv, "/_feature-switches", headers)[0] == 403
+            assert _post(srv, "/_feature-switches", headers, body)[0] == 403
+        # A bearer or app grant cannot replace gateway proof or owner identity.
+        for headers in ({}, {"Authorization": "Bearer forged"}, {"X-Wizard-Grant": "f" * 64}):
+            assert _get(srv, "/_feature-switches", headers)[0] == 403
+            assert _post(srv, "/_feature-switches", headers, body)[0] == 403
+        for overrides in ({"Origin": "https://evil.example"}, {"X-Wizard-Store": None},
+                          {"Content-Type": "text/plain"}, {"X-Forwarded-For": next(iter(si.own_ips()))}):
+            headers = {k: v for k, v in {**GW, **overrides}.items() if v is not None}
+            assert _post(srv, "/_feature-switches", headers, body)[0] == 403
+        for path in ("/_feature-switchesX", "/_feature-switches/child", "/_feature-switch", "/_feature-switches%2fchild",
+                     "/_remove/wizard-mail", "/_host-access/wizard-mail", "/_views/x"):
+            assert not si.gateway_path_ok(path)
+            assert _get(srv, path, GW)[0] == 404
+            assert _post(srv, path, GW, body)[0] == 404
+        for method in ("PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            try:
+                conn.request(method, "/_feature-switches", headers=GW)
+                response = conn.getresponse()
+                assert response.status == 501
+                response.read()
+            finally:
+                conn.close()
+        assert calls == [], "no rejected request may reach the existing feature writer"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_gateway_proof_is_off_without_a_long_secret_and_origins_come_from_settings(tmp_path):
     assert si.gateway_proof(tmp_path) == ""
     (tmp_path / si.GATEWAY_PROOF_FILE).parent.mkdir(exist_ok=True)
