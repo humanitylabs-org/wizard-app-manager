@@ -103,7 +103,7 @@ def test_automatic_installs_a_fast_tracked_stable_fix(tmp_path):
     calls = []
     res = updates.apply_if_auto(h, d.as_uri(), _runner(calls), is_busy=lambda: False)
     assert res["started"] is True
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.32 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.32 bash -s start"]]
 
 
 def test_only_releases_before_the_split_can_be_grandfathered():
@@ -173,7 +173,7 @@ def test_update_button_installs_the_channel_release_it_checked(tmp_path):
     calls = []
     res = updates.apply(h, _mirror(tmp_path, "0.3.25", latest="0.3.27"), _runner(calls))
     assert res["started"] is True
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.27 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.27 bash -s start"]]
 
 
 def test_automatic_on_stable_installs_only_a_promoted_stable_release(tmp_path):
@@ -183,7 +183,7 @@ def test_automatic_on_stable_installs_only_a_promoted_stable_release(tmp_path):
     calls = []
     res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
     assert res["started"] is True and res["latest"] == "0.3.26"
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.26 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.26 bash -s start"]]
 
 
 # #458: Automatic + Latest installs each new Latest release (it used to install Stable only).
@@ -196,7 +196,7 @@ def test_automatic_on_latest_installs_the_newest_latest_release(tmp_path):
     calls = []
     res = updates.apply_if_auto(h, _mirror(tmp_path, "0.3.26", latest="0.3.28"), _runner(calls), is_busy=lambda: False)
     assert res["started"] is True and res["latest"] == "0.3.28" and res["channel"] == "latest"
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.28 bash -s start"]]
+    assert calls == [["bash", "-c", "curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.28 bash -s start"]]
 
 
 def test_automatic_on_latest_needs_no_promotion_record_for_a_latest_only_release(tmp_path):

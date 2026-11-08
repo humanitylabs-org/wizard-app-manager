@@ -519,7 +519,7 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     env = f"WIZARD_RELEASE={pin} " if pin else ""
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
-    r = runner(["bash", "-c", f"curl -fsSL {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
+    r = runner(["bash", "-c", f"curl -fsSL --retry 4 --retry-delay 2 {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
     if ok and not target:

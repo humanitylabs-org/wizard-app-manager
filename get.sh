@@ -52,6 +52,14 @@ tty_ok() { [ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null; }
 MODE="${WIZARD_MODE:-auto}"
 case "$MODE" in auto|alongside|fresh) ;; *) echo "WIZARD_MODE must be auto, alongside or fresh" >&2; exit 2 ;; esac
 REF="${WAM_REF:-main}"
+# Raw files come straight from raw.githubusercontent.com: github.com/<repo>/raw/ is only a redirect to it, and that
+# redirect can 504 for minutes while raw itself serves (Update now failed on a 504 from the redirect). Retried too.
+repo_raw() {  # repo_raw <path>: the raw URL of <path> at $REF in $REPO
+  case "$REPO" in
+    https://github.com/*) printf 'https://raw.githubusercontent.com/%s/%s/%s' "${REPO#https://github.com/}" "$REF" "$1" ;;
+    *) printf '%s/raw/%s/%s' "$REPO" "$REF" "$1" ;;
+  esac
+}
 # ---- Hermes detection (read-only; get.sh --check prints it) ----
 # An existing Hermes = <hermes home>/config.yaml plus a `hermes` command, owned by ANY Linux user (root included).
 # Found by: each account's ~/.hermes (root and uid >= 1000), hermes-gateway systemd units (system and user, incl. a
@@ -364,7 +372,7 @@ as_user() {
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
-    bash -c "set -o pipefail; curl -fsSL '$REPO/raw/$REF/get.sh' | bash"
+    bash -c "set -o pipefail; curl -fsSL --retry 4 --retry-delay 2 '$(repo_raw get.sh)' | bash"
 }
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
@@ -660,7 +668,7 @@ install_start() {
   # This exact installer runs detached: this file when run from a file, else the same source the command came from.
   local src="${BASH_SOURCE[0]:-}"
   if [ -n "$src" ] && [ -f "$src" ]; then cp "$src" "$WOS_DIR/get.sh.tmp"
-  else curl -fsSL "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" -o "$WOS_DIR/get.sh.tmp"; fi
+  else curl -fsSL --retry 4 --retry-delay 2 "${WIZARD_GET_SH_URL:-$(repo_raw get.sh)}" -o "$WOS_DIR/get.sh.tmp"; fi
   mv "$WOS_DIR/get.sh.tmp" "$WOS_DIR/get.sh"
   # The settings this command was given, for the runner only (0600, deleted once read; never printed).
   # Detached is for agents: the Hermes restart is always deferred (WIZARD_AGENT_SAFE=0 still forces it off).
@@ -871,7 +879,7 @@ print(json.dumps({"relay": a[1], "host": a[2], "user": a[3], "needs": [x for x i
   "interval": a[6], "down_after": a[7], "admin_cmd": a[8], "getsh": a[9], "getsh_sha": a[10], "root_env": a[11:]}))' \
     "${WIZARD_APPROVE_URL:-https://www.aiwizards.com/os-approve}" "$(hostname -s 2>/dev/null || hostname)" "$(id -un)" "$needs" \
     "${WIZARD_APPROVE_TRIES:-3}" "${WIZARD_APPROVE_INTERVAL:-3}" "${WIZARD_APPROVE_DOWN_AFTER:-300}" "$(admin_command)" \
-    "${WIZARD_GET_SH_URL:-$REPO/raw/$REF/get.sh}" "$(sha256sum < "$WOS_DIR/get.sh" | cut -d' ' -f1)" "WIZARD_HERMES_USER=$H_USER" "HERMES_HOME=$H_HOME" WIZARD_HOST_PREP_ONLY=1 WIZARD_AGENT_SAFE=1 \
+    "${WIZARD_GET_SH_URL:-$(repo_raw get.sh)}" "$(sha256sum < "$WOS_DIR/get.sh" | cut -d' ' -f1)" "WIZARD_HERMES_USER=$H_USER" "HERMES_HOME=$H_HOME" WIZARD_HOST_PREP_ONLY=1 WIZARD_AGENT_SAFE=1 \
     "WAM_REPO=$REPO" ${WAM_REF:+"WAM_REF=$WAM_REF"} "WIZARD_PRIVATE_ACCESS=${WIZARD_PRIVATE_ACCESS:-tailscale}")"
   local rc=0; python3 -c "$APPROVE_PY" "$cfg" || rc=$?
   [ "$rc" -eq 0 ] || exit "$rc"
@@ -957,7 +965,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
       # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
       helper="$(mktemp)"
-      curl -fsSL "$REPO/raw/$REF/scripts/prepare-named-user.sh" -o "$helper"
+      curl -fsSL --retry 4 --retry-delay 2 "$(repo_raw scripts/prepare-named-user.sh)" -o "$helper"
       bash "$helper" "$ALONG_USER"
       rm -f "$helper"
       if [ "${WIZARD_HOST_PREP_ONLY:-0}" = 1 ]; then   # the owner-approved root step: the owner's runner continues
