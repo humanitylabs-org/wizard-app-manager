@@ -5,7 +5,8 @@ indexed app: fetch the repo at its newest commit (with this box's GitHub login),
 and write the app into the Wizard store folder. Images are pulled on the host with the same login, so Runtipi finds
 them locally. Nothing about a private app is sent to the index.
 
-GitHub login, first found wins: $GITHUB_TOKEN, $GH_TOKEN, ~/.wizard-os/github-token, `gh auth token`. Private images also need the
+GitHub login, first found wins: $GITHUB_TOKEN, $GH_TOKEN, the selected Wizard home's github-token,
+the legacy ~/.wizard-os/github-token (read-only fallback), `gh auth token`. Private images also need the
 `read:packages` scope (`gh auth refresh -s read:packages`).
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-from . import dirswap, wizardmd
+from . import dirswap, registry, wizardmd
 
 CATEGORIES = ("agent", "interface", "app", "system")
 IMAGE_VAR = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?-([^}]*))?\}")
@@ -34,20 +35,38 @@ class PrivateError(RuntimeError):
 
 
 def token_file() -> Path:
-    """The saved GitHub login. The Store's GitHub sign-in (github_signin.py) writes exactly this file."""
-    return Path.home() / '.wizard-os/github-token'
+    """This installation's saved login: the only token file sign-in may write or delete."""
+    return registry.home() / "github-token"
+
+
+def saved_token() -> tuple[str, str]:
+    """(source, token), with legacy default-home READ compatibility after the selected file.
+
+    A legacy token outside this installation is external (source `env`), like `gh`:
+    it remains usable but sign-out must never delete it or its account sidecar.
+    """
+    selected = token_file()
+    legacy = Path.home() / ".wizard-os/github-token"
+    paths = [("file", selected)]
+    if legacy != selected:
+        paths.append(("env", legacy))
+    for source, path in paths:
+        try:
+            saved = path.read_text().strip()
+        except OSError:
+            continue
+        if saved:
+            return source, saved
+    return "", ""
 
 
 def token() -> str:
     for k in ("GITHUB_TOKEN", "GH_TOKEN"):
         if os.environ.get(k):
             return os.environ[k]
-    try:
-        saved = token_file().read_text().strip()
-        if saved:
-            return saved
-    except OSError:
-        pass
+    _, saved = saved_token()
+    if saved:
+        return saved
     try:
         out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20)
         return out.stdout.strip() if out.returncode == 0 else ""

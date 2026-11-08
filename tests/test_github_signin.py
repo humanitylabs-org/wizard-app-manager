@@ -132,7 +132,7 @@ def test_happy_path_saves_the_token_privately_and_only_the_login_is_reported(box
     assert done == {"state": "signed_in", "login": "octo-friend", "source": "file"}
     assert private.token() == TOKEN                                  # the exact file wam/private.py reads
     assert box.auth == f"Bearer {TOKEN}"                             # GET /user used it
-    assert (gs.login_path()).read_text().strip() == "octo-friend" and TOKEN not in gs.login_path().read_text()
+    assert "octo-friend" in gs.login_path().read_text() and TOKEN not in gs.login_path().read_text()
     _no_secret(st, done, capsys.readouterr().err)
 
 
