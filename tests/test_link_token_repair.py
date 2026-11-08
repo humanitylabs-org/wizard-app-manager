@@ -210,3 +210,14 @@ def test_doctor_token_row_without_hermes(homes, cli, monkeypatch):
     w.repair_link_token(hh, w.read_record())
     rows, _ = doctor_rows(w, hh, monkeypatch)
     assert rows['gateway token matches this box']['ok'] is True
+
+
+def test_doctor_names_a_missing_hermes_token_with_the_remedy(homes, cli, monkeypatch):
+    osh, hh = homes
+    w, switches = cli
+    linked_box(w, osh, hh, None)
+    switches.add(w.LINK_TOKEN_REPAIR)
+    rows, out = doctor_rows(w, hh, monkeypatch)
+    row = rows['gateway token matches this box']
+    assert row['ok'] is False and 'has no ' + w.TOKEN_ENV in row['detail']
+    assert '401' in row['detail'] and 'wizard link --restart' in row['detail'] and box_token(osh) not in repr(out)

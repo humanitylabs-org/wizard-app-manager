@@ -1385,7 +1385,7 @@ def cmd_doctor(ns) -> dict:
     token = envn.get(TOKEN_ENV, "")
     _check(rows, "gateway token in the Hermes .env", bool(token), f"{TOKEN_ENV} (value not shown)")
     boxf = os_home() / "mcp-token"
-    if token and boxf.is_file() and switch_on(LINK_TOKEN_REPAIR):
+    if boxf.is_file() and switch_on(LINK_TOKEN_REPAIR):   # a missing Hermes token fails here too, with the remedy
         try:
             box = boxf.read_text(encoding="utf-8").strip()
         except OSError:
@@ -1393,7 +1393,8 @@ def cmd_doctor(ns) -> dict:
         same = bool(box) and token == box
         _check(rows, "gateway token matches this box", same,
                f"sha256 {token_fingerprint(token)} (values not shown)" if same else
-               f"Hermes .env sha256 {token_fingerprint(token)} != {boxf} sha256 {token_fingerprint(box)}: "
+               f"Hermes .env {('sha256 ' + token_fingerprint(token)) if token else 'has no ' + TOKEN_ENV} != {boxf} "
+               f"sha256 {token_fingerprint(box)}: "
                "the agent gets 401 from /wizard/mcp; `wizard link --restart` restores it")
     origin = ((st.get("agent") or {}).get("origin")) or "http://127.0.0.1:8642"
     try:
