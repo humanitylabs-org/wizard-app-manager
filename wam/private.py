@@ -33,12 +33,17 @@ class PrivateError(RuntimeError):
     pass
 
 
+def token_file() -> Path:
+    """The saved GitHub login. The Store's GitHub sign-in (github_signin.py) writes exactly this file."""
+    return Path.home() / '.wizard-os/github-token'
+
+
 def token() -> str:
     for k in ("GITHUB_TOKEN", "GH_TOKEN"):
         if os.environ.get(k):
             return os.environ[k]
     try:
-        saved = (Path.home() / '.wizard-os/github-token').read_text().strip()
+        saved = token_file().read_text().strip()
         if saved:
             return saved
     except OSError:
