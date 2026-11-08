@@ -1867,6 +1867,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._chats_default(method)
         if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
             return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
+        if app_id == '_github' or app_id.startswith('_github/'):   # Store "Sign in to GitHub" (github_signin.py)
+            return self._github(method, app_id.removeprefix('_github').lstrip('/'))
         if app_id.startswith('_host-access/'):   # the owner's own device accepts host access (host_access_gate.py)
             return self._host_access(method, app_id.removeprefix('_host-access/'))
         if app_id == '_recommended':
@@ -2025,6 +2027,29 @@ class StoreHandler(BaseHTTPRequestHandler):
             sys.stderr.write(f"wam store: remove {app_id} failed: {type(e).__name__}: {e}\n")
             return self._json(500, {'error': f"The App Manager couldn't check this removal ({type(e).__name__}). "
                                              "Nothing was removed."})
+
+    def _github(self, method: str, sub: str) -> None:
+        """GET: the sign-in state. POST start / signout with body {}: begin or end it. The owner gate in _go already ran
+        (check_request for a POST). Never answers with a token or the device code (github_signin.status())."""
+        from . import github_signin as gs
+        if sub not in ('', 'start', 'signout'):
+            return self._json(404, {'error': 'not found'})
+        if (method == 'GET') != (sub == ''):
+            return self._json(405, {'error': 'GET _github, or POST _github/start and _github/signout'})
+        try:
+            if method == 'GET':
+                return self._json(200, gs.status())
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 <= size <= 64:
+                return self._json(400, {'error': 'invalid body size'})
+            if size and json.loads(self.rfile.read(size)) != {}:
+                return self._json(400, {'error': 'send {}'})
+            return self._json(*(gs.start() if sub == 'start' else (200, gs.signout())))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
+        except Exception as e:  # noqa: BLE001 - answer with the type only: a message could carry request detail
+            sys.stderr.write(f"wam store: github sign-in failed: {type(e).__name__}\n")
+            return self._json(500, {'error': f"The App Manager couldn't do that ({type(e).__name__})."})
 
     def _chats_default(self, method: str) -> None:
         from . import chats_views
