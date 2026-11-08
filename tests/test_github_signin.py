@@ -94,6 +94,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(gs, "API_URL", gh.url)
     monkeypatch.setattr(gs, "TIME_SCALE", 0.002)
     monkeypatch.setattr(gs, "_gh_token", lambda: "")
+    monkeypatch.setattr(gs, "switch_on", lambda: True)   # the feature switch: tests below the switch tests turn it on
     monkeypatch.setattr(gs, "_flow", None)
     monkeypatch.setattr(gs, "_gh_cache", None)
     gs._login_cache.clear()
@@ -508,3 +509,36 @@ def test_oversized_github_answers_are_refused(box, monkeypatch):
     box.device_reply = (200, {"device_code": DEVICE, "user_code": USER_CODE, "expires_in": 900,
                               "verification_uri": f"{box.url}/login/device"})
     assert gs.start()[1]["state"] == "error"
+
+
+# ---------------------------------------------------------------- feature switch archimedes/github-signin
+
+def test_switch_off_by_default_start_is_409_and_makes_no_request(box, monkeypatch):
+    monkeypatch.setattr(gs, "switch_on", lambda: False)
+    assert gs.status() == {"state": "switched_off", "login": "", "source": ""}
+    assert gs.start() == (409, {"state": "switched_off", "login": "", "source": ""})
+    assert box.calls == [] and gs._flow is None
+
+
+def test_switch_off_still_reports_an_existing_login_and_signout_works(box, monkeypatch):
+    monkeypatch.setattr(gs, "switch_on", lambda: False)
+    gs.token_path().parent.mkdir(parents=True, exist_ok=True)
+    gs.token_path().write_text(TOKEN + "\n")
+    assert gs.status() == {"state": "signed_in", "login": "octo-friend", "source": "file"}
+    assert gs.signout()["state"] == "switched_off" and not gs.token_path().exists()
+
+
+def test_switch_uses_the_box_feature_switch_and_is_off_when_unreadable(monkeypatch):
+    from wam import feature_switches
+    seen = []
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, *a, **k: seen.append(tid) or False)
+    assert gs.switch_on() is False and seen == ["archimedes/github-signin"]
+    monkeypatch.undo()
+    monkeypatch.setenv("WIZARD_OS_HOME", "/nonexistent-wizard-home")
+    assert gs.switch_on() is False
+
+
+def test_switch_off_start_is_409_over_http(listener, box, monkeypatch):
+    monkeypatch.setattr(gs, "switch_on", lambda: False)
+    code, body, _ = listener("POST", "/_github/start")
+    assert code == 409 and body["state"] == "switched_off" and box.calls == []

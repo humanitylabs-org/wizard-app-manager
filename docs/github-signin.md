@@ -4,6 +4,10 @@ A friend invited to a private GitHub repository can sign in to GitHub from Apps 
 
 Code: `wam/github_signin.py`; routes in `StoreHandler` (`wam/cli.py`); tests: `tests/test_github_signin.py`.
 
+## Feature switch: `archimedes/github-signin` (off by default)
+
+Sign-in is a tester feature: no new sign-in can start until the owner turns on `archimedes/github-signin` (Settings › Try new features, or the WizardOS Tracker's Try it; For testers channel only; `wam/feature_switches.is_on`). While it is off, `GET _github` reports `switched_off` when nobody is signed in, and `POST _github/start` answers `409` + `switched_off` without calling GitHub. A token that is already there (environment, `gh`, or a saved `github-token`) still reads as `signed_in`, and Sign out still removes a saved one.
+
 ## Setup: a GitHub OAuth App (one time, by the WizardOS org owner)
 
 Nothing signs in until WizardOS has an OAuth App. Create it under `humanitylabs-org` (Settings → Developer settings → OAuth Apps), tick **Enable Device Flow**, and give its **client id** to the box. The client id is a public value; the device flow needs no client secret. Do not use another tool's client id (for example the `gh` CLI's).
@@ -26,10 +30,10 @@ On the owner-gated store listener (`127.0.0.1:7791`, mounted at `/wizard-os-home
 | Request | Does |
 |---|---|
 | `GET _github` | `{state, login, source, user_code?, verification_uri?, expires_in?, interval?}` |
-| `POST _github/start` `{}` | Begin sign-in; same shape, state `pending` with the code. Repeating it while pending returns the same code. `409` + `not_configured` when there is no client id. |
+| `POST _github/start` `{}` | Begin sign-in; same shape, state `pending` with the code. Repeating it while pending returns the same code. `409` + `switched_off` while the feature switch is off, `409` + `not_configured` when there is no client id. |
 | `POST _github/signout` `{}` | Delete the saved token and username, end any sign-in in progress; returns the status. |
 
-`state`: `signed_out`, `pending`, `signed_in`, `expired`, `denied`, `error`, `not_configured`. `login` is the GitHub username while `signed_in`, else `""`. `source` is `file` (saved by this sign-in, or a hand-placed `github-token`: Sign out removes it) or `env` (`GITHUB_TOKEN`, `GH_TOKEN` or the `gh` CLI: signed in, Sign out cannot remove it). `user_code`, `verification_uri`, `expires_in` and `interval` appear only while `pending`. A body other than `{}` is refused.
+`state`: `signed_out`, `pending`, `signed_in`, `expired`, `denied`, `error`, `not_configured`, `switched_off`. `login` is the GitHub username while `signed_in`, else `""`. `source` is `file` (saved by this sign-in, or a hand-placed `github-token`: Sign out removes it) or `env` (`GITHUB_TOKEN`, `GH_TOKEN` or the `gh` CLI: signed in, Sign out cannot remove it). `user_code`, `verification_uri`, `expires_in` and `interval` appear only while `pending`. A body other than `{}` is refused.
 
 ## How the flow runs
 

@@ -5,10 +5,10 @@ every request already passed its gate: Tailscale Serve as the box owner, and for
 the shell's own origin, JSON and `X-Wizard-Store: 1`. The private-gateway listener (:7792) never serves these paths.
 
   GET  _github          {state, login, source, user_code?, verification_uri?, expires_in?, interval?}
-  POST _github/start    {}  begin the flow (409 when this Wizard has no GitHub client id)
+  POST _github/start    {}  begin the flow (409 when the feature switch is off or this Wizard has no client id)
   POST _github/signout  {}  delete the saved login and end any flow in progress
 
-`state` is signed_out | pending | signed_in | expired | denied | error | not_configured. `source` is `file` (the
+`state` is signed_out | pending | signed_in | expired | denied | error | not_configured | switched_off. `source` is `file` (the
 sign-in this module saved, removable) or `env` (a token from the environment or the `gh` CLI: signed in, but Sign out
 cannot remove it). `login` is the GitHub username and only while signed in.
 
@@ -39,7 +39,8 @@ from pathlib import Path
 
 from . import private, registry
 
-STATES = ("signed_out", "pending", "signed_in", "expired", "denied", "error", "not_configured")
+STATES = ("signed_out", "pending", "signed_in", "expired", "denied", "error", "not_configured", "switched_off")
+SWITCH = "archimedes/github-signin"   # feature switch (Settings > Try new features / Tracker): off by default
 SCOPE = "repo read:packages"
 GITHUB_URL = "https://github.com"          # device flow endpoints (tests point these at a local server)
 API_URL = "https://api.github.com"         # GET /user for the username
@@ -81,6 +82,13 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------- config and files
+
+def switch_on() -> bool:
+    """Whether the owner turned on the `archimedes/github-signin` feature switch. Off: no new sign-in can start
+    (status `switched_off`); an existing login still reads as signed in and Sign out still works."""
+    from . import feature_switches
+    return feature_switches.is_on(SWITCH)
+
 
 def client_id() -> str:
     cid = (os.environ.get("WAM_GITHUB_CLIENT_ID") or "").strip()
@@ -255,6 +263,8 @@ def status() -> dict:
             return out
     if tok:
         return {"state": "signed_in", "login": sidecar or _login_for(tok), "source": source}
+    if not switch_on():
+        return {"state": "switched_off", "login": "", "source": ""}
     return {"state": "signed_out" if client_id() else "not_configured", "login": "", "source": ""}
 
 
@@ -267,6 +277,8 @@ def start() -> tuple[int, dict]:
         st = status()
         if st["state"] in ("signed_in", "pending"):
             return 200, st
+        if not switch_on():
+            return 409, {"state": "switched_off", "login": "", "source": ""}
         cid = client_id()
         if not cid:
             return 409, {"state": "not_configured", "login": "", "source": ""}
