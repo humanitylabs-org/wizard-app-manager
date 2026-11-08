@@ -25,6 +25,13 @@ CONFLICT_RECHECK_S = 1.0   # pause before re-reading Serve when a route looks ta
 ADMIN_PORTS = {8480, 8443}   # the App Manager itself: box-only
 
 
+def cli_install_publishes(home: Path) -> bool:
+    """`wam install` publishes links like Store install does (#400). Off until app-manager.json has
+    `cli_install_links: true` (absence means off), the same kind of switch as `owner_proof_enabled`."""
+    from .network import _cfg
+    return _cfg(home).get("cli_install_links") is True
+
+
 def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a tailscale command as this user (works when it is the tailnet operator), else once more with sudo -n
     (the installer's wizard user has passwordless sudo). Never prompts."""

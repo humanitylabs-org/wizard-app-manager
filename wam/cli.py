@@ -1310,6 +1310,18 @@ def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = No
         return install(c, app_id, given, wait=wait, **kw)
 
 
+def cli_install_links(c: Config, res: dict, publish=None) -> dict:
+    """After `wam install`, publish links the same way Store install does (store_install._links), so a connected box
+    needs no manual `wam links` (#400). Behind the off-by-default `cli_install_links` switch in app-manager.json."""
+    from . import links
+    if not links.cli_install_publishes(c.home) or res.get("status") not in ("running", "stopped", "already installed"):
+        return res
+    if publish is None:
+        from .store_install import _links as publish
+    publish(c)   # best effort: never fails the install
+    return {**res, "links": "refreshed"}
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -2501,8 +2513,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait,
-                                                allow_host_access=args.allow_host_access), indent=2))
+            print(json.dumps(cli_install_links(c, install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait,
+                                                                     allow_host_access=args.allow_host_access)),
+                             indent=2))
         elif args.cmd == "connections":
             from . import network
             rep = network.report(c)
