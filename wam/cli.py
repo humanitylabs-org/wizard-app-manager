@@ -1310,6 +1310,24 @@ def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = No
         return install(c, app_id, given, wait=wait, **kw)
 
 
+CLI_INSTALL_LINKS = "wizard/cli-install-links"   # feature switch (Settings › Try new features), off by default
+
+
+def cli_install_links(c: Config, res: dict, publish=None, switch_on=None) -> dict:
+    """After `wam install`, publish links the same way Store install does (store_install._links), so a connected box
+    needs no manual `wam links` (#400). Only when the off-by-default feature switch `wizard/cli-install-links` is on."""
+    if res.get("status") not in ("running", "stopped", "already installed"):
+        return res
+    if switch_on is None:
+        from .feature_switches import is_on as switch_on
+    if not switch_on(CLI_INSTALL_LINKS, c.home):
+        return res
+    if publish is None:
+        from .store_install import _links as publish
+    publish(c)   # best effort: never fails the install
+    return {**res, "links": "refreshed"}
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -2501,8 +2519,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(hits, indent=2) if args.json else "\n".join(
                 f"{h['id']:<20} {h['category']:<10} {h['repo']:<40} {h['summary']}" for h in hits) or "no matches")
         elif args.cmd == "install":
-            print(json.dumps(install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait,
-                                                allow_host_access=args.allow_host_access), indent=2))
+            print(json.dumps(cli_install_links(c, install_with_retry(c, args.app, _sets(args.set), wait=not args.no_wait,
+                                                                     allow_host_access=args.allow_host_access)),
+                             indent=2))
         elif args.cmd == "connections":
             from . import network
             rep = network.report(c)
