@@ -60,6 +60,7 @@ GH_TTL = 30                 # how long the `gh auth token` answer is remembered
 _lock = threading.Lock()         # guards _flow and the token/sidecar files
 _start_lock = threading.Lock()   # one device-code request at a time
 _flow: "Flow | None" = None
+_signouts = 0                    # bumped by signout(): a start that began before a sign-out must not install its flow
 _gh_cache: tuple[float, str] | None = None
 _login_cache: dict[str, tuple[float, str]] = {}
 _clock = time.monotonic
@@ -282,6 +283,8 @@ def start() -> tuple[int, dict]:
         cid = client_id()
         if not cid:
             return 409, {"state": "not_configured", "login": "", "source": ""}
+        with _lock:
+            began = _signouts
         try:
             code, data = _post(f"{GITHUB_URL}/login/device/code", {"client_id": cid, "scope": SCOPE})
             parsed = _parse_code(code, data)
@@ -292,6 +295,8 @@ def start() -> tuple[int, dict]:
             return 200, _set_failed("error")
         flow = Flow(**parsed, state="pending", stop=threading.Event(), client_id=cid)
         with _lock:
+            if _signouts != began:   # signed out while GitHub was answering: do not start a flow behind its back
+                return 200, {"state": "signed_out", "login": "", "source": ""}
             if _flow:
                 _flow["stop"].set()
             _flow = flow
@@ -408,8 +413,9 @@ def _finish(flow: dict, tok: str) -> None:
 
 def signout() -> dict:
     """Delete the saved login and username, end any flow in progress. An environment token stays (source `env`)."""
-    global _flow, _gh_cache
+    global _flow, _gh_cache, _signouts
     with _lock:
+        _signouts += 1
         if _flow:
             _flow["stop"].set()
         _flow = None

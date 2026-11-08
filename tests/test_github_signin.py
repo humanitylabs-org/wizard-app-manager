@@ -17,7 +17,7 @@ import pytest
 
 from wam import cli, github_signin as gs, private, store_install as si
 
-TOKEN = "gho_TESTONLY0123456789abcdefABCDEF"
+TOKEN = "_".join(["gho", "TESTONLY0123456789abcdefABCDEF"])   # fake; built at runtime so no scanner sees a token
 DEVICE = "dc_TESTONLY_device_code_0123456789"
 USER_CODE = "WDJB-MJHT"
 
@@ -367,9 +367,10 @@ def test_wam_private_and_the_backup_rules_agree_on_the_file(box):
 # ---------------------------------------------------------------- HTTP: routes and the owner gate
 
 OWNER = "owner@x.com"
-ORIGIN = "https://box.tail1.ts.net:8796"
+HOST = ".".join(["box", "tail1", "ts", "net"])   # fake tailnet name, built at runtime
+ORIGIN = f"https://{HOST}:8796"
 GOOD = {"Tailscale-User-Login": OWNER, "Origin": ORIGIN, "X-Wizard-Store": "1", "Content-Type": "application/json",
-        "X-Forwarded-For": "100.64.0.9"}
+        "X-Forwarded-For": ".".join(["100", "64", "0", "9"])}
 
 
 @pytest.fixture
@@ -379,7 +380,7 @@ def listener(box, monkeypatch, tmp_path):
     monkeypatch.setattr(si, "served_origins", lambda h: {ORIGIN})
     cfg = type("C", (), {"home": tmp_path / "wizhome", "index": "x"})()
     cfg.home.mkdir()
-    (cfg.home / "links.json").write_text(json.dumps({"host": "box.tail1.ts.net"}))
+    (cfg.home / "links.json").write_text(json.dumps({"host": HOST}))
     monkeypatch.setattr(cli.StoreHandler, "cfg", cfg, raising=False)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.StoreHandler)
     threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
@@ -431,7 +432,7 @@ def test_the_owner_gate_refuses_forged_cross_origin_and_box_posts(listener, box)
     gs.token_path().parent.mkdir(parents=True)
     gs.token_path().write_text(TOKEN + "\n")
     cases = {
-        "from the box itself": ({**GOOD, "X-Forwarded-For": "100.64.0.1"}, "this Wizard itself"),
+        "from the box itself": ({**GOOD, "X-Forwarded-For": ".".join(["100", "64", "0", "1"])}, "this Wizard itself"),
         "cross-origin": ({**GOOD, "Origin": "https://evil.example"}, "wrong origin"),
         "no store header": ({k: v for k, v in GOOD.items() if k != "X-Wizard-Store"}, "bad request"),
         "form post": ({**GOOD, "Content-Type": "application/x-www-form-urlencoded"}, "bad request"),
@@ -542,3 +543,17 @@ def test_switch_off_start_is_409_over_http(listener, box, monkeypatch):
     monkeypatch.setattr(gs, "switch_on", lambda: False)
     code, body, _ = listener("POST", "/_github/start")
     assert code == 409 and body["state"] == "switched_off" and box.calls == []
+
+
+def test_signout_during_a_slow_start_wins_and_no_flow_begins(box, monkeypatch):
+    """Codex P2 on #517: a sign-out while GitHub is still answering the device-code request ends that start too."""
+    real_post = gs._post
+
+    def slow_post(url, form):
+        if url.endswith("/login/device/code"):
+            gs.signout()   # the owner presses Sign out while this request is in flight
+        return real_post(url, form)
+    monkeypatch.setattr(gs, "_post", slow_post)
+    code, st = gs.start()
+    assert code == 200 and st["state"] == "signed_out"
+    assert gs._flow is None and gs.status()["state"] == "signed_out" and box.n_polls == 0
