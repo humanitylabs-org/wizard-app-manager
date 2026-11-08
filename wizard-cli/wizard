@@ -886,6 +886,50 @@ def builder_module():
     raise Fail('tool_error', 'Stock builder bundle is missing; reinstall Wizard App Manager')
 
 
+LINK_TOKEN_REPAIR = "wizard/link-token-repair"   # feature switch (Settings > Try new features), off by default
+
+
+def switch_on(tid: str) -> bool:
+    """Whether the owner turned box feature switch `tid` on (wam.feature_switches.is_on); False when wam isn't here."""
+    roots = [Path(__file__).resolve().parent.parent, os_home() / 'builder/current']
+    for root in roots:
+        if (root / 'wam/feature_switches.py').is_file():
+            try:
+                if str(root) not in sys.path:
+                    sys.path.insert(0, str(root))
+                from wam.feature_switches import is_on
+                return bool(is_on(tid))
+            except Exception:  # noqa: BLE001 - a switch we can't read is off
+                return False
+    return False
+
+
+def token_fingerprint(token: str) -> str:
+    """Short sha256 of a token, so two copies can be compared in output without showing either."""
+    import hashlib
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
+
+
+def repair_link_token(home: Path, rec: dict) -> bool:
+    """wizard-ux#974: on an already-linked box, put this box's gateway token back into the Hermes .env when it is
+    missing or no longer matches (Hermes then gets 401 from /wizard/mcp). Only the WIZARD_MCP_TOKEN line changes;
+    unlink still removes it only if link added it. Returns True when the .env was rewritten."""
+    envp = home / ".env"
+    try:   # never mint a token here: a new one would match nothing the Agent Service knows
+        token = (os_home() / "mcp-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if not token or env_names(envp).get(TOKEN_ENV) == token:
+        return False
+    env_remove(envp, [TOKEN_ENV])
+    env_append(envp, TOKEN_ENV, token)
+    # known_env_shas stays as it was: the owner (or a setup step) may have edited the .env since link, and unlink
+    # must keep those edits; it removes only what link added (env_added).
+    rec.setdefault("notes", []).append("gateway token in the Hermes .env was missing or stale; restored it")
+    save_record(rec)
+    return True
+
+
 def plugin_fingerprint(home):
     return plugin_tree_fingerprint(home / 'plugins' / PLUGIN_NAME)
 
@@ -1006,9 +1050,15 @@ def cmd_link(ns) -> dict:
             hcfg_set(home, 'skills.external_dirs', after)
         rec['config_sha_after'] = sha256_file(cfgp)
         save_record(rec)
+        repaired = switch_on(LINK_TOKEN_REPAIR) and repair_link_token(home, rec)
         restarted = ns.restart and run_hermes(home, 'gateway', 'restart', check=False, timeout=180).returncode == 0
-        return {"ok": True, "already_linked": True, 'builder': builder, 'plugin_refreshed': True,
-                'gateway_restarted': bool(restarted), "record": str(os_home() / LINK_FILE)}
+        out = {"ok": True, "already_linked": True, 'builder': builder, 'plugin_refreshed': True,
+               'gateway_restarted': bool(restarted), "record": str(os_home() / LINK_FILE)}
+        if repaired:
+            out['token_repaired'] = True
+            if not restarted:
+                out['next'] = 'restart Hermes so it loads the restored gateway token (wizard link --restart)'
+        return out
     recovered = None
     if pending_record():   # an earlier link died half-way: put the owner's files back before starting again
         recovered = rollback_link(pending_record())
@@ -1334,6 +1384,17 @@ def cmd_doctor(ns) -> dict:
     envn = env_names(home / ".env")
     token = envn.get(TOKEN_ENV, "")
     _check(rows, "gateway token in the Hermes .env", bool(token), f"{TOKEN_ENV} (value not shown)")
+    boxf = os_home() / "mcp-token"
+    if token and boxf.is_file() and switch_on(LINK_TOKEN_REPAIR):
+        try:
+            box = boxf.read_text(encoding="utf-8").strip()
+        except OSError:
+            box = ""
+        same = bool(box) and token == box
+        _check(rows, "gateway token matches this box", same,
+               f"sha256 {token_fingerprint(token)} (values not shown)" if same else
+               f"Hermes .env sha256 {token_fingerprint(token)} != {boxf} sha256 {token_fingerprint(box)}: "
+               "the agent gets 401 from /wizard/mcp; `wizard link --restart` restores it")
     origin = ((st.get("agent") or {}).get("origin")) or "http://127.0.0.1:8642"
     try:
         code, _ = _http_json(f"{origin}/health")
