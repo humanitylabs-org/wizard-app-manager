@@ -22,9 +22,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -212,12 +214,40 @@ GATEWAY_PROOF_FILE = "owner-proof/store-gateway-proof"   # beside the host-acces
 
 
 def gateway_proof(home) -> str:
-    """The shared secret, '' when the gateway listener is not set up (missing, empty or too short to trust)."""
+    """Read a bounded, private service-owned proof; invalid custody disables the listener.
+
+    The configured home's ancestors are trusted installation paths. Pin home and
+    owner-proof with no-follow directory descriptors, then validate the opened
+    regular file before reading. Recheck every request; never cache the secret.
+    """
     try:
-        v = (Path(home) / GATEWAY_PROOF_FILE).read_text().strip()
-    except OSError:
+        with ExitStack() as handles:
+            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            uid = os.geteuid()
+            directory = os.open(Path(home), flags | os.O_DIRECTORY)
+            handles.callback(os.close, directory)
+            root = os.fstat(directory)
+            if root.st_uid != uid or root.st_mode & 0o022:
+                return ""
+            directory = os.open("owner-proof", flags | os.O_DIRECTORY, dir_fd=directory)
+            handles.callback(os.close, directory)
+            parent = os.fstat(directory)
+            if parent.st_uid != uid or parent.st_mode & 0o022:
+                return ""
+            proof = os.open("store-gateway-proof", flags | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=directory)
+            handles.callback(os.close, proof)
+            info = os.fstat(proof)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                    or info.st_size > 4096):
+                return ""
+            raw = os.read(proof, 4097)
+            if len(raw) > 4096:
+                return ""
+            value = raw.decode("utf-8").strip()
+            return value if len(value) >= 32 else ""
+    except (OSError, UnicodeError):
         return ""
-    return v if len(v) >= 32 else ""
 
 
 GATEWAY_CONTROL = ("_updates", "_main-compare", "_connections", "_disk", "_feature-switches")   # owner gate unchanged

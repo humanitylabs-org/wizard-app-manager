@@ -71,3 +71,11 @@ opens `127.0.0.1:7792` **when `<wizard home>/owner-proof/store-gateway-proof` (0
 
 The owner login and this node's addresses come from the tailscale CLI; set `WAM_TAILSCALE_BIN` / `WAM_TAILSCALE_SOCKET`
 in the service unit when it is not on `PATH` or talks to a non-default daemon socket.
+
+The proof reader validates custody at startup and on every gateway request: the opened file must be regular,
+service-owned, exactly `0600`, single-linked and at most 4096 bytes, with valid UTF-8 and at least 32 characters after
+trimming. Home and `owner-proof` are pinned with no-follow directory descriptors, must belong to the service user,
+and must not be group/other-writable. Symlinked files/directories, hard-linked files, special files, malformed text
+or unsafe modes disable authentication; the reader never repairs permissions or creates a proof. Home itself must
+not be a symlink; its ancestors remain trusted installation paths. These checks do not provision/revoke gateway credentials or prove deployed gateway
+routing, container isolation, historical-secret confidentiality, or resistance to a concurrently malicious service user.
