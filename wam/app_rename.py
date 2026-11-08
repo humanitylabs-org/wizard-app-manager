@@ -360,7 +360,7 @@ def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly:
     Public-index apps are checked through their recorded repo's index record (GitHub keeps the old repo name
     redirecting after a repo rename, and the index re-reads it). Private sources are moved with `wam app-rename`.
     `nightly`: the unattended run leaves alone what the nightly updates leave alone (an app the owner holds, a
-    system app that moves with the Wizard OS release, an exact owner-pinned selection); a rename installs the new
+    system app that moves with the WizardOS release, an exact owner-pinned selection); a rename installs the new
     id's current release, so it is an update too. `wam app-rename <old>` still moves any of them on request."""
     from . import app_updates, cli, index
     rt = rt or c.runtipi()

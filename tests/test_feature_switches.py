@@ -1,4 +1,4 @@
-"""Feature switches for Settings and the Wizard OS Tracker app (wam/feature_switches.py; Miguel, 7 Nov 2026): list and
+"""Feature switches for Settings and the WizardOS Tracker app (wam/feature_switches.py; Miguel, 7 Nov 2026): list and
 turn one on or off for this box, only on For testers, only for the owner (Tailscale owner login on the same-origin store
 route, or the owner token on wam serve). No app key exists. No real box is touched: the shell catalog and the Agent
 Service Pages API are fakes."""

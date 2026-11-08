@@ -1,4 +1,4 @@
-# Tells the Wizard OS release train (humanitylabs-org/wizard-os .github/workflows/release-cut.yml) that main has a
+# Tells the WizardOS release train (humanitylabs-org/wizard-os .github/workflows/release-cut.yml) that main has a
 # new publishable commit, so it reaches For testers (latest) within minutes (at most one cut per 30 min there).
 # Release mirror merges (`*-mirror-train` branches) are skipped: they only copy releases/.
 # Runs after a green `test` or `image` run on main, and dispatches only once every `test`/`image` run for that commit

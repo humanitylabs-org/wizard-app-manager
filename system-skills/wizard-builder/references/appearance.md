@@ -41,7 +41,7 @@ python3 tools/sync_wizard_style.py --source /path/to/wizard-os --revision <exact
 python3 tools/sync_wizard_style.py --check --source /path/to/wizard-os
 ```
 
-Refresh requires a matching source HEAD, committed runtime files and a passing JSON/CSS drift check. Review canonical changes in Wizard OS first; carry the generated snapshot in a WAM PR for Miguel/Oscar. `--check` without a source verifies the shipped offline snapshot; generation refuses a drifted snapshot. Schema 3 pins only canonical CSS/boot/sheet assets: shared runtime transport is served by the gateway, never copied or exempted from the mandatory source gate.
+Refresh requires a matching source HEAD, committed runtime files and a passing JSON/CSS drift check. Review canonical changes in WizardOS first; carry the generated snapshot in a WAM PR for Miguel/Oscar. `--check` without a source verifies the shipped offline snapshot; generation refuses a drifted snapshot. Schema 3 pins only canonical CSS/boot/sheet assets: shared runtime transport is served by the gateway, never copied or exempted from the mandatory source gate.
 
 ## Acceptance
 

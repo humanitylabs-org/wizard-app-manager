@@ -1281,7 +1281,7 @@ def connection_state(c, rt) -> dict | None:
 
 SETTLED = "connection_mode_settled"   # app-manager.json: the upgrade settled this box's mode once (settle_mode)
 UPGRADE_NOTICE = ("Your apps stay connected",
-                  "Wizard OS can now keep apps apart. Your apps stay connected as before, so nothing you use stops "
+                  "WizardOS can now keep apps apart. Your apps stay connected as before, so nothing you use stops "
                   "working. To keep apps apart, open Settings › Connections, tap Details and turn on Keep apps apart.")
 
 

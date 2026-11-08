@@ -105,8 +105,8 @@ def blocks_uninstall(reg: dict, app_id: str, defaults: dict[str, dict] | None = 
 
 
 def system_apps(defaults: dict[str, dict] | None = None) -> set[str]:
-    """System apps are the apps Wizard OS publishes as the default for a spot (wizard-os docs/SYSTEM_APPS.md). On a
-    pinned box the release names them, so this is also the set a Wizard OS update brings to its pinned commits."""
+    """System apps are the apps WizardOS publishes as the default for a spot (wizard-os docs/SYSTEM_APPS.md). On a
+    pinned box the release names them, so this is also the set a WizardOS update brings to its pinned commits."""
     defaults = load_defaults() if defaults is None else defaults
     return {d["app"] for d in defaults.values() if (d or {}).get("app")}
 

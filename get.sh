@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Wizard OS, one command on a fresh Ubuntu/Debian server (run as root, or as a user with sudo):
+# WizardOS, one command on a fresh Ubuntu/Debian server (run as root, or as a user with sudo):
 #
 #   curl -fsSL aiwizards.com/os.sh | bash
 #
 # Already running Hermes on this box? The same command finds it, whichever Linux user owns it (root or any named
-# user), and installs Wizard OS *alongside* it as that user (the App Manager, the apps, and the Wizard shell pointed at
+# user), and installs WizardOS *alongside* it as that user (the App Manager, the apps, and the Wizard shell pointed at
 # your Hermes; your agent is linked to the apps with `wizard link`, reversible with `wizard unlink`). Nothing in your
 # Hermes is migrated or moved. Several Hermes installs: WIZARD_HERMES_USER=<user> or HERMES_HOME=<path> picks one.
 #
@@ -32,7 +32,7 @@
 # existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN,
 # WIZARD_CHECK=1 (read-only preflight), WIZARD_HERMES_USER / HERMES_HOME (which Hermes), WIZARD_AGENT_SAFE=1|0.
 #
-# Release pins (wizard-os#27): the install follows one Wizard OS release file, wizard-os/releases/<version>.json,
+# Release pins (wizard-os#27): the install follows one WizardOS release file, wizard-os/releases/<version>.json,
 # which names the App Manager commit and the image digests. WIZARD_RELEASE=<version> picks one; without it the
 # release named in wizard-os/releases/stable is used. Re-running the command with no WIZARD_RELEASE updates to the
 # current stable release; WIZARD_RELEASE=<version> keeps a box on that version. Channels (James, 21 Oct 2026):
@@ -63,7 +63,7 @@ repo_raw() {  # repo_raw <path>: the raw URL of <path> at $REF in $REPO
 # ---- Hermes detection (read-only; get.sh --check prints it) ----
 # An existing Hermes = <hermes home>/config.yaml plus a `hermes` command, owned by ANY Linux user (root included).
 # Found by: each account's ~/.hermes (root and uid >= 1000), hermes-gateway systemd units (system and user, incl. a
-# custom HERMES_HOME), and running `hermes gateway` processes. Wizard OS installs alongside as the user that owns
+# custom HERMES_HOME), and running `hermes gateway` processes. WizardOS installs alongside as the user that owns
 # that Hermes; nothing in it is moved. Several found: WIZARD_HERMES_USER=<user> or HERMES_HOME=<path> picks one.
 SYSUNIT_DIR="${WIZARD_SYSTEMD_DIR:-/etc/systemd/system}"
 SUDOERS_DIR="${WIZARD_SUDOERS_DIR:-/etc/sudoers.d}"
@@ -188,7 +188,7 @@ has_hermes() {
 }
 # ---- end Hermes detection ----
 
-# Which Wizard OS does this user already have? alongside | fresh | none. Re-running the command updates a box, and
+# Which WizardOS does this user already have? alongside | fresh | none. Re-running the command updates a box, and
 # an update must keep the box's mode: a fresh box whose owner also runs Hermes on the host stays fresh.
 wos_mode() {  # wos_mode user
   local h; h="$(home_of "$1")"
@@ -199,7 +199,7 @@ wos_mode() {  # wos_mode user
   elif [ -n "$h" ] && [ -f "$h/.wizard-os/apps.json" ]; then echo fresh
   else echo none; fi
 }
-# A fresh Wizard OS already on this box: under the wizard user, or a Runtipi it runs, with no alongside record here.
+# A fresh WizardOS already on this box: under the wizard user, or a Runtipi it runs, with no alongside record here.
 fresh_box() {  # fresh_box [user]
   local u="${1:-$(id -un)}"
   [ "$(wos_mode "$u")" = alongside ] && return 1
@@ -209,7 +209,7 @@ fresh_box() {  # fresh_box [user]
   has_hermes && return 1
   { docker ps --format '{{.Names}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}' 2>/dev/null; } | grep -qx runtipi
 }
-# Users (root, uid >= 1000) whose Wizard OS is alongside (re-runs keep it).
+# Users (root, uid >= 1000) whose WizardOS is alongside (re-runs keep it).
 alongside_users() {
   local name uid home
   while IFS=: read -r name _ uid _ _ home _; do
@@ -226,7 +226,7 @@ want_alongside() {  # want_alongside [user]
 }
 # ---- end mode helpers ----
 
-# Running inside a Hermes agent (a chat asked its agent to install Wizard OS)? Then the install must never restart
+# Running inside a Hermes agent (a chat asked its agent to install WizardOS)? Then the install must never restart
 # the Hermes gateway synchronously: that kills the agent running this script and its reply. WIZARD_AGENT_SAFE=1|0
 # forces it either way.
 in_hermes_agent() {
@@ -252,7 +252,7 @@ docker_mode() {  # rootless | rootful | none, for user $1
 # Read-only preflight: what the installer found and what it would do. Changes nothing.
 preflight() {
   local rc=0 plan ver svc
-  say "Wizard OS preflight (read-only: nothing is installed or changed)"
+  say "WizardOS preflight (read-only: nothing is installed or changed)"
   echo "running as:        $(id -un) (uid $(id -u))${SUDO_USER:+, via sudo from $SUDO_USER}"
   if in_hermes_agent; then echo "run by an agent:   yes (a Hermes agent started this; its gateway restart will be deferred)"
   else echo "run by an agent:   no"; fi
@@ -293,7 +293,7 @@ preflight() {
       echo "needs root once:   ${rn:-host preparation} (the agent's start shows the owner a one-time approval link)"
     fi
   fi
-  echo "existing Wizard OS: $(wos_mode "$(id -un)") for $(id -un)$( [ "$(id -un)" = "$WUSER" ] || echo ", $(wos_mode "$WUSER") for $WUSER")"
+  echo "existing WizardOS: $(wos_mode "$(id -un)") for $(id -un)$( [ "$(id -un)" = "$WUSER" ] || echo ", $(wos_mode "$WUSER") for $WUSER")"
   if [ -z "${plan:-}" ] && [ "$MODE" != fresh ]; then
     if [ "$rc" -eq 0 ] && [ "$H_OK" != yes ]; then plan="stop: existing Hermes cannot be verified"
     elif [ "$rc" -eq 1 ] && { [ "$MODE" = alongside ] || [ -n "${WIZARD_HERMES_USER:-}${HERMES_HOME:-}" ]; }; then
@@ -388,7 +388,7 @@ prepare_server() {  # root only: base packages and Docker (Docker is left alone 
   systemctl enable --now docker >/dev/null 2>&1 || true
 }
 stop_several() {
-  echo "Found more than one Hermes on this box, so Wizard OS doesn't know which one to install next to:" >&2
+  echo "Found more than one Hermes on this box, so WizardOS doesn't know which one to install next to:" >&2
   printf '%s\n' "$HERMES_FOUND" | while IFS='|' read -r u hh _ s _; do echo "  - user $u, Hermes home $hh ($s)" >&2; done
   echo "Pick one and run the command again, e.g.:" >&2
   echo "  curl -fsSL aiwizards.com/os.sh | WIZARD_HERMES_USER=<user> bash      (or HERMES_HOME=<path>)" >&2
@@ -455,7 +455,7 @@ if mode == "end":
                 lines = [ansi.sub("", s).strip() for s in f.read().decode("utf-8", "replace").splitlines() if s.strip()]
             # The read-back summary ("-> install-failed; recorded in ...") and report noise are not the
             # cause; prefer the last real error line, and never echo credentials into the status file.
-            noise = re.compile(r"^(->|PASS |FAIL |DRIFT |fix:|Wizard OS \S+: what runs vs the release|\[wizard-os\] )")
+            noise = re.compile(r"^(->|PASS |FAIL |DRIFT |fix:|Wizard ?OS \S+: what runs vs the release|\[wizard-os\] )")
             errs = [s for s in lines if not noise.match(s)]
             hits = [s for s in errs if re.search(r"(?i)\b(error|fatal|failed|refus|denied|cannot|not found|abort)", s)]
             pick = (hits or errs or lines or [None])[-1]
@@ -472,11 +472,11 @@ if mode == "end":
         st["state"], st["message"] = "needs_admin", st["admin_message"]
         save(st); sys.exit(0)
     if rc == 0:
-        msg = "Wizard OS is installed."
+        msg = "WizardOS is installed."
         if not st.get("wizard_url"):
             msg += " It is box-only for now (no private Wizard link yet)."
     else:
-        msg = "Wizard OS did not finish installing (exit %d). The last log lines show why." % rc
+        msg = "WizardOS did not finish installing (exit %d). The last log lines show why." % rc
     notes = st.get("notes") or []
     if notes: msg += " " + " ".join(notes)
     if rc == 0 and st.get("restart_pending"):
@@ -557,7 +557,7 @@ with open(log_path, errors="replace") as log:
 '
 install_status() {  # the short block for the owner's agent
   if [ ! -f "$STATUS_FILE" ]; then
-    echo "Wizard OS install: not started on this box for $(id -un)."
+    echo "WizardOS install: not started on this box for $(id -un)."
     echo "Start it with:"; echo "$START_CMD"; return 0
   fi
   local state
@@ -568,12 +568,12 @@ install_status() {  # the short block for the owner's agent
   python3 - "$STATUS_FILE" "$state" <<'PY'
 import json, sys
 st, state = json.load(open(sys.argv[1])), sys.argv[2]
-print(f"Wizard OS install: {state}")
+print(f"WizardOS install: {state}")
 if state in ("running", "needs_owner"):
     print(f"Step: {st.get('step') or 'starting'}")
     if st.get("approval_url"):
         if st.get("notice"): print(f"Note: {st['notice']}")
-        print(f"Owner action: {st.get('message') or 'Open this link and enter your server password once to approve the Wizard OS install:'}")
+        print(f"Owner action: {st.get('message') or 'Open this link and enter your server password once to approve the WizardOS install:'}")
         print(st["approval_url"])
     elif st.get("tailscale_login_url"):
         print("Owner action: Open this link to connect your Wizard to your Tailscale:")
@@ -584,7 +584,7 @@ if state in ("running", "needs_owner"):
     elif state == "needs_owner" and st.get("message"):
         print(f"Owner action: {st['message']}")
 elif state == "done":
-    print(st.get("message") or "Wizard OS is installed.")
+    print(st.get("message") or "WizardOS is installed.")
     if st.get("wizard_url"):
         print("Your private Wizard link (open it on a device signed in to your Tailscale):")
         print(st["wizard_url"])
@@ -594,7 +594,7 @@ elif state == "needs_admin":
 elif state in ("stopped", "interrupted"):
     print("The install stopped before it finished (the runner is gone, e.g. the box restarted). Run the start command again to retry.")
 else:
-    print(st.get("message") or "Wizard OS did not finish installing.")
+    print(st.get("message") or "WizardOS did not finish installing.")
 PY
   if [ "$state" = failed ] || [ "$state" = stopped ] || [ "$state" = interrupted ]; then
     echo "Last 20 lines of $INSTALL_LOG:"
@@ -613,7 +613,7 @@ install_runner() {  # internal: the detached runner. One at a time (flock); the 
     exec sg docker -c "exec /bin/bash $(printf '%q' "$WOS_DIR/get.sh") __runner"
   fi
   exec 9>"$INSTALL_LOCK"
-  flock -n 9 || { echo "A Wizard OS install is already running." >&2; exit 0; }
+  flock -n 9 || { echo "A WizardOS install is already running." >&2; exit 0; }
   # The settings stay (0600) for this whole run, not just its first read: when Ubuntu's needrestart (after an
   # automatic upgrade) or a manual restart starts this runner again, it must install the same release, not fall
   # back to stable halfway through an update. The unit also refuses outside stops (install_start), and the file is
@@ -662,7 +662,7 @@ install_start() {
   exec 8>"$WOS_DIR/install.start.lock"   # two starts at once: the second waits here, then sees the first running
   flock -w 30 8 || { echo "Another start is in progress; run the status command." >&2; exit 0; }
   if install_running; then
-    echo "A Wizard OS install is already running; not starting a second one."
+    echo "A WizardOS install is already running; not starting a second one."
     install_status; return 0
   fi
   # This exact installer runs detached: this file when run from a file, else the same source the command came from.
@@ -698,11 +698,11 @@ for k in sorted(os.environ):
   fi
   for _ in $(seq 1 40); do install_running && [ -f "$STATUS_FILE" ] && break; sleep 0.25; done
   if [ ! -f "$STATUS_FILE" ] && ! install_running; then
-    echo "The Wizard OS install did not start (its background runner exited at once). Nothing new was installed." >&2
+    echo "The WizardOS install did not start (its background runner exited at once). Nothing new was installed." >&2
     echo "Run the start command again; if it repeats, run: curl -fsSL https://aiwizards.com/os.sh | bash" >&2
     exit 1
   fi
-  echo "Wizard OS install started in the background (it can take 10-20 minutes)."
+  echo "WizardOS install started in the background (it can take 10-20 minutes)."
   echo "Check on it with:"
   echo "$STATUS_CMD"
 }
@@ -821,8 +821,8 @@ for attempt in range(1, tries + 1):
     s, j = api("create", {"id": rid, "pickup_hash": hashlib.sha256(pickup.encode()).hexdigest(), "pubkey": pub,
                           "host": cfg["host"], "user": cfg["user"], "needs": cfg["needs"], "attempt": attempt})
     if s != 201:
-        fallback("Wizard OS needs administrator rights once for host setup, and the approval link is unavailable right now." + TERM)
-    say("[wizard-os] owner-approval: Open this link and enter your server password once to approve the Wizard OS install: "
+        fallback("WizardOS needs administrator rights once for host setup, and the approval link is unavailable right now." + TERM)
+    say("[wizard-os] owner-approval: Open this link and enter your server password once to approve the WizardOS install: "
         + PAGE + "#" + cap)
     ct, down_since, deadline = None, None, time.time() + int(j.get("ttl") or 1800) + 30
     while time.time() < deadline:
@@ -831,7 +831,7 @@ for attempt in range(1, tries + 1):
         if s != 200:
             down_since = down_since or time.time()
             if time.time() - down_since > float(cfg.get("down_after") or 300):
-                fallback("Wizard OS needs administrator rights once for host setup, and the approval link stopped working." + TERM)
+                fallback("WizardOS needs administrator rights once for host setup, and the approval link stopped working." + TERM)
             continue
         down_since = None
         if j.get("state") == "submitted" and j.get("ct"): ct = j["ct"]; break
@@ -865,7 +865,7 @@ owner_approval() {  # in the detached runner: ask for the one-time approval, run
   echo "Administrator rights are needed once for: ${needs:-host preparation}"
   if ! command -v openssl >/dev/null || ! command -v sudo >/dev/null; then
     echo "[wizard-os] admin-command: $(admin_command)"
-    echo "[wizard-os] owner-admin: Wizard OS needs administrator rights once for host setup, and this server cannot show the approval link (openssl or sudo is missing). Run this once in your own terminal on the server (sudo asks for the password there, never in chat); your agent can then keep checking the normal status:"
+    echo "[wizard-os] owner-admin: WizardOS needs administrator rights once for host setup, and this server cannot show the approval link (openssl or sudo is missing). Run this once in your own terminal on the server (sudo asks for the password there, never in chat); your agent can then keep checking the normal status:"
     exit 3
   fi
   if ! sudo_group_member; then
@@ -899,7 +899,7 @@ if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] && [ "${WIZARD_APPROVED
   prc=0; pick_hermes || prc=$?
   if [ "$prc" -eq 0 ] && [ "$H_USER" = "$(id -un)" ] && [ "$H_OK" = yes ]; then
     if [ "${WIZARD_APPROVE:-link}" = link ] && [ "${1:-}" = start ] && ! sudo_group_member; then
-      echo "The account $(id -un) is not in this server's sudo group, so its password cannot approve the Wizard OS install. No passwordless sudo is required or granted." >&2
+      echo "The account $(id -un) is not in this server's sudo group, so its password cannot approve the WizardOS install. No passwordless sudo is required or granted." >&2
       echo "An administrator of this server must run this once in their own terminal (sudo asks there, never in chat); your agent can then check normal status:" >&2
       admin_command >&2; echo >&2
       exit 2
@@ -908,7 +908,7 @@ if [ "$(id -u)" -ne 0 ] && [ "${WIZARD_CHECK:-0}" != 1 ] && [ "${WIZARD_APPROVED
     elif [ "${WIZARD_APPROVE:-link}" = link ] && [ "${WIZARD_DETACHED:-0}" = 1 ] && [ -z "${1:-}" ]; then
       owner_approval
     else
-      echo "Wizard OS needs one administrator approval for host packages and services. No passwordless sudo is required or granted." >&2
+      echo "WizardOS needs one administrator approval for host packages and services. No passwordless sudo is required or granted." >&2
       echo "Run this in your own terminal (sudo asks there, never in chat); your agent can then check normal status:" >&2
       admin_command >&2; echo >&2
       exit 2
@@ -955,7 +955,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
     fi
   fi
   if [ -n "$ALONG_USER" ]; then
-    say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing Wizard OS alongside it as $ALONG_USER"
+    say "Found Hermes for $ALONG_USER${ALONG_HOME:+ ($ALONG_HOME)}; installing WizardOS alongside it as $ALONG_USER"
     if [ "$ALONG_USER" != root ] && [ "$(docker_mode "$ALONG_USER")" = rootless ]; then
       echo "The selected Hermes owner uses rootless Docker. The one-time host preparation does not support that layout yet; existing Docker and Hermes were not changed." >&2
       exit 2
@@ -973,7 +973,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       fi
       as_user "$ALONG_USER" alongside "$ALONG_HOME"
     fi
-    # Root owns this Hermes: Wizard OS runs as root too. Its user units need root's user manager (linger).
+    # Root owns this Hermes: WizardOS runs as root too. Its user units need root's user manager (linger).
     enable_linger root >/dev/null 2>&1 || true
     for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S /run/user/0/bus ] && break; sleep 1; done
     export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
@@ -1015,7 +1015,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != alongside ]; then
     fi
   fi
 
-  say "Installing Wizard OS as $WUSER"
+  say "Installing WizardOS as $WUSER"
   as_user "$WUSER" fresh
 fi
 
@@ -1036,7 +1036,7 @@ if [ "$MODE" = auto ]; then
   elif ! want_alongside "$(id -un)"; then
     MODE=fresh
     if has_hermes "$(id -un)"; then
-      echo "Found Hermes on this box, but Wizard OS is already installed fresh here: keeping fresh mode (WIZARD_MODE=alongside switches)."
+      echo "Found Hermes on this box, but WizardOS is already installed fresh here: keeping fresh mode (WIZARD_MODE=alongside switches)."
     elif ! fresh_box; then
       # A Hermes that belongs to someone else (root or another user): installing fresh here would run a second
       # agent next to it. Say so instead; root (or that user) installs alongside it.
@@ -1044,8 +1044,8 @@ if [ "$MODE" = auto ]; then
       if [ "$prc" -eq 2 ]; then stop_several; fi
       if [ "$prc" -eq 0 ] && [ "$H_USER" != "$(id -un)" ]; then
         echo "Hermes on this box belongs to $H_USER${H_HOME:+ ($H_HOME)}, not $(id -un). Run the command as $H_USER," >&2
-        echo "or as root (curl -fsSL aiwizards.com/os.sh | sudo bash): Wizard OS then installs alongside it as $H_USER." >&2
-        echo "WIZARD_MODE=fresh installs a separate Wizard OS for $(id -un) instead. Nothing was changed." >&2
+        echo "or as root (curl -fsSL aiwizards.com/os.sh | sudo bash): WizardOS then installs alongside it as $H_USER." >&2
+        echo "WIZARD_MODE=fresh installs a separate WizardOS for $(id -un) instead. Nothing was changed." >&2
         exit 2
       fi
     fi
@@ -1053,7 +1053,7 @@ if [ "$MODE" = auto ]; then
     MODE=alongside
     if tty_ok; then
       say "Found Hermes on this box (${H_HOME:-${HERMES_HOME:-$HOME/.hermes}})"
-      printf "Install Wizard OS alongside it? Your Hermes stays as it is and gets linked to the apps. [Y/n] " >/dev/tty
+      printf "Install WizardOS alongside it? Your Hermes stays as it is and gets linked to the apps. [Y/n] " >/dev/tty
       read -r -t 120 ans </dev/tty || ans=y
       case "${ans:-y}" in n|N|no|NO) MODE=fresh ;; esac
     else
@@ -1118,7 +1118,7 @@ print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2
   if [ -z "$REL" ]; then
     frc=0; fetch_release stable "$RECORD.stable" || frc=$?
     if [ "$frc" -eq 1 ]; then
-      echo "Could not read the Wizard OS stable release; not installing unpinned bits by accident. Try again, or set WIZARD_RELEASE." >&2
+      echo "Could not read the WizardOS stable release; not installing unpinned bits by accident. Try again, or set WIZARD_RELEASE." >&2
       exit 1
     fi
     [ "$frc" -eq 0 ] && REL="$(tr -d ' \t\r\n' < "$RECORD.stable")"
@@ -1127,7 +1127,7 @@ print(c if c in ("stable", "latest") else "")' "$HOME/.wizard-os/updates.json" 2
   if [ -n "$REL" ]; then
     case "$REL" in *[!0-9A-Za-z.+-]*|.*) echo "WIZARD_RELEASE '$REL' is not a version" >&2; exit 2 ;; esac
     PINS="$HOME/.wizard-os/release-pins.json"
-    fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch Wizard OS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
+    fetch_release "$REL.json" "$PINS.tmp" || { echo "Could not fetch WizardOS release $REL ($RELEASE_BASE/$REL.json)" >&2; exit 1; }
     fetch_release hermes-lock.json "$PINS.lock" || { echo "Could not read the shared Hermes lock; nothing installed" >&2; exit 1; }
     # Only validated values leave Python (40-hex commit, sha256 digests, plain image names), shell-quoted.
     PIN_ENV="$(python3 - "$PINS.tmp" "$REL" "$PINS.lock" <<'PY'
@@ -1210,9 +1210,9 @@ PY
         export "$override_var=$pin_value"
       fi
     done
-    say "Installing Wizard OS $REL (App Manager ${REF:0:12})"
+    say "Installing WizardOS $REL (App Manager ${REF:0:12})"
   else
-    echo "note: no Wizard OS stable release is published at $RELEASE_BASE/stable; installing the App Manager's main branch (unpinned)."
+    echo "note: no WizardOS stable release is published at $RELEASE_BASE/stable; installing the App Manager's main branch (unpinned)."
     unpinned "no stable release published at $RELEASE_BASE/stable"
   fi
 else
@@ -1328,7 +1328,7 @@ if [ "$AGENT_SAFE" = 1 ] && [ "$MODE" = alongside ] && ! grep -q "^# wizard-inst
   DEFER_SHIM="$(mktemp -d "$HOME/.wizard-os/agent-safe-bin.XXXXXX")"
   cat > "$DEFER_SHIM/hermes" <<SHIM
 #!/bin/sh
-# Written by the Wizard OS installer for an agent-run install.
+# Written by the WizardOS installer for an agent-run install.
 # Kept afterwards (a unit may have recorded this path) and then always runs the real hermes.
 if [ -f "$HOME/.wizard-os/agent-safe.active" ] && [ "\$1" = gateway ] && [ "\$2" = restart ]; then
   echo deferred > "$HOME/.wizard-os/hermes-restart.pending"; exit 0
@@ -1351,7 +1351,7 @@ PY
 }
 hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
   # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
-  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  # 30 min), then interrupt deliberately so WizardOS never stays half-linked. Older Hermes restarts at once.
   local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
   case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
   printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
@@ -1397,7 +1397,7 @@ deferred_restart() {  # after an older install.sh under an agent: schedule the r
     setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
   fi
   echo
-  echo "Hermes will restart in ~${delay}s to load Wizard OS (this chat pauses briefly; send any message after a"
+  echo "Hermes will restart in ~${delay}s to load WizardOS (this chat pauses briefly; send any message after a"
   echo "minute). Then run 'wizard doctor'. Logged in $log."
 }
 if [ -z "$PINS" ]; then
@@ -1511,7 +1511,7 @@ status = ("install-failed" if install_rc != "0" else "mismatch" if core_bad else
 rec = {"release": rel.get("version"), "mode": mode, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
        "status": status, "install_rc": int(install_rc), "checks": checks}
 write(rec)
-print(f"\nWizard OS {rel.get('version')}: what runs vs the release")
+print(f"\nWizardOS {rel.get('version')}: what runs vs the release")
 for c in checks:
     print(f"  {'PASS' if c['ok'] else ('FAIL' if c['core'] else 'DRIFT')}  {c['name']}: {c['observed']}"
           + ("" if c["ok"] else f" (release: {c['expected']})") + (f"\n        fix: {c['remedy']}" if c.get("remedy") else ""))

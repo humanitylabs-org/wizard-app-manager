@@ -1,4 +1,4 @@
-# Install Wizard OS alongside your existing Hermes
+# Install WizardOS alongside your existing Hermes
 
 You are the owner's agent. Follow these steps in order. Keep every message to the owner short. Put each command and each link on its own line.
 

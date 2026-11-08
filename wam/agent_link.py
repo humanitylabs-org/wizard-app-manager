@@ -185,7 +185,7 @@ if not isinstance(servers, dict):
 want = {'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
 have = servers.get(name)
 if have is not None and not (isinstance(have, dict) and '/wizard/mcp' in str(have.get('url', ''))):
-    raise SystemExit("an MCP server called '%s' that is not Wizard OS exists; left it alone" % name)
+    raise SystemExit("an MCP server called '%s' that is not WizardOS exists; left it alone" % name)
 if have != want:
     servers[name] = want
     cfg['mcp_servers'] = servers

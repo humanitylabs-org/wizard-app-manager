@@ -1,6 +1,6 @@
 """Automatic app updates: every box gets the new version of its apps soon after a publisher ships it.
 
-A Wizard OS release only moves the system apps it pins (shell, Agent Service, Hermes, release defaults). Every other
+A WizardOS release only moves the system apps it pins (shell, Agent Service, Hermes, release defaults). Every other
 app installed from the Wizard App Index stayed on the version it was installed at until someone ran
 `wam app update <id>` by hand, so publishing a fix reached new installs only. This module closes that gap:
 
@@ -14,11 +14,11 @@ app installed from the Wizard App Index stayed on the version it was installed a
 - a nightly systemd user timer (wizard-app-updates.timer) runs apply when the app-update mode is "auto";
 - the owner is told what changed through the Notifications app when it is installed.
 
-The app-update mode is separate from the Wizard OS update mode (updates.py): system releases default to Ask me
+The app-update mode is separate from the WizardOS update mode (updates.py): system releases default to Ask me
 (James, alpha), app updates default to Automatic because each one is small, backed up and rolled back on failure.
 Owners can switch to "ask" (`wam app-updates --ask`) or hold single apps (`--hold <id>`).
 
-Never touched here: the shell, the Agent Service, Hermes and anything the Wizard OS release pins (they move with the
+Never touched here: the shell, the Agent Service, Hermes and anything the WizardOS release pins (they move with the
 release), apps prepared from an exact owner-local selection (.wizard-selection), and versions the owner ignored.
 
 State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {id: tipi}, "last": {...}}.
@@ -44,7 +44,7 @@ SETTLE_SECONDS = 20          # an app must stay up this long after its update be
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
 FRESH_SLACK_MS = 120_000     # the rollback backup must be at least this recent relative to the update start
 RETRY_DAYS = 7               # a version that failed is tried again after this long (a box-side fix may land meanwhile)
-# Moved only by a Wizard OS release (updates.py / release_updates), never by this module.
+# Moved only by a WizardOS release (updates.py / release_updates), never by this module.
 SYSTEM_APPS = frozenset({"hermes-agent", "wizard-ux", "wizard-agent-service", "wizard-shell"})
 
 
@@ -184,7 +184,7 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
             continue
         skip = None
         if app_id in SYSTEM_APPS or app_id in managed:
-            skip = "system"            # moves with the Wizard OS release
+            skip = "system"            # moves with the WizardOS release
         elif _selection_pinned(runtipi_root, store, app_id):
             skip = "pinned"            # an exact owner-local selection
         elif app.get("ignoredVersion") is not None and str(app.get("ignoredVersion")) == str(latest):
@@ -401,7 +401,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         return {"started": False, "skipped": "running", "note": "app updates are already running"}
     try:
         if updates.installing(c.home):
-            return {"started": False, "skipped": "installing", "note": "a Wizard OS update is running; next window"}
+            return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:

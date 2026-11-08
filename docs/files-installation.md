@@ -23,7 +23,7 @@ commit before stable installs obtain this behavior. Keep historical release JSON
 and `releases/stable` untouched. Existing boxes require the normal approved
 installer/update path; reloading shell assets alone cannot update the recipe.
 The Files repository's existing main-push workflow reindexes the app catalog;
-that is separate from publishing a Wizard OS release or advancing stable.
+that is separate from publishing a WizardOS release or advancing stable.
 
 ## Checks
 
