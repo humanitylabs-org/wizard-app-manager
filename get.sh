@@ -372,7 +372,7 @@ as_user() {
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
   exec sudo -iu "$u" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     "${env[@]}" WIZARD_GITHUB=0 WIZARD_MODE="$m" ${3:+HERMES_HOME="$3"} \
-    bash -c "set -o pipefail; curl -fsSL --retry 4 --retry-delay 2 '$(repo_raw get.sh)' | bash"
+    bash -c "t=\$(mktemp) || exit 1; trap 'rm -f \"\$t\"' EXIT; curl -fsSL --retry 4 --retry-delay 2 '$(repo_raw get.sh)' -o \"\$t\" && bash < \"\$t\""
 }
 prepare_server() {  # root only: base packages and Docker (Docker is left alone when it is new enough)
   say "Preparing the server"
