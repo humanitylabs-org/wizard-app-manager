@@ -1,6 +1,6 @@
 {
   "version": "0.2.2",
-  "name": "WizardOS install snapshot 0.2.2",
+  "name": "Wizard OS install snapshot 0.2.2",
   "date": "2026-10-15",
   "about": "Exact split UX / Agent Service / App Manager install snapshot. Component versions remain independent. This manifest proves source and public image identities, not fresh-box or production acceptance.",
   "install": {

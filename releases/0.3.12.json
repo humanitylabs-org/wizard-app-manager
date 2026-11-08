@@ -1,6 +1,6 @@
 {
   "version": "0.3.12",
-  "name": "WizardOS install snapshot 0.3.12",
+  "name": "Wizard OS install snapshot 0.3.12",
   "date": "2026-10-19",
   "about": "Installer rerun repairs a box whose Runtipi records survive but whose base and app containers are gone (WAM #95/#99): starts runtipi-db/queue and a missing reverse proxy, then restarts the shell/Agent Service and apps recorded running (owner-stopped apps stay stopped); a healthy rerun is a no-op. Also carries merged WAM host-tooling fixes #93/#97/#98. Images and default apps unchanged from 0.3.11. Private pilot release.",
   "install": {

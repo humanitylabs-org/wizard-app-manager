@@ -1,6 +1,6 @@
 {
   "version": "0.3.28",
-  "name": "WizardOS install snapshot 0.3.28",
+  "name": "Wizard OS install snapshot 0.3.28",
   "date": "2026-10-21",
   "about": "0.3.27 plus wizard-app-manager #146: on fresh boxes an app installed from the Store opens. The App Manager now sets WIZARD_TRUSTED_HOSTS/ORIGINS from the fresh shell port and the app's own private address; before, they were empty without alongside.json and the app answered 403 \"Unknown host\". Also carries wizard-app-manager #140 (additive Chats slot, app null), whose image change is a new App Manager image built from 8d6e7bd. Every other pin is unchanged.",
   "install": {

@@ -1,6 +1,6 @@
 {
   "version": "0.3.30",
-  "name": "WizardOS install snapshot 0.3.30",
+  "name": "Wizard OS install snapshot 0.3.30",
   "date": "2026-10-21",
   "about": "0.3.29 plus wizard-ux #273 and wizard-app-manager #152: right after a Store Get the Store shows Open without a reload. App Manager reports an app installed only after its same-origin route and the registry are published (#152), and the shell re-reads its apps when a Get finishes (#273). The Wizard UX image moves to official main dc9028c, which also carries #269/#270 (portable build settings and QA tooling), #256 (Chats view slot), #267 (Chats QA suites), #271/#274/#275/#276/#277 (Miguel's skins: app kinds, skin preview cards for all skins, compact Home), and #279 (CI: image publishing works again). The App Manager image is unchanged because no image input changed. Agent Service and every other pin are unchanged.",
   "install": {

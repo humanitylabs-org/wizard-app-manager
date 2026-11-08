@@ -1,6 +1,6 @@
 {
   "version": "0.3.34",
-  "name": "WizardOS install snapshot 0.3.34",
+  "name": "Wizard OS install snapshot 0.3.34",
   "date": "2026-10-24",
   "about": "0.3.33 brought to current main for the private launch: Wizard UX 788affe (newest main merge with a published image; 356 merges past a79e28a, including Chats terminal reconciliation and stale-row repaint fixes that leave a delivered message's 'Sent / Dismiss' pending bubble behind the reply), Agent Service 65d33e1 (newest main merge with a published image) and App Manager main 0f8a58b (installer/doctor fixes through #183; the App Manager image is the official db4325a build, whose image inputs are unchanged at 0f8a58b). Default apps and the Hermes pin are unchanged.",
   "install": {

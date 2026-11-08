@@ -1,6 +1,6 @@
 {
   "version": "0.3.20",
-  "name": "WizardOS install snapshot 0.3.20",
+  "name": "Wizard OS install snapshot 0.3.20",
   "date": "2026-10-21",
   "about": "0.3.19 plus App Manager #123: an update cut short by a reboot (or a killed installer) no longer leaves the box reporting \"installing\" forever. The installer records the boot id; `wam updates` marks a run whose runner is gone `interrupted`, releases the stale install.lock, and the Update button or the nightly Automatic check starts the update again (wizard-os#90). Also App Manager #122 (private provider discovery metadata kept in apps.json), and the `secrets` default app moves to secret-drop 690b277 (engine image pinned by digest, same bytes as 0.3.19). The App Manager, UX and Agent Service images are unchanged.",
   "install": {

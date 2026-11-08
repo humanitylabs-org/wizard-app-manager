@@ -1,6 +1,6 @@
 {
   "version": "0.3.37",
-  "name": "WizardOS install snapshot 0.3.37",
+  "name": "Wizard OS install snapshot 0.3.37",
   "date": "2026-10-24",
   "about": "0.3.36 plus launch polish: Wizard UX 78b3311 (wizard-ux #440: a thread that answers 404 says it is gone and stops retrying, instead of 'Couldn't load this thread ... Retrying automatically' forever) and App Manager cfd13ec (wizard-app-manager #194: Setup leaves out recommendations not yet published, so no dead 'Connected accounts' card; before the deferred Hermes restart the installer prints the Hermes-API checks as WAIT, not FAIL). The App Manager image is unchanged (image inputs untouched).",
   "install": {

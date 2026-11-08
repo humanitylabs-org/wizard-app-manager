@@ -1,6 +1,6 @@
 {
   "version": "0.3.96",
-  "name": "WizardOS 0.3.96 \u2014 0.3.95 with Wizard UX 6f920851 -> cd54ef60 (fixes)",
+  "name": "Wizard OS 0.3.96 \u2014 0.3.95 with Wizard UX 6f920851 -> cd54ef60 (fixes)",
   "date": "2026-10-30",
   "about": "Latest 0.3.95 with Wizard UX 6f920851 -> cd54ef60. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable. Stable stays 0.3.94 until the installed upgrade test passes.",
   "install": {

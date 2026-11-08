@@ -1,6 +1,6 @@
 {
   "version": "0.3.7",
-  "name": "WizardOS install snapshot 0.3.7",
+  "name": "Wizard OS install snapshot 0.3.7",
   "date": "2026-10-19",
   "about": "Installer-only follow-up to 0.3.6 from a live named-user (no passwordless sudo) acceptance run: the detached runner picks up the docker group granted by the one-time administrator approval (via sg) instead of silently exiting at the administrator gate, and start reports a runner that exits at once; App Store data fetches the sibling modules its adapter imports; /api/system/load fills disk fields from the host; bootstrap retries once a default app the App Manager removed after a failed install. All official image/default-app pins unchanged.",
   "install": {

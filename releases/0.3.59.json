@@ -1,6 +1,6 @@
 {
   "version": "0.3.59",
-  "name": "WizardOS 0.3.59 \u2014 any number of Claude subscriptions",
+  "name": "Wizard OS 0.3.59 \u2014 any number of Claude subscriptions",
   "date": "2026-10-26",
   "about": "Stable 0.3.57 plus the multi-account Claude app (owner-authorized feature, DECISIONS #93): the Claude app moves to claude-connection 0.2.5 (#2; engine wizard-claude 0.2.5 from wizard-app-store #31), so an owner adds, reconnects and removes any number of Claude subscriptions, each with its own usage; the existing Claude Code sign-in stays as the first row and keeps working. The shell's Claude-pool routing (wizard-ux #537 + #558, cherry-picked onto the Stable branch as #564) sends Opus and new chats to the agent's pooled Claude subscriptions once one is ready, and keeps the legacy Claude Code route everywhere else. App Manager: Stable's d926eec plus #249/#252 (cherry-picked as #250): alongside boxes turn on the agent's account broker (WIZARD_ACCOUNT_CHANGES=1 in the host dashboard env) and reload the dashboard after `wizard link` refreshes the wizard-os plugin. No other pins change: Agent Service, Hermes, every other default app and the App Manager image are byte-for-byte 0.3.57.",
   "install": {

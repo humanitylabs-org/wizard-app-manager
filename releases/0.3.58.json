@@ -1,6 +1,6 @@
 {
   "version": "0.3.58",
-  "name": "WizardOS 0.3.58 \u2014 Latest continuity (0.3.56 unchanged)",
+  "name": "Wizard OS 0.3.58 \u2014 Latest continuity (0.3.56 unchanged)",
   "date": "2026-10-26",
   "about": "Latest continuity only: exactly the 0.3.56 runtime pins (0.3.54 backup bundle plus Troubleshooter c1b4c43), so Latest testers keep their bundle while Stable moves to 0.3.57 (latest may not trail stable). Does not carry the 0.3.57 Install beat; that reaches Latest once wizard-ux #549 lands on main. Previous 0.3.56 description (historical): Latest 0.3.54 plus wizard-troubleshooter #12 and #13 (pin 4b1f0ef -> c1b4c43; #10 MIT license rides along), the same Troubleshooter change as Stable 0.3.55: one bounded, owner-approved repair tool set shared by Claude, ChatGPT and Tinfoil with host-independent paths, and Claude falls back to the agent's second Claude sign-in on a usage limit. Host tooling only: every image, App Manager, Agent Service, Hermes and default-app pin is byte-for-byte 0.3.54. Keeps Latest testers on the 0.3.54 backup/restore bundle. Feature-classified 0.3.54 content; latest only until its own gates pass.",
   "install": {

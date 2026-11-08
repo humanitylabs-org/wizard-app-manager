@@ -1,6 +1,6 @@
 {
   "version": "0.3.80",
-  "name": "WizardOS 0.3.80 \u2014 0.3.79 with the first-run Welcome (Wizard UX 2e316e77 -> fe269416), App Manager 79272034 -> c52f260f, Claude 0.2.10 and ChatGPT 0.2.8",
+  "name": "Wizard OS 0.3.80 \u2014 0.3.79 with the first-run Welcome (Wizard UX 2e316e77 -> fe269416), App Manager 79272034 -> c52f260f, Claude 0.2.10 and ChatGPT 0.2.8",
   "date": "2026-10-29",
   "about": "Latest 0.3.79 plus: wizard-ux #733 (feature, Miguel-approved): the first run is one Welcome modal: connect AI (Claude recommended, ChatGPT, Tinfoil), pick a colour, say hello; the same on every install method. wizard-app-manager #333 Recommended fix: wam picks up the docker group when the user manager predates it (Store installs on prepared boxes); App Manager main also brings #321 (fix), #323 and #328 (Connections features) and #331 (fix). claude-connection #8 / chatgpt-connection #8 (wizard-app-store #42): sign in first, no nickname field, ?connect=1 opens straight into sign-in. Feature release: Latest (early access) first, Stable after the 72h soak.",
   "install": {

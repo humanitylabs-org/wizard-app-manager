@@ -1,6 +1,6 @@
 {
   "version": "0.3.106",
-  "name": "WizardOS 0.3.106 \u2014 authorized local Docker for alongside media",
+  "name": "Wizard OS 0.3.106 \u2014 authorized local Docker for alongside media",
   "date": "2026-11-07",
   "about": "Latest 0.3.105 with only the App Manager source moved to b6a8810a243bb834ea742c19bf2902664c939ab6 (main merge of #461). Alongside media adoption reuses preauthorized local sudo Docker before group membership takes effect, including Docker 20.10. Carries #462 gateway listener exclusion. No new Docker permission, group membership or Hermes modification. All images and other source pins are unchanged. Stable remains 0.3.102 pending its independent normal promotion gate.",
   "install": {

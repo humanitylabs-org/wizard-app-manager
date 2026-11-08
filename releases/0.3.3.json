@@ -1,6 +1,6 @@
 {
   "version": "0.3.3",
-  "name": "WizardOS install snapshot 0.3.3",
+  "name": "Wizard OS install snapshot 0.3.3",
   "date": "2026-10-19",
   "about": "0.3.2 plus truthful post-update source receipts: the installer reads apps.json after core image updates land, avoiding a false mismatch from its pre-update snapshot. Retains the compatible official compact-thread UX and Agent Service images, private numeric resource route, additive ChatGPT default and authenticated host-dashboard usage plumbing. Session/history sharing remains opt-in. User-run installed acceptance and broader configuration coverage remain open.",
   "install": {

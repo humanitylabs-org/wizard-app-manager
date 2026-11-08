@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the generic WizardOS CLI (tools/wizard) as a single file. No dependencies beyond python3 >= 3.9.
+# Install the generic Wizard OS CLI (tools/wizard) as a single file. No dependencies beyond python3 >= 3.9.
 #
 #   sh tools/install_wizard_cli.sh [--prefix DIR] [--name NAME]
 #
@@ -24,7 +24,7 @@ if ! "$py" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; the
 fi
 dest="$prefix/$name"
 if [ -e "$dest" ] && ! grep -q 'wizard-os-generic-cli' "$dest" 2>/dev/null; then
-  echo "install_wizard_cli: $dest exists and is not the WizardOS CLI; left it alone." >&2
+  echo "install_wizard_cli: $dest exists and is not the Wizard OS CLI; left it alone." >&2
   echo "  Install under another name instead: sh $0 --name wizard-os" >&2
   exit 1
 fi

@@ -1,6 +1,6 @@
 {
   "version": "0.3.33",
-  "name": "WizardOS install snapshot 0.3.33",
+  "name": "Wizard OS install snapshot 0.3.33",
   "date": "2026-10-22",
   "about": "0.3.32 plus the Agent Service at official main 634fe96 (3c45698 + #90). The 0.3.32 shell ships first-run Setup (wizard-ux #15) and the box-wide shell preferences, but the Agent Service pin (e7bfd6d, unchanged since 0.3.17) predates both APIs: on a fresh 0.3.32 box GET /wizard/v1/setup and /wizard/v1/ui-preferences answer 404, so Setup never opens on first run and shows 'This Wizard doesn't have Setup yet' (demo box, 22 Oct). 3c45698 serves every stable route the pinned shell calls (wizard-agent-service #24 phone setup, #43 ui-preferences, #71 own app screens, #72 Chats views) and #90 lets the shell's own Serve host (from apps.json) through the Setup host guard; without it a fresh box still answered 403 host_not_allowed. Ride-alongs from e7bfd6d..3c45698: #63, #42 (account changes off unless WIZARD_ACCOUNT_CHANGES=1), #61, #68 (default agent; one-time store migration with .bak baselines), #69, #73, #76, #78, #79, #44, #86, #87 (restricted heavy relay, off by default). Every other pin is unchanged.",
   "install": {

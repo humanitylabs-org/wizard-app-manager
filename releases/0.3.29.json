@@ -1,6 +1,6 @@
 {
   "version": "0.3.29",
-  "name": "WizardOS install snapshot 0.3.29",
+  "name": "Wizard OS install snapshot 0.3.29",
   "date": "2026-10-21",
   "about": "0.3.28 plus wizard-app-manager #150: on fresh boxes, apps installed from the Store show Open and open in a Wizard window. `wam links` (installer and Store Get) now also serves every installed app page on a same-origin path on each owner shell Serve port (/<id>/ stripped, or the recipe's declared view.path), never replacing a different route, and points apps.json at it; the shell only opens same-origin views. Also carries wizard-app-manager #148 (portable work paths, guard personal machine defaults) and #149 (tests only). Host tooling only: no image input changed, every other pin is unchanged.",
   "install": {

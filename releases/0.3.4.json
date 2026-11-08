@@ -1,6 +1,6 @@
 {
   "version": "0.3.4",
-  "name": "WizardOS install snapshot 0.3.4",
+  "name": "Wizard OS install snapshot 0.3.4",
   "date": "2026-10-19",
   "about": "Installer-only follow-up to 0.3.3: named Linux owners no longer need permanent passwordless sudo. One administrator host-preparation phase retains the original selected Hermes owner/home, grants explicit rootful Docker administration access instead of unrestricted sudo, and projects live progress under the named owner UID. Running Tailscale is reused through its supported operator interface; conflicting operators and unsupported rootless preparation stop safely. Official image and default-app pins are unchanged. The shipped no-sudo blocker is reproduced on an isolated Ubuntu guest; complete installed-app/API/rerun/unlink and real Tailscale browser sign-in acceptance remain open, so this is not broad-rollout certification.",
   "install": {

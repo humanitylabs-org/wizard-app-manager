@@ -1,6 +1,6 @@
 {
   "version": "0.3.64",
-  "name": "WizardOS 0.3.64 \u2014 Latest continuity with reliable ChatGPT and Claude sign-in",
+  "name": "Wizard OS 0.3.64 \u2014 Latest continuity with reliable ChatGPT and Claude sign-in",
   "date": "2026-10-26",
   "about": "Latest continuity: Latest 0.3.62 (the 0.3.60 runtime pins) plus the same two AI connection app pins as Stable 0.3.63, so Latest never trails Stable: ChatGPT chatgpt-connection 0.2.4 (#3) and Claude claude-connection 0.2.6 (#3), engines from wizard-app-store #32 (reliable sign-in through the agent, a clear 'can't reach your agent' state with Retry, no Claude Code fallback on alongside boxes, one row per account, ChatGPT 'Device code sign-in for Codex' named up front). Every other pin is 0.3.62's.",
   "install": {

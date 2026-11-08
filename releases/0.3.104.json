@@ -1,6 +1,6 @@
 {
   "version": "0.3.104",
-  "name": "WizardOS 0.3.104 — 0.3.103 with App Manager 525e9d3d -> 17c8d9c (private app-data permissions, owner proof, nightly maintenance)",
+  "name": "Wizard OS 0.3.104 — 0.3.103 with App Manager 525e9d3d -> 17c8d9c (private app-data permissions, owner proof, nightly maintenance)",
   "date": "2026-11-06",
   "about": "Latest 0.3.103 with the App Manager moved from 525e9d3d to 17c8d9cd (official main). Merged since: humanitylabs-org/wizard-app-manager#457 Recommended fix: preserve private app-data permissions through install and update; #450 Owner proof: enrolled owner device + host access only from the owner; #447 maintain: nightly maintenance with removable root helper; #455 fix: bootstrap Docker before Runtipi on Debian cloud images; #448 docs; and the 0.3.103 release mirror. Wizard UX, Agent Service, Troubleshooter, Hermes and the default apps are unchanged. Cut for Messenger's single Standard release, which needs #457 on every owner's box. Stable stays 0.3.102 until the installed upgrade test passes.",
   "install": {

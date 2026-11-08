@@ -1,6 +1,6 @@
 {
   "version": "0.3.70",
-  "name": "WizardOS 0.3.70 \u2014 0.3.69 upgrade repair with the 0.3.68 Agent Service, UX and AI apps",
+  "name": "Wizard OS 0.3.70 \u2014 0.3.69 upgrade repair with the 0.3.68 Agent Service, UX and AI apps",
   "date": "2026-10-27",
   "about": "Latest 0.3.69 (upgrades bring installed default apps to their release pins) together with Stable 0.3.68's current Agent Service and Wizard UX, Claude 0.2.8 and ChatGPT 0.2.6, so Latest testers no longer move those back. Claude shows the same account once using the agent's exact email hash; Home names ChatGPT sign-ins 'ChatGPT' instead of 'openai-codex-oauth-1'; the model picker refetches on open and says when the Claude app is not answering.",
   "install": {

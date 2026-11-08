@@ -1,6 +1,6 @@
 {
   "version": "0.3.26",
-  "name": "WizardOS install snapshot 0.3.26",
+  "name": "Wizard OS install snapshot 0.3.26",
   "date": "2026-10-21",
   "about": "0.3.25 plus wizard-app-manager #143: the App Store works on fresh boxes. The installer now runs the Store data adapter and mounts /wizard-os-home/store-data and the owner-gated /wizard-os-home/store-install on the fresh shell's Tailscale Serve ports (before: 404, \"Installed status is incomplete\", Store Get had nowhere to post). Also carries #138 (updates default to Ask me) and #141 (stable/latest channels). Host tooling only; every image pin is unchanged.",
   "install": {

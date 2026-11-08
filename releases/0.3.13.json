@@ -1,6 +1,6 @@
 {
   "version": "0.3.13",
-  "name": "WizardOS install snapshot 0.3.13",
+  "name": "Wizard OS install snapshot 0.3.13",
   "date": "2026-10-20",
   "about": "Files same-origin repair only: App Manager #102/#103 publish bundled /files/ on every configured shell alias and re-share final launcher URLs; Files #1 serves its assets/API at /files/. All other component/app/image pins remain unchanged from 0.3.12. Installer resolves the current stable pointer on each rerun; immutable pins remain inside each snapshot.",
   "install": {

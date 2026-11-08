@@ -1,6 +1,6 @@
-# Public WizardOS release metadata
+# Public Wizard OS release metadata
 
-This directory publishes only the installer’s release metadata. The canonical WizardOS specification repository remains private; no source checkout, credentials or owner configuration is mirrored here.
+This directory publishes only the installer’s release metadata. The canonical Wizard OS specification repository remains private; no source checkout, credentials or owner configuration is mirrored here.
 
 `get.sh` reads `stable` (or `latest` on a box whose owner chose the latest channel), then `<version>.json`. `WIZARD_RELEASE_BASE` still supports an explicitly chosen alternate mirror or local release directory.
 

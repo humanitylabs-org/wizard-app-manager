@@ -1,6 +1,6 @@
 {
   "version": "0.3.1",
-  "name": "WizardOS install snapshot 0.3.1",
+  "name": "Wizard OS install snapshot 0.3.1",
   "date": "2026-10-19",
   "about": "0.3.0 plus the installer fix that runs wam/wizard with a python3 that has PyYAML (first live agent-run root install failed on the agent's bundled Python). Split UX / Agent Service / App Manager install snapshot with the agent-run installer (get.sh start/status, Tailscale owner action, deferred Hermes restart) and the AI connection slot replacing AI Accounts. Component versions remain independent. This manifest proves source and public image identities, not fresh-box or production acceptance.",
   "install": {

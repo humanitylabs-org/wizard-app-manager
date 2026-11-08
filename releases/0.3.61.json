@@ -1,6 +1,6 @@
 {
   "version": "0.3.61",
-  "name": "WizardOS 0.3.61 \u2014 Stable with the final three-step guide and a never-frozen orb",
+  "name": "Wizard OS 0.3.61 \u2014 Stable with the final three-step guide and a never-frozen orb",
   "date": "2026-10-26",
   "about": "Stable 0.3.59 plus wizard-ux #567 (Recommended fix) and #568 (owner-approved feature) on the Stable-only branch release/stable-onboarding. Fix: in an iPhone Safari tab the orb never freezes: a browser bar covering the page bottom lifts the dock, orb and Cancel above it (visual viewport), a second tap on a take whose microphone never opened ends it visibly, an unanswered microphone request times out after 8 s, and during a take in the tour the orb and its controls sit above the tour layer. Feature (Miguel, 26 Oct 2026, wording approved verbatim): the phone guide is Talk, Reply (open Chats, a delivered typed reply moves on) and Done (owner\u2019s end card), each labelled Step N of 3 with Skip this step and Skip tour; the Hide and Install beats are removed (install guidance is in the chat handoff, os.md, wizard-app-manager #253); desktop guide Step 1 of 2 / Step 2 of 2 with the same Done words. Only the UX component, image and default shell pin change versus 0.3.59; no other pins, no migrations. Official hosted maintenance publication from release/stable-onboarding.",
   "install": {

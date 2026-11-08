@@ -1,6 +1,6 @@
 {
   "version": "0.3.17",
-  "name": "WizardOS install snapshot 0.3.17",
+  "name": "Wizard OS install snapshot 0.3.17",
   "date": "2026-10-20",
   "about": "0.3.16 plus box auto-updates and My skin: App Manager #83 adds `wam updates` (Automatic by default, an explicit 'Ask me' is kept; unpinned boxes never update unless forced; the nightly timer skips while the agent is busy) and install.sh now runs `wam updates --ensure-timer` on every install and rerun; Wizard UX #211 adds Settings → Updates (Automatic / Ask me, installed vs latest, Update now); Agent Service #62 serves the owner's own skin layer from Files (Skins/My skin.css) and Wizard UX #212 applies it on top of whichever skin is picked. The App Manager image is unchanged.",
   "install": {

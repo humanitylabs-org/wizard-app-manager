@@ -1,6 +1,6 @@
 {
   "version": "0.3.85",
-  "name": "WizardOS 0.3.85 \u2014 0.3.84 with upgrading boxes keeping their apps connected",
+  "name": "Wizard OS 0.3.85 \u2014 0.3.84 with upgrading boxes keeping their apps connected",
   "date": "2026-10-30",
   "about": "0.3.84 plus App Manager #349 (Recommended fix: a box that already runs apps its owner installed and never chose a connection mode is settled to Open once on upgrade, so apps that call another app without declaring it keep working, and the owner is told how to turn Keep apps apart on; a new box starts with apps kept apart).",
   "install": {

@@ -1,6 +1,6 @@
 {
   "version": "0.3.63",
-  "name": "WizardOS 0.3.63 \u2014 reliable ChatGPT and Claude sign-in",
+  "name": "Wizard OS 0.3.63 \u2014 reliable ChatGPT and Claude sign-in",
   "date": "2026-10-26",
   "about": "Stable 0.3.61 plus reliable ChatGPT and Claude sign-in (Recommended fix, wizard-app-store #32): the ChatGPT app moves from the single-account 0.1.4 page to chatgpt-connection 0.2.4 (#3), the same accounts page as Claude, so sign-in runs inside the agent and lands in its credential pool, with ChatGPT's 'Device code sign-in for Codex' setting named up front; Claude moves to claude-connection 0.2.6 (#3): no fallback to the original Claude Code login on alongside boxes (it reported success while the host agent had no Claude credential), one row when the original sign-in and an agent sign-in are the same account. Both apps report an unreachable agent (e.g. a stale address after a tailnet move) with its address and Retry, and /api/connection answers unreachable instead of an empty inventory, so Home no longer shows them as not connected. No other pins change: every other default app, Wizard UX, Agent Service, App Manager and Hermes are byte-for-byte 0.3.61.",
   "install": {

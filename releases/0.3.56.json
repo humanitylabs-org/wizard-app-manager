@@ -1,6 +1,6 @@
 {
   "version": "0.3.56",
-  "name": "WizardOS 0.3.56 \u2014 backup and repaired onboarding plus Troubleshooter repair fixes",
+  "name": "Wizard OS 0.3.56 \u2014 backup and repaired onboarding plus Troubleshooter repair fixes",
   "date": "2026-10-26",
   "about": "Latest 0.3.54 plus wizard-troubleshooter #12 and #13 (pin 4b1f0ef -> c1b4c43; #10 MIT license rides along), the same Troubleshooter change as Stable 0.3.55: one bounded, owner-approved repair tool set shared by Claude, ChatGPT and Tinfoil with host-independent paths, and Claude falls back to the agent's second Claude sign-in on a usage limit. Host tooling only: every image, App Manager, Agent Service, Hermes and default-app pin is byte-for-byte 0.3.54. Keeps Latest testers on the 0.3.54 backup/restore bundle. Feature-classified 0.3.54 content; latest only until its own gates pass.",
   "install": {

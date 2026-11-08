@@ -1,6 +1,6 @@
 {
   "version": "0.3.36",
-  "name": "WizardOS install snapshot 0.3.36",
+  "name": "Wizard OS install snapshot 0.3.36",
   "date": "2026-10-24",
   "about": "0.3.35 plus Agent Service 35b2463: wizard-agent-service #143 matches the owner's admitted Wizard message by its input text and admission time, because Hermes' session history omits platform_message_id; without it #142 never applied on a real box and the 'Sent / Dismiss' bubble stayed. Every other pin unchanged.",
   "install": {

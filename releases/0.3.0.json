@@ -1,6 +1,6 @@
 {
   "version": "0.3.0",
-  "name": "WizardOS install snapshot 0.3.0",
+  "name": "Wizard OS install snapshot 0.3.0",
   "date": "2026-10-18",
   "about": "Split UX / Agent Service / App Manager install snapshot with the agent-run installer (get.sh start/status, Tailscale owner action, deferred Hermes restart) and the AI connection slot replacing AI Accounts. Component versions remain independent. This manifest proves source and public image identities, not fresh-box or production acceptance.",
   "install": {

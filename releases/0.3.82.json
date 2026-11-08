@@ -1,6 +1,6 @@
 {
   "version": "0.3.82",
-  "name": "WizardOS 0.3.82 — 0.3.81 with the fresh-install first run fixed (Welcome, Claude, App Manager)",
+  "name": "Wizard OS 0.3.82 — 0.3.81 with the fresh-install first run fixed (Welcome, Claude, App Manager)",
   "date": "2026-10-29",
   "about": "0.3.81 plus three Recommended fixes found by a standard fresh install on a bare VPS: App Manager #341 (a fresh install no longer stops at the builder mount because of the Hermes override's `networks: !override`), Wizard UX #743 (the Welcome asks to connect an AI on a fresh Wizard instead of skipping to colours) and Claude 0.2.11 / ChatGPT 0.2.9 (wizard-app-store #43: a Claude sign-in on a fresh Wizard becomes the agent's model when it has none).",
   "install": {

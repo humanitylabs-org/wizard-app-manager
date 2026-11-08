@@ -1,6 +1,6 @@
 {
   "version": "0.3.51",
-  "name": "WizardOS 0.3.51 \u2014 Stable onboarding repair only",
+  "name": "Wizard OS 0.3.51 \u2014 Stable onboarding repair only",
   "date": "2026-10-26",
   "about": "Fix-only backport atop Stable 0.3.39, not promotion of Latest 0.3.50. Only Wizard UX changes: alongside phone first-run tour and actual desktop first-message guide; working replay links/Keys, Settings and Esc handoff, slow-launch interruption guard, immediately readable WebKit instructions, and responsive Done-card rotation/Skip control. No Command exercise or required appearance change. UX source is the one-time reviewed release/stable-onboarding branch authorized by wizard-os #236 / UX #530; runtime repairs #434/#482/#483/#486 plus #531 regressions. Official hosted multi-arch build, signed real-branch provenance, immutable finalization and anonymous amd64/arm64 pulls passed run 40259576904. App Manager source/image, Agent Service, Hermes and every other default app are unchanged from Stable 0.3.39. No backup/restore/Undo, Spaces, Android update, or other Latest feature ride-alongs; no migrations or owner-data deletion.",
   "install": {

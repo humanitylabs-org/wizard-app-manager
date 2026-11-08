@@ -1,6 +1,6 @@
 {
   "version": "0.3.55",
-  "name": "WizardOS 0.3.55 \u2014 Stable onboarding repair plus Troubleshooter repair fixes",
+  "name": "Wizard OS 0.3.55 \u2014 Stable onboarding repair plus Troubleshooter repair fixes",
   "date": "2026-10-26",
   "about": "Stable 0.3.53 plus wizard-troubleshooter #12 and #13 (pin 4b1f0ef -> c1b4c43; #10 MIT license rides along): the repair chat gets one bounded, owner-approved repair tool set shared by Claude, ChatGPT and Tinfoil with host-independent paths, and Claude falls back to the agent's second Claude sign-in when the Claude app login hits its usage limit. Host tooling only: every image, App Manager, Agent Service, Hermes and default-app pin is byte-for-byte 0.3.53. No trunk features (backup/restore/Undo, Spaces, Android) ride along. Fix-classified Stable candidate.",
   "install": {

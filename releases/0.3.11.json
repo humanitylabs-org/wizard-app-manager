@@ -1,6 +1,6 @@
 {
   "version": "0.3.11",
-  "name": "WizardOS install snapshot 0.3.11",
+  "name": "Wizard OS install snapshot 0.3.11",
   "date": "2026-10-19",
   "about": "Reserve pending alongside shell/Agent Service ports while dependencies install (WAM #90), fixing a real fresh/no-Docker acceptance failure where Files took the service port. Includes the merged Store exact-selection and legacy-private-identity fixes (#88/#89), matching official Store UX, and unchanged Agent Service. Private pilot release; owner enrollment remains an explicit gate.",
   "install": {

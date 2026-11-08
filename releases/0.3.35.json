@@ -1,6 +1,6 @@
 {
   "version": "0.3.35",
-  "name": "WizardOS install snapshot 0.3.35",
+  "name": "Wizard OS install snapshot 0.3.35",
   "date": "2026-10-24",
   "about": "0.3.34 plus Agent Service 039eff5: wizard-agent-service #141 (Setup 'Use Wizard on your phone' shows the box's private tailnet link on alongside boxes that run host Tailscale without the private-access helper) and #142 (the owner's own Wizard message shows and the 'Sent / Dismiss' bubble clears: Hermes 0.22.5 stamps admitted API turns internal_notification). Every other pin unchanged.",
   "install": {

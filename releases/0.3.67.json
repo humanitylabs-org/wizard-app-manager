@@ -1,6 +1,6 @@
 {
   "version": "0.3.67",
-  "name": "WizardOS 0.3.67 \u2014 Backup and the current Stable fixes together",
+  "name": "Wizard OS 0.3.67 \u2014 Backup and the current Stable fixes together",
   "date": "2026-10-27",
   "about": "Back up and restore your Wizard, with the same installer repairs and first-run guide as the current Stable. The microphone no longer leaves the orb stuck when permission never arrives, and the phone guide has three clear steps: Talk, Reply and Done. Installer reruns reconnect the AI apps when the agent address or login changes, wait for Tailscale approval, and explain when HTTPS must be enabled. This release is for Latest testers; Stable is unchanged.",
   "install": {

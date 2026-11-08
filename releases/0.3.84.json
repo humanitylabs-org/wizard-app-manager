@@ -1,6 +1,6 @@
 {
   "version": "0.3.84",
-  "name": "WizardOS 0.3.84 \u2014 0.3.83 with Wizard UX 0a23c082 -> 53d209c5 (new Home & Settings)",
+  "name": "Wizard OS 0.3.84 \u2014 0.3.83 with Wizard UX 0a23c082 -> 53d209c5 (new Home & Settings)",
   "date": "2026-10-29",
   "about": "Latest 0.3.83 with Wizard UX 0a23c082 -> 53d209c5. Owner-approved same-day Stable (DECISIONS #93 feature fast-track): humanitylabs-org/wizard-ux#668 Home & Settings for everyone (owner-approved: Miguel, 29 Oct 2026, 'stable today'). Stable stays 0.3.83 until the installed upgrade test passes.",
   "install": {
