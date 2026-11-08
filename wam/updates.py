@@ -1,4 +1,4 @@
-"""Wizard OS updates: always automatic, on the stable ("For everyone", default) or latest ("For testers") channel.
+"""Owner-chosen updates: Ask me (default) or Automatic, on the stable (default) or latest channel.
 
 A box updates the way it always has: re-running the installer moves it to the release its channel names, in the
 mode the box already has (get.sh). Two channels (James, 21 Oct 2026):
@@ -15,10 +15,9 @@ installer:
 - a check: which release runs here (~/.wizard-os/release.json) vs the current stable, so a shell can show
   "Update available" with an Update button;
 - a channel, saved in ~/.wizard-os/updates.json as "channel" (default "stable");
-- updates are always automatic (Miguel + James, Nov 2026): the nightly run applies the channel's new release on
-  every box. The old "Ask me" choice is gone: a saved {"mode": "ask"} (or no choice at all) reads as "auto", and
-  `set_mode("ask")` from an older shell is accepted and answered with "auto", so it never errors and never turns
-  updates off. Update now still installs at once.
+- a choice, saved in ~/.wizard-os/updates.json: "ask" (the default for every box whose owner never chose:
+  nothing runs by itself, the shell shows "Update available") or "auto" (the nightly run applies the channel's
+  new release). An explicit choice is always kept; the installer never writes updates.json.
 
 Applying = the documented agent-safe detached rerun (`os.sh | bash -s start`). The one exception is a release that
 moves ONLY the Wizard UX shell's pins on an alongside box that read back cleanly: wam/quick_update.py swaps that one
@@ -41,9 +40,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-MODES = ("auto",)             # updates are always automatic; there is no owner choice any more
-LEGACY_MODES = ("ask",)       # still accepted from older shells and old updates.json files, and read as "auto"
-DEFAULT_MODE = "auto"
+MODES = ("ask", "auto")
+DEFAULT_MODE = "ask"          # nothing installs unless the owner chose Automatic (James, alpha); an explicit "auto" is kept
 CHANNELS = ("stable", "latest")
 DEFAULT_CHANNEL = "stable"    # tested releases only; "latest" is the testers' opt-in
 SOAK_HOURS = 72               # a release runs on latest this long before it can be promoted to stable
@@ -74,24 +72,21 @@ def _save(home: Path | None, **changes) -> None:
     """Write updates.json, keeping the other saved choice (mode and channel are independent)."""
     h = _home(home)
     h.mkdir(parents=True, exist_ok=True)
-    s = {k: v for k, v in _settings(h).items() if k == "channel" and v in CHANNELS}
+    s = {k: v for k, v in _settings(h).items() if (k == "mode" and v in MODES) or (k == "channel" and v in CHANNELS)}
     s.update(changes)
-    s["mode"] = "auto"            # an older App Manager (rollback) reads this file too: keep it on Automatic
     tmp = h / "updates.json.tmp"
     tmp.write_text(json.dumps(s) + "\n")
     tmp.replace(h / "updates.json")
 
 
 def _choice(home: Path | None) -> str | None:
-    """The mode saved in updates.json ("ask" from before always-automatic included), or None when nothing is saved.
-    Only reported; it never changes what the box does."""
+    """The owner's explicit choice, or None when they never chose."""
     m = _settings(home).get("mode")
-    return m if m in MODES + LEGACY_MODES else None
+    return m if m in MODES else None
 
 
 def mode(home: Path | None = None) -> str:
-    """Always "auto": every box installs its channel's new releases by itself (a saved "ask" included)."""
-    return DEFAULT_MODE
+    return _choice(home) or DEFAULT_MODE
 
 
 def channel(home: Path | None = None) -> str:
@@ -395,7 +390,6 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
         reason = (installer.get("failure_reason") or installer.get("message")
                   or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
-            "always_auto": True,      # the shell shows no Automatic / Ask me choice (older App Managers omit it)
             "latest": want, "stable": stable,
             "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
             "installing": run == "running",
@@ -442,17 +436,11 @@ def _systemctl(enabled: bool):
 
 
 def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemctl: bool = True) -> dict:
-    """Make sure the nightly Automatic run exists (the maintain timer, or the legacy wizard-os-update timer).
+    """Make the nightly timer match the mode (Automatic: installed and enabled; Ask me: removed).
 
-    Updates are always automatic, so this installs the timer on every box, including one whose updates.json still
-    says "ask" or that has no choice saved; that file is normalised to "auto" (keeping the channel) so an older App Manager after a rollback
-    stays automatic too. The installer calls this on every install and rerun."""
+    Never writes updates.json, so a box whose owner never chose keeps following the default. The installer calls
+    this on every install and rerun."""
     m = mode(home)
-    if _settings(home).get("mode") != "auto":         # legacy "ask", or no choice saved (the old default was ask)
-        try:
-            _save(home)                               # {"mode": "ask", ...} / no file -> {"mode": "auto", ...}
-        except OSError:
-            pass                                      # read-only home: mode() already reads it as auto
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = _systemctl(systemctl)
@@ -463,11 +451,17 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
                 p.unlink(missing_ok=True)
             run("daemon-reload")
         return {"mode": m, "timer": False, "nightly": "wizard-os-maintain"}
-    ud.mkdir(parents=True, exist_ok=True)
-    for p, text in files.items():
-        p.write_text(text)
-    run("daemon-reload"); run("enable", "--now", f"{UNIT}.timer")
-    out = {"mode": m, "timer": True}
+    if m == "auto":
+        ud.mkdir(parents=True, exist_ok=True)
+        for p, text in files.items():
+            p.write_text(text)
+        run("daemon-reload"); run("enable", "--now", f"{UNIT}.timer")
+    else:
+        run("disable", "--now", f"{UNIT}.timer")
+        for p in files:
+            p.unlink(missing_ok=True)
+        run("daemon-reload")
+    out = {"mode": m, "timer": m == "auto"}
     if unit_dir is None:   # the installer's call also sets up app updates (their own mode, default Automatic)
         from . import app_updates
         out.update(app_updates.ensure_timer(home, None, systemctl))
@@ -475,17 +469,13 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
 
 
 def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, systemctl: bool = True) -> dict:
-    """Updates are always automatic. "auto" (and "ask" from an older shell, which is not honoured) keeps the box on
-    Automatic and makes sure its nightly run exists; anything else is an error."""
-    if new not in MODES + LEGACY_MODES:
+    """Save the owner's explicit choice; Automatic installs the nightly timer, Ask me removes it."""
+    if new not in MODES:
         raise SystemExit(f"updates mode must be one of {', '.join(MODES)}")
     h = _home(home)
-    _save(h)
+    _save(h, mode=new)
     ensure_timer(h, unit_dir, systemctl)
-    out = {"mode": "auto", "chosen": True}
-    if new in LEGACY_MODES:
-        out["note"] = "Wizard OS updates are always automatic now; Update now still installs at once"
-    return out
+    return {"mode": new, "chosen": True}
 
 
 def set_channel(new: str, home: Path | None = None) -> dict:
@@ -637,9 +627,11 @@ def auto_target(st: dict, base: str | None = None) -> str | None:
 
 
 def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
-    """The nightly timer (every box is Automatic): apply only this box's channel release (stable: a promoted stable
+    """The nightly timer: apply only in Automatic, only this box's channel release (stable: a promoted stable
     release; latest: the newest Latest release, #458), never on an unpinned box, and not while the agent is working
     (skipped; the next nightly window tries again)."""
+    if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
+        return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
     stable = st["stable"]
     target = auto_target(st, base)

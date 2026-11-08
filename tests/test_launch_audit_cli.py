@@ -59,7 +59,7 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(value['release']['mismatches'], 2)
         self.assertEqual(value['release']['identities'][0]['expected'], 'a' * 40)
         self.assertEqual(value['expected_pins']['wizard-ux']['digest'], 'sha256:' + 'c' * 64)
-        self.assertEqual(value['updates'], {'mode': 'auto', 'channel': 'stable'})
+        self.assertEqual(value['updates'], {'mode': 'ask', 'channel': 'stable'})
         self.assertEqual(set(value), {'schema', 'cli_version', 'python_version', 'os', 'release',
                          'expected_pins', 'services', 'recent_errors', 'updates', 'privacy'})
         for row in value['recent_errors'].values():
@@ -121,15 +121,6 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn(CANARIES[0], out.getvalue())
         self.assertEqual(set(value['services'].values()), {'unavailable'})
         self.assertEqual(value['release']['status'], 'unavailable')
-
-    def test_report_update_mode_is_always_automatic(self):
-        for value in (None, {'mode': 'ask', 'channel': 'latest'}, {'mode': 'auto'}):
-            if value is None:
-                (self.root / 'updates.json').unlink(missing_ok=True)
-            else:
-                self.write('updates.json', value)
-            with patch.object(wizard, '_audit_run', return_value=None):
-                self.assertEqual(wizard.cmd_report(argparse.Namespace())['updates']['mode'], 'auto')
 
     def test_report_malformed_shapes(self):
         for value in ([], None, 'secret', 18, {'checks': [None, [], 'secret'], 'components': [], 'images': None}):
