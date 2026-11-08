@@ -200,6 +200,18 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None) ->
                      if locked else ""), "switches": rows}
 
 
+def is_on(tid: str, home: Path | None = None, pages: Pages | None = None) -> bool:
+    """Whether the owner turned feature switch `tid` on, for box-side code gated on a switch (#400). Reads the same
+    look.json `tweaks` map as listing(); always False on For everyone and whenever look.json can't be read."""
+    try:
+        if not ID.fullmatch(tid) or _channel(home) != "latest":
+            return False
+        doc, _ = (pages or _pages(home)).get()
+        return _readable(doc) and _tweaks(doc).get(tid, {}).get("on") is True
+    except (SwitchError, OSError, ValueError):
+        return False
+
+
 def set_switch(tid: str, on: bool, home: Path | None = None, fetch=_get, pages: Pages | None = None,
                by: str = "owner") -> dict:
     """Turn one feature switch on or off for this box (every device of the owner follows within ~30 s)."""

@@ -68,7 +68,7 @@ Wizard additions:
 | Command | What it does |
 |---|---|
 | `wam search [query]` | Search the index |
-| `wam install <id> [--set KEY=VALUE]` | Install an app and the apps it `uses`; required passwords you don't pass are generated and saved 0600 in `~/.wizard-os/secrets/<id>.json`. With `"cli_install_links": true` in `~/.wizard-os/app-manager.json` (off by default) it then publishes app links like Store install, so no manual `wam links` |
+| `wam install <id> [--set KEY=VALUE]` | Install an app and the apps it `uses`; required passwords you don't pass are generated and saved 0600 in `~/.wizard-os/secrets/<id>.json`. With the feature switch `wizard/cli-install-links` on (For testers, off by default) it then publishes app links like Store install, so no manual `wam links` |
 | `wam uninstall <id>` | Remove an app |
 | `wam apps [--json]` | Installed apps with their MCP addresses; writes `~/.wizard-os/apps.json` + `skills/` for agents |
 | `wam doctor [--fix]` | Check the whole chain |
