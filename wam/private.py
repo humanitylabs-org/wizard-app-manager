@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from . import wizardmd
+from . import dirswap, wizardmd
 
 CATEGORIES = ("agent", "interface", "app", "system")
 IMAGE_VAR = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?-([^}]*))?\}")
@@ -344,6 +344,6 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True, "source": source}) + "\n")
         if release or source_pin:
             (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
-        shutil.rmtree(dst, ignore_errors=True)
-        tmp.rename(dst)
+        # Never rmtree-then-rename: Runtipi (root) rewrites this folder, so rmtree can silently leave files.
+        dirswap.replace_dir(tmp, dst)
     return rec
