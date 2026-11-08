@@ -301,7 +301,7 @@ def test_gateway_feature_switches_reuses_owner_gate_and_exact_route(monkeypatch,
             assert _get(srv, "/_feature-switches", headers)[0] == 403
             assert _post(srv, "/_feature-switches", headers, body)[0] == 403
         for overrides in ({"Origin": "https://evil.example"}, {"X-Wizard-Store": None},
-                          {"Content-Type": "text/plain"}, {"X-Forwarded-For": "100.64.0.1"}):
+                          {"Content-Type": "text/plain"}, {"X-Forwarded-For": next(iter(si.own_ips()))}):
             headers = {k: v for k, v in {**GW, **overrides}.items() if v is not None}
             assert _post(srv, "/_feature-switches", headers, body)[0] == 403
         for path in ("/_feature-switchesX", "/_feature-switches/child", "/_feature-switch", "/_feature-switches%2fchild",
