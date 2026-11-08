@@ -1519,6 +1519,18 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
 
 
+def doctor_gateway_keys(c: Config, reg: dict, switch_on=None) -> list[tuple[str, bool, str]]:
+    """#387: flag apps with tools that the Agent Service's gateway holds no grant key for (read-only). Only when the
+    off-by-default feature switch `wizard/doctor-gateway-keys` is on."""
+    from . import gateway_keys
+    if switch_on is None:
+        from .feature_switches import is_on as switch_on
+    if not switch_on(gateway_keys.SWITCH, c.home):
+        return []
+    row = gateway_keys.check(reg, c.home, c.runtipi_root)
+    return [row] if row else []
+
+
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     out = []
     from . import builder_bundle
@@ -1605,6 +1617,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
                         "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
     if regp.is_file():
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
+        out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
     try:
         from . import network
         rep = network.report(c)
