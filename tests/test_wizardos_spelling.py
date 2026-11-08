@@ -46,7 +46,7 @@ def hits():
 class WizardOSNameTests(unittest.TestCase):
     def test_rule_keeps_identifiers(self):
         two = "Wizard" + " OS"
-        for bad in (two, two.lower(), "\\n" + two, "Wizard-OS", "Wizard \u2014 OS", f"the {two} app", f"{two}'s"):
+        for bad in (two, two.lower(), "\\n" + two, "Wizard" + "-OS", "Wizard" + " \u2014 OS", f"the {two} app", f"{two}'s"):
             self.assertTrue(misspells(bad), bad)
         for ok in ("WizardOS", "wizard-os", "humanitylabs-org/wizard-os", "wizard-os-home", "wizard_os",
                    "~/.wizard-os", "WIZARD_OS_HOME", "wizardos.app"):
