@@ -48,7 +48,7 @@ def test_os_update_mode_and_app_update_mode_are_independent(tmp_path, monkeypatc
     monkeypatch.setenv("WIZARD_OS_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     out = updates.ensure_timer(home, None, systemctl=False)
-    assert out["mode"] == "auto" and out["timer"] is True          # Wizard OS releases: always Automatic
+    assert out["mode"] == "ask" and out["timer"] is False          # Wizard OS releases: Ask me by default
     assert out["app_mode"] == "auto" and out["app_timer"] is True   # app updates: Automatic by default
     assert (tmp_path / ".config/systemd/user/wizard-app-updates.timer").is_file()
 

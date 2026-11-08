@@ -388,11 +388,11 @@ def test_backup_row_absent_without_backup_engine():
 
 # ---- slice 3: Wizard OS updates -------------------------------------------------------------------------------
 
-def test_updates_step_runs_even_for_a_saved_ask_me(tmp_path, monkeypatch):
+def test_updates_step_ask_does_nothing(tmp_path, monkeypatch):
     from wam import updates
-    (tmp_path / "updates.json").write_text('{"mode": "ask"}')     # from before updates were always automatic
-    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": False, "installed": "0.3.1"})
-    assert maintain.updates_step(tmp_path, True)["state"] == "current"
+    monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: 1 / 0)
+    assert maintain.updates_step(tmp_path, True)["state"] == "ask"
 
 
 def test_updates_step_auto_applies_only_when_quiet(tmp_path, monkeypatch):

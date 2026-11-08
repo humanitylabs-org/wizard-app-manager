@@ -1,4 +1,4 @@
-"""Wizard OS updates (wam/updates.py): check vs the channel, always Automatic (a saved Ask me reads as Automatic), apply = installer rerun."""
+"""Owner-chosen updates (wam/updates.py): check vs stable, Ask me (default) / Automatic, apply = installer rerun."""
 import io
 import json
 import subprocess
@@ -87,42 +87,48 @@ def test_latest_is_cached_about_ten_minutes(tmp_path, monkeypatch):
     assert len(hits) == 5                                                            # a miss retries after a minute
 
 
-def test_updates_are_always_automatic_and_a_saved_ask_me_reads_as_automatic(tmp_path):
+def test_mode_defaults_to_ask_me_and_an_explicit_automatic_is_kept(tmp_path):
     h, ud = tmp_path / "wos", tmp_path / "units"
     st = updates.status(h, _base(tmp_path, "0.3.16"))
-    assert updates.mode(h) == "auto" and st["mode"] == "auto" and st["always_auto"] is True
-    # Every box gets the nightly run, including one whose owner never chose.
-    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
-    assert json.loads((h / "updates.json").read_text()) == {"mode": "auto"}   # persisted, so a rollback stays auto
+    assert updates.mode(h) == "ask" and st["mode"] == "ask" and st["chosen"] is False
+    # A box whose owner never chose gets no timer, and the installer records no choice for the owner.
+    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "ask", "timer": False}
+    assert not (h / "updates.json").exists() and not (ud.exists() and list(ud.iterdir()))
+    # A timer left by the old Automatic default does nothing for an owner who never chose.
+    assert updates.apply_if_auto(h, _base(tmp_path, "0.3.17"), runner=lambda *a, **k: pytest.fail("ran"), is_busy=lambda: False).get("started") is not True
+    updates.set_mode("auto", h, ud, systemctl=False)
+    assert updates.mode(h) == "auto" and (ud / "wizard-os-update.timer").is_file()
     timer = (ud / "wizard-os-update.timer").read_text()
     assert "OnCalendar=*-*-* 03:30" in timer and "RandomizedDelaySec=1h" in timer and "Persistent=true" in timer
     assert "updates --apply-if-auto" in (ud / "wizard-os-update.service").read_text()
-    # A box that chose Ask me before: read as Automatic, and the file is normalised (channel kept) so an older
-    # App Manager after a rollback stays automatic too.
-    h.mkdir(exist_ok=True)
-    (h / "updates.json").write_text(json.dumps({"mode": "ask", "channel": "latest"}))
-    assert updates.mode(h) == "auto" and updates.status(h, _base(tmp_path, "0.3.16"))["mode"] == "auto"
+    # An installer rerun after the owner chose Automatic keeps Automatic and its timer.
     assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
-    assert json.loads((h / "updates.json").read_text()) == {"channel": "latest", "mode": "auto"}
-    # An older shell's "Ask me" tap is accepted, answered with auto, and never removes the timer.
-    res = updates.set_mode("ask", h, ud, systemctl=False)
-    assert res["mode"] == "auto" and "always automatic" in res["note"]
-    assert updates.mode(h) == "auto" and (ud / "wizard-os-update.timer").is_file()
-    assert json.loads((h / "updates.json").read_text())["mode"] == "auto"
+    assert updates.status(h, _base(tmp_path, "0.3.16"))["chosen"] is True
+    updates.set_mode("ask", h, ud, systemctl=False)
+    assert updates.mode(h) == "ask" and not list(ud.iterdir())
     with pytest.raises(SystemExit):
         updates.set_mode("sometimes", h, ud, systemctl=False)
     (h / "updates.json").write_text("{not json")
-    assert updates.mode(h) == "auto"
+    assert updates.mode(h) == "ask"
 
 
-def test_a_saved_ask_me_box_installs_its_new_release_overnight(tmp_path):
-    h = tmp_path / "wos"
+def test_a_box_that_always_automatic_moved_to_auto_stays_automatic_and_ask_me_is_back(tmp_path):
+    """#483: undoing #465. Boxes it rewrote to {"mode": "auto"} can't be told from owners who chose Automatic,
+    so they stay Automatic; the owner can pick Ask me again, and Ask me never installs by itself."""
+    h, ud = tmp_path / "wos", tmp_path / "units"
     _pin(h, "0.3.7")
-    (h / "updates.json").write_text(json.dumps({"mode": "ask"}))
-    calls = []
-    res = updates.apply_if_auto(h, _base(tmp_path, "0.3.8"), _ok_runner(calls), is_busy=lambda: False)
-    assert res["started"] is True and res["mode"] == "auto"          # Ask me used to return without installing
-    assert calls == [["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_HERMES_PROMOTION= WIZARD_RELEASE=0.3.8 bash -s start"]]
+    (h / "updates.json").write_text(json.dumps({"mode": "auto", "channel": "latest"}))   # as #465 left it
+    st = updates.status(h, _base(tmp_path, "0.3.8"))
+    assert st["mode"] == "auto" and st["chosen"] is True and "always_auto" not in st
+    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": True}
+    assert json.loads((h / "updates.json").read_text()) == {"mode": "auto", "channel": "latest"}
+    res = updates.set_mode("ask", h, ud, systemctl=False)
+    assert res == {"mode": "ask", "chosen": True} and "note" not in res
+    assert json.loads((h / "updates.json").read_text()) == {"mode": "ask", "channel": "latest"}   # channel kept
+    assert updates.apply_if_auto(h, _base(tmp_path, "0.3.8"), runner=lambda *a, **k: pytest.fail("ran"),
+                                 is_busy=lambda: False)["started"] is False
+    st = updates.status(h, _base(tmp_path, "0.3.8"))
+    assert st["mode"] == "ask" and st["update_available"] is True                 # shows the new version instead
 
 
 def test_apply_reruns_the_installer_only_when_newer(tmp_path):
@@ -130,6 +136,8 @@ def test_apply_reruns_the_installer_only_when_newer(tmp_path):
     _pin(h, "0.3.7")
     calls = []
     run = _ok_runner(calls)
+    updates.set_mode("ask", h, tmp_path / "u", systemctl=False)
+    assert updates.apply_if_auto(h, _base(tmp_path, "0.3.8"), run)["started"] is False and calls == []  # Ask me
     res = updates.apply(h, _base(tmp_path, "0.3.8"), run)
     assert res["started"] is True
     assert calls[-1] == ["bash", "-c", "curl -fsSL https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.8 bash -s start"]
