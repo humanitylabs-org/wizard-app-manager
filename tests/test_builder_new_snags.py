@@ -27,19 +27,25 @@ def _summary(root, line):
     return wm
 
 
-def test_a_colon_in_the_summary_is_read_and_package_inline_quotes_it(tmp_path):
+def test_a_colon_is_rejected_until_package_inline_repairs_the_source(tmp_path):
     root = builder.new_app('to-dos', tmp_path, 'a to-do list', name='To-dos', kind='list')
     wm = _summary(root, 'summary: To-dos: one list for the house, with groups')
+    original = wm.read_bytes()
     with pytest.raises(yaml.YAMLError):
-        yaml.safe_load(wm.read_text().split('---', 2)[1])         # what broke the run: not plain YAML
-    assert wizardmd.front_matter(wm.read_text())['summary'] == 'To-dos: one list for the house, with groups'
-    report = builder.check_app(root, proposal=True)
-    assert report['ok'], [r for r in report['rules'] if not r['ok']]
-    assert any(r['rule'] == 'wizard.md front matter is plain YAML' for r in report['warnings'])
+        yaml.safe_load(wm.read_text().split('---', 2)[1])
+    with pytest.raises(yaml.YAMLError):
+        wizardmd.front_matter(wm.read_text())
+    assert any(name == 'front matter parses' and not ok for name, ok, _ in wizardmd.check(root))
+    assert not builder.check_app(root, proposal=True)['ok']
+    with pytest.raises(ValueError, match='Source failed checker'):
+        builder.prepare_publish(root, 'example/to-dos')
+    assert wm.read_bytes() == original, 'checking and publication preparation must not repair source'
     package_inline(root)
-    doc = yaml.safe_load(wm.read_text().split('---', 2)[1])       # now plain YAML for every other reader
+    doc = yaml.safe_load(wm.read_text().split('---', 2)[1])
     assert doc['summary'] == 'To-dos: one list for the house, with groups'
-    assert not any(r['rule'] == 'wizard.md front matter is plain YAML' for r in builder.check_app(root)['rules'])
+    assert wizardmd.front_matter(wm.read_text()) == doc
+    assert builder.check_app(root, proposal=True)['ok']
+    assert builder.prepare_publish(root, 'example/to-dos')['state'] == 'prepared_requires_human_approval'
 
 
 def test_quote_colons_folds_continuations_and_leaves_real_errors_alone():

@@ -101,14 +101,19 @@ def test_health_missing_corrupt_incompatible(homes):
 
 def test_upgrade_retains_previous_release(homes, tmp_path):
     osh, _ = homes
-    first = bb.install(osh)
     source = tmp_path / 'source'
     for name in ('wam', 'templates', 'system-skills', 'wizard-views'):
         shutil.copytree(bb.SOURCE / name, source / name, ignore=shutil.ignore_patterns('__pycache__'))
     shutil.copy(bb.SOURCE / 'LICENSE', source / 'LICENSE')
+    # Explicit fixture versions work in a checkout or a history-free source
+    # export, without accidentally exercising unknown-order preservation.
+    (source / bb.STAMP).write_text(f'{"1" * 40} 1700000000\n')
+    first = bb.install(osh, source)
     p = source / 'system-skills/wizard-builder/references/build.md'
     p.write_text(p.read_text() + '\nNew release reference\n')
+    (source / bb.STAMP).write_text(f'{"2" * 40} 1800000000\n')
     second = bb.install(osh, source)
+    assert second['state'] == 'installed'
     assert first['sha256'] != second['sha256']
     assert (osh / 'builder/releases' / first['sha256'] / 'bundle.json').is_file()
     assert (osh / 'system-skills/wizard-builder/references/build.md').read_text().endswith('New release reference\n')

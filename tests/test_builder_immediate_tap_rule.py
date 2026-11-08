@@ -39,13 +39,18 @@ def test_bundle_upgrade_delivers_both_instruction_files_and_rollback(tmp_path):
         shutil.copytree(ROOT / name, source / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     shutil.copy(ROOT / 'LICENSE', source / 'LICENSE')
+    # Explicit synthetic versions keep this lifecycle fixture about delivery and
+    # rollback, not the separate unknown-version preservation policy.
+    (source / bb.STAMP).write_text(f'{"1" * 40} 1700000000\n')
     for relative in (SKILL, REFERENCE):
         (source / relative).write_text('previous instruction\n')
     home = tmp_path / 'os'
     first = bb.install(home, source)
     for relative in (SKILL, REFERENCE):
         shutil.copy(ROOT / relative, source / relative)
+    (source / bb.STAMP).write_text(f'{"2" * 40} 1800000000\n')
     second = bb.install(home, source)
+    assert second['state'] == 'installed'
     assert second['sha256'] != first['sha256']
     assert Path(second['skill']).is_file()
     for relative in (SKILL, REFERENCE):

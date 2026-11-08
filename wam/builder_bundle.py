@@ -428,20 +428,23 @@ def install(os_home, source=SOURCE, *, migrate_local_copy=None, hermes_home=None
 
 
 def _keep_newer(current, new, allow_downgrade):
-    """The receipt for keeping a newer installed bundle, or None when installing `new` is not a downgrade."""
+    """Keep an installed bundle unless the offered version is demonstrably equal/newer or explicitly allowed."""
     if allow_downgrade or not current.is_symlink() or not (current / 'bundle.json').is_file():
         return None
     have = stamp(current)
-    if order(new, have) != -1:
+    relation = order(new, have)
+    if relation in (0, 1):
         return None
     try:
         digest = json.loads((current / 'bundle.json').read_text()).get('sha256')
     except (OSError, ValueError):
         digest = None
-    return {'state': 'kept_newer', 'sha256': digest, 'release': os.readlink(current).rsplit('/', 1)[-1],
+    reason = ('The installed builder bundle is newer than this App Manager' if relation == -1
+              else 'The offered builder bundle cannot be ordered against the installed bundle')
+    return {'state': 'kept_newer' if relation == -1 else 'kept_unknown',
+            'sha256': digest, 'release': os.readlink(current).rsplit('/', 1)[-1],
             'installed': describe(have), 'offered': describe(new),
-            'note': 'The installed builder bundle is newer than this App Manager; nothing changed. '
-                    'Pass --allow-downgrade to replace it anyway.'}
+            'note': reason + '; nothing changed. Pass --allow-downgrade to replace it anyway.'}
 
 
 def restore_local_copy(os_home, revision):
@@ -609,9 +612,32 @@ def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False
     return {**receipt, 'hermes_home': str(data), 'override': str(override), 'restart_required': pending.exists()}
 
 
+def _offered_bundle_source():
+    """Use the same box source for bundle doctor guidance and drift checks."""
+    if (SOURCE / 'bundle.json').is_file():
+        from .bundle_delegate import box_source
+        return box_source()
+    return SOURCE if (SOURCE / 'wam').is_dir() else None
+
+
+def _integrity_repair(current):
+    try:
+        other = _offered_bundle_source()
+        kept = _keep_newer(current, stamp(other) if other else None, False)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return 'inspect the bundle manifest and replacement source before reinstalling'
+    command = 'wam builder-bundle install'
+    if kept:
+        source = str(other) if other else 'unidentified box source'
+        command += (' --allow-downgrade; explicit replacement may install older code '
+                    f'(offered source: {source}); inspect that source before replacing')
+    return command
+
+
 def health(os_home, hermes_home=None, runtime=None):
     rows = []
     base = Path(os.environ.get('WIZARD_BUILDER_ROOT') or Path(os_home) / 'builder')
+    integrity_failure = True
     try:
         manifest = json.loads((base / 'current/bundle.json').read_text())
         if manifest.get('schema') != SCHEMA or manifest.get('owner') != MARKER:
@@ -622,6 +648,7 @@ def health(os_home, hermes_home=None, runtime=None):
         digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
         if digest != manifest['sha256']:
             raise ValueError('bundle digest mismatch')
+        integrity_failure = False
         if shutil.which('git') is None:
             raise ValueError('tooling unavailable: git is required for source scaffolding')
         p = subprocess.run([str(base / 'current/bin/wam'), 'new', '--help'], capture_output=True, text=True, timeout=15)
@@ -632,11 +659,7 @@ def health(os_home, hermes_home=None, runtime=None):
         # from the bundle, compare with the box's App Manager. Only a provably older bundle is drift: a bundle newer
         # than this App Manager is kept (installing from here would downgrade it).
         detail = digest
-        if (SOURCE / 'bundle.json').is_file():
-            from .bundle_delegate import box_source
-            other = box_source()
-        else:
-            other = SOURCE if (SOURCE / 'wam').is_dir() else None
+        other = _offered_bundle_source()
         if other is not None:
             ours = {'wam/' + k: v for k, v in _files(other / 'wam').items() if 'wam/' + k != STAMP}
             if ours != {k: v for k, v in files.items() if k.startswith('wam/') and k != STAMP}:
@@ -648,7 +671,8 @@ def health(os_home, hermes_home=None, runtime=None):
                            f'; differs from the App Manager at {other}, order unknown, kept')
         rows.append(('Wizard builder bundle and host tooling', True, detail))
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
-        rows.append(('Wizard builder bundle and host tooling', False, str(e) + '; repair: wam builder-bundle install'))
+        repair = _integrity_repair(base / 'current') if integrity_failure else 'wam builder-bundle install'
+        rows.append(('Wizard builder bundle and host tooling', False, str(e) + '; repair: ' + repair))
     if hermes_home:
         try:
             cfg = yaml.safe_load(_read_text(Path(hermes_home) / 'config.yaml')) or {}
@@ -723,7 +747,7 @@ def main(argv=None):
     ap.add_argument('--hermes-home', type=Path)
     ap.add_argument('--restart', action='store_true', help='fresh only: adopt changed discovery/mount through Runtipi')
     ap.add_argument('--allow-downgrade', action='store_true',
-                    help='install/fresh: replace an installed bundle that is newer than this App Manager')
+                    help='install/fresh: explicitly replace a newer or unorderable installed bundle')
     a = ap.parse_args(argv)
     from .registry import home
     try:
