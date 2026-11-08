@@ -1,6 +1,6 @@
 {
   "version": "0.3.65",
-  "name": "Wizard OS 0.3.65 \u2014 installer reruns keep ChatGPT and Claude connected",
+  "name": "WizardOS 0.3.65 \u2014 installer reruns keep ChatGPT and Claude connected",
   "date": "2026-10-26",
   "about": "Stable 0.3.63 plus the installer fixes from Heidi's install (Recommended fix, wizard-app-manager #258, merged on the Stable maintenance branch as #259): a rerun recreates the ChatGPT/Claude connection apps whose agent address or login changed or whose running containers still hold an old one (e.g. after a tailnet move), instead of rewriting app.env and leaving them pointed at the old address; a new tailnet with HTTPS certificates off is an explicit owner step (needs_owner, https://login.tailscale.com/admin/dns) and the install continues by itself once `tailscale cert` works; an approved Tailscale login is waited for (no second `tailscale up` after a successful one, short grace after a shown link); `wam updates` routes a Hermes from the official installer to `hermes update` instead of 'update this Hermes by hand'. Only the App Manager pin changes versus 0.3.63; every app, Wizard UX, Agent Service, Troubleshooter and Hermes are byte-for-byte 0.3.63. No migrations.",
   "install": {

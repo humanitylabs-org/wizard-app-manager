@@ -1,6 +1,6 @@
 {
   "version": "0.3.14",
-  "name": "Wizard OS install snapshot 0.3.14",
+  "name": "WizardOS install snapshot 0.3.14",
   "date": "2026-10-20",
   "about": "One-time owner approval link: a named Hermes owner whose sudo needs a password approves the one root step through www.aiwizards.com/os-approve (browser-side encryption to a key generated on the box; single use; ~30 min) instead of running a terminal command (App Manager #105, index #4). The terminal command remains the fallback. All image and app pins remain unchanged from 0.3.13.",
   "install": {

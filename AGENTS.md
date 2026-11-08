@@ -2,7 +2,7 @@
 
 Two kinds of agent read this file:
 
-- **Installing Wizard OS on a machine?** Go straight to [Installing Wizard OS apps on this machine](#installing-wizard-os-apps-on-this-machine-instructions-for-an-ai-agent) at the bottom.
+- **Installing WizardOS on a machine?** Go straight to [Installing WizardOS apps on this machine](#installing-wizard-os-apps-on-this-machine-instructions-for-an-ai-agent) at the bottom.
 - **Changing this repo?** Read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (layout, tests, required CI checks and how to reproduce them, browser checks, how a change reaches users), "This repo", the [Team workflow](#team-workflow) and the team rules.
 
 ## This repo
@@ -25,7 +25,7 @@ test/CI command enforces this. Historical evidence/receipts are explicitly exemp
 
 ## Team workflow
 
-Agreed 5 Nov 2026 and being rolled out by Miguel; tracking issue: [wizard-ux#887](https://github.com/humanitylabs-org/wizard-ux/issues/887). This is agreed policy, not a claim that every label, switch or release job already enforces it. Where it disagrees with the older "Wizard OS team rules" block below, **this section wins**. Void from that block: an author merging their own PR (including "fix" tier PRs), `needs: ... review` gating, `preview only` and developer-mode branches on a box. Tier labels and title prefixes may still describe a change but give no merge rights. Branch naming, PR body, cross-repo order and safety from that block still apply.
+Agreed 5 Nov 2026 and being rolled out by Miguel; tracking issue: [wizard-ux#887](https://github.com/humanitylabs-org/wizard-ux/issues/887). This is agreed policy, not a claim that every label, switch or release job already enforces it. Where it disagrees with the older "WizardOS team rules" block below, **this section wins**. Void from that block: an author merging their own PR (including "fix" tier PRs), `needs: ... review` gating, `preview only` and developer-mode branches on a box. Tier labels and title prefixes may still describe a change but give no merge rights. Branch naming, PR body, cross-repo order and safety from that block still apply.
 
 - **Humans file issues, agents write PRs.** Every PR links an issue. If none exists, the agent files one from the human's request.
 - **Two issue kinds.** *Goals* are big and closable with a done-list; only humans open and close them; there is no permanent catch-all Goal. *Bugs* are small: a core-team human's bug is accepted; outside reports and agent-drafted issues wait for a human yes. Bugs need no parent Goal.
@@ -36,10 +36,10 @@ Agreed 5 Nov 2026 and being rolled out by Miguel; tracking issue: [wizard-ux#887
 - A single company implementer agent is being trialled; until then the existing team agents implement under these rules. Put knowledge in the repo, not in an agent's memory.
 
 
-<!-- wizard-os-team-rules v4 (24 Oct 2026). Same text in every Wizard OS repo; the canonical copy is humanitylabs-org/wizard-os AGENTS.md. Change it there first, then copy the block to every repo in one round of PRs. -->
-## Wizard OS team rules (identical in every repo)
+<!-- wizard-os-team-rules v4 (24 Oct 2026). Same text in every WizardOS repo; the canonical copy is humanitylabs-org/wizard-os AGENTS.md. Change it there first, then copy the block to every repo in one round of PRs. -->
+## WizardOS team rules (identical in every repo)
 
-Wizard OS is built by James, Jan and Miguel together with their agents. Archimedes commits as `defleur-agents` and Oscar as `oscarhenrycollins`. Every repo belongs to Wizard OS as a whole, and no repo belongs to one person. Make the change that is best for the whole system, and build on each other's work.
+WizardOS is built by James, Jan and Miguel together with their agents. Archimedes commits as `defleur-agents` and Oscar as `oscarhenrycollins`. Every repo belongs to WizardOS as a whole, and no repo belongs to one person. Make the change that is best for the whole system, and build on each other's work.
 
 ### Branches
 
@@ -97,7 +97,7 @@ Every change reaches `main` one of two ways: **propose a fix** (`tier: recommend
 
 ### Tracking
 
-**The [Wizard OS · PR pipeline](https://github.com/orgs/humanitylabs-org/projects/1) board is the source of truth for where every PR is**, across all repos: Draft → In review → Merged → On Latest → On Stable, or Dropped. wizard-os `tools/pr_board.py` syncs it every 15 minutes from the PRs and the release pointers, so nobody moves cards by hand; keep the tier label right and the board stays right. Check it before asking someone where a change is, and link it in status updates instead of listing PRs.
+**The [WizardOS · PR pipeline](https://github.com/orgs/humanitylabs-org/projects/1) board is the source of truth for where every PR is**, across all repos: Draft → In review → Merged → On Latest → On Stable, or Dropped. wizard-os `tools/pr_board.py` syncs it every 15 minutes from the PRs and the release pointers, so nobody moves cards by hand; keep the tier label right and the board stays right. Check it before asking someone where a change is, and link it in status updates instead of listing PRs.
 
 ### Merging
 
@@ -160,7 +160,7 @@ Anything shipped, tagged or handed to a tester is built only from commits alread
 Pick up work from the open issues in this repo and from wizard-os `docs/WORK_OUTSTANDING.md`. For how the pieces fit together and what is already decided, read wizard-os `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`.
 <!-- /wizard-os-team-rules -->
 
-## Installing Wizard OS apps on this machine (instructions for an AI agent)
+## Installing WizardOS apps on this machine (instructions for an AI agent)
 
 You are installing the Wizard App Manager. It uses stock Runtipi to run apps. Do these steps in order and report each result.
 

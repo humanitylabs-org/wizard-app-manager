@@ -1,6 +1,6 @@
 {
   "version": "0.3.69",
-  "name": "Wizard OS 0.3.69 \u2014 Connection apps stay current after an upgrade",
+  "name": "WizardOS 0.3.69 \u2014 Connection apps stay current after an upgrade",
   "date": "2026-10-27",
   "about": "Upgrading now brings installed default apps to the versions included with your Wizard update, including Claude. Backup restore no longer encounters a Claude app left behind by an earlier update. Existing connection settings and sign-ins are kept. This Latest release keeps the other components from 0.3.67; Stable is unchanged.",
   "install": {

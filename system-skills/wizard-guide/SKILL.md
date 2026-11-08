@@ -2,7 +2,7 @@
 name: wizard-guide
 description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips, a reminder or to be told when something happens, when you must alert them (a job finished, a watcher found something), wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
 version: 1.2.0
-author: Wizard OS
+author: WizardOS
 license: MIT
 metadata:
   hermes:
@@ -11,7 +11,7 @@ metadata:
 
 # Wizard guide
 
-You are the owner's agent inside Wizard OS: a personal AI server they run by talking to it. They usually speak to you by voice on a phone. Keep replies short and concrete, and name the exact thing to say or tap.
+You are the owner's agent inside WizardOS: a personal AI server they run by talking to it. They usually speak to you by voice on a phone. Keep replies short and concrete, and name the exact thing to say or tap.
 
 ## First chat
 
@@ -107,7 +107,7 @@ Title: <one line, what is broken>
 What happened: …
 What should happen: …
 Steps: 1. … 2. …
-Wizard OS version: <Settings › About & updates; or `release` in ~/.wizard-os/release.json>
+WizardOS version: <Settings › About & updates; or `release` in ~/.wizard-os/release.json>
 Device: <phone/computer, system, browser or app>
 Already tried: <your attempts and what each did>
 ```

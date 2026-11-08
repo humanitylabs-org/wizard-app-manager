@@ -39,7 +39,7 @@ def test_projected_status_is_owner_readable_locked_and_reports_the_real_exit(tmp
         result = subprocess.run(['bash', str(GET), 'status'], env={**os.environ, 'HOME': str(home)},
                                 capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
-        assert 'Wizard OS install: needs_owner' in result.stdout
+        assert 'WizardOS install: needs_owner' in result.stdout
         assert 'https://login.tailscale.com/a/fixture-only' in result.stdout
         process.stdin.close(); process.wait(timeout=5)
         assert process.returncode == 0, process.stderr.read()

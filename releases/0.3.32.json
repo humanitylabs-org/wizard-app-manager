@@ -1,6 +1,6 @@
 {
   "version": "0.3.32",
-  "name": "Wizard OS install snapshot 0.3.32",
+  "name": "WizardOS install snapshot 0.3.32",
   "date": "2026-10-21",
   "about": "0.3.31 plus wizard-app-manager #153: apps whose wizard.md declares runtime.package source run from the commit the index pins. The App Manager copies that commit into app-data and sets APP_SOURCE_DIR, so an app like Wisdom installs from the Store on the official multi-arch python:3.12-slim with no private app image to pull (Wisdom's 0.4.0-private.* images were never pushed to GHCR, so a fresh Store Get failed with 'removed it'). The App Manager image moves to the official build from merge 66d06b4 because #153 changes the backend. Every other pin is unchanged.",
   "install": {

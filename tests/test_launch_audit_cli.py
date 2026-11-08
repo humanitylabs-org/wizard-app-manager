@@ -130,7 +130,7 @@ class AuditTests(unittest.TestCase):
                 self.assertEqual(wizard.cmd_report(argparse.Namespace())['schema'], 'wizard-report-v1')
 
     @contextlib.contextmanager
-    def shell(self, body=b'<title>Wizard OS</title>', redirect=None,
+    def shell(self, body=b'<title>WizardOS</title>', redirect=None,
               setup_body=b'{"first_run":true}', setup_status=200, setup_redirect=None):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):

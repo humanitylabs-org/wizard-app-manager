@@ -418,12 +418,12 @@ def _quick_now(home: Path | None, installer: dict, run: str | None) -> bool:
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
     return {
         unit_dir / f"{UNIT}.service": (
-            "[Unit]\nDescription=Wizard OS automatic update (owner setting: Automatic)\n\n"
+            "[Unit]\nDescription=WizardOS automatic update (owner setting: Automatic)\n\n"
             "[Service]\nType=oneshot\nEnvironment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin\n"
             # the installer's detached runner must outlive this oneshot when systemd-run is unavailable
             f"KillMode=process\nExecStart={wam} updates --apply-if-auto\n"),
         unit_dir / f"{UNIT}.timer": (
-            "[Unit]\nDescription=Nightly Wizard OS update check\n\n"
+            "[Unit]\nDescription=Nightly WizardOS update check\n\n"
             "[Timer]\nOnCalendar=*-*-* 03:30\nRandomizedDelaySec=1h\nPersistent=true\n\n"
             "[Install]\nWantedBy=timers.target\n"),
     }

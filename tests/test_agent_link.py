@@ -54,7 +54,7 @@ def test_edit_refuses_foreign_wizard_server(tmp_path):
     raw = yaml.safe_dump({'mcp_servers': {'wizard': {'url': 'http://someone-else/mcp'}}})
     (tmp_path / 'config.yaml').write_text(raw)
     p = run_edit(tmp_path)
-    assert p.returncode != 0 and 'not Wizard OS' in p.stderr
+    assert p.returncode != 0 and 'not WizardOS' in p.stderr
     assert (tmp_path / 'config.yaml').read_text() == raw
 
 

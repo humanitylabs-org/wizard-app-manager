@@ -1,6 +1,6 @@
 {
   "version": "0.3.24",
-  "name": "Wizard OS install snapshot 0.3.24",
+  "name": "WizardOS install snapshot 0.3.24",
   "date": "2026-10-21",
   "about": "0.3.23 plus wizard-app-manager #135: a fresh install no longer fails before Runtipi exists when an earlier install left a root-owned /tmp/runtipi-setup.sh (curl exit 23); the Runtipi setup now downloads to a private temp dir. Main also carries #133 (owner screens through the shared Wizard view projection, host tooling). Host tooling only; every image pin is unchanged.",
   "install": {

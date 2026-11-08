@@ -1,6 +1,6 @@
 {
   "version": "0.3.77",
-  "name": "Wizard OS 0.3.77 — Latest 0.3.75 with the Troubleshooter one-tap screen",
+  "name": "WizardOS 0.3.77 — Latest 0.3.75 with the Troubleshooter one-tap screen",
   "date": "2026-10-29",
   "about": "Latest 0.3.75 with only the Troubleshooter pin moved c1b4c43 -> 3e56f66 (same pin as Stable 0.3.76), so Latest never trails Stable. Every image, App Manager, Hermes and default app is byte-identical to 0.3.75; its Wizard UX main 91218c83 already carries the launcher long-name fix (#726).",
   "install": {

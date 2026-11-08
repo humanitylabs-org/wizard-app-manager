@@ -1577,7 +1577,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     from . import updates
     run = updates.install_state(c.home)  # also heals a stale running state and its lock (wizard-os#90)
     if run == "interrupted":
-        out.append(("Wizard OS update completed", False,
+        out.append(("WizardOS update completed", False,
                     "the last install or update was interrupted before it finished; retry with "
                     "`wam updates --apply`, or `curl -fsSL https://aiwizards.com/os.sh | bash -s start`"))
     st = alongside.load(c.home)
@@ -2454,7 +2454,7 @@ def main(argv: list[str] | None = None) -> int:
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
     fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the same state "
-                                                  "as Settings and the Wizard OS Tracker")
+                                                  "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
     fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")

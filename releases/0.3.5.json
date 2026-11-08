@@ -1,6 +1,6 @@
 {
   "version": "0.3.5",
-  "name": "Wizard OS install snapshot 0.3.5",
+  "name": "WizardOS install snapshot 0.3.5",
   "date": "2026-10-19",
   "about": "Installer-only follow-up to 0.3.4: a running Runtipi container is no longer treated as proof of fresh mode when a verified existing host Hermes is present. This keeps generic administrator reruns beside the original named owner and avoids accidentally creating a second wizard user/agent with fresh-mode sudo grants. Explicit fresh receipts retain priority. All official image and default-app pins are unchanged. Named-user installed-app/API/resources/rerun/unlink and owner browser enrollment acceptance are not yet complete; this snapshot does not certify broad rollout.",
   "install": {

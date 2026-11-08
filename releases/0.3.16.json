@@ -1,6 +1,6 @@
 {
   "version": "0.3.16",
-  "name": "Wizard OS install snapshot 0.3.16",
+  "name": "WizardOS install snapshot 0.3.16",
   "date": "2026-10-20",
   "about": "0.3.15 plus three merged fixes: the Claude connection app is a default on every box as the new `claude-subscription` slot and, in alongside mode, is wired to the host agent's own Claude login (App Manager #110); the Agent Service detects a signed-out AI provider and names the app to reconnect in a `wizard_reconnect` field (Agent Service #60); the shell shows a 'Claude is signed out' panel with an Open/Get Claude button (Wizard UX #200). The App Manager image is unchanged.",
   "install": {

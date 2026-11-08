@@ -1,7 +1,7 @@
 """The deferred Hermes restart must outlast a live chat turn.
 
 Hermes >= 0.22 refuses `gateway restart` (exit 1) while a chat turn is live. An agent-run install schedules the
-restart while the installing agent's own turn is still live, so a single attempt left Wizard OS linked but with the
+restart while the installing agent's own turn is still live, so a single attempt left WizardOS linked but with the
 Hermes API never started (demo box, 26 Oct 2026: shell showed "Your agent (Hermes) isn't responding").
 """
 import re

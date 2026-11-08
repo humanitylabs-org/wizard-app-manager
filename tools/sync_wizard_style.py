@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vendor a verified immutable Wizard OS style snapshot, or check it for drift.
+"""Vendor a verified immutable WizardOS style snapshot, or check it for drift.
 
 No network dependency in app generation. Run this only when refreshing the style pin.
 """

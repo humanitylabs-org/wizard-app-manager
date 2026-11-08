@@ -1,6 +1,6 @@
 {
   "version": "0.3.38",
-  "name": "Wizard OS install snapshot 0.3.38",
+  "name": "WizardOS install snapshot 0.3.38",
   "date": "2026-10-24",
   "about": "Launch fixes on 0.3.37: alongside installs open chats quietly with optional Setup and retain VM onboarding; ready host Tailscale access is detected without waiting for helpers, preserving enrolled-helper provenance and verified pinned phone visits; empty Yesterday/Past week chat groups are hidden; Agent Service receives supplementary media gid 1000 with cap_drop ALL, and upload directories are prepared before first service install. Ride-alongs: stale 404 transcripts are evicted (#442), genuine pre-restart doctor failures remain failures (WAM #197), and pending steer replay fixes (Service #148). Hermes and default app pins unchanged. No migrations or owner-data deletion.",
   "install": {

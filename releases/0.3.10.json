@@ -1,6 +1,6 @@
 {
   "version": "0.3.10",
-  "name": "Wizard OS install snapshot 0.3.10",
+  "name": "WizardOS install snapshot 0.3.10",
   "date": "2026-10-19",
   "about": "Same component and default-app pins as 0.3.9 (alongside fixes: WAM #81 Files 502 for a non-owner installing account, WAM #82 Store adapter port, Agent Service #55 image save location, UX #171 linked image 'undefined'), plus WAM #85: upgrades no longer fail with 'No such image' when the Agent Service pin changes (the attachment-folder step now pulls the pinned image). 0.3.9 is superseded; use 0.3.10.",
   "install": {

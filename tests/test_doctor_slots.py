@@ -1,6 +1,6 @@
 """An owner-installed alternative provider of a single-app slot is a supported state (install the alternative,
 then remove the default; the saved slots.<s>.default is the active one). `wam doctor` must not FAIL on it, or a
-strict Wizard OS install/rollback aborts on a box where the owner merely added Wizard Files next to Files
+strict WizardOS install/rollback aborts on a box where the owner merely added Wizard Files next to Files
 (wizard-os#389 rehearsal: "slot 'files' has 2 apps (files, wizard-files)")."""
 import json
 import sys

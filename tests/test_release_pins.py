@@ -1,4 +1,4 @@
-"""get.sh follows one Wizard OS release file (wizard-os#27): pinned App Manager commit + image digests, then a
+"""get.sh follows one WizardOS release file (wizard-os#27): pinned App Manager commit + image digests, then a
 read-back of what actually runs. Runs get.sh as this user against a local App Manager repo, a file:// release base
 and a stand-in `docker`; nothing on the box is installed or contacted."""
 import json
@@ -177,7 +177,7 @@ def test_no_stable_pointer_installs_main_unpinned_and_says_so(box):
     (box["rel"] / "stable").unlink()
     p, rec = box["run"]()
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "no Wizard OS stable release is published" in p.stdout and rec["status"] == "unpinned"
+    assert "no WizardOS stable release is published" in p.stdout and rec["status"] == "unpinned"
     assert "moved-on" in p.stdout   # main's install.sh ran, not the pinned one
 
 

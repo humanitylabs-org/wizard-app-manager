@@ -1,6 +1,6 @@
 {
   "version": "0.3.91",
-  "name": "Wizard OS 0.3.91 \u2014 0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80 (fixes)",
+  "name": "WizardOS 0.3.91 \u2014 0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80 (fixes)",
   "date": "2026-10-30",
   "about": "Latest 0.3.90 with Wizard UX 7f7a9dd2 -> 8b4a5b80. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#757 Recommended fix: Store can remove an installed app; humanitylabs-org/wizard-ux#758 Recommended fix: model picker stays clear of draft text; humanitylabs-org/wizard-app-manager#362 Recommended fix: Store can remove an installed app safely; humanitylabs-org/wizard-app-manager#363 Fix: use documentation IPs in Store removal tests; humanitylabs-org/wizard-app-manager#364 Recommended fix: keep an app's Wizard path while it or the shell restarts. Stable stays 0.3.89 until the installed upgrade test passes.",
   "install": {

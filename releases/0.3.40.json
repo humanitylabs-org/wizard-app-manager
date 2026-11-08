@@ -1,6 +1,6 @@
 {
   "version": "0.3.40",
-  "name": "Wizard OS install snapshot 0.3.40",
+  "name": "WizardOS install snapshot 0.3.40",
   "date": "2026-10-24",
   "about": "0.3.39 plus wizard-ux #482/#483: an alongside (existing-Hermes) first launch starts the short first-message orientation once per browser (phone Talk -> Hide tour; desktop guide on the New chat composer) while Setup stays manual; the desktop shell loads the tour at all (?view=tour, Keys -> Show me again); Esc/Back and early taps never get stranded or interrupted. Ride-alongs on wizard-ux main since c8433e3 (first-parent): #422, #423, #434, #459, #403, #408, #461, #463, #464, #465, #466 share sheet, #454 PWA icon, #469, #441 app kinds on our skins, #476, #474, #475, #470 native icon, #479 Photos leaves Settings, #481 Space counts. App Manager, Agent Service, Hermes and other default app pins unchanged. No migrations or owner-data deletion.",
   "install": {

@@ -1,6 +1,6 @@
 {
   "version": "0.3.90",
-  "name": "Wizard OS 0.3.90 — 0.3.89 with apps kept on their Wizard path while they restart, and Store app removal",
+  "name": "WizardOS 0.3.90 — 0.3.89 with apps kept on their Wizard path while they restart, and Store app removal",
   "date": "2026-10-30",
   "about": "0.3.89 plus App Manager #364 (Recommended fix: an app that is starting, restarting or updating, or a restarting shell, stays published in links.json, so Messenger and other apps keep their same-origin /<id>/ path instead of falling back to a raw port and opening blank in Wizard). The App Manager pin also carries #362/#363 (Recommended fix: the Store can remove an installed app exactly and safely; Store removal tests use documentation addresses), merged after 0.3.89. Only App Manager moved; the App Manager image, Wizard UX, Agent Service, Troubleshooter, Hermes and every default app are unchanged from 0.3.89.",
   "install": {

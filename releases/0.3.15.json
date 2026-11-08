@@ -1,6 +1,6 @@
 {
   "version": "0.3.15",
-  "name": "Wizard OS install snapshot 0.3.15",
+  "name": "WizardOS install snapshot 0.3.15",
   "date": "2026-10-20",
   "about": "Upgrade fix on top of 0.3.14 (one-time owner approval link): `wam bootstrap` now moves installed release defaults to the release's source commit on a rerun (App Manager #107), so boxes upgraded from 0.3.12 get the 0.3.13 Files repair instead of ending in `mismatch`. All image and app pins remain unchanged from 0.3.14.",
   "install": {

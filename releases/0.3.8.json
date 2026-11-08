@@ -1,6 +1,6 @@
 {
   "version": "0.3.8",
-  "name": "Wizard OS install snapshot 0.3.8",
+  "name": "WizardOS install snapshot 0.3.8",
   "date": "2026-10-19",
   "about": "Installer-only follow-up to 0.3.7: App Store data treats a cached adapter as complete only when every module it imports is present, and every alongside run (re)installs the Store data service, so a rerun repairs a box left with a failed Store data unit. Keeps 0.3.7's named-owner rerun (sg docker), host disk, and default-app retry fixes. All official image/default-app pins unchanged.",
   "install": {

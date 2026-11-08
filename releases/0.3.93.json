@@ -1,6 +1,6 @@
 {
   "version": "0.3.93",
-  "name": "Wizard OS 0.3.93 — 0.3.92 with Wizard UX 8b4a5b80 -> 96f111f0 (every skin in one list; tweaks by author)",
+  "name": "WizardOS 0.3.93 — 0.3.92 with Wizard UX 8b4a5b80 -> 96f111f0 (every skin in one list; tweaks by author)",
   "date": "2026-10-30",
   "about": "Latest 0.3.92 with Wizard UX 8b4a5b80 -> 96f111f0: humanitylabs-org/wizard-ux#755 Skins and tweaks are separate choices. Settings › Look and onboarding offer every skin in one list (Nebula, Grove, Tide, Ember, Signal, Noir, Sepia, Dark, Light, Landscapes Dark, Landscapes Light); tweaks are one list, off by default, labelled by author, with a quick button per author; Notifications in Chats and Machines on Home are ordinary settings. Existing devices keep what they ran. Only wizard-ux moved; every other component is unchanged from 0.3.92.",
   "install": {

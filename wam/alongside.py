@@ -1,4 +1,4 @@
-"""Alongside mode: Wizard OS next to an owner's existing Hermes, which is never moved or migrated.
+"""Alongside mode: WizardOS next to an owner's existing Hermes, which is never moved or migrated.
 
 wizard-os spec/AGENT_BRIDGE.md, "Installing over an existing Hermes". In this mode:
 - the `agent` parking spot is filled by the host's own Hermes ("external: host Hermes"), so `wam bootstrap`
@@ -116,7 +116,7 @@ def detect(home: Path | None = None) -> dict:
             "api_origin": origin, "api_up": api_up(origin) if found else False, "api_key_present": bool(api_key(home))}
 
 
-# ---------------------------------------------------------------- Wizard OS side state
+# ---------------------------------------------------------------- WizardOS side state
 
 def state_path(wizard_home: Path) -> Path:
     return wizard_home / STATE_FILE
@@ -560,7 +560,7 @@ def shell_override(st: dict, app_id: str, wizard_home: Path | None = None, role:
     else:
         view = Path(wizard_home or Path(hh).parent / ".wizard-os") / "hermes-view"
         if not _SAFE_PATH.match(str(view)):
-            raise SystemExit(f"Wizard OS home path {str(view)!r} has characters a compose file can't carry safely")
+            raise SystemExit(f"WizardOS home path {str(view)!r} has characters a compose file can't carry safely")
         try:
             (view / "cache" / "images").mkdir(parents=True, exist_ok=True)
             Path(hh, "cache", "images").mkdir(parents=True, exist_ok=True)

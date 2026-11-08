@@ -1,6 +1,6 @@
 {
   "version": "0.3.98",
-  "name": "Wizard OS 0.3.98 \u2014 0.3.97 with Wizard UX d11ac30f -> d2bef7dc, Agent Service 9233c199 -> 9cea1291 (fixes)",
+  "name": "WizardOS 0.3.98 \u2014 0.3.97 with Wizard UX d11ac30f -> d2bef7dc, Agent Service 9233c199 -> 9cea1291 (fixes)",
   "date": "2026-10-31",
   "about": "Latest 0.3.97 with Wizard UX d11ac30f -> d2bef7dc, Agent Service 9233c199 -> 9cea1291. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key; humanitylabs-org/wizard-ux#714 Recommended fix: Wizard ID approval shows the raw request when an event only partly matche; humanitylabs-org/wizard-ux#732 Recommended fix: replies with pictures no longer show twice or as raw MEDIA text; humanitylabs-org/wizard-agent-service#284 Recommended fix: Import keeps host-shared paths on the host (main, conflict resolved). Stable stays 0.3.94 until the installed upgrade test passes.",
   "install": {

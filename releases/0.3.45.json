@@ -1,6 +1,6 @@
 {
   "version": "0.3.45",
-  "name": "Wizard OS 0.3.45 — container-owned backup permission fix",
+  "name": "WizardOS 0.3.45 — container-owned backup permission fix",
   "date": "2026-10-25",
   "about": "Published 0.3.44 bundle (including Voice and Connection Router defaults), with WAM #221 fixing owner-user backup discovery, metadata reads and restore/Undo of root-only container-owned agent trees. 0.3.40 bundle with WAM main through #213: backup/restore #61 (verified encrypted export/import, paused cron/messaging/backups and Undo, Mac companion engine), report and strict contact #166, install retry #209; non-author review fixes kept-app credential loss, durable app/volume Undo archives, kept-tree interrupted-swap recovery and confirmed agent stops. All non-WAM pins remain 0.3.40; does not take the separately reserved 0.3.41 defaults/UI candidate. Small tester group only. Known limitations: Wizard scheduler is not paused/checkpointed/reconciled; stop source Service before export, inspect schedules with destination stopped/offline. AI login refresh is not fenced by activation: old box off before import or destination offline until exclusive handover. Tailscale and external alongside/linked grants re-enrol. Not an online clone. James explicitly waived the 72h latest soak on 25 Oct 2026; stable promotion still requires fresh install, upgrades from 0.3.39 and 0.3.40, and new-version backup/restore evidence.",
   "install": {

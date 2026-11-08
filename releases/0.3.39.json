@@ -1,6 +1,6 @@
 {
   "version": "0.3.39",
-  "name": "Wizard OS install snapshot 0.3.39",
+  "name": "WizardOS install snapshot 0.3.39",
   "date": "2026-10-24",
   "about": "0.3.38 plus wizard-ux #456: the first-run tour drops the Command beat (Talk -> Hide -> end card) and each beat can be skipped on its own (\"Skip this step\") while \"Skip tour\" still ends it; a hold during the tour is steered back instead of advancing. Ride-alongs on wizard-ux main since 3965b60: home-screen pinning from the New desk grid and Desks (#451, #455), document-scrolled Chats reading-place fixes (#449), no duplicate Sending bubble / scroll leap (#418), quieter Change Wizard on the Reach screen (#431). App Manager, Agent Service, Hermes and default app pins unchanged. No migrations or owner-data deletion.",
   "install": {

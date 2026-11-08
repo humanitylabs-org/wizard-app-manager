@@ -1,6 +1,6 @@
 {
   "version": "0.3.68",
-  "name": "Wizard OS 0.3.68 \u2014 current Agent Service and Wizard UX, exact AI account matching",
+  "name": "WizardOS 0.3.68 \u2014 current Agent Service and Wizard UX, exact AI account matching",
   "date": "2026-10-27",
   "about": "0.3.67 (backup plus the current Stable fixes) with the Agent Service and Wizard UX moved to current main. Setup says a phone is connected only after it opens Wizard; Claude and ChatGPT accounts report a one-way email hash, so the Claude app shows the same account once and never merges two different ones; Home names a ChatGPT sign-in 'ChatGPT' instead of 'openai-codex-oauth-1'; the model picker refetches on open and says when the Claude app is not answering instead of hiding Claude silently. Claude 0.2.8 and ChatGPT 0.2.6 carry the new accounts page (design rules v0).",
   "install": {

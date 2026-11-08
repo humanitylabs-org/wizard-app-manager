@@ -1,6 +1,6 @@
 {
   "version": "0.3.62",
-  "name": "Wizard OS 0.3.62 \u2014 Latest continuity (0.3.60 unchanged)",
+  "name": "WizardOS 0.3.62 \u2014 Latest continuity (0.3.60 unchanged)",
   "date": "2026-10-26",
   "about": "Latest continuity only: exactly the 0.3.60 runtime pins, so Latest testers keep their bundle while Stable moves to 0.3.61 (latest may not trail stable). Does not carry the 0.3.61 three-step guide or the stuck-orb fix; those reach Latest once wizard-ux #569 lands on main. Previous 0.3.60 description (historical): Latest 0.3.58 plus the same multi-account Claude change as Stable 0.3.59, so Latest never trails Stable: Claude app claude-connection 0.2.5 (#2; engine wizard-claude 0.2.5), App Manager 44fded3 plus #249/#252 (cherry-picked as #251), and Wizard UX main a0399680 (#558, includes #537). The UX move from e0900880 to a0399680 also carries 16 other merged main PRs (18 first-parent merges incl. #537/#558): #539 instant app open, #541 shared attach chip, #542 team rules v4 (docs), #543 refresh shortcut, #514 chat-row swipe actions, #515 My skin orb contrast (docs), #538 Notes sigil, #546/#550 refactors, #551 components brief limit, #552 launcher freshness, #553 Profiles sigil, #554 app context draft, #555 refresh button (Miguel's skins), #556 snooze lowest priority, #557 edge-peek tweak. Feature-classified; every other pin is 0.3.58's.",
   "install": {

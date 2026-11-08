@@ -1,6 +1,6 @@
 {
   "version": "0.3.25",
-  "name": "Wizard OS install snapshot 0.3.25",
+  "name": "WizardOS install snapshot 0.3.25",
   "date": "2026-10-21",
   "about": "0.3.24 plus wizard-app-manager #137: a fresh install on a box whose new wizard user is not uid 1000 (any VPS that already has a regular user) no longer fails at the end with Errno 13 on the stock Hermes config.yaml; the builder step reads and replaces it through the installer's passwordless sudo, keeping the agent's owner and mode. Host tooling only; every image pin is unchanged.",
   "install": {

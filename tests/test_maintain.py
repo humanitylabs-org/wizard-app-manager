@@ -386,7 +386,7 @@ def test_backup_row_absent_without_backup_engine():
     assert maintain._backup_item({"state": "not_installed"}, NOW) is None
 
 
-# ---- slice 3: Wizard OS updates -------------------------------------------------------------------------------
+# ---- slice 3: WizardOS updates -------------------------------------------------------------------------------
 
 def test_updates_step_ask_does_nothing(tmp_path, monkeypatch):
     from wam import updates

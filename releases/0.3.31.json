@@ -1,6 +1,6 @@
 {
   "version": "0.3.31",
-  "name": "Wizard OS install snapshot 0.3.31",
+  "name": "WizardOS install snapshot 0.3.31",
   "date": "2026-10-21",
   "about": "0.3.30 plus wizard-app-manager #155 and wizard-ux #282. A Store Get now fills a required trusted-origin list whose recipe default is empty (Wisdom's WISDOM_ORIGINS) with the owner's Serve origins, so the app no longer starts trusting no Wizard origin and answering 421 'Unknown host' inside the shell (#155). The fresh shell image ships empty data.js/summaries.js placeholders, so the shell stops logging 'Refused to execute script ... MIME type text/html' on every load (#282). The Wizard UX image moves to official main a79e28a, which also carries #272 (Settings redesign: short index with pages), #280 (Miguel's skins: app kinds) and #281 (recordings: Delete works on recovered takes). The App Manager image is unchanged because no image input changed. Agent Service and every other pin are unchanged.",
   "install": {

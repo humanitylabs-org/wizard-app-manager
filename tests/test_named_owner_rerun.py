@@ -112,10 +112,10 @@ def test_runner_that_loses_sudo_reports_the_admin_command_instead_of_vanishing(b
     out = []
     while time.time() < end:
         out = box.run("dana", "status", **env).stdout.splitlines()
-        if out and out[0] == "Wizard OS install: needs_admin":
+        if out and out[0] == "WizardOS install: needs_admin":
             break
         time.sleep(0.2)
-    assert out[0] == "Wizard OS install: needs_admin", out
+    assert out[0] == "WizardOS install: needs_admin", out
     assert "An administrator of this server must run this once" in out[1]
     assert "sudo env WIZARD_HERMES_USER=dana" in out[2]
 

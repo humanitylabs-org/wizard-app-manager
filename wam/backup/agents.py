@@ -263,7 +263,7 @@ def env_merge(home: Path, wizard_lines: list[str]) -> list[str]:
     lines = envp.read_text().splitlines() if envp.is_file() else []
     replaced = sorted({ln.split("=", 1)[0].strip() for ln in lines if WIZARD_ENV.match(ln)})
     keep = [ln for ln in lines if not WIZARD_ENV.match(ln)]
-    text = "\n".join(keep + ["", "# Wizard OS (this box's wiring, kept by wam backup import)"] + wizard_lines) + "\n"
+    text = "\n".join(keep + ["", "# WizardOS (this box's wiring, kept by wam backup import)"] + wizard_lines) + "\n"
     tmp = envp.with_name(".env.wam-import")
     with datafs.private_open(tmp) as f:
         f.write(text)

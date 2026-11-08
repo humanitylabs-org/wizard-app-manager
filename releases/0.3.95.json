@@ -1,6 +1,6 @@
 {
   "version": "0.3.95",
-  "name": "Wizard OS 0.3.95 \u2014 0.3.94 with Wizard UX 7991db03 -> 6f920851 (fixes)",
+  "name": "WizardOS 0.3.95 \u2014 0.3.94 with Wizard UX 7991db03 -> 6f920851 (fixes)",
   "date": "2026-10-30",
   "about": "Latest 0.3.94 with Wizard UX 7991db03 -> 6f920851. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window. Stable stays 0.3.94 until the installed upgrade test passes.",
   "install": {

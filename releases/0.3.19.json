@@ -1,6 +1,6 @@
 {
   "version": "0.3.19",
-  "name": "Wizard OS install snapshot 0.3.19",
+  "name": "WizardOS install snapshot 0.3.19",
   "date": "2026-10-20",
   "about": "0.3.18 plus App Manager #118: Store Get no longer fails with a bare \"Install failed (502)\" when the App Manager service can't run `docker info` (fresh box before docker-group membership is active, or a rootless socket missing from the unit env). The architecture check falls back to `sudo -n docker`, then to the machine's own CPU, and any unexpected selection error answers with a plain JSON reason instead of a dropped connection. Every other pin is identical to 0.3.18; the App Manager image is unchanged.",
   "install": {

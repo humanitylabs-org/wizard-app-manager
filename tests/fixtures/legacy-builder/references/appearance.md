@@ -1,6 +1,6 @@
 # App styling default (MVP)
 
-Goal: an app the agent builds should look like part of Wizard OS, in whichever skin the owner wears, without the agent choosing a single colour.
+Goal: an app the agent builds should look like part of WizardOS, in whichever skin the owner wears, without the agent choosing a single colour.
 
 ## What the template ships
 - `web/boot.js`: marks a hosted page before first paint, so it never flashes a canvas.

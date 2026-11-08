@@ -1,6 +1,6 @@
-"""Feature switches for one box: the Wizard OS Tracker app's 'Try it' and Settings' "Try new features" (Miguel, 7 Nov 2026).
+"""Feature switches for one box: the WizardOS Tracker app's 'Try it' and Settings' "Try new features" (Miguel, 7 Nov 2026).
 
-Feature switches live in Settings › Appearance ("Try new features", For testers only) and in the Wizard OS Tracker
+Feature switches live in Settings › Appearance ("Try new features", For testers only) and in the WizardOS Tracker
 app, one shared state. Only on the For testers channel (`latest`): on For everyone (`stable`) every switch stays off
 and none can be turned on (the shell enforces the same: wizard-ux core/experience.js).
 
@@ -157,7 +157,7 @@ def _readable(doc) -> bool:
 
 def _refuse_unreadable(doc) -> None:
     if not _readable(doc):
-        raise SwitchError("look.json is unreadable or from a newer Wizard OS, so it was left alone; "
+        raise SwitchError("look.json is unreadable or from a newer WizardOS, so it was left alone; "
                           "fix or update it first", 409)
 
 

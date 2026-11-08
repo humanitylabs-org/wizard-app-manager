@@ -1,6 +1,6 @@
 {
   "version": "0.3.76",
-  "name": "Wizard OS 0.3.76 — Stable 0.3.74 with the Troubleshooter one-tap screen and the app picker long-name fix (fixes)",
+  "name": "WizardOS 0.3.76 — Stable 0.3.74 with the Troubleshooter one-tap screen and the app picker long-name fix (fixes)",
   "date": "2026-10-29",
   "about": "Stable 0.3.74 plus two fixes only. Wizard UX db361987 -> 25f28781 (release/stable-onboarding: exactly db361987 plus humanitylabs-org/wizard-ux#726/#730 via #729, Recommended fix: the app picker shows long one-word names such as Troubleshooter whole instead of 'Troubleshoote / r'). Troubleshooter c1b4c43 -> 3e56f66 (Miguel classified the Troubleshooter changes as fixes: James's one-tap screen back, following the selected skin; sign-in reconnect path; reply probes off by default; Tinfoil check fix). Agent Service, App Manager, Hermes, Notifications and every other image and default app are byte-identical to 0.3.74.",
   "install": {

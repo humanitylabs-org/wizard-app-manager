@@ -1,6 +1,6 @@
 {
   "version": "0.3.92",
-  "name": "Wizard OS 0.3.92 — 0.3.91 with App Manager 29c4b831 -> 23a71b5d (Messenger keeps its Wizard path)",
+  "name": "WizardOS 0.3.92 — 0.3.91 with App Manager 29c4b831 -> 23a71b5d (Messenger keeps its Wizard path)",
   "date": "2026-10-30",
   "about": "Latest 0.3.91 with App Manager 29c4b831 -> 23a71b5d: humanitylabs-org/wizard-app-manager#368 Recommended fix: keep an app behind an owner gateway on its Wizard path (Messenger's owner ingress route is kept, and a stale Serve read is re-checked before an app is moved to its raw port). App Manager image unchanged (no image inputs moved). Stable stays 0.3.90 until the installed upgrade test passes.",
   "install": {

@@ -46,7 +46,7 @@ Alpha uses the installed shell's bundled `wizard-alpha.mjs` and its existing own
 
 Jobs retain a public selection receipt. Repeated taps join only the same source/repository/commit/operation. A conflicting operation returns 409. Receipts contain no credentials, policy commands, filesystem paths or raw catalog entries. The UI checks the receipt and registered installed commit before saying ready.
 
-Deploy the manager image containing `.wizard-selection` support **before** the companion Python API and shell UI. This changes no stable release pointer; normal Wizard OS releases remain independently pinned snapshots.
+Deploy the manager image containing `.wizard-selection` support **before** the companion Python API and shell UI. This changes no stable release pointer; normal WizardOS releases remain independently pinned snapshots.
 
 Verification:
 - `python -m pytest -q`

@@ -1,6 +1,6 @@
 {
   "version": "0.3.66",
-  "name": "Wizard OS 0.3.66 \u2014 Latest continuity with the installer fixes",
+  "name": "WizardOS 0.3.66 \u2014 Latest continuity with the installer fixes",
   "date": "2026-10-26",
   "about": "Latest continuity: exactly the 0.3.64 runtime pins plus the same installer fixes as Stable 0.3.65 (wizard-app-manager #258, merged on the Latest maintenance branch as #260), so Latest never trails Stable: connection apps recreated on an address/login change or stale running container (tailnet move), HTTPS-off owner step that continues by itself, approved Tailscale login waited for, official-installer Hermes routes to `hermes update`. Only the App Manager pin changes versus 0.3.64. Previous 0.3.64 description (historical): Latest continuity: Latest 0.3.62 (the 0.3.60 runtime pins) plus the same two AI connection app pins as Stable 0.3.63, so Latest never trails Stable: ChatGPT chatgpt-connection 0.2.4 (#3) and Claude claude-connection 0.2.6 (#3), engines from wizard-app-store #32 (reliable sign-in through the agent, a clear 'can't reach your agent' state with Retry, no Claude Code fallback on alongside boxes, one row per account, ChatGPT 'Device code sign-in for Codex' named up front). Every other pin is 0.3.62's.",
   "install": {

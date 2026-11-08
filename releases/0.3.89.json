@@ -1,6 +1,6 @@
 {
   "version": "0.3.89",
-  "name": "Wizard OS 0.3.89 — 0.3.88 with ChatGPT sign-in on fresh installs, faster Working, Opus default, color spelling",
+  "name": "WizardOS 0.3.89 — 0.3.88 with ChatGPT sign-in on fresh installs, faster Working, Opus default, color spelling",
   "date": "2026-10-30",
   "about": "0.3.88 plus App Manager #357 (Recommended fix: a fresh link installs the wizard-os plugin so a ChatGPT sign-in works on a fresh Wizard), ChatGPT 0.2.12 and Claude 0.2.14 (wizard-app-store #46/#47: on a fresh Wizard a ChatGPT sign-in becomes the agent's model when it has none; chatgpt-connection #11/#12, claude-connection #11/#12: newest Opus becomes the default after a fresh Claude sign-in, masked sign-in code). The faster Working fix (wizard-agent-service #274, with #275) and the 'color' spelling (wizard-ux #750) were already carried by 0.3.88 at Agent Service 1f78352d and Wizard UX 7f7a9dd2, which are unchanged here. Tinfoil 0.3.6 is not a default app; the Welcome installs it from the Store, which lists 0.3.6.",
   "install": {

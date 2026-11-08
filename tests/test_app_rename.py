@@ -426,7 +426,7 @@ def test_nightly_leaves_held_system_and_pinned_apps_alone(tmp_path, monkeypatch)
     monkeypatch.setattr(app_updates, "_release_managed", lambda: set())
     # on request (wam app-rename): both are offered
     assert {d["from"] for d in ar.due(c, rt, fetch=fetch)} == {"cinequeue", "wizard-ux"}
-    # nightly: a system app moves with the Wizard OS release, never on its own
+    # nightly: a system app moves with the WizardOS release, never on its own
     assert [d["from"] for d in ar.due(c, rt, fetch=fetch, nightly=True)] == ["cinequeue"]
     # an app the owner holds is not moved (a rename installs the new id's current release)
     app_updates.hold("cinequeue", True, home=c.home)

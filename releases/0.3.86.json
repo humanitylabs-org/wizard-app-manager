@@ -1,6 +1,6 @@
 {
   "version": "0.3.86",
-  "name": "Wizard OS 0.3.86 — 0.3.85 with the fresh-install Claude sign-in fixed",
+  "name": "WizardOS 0.3.86 — 0.3.85 with the fresh-install Claude sign-in fixed",
   "date": "2026-10-30",
   "about": "0.3.85 plus App Manager #350 (Recommended fix: on a fresh install the agent can use the Claude sign-in) and wizard-app-store #44 (Recommended fix: Claude sign-in is just a link and a code box, shipped as Claude 0.2.12 and ChatGPT 0.2.10).",
   "install": {

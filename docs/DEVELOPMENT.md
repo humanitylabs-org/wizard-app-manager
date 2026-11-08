@@ -4,7 +4,7 @@ Entry point is [AGENTS.md](../AGENTS.md); this page holds the commands. Checked 
 
 ## What this repo is, and its neighbours
 
-A thin fork of Runtipi 4.10.2 (GPL-3.0) plus the Python **`wam`** CLI. App Manager installs and updates apps, writes the app registry and cuts Wizard OS releases. Keep the diff from upstream Runtipi small: Wizard behaviour goes in `wam/`, the installer, or the `wizardapps` store module.
+A thin fork of Runtipi 4.10.2 (GPL-3.0) plus the Python **`wam`** CLI. App Manager installs and updates apps, writes the app registry and cuts WizardOS releases. Keep the diff from upstream Runtipi small: Wizard behaviour goes in `wam/`, the installer, or the `wizardapps` store module.
 - **wizard-ux** is the long-term interface and owns the shared Reuse and style gates. **wizard-agent-service** owns each agent's app allow-list; `wam/agent_access.py` changes it only through its loopback owner API. **wizard-troubleshooter** is a native host service that `wam troubleshooter` installs and pins (`wam/troubleshooter.py`). **Hermes** stays stock and updates through its own path (`docs/hermes-update.md`).
 
 ## Layout
@@ -50,6 +50,6 @@ node --test tests/backup-source-safety.test.mjs
 ## How a change reaches users
 
 1. **Code:** a PR merges to `main`. `image.yml` (only when `packages/**`, `Dockerfile`, `package.json`, `bun.lock`, `turbo.json`, the Hermes lock files or the workflow change) builds both architectures; on `main` it publishes `ghcr.io/humanitylabs-org/wizard-app-manager` (`:latest` and `:v4.10.2-wizard.<n>-<sha>`) and attests provenance. PRs do not publish. GHCR `latest` is not the OS Latest channel.
-2. **OS release:** boxes read `stable` or `latest` plus a `<version>.json` (component commit pins) from `releases/` ([releases/README.md](../releases/README.md)). Releases are cut and promoted in the private Wizard OS canon repo (its `tools/promote_stable.py`); this repo mirrors the metadata, so a contributor here cannot cut one: file an issue. Today's executable gate: Stable needs a promotion record, normally 72 h on Latest plus a passed upgrade test, with `fast_track` for some releases (`wam/updates.py`). Never point `stable` at a release without its record; `tests/test_release_channels.py` fails.
+2. **OS release:** boxes read `stable` or `latest` plus a `<version>.json` (component commit pins) from `releases/` ([releases/README.md](../releases/README.md)). Releases are cut and promoted in the private WizardOS canon repo (its `tools/promote_stable.py`); this repo mirrors the metadata, so a contributor here cannot cut one: file an issue. Today's executable gate: Stable needs a promotion record, normally 72 h on Latest plus a passed upgrade test, with `fast_track` for some releases (`wam/updates.py`). Never point `stable` at a release without its record; `tests/test_release_channels.py` fails.
 3. **App updates** move separately and automatically with backup and rollback ([docs/app-updates.md](app-updates.md)). Hermes, the shell, Agent Service and Troubleshooter are excluded.
 4. The agreed team policy (Latest is plain `main`, Stable after a soak, `hotfix` skips it) is in AGENTS.md. It does not change `wam/updates.py` until that code does; existing release docs that mention self-merging fixes are older than it.

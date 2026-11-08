@@ -1,8 +1,8 @@
 {
   "version": "0.3.21",
-  "name": "Wizard OS install snapshot 0.3.21",
+  "name": "WizardOS install snapshot 0.3.21",
   "date": "2026-10-21",
-  "about": "0.3.20 plus Wizard UX main 7dbef20: installed apps can show their own unread badge (#226) and put a few controls in their window title bar (#232, first used by Morning Report 0.4.0); on Dark, Light and Landscapes, slim 36px phone title bars and a full-screen burst with \"Updating Wizard OS...\" when Update is tapped (#233); plus readable app selector, sigil fallbacks, Notifications Reply, share-sheet orb, tapped-voice and Settings desk-swipe fixes (#234-#242). App Manager and Agent Service unchanged.",
+  "about": "0.3.20 plus Wizard UX main 7dbef20: installed apps can show their own unread badge (#226) and put a few controls in their window title bar (#232, first used by Morning Report 0.4.0); on Dark, Light and Landscapes, slim 36px phone title bars and a full-screen burst with \"Updating WizardOS...\" when Update is tapped (#233); plus readable app selector, sigil fallbacks, Notifications Reply, share-sheet orb, tapped-voice and Settings desk-swipe fixes (#234-#242). App Manager and Agent Service unchanged.",
   "install": {
     "command": "curl -fsSL aiwizards.com/os.sh | bash",
     "agent": {

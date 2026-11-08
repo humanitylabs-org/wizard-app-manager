@@ -1,6 +1,6 @@
 {
   "version": "0.3.83",
-  "name": "Wizard OS 0.3.83 — 0.3.82 with the fresh-install agent gateway fixed",
+  "name": "WizardOS 0.3.83 — 0.3.82 with the fresh-install agent gateway fixed",
   "date": "2026-10-30",
   "about": "0.3.82 plus App Manager #345 (Recommended fix: a fresh install's agent gets the wizard gateway; the skills mount keeps the override's Compose merge tags).",
   "install": {

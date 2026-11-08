@@ -1,6 +1,6 @@
 {
   "version": "0.3.6",
-  "name": "Wizard OS install snapshot 0.3.6",
+  "name": "WizardOS install snapshot 0.3.6",
   "date": "2026-10-19",
   "about": "Installer-only follow-up to 0.3.5: internal detached-runner dispatch exits after its handler returns, including the named-owner administrator-progress branch. This prevents falling through into a second installation and allows the original runner PID to exit before its deferred Hermes restart. Retains the one-time administrator/no-NOPASSWD path and safe named-owner rerun detection, with all official image/default-app pins unchanged. Full named-user installed-app/API/resources/rerun/unlink and owner browser enrollment acceptance remain open; no broad rollout certification is claimed.",
   "install": {

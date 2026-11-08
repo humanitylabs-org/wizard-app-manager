@@ -134,7 +134,7 @@ def test_root_owned_hermes_installs_alongside_as_root_not_a_new_wizard_user(box,
     src = _local_wam(tmp_path)
     p = box.run("root", WAM_REPO=str(src), WAM_REF="main", WAM_DIR=str(tmp_path / "wam"))
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "installing Wizard OS alongside it as root" in p.stdout
+    assert "installing WizardOS alongside it as root" in p.stdout
     assert not box.handoff(), "root's Hermes must not be handed to another user"
     assert "useradd" not in box.log.read_text()
     seen = _env_of((tmp_path / "install-env").read_text())

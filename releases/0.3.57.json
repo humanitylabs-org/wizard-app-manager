@@ -1,6 +1,6 @@
 {
   "version": "0.3.57",
-  "name": "Wizard OS 0.3.57 \u2014 Stable onboarding with optional Add to Home Screen beat",
+  "name": "WizardOS 0.3.57 \u2014 Stable onboarding with optional Add to Home Screen beat",
   "date": "2026-10-26",
   "about": "Stable 0.3.55 plus wizard-ux #548 only: the phone tour ends with one optional Install beat, offered only where installing can work and Wizard is not installed yet (Android Chrome: the browser's real install prompt, shared with the existing banner, which is held while the tour runs; iPhone Safari: Share, then Add to Home Screen; in-app browsers such as Telegram: open the link in Safari/Chrome). No beat when already installed or unsupported; desktop unchanged. Owner-requested (Miguel, 26 Oct 2026) so the chat handoff (os.md, wizard-app-manager #246) no longer explains PWA installation. Only the UX component, image and default shell pin change versus 0.3.55; no main/Latest feature code. Official hosted maintenance publication from release/stable-onboarding.",
   "install": {

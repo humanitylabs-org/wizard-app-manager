@@ -1,6 +1,6 @@
 {
   "version": "0.3.18",
-  "name": "Wizard OS install snapshot 0.3.18",
+  "name": "WizardOS install snapshot 0.3.18",
   "date": "2026-10-20",
   "about": "0.3.17 plus App Manager #116 (fixes #113): `wam app update` and `wam alongside` reconcile the alongside image pin from the selected release (explicit developer image overrides still win) before queuing a core app update, so an alongside box no longer keeps the Agent Service or Wizard UX on a stale saved image. Every other pin is identical to 0.3.17; the App Manager image is unchanged.",
   "install": {

@@ -84,7 +84,7 @@ def test_start_returns_at_once_and_status_walks_running_owner_action_done(box, t
     st = _wait(home, {"needs_owner"})
     assert st["tailscale_login_url"] == LINK
     s = box.run("alice", "status").stdout.splitlines()
-    assert s[0] == "Wizard OS install: needs_owner"
+    assert s[0] == "WizardOS install: needs_owner"
     assert "Open this link to connect your Wizard to your Tailscale" in s[2] and s[3] == LINK
 
     (home / ".signed-in").touch()
@@ -92,7 +92,7 @@ def test_start_returns_at_once_and_status_walks_running_owner_action_done(box, t
     assert st["state"] == "done", (home / ".wizard-os/install.log").read_text()
     assert st["tailscale_login_url"] is None and st["wizard_url"] == WIZ and st["exit_code"] == 0
     s = box.run("alice", "status").stdout.splitlines()
-    assert s[0] == "Wizard OS install: done" and s[-1] == WIZ
+    assert s[0] == "WizardOS install: done" and s[-1] == WIZ
     log = (home / ".wizard-os/install.log").read_text()
     assert "Installing the App Manager" in log and "\x1b[" not in log
     assert not (home / ".wizard-os/install-env").exists(), "the runner's settings file is deleted once read"
@@ -119,7 +119,7 @@ def test_https_off_is_a_needs_owner_step_with_the_admin_link(box, tmp_path):
     st = _wait(home, {"needs_owner"})
     assert st["owner_url"] == ADMIN_DNS and st["tailscale_login_url"] is None
     s = box.run("alice", "status").stdout.splitlines()
-    assert s[0] == "Wizard OS install: needs_owner"
+    assert s[0] == "WizardOS install: needs_owner"
     assert s[2].startswith("Owner action: Your Tailscale network needs HTTPS turned on once") and s[3] == ADMIN_DNS
     assert ADMIN_DNS not in s[2] and "connect your Wizard to your Tailscale" not in s[2]
     (home / ".https-on").touch()
@@ -156,7 +156,7 @@ def test_failed_install_status_shows_the_last_20_log_lines(box, tmp_path):
     st = _wait(home, {"done", "failed"})
     assert st["state"] == "failed" and st["exit_code"] == 7
     out = box.run("alice", "status").stdout.splitlines()
-    assert out[0] == "Wizard OS install: failed"
+    assert out[0] == "WizardOS install: failed"
     i = next(n for n, l in enumerate(out) if l.startswith("Last 20 lines"))
     tail = out[i + 1:]
     assert len(tail) == 20 and tail[-1] == "boom: docker is not running" and tail[0] == "line 22" and "line 21" not in tail
@@ -174,7 +174,7 @@ def test_status_spots_a_runner_that_died(box, tmp_path):
     (d / "install-status.json").write_text(json.dumps({"state": "running", "step": "Default apps"}))
     (d / "install.log").write_text("last words\n")
     out = box.run("alice", "status").stdout
-    assert out.startswith("Wizard OS install: stopped") and "last words" in out
+    assert out.startswith("WizardOS install: stopped") and "last words" in out
 
 
 def test_runner_records_its_boot_id_and_status_reports_an_interrupted_update(box, tmp_path):
@@ -188,7 +188,7 @@ def test_runner_records_its_boot_id_and_status_reports_an_interrupted_update(box
     d = home / ".wizard-os"
     (d / "install-status.json").write_text(json.dumps({"state": "interrupted", "interrupted_step": "Default apps"}))
     out = box.run("alice", "status").stdout
-    assert out.startswith("Wizard OS install: interrupted") and "Run the start command again" in out
+    assert out.startswith("WizardOS install: interrupted") and "Run the start command again" in out
 
 
 def test_detached_agent_install_restarts_hermes_only_after_done_is_written(box, tmp_path):

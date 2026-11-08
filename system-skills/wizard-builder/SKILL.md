@@ -1,6 +1,6 @@
 ---
 name: wizard-builder
-description: Use when building, porting or changing apps for Wizard OS (wizard.md packages).
+description: Use when building, porting or changing apps for WizardOS (wizard.md packages).
 version: 0.3.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
@@ -10,7 +10,7 @@ metadata:
     tags: [wizard-apps, builder]
     related_skills: []
 ---
-# Build an app for Wizard OS
+# Build an app for WizardOS
 
 Build from tested parts; the platform is tested once, not per app. A new app targets **about 20 minutes and 30 tool
 calls**. Never write new test harnesses, Playwright scripts or release packets for a single app: `wam verify` is the

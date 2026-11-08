@@ -1,6 +1,6 @@
 {
   "version": "0.3.97",
-  "name": "Wizard OS 0.3.97 \u2014 0.3.96 with Wizard UX cd54ef60 -> d11ac30f (fixes)",
+  "name": "WizardOS 0.3.97 \u2014 0.3.96 with Wizard UX cd54ef60 -> d11ac30f (fixes)",
   "date": "2026-10-31",
   "about": "Latest 0.3.96 with Wizard UX cd54ef60 -> d11ac30f. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#759 Recommended fix: keep the Resources Back control tappable; humanitylabs-org/wizard-ux#766 Recommended fix: launcher tiles for agent Pages open in the Pages window; humanitylabs-org/wizard-ux#769 Recommended fix: Replace Installed with Open after install; humanitylabs-org/wizard-ux#770 Recommended fix: ignore gitleaks false positive on app-logo storage key. Stable stays 0.3.94 until the installed upgrade test passes.",
   "install": {

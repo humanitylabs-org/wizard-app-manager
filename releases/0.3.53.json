@@ -1,6 +1,6 @@
 {
   "version": "0.3.53",
-  "name": "Wizard OS 0.3.53 \u2014 safe-area-correct Stable onboarding repair",
+  "name": "WizardOS 0.3.53 \u2014 safe-area-correct Stable onboarding repair",
   "date": "2026-10-26",
   "about": "Fix-only Stable 0.3.39 backport, superseding the unpromoted 0.3.51 candidate without rewriting it. Includes 0.3.51 alongside/desktop first-message orientation, replay, Settings/Esc handoff, slow-launch guard, readable WebKit copy, responsive Done and reachable Skip; adds UX #535 safe-area correction after Codex #533 found the fixed margins did not reserve native top/bottom insets. Resolved safe-area padding and an actual in-flow spacer keep all Done content scroll-reachable above the home indicator in Chromium and WebKit. No command exercise or mandatory customization. Official hosted maintenance-source build/sign/finalize/anonymous amd64+arm64 run 40264433758. Compared with Stable 0.3.39, only UX source/image/default-shell pin change; App Manager, Agent Service, Hermes and all other default apps are identical. No backup/restore/Undo, Spaces, Android or unrelated Latest features, migrations or owner-data deletion. Latest continuity is a separate metadata-only snapshot and is not promoted here.",
   "install": {

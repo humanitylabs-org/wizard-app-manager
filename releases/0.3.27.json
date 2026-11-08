@@ -1,6 +1,6 @@
 {
   "version": "0.3.27",
-  "name": "Wizard OS install snapshot 0.3.27",
+  "name": "WizardOS install snapshot 0.3.27",
   "date": "2026-10-21",
   "about": "0.3.26 plus wizard-ux #268: Settings → Updates has a release channel picker, Stable (recommended) or Latest (every release, for testers), saved through the App Manager's channel API (#141); on Latest with Automatic it says Automatic installs stable only. Wizard UX moves to main through #268 (7dbef20 → 00ffd23); every other pin is unchanged.",
   "install": {

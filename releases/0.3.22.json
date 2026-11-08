@@ -1,6 +1,6 @@
 {
   "version": "0.3.22",
-  "name": "Wizard OS install snapshot 0.3.22",
+  "name": "WizardOS install snapshot 0.3.22",
   "date": "2026-10-21",
   "about": "0.3.21 plus wizard-app-manager #130: every new box (and every rerun) gets the working Troubleshooter, the native host service at /troubleshoot/ on the owner's shell addresses, pinned to wizard-troubleshooter c434bbe, owner gate = the box's own tailnet login, guardian report-only; and #128 (wizard-job-* routing skills kept when the registry is rewritten). Wizard UX, Agent Service and every image unchanged.",
   "install": {
