@@ -32,6 +32,15 @@ def write_keys(d, outgoing):
     return f
 
 
+def test_service_data_folder_wins_over_a_legacy_home_agents_folder(box):
+    """Codex on #492: with the service's data folder present but no agents/ in it yet, a legacy ~/.wizard-os/agents
+    must not send the check to ~/.wizard-os/grants."""
+    data = box.runtipi_root / "app-data" / "wizardapps" / "wizard-agent-service" / "data"
+    data.mkdir(parents=True)
+    (box.home / "agents").mkdir(parents=True, exist_ok=True)
+    assert gateway_keys.path(box.home, box.runtipi_root) == data / "wizard-os" / "grants" / "agent-service.json"
+
+
 def test_switch_off_adds_no_row(box):
     service_home(box)
     assert cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: False) == []

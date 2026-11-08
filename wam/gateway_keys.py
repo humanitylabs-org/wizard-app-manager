@@ -22,17 +22,21 @@ AGENT_SERVICE_APPS = ("wizard-agent-service", "wizard-shell")   # the gateway it
 
 def path(home: Path | None, runtipi_root: Path | None, store: str = "wizardapps") -> Path | None:
     """The gateway file under the Agent Service's own WIZARD_OS_HOME (its data mount, e.g. /state/wizard-os inside
-    the container = app-data/<store>/wizard-agent-service/data/wizard-os on the host), found the same way as its agents
-    (kinds.agents_dir). None when no Agent Service data is on this box."""
+    the container = app-data/<store>/wizard-agent-service/data/wizard-os on the host). The installed service's own data
+    folder wins, even before its agents/ folder exists, so a legacy ~/.wizard-os/agents can't redirect the check to the
+    wrong file; otherwise the same lookup as its agents (kinds.agents_dir). None when no Agent Service data is here."""
     from .kinds import agents_dir
-    d = agents_dir(home, runtipi_root, store)
-    if d:
-        return d.parent / "grants" / "agent-service.json"
     if runtipi_root:
         for app in AGENT_SERVICE_APPS:
             data = Path(runtipi_root) / "app-data" / store / app / "data"
-            if data.is_dir():
-                return data / "wizard-os" / "grants" / "agent-service.json"
+            try:
+                if data.is_dir():
+                    return data / "wizard-os" / "grants" / "agent-service.json"
+            except OSError:
+                continue
+    d = agents_dir(home, runtipi_root, store)
+    if d:
+        return d.parent / "grants" / "agent-service.json"
     return None
 
 
