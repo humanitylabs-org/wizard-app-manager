@@ -40,13 +40,15 @@ def _runs(fake):
     return fake["marker"].read_text().splitlines() if fake["marker"].exists() else []
 
 
-def _as_user_script():
-    """The inner `bash -c` text of get.sh's as_user, expanded the way get.sh expands it."""
-    line = next(l for l in (ROOT / "get.sh").read_text().splitlines() if "repo_raw get.sh" in l and "bash -c" in l)
-    quoted = line.split("bash -c ", 1)[1]
-    out = subprocess.run(["bash", "-c", "repo_raw() { printf 'https://example.test/%s' \"$1\"; }; printf %s " + quoted],
-                         capture_output=True, text=True, check=True)
-    return out.stdout
+def _as_user(fake, tmp_path):
+    """Run get.sh's own as_user (sliced from get.sh) with a fake `sudo -iu` that runs the command as this user."""
+    fn = re.search(r"^as_user\(\) \{\n.*?^\}\n", (ROOT / "get.sh").read_text(), re.S | re.M).group(0)
+    sudo = tmp_path / "bin" / "sudo"
+    sudo.write_text('#!/bin/sh\n[ "$1" = -iu ] && shift 2\nexec "$@"\n'); sudo.chmod(0o755)
+    prog = ("set -euo pipefail; fwd_env() { printf '%s\\n' WAM_REF=; }; enable_linger() { :; }; "
+            "repo_raw() { printf 'https://example.test/%s' \"$1\"; }; WIZARD_BUS_WAIT=0\n" + fn
+            + 'as_user "$(id -un)" alongside /h; echo "returned"\n')
+    return subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
 
 
 def test_no_retried_curl_is_piped_into_bash():
@@ -96,12 +98,12 @@ def test_quick_update_handover_fails_closed(fake, monkeypatch):
     assert ops.start_installer("0.9.2", auto=False) is False and _runs(fake) == []
 
 
-def test_get_sh_as_user_runs_once_and_fails_closed(fake, monkeypatch):
-    inner = _as_user_script()
-    assert "https://example.test/get.sh" in inner
-    r = subprocess.run(["bash", "-c", inner], capture_output=True, text=True)
-    assert r.returncode == 0 and _runs(fake) == ["run "] and list(fake["tmp"].iterdir()) == []
+def test_get_sh_as_user_runs_once_and_fails_closed(fake, monkeypatch, tmp_path):
+    r = _as_user(fake, tmp_path)
+    assert r.returncode == 0 and "returned" not in r.stdout          # exec: the root run ends in the user's run
+    assert _runs(fake) == ["run "] and list(fake["tmp"].iterdir()) == []
     fake["marker"].unlink()
     monkeypatch.setenv("FAKE_RC", "22")
-    r = subprocess.run(["bash", "-c", inner], capture_output=True, text=True)
-    assert r.returncode != 0 and _runs(fake) == [] and list(fake["tmp"].iterdir()) == []
+    r = _as_user(fake, tmp_path)
+    assert r.returncode != 0 and "returned" not in r.stdout and "Could not download the installer" in r.stderr
+    assert _runs(fake) == [] and list(fake["tmp"].iterdir()) == []
