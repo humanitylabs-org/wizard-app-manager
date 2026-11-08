@@ -32,6 +32,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from . import dirswap
+
 REPO = "humanitylabs-org/wizard-troubleshooter"
 PORT = 9691
 PREFIX = "/troubleshoot"
@@ -128,8 +130,7 @@ def node(p: dict) -> str:
         except TypeError:  # Python without extraction filters; the archive's sha256 was verified above
             t.extractall(stage)
     tmp.unlink()
-    shutil.rmtree(p["node"], ignore_errors=True)
-    (stage / name).rename(p["node"])
+    dirswap.replace_dir(stage / name, p["node"])
     shutil.rmtree(stage, ignore_errors=True)
     if not _node_ok(str(own)):
         raise ValueError("installed Node does not run")
