@@ -106,7 +106,8 @@ def pins(tmp_path, repo="humanitylabs-org/wizard-troubleshooter", commit=None):
 
 
 def envfile(home):
-    return dict(l.split("=", 1) for l in (home / ".local/share/wizard-troubleshooter/host.env").read_text().splitlines())
+    return dict(l.split("=", 1) for l in (home / ".local/share/wizard-troubleshooter/host.env").read_text().splitlines()
+                if not l.startswith("#"))
 
 
 def test_fresh_box_gets_the_pinned_native_service_wired_to_this_box(tmp_path, stubs, monkeypatch):
@@ -122,7 +123,8 @@ def test_fresh_box_gets_the_pinned_native_service_wired_to_this_box(tmp_path, st
     # Owner gate: the login this box is signed in as, derived at install time (never a fixed address).
     assert env["TROUBLESHOOT_OWNERS"] == "owner@example.com"
     assert env["TROUBLESHOOT_FRONT"] == "tailscale-serve"
-    assert env["GUARDIAN_ACT"] == "0", "guardian is report-only by default"
+    assert env["GUARDIAN_ACT"] == "1", "the guardian repairs by default (James, 9 Nov 2026)"
+    assert res["guardian"] == {"act": True, "set_by": "default"}
     # Fresh layout: Hermes is the hermes-agent app (no host port), restarted as its container.
     assert env["HERMES_PORT"] == "0" and env["HERMES_UNIT"] == ""
     assert env["HERMES_CONTAINER"] == "hermes-agent_wizardapps-hermes-agent-engine-1"
@@ -250,3 +252,105 @@ def test_node_download_is_refused_when_its_sha256_does_not_match(tmp_path, monke
     with pytest.raises(ValueError, match="sha256"):
         T.node(p)
     assert not (p["node"] / "bin/node").exists()
+
+
+# --- the guardian acts by default; the owner's report-only choice survives updates (James, 9 Nov 2026) ---------------
+
+def _ready(tmp_path, stubs, monkeypatch):
+    src, v1, v2 = fixture_repo(tmp_path)
+    home, wh = box(tmp_path)
+    monkeypatch.setenv("WAM_TROUBLESHOOTER_REPO_URL", f"file://{src}")
+    return home, wh
+
+
+def test_upgrade_from_an_older_app_manager_turns_repairs_on(tmp_path, stubs, monkeypatch):
+    """Before this version every box got GUARDIAN_ACT=0 as the default, so it is not an owner's choice."""
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.parent.mkdir(parents=True)
+    envf.write_text("PORT=9691\nGUARDIAN_ACT=0\nPATH=/usr/bin\n")  # exactly what the older command wrote
+    res = T.install(wh, home / "runtipi", home)
+    assert res["state"] == "ready", res
+    assert envfile(home)["GUARDIAN_ACT"] == "1"
+    assert res["guardian"] == {"act": True, "set_by": "default"}
+    assert not (wh / "guardian.json").exists(), "no owner choice is invented"
+    assert "repairs on" in T.describe(res)
+
+
+def test_report_only_is_saved_and_survives_every_rerun(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "1"
+    res = T.install(wh, home / "runtipi", home, guardian=False)
+    assert res["guardian"] == {"act": False, "set_by": "owner"} and envfile(home)["GUARDIAN_ACT"] == "0"
+    saved = json.loads((wh / "guardian.json").read_text())
+    assert saved["act"] is False and saved["chosen_by"] == "owner" and saved["how"] == "--report-only"
+    for _ in range(2):  # installer reruns and updates run `wam troubleshooter` with no flag
+        res = T.install(wh, home / "runtipi", home)
+        assert envfile(home)["GUARDIAN_ACT"] == "0" and res["guardian"]["set_by"] == "owner"
+    assert "report-only" in T.describe(res)
+    res = T.install(wh, home / "runtipi", home, guardian=True)
+    assert envfile(home)["GUARDIAN_ACT"] == "1" and json.loads((wh / "guardian.json").read_text())["act"] is True
+
+
+def test_a_hand_edit_of_host_env_after_this_version_is_the_owners_choice(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text().replace("GUARDIAN_ACT=1\n", "GUARDIAN_ACT=0\n"))
+    res = T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "0", "kept, not reset to the default"
+    assert res["guardian"] == {"act": False, "set_by": "owner"}
+    assert json.loads((wh / "guardian.json").read_text())["how"] == "host.env edited by hand"
+
+
+def test_report_only_takes_effect_even_when_the_install_cannot_finish(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    from wam import links
+    monkeypatch.setattr(links, "tailnet", lambda: {"state": "NeedsLogin", "host": ""})
+    assert T.install(wh, home / "runtipi", home, guardian=False)["state"] == "waiting"
+    assert envfile(home)["GUARDIAN_ACT"] == "0"
+    assert json.loads((wh / "guardian.json").read_text())["act"] is False
+
+
+def test_hand_installed_troubleshooter_keeps_its_own_guardian_setting(tmp_path, stubs, monkeypatch):
+    home, wh = box(tmp_path)
+    units = home / ".config/systemd/user"
+    units.mkdir(parents=True)
+    (units / "wizard-troubleshooter.service").write_text("[Service]\nExecStart=/usr/bin/node server.mjs\n")
+    res = T.install(wh, home / "runtipi", home, guardian=False)
+    assert res["state"] == "kept" and "not changed" in res["reason"]
+    assert not (wh / "guardian.json").exists()
+    assert not (home / ".local/share/wizard-troubleshooter/host.env").exists()
+
+
+def test_guardian_unit_and_cli_name_the_off_switch():
+    units = T._units(Path("/a"), "/n", Path("/e"))
+    assert "--report-only" in units["wizard-guardian.service"] and "report-only until" not in units["wizard-guardian.service"]
+    text = (REPO / "wam/cli.py").read_text()
+    assert 'troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)' in text
+    assert '"--report-only", dest="guardian", action="store_false"' in text and '"--act", dest="guardian"' in text
+
+
+def test_an_appended_report_only_line_is_the_one_that_counts(tmp_path, stubs, monkeypatch):
+    """systemd uses the last assignment in an EnvironmentFile, so an owner appending GUARDIAN_ACT=0 is a choice."""
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text() + "GUARDIAN_ACT=0\n")
+    res = T.install(wh, home / "runtipi", home)
+    assert res["guardian"] == {"act": False, "set_by": "owner"} and envfile(home)["GUARDIAN_ACT"] == "0"
+
+
+def test_dry_run_reports_a_hand_edit_without_saving_it(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text().replace("GUARDIAN_ACT=1\n", "GUARDIAN_ACT=0\n"))
+    before = envf.read_text()
+    res = T.install(wh, home / "runtipi", home, apply=False)
+    assert res["guardian"] == {"act": False, "set_by": "owner"}
+    assert not (wh / "guardian.json").exists() and envf.read_text() == before
+    assert T.install(wh, home / "runtipi", home, apply=False, guardian=True)["guardian"]["act"] is True
+    assert not (wh / "guardian.json").exists()
