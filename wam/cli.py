@@ -20,6 +20,8 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
+    [--report-only|--act]       the guardian repairs broken links by itself; --report-only keeps it to reporting
+                                (saved, kept across updates); --act turns repairs back on
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
                                 checked and rolled back on failure)
   wam doctor [--fix]            check the whole chain
@@ -2490,6 +2492,11 @@ def main(argv: list[str] | None = None) -> int:
     opp.add_argument("--json", action="store_true"); opp.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
     tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
+    trg = tr.add_mutually_exclusive_group()
+    trg.add_argument("--report-only", dest="guardian", action="store_false", default=None,
+                     help="the guardian only reports what it would fix (saved; kept across updates)")
+    trg.add_argument("--act", dest="guardian", action="store_true", default=None,
+                     help="the guardian repairs broken links by itself (the default)")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -2701,7 +2708,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if res["found"] else 3
         elif args.cmd == "troubleshooter":
             from . import troubleshooter
-            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
+            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
         elif args.cmd == "owner-edge":

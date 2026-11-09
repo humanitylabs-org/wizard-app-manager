@@ -12,7 +12,11 @@ units beside App Manager (like `wam serve`), never as a Runtipi app.
 - writes the two units plus a generated environment file describing THIS box: alongside (host Hermes unit + port) or
   fresh (Hermes is the hermes-agent app: no host port, restarted as its container), shell and Agent Service ports and
   containers from apps.json, the owner gate = the tailnet login this box is signed in as (never a fixed address);
-- guardian is report-only (GUARDIAN_ACT=0) until the owner turns automatic repairs on;
+- the guardian acts (GUARDIAN_ACT=1: restarts a broken link, undoes a bad update, starts a repair) unless the owner
+  chose report-only: `wam troubleshooter --report-only` (saved in ~/.wizard-os/guardian.json, kept across upgrades;
+  `--act` turns repairs back on). A box last set up by an older App Manager has GUARDIAN_ACT=0 in host.env as that
+  version's default, not as anyone's choice, so it now acts too; GUARDIAN_ACT=0 typed into host.env by hand after this
+  version wrote it counts as the owner's choice and is kept;
 - mounts /troubleshoot on every owner shell HTTPS port, never replacing someone else's route;
 - leaves a hand-installed Troubleshooter (units not written by this command) exactly as it is.
 
@@ -39,6 +43,9 @@ PORT = 9691
 PREFIX = "/troubleshoot"
 MARKER = "# Written by `wam troubleshooter` (wizard-app-manager); rerun the installer to update."
 UNITS = ("wizard-troubleshooter.service", "wizard-guardian.service", "wizard-guardian.timer")
+# host.env carries this line beside GUARDIAN_ACT so a later run can tell the value this command wrote from one the owner
+# typed in by hand. A host.env without it was written by an older App Manager, whose GUARDIAN_ACT=0 was its default.
+GUARDIAN_NOTE = "# wam troubleshooter wrote GUARDIAN_ACT={act}; `wam troubleshooter --report-only` keeps the guardian report-only"
 # Official Node.js LTS builds (https://nodejs.org/dist/v22.23.2/SHASUMS256.txt), only when the box has no Node >= 20.
 NODE_VERSION = "22.23.2"
 NODE_SHA256 = {
@@ -194,7 +201,7 @@ def layout(wizard_home: Path, home: Path, runtipi_root: Path) -> dict:
     return out
 
 
-def environment(lay: dict, host: str, origins: list[str], owner: str, home: Path) -> dict:
+def environment(lay: dict, host: str, origins: list[str], owner: str, home: Path, act: bool = True) -> dict:
     docker = shutil.which("docker") or "docker"
     env = {
         "PORT": str(PORT),
@@ -210,12 +217,83 @@ def environment(lay: dict, host: str, origins: list[str], owner: str, home: Path
         "HERMES_PORT": str(lay["hermes_port"]), "HERMES_UNIT": lay["hermes_unit"], "HERMES_CONTAINER": lay["hermes_container"],
         "DOCKER_BIN": docker,
         "CHATGPT_AUTH_FILE": lay["chatgpt_auth"],
-        "GUARDIAN_ACT": "0",
+        "GUARDIAN_ACT": "1" if act else "0",
         "PATH": f"{home}/bin:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
     }
     if os.environ.get("DOCKER_HOST"):
         env["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
     return env
+
+
+def _guardian_file(wizard_home: Path) -> Path:
+    return wizard_home / "guardian.json"
+
+
+def guardian_choice(wizard_home: Path) -> bool | None:
+    """The owner's saved choice: True = repairs on, False = report-only, None = never chose (default: repairs on)."""
+    try:
+        d = json.loads(_guardian_file(wizard_home).read_text())
+    except (OSError, ValueError):
+        return None
+    return d["act"] if isinstance(d, dict) and isinstance(d.get("act"), bool) else None
+
+
+def save_guardian_choice(wizard_home: Path, act: bool, how: str) -> None:
+    wizard_home.mkdir(parents=True, exist_ok=True)
+    f = _guardian_file(wizard_home)
+    tmp = f.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"act": act, "chosen_by": "owner", "how": how,
+                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2) + "\n")
+    tmp.replace(f)
+
+
+def _hand_set_guardian(env_file: Path) -> bool | None:
+    """GUARDIAN_ACT the owner changed by hand in host.env after this command wrote it; None when untouched or unknown.
+
+    Only a host.env carrying GUARDIAN_NOTE can show a hand edit: in one from an older App Manager, GUARDIAN_ACT=0 was
+    that version's default for every box, so it says nothing about the owner.
+    """
+    try:
+        lines = env_file.read_text().splitlines()
+    except OSError:
+        return None
+    wrote = next((m.group(1) for l in lines if (m := re.match(r"^# wam troubleshooter wrote GUARDIAN_ACT=([01]);", l))), None)
+    now = next((l.split("=", 1)[1].strip() for l in lines if l.startswith("GUARDIAN_ACT=")), None)
+    if wrote is None or now is None or now == wrote:
+        return None
+    return now != "0"
+
+
+def guardian_mode(wizard_home: Path, env_file: Path) -> tuple[bool, str]:
+    """(act, why). The owner's saved choice wins, then a hand edit of host.env (saved as the owner's choice), else act."""
+    hand = _hand_set_guardian(env_file)
+    if hand is not None:
+        save_guardian_choice(wizard_home, hand, "host.env edited by hand")
+    choice = guardian_choice(wizard_home)
+    if choice is None:
+        return True, "default"
+    return choice, "owner"
+
+
+def _write_env(env_file: Path, env: dict) -> None:
+    body = "".join(f"{k}={v}\n" for k, v in env.items())
+    body += GUARDIAN_NOTE.format(act=env.get("GUARDIAN_ACT", "1")) + "\n"
+    env_file.write_text(body)
+    env_file.chmod(0o600)
+
+
+def _set_env_guardian(env_file: Path, act: bool) -> bool:
+    """Flip GUARDIAN_ACT in an existing host.env (the next guardian run, within a minute, reads it). False if none."""
+    try:
+        lines = env_file.read_text().splitlines()
+    except OSError:
+        return False
+    val = "1" if act else "0"
+    out = [l for l in lines if not l.startswith("GUARDIAN_ACT=") and not l.startswith("# wam troubleshooter wrote GUARDIAN_ACT=")]
+    out += [f"GUARDIAN_ACT={val}", GUARDIAN_NOTE.format(act=val)]
+    env_file.write_text("\n".join(out) + "\n")
+    env_file.chmod(0o600)
+    return True
 
 
 def _units(app: Path, node_bin: str, env_file: Path) -> dict[str, str]:
@@ -237,7 +315,7 @@ WantedBy=default.target
 """
     guard = f"""{MARKER}
 [Unit]
-Description=Wizard Guardian: checks every link to the agent (report-only until the owner turns repairs on)
+Description=Wizard Guardian: checks every link to the agent and repairs it (report-only if the owner chose: wam troubleshooter --report-only)
 
 [Service]
 Type=oneshot
@@ -309,8 +387,12 @@ def routes(host: str, shell_port: int, apply: bool) -> tuple[list[int], dict]:
     return ok, errs
 
 
-def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, apply: bool = True) -> dict:
-    """Install or update the native Troubleshooter. Returns a status record (also saved unless dry run)."""
+def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, apply: bool = True,
+            guardian: bool | None = None) -> dict:
+    """Install or update the native Troubleshooter. Returns a status record (also saved unless dry run).
+
+    guardian: True (`--act`) or False (`--report-only`) saves the owner's choice first; None keeps whatever it is.
+    """
     home = Path(home or Path.home())
     p = paths(home)
     res: dict = {"state": "ready", "port": PORT, "dir": str(p["app"])}
@@ -326,7 +408,15 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
     if os.environ.get("WIZARD_TROUBLESHOOTER", "1") == "0":
         return done("skipped", reason="WIZARD_TROUBLESHOOTER=0")
     if hand_installed(p):
-        return done("kept", reason=f"a hand-installed {UNITS[0]} exists; left exactly as it is")
+        why = "; its guardian setting is its own (not changed)" if guardian is not None else ""
+        return done("kept", reason=f"a hand-installed {UNITS[0]} exists; left exactly as it is{why}")
+    if guardian is not None and apply:
+        save_guardian_choice(wizard_home, guardian, "--act" if guardian else "--report-only")
+        # Takes effect on the next guardian run even if the rest of this install can't finish right now.
+        _set_env_guardian(p["env"], guardian)
+    act, why = guardian_mode(wizard_home, p["env"]) if apply else (
+        guardian if guardian is not None else (guardian_choice(wizard_home) is not False), "dry-run")
+    res["guardian"] = {"act": act, "set_by": why}
     if not shutil.which("systemctl") or _run(["systemctl", "--user", "show-environment"], 20).returncode:
         return done("skipped", reason="no systemd user session on this box (the Troubleshooter needs one)")
     from . import links
@@ -346,7 +436,7 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
     except (OSError, subprocess.TimeoutExpired, ValueError):
         shell_ports = [lay["shell_port"]]
     origins = [f"https://{ts['host']}" + ("" if port == 443 else f":{port}") for port in shell_ports]
-    env = environment(lay, ts["host"], origins, owner, home)
+    env = environment(lay, ts["host"], origins, owner, home, act)
     if not apply:
         return {**res, "env": env, "dry_run": True}
     try:
@@ -356,8 +446,7 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         return done("failed", reason=str(e)[:300])
     res["node"] = node_bin
     p["share"].mkdir(parents=True, exist_ok=True)
-    p["env"].write_text("".join(f"{k}={v}\n" for k, v in env.items()))
-    p["env"].chmod(0o600)
+    _write_env(p["env"], env)
     p["units"].mkdir(parents=True, exist_ok=True)
     changed = False
     for name, body in _units(p["app"], node_bin, p["env"]).items():
@@ -384,6 +473,9 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
 
 def describe(res: dict) -> str:
     st = res.get("state")
+    g = res.get("guardian") or {}
+    mode = "" if not g else (" Guardian: repairs on." if g.get("act") else
+                             " Guardian: report-only (owner's choice; `wam troubleshooter --act` turns repairs on).")
     if st == "ready":
-        return f"Troubleshooter {str(res.get('commit', ''))[:12]} is running: " + ", ".join(res.get("routes") or [])
+        return f"Troubleshooter {str(res.get('commit', ''))[:12]} is running: " + ", ".join(res.get("routes") or []) + mode
     return f"Troubleshooter {st}: {res.get('reason', '')}".rstrip(": ")
