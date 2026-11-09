@@ -354,3 +354,99 @@ def test_dry_run_reports_a_hand_edit_without_saving_it(tmp_path, stubs, monkeypa
     assert not (wh / "guardian.json").exists() and envf.read_text() == before
     assert T.install(wh, home / "runtipi", home, apply=False, guardian=True)["guardian"]["act"] is True
     assert not (wh / "guardian.json").exists()
+
+
+# --- the owner's report-only choice is never lost (independent source review, 9 Nov 2026) ---------------------------
+
+def _hand_edit(home, value):
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text().replace("GUARDIAN_ACT=1\n", f"GUARDIAN_ACT={value}\n"))
+    return envf
+
+
+@pytest.mark.parametrize("value", ['"0"', "'0'", " 0 ", '"0" '])
+def test_a_quoted_report_only_hand_edit_is_kept(tmp_path, stubs, monkeypatch, value):
+    """systemd strips the quotes, so the guardian runs report-only; wam must read it the same way."""
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    _hand_edit(home, value)
+    res = T.install(wh, home / "runtipi", home)
+    assert res["guardian"]["act"] is False and envfile(home)["GUARDIAN_ACT"] == "0"
+    assert json.loads((wh / "guardian.json").read_text())["act"] is False
+
+
+@pytest.mark.parametrize("value", ["yes", "", '"1', "on", "2"])
+def test_an_unclear_hand_edit_never_turns_repairs_on(tmp_path, stubs, monkeypatch, value):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home, guardian=False)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text().replace("GUARDIAN_ACT=0\n", f"GUARDIAN_ACT={value}\n"))
+    res = T.install(wh, home / "runtipi", home)
+    assert res["guardian"]["act"] is False and envfile(home)["GUARDIAN_ACT"] == "0"
+
+
+@pytest.mark.parametrize("broken", ["{broken", '{"act": "no"}', "[]", ""])
+def test_an_unreadable_saved_choice_stays_report_only(tmp_path, stubs, monkeypatch, broken):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home, guardian=False)
+    (wh / "guardian.json").write_text(broken)
+    assert T.guardian_mode(wh, home / ".local/share/wizard-troubleshooter/host.env", save=False) == (False, "unreadable")
+    res = T.install(wh, home / "runtipi", home)
+    assert res["guardian"] == {"act": False, "set_by": "unreadable"} and envfile(home)["GUARDIAN_ACT"] == "0"
+    assert (wh / "guardian.json").read_text() == broken, "the owner's file is not overwritten by a guess"
+    assert "can't be read" in T.describe(res)
+    res = T.install(wh, home / "runtipi", home, guardian=True)   # an explicit choice repairs it
+    assert envfile(home)["GUARDIAN_ACT"] == "1" and json.loads((wh / "guardian.json").read_text())["act"] is True
+
+
+def test_a_missing_saved_choice_is_the_default_not_unreadable(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    assert T.guardian_choice(wh) is None
+    (wh / "guardian.json").write_text("{broken")
+    assert T.guardian_choice(wh) is T.UNREADABLE
+
+
+def _overlap(monkeypatch, inner):
+    """Run `inner()` once while the outer install is fetching (another `wam troubleshooter` overlapping it)."""
+    real, ran, started = T.fetch, [], []
+
+    def fetch(*a, **kw):
+        if not started:
+            started.append(1)
+            ran.append(inner())
+        return real(*a, **kw)
+    monkeypatch.setattr(T, "fetch", fetch)
+    return ran
+
+
+def test_report_only_chosen_during_another_install_is_what_ends_up_in_host_env(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    ran = _overlap(monkeypatch, lambda: T.install(wh, home / "runtipi", home, guardian=False))
+    outer = T.install(wh, home / "runtipi", home)
+    assert ran and ran[0]["guardian"]["act"] is False
+    assert json.loads((wh / "guardian.json").read_text())["act"] is False
+    assert envfile(home)["GUARDIAN_ACT"] == "0" and outer["guardian"] == {"act": False, "set_by": "owner"}
+
+
+def test_report_only_chosen_after_another_install_finished_is_kept(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    T.install(wh, home / "runtipi", home, guardian=False)
+    assert envfile(home)["GUARDIAN_ACT"] == "0" and json.loads((wh / "guardian.json").read_text())["act"] is False
+
+
+def test_act_chosen_during_another_install_is_kept(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home, guardian=False)
+    _overlap(monkeypatch, lambda: T.install(wh, home / "runtipi", home, guardian=True))
+    outer = T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "1" and json.loads((wh / "guardian.json").read_text())["act"] is True
+    assert outer["guardian"] == {"act": True, "set_by": "owner"}
+
+
+def test_explicit_act_survives_a_plain_rerun_overlapping_it(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home, guardian=False)
+    _overlap(monkeypatch, lambda: T.install(wh, home / "runtipi", home))
+    T.install(wh, home / "runtipi", home, guardian=True)
+    assert envfile(home)["GUARDIAN_ACT"] == "1" and json.loads((wh / "guardian.json").read_text())["act"] is True
