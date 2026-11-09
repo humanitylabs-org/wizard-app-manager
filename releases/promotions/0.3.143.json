@@ -1,0 +1,16 @@
+{
+  "version": "0.3.143",
+  "latest_since": "2026-11-09T13:56:29Z",
+  "promoted_at": "2026-11-09T14:08:47Z",
+  "upgrade_test": {
+    "from": "0.3.134",
+    "to": "0.3.143",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.143.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "James approved the Troubleshooter guardian repairing by default on every box (9 Nov 2026, 'defaults'). 0.3.143 = Stable 0.3.134 + App Manager 7d60346f (#542 repairs by default, #548 the owner's report-only choice is never lost: quoted hand edits, unreadable guardian.json, overlapping installs; 15 fail-first tests, 42 pass with the fix, independent probe clean). Replaces 0.3.140, which was recorded but never mirrored as Stable. Forum KVM upgrade test 0.3.134 -> 0.3.143 passed (heavy_0a9cc0dc, 27 checks 0 failed, doctors FAIL 0, guardian act 0 -> 1 set_by default).",
+    "notes": "Rides along: wizard-app-manager #546 (gateway grant keys, feature switch wizard/gateway-keys off by default) and the App Manager main image 17c8d9c Latest has run since 0.3.104. Candidate served to the rig from wizard-os 83b5d8c (#487 head), byte-identical to main. Rollback: stable -> 0.3.134; per box: wam troubleshooter --report-only."
+  }
+}
