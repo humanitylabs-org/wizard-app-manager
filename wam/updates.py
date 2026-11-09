@@ -341,6 +341,31 @@ def by_host() -> bool:
 
 
 HOST_REQUEST = "host-update-request.json"
+# Automatic on a host-run box: the host announces the night's update 5 minutes ahead (host_headsup, written by the
+# host through wizard-ctl); "Not tonight" from any of the owner's devices leaves host-update-postpone.json, which the
+# host reads and honours until the next night.
+HOST_HEADSUP = "host-update-headsup.json"
+HOST_POSTPONE = "host-update-postpone.json"
+
+
+def host_headsup(home: Path | None = None) -> dict | None:
+    """{"target", "at"}: Automatic installs `target` at epoch `at` unless the owner says Not tonight."""
+    doc = _read_status(_home(home) / HOST_HEADSUP)
+    if not doc or not isinstance(doc.get("at"), (int, float)) or doc["at"] < time.time() - 15 * 60:
+        return None   # a heads-up the host never cleared (it stopped) is not news
+    return doc
+
+
+def postpone_host(home: Path | None = None) -> dict:
+    """Not tonight: the owner's answer to the heads-up. The host skips the rest of tonight."""
+    h = _home(home)
+    doc = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "target": (host_headsup(h) or {}).get("target")}
+    h.mkdir(parents=True, exist_ok=True)
+    tmp = h / (HOST_POSTPONE + ".tmp")
+    tmp.write_text(json.dumps(doc) + "\n")
+    os.replace(tmp, h / HOST_POSTPONE)
+    (h / HOST_HEADSUP).unlink(missing_ok=True)
+    return {**status(h), "postponed": doc, "note": "Not tonight. WizardOS tries again tomorrow night; Install in Settings updates any time."}
 
 
 def host_pending(home: Path | None = None) -> dict | None:
@@ -434,7 +459,7 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "failed": failed, "failure_reason": reason if failed else None,
             "retry_target": retry, "superseded": superseded,
             # The host starts Automatic updates (Wizard for Mac, after its disk copy), not this box's own timer.
-            "by_host": by_host(), "host_pending": host_pending(home),
+            "by_host": by_host(), "host_pending": host_pending(home), "host_headsup": host_headsup(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": _quick_now(home, installer, run) if run == "running" else
                      bool(newer and not failed and retry is None and _quick(home, want, base)),
@@ -544,7 +569,8 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
     names the channel release apply_if_auto checked. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
-    (_home(home) / HOST_REQUEST).unlink(missing_ok=True)   # the host acted on the owner's request (request_host_apply)
+    for name in (HOST_REQUEST, HOST_HEADSUP):   # the host acted on the owner's request or its own heads-up
+        (_home(home) / name).unlink(missing_ok=True)
     st = status(home, base, fresh=True)
     retry = st["retry_target"]
     if target:
