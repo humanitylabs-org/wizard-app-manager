@@ -335,6 +335,29 @@ def test_guardian_unit_and_cli_name_the_off_switch():
     assert '"--report-only", dest="guardian", action="store_false"' in text and '"--act", dest="guardian"' in text
 
 
+def test_an_appended_report_only_line_is_the_one_that_counts(tmp_path, stubs, monkeypatch):
+    """systemd uses the last assignment in an EnvironmentFile, so an owner appending GUARDIAN_ACT=0 is a choice."""
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text() + "GUARDIAN_ACT=0\n")
+    res = T.install(wh, home / "runtipi", home)
+    assert res["guardian"] == {"act": False, "set_by": "owner"} and envfile(home)["GUARDIAN_ACT"] == "0"
+
+
+def test_dry_run_reports_a_hand_edit_without_saving_it(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    T.install(wh, home / "runtipi", home)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.write_text(envf.read_text().replace("GUARDIAN_ACT=1\n", "GUARDIAN_ACT=0\n"))
+    before = envf.read_text()
+    res = T.install(wh, home / "runtipi", home, apply=False)
+    assert res["guardian"] == {"act": False, "set_by": "owner"}
+    assert not (wh / "guardian.json").exists() and envf.read_text() == before
+    assert T.install(wh, home / "runtipi", home, apply=False, guardian=True)["guardian"]["act"] is True
+    assert not (wh / "guardian.json").exists()
+
+
 # --- behind the off-by-default switch wizard/guardian-repairs (#541) ----------------------------------------------
 
 def test_switch_off_keeps_the_old_report_only_default(tmp_path, stubs, monkeypatch):

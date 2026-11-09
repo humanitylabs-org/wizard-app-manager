@@ -267,18 +267,21 @@ def _hand_set_guardian(env_file: Path) -> bool | None:
     except OSError:
         return None
     wrote = next((m.group(1) for l in lines if (m := re.match(r"^# wam troubleshooter wrote GUARDIAN_ACT=([01]);", l))), None)
-    now = next((l.split("=", 1)[1].strip() for l in lines if l.startswith("GUARDIAN_ACT=")), None)
+    # The last assignment is the one systemd's EnvironmentFile uses, so an appended GUARDIAN_ACT=0 counts.
+    now = next((l.split("=", 1)[1].strip() for l in reversed(lines) if l.startswith("GUARDIAN_ACT=")), None)
     if wrote is None or now is None or now == wrote:
         return None
     return now != "0"
 
 
-def guardian_mode(wizard_home: Path, env_file: Path) -> tuple[bool, str]:
-    """(act, why). The owner's saved choice wins, then a hand edit of host.env (saved as the owner's choice), else the
-    default: act when the `wizard/guardian-repairs` switch is on, report-only when it is off."""
+def guardian_mode(wizard_home: Path, env_file: Path, save: bool = True) -> tuple[bool, str]:
+    """(act, why). A hand edit of host.env (saved as the owner's choice unless save=False), then the owner's saved
+    choice, else the default: act when the `wizard/guardian-repairs` switch is on, report-only when it is off."""
     hand = _hand_set_guardian(env_file)
     if hand is not None:
-        save_guardian_choice(wizard_home, hand, "host.env edited by hand")
+        if save:
+            save_guardian_choice(wizard_home, hand, "host.env edited by hand")
+        return hand, "owner"
     choice = guardian_choice(wizard_home)
     if choice is None:
         return switch_on(wizard_home), "default"
@@ -424,9 +427,10 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         save_guardian_choice(wizard_home, guardian, "--act" if guardian else "--report-only")
         # Takes effect on the next guardian run even if the rest of this install can't finish right now.
         _set_env_guardian(p["env"], guardian)
-    act, why = guardian_mode(wizard_home, p["env"]) if apply else (
-        guardian if guardian is not None else (
-            guardian_choice(wizard_home) if guardian_choice(wizard_home) is not None else switch_on(wizard_home)), "dry-run")
+    if guardian is not None and not apply:
+        act, why = guardian, "owner"
+    else:
+        act, why = guardian_mode(wizard_home, p["env"], save=apply)
     res["guardian"] = {"act": act, "set_by": why}
     if not shutil.which("systemctl") or _run(["systemctl", "--user", "show-environment"], 20).returncode:
         return done("skipped", reason="no systemd user session on this box (the Troubleshooter needs one)")
