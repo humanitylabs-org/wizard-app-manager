@@ -2112,7 +2112,8 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _app_updates(self, method: str) -> None:
         """App updates for Settings, behind the off-by-default switch wizard/app-updates-list (404 while it is off).
-        GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped). POST {"mode": "auto"|
+        GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped, notes = one-line
+        What's new per app). POST {"mode": "auto"|
         "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry),
         which runs in the background like the nightly timer. _go already checked the owner (and Origin for POST)."""
         from . import app_updates as au, store_install as si
