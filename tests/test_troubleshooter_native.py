@@ -55,6 +55,7 @@ SERVE = {"TCP": {"8444": {"HTTPS": True}, "8806": {"HTTPS": True}},
 @pytest.fixture
 def stubs(tmp_path, monkeypatch):
     """systemctl / tailscale / ping stand-ins. Serve state is a dict the fake `tailscale serve` mutates."""
+    monkeypatch.setattr(T, "switch_on", lambda wh=None: False)   # off-by-default switch; never read the real box
     calls, serve = [], json.loads(json.dumps(SERVE))
     real_run = T._run
     tagged = {"on": False}
@@ -123,8 +124,8 @@ def test_fresh_box_gets_the_pinned_native_service_wired_to_this_box(tmp_path, st
     # Owner gate: the login this box is signed in as, derived at install time (never a fixed address).
     assert env["TROUBLESHOOT_OWNERS"] == "owner@example.com"
     assert env["TROUBLESHOOT_FRONT"] == "tailscale-serve"
-    assert env["GUARDIAN_ACT"] == "1", "the guardian repairs by default (James, 9 Nov 2026)"
-    assert res["guardian"] == {"act": True, "set_by": "default"}
+    assert env["GUARDIAN_ACT"] == "0", "report-only by default while the wizard/guardian-repairs switch is off"
+    assert res["guardian"] == {"act": False, "set_by": "default"}
     # Fresh layout: Hermes is the hermes-agent app (no host port), restarted as its container.
     assert env["HERMES_PORT"] == "0" and env["HERMES_UNIT"] == ""
     assert env["HERMES_CONTAINER"] == "hermes-agent_wizardapps-hermes-agent-engine-1"
@@ -256,7 +257,8 @@ def test_node_download_is_refused_when_its_sha256_does_not_match(tmp_path, monke
 
 # --- the guardian acts by default; the owner's report-only choice survives updates (James, 9 Nov 2026) ---------------
 
-def _ready(tmp_path, stubs, monkeypatch):
+def _ready(tmp_path, stubs, monkeypatch, switch=True):
+    monkeypatch.setattr(T, "switch_on", lambda wh=None: switch)
     src, v1, v2 = fixture_repo(tmp_path)
     home, wh = box(tmp_path)
     monkeypatch.setenv("WAM_TROUBLESHOOTER_REPO_URL", f"file://{src}")
@@ -331,3 +333,42 @@ def test_guardian_unit_and_cli_name_the_off_switch():
     text = (REPO / "wam/cli.py").read_text()
     assert 'troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)' in text
     assert '"--report-only", dest="guardian", action="store_false"' in text and '"--act", dest="guardian"' in text
+
+
+# --- behind the off-by-default switch wizard/guardian-repairs (#541) ----------------------------------------------
+
+def test_switch_off_keeps_the_old_report_only_default(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch, switch=False)
+    envf = home / ".local/share/wizard-troubleshooter/host.env"
+    envf.parent.mkdir(parents=True)
+    envf.write_text("PORT=9691\nGUARDIAN_ACT=0\nPATH=/usr/bin\n")  # an upgrade from the older command
+    res = T.install(wh, home / "runtipi", home)
+    assert res["state"] == "ready", res
+    assert envfile(home)["GUARDIAN_ACT"] == "0" and res["guardian"] == {"act": False, "set_by": "default"}
+    assert not (wh / "guardian.json").exists()
+    assert "owner's choice" not in T.describe(res)
+
+
+def test_switch_off_still_honours_the_owners_act(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch, switch=False)
+    res = T.install(wh, home / "runtipi", home, guardian=True)
+    assert envfile(home)["GUARDIAN_ACT"] == "1" and res["guardian"] == {"act": True, "set_by": "owner"}
+
+
+def test_turning_the_switch_on_then_off_follows_the_default(tmp_path, stubs, monkeypatch):
+    home, wh = _ready(tmp_path, stubs, monkeypatch, switch=False)
+    T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "0"
+    monkeypatch.setattr(T, "switch_on", lambda wh=None: True)
+    T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "1", "a value wam wrote is not mistaken for a hand edit"
+    monkeypatch.setattr(T, "switch_on", lambda wh=None: False)
+    T.install(wh, home / "runtipi", home)
+    assert envfile(home)["GUARDIAN_ACT"] == "0" and not (wh / "guardian.json").exists()
+
+
+def test_switch_reads_the_box_feature_switch(monkeypatch, tmp_path):
+    from wam import feature_switches
+    seen = []
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None: seen.append((tid, home)) or True)
+    assert T.switch_on(tmp_path) is True and seen == [("wizard/guardian-repairs", tmp_path)]

@@ -12,10 +12,11 @@ units beside App Manager (like `wam serve`), never as a Runtipi app.
 - writes the two units plus a generated environment file describing THIS box: alongside (host Hermes unit + port) or
   fresh (Hermes is the hermes-agent app: no host port, restarted as its container), shell and Agent Service ports and
   containers from apps.json, the owner gate = the tailnet login this box is signed in as (never a fixed address);
-- the guardian acts (GUARDIAN_ACT=1: restarts a broken link, undoes a bad update, starts a repair) unless the owner
-  chose report-only: `wam troubleshooter --report-only` (saved in ~/.wizard-os/guardian.json, kept across upgrades;
+- behind the off-by-default feature switch `wizard/guardian-repairs` (#541): with it on, the guardian acts
+  (GUARDIAN_ACT=1: restarts a broken link, undoes a bad update, starts a repair) unless the owner chose report-only;
+  with it off the default stays report-only (GUARDIAN_ACT=0) as before. The owner's own choice works either way: `wam troubleshooter --report-only` (saved in ~/.wizard-os/guardian.json, kept across upgrades;
   `--act` turns repairs back on). A box last set up by an older App Manager has GUARDIAN_ACT=0 in host.env as that
-  version's default, not as anyone's choice, so it now acts too; GUARDIAN_ACT=0 typed into host.env by hand after this
+  version's default, not as anyone's choice, so it follows the default too; GUARDIAN_ACT=0 typed into host.env by hand after this
   version wrote it counts as the owner's choice and is kept;
 - mounts /troubleshoot on every owner shell HTTPS port, never replacing someone else's route;
 - leaves a hand-installed Troubleshooter (units not written by this command) exactly as it is.
@@ -225,6 +226,14 @@ def environment(lay: dict, host: str, origins: list[str], owner: str, home: Path
     return env
 
 
+SWITCH = "wizard/guardian-repairs"   # off by default: the guardian's default becomes "repairs on" (#541)
+
+
+def switch_on(wizard_home: Path | None = None) -> bool:
+    from . import feature_switches
+    return feature_switches.is_on(SWITCH, wizard_home)
+
+
 def _guardian_file(wizard_home: Path) -> Path:
     return wizard_home / "guardian.json"
 
@@ -265,13 +274,14 @@ def _hand_set_guardian(env_file: Path) -> bool | None:
 
 
 def guardian_mode(wizard_home: Path, env_file: Path) -> tuple[bool, str]:
-    """(act, why). The owner's saved choice wins, then a hand edit of host.env (saved as the owner's choice), else act."""
+    """(act, why). The owner's saved choice wins, then a hand edit of host.env (saved as the owner's choice), else the
+    default: act when the `wizard/guardian-repairs` switch is on, report-only when it is off."""
     hand = _hand_set_guardian(env_file)
     if hand is not None:
         save_guardian_choice(wizard_home, hand, "host.env edited by hand")
     choice = guardian_choice(wizard_home)
     if choice is None:
-        return True, "default"
+        return switch_on(wizard_home), "default"
     return choice, "owner"
 
 
@@ -315,7 +325,7 @@ WantedBy=default.target
 """
     guard = f"""{MARKER}
 [Unit]
-Description=Wizard Guardian: checks every link to the agent and repairs it (report-only if the owner chose: wam troubleshooter --report-only)
+Description=Wizard Guardian: checks every link to the agent; repairs it when GUARDIAN_ACT=1 (wam troubleshooter --act / --report-only)
 
 [Service]
 Type=oneshot
@@ -415,7 +425,8 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         # Takes effect on the next guardian run even if the rest of this install can't finish right now.
         _set_env_guardian(p["env"], guardian)
     act, why = guardian_mode(wizard_home, p["env"]) if apply else (
-        guardian if guardian is not None else (guardian_choice(wizard_home) is not False), "dry-run")
+        guardian if guardian is not None else (
+            guardian_choice(wizard_home) if guardian_choice(wizard_home) is not None else switch_on(wizard_home)), "dry-run")
     res["guardian"] = {"act": act, "set_by": why}
     if not shutil.which("systemctl") or _run(["systemctl", "--user", "show-environment"], 20).returncode:
         return done("skipped", reason="no systemd user session on this box (the Troubleshooter needs one)")
@@ -475,7 +486,8 @@ def describe(res: dict) -> str:
     st = res.get("state")
     g = res.get("guardian") or {}
     mode = "" if not g else (" Guardian: repairs on." if g.get("act") else
-                             " Guardian: report-only (owner's choice; `wam troubleshooter --act` turns repairs on).")
+                             (" Guardian: report-only (owner's choice; `wam troubleshooter --act` turns repairs on)." if g.get("set_by") == "owner"
+                              else " Guardian: report-only (`wam troubleshooter --act` turns repairs on)."))
     if st == "ready":
         return f"Troubleshooter {str(res.get('commit', ''))[:12]} is running: " + ", ".join(res.get("routes") or []) + mode
     return f"Troubleshooter {st}: {res.get('reason', '')}".rstrip(": ")
