@@ -434,3 +434,14 @@ def test_host_update_progress_and_result(tmp_path, monkeypatch):
     assert updates.status(h, base)["host_update"] is None              # an abandoned one is not news
     put(phase="sideways")
     assert updates.status(h, base)["host_update"] is None
+
+
+def test_status_says_how_the_install_read_back(tmp_path):
+    """A drifted install counts as installed (as before), and status says it drifted, so a host can tell."""
+    h = tmp_path / "wos"
+    _pin(h, "0.3.16")
+    base = _base(tmp_path, "0.3.16")
+    assert updates.status(h, base)["receipt"] == "pinned"
+    (h / "release.json").write_text(json.dumps({"release": "0.3.16", "status": "drift"}))
+    st = updates.status(h, base)
+    assert (st["installed"], st["receipt"]) == ("0.3.16", "drift")

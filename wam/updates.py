@@ -100,6 +100,12 @@ def channel(home: Path | None = None) -> str:
     return c if c in CHANNELS else DEFAULT_CHANNEL
 
 
+def receipt_status(home: Path | None = None) -> str | None:
+    """release.json's status: pinned | drift | unpinned | failed…; None without a receipt."""
+    st = _read_status(_home(home) / "release.json") or {}
+    return st.get("status") if isinstance(st.get("status"), str) else None
+
+
 def installed(home: Path | None = None) -> str | None:
     """The successfully read-back release; a failed attempt is not an installed version."""
     try:
@@ -480,6 +486,9 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "retry_target": retry, "superseded": superseded,
             # The host starts Automatic updates (Wizard for Mac, after its disk copy), not this box's own timer.
             "by_host": by_host(), "host_pending": host_pending(home), "host_headsup": host_headsup(home),
+            # How the last install read back: "pinned" (exactly the release) or "drift" (installed, but something
+            # isn't the release's, e.g. an image that couldn't be pulled). A host that verifies its update needs it.
+            "receipt": receipt_status(home),
             "host_update": host_update(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": _quick_now(home, installer, run) if run == "running" else
