@@ -346,6 +346,26 @@ HOST_REQUEST = "host-update-request.json"
 # host reads and honours until the next night.
 HOST_HEADSUP = "host-update-headsup.json"
 HOST_POSTPONE = "host-update-postpone.json"
+# The host's progress and result for the update it runs (written by the host through wizard-ctl update-phase), so
+# every device shows the same "Updating WizardOS" and how it ended: {id, phase, target, result, reason, at}.
+HOST_PHASE = "host-update-phase.json"
+HOST_PHASES = ("stopping", "updating", "verifying", "restoring", "done")
+HOST_RESULTS = ("ok", "restored", "failed", "skipped")
+
+
+def host_update(home: Path | None = None) -> dict | None:
+    """The host's last update: in progress (phase) or finished (result). An unfinished one older than 3 hours, or a
+    finished one older than a day, is not news."""
+    doc = _read_status(_home(home) / HOST_PHASE)
+    if not doc or doc.get("phase") not in HOST_PHASES or not isinstance(doc.get("at"), (int, float)) \
+            or not isinstance(doc.get("id"), str) or not isinstance(doc.get("target"), str):
+        return None
+    if doc.get("result") not in (None, *HOST_RESULTS):
+        return None
+    age = time.time() - doc["at"]
+    if age > (86400 if doc["phase"] == "done" else 3 * 3600):
+        return None
+    return {k: doc.get(k) for k in ("id", "phase", "target", "result", "reason", "at")}
 
 
 def host_headsup(home: Path | None = None) -> dict | None:
@@ -460,6 +480,7 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "retry_target": retry, "superseded": superseded,
             # The host starts Automatic updates (Wizard for Mac, after its disk copy), not this box's own timer.
             "by_host": by_host(), "host_pending": host_pending(home), "host_headsup": host_headsup(home),
+            "host_update": host_update(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": _quick_now(home, installer, run) if run == "running" else
                      bool(newer and not failed and retry is None and _quick(home, want, base)),

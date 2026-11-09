@@ -413,3 +413,24 @@ def test_heads_up_and_not_tonight_on_a_host_run_box(tmp_path, monkeypatch):
     (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": _t.time() + 60}))
     assert updates.apply(h, base, _ok_runner(calls))["started"] is True
     assert not (h / updates.HOST_HEADSUP).exists()
+
+
+def test_host_update_progress_and_result(tmp_path, monkeypatch):
+    """The Mac's progress/result (wizard-ctl update-phase) reaches every device through status()."""
+    import time as _t
+    h = tmp_path / "wos"
+    _pin(h, "0.3.15")
+    base = _base(tmp_path, "0.3.16")
+    def put(**d):
+        (h / updates.HOST_PHASE).write_text(json.dumps({"id": "6520D417", "target": "0.3.16", "result": None,
+                                                         "reason": None, "at": _t.time(), **d}))
+    put(phase="updating")
+    assert updates.status(h, base)["host_update"]["phase"] == "updating"
+    put(phase="done", result="restored", reason="installer")
+    assert updates.status(h, base)["host_update"] == {"id": "6520D417", "phase": "done", "target": "0.3.16",
+                                                     "result": "restored", "reason": "installer",
+                                                     "at": updates.status(h, base)["host_update"]["at"]}
+    put(phase="updating", at=_t.time() - 4 * 3600)
+    assert updates.status(h, base)["host_update"] is None              # an abandoned one is not news
+    put(phase="sideways")
+    assert updates.status(h, base)["host_update"] is None
