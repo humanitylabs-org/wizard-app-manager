@@ -393,3 +393,23 @@ def test_update_now_from_settings_on_a_host_run_box_asks_the_host(tmp_path, monk
     assert updates.host_pending(h) is None
     _pin(h, "0.3.16")
     assert updates.request_host_apply(h, base)["host_pending"] is None and updates.host_pending(h) is None
+
+
+def test_heads_up_and_not_tonight_on_a_host_run_box(tmp_path, monkeypatch):
+    """Automatic on a Mac: the Mac writes a 5-minute heads-up, every device shows it, Not tonight leaves the Mac a
+    postpone and clears the heads-up; the update itself (apply) also clears it."""
+    import time as _t
+    h = tmp_path / "wos"
+    monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "updates-by-host")
+    _pin(h, "0.3.15")
+    base, calls = _base(tmp_path, "0.3.16"), []
+    (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": _t.time() + 300}))
+    assert updates.status(h, base)["host_headsup"]["target"] == "0.3.16"
+    res = updates.postpone_host(h)
+    assert res["postponed"]["target"] == "0.3.16" and res["host_headsup"] is None
+    assert json.loads((h / updates.HOST_POSTPONE).read_text())["target"] == "0.3.16"
+    (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": _t.time() - 3600}))
+    assert updates.status(h, base)["host_headsup"] is None            # stale: the host stopped without clearing it
+    (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": _t.time() + 60}))
+    assert updates.apply(h, base, _ok_runner(calls))["started"] is True
+    assert not (h / updates.HOST_HEADSUP).exists()

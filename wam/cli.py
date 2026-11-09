@@ -2284,6 +2284,10 @@ class StoreHandler(BaseHTTPRequestHandler):
             # A Mac's VM: the Mac copies the disk first, then starts it (updates.request_host_apply).
             res = updates.request_host_apply() if updates.by_host() else updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
+        if body.get("action") == "postpone" and set(body) == {"action"} and updates.by_host():
+            # Not tonight, the answer to a Mac's 5-minute heads-up before an Automatic update.
+            res = updates.postpone_host()
+            return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
