@@ -253,14 +253,31 @@ def whats_new(installed: list[dict], *, store: str, runtipi_root: Path) -> dict:
     return out
 
 
+_BUG_URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]{0,9}")
+
+
+def bug_url(url) -> str | None:
+    """A GitHub issue URL as update_reports files or finds it, else None (nothing else is ever linked)."""
+    return url if isinstance(url, str) and _BUG_URL.fullmatch(url) else None
+
+
+def _reports_on() -> bool:
+    """Whether wizard/update-bug-reports (#524) is on; tests monkeypatch this."""
+    from . import update_reports
+    return update_reports.switch_on()
+
+
 def owner_status(c=None) -> dict:
     """status() plus what the owner needs to read a failure: the version that failed, when, and why (plain text),
-    and each app's one-line What's new (whats_new()). Read only; the same state file the nightly run writes and the
+    the bug the team was told in (`bug`, only with wizard/update-bug-reports on and a bug filed or found), and each
+    app's one-line What's new (whats_new()). Read only; the same state file the nightly run writes and the
     Store's own copy of each app, never a second copy."""
     from . import cli
     c = c or cli.Config()
     installed = c.runtipi().installed()
-    failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300]}
+    linked = _reports_on()   # the bug link only while the owner lets the box report failures (#524)
+    failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300],
+                  **({"bug": bug_url(v.get("bug"))} if linked and bug_url(v.get("bug")) else {})}
               for k, v in _failed(c.home).items()}
     last = _state(c.home).get("last")
     return {**status(c, installed), "failed": failed, "last": last if isinstance(last, dict) else None,
@@ -559,6 +576,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except Exception as e:  # noqa: BLE001 - reporting never fails the run
                 print(f"WARNING: update failures not reported: {type(e).__name__}", file=sys.stderr)
         told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
+        bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
+        if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
+            for k, url in bugs.items():
+                fails[k] = {**fails[k], "bug": url}
+            _write(c.home, failed=fails)
         msg = _summary(done, rolled, failed, needs, renamed, told)
         if notify and msg:
             _notify(c, *msg)
