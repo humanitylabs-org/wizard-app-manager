@@ -1,6 +1,6 @@
 """A failed app update tells the team (#524): file a bug in the app's repo, or comment on the open one.
 
-Behind the off-by-default feature switch `oscar/update-bug-reports` (wam/update_reports.py)."""
+Behind the off-by-default feature switch `wizard/update-bug-reports` (wam/update_reports.py)."""
 import json
 import urllib.error
 
@@ -162,3 +162,135 @@ def test_apply_hands_failures_to_the_reporter(tmp_path, monkeypatch):
     assert seen == [[("wizard-messenger", "check after update")]]
     assert out["reported"] == {"wizard-messenger": {"filed": "u", "issue": "u"}}
     assert "The team was told about it." in sent[0][1]
+
+
+# ---- WizardOS update failures (wam/updates.py) -------------------------------------------------------------------
+
+def os_box(tmp_path, state="failed", receipt=None, step="pulling the shell image", reason="docker pull failed"):
+    (tmp_path / "install-status.json").write_text(json.dumps({
+        "state": state, "step": step, "failure_reason": reason, "exit_code": 1,
+        "started_at": "2026-11-09T03:31:00Z"}))
+    (tmp_path / "release-pins.json").write_text(json.dumps({"version": "0.4.2"}))
+    if receipt:
+        (tmp_path / "release.json").write_text(json.dumps(receipt))
+    return tmp_path
+
+
+def test_os_failure_reads_the_installer_run(tmp_path):
+    row = ur.os_failure(os_box(tmp_path))
+    assert (row["kind"], row["to"], row["step"], row["reason"]) == ("os", "0.4.2", "pulling the shell image",
+                                                                     "docker pull failed")
+    d = ur.draft({**row, "from": "0.4.1"}, "oscar-main")
+    assert d["title"] == "WizardOS update failed: 0.4.1 to 0.4.2 (pulling the shell image)"
+    assert d["key"] == "wizard-os:0.4.2:pulling the shell image"
+    for want in ("A WizardOS update failed", "Box: oscar-main", "0.4.1 -> 0.4.2", "Error: docker pull failed",
+                 "retry it with Update now"):
+        assert want in d["body"], want
+
+
+def test_os_failure_read_back_mismatch_and_healthy(tmp_path):
+    receipt = {"release": "0.4.3", "status": "mismatch", "checks": [
+        {"name": "shell image", "core": True, "ok": False}, {"name": "default app x", "core": False, "ok": False}]}
+    row = ur.os_failure(os_box(tmp_path, state="done", receipt=receipt))
+    assert (row["to"], row["step"]) == ("0.4.3", "read-back") and "shell image" in row["reason"]
+    assert "default app x" not in row["reason"]
+    os_box(tmp_path, state="done", receipt={"release": "0.4.3", "status": "pinned"})
+    assert ur.os_failure(tmp_path) is None
+    os_box(tmp_path, state="failed", receipt={"status": "unpinned"})
+    assert ur.os_failure(tmp_path) is None   # a developer box updated by hand is not a release failure
+
+
+def test_report_os_switched_off_does_nothing(tmp_path):
+    os_box(tmp_path)
+
+    def no_token():
+        raise AssertionError("token read while switched off")
+    gh = FakeGitHub()
+    assert ur.report_os(tmp_path, token=no_token, gh=gh, on=lambda: False, notify=lambda *m: 1 / 0) == {}
+    assert gh.calls == [] and not (tmp_path / ur.OS_STATE).exists()
+
+
+def test_report_os_files_once_per_failed_run_and_tells_the_owner(tmp_path):
+    (tmp_path / ur.OS_STATE).write_text(json.dumps({"good": "0.4.1"}))
+    os_box(tmp_path)
+    gh, sent = FakeGitHub(private=True), []
+    got = ur.report_os(tmp_path, token=lambda: "tok-123", gh=gh, on=lambda: True, notify=lambda *m: sent.append(m))
+    assert got["filed"] and gh.calls[0][1] == "/repos/humanitylabs-org/wizard-os"
+    method, path, body = gh.calls[-1]
+    assert (method, path) == ("POST", "/repos/humanitylabs-org/wizard-os/issues") and body["labels"] == ["bug"]
+    assert "0.4.1 -> 0.4.2" in body["body"]
+    title, msg, prio = sent[0]
+    assert prio == "high" and "did not finish (step: pulling the shell image): docker pull failed" in msg
+    assert "The team was told, so you don't need to report it." in msg
+    # the same failed run is not reported again
+    assert ur.report_os(tmp_path, token=lambda: "tok-123", gh=gh, on=lambda: True, notify=sent.append) == {}
+    assert len(sent) == 1 and len(gh.calls) == 3
+    # the next failed run of the same release comments on the open bug
+    mark = ur.draft({**ur.os_failure(tmp_path)}, "x")["mark"]
+    (tmp_path / "install-status.json").write_text(json.dumps({
+        "state": "failed", "step": "pulling the shell image", "failure_reason": "docker pull failed",
+        "started_at": "2026-11-10T03:31:00Z"}))
+    gh2 = FakeGitHub(open_bugs=[{"number": 7, "body": mark, "html_url": "https://github.com/o/r/issues/7"}],
+                     private=True)
+    got = ur.report_os(tmp_path, token=lambda: "tok-123", gh=gh2, on=lambda: True, notify=lambda *m: sent.append(m))
+    assert got["commented"] and gh2.calls[-1][1].endswith("/issues/7/comments") and len(sent) == 2
+
+
+def test_report_os_remembers_the_last_clean_release(tmp_path):
+    (tmp_path / "release.json").write_text(json.dumps({"release": "0.4.1", "status": "pinned"}))
+    gh = FakeGitHub()
+    assert ur.report_os(tmp_path, token=lambda: "tok-123", gh=gh, on=lambda: True) == {}
+    assert json.loads((tmp_path / ur.OS_STATE).read_text())["good"] == "0.4.1" and gh.calls == []
+
+
+def test_report_os_without_login_or_on_github_refusal_tells_nobody(tmp_path):
+    os_box(tmp_path)
+    sent = []
+    got = ur.report_os(tmp_path, token=lambda: "", gh=FakeGitHub(), on=lambda: True, notify=sent.append)
+    assert got == {"error": "this Wizard has no GitHub login"}
+    err = urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
+    got = ur.report_os(tmp_path, token=lambda: "tok-123", gh=FakeGitHub(fail=err), on=lambda: True,
+                       notify=sent.append)
+    assert got == {"error": "GitHub said 403"} and sent == []
+    assert "reported" not in json.loads((tmp_path / ur.OS_STATE).read_text() if (tmp_path / ur.OS_STATE).exists()
+                                        else "{}")
+
+
+def test_automatic_check_reports_before_retrying(tmp_path, monkeypatch):
+    from wam import updates
+    calls = []
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    monkeypatch.setattr(ur, "report_os", lambda home=None: calls.append(("report", home)) or {})
+    monkeypatch.setattr(updates, "status", lambda *a, **k: calls.append(("status",)) or (_ for _ in ()).throw(
+        RuntimeError("stop here")))
+    try:
+        updates.apply_if_auto(tmp_path)
+    except RuntimeError:
+        pass
+    assert calls == [("report", tmp_path), ("status",)]
+
+
+def test_report_failure_never_raises(tmp_path, monkeypatch):
+    from wam import updates
+    monkeypatch.setattr(ur, "report_os", lambda home=None: 1 / 0)
+    assert updates.report_failure(tmp_path) == {}
+
+
+def test_nightly_run_reports_in_ask_mode_and_when_busy(tmp_path, monkeypatch):
+    from wam import maintain, updates
+    seen = []
+    monkeypatch.setattr(updates, "report_failure", lambda home=None: seen.append(home) or {})
+    monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
+    assert maintain.updates_step(tmp_path, True)["state"] == "ask" and seen == [tmp_path]
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    assert maintain.updates_step(tmp_path, False)["state"] == "deferred" and seen == [tmp_path, tmp_path]
+
+
+def test_read_back_mismatch_of_this_run_wins_over_the_failed_run(tmp_path):
+    receipt = {"release": "0.4.2", "status": "mismatch", "at": "2026-11-09T03:50:00Z",
+               "checks": [{"name": "shell image", "core": True, "ok": False}]}
+    row = ur.os_failure(os_box(tmp_path, receipt=receipt, step="read-back of the release"))
+    assert row["step"] == "read-back" and "shell image" in row["reason"]
+    # a mismatch from an earlier run does not hide a newer run that failed before its read-back
+    row = ur.os_failure(os_box(tmp_path, receipt={**receipt, "at": "2026-11-08T03:50:00Z"}))
+    assert row["step"] == "pulling the shell image"

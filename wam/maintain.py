@@ -527,6 +527,7 @@ def updates_step(home: Path, quiet: bool) -> dict:
     formerly its own 03:30 timer.
     Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
     from . import updates
+    updates.report_failure(home)   # a failed update tells the team in either mode, busy or not (switch-gated, #524)
     try:
         if updates.mode(home) != "auto":
             return {"state": "ask", "mode": "ask"}

@@ -615,6 +615,16 @@ def _auto_retry_clear(home: Path | None) -> None:
         pass
 
 
+def report_failure(home: Path | None = None) -> dict:
+    """A failed WizardOS update files or links a bug in wizard-os, once per failed run, only with the feature switch
+    `wizard/update-bug-reports` on (wam/update_reports.py, #524). Never raises."""
+    try:
+        from . import update_reports
+        return update_reports.report_os(home)
+    except Exception:  # noqa: BLE001 - reporting never stops an update check
+        return {}
+
+
 def auto_target(st: dict, base: str | None = None) -> str | None:
     """The release Automatic installs on this box: its channel's release (#458).
 
@@ -632,6 +642,7 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     (skipped; the next nightly window tries again)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
+    report_failure(home)           # tell the team about a failed run before retrying it (switch-gated, #524)
     st = status(home, base, fresh=True)
     stable = st["stable"]
     target = auto_target(st, base)

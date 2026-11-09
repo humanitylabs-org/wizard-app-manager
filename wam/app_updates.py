@@ -515,7 +515,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
         _write(c.home, failed=fails, last=last)
         reports = {}
-        if notify and (rolled or failed):   # tell the team too (#524): only with oscar/update-bug-reports on
+        if notify and (rolled or failed):   # tell the team too (#524): only with wizard/update-bug-reports on
             try:
                 from . import update_reports
                 reports = (reporter or update_reports.report_all)(c, rolled + failed, store=cli.STORE)
