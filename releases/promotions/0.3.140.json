@@ -1,0 +1,16 @@
+{
+  "version": "0.3.140",
+  "latest_since": "2026-11-09T12:39:03Z",
+  "promoted_at": "2026-11-09T13:00:29Z",
+  "upgrade_test": {
+    "from": "0.3.134",
+    "to": "0.3.140",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.140.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "James approved (9 Nov 2026) the Troubleshooter guardian repairing by default on every box: App Manager 525e9d3d -> 9f793620 (wizard-app-manager#542) makes wam troubleshooter write GUARDIAN_ACT=1 on fresh installs and on boxes holding the old default; wam troubleshooter --report-only keeps it off across updates. Feature (DECISIONS #93). Only the App Manager (commit + its published main image 17c8d9c, on Latest since 0.3.104) moves; every other pin is 0.3.134. Installed upgrade 0.3.134 -> 0.3.140 passed on a disposable KVM guest on forum: 124 s, pinned, 27 checks 0 failed, wizard/wam doctor 0 FAIL, Hermes config/.env/SOUL unchanged, guardian GUARDIAN_ACT 0 -> 1 with the timer active. #542 CI green.",
+    "notes": "The App Manager move carries 18 App Manager main PRs between 525e9d3d and 9f793620 that Latest has run (listed in the evidence doc; mostly Recommended fixes, plus About main-compare, home_screen in apps.json, private-gateway Store/Settings routes). Inherited components.wizard-troubleshooter.note still says report-only; out of date, corrected in the evidence doc and the App Manager releases/README. Candidate served to the rig from wizard-os main 171e9d9 (releases/0.3.140.json sha256 07cda908..., identical to the mirror), not fetched from the public mirror; 0.3.134 came from the public mirror. Not checked: a guardian repair on the rig, real Tailscale/Serve (rig has none: Troubleshooter degraded before and after), real chats, phones, a fresh install."
+  }
+}

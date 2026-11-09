@@ -847,3 +847,9 @@ Channel: on latest only (until promoted).
 Canonical: wizard-os releases/0.3.141.json (humanitylabs-org/wizard-os#482). SHA256: `21598acde2ed0db20c9b8a491cb85fb24521c2a56b92a714b4840c3e4655a72c`.
 Exactly Latest 0.3.139 (every pin unchanged), re-cut one version above the Stable candidate 0.3.140 so Latest never trails Stable. Same guardian default and the same note correction as 0.3.140.
 Channel: on latest only.
+
+## stable 0.3.140
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/484 (promotion). `releases/stable` → 0.3.140 (sha256 `18b4b86a2d961500002510362d38474c16a21cd1b73fca4aaa65ec5c35db8a4d`); `promotions/0.3.140.json` sha256 `26cab3f3526b53a4f937151606c207e4f704d73d5af8c17ca6b2420f22932ba7`.
+Stable 0.3.134 with only the App Manager moved, 525e9d3d -> 9f793620 (and its published main image 17c8d9c): the Troubleshooter guardian repairs by default (#542, James 9 Nov 2026); `wam troubleshooter --report-only` keeps a box report-only across updates. Fast-tracked as **feature** (DECISIONS #93). Installed upgrade 0.3.134 → 0.3.140 passed on a disposable KVM guest on forum (GUARDIAN_ACT 0 → 1, timer active): wizard-os docs/acceptance/promote-0.3.140.md.
+Rollback: point `releases/stable` back at 0.3.134 (it already has a valid promotion record) in both repos.
