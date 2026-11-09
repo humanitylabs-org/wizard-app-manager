@@ -1061,8 +1061,12 @@ def write_overlay(path: Path, overlay: dict | None) -> bool:
         for name, nets in overlay["services"].items():
             s = svcs.setdefault(name, {})
             s["networks"] = _Tagged("!override", nets)
-        doc.setdefault("networks", {}).update(overlay["networks"])
-        doc[MARK] = {"services": sorted(overlay["services"]), "networks": sorted(overlay["networks"])}
+        top = doc.setdefault("networks", {})
+        # An app-own network carried for an update (#520) that the owner's override already declares stays theirs:
+        # never replaced, and not recorded as ours (strip_overlay would delete their settings later).
+        theirs = {n for n, d in overlay["networks"].items() if n in top and not (isinstance(d, dict) and d.get("external"))}
+        top.update({n: d for n, d in overlay["networks"].items() if n not in theirs})
+        doc[MARK] = {"services": sorted(overlay["services"]), "networks": sorted(set(overlay["networks"]) - theirs)}
     body = dump_yaml(doc) if doc else ""
     head = []   # keep the comment header other writers put on top (alongside, Claude login)
     for line in (before or "").splitlines():

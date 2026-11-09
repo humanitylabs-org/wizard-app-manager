@@ -1557,3 +1557,19 @@ def test_pre_update_override_parses_with_the_old_generated_compose(tmp_path):
     r = subprocess.run(["docker", "compose", "-p", "m", "-f", str(inst / "docker-compose.generated.yml"), "-f", str(f),
                         "config", "-q"], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_carried_network_never_replaces_the_owners_own_declaration(tmp_path):
+    """#520 / Codex review on #521: a network the owner's override already declares keeps their settings and is
+    never recorded as wam's, so the post-update reconcile can't delete it."""
+    root, inst = _lane_update_box(tmp_path)
+    f = net.override_path(root, "wizardapps", "m")
+    f.parent.mkdir(parents=True)
+    f.write_text("networks:\n  signin-lane:\n    internal: true\n    driver_opts: {com.docker.network.driver.mtu: '1400'}\n")
+    a = net.read_app(root, "wizardapps", "m", fresh=True)
+    assert net.write_overlay(f, net.overlay_for(net.plan([a], [], set())["apps"][0]))
+    doc = yaml.safe_load(f.read_text().replace("!override", ""))
+    assert doc["networks"]["signin-lane"]["driver_opts"] == {"com.docker.network.driver.mtu": "1400"}
+    assert "signin-lane" not in doc[net.MARK]["networks"]
+    net.write_overlay(f, None)
+    assert yaml.safe_load(f.read_text())["networks"]["signin-lane"]["driver_opts"]
