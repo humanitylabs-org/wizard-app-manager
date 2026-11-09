@@ -202,3 +202,27 @@ def test_checker_rule_matches_the_spec(tmp_path):
         assert not wizardmd.whats_new_ok(bad), bad
     (tmp_path / "wizard.md").write_text("---\nwizard: 0.2\nid: whats-new-test\ntype: service\nwhats_new: \"\"\n---\n")
     assert ("whats_new is one line of 1-140 chars", False) in [(n, ok) for n, ok, _ in wizardmd.check(tmp_path)]
+
+
+def test_owner_status_links_the_failed_version_to_its_bug(tmp_path, monkeypatch):
+    """wizard-ux#1191: a failed row links to the bug #524 filed or found; none while that switch is off."""
+    monkeypatch.setattr(au, "_release_managed", lambda: set())
+    c = _cfg(tmp_path)
+    url = "https://github.com/humanitylabs-org/wizard-messenger/issues/12"
+    _state(c, failed={"messenger": {"to": 97, "at": 1, "reason": "r", "bug": url},
+                      "movies": {"to": 5, "at": 1, "reason": "r", "bug": "https://evil.test/issues/1"},
+                      "notes": {"to": 3, "at": 1, "reason": "r"}})
+    monkeypatch.setattr(au, "_reports_on", lambda: True)
+    f = au.owner_status(c)["failed"]
+    assert f["messenger"]["bug"] == url
+    assert "bug" not in f["movies"] and "bug" not in f["notes"]
+    monkeypatch.setattr(au, "_reports_on", lambda: False)
+    assert all("bug" not in v for v in au.owner_status(c)["failed"].values())
+
+
+def test_reports_switch_is_the_update_bug_reports_switch(monkeypatch):
+    from wam import update_reports
+    monkeypatch.setattr(update_reports, "switch_on", lambda: True)
+    assert au._reports_on() is True
+    monkeypatch.setattr(update_reports, "switch_on", lambda: False)
+    assert au._reports_on() is False

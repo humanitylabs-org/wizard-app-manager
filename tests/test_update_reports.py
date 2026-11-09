@@ -294,3 +294,44 @@ def test_read_back_mismatch_of_this_run_wins_over_the_failed_run(tmp_path):
     # a mismatch from an earlier run does not hide a newer run that failed before its read-back
     row = ur.os_failure(os_box(tmp_path, receipt={**receipt, "at": "2026-11-08T03:50:00Z"}))
     assert row["step"] == "pulling the shell image"
+
+
+def test_apply_remembers_the_bug_for_settings(tmp_path, monkeypatch):
+    """wizard-ux#1191: the failed version keeps the bug URL the team was told in, so Settings can link it."""
+    from wam import cli, updates
+    monkeypatch.setattr(updates, "installing", lambda home: False)
+    monkeypatch.setattr(au, "candidates", lambda *a, **k: [
+        {"id": i, "name": i, "from": 1, "to": 2, "to_version": "2", "status": "running", "skip": None}
+        for i in ("wizard-messenger", "movies", "notes")])
+    monkeypatch.setattr(au, "_containers", lambda urn: ["running"])
+    monkeypatch.setattr(au, "baseline", lambda *a, **k: True)
+    monkeypatch.setattr(au, "reconcile_settings", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "app_update", lambda c, app_id: {"version": 2, "status": "running"})
+    monkeypatch.setattr(au, "verify", lambda *a, **k: "the app did not answer after the update")
+    monkeypatch.setattr(au, "rollback", lambda *a, **k: {"rolled_back": True})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
+    monkeypatch.setattr(au, "_notify", lambda c, *msg: None)
+
+    class C:
+        home = tmp_path
+        runtipi_root = tmp_path
+
+        def runtipi(self):
+            return type("Rt", (), {"installed": lambda self: []})()
+    url = "https://github.com/humanitylabs-org/wizard-messenger/issues/12"
+    reports = {"wizard-messenger": {"commented": url + "#issuecomment-1", "issue": url},
+               "movies": {"filed": "javascript:alert(1)", "issue": "javascript:alert(1)"},
+               "notes": {"error": "this Wizard has no GitHub login"}}
+    au.apply(C(), renames=lambda c, rt: [], reporter=lambda c, rows, store: reports)
+    failed = au._failed(tmp_path)
+    assert failed["wizard-messenger"]["bug"] == url and failed["wizard-messenger"]["to"] == 2
+    assert "bug" not in failed["movies"] and "bug" not in failed["notes"]
+    assert set(failed) == {"wizard-messenger", "movies", "notes"}
+
+
+def test_bug_url_only_takes_github_issue_links():
+    ok = "https://github.com/humanitylabs-org/wizard-os/issues/7"
+    assert au.bug_url(ok) == ok
+    for bad in (None, 7, "", ok + "/x", ok.replace("https", "http"), "https://github.com/a/b/pull/3",
+                "https://github.com.evil/a/b/issues/3", "https://github.com/a/b/issues/0"):
+        assert au.bug_url(bad) is None, bad
