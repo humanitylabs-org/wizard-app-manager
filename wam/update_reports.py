@@ -209,7 +209,10 @@ def os_failure(home=None) -> dict | None:
     pins = updates._read_status(h / "release-pins.json") or {}
     if receipt.get("status") == "unpinned":   # a developer box, updated by hand: not a release failure
         return None
-    if run.get("state") == "failed":
+    # A full update whose core read-back failed writes a `mismatch` receipt and then ends the run as failed: the
+    # read-back is the real failure when the receipt belongs to this run (written after it started).
+    mine = str(receipt.get("at") or "") >= str(run.get("started_at") or "")
+    if run.get("state") == "failed" and not (receipt.get("status") == "mismatch" and mine):
         step = str(run.get("step") or "install")
         reason = (run.get("failure_reason") or run.get("message")
                   or f"Installer failed (exit {run.get('exit_code', 'unknown')}).")

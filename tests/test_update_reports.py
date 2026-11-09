@@ -276,9 +276,21 @@ def test_report_failure_never_raises(tmp_path, monkeypatch):
     assert updates.report_failure(tmp_path) == {}
 
 
-def test_ask_mode_nightly_run_still_reports(tmp_path, monkeypatch):
+def test_nightly_run_reports_in_ask_mode_and_when_busy(tmp_path, monkeypatch):
     from wam import maintain, updates
     seen = []
-    monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
     monkeypatch.setattr(updates, "report_failure", lambda home=None: seen.append(home) or {})
+    monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
     assert maintain.updates_step(tmp_path, True)["state"] == "ask" and seen == [tmp_path]
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    assert maintain.updates_step(tmp_path, False)["state"] == "deferred" and seen == [tmp_path, tmp_path]
+
+
+def test_read_back_mismatch_of_this_run_wins_over_the_failed_run(tmp_path):
+    receipt = {"release": "0.4.2", "status": "mismatch", "at": "2026-11-09T03:50:00Z",
+               "checks": [{"name": "shell image", "core": True, "ok": False}]}
+    row = ur.os_failure(os_box(tmp_path, receipt=receipt, step="read-back of the release"))
+    assert row["step"] == "read-back" and "shell image" in row["reason"]
+    # a mismatch from an earlier run does not hide a newer run that failed before its read-back
+    row = ur.os_failure(os_box(tmp_path, receipt={**receipt, "at": "2026-11-08T03:50:00Z"}))
+    assert row["step"] == "pulling the shell image"
