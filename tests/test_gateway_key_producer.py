@@ -1,0 +1,231 @@
+"""#387: the App Manager writes the gateway's grant keys (grants/agent-service.json) for every app with tools, behind
+the off-by-default feature switch wizard/gateway-keys. Providers first, hand-written keys and rows adopted unchanged,
+removal on uninstall, 0600 owned by the Agent Service's user."""
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from wam import cli, gateway_keys  # noqa: E402
+
+HAND = "ab" * 32
+HOST = "host:agent-service"
+
+
+class LocalFiles:
+    """RuntipiFiles on the test's own disk: records each write (path, mode, uid, gid) instead of chowning."""
+
+    def __init__(self, owners=None):
+        self.writes = []
+        self.owners = owners or {}
+
+    def read(self, p):
+        return Path(p).read_bytes() if Path(p).is_file() else None
+
+    def stat(self, p):
+        p = Path(p)
+        if not p.exists() or p.is_symlink():
+            return None
+        st = p.stat()
+        uid, gid = self.owners.get(str(p), (st.st_uid, st.st_gid))
+        return stat.S_IMODE(st.st_mode), uid, gid
+
+    def write(self, p, data, mode, uid, gid):
+        p = Path(p)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.writes.append((p.name if p.name != "grants.json" else p.parent.parent.name, mode, uid, gid))
+        tmp = p.with_name(p.name + ".t")
+        tmp.write_bytes(data)
+        os.chmod(tmp, mode)
+        tmp.replace(p)
+        self.owners[str(p)] = (uid, gid)
+
+
+@pytest.fixture
+def box(tmp_path):
+    home = tmp_path / "wizard-os"
+    home.mkdir()
+    root = tmp_path / "runtipi"
+    os_home = root / "app-data" / "wizardapps" / "wizard-agent-service" / "data" / "wizard-os"
+    os_home.mkdir(parents=True)
+    files = LocalFiles({str(os_home): (1000, 1000)})   # the service runs as uid 1000 here
+    return SimpleNamespace(home=home, runtipi_root=root, os_home=os_home, files=files,
+                           gw=os_home / "grants" / "agent-service.json")
+
+
+def app(i, mcp=True, store="wizardapps"):
+    return {"id": i, "urn": f"{i}:{store}", **({"mcp": {"url": "http://127.0.0.1:1/mcp"}} if mcp else {})}
+
+
+def reg(*apps):
+    return {"apps": [app("wizard-agent-service"), app("wizard-ux", mcp=False), *apps]}
+
+
+def app_file(box, i, incoming=(), enforce=True):
+    f = box.runtipi_root / "app-data" / "wizardapps" / i / "wizard" / "grants.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"outgoing": {}, "incoming": list(incoming), "enforce": enforce}))
+    return f
+
+
+def rows(f):
+    return json.loads(f.read_text())["incoming"]
+
+
+def gateway(box):
+    return json.loads(box.gw.read_text())["outgoing"]
+
+
+def test_mints_one_key_per_app_with_tools_and_publishes_rows_first(box):
+    m, n = app_file(box, "messenger"), app_file(box, "notes")
+    keys = iter(["11" * 32, "22" * 32])
+    res = gateway_keys.sync(reg(app("messenger"), app("notes")), box.home, box.runtipi_root, files=box.files,
+                            mint=lambda: next(keys))
+    assert gateway(box) == {"messenger": "11" * 32, "notes": "22" * 32}
+    assert rows(m) == [{"from": HOST, "sha256": gateway_keys.digest("11" * 32)}]
+    assert rows(n) == [{"from": HOST, "sha256": gateway_keys.digest("22" * 32)}]
+    # providers before the gateway file, which is 0600 and owned by the Agent Service's user
+    assert [w[0] for w in box.files.writes] == ["messenger", "notes", "agent-service.json"]
+    assert box.files.writes[-1][1:] == (0o600, 1000, 1000)
+    assert res["minted"] == ["messenger", "notes"]
+    assert "11" * 32 not in json.dumps(res)
+    assert json.loads((box.home / gateway_keys.STATE).read_text()) == {"managed": ["messenger", "notes"]}
+
+
+def test_the_doctor_row_passes_after_a_sync(box):
+    app_file(box, "messenger")
+    r = reg(app("messenger"))
+    gateway_keys.sync(r, box.home, box.runtipi_root, files=box.files)
+    name, ok, _ = gateway_keys.check(r, box.home, box.runtipi_root)
+    assert name == gateway_keys.NAME and ok
+
+
+def test_hand_written_key_and_row_are_adopted_unchanged(box):
+    """Miguel's hand fix: key in the gateway file and its row in Messenger's file stay exactly as they are."""
+    box.gw.parent.mkdir()
+    box.gw.write_text(json.dumps({"outgoing": {"messenger": HAND}}))
+    os.chmod(box.gw, 0o600)
+    box.files.owners[str(box.gw)] = (1000, 1000)
+    hand_row = {"from": HOST, "sha256": gateway_keys.digest(HAND)}
+    m = app_file(box, "messenger", [{"from": "calendar", "sha256": "cc" * 32}, hand_row])
+    before = m.read_bytes()
+    res = gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files,
+                            mint=lambda: pytest.fail("must not mint over a hand-written key"))
+    assert gateway(box) == {"messenger": HAND}
+    assert m.read_bytes() == before and box.files.writes == []   # nothing needed rewriting
+    assert res["keys"] == ["messenger"] and res["minted"] == [] and res["rows_added"] == []
+
+
+def test_a_hand_written_key_for_an_app_it_never_managed_is_kept(box):
+    box.gw.parent.mkdir()
+    box.gw.write_text(json.dumps({"outgoing": {"something-else": HAND}}))
+    app_file(box, "messenger")
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    assert gateway(box)["something-else"] == HAND and "messenger" in gateway(box)
+
+
+def test_uninstall_removes_the_row_then_the_key(box):
+    m, n = app_file(box, "messenger", [{"from": "calendar", "sha256": "cc" * 32}]), app_file(box, "notes")
+    gateway_keys.sync(reg(app("messenger"), app("notes")), box.home, box.runtipi_root, files=box.files)
+    box.files.writes.clear()
+    res = gateway_keys.sync(reg(app("notes")), box.home, box.runtipi_root, files=box.files)
+    assert "messenger" not in gateway(box) and "notes" in gateway(box)
+    assert rows(m) == [{"from": "calendar", "sha256": "cc" * 32}]   # the other app's row is untouched
+    assert [w[0] for w in box.files.writes] == ["messenger", "agent-service.json"]
+    assert res["removed"] == ["messenger"]
+    assert json.loads((box.home / gateway_keys.STATE).read_text()) == {"managed": ["notes"]}
+
+
+def test_app_folder_already_gone_still_drops_the_key(box):
+    app_file(box, "messenger")
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    import shutil
+    shutil.rmtree(box.runtipi_root / "app-data" / "wizardapps" / "messenger")
+    gateway_keys.sync(reg(), box.home, box.runtipi_root, files=box.files)
+    assert gateway(box) == {}
+
+
+def test_other_stores_apps_without_tools_and_broken_files_are_left_alone(box):
+    app_file(box, "messenger")
+    bad = box.runtipi_root / "app-data" / "wizardapps" / "notes" / "wizard" / "grants.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text(json.dumps({"incoming": "nope"}))
+    r = reg(app("messenger"), app("notes"), app("clock", mcp=False), app("mine", store="private-store"))
+    res = gateway_keys.sync(r, box.home, box.runtipi_root, files=box.files)
+    assert set(gateway(box)) == {"messenger"}
+    assert json.loads(bad.read_text()) == {"incoming": "nope"}
+    assert set(res["skipped"]) == {"notes", "mine"}
+
+
+def test_no_grants_file_yet_means_no_key(box):
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    assert gateway(box) == {}
+
+
+def test_nothing_happens_before_the_agent_service_made_its_data_folder(box, tmp_path):
+    import shutil
+    shutil.rmtree(box.os_home)
+    app_file(box, "messenger")
+    res = gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    assert box.files.writes == [] and "*" in res["skipped"]
+
+
+def test_a_broken_gateway_file_is_never_replaced(box):
+    box.gw.parent.mkdir()
+    box.gw.write_text("{")
+    app_file(box, "messenger")
+    res = gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    assert box.gw.read_text() == "{" and box.files.writes == [] and "*" in res["skipped"]
+
+
+def test_a_wrong_mode_gateway_file_is_fixed(box):
+    app_file(box, "messenger")
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    os.chmod(box.gw, 0o644)
+    box.files.writes.clear()
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files)
+    assert box.files.writes == [("agent-service.json", 0o600, 1000, 1000)]
+
+
+# ---------------------------------------------------------------- the switch
+
+
+def test_switch_off_by_default_writes_nothing(box, monkeypatch):
+    monkeypatch.setattr(gateway_keys, "switch_on", lambda *a: False)
+    app_file(box, "messenger")
+    c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
+    assert gateway_keys.sync_if_on(c, reg(app("messenger")), files=box.files) is None
+    assert box.files.writes == [] and not box.gw.exists()
+
+
+def test_switch_on_runs_the_producer(box, monkeypatch):
+    seen = []
+    monkeypatch.setattr(gateway_keys, "switch_on", lambda home: seen.append(home) or True)
+    app_file(box, "messenger")
+    c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
+    res = gateway_keys.sync_if_on(c, reg(app("messenger")), files=box.files)
+    assert seen == [box.home] and res["keys"] == ["messenger"] and "messenger" in gateway(box)
+
+
+def test_the_switch_reads_feature_switch_wizard_gateway_keys(monkeypatch):
+    from wam import feature_switches
+    seen = []
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None: seen.append(tid) or False)
+    assert gateway_keys.switch_on() is False and seen == ["wizard/gateway-keys"]
+
+
+def test_a_failure_never_breaks_the_registry_write(box, monkeypatch):
+    monkeypatch.setattr(gateway_keys, "switch_on", lambda *a: True)
+    monkeypatch.setattr(gateway_keys, "sync", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("docker down")))
+    c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
+    assert gateway_keys.sync_if_on(c, reg()) == {"error": "docker down"}
+
+
+def test_write_registry_calls_the_hook(monkeypatch):
+    import inspect
+    assert "gateway_keys.sync_if_on(c, reg)" in inspect.getsource(cli.write_registry)
