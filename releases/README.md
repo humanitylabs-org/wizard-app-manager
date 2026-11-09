@@ -817,3 +817,8 @@ Channel: on latest only.
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/477 (promotion). `releases/stable` → 0.3.134 (sha256 `7401bad48670bcbc2e6912e3140dc335fe3b9c564c2bafe6b9d14f610d1a8d78`); `promotions/0.3.134.json` sha256 `b4011ca0744eeda5e122dbebeebe6bb9e6e9fe4f5448702487e00cfabbe15f35`.
 Stable 0.3.102 with only the Troubleshooter pin moved, 3e56f66d -> 9088a254 (wizard-troubleshooter #24–#42). Fast-tracked as **feature** (DECISIONS #93): #36/#38/#42 add owner-approved repair plans with backups and Undo, on by default; the guardian stays report-only (GUARDIAN_ACT=0). Installed upgrade 0.3.102 → 0.3.134 passed on a disposable KVM guest (candidate served from wizard-os 8402c55, sha256 identical to this mirror's `0.3.134.json`): wizard-os docs/acceptance/promote-0.3.134.md.
 Rollback: point `releases/stable` back at 0.3.102 (it already has a valid promotion record) in both repos.
+## 0.3.137 provenance
+
+Canonical: wizard-os releases/0.3.137.json. SHA256: `2cdd1d18cd70917cb7239c7d977a2eeaec093b50dd875c534dd1103fdac76dcb`.
+Latest 0.3.136 with Wizard UX 4fe0e844 -> 1bda35c0: the AI apps header name opens the shared Wizard switcher, so a box without the devices registry lists its way back to another Wizard (wizard-ux#1208), plus one unsent-message fix already on main. Cut by hand onto latest; Stable stays 0.3.134.
+Channel: on latest only.
