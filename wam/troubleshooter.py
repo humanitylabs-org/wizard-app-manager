@@ -16,7 +16,9 @@ units beside App Manager (like `wam serve`), never as a Runtipi app.
   chose report-only: `wam troubleshooter --report-only` (saved in ~/.wizard-os/guardian.json, kept across upgrades;
   `--act` turns repairs back on). A box last set up by an older App Manager has GUARDIAN_ACT=0 in host.env as that
   version's default, not as anyone's choice, so it now acts too; GUARDIAN_ACT=0 typed into host.env by hand after this
-  version wrote it counts as the owner's choice and is kept;
+  version wrote it counts as the owner's choice and is kept (read as systemd reads it, quotes included; a value that
+  is neither 0 nor 1 keeps the guardian report-only, never turns repairs on); a guardian.json that exists but can't be
+  read keeps it report-only until the owner runs `--act` or `--report-only` again;
 - mounts /troubleshoot on every owner shell HTTPS port, never replacing someone else's route;
 - leaves a hand-installed Troubleshooter (units not written by this command) exactly as it is.
 
@@ -24,6 +26,8 @@ WIZARD_TROUBLESHOOTER=0 skips it. Status lands in ~/.wizard-os/troubleshooter.js
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -229,13 +233,32 @@ def _guardian_file(wizard_home: Path) -> Path:
     return wizard_home / "guardian.json"
 
 
-def guardian_choice(wizard_home: Path) -> bool | None:
-    """The owner's saved choice: True = repairs on, False = report-only, None = never chose (default: repairs on)."""
+UNREADABLE = "unreadable"   # guardian.json exists but can't be read: the owner may have chosen report-only, so stay off
+
+
+def guardian_choice(wizard_home: Path):
+    """The owner's saved choice: True = repairs on, False = report-only, None = never chose (no file: repairs on),
+    UNREADABLE = a file that exists but can't be read or makes no sense (fail closed: report-only)."""
     try:
         d = json.loads(_guardian_file(wizard_home).read_text())
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
-    return d["act"] if isinstance(d, dict) and isinstance(d.get("act"), bool) else None
+    except (OSError, ValueError):
+        return UNREADABLE
+    return d["act"] if isinstance(d, dict) and isinstance(d.get("act"), bool) else UNREADABLE
+
+
+@contextlib.contextmanager
+def _guardian_lock(wizard_home: Path):
+    """Held while the owner's choice and host.env are read and written together, so an overlapping
+    `wam troubleshooter` can't publish one without the other. Never held across a download."""
+    wizard_home.mkdir(parents=True, exist_ok=True)
+    with open(wizard_home / "guardian.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def save_guardian_choice(wizard_home: Path, act: bool, how: str) -> None:
@@ -245,6 +268,23 @@ def save_guardian_choice(wizard_home: Path, act: bool, how: str) -> None:
     tmp.write_text(json.dumps({"act": act, "chosen_by": "owner", "how": how,
                                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2) + "\n")
     tmp.replace(f)
+
+
+def _env_value(raw: str) -> str | None:
+    """A value as systemd's EnvironmentFile reads it: surrounding blanks dropped, one pair of matching quotes removed
+    (with backslash escapes inside double quotes). None for a value systemd would not read the same way (unbalanced)."""
+    v = raw.strip()
+    if v[:1] in "\"'":
+        if len(v) < 2 or v[-1] != v[0]:
+            return None
+        inner = v[1:-1]
+        return re.sub(r"\\(.)", r"\1", inner) if v[0] == '"' else inner
+    return v
+
+
+def _act_from(raw: str) -> bool | None:
+    """True for 1, False for 0, None for anything else (unclear)."""
+    return {"1": True, "0": False}.get(_env_value(raw) or "")
 
 
 def _hand_set_guardian(env_file: Path) -> bool | None:
@@ -259,10 +299,13 @@ def _hand_set_guardian(env_file: Path) -> bool | None:
         return None
     wrote = next((m.group(1) for l in lines if (m := re.match(r"^# wam troubleshooter wrote GUARDIAN_ACT=([01]);", l))), None)
     # The last assignment is the one systemd's EnvironmentFile uses, so an appended GUARDIAN_ACT=0 counts.
-    now = next((l.split("=", 1)[1].strip() for l in reversed(lines) if l.startswith("GUARDIAN_ACT=")), None)
-    if wrote is None or now is None or now == wrote:
+    now = next((l.split("=", 1)[1] for l in reversed(lines) if l.startswith("GUARDIAN_ACT=")), None)
+    if wrote is None or now is None:
         return None
-    return now != "0"
+    act = _act_from(now)
+    if act is None:
+        return False   # an unclear value never turns repairs on (the guardian itself reads anything but 0 as on)
+    return None if act == (wrote == "1") else act
 
 
 def guardian_mode(wizard_home: Path, env_file: Path, save: bool = True) -> tuple[bool, str]:
@@ -276,14 +319,22 @@ def guardian_mode(wizard_home: Path, env_file: Path, save: bool = True) -> tuple
     choice = guardian_choice(wizard_home)
     if choice is None:
         return True, "default"
+    if choice is UNREADABLE:
+        return False, UNREADABLE
     return choice, "owner"
 
 
 def _write_env(env_file: Path, env: dict) -> None:
     body = "".join(f"{k}={v}\n" for k, v in env.items())
     body += GUARDIAN_NOTE.format(act=env.get("GUARDIAN_ACT", "1")) + "\n"
-    env_file.write_text(body)
-    env_file.chmod(0o600)
+    _write_private(env_file, body)
+
+
+def _write_private(f: Path, body: str) -> None:
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(body)
+    tmp.chmod(0o600)
+    tmp.replace(f)
 
 
 def _set_env_guardian(env_file: Path, act: bool) -> bool:
@@ -295,8 +346,7 @@ def _set_env_guardian(env_file: Path, act: bool) -> bool:
     val = "1" if act else "0"
     out = [l for l in lines if not l.startswith("GUARDIAN_ACT=") and not l.startswith("# wam troubleshooter wrote GUARDIAN_ACT=")]
     out += [f"GUARDIAN_ACT={val}", GUARDIAN_NOTE.format(act=val)]
-    env_file.write_text("\n".join(out) + "\n")
-    env_file.chmod(0o600)
+    _write_private(env_file, "\n".join(out) + "\n")
     return True
 
 
@@ -415,13 +465,17 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         why = "; its guardian setting is its own (not changed)" if guardian is not None else ""
         return done("kept", reason=f"a hand-installed {UNITS[0]} exists; left exactly as it is{why}")
     if guardian is not None and apply:
-        save_guardian_choice(wizard_home, guardian, "--act" if guardian else "--report-only")
-        # Takes effect on the next guardian run even if the rest of this install can't finish right now.
-        _set_env_guardian(p["env"], guardian)
+        with _guardian_lock(wizard_home):
+            save_guardian_choice(wizard_home, guardian, "--act" if guardian else "--report-only")
+            # Takes effect on the next guardian run even if the rest of this install can't finish right now.
+            _set_env_guardian(p["env"], guardian)
     if guardian is not None and not apply:
         act, why = guardian, "owner"
+    elif apply:
+        with _guardian_lock(wizard_home):
+            act, why = guardian_mode(wizard_home, p["env"])
     else:
-        act, why = guardian_mode(wizard_home, p["env"], save=apply)
+        act, why = guardian_mode(wizard_home, p["env"], save=False)
     res["guardian"] = {"act": act, "set_by": why}
     if not shutil.which("systemctl") or _run(["systemctl", "--user", "show-environment"], 20).returncode:
         return done("skipped", reason="no systemd user session on this box (the Troubleshooter needs one)")
@@ -452,7 +506,13 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         return done("failed", reason=str(e)[:300])
     res["node"] = node_bin
     p["share"].mkdir(parents=True, exist_ok=True)
-    _write_env(p["env"], env)
+    with _guardian_lock(wizard_home):
+        # Read the choice again: another `wam troubleshooter --report-only/--act` may have run while this one was
+        # downloading, and host.env must say what guardian.json says.
+        act, why = guardian_mode(wizard_home, p["env"])
+        env["GUARDIAN_ACT"] = "1" if act else "0"
+        res["guardian"] = {"act": act, "set_by": why}
+        _write_env(p["env"], env)
     p["units"].mkdir(parents=True, exist_ok=True)
     changed = False
     for name, body in _units(p["app"], node_bin, p["env"]).items():
@@ -481,6 +541,8 @@ def describe(res: dict) -> str:
     st = res.get("state")
     g = res.get("guardian") or {}
     mode = "" if not g else (" Guardian: repairs on." if g.get("act") else
+                             " Guardian: report-only (~/.wizard-os/guardian.json can't be read; `wam troubleshooter"
+                             " --act` or `--report-only` sets it again)." if g.get("set_by") == UNREADABLE else
                              " Guardian: report-only (owner's choice; `wam troubleshooter --act` turns repairs on).")
     if st == "ready":
         return f"Troubleshooter {str(res.get('commit', ''))[:12]} is running: " + ", ".join(res.get("routes") or []) + mode
