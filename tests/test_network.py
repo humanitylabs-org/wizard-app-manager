@@ -1490,3 +1490,70 @@ def test_a_cut_between_two_published_apps_is_reported_not_claimed():
     crm = next(a for a in rep["apps"] if a["id"] == "carlos-crm")
     assert crm["open"]["unenforced"] == [{"app": "resend-connector", "why": "disconnected"}]
     assert "NOT CUT: resend-connector" in net.describe(rep)
+
+
+def _lane_update_box(tmp_path):
+    """Installed Messenger-like app: one service on its own `web` lane; the update adds a `signin-lane` (internal)."""
+    root = tmp_path / "runtipi"
+    inst = root / "apps" / "wizardapps" / "m"
+    new = root / "repos" / "wizardapps" / "apps" / "m"
+    inst.mkdir(parents=True)
+    new.mkdir(parents=True)
+    old = {"services": {"m": {"image": "a", "networks": ["web"], "x-runtipi": {"is_main": True}}},
+           "networks": {"web": {}}}
+    (inst / "docker-compose.yml").write_text(yaml.safe_dump(old))
+    (inst / "docker-compose.generated.yml").write_text(yaml.safe_dump({
+        "services": {"m": {"image": "a", "networks": {"web": {}, "m_wizardapps_network": {"gw_priority": 0},
+                                                       "tipi_main_network": {"gw_priority": 1}}}},
+        "networks": {"web": {}, "tipi_main_network": {"name": "runtipi_tipi_main_network", "external": True},
+                     "m_wizardapps_network": {"name": "m_wizardapps_network"}}}))
+    newdoc = {"services": {"m": {"image": "a", "networks": ["web", "signin-lane"], "x-runtipi": {"is_main": True}},
+                           "signin-browser": {"image": "b", "networks": ["signin-lane"]}},
+              "networks": {"web": {}, "signin-lane": {"internal": True}}}
+    (new / "docker-compose.yml").write_text(yaml.safe_dump(newdoc))
+    return root, inst
+
+
+def test_pre_update_override_declares_networks_only_the_new_recipe_has(tmp_path):
+    """#520: the pre-update override names `signin-lane` for the isolated service, but Runtipi's update `stop` (and
+    its rollback) still read the OLD generated compose, which doesn't define it: Compose refused the project and the
+    update rolled back every night. The managed block now declares such a network (with the recipe's definition)
+    until the post-update reconcile, where the new generated compose defines it itself."""
+    root, inst = _lane_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "m", fresh=True)
+    p = net.plan([a], [], set())
+    ov = net.overlay_for(p["apps"][0])
+    assert "signin-lane" in ov["services"]["m"]
+    assert ov["networks"]["signin-lane"] == {"internal": True}
+    assert "web" not in ov["networks"]          # the installed compose defines it already: left alone
+    f = net.override_path(root, "wizardapps", "m")
+    assert net.write_overlay(f, ov)
+    doc = yaml.safe_load(f.read_text().replace("!override", ""))
+    assert doc["networks"]["signin-lane"] == {"internal": True}
+    assert "signin-lane" in doc[net.MARK]["networks"]
+    # after the update Runtipi wrote the new generated compose: the next reconcile drops the extra declaration
+    gen = yaml.safe_load((inst / "docker-compose.generated.yml").read_text())
+    gen["networks"]["signin-lane"] = {"internal": True}
+    gen["services"]["m"]["networks"]["signin-lane"] = {}
+    (inst / "docker-compose.generated.yml").write_text(yaml.safe_dump(gen))
+    (inst / "docker-compose.yml").write_text((root / "repos" / "wizardapps" / "apps" / "m" / "docker-compose.yml").read_text())
+    a2 = net.read_app(root, "wizardapps", "m")
+    ov2 = net.overlay_for(net.plan([a2], [], set())["apps"][0])
+    assert "signin-lane" not in ov2["networks"]
+    net.write_overlay(f, ov2)
+    assert "signin-lane" not in (yaml.safe_load(f.read_text().replace("!override", "")).get("networks") or {})
+
+
+def test_pre_update_override_parses_with_the_old_generated_compose(tmp_path):
+    """#520, end to end with real Compose when it is installed: old generated + pre-update override must be valid."""
+    import shutil
+    import subprocess
+    if not shutil.which("docker") or subprocess.run(["docker", "compose", "version"], capture_output=True).returncode:
+        pytest.skip("docker compose not installed")
+    root, inst = _lane_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "m", fresh=True)
+    f = net.override_path(root, "wizardapps", "m")
+    net.write_overlay(f, net.overlay_for(net.plan([a], [], set())["apps"][0]))
+    r = subprocess.run(["docker", "compose", "-p", "m", "-f", str(inst / "docker-compose.generated.yml"), "-f", str(f),
+                        "config", "-q"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
