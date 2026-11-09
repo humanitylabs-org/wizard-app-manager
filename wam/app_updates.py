@@ -247,7 +247,7 @@ def whats_new(installed: list[dict], *, store: str, runtipi_root: Path) -> dict:
             continue
         if not isinstance(text, str):
             continue
-        line = " ".join(text.split())   # one line, whatever the writer typed
+        line = " ".join(text.split())   # one line, even from a copy published before the checker rule (spec 8d)
         if line:
             out[app_id] = {"version": version, "text": line[:WHATS_NEW_MAX]}
     return out

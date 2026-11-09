@@ -168,6 +168,12 @@ def storage_problems(manifest: dict, compose: dict) -> list[str]:
     return bad
 
 
+def whats_new_ok(value: object) -> bool:
+    """`whats_new`: one line (1-140 characters, no line breaks or control characters) saying what changed in this
+    version, shown to the owner next to the update in Settings > About & updates (wizard-ux#1191)."""
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= 140 and not re.search(r"[\x00-\x1f\x7f]", value)
+
+
 def voice_names(manifest: dict) -> list[str]:
     """Spoken names that open this app; absence is backward compatible."""
     names = manifest.get("voice_names", [])
@@ -238,6 +244,9 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
             rule("voice_names valid", True)
         except ValueError as e:
             rule("voice_names valid", False, str(e))
+    if "whats_new" in d:
+        wn = d["whats_new"]
+        rule("whats_new is one line of 1-140 chars", whats_new_ok(wn), repr(wn)[:60])
     if "home_screen" in d:
         try:
             declared = home_screen(d)

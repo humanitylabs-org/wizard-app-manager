@@ -193,3 +193,12 @@ def test_whats_new_never_fails_on_broken_or_foreign_copies(tmp_path):
 def test_owner_status_without_store_copies_has_empty_notes(tmp_path, monkeypatch):
     monkeypatch.setattr(au, "_release_managed", lambda: set())
     assert au.owner_status(_cfg(tmp_path))["notes"] == {}
+
+
+def test_checker_rule_matches_the_spec(tmp_path):
+    from wam import wizardmd
+    assert wizardmd.whats_new_ok("Replies stay in their thread.") and wizardmd.whats_new_ok("x" * 140)
+    for bad in ["", "   ", "x" * 141, "two\nlines", "tab\there", None, 3, ["a"], {"a": 1}]:
+        assert not wizardmd.whats_new_ok(bad), bad
+    (tmp_path / "wizard.md").write_text("---\nwizard: 0.2\nid: whats-new-test\ntype: service\nwhats_new: \"\"\n---\n")
+    assert ("whats_new is one line of 1-140 chars", False) in [(n, ok) for n, ok, _ in wizardmd.check(tmp_path)]
