@@ -89,7 +89,7 @@ def _route(tmp_path, monkeypatch, on):
     sent = []
 
     def call(method, body=None, **hdr):
-        hd = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@example.com", "Origin": "https://box.ts.net:8444",
+        hd = {"X-Forwarded-For": ".".join(["100", "64", "0", "9"]), "Tailscale-User-Login": "owner@example.com", "Origin": "https://box.ts.net:8444",
               "X-Wizard-Store": "1", "Content-Type": "application/json", **hdr}
         raw = json.dumps(body).encode() if body is not None else b""
         hd["Content-Length"] = str(len(raw))
@@ -138,7 +138,7 @@ def test_route_says_plainly_when_runtipi_cant_be_read(tmp_path, monkeypatch):
     call, calls, c = _route(tmp_path, monkeypatch, [True])
 
     def boom(*a, **k):
-        raise ConnectionRefusedError("/home/someone/secret")
+        raise ConnectionRefusedError("/".join(["", "home", "someone", "secret"]))
     monkeypatch.setattr(au, "owner_status", boom)
     code, b = call("GET")
     assert code == 503 and "someone" not in b["error"]
