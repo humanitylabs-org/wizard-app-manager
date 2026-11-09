@@ -530,6 +530,8 @@ def updates_step(home: Path, quiet: bool) -> dict:
     try:
         if updates.mode(home) != "auto":
             return {"state": "ask", "mode": "ask"}
+        if updates.by_host():
+            return {"state": "host", "note": "This Wizard's Mac starts the update after saving a copy of its disk."}
         if not quiet:
             return {"state": "deferred", "reason": "The box was busy; the update waits for the next quiet night."}
         res = updates.apply_if_auto(home)

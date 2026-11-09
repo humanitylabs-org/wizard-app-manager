@@ -403,6 +403,14 @@ def test_updates_step_auto_applies_only_when_quiet(tmp_path, monkeypatch):
     assert maintain.updates_step(tmp_path, True) == {"state": "started", "to": "0.4.0", "from": "0.3.9"}
 
 
+def test_updates_step_leaves_a_host_run_box_to_its_host(tmp_path, monkeypatch):
+    from wam import updates
+    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
+    monkeypatch.setattr(updates, "by_host", lambda: True)
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: 1 / 0)
+    assert maintain.updates_step(tmp_path, True)["state"] == "host"
+
+
 def test_updates_failure_never_sinks_the_run(tmp_path, monkeypatch):
     from wam import updates
     monkeypatch.setattr(updates, "mode", lambda h=None: "auto")

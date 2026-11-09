@@ -350,3 +350,46 @@ def test_finished_states_are_left_alone(tmp_path):
         (h / "install-status.json").write_text(raw)
         assert updates.install_state(h) == state and (h / "install-status.json").read_text() == raw
     assert updates.install_state(tmp_path / "none") is None
+
+
+def test_a_host_run_box_keeps_no_timer_and_the_host_asks_before_its_disk_copy(tmp_path, monkeypatch):
+    """Wizard for Mac starts updates itself (HOST_UPDATES): it copies the VM disk, then applies. The box keeps the
+    owner's choice but no 03:30 timer, and `--check` gives the host the same decision without starting anything."""
+    h, ud = tmp_path / "wos", tmp_path / "units"
+    marker = tmp_path / "updates-by-host"
+    monkeypatch.setattr(updates, "HOST_UPDATES", marker)
+    _pin(h, "0.3.15")
+    updates.set_mode("auto", h, ud, systemctl=False)
+    assert (ud / "wizard-os-update.timer").is_file()
+    marker.write_text("")
+    assert updates.ensure_timer(h, ud, systemctl=False) == {"mode": "auto", "timer": False, "nightly": "host"}
+    assert not (ud / "wizard-os-update.timer").exists() and not (ud / "wizard-os-update.service").exists()
+    updates.set_mode("auto", h, ud, systemctl=False)                                # choosing Automatic again
+    assert updates.mode(h) == "auto" and not (ud / "wizard-os-update.timer").exists()
+    base, calls = _base(tmp_path, "0.3.16"), []
+    assert updates.status(h, base)["by_host"] is True
+    assert updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: True, check=True)["skipped"] == "busy"
+    res = updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: False, check=True)
+    assert (res["due"], res["started"], calls) == (True, False, [])
+    assert updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: False)["started"] is True
+    _pin(h, "0.3.16")
+    assert "due" not in updates.apply_if_auto(h, base, _ok_runner(calls), is_busy=lambda: False, check=True)
+    updates.set_mode("ask", h, ud, systemctl=False)
+    assert "due" not in updates.apply_if_auto(h, _base(tmp_path, "0.3.17"), _ok_runner(calls), is_busy=lambda: False,
+                                              check=True)
+
+
+def test_update_now_from_settings_on_a_host_run_box_asks_the_host(tmp_path, monkeypatch):
+    """Settings' Update now on a Mac's VM leaves a request; the Mac copies the disk, then runs `wam updates --apply`,
+    which consumes it."""
+    h = tmp_path / "wos"
+    monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "updates-by-host")
+    _pin(h, "0.3.15")
+    base, calls = _base(tmp_path, "0.3.16"), []
+    res = updates.request_host_apply(h, base)
+    assert res["started"] is False and res["host_pending"]["target"] == "0.3.16" and calls == []
+    assert updates.status(h, base)["host_pending"]["target"] == "0.3.16"
+    assert updates.apply(h, base, _ok_runner(calls))["started"] is True and len(calls) == 1
+    assert updates.host_pending(h) is None
+    _pin(h, "0.3.16")
+    assert updates.request_host_apply(h, base)["host_pending"] is None and updates.host_pending(h) is None

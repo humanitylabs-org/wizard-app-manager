@@ -48,6 +48,12 @@ SOAK_HOURS = 72               # a release runs on latest this long before it can
 FAST_TRACK_CLASSES = ("fix", "feature")   # DECISIONS #82 + #93 (wizard-os): any release with a passed upgrade test may skip the soak
 GRANDFATHERED_THROUGH = "0.3.25"   # stable when the channels split; every later promotion passes the full gate
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
+# A box whose host starts its updates (Wizard for Mac: it saves a copy of the VM disk first and puts it back if the
+# update fails). Root-owned and shipped in the host's guest image, so nothing in the box can drop it. On such a box
+# nothing here starts an Automatic update by itself: no 03:30 timer and no update in the nightly maintenance run.
+# The owner's Automatic / Ask me choice and Update now are unchanged; the host reads the choice through
+# `wam updates --apply-if-auto [--check]`.
+HOST_UPDATES = Path("/etc/wizard/updates-by-host")
 INSTALLER = "https://aiwizards.com/os.sh"
 UNIT = "wizard-os-update"
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
@@ -329,6 +335,36 @@ def install_state(home: Path | None = None, boot_path: Path | None = None, stat_
             os.close(fd)
 
 
+def by_host() -> bool:
+    """The host starts this box's Automatic updates (HOST_UPDATES)."""
+    return HOST_UPDATES.exists()
+
+
+HOST_REQUEST = "host-update-request.json"
+
+
+def host_pending(home: Path | None = None) -> dict | None:
+    """The owner's Update now, waiting for the host to copy the disk and start it (request_host_apply)."""
+    return _read_status(_home(home) / HOST_REQUEST)
+
+
+def request_host_apply(home: Path | None = None, base: str | None = None) -> dict:
+    """Update now on a host-run box (Settings, from any of the owner's devices): ask the host to start the update
+    after its disk copy instead of starting it here. The host picks the request up within a minute and runs
+    `wam updates --apply`, which consumes it."""
+    st = status(home, base, fresh=True)
+    if st["installing"] or not st["update_available"] or st["unpinned"]:
+        return {**st, "started": False}
+    doc = {"target": st["latest"], "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    path = _home(home) / HOST_REQUEST
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc) + "\n")
+    os.replace(tmp, path)
+    return {**st, "started": False, "host_pending": doc,
+            "note": "Your Mac saves a copy of Wizard OS first, then starts the update. Wizard restarts once."}
+
+
 def installing(home: Path | None = None) -> bool:
     """An installer run (e.g. an update just started) is still going; a run cut short by a reboot is not."""
     return install_state(home) == "running"
@@ -397,6 +433,8 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "interrupted": run == "interrupted",
             "failed": failed, "failure_reason": reason if failed else None,
             "retry_target": retry, "superseded": superseded,
+            # The host starts Automatic updates (Wizard for Mac, after its disk copy), not this box's own timer.
+            "by_host": by_host(), "host_pending": host_pending(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": _quick_now(home, installer, run) if run == "running" else
                      bool(newer and not failed and retry is None and _quick(home, want, base)),
@@ -444,6 +482,17 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = _systemctl(systemctl)
+    if by_host():   # the host starts updates; a timer here would update without the host's disk copy
+        if (ud / f"{UNIT}.timer").exists():
+            run("disable", "--now", f"{UNIT}.timer")
+        for p in files:
+            p.unlink(missing_ok=True)
+        run("daemon-reload")
+        out = {"mode": m, "timer": False, "nightly": "host"}
+        if unit_dir is None:
+            from . import app_updates
+            out.update(app_updates.ensure_timer(home, None, systemctl))
+        return out
     if (ud / "wizard-os-maintain.timer").exists():   # the nightly maintenance run applies Automatic (wam/maintain.py)
         if (ud / f"{UNIT}.timer").exists():
             run("disable", "--now", f"{UNIT}.timer")
@@ -495,6 +544,7 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
     names the channel release apply_if_auto checked. `force` is the only way to rerun the installer on an unpinned box (it then
     moves onto stable pins)."""
+    (_home(home) / HOST_REQUEST).unlink(missing_ok=True)   # the host acted on the owner's request (request_host_apply)
     st = status(home, base, fresh=True)
     retry = st["retry_target"]
     if target:
@@ -626,10 +676,14 @@ def auto_target(st: dict, base: str | None = None) -> str | None:
     return latest(base, chan="latest") or st.get("stable")   # the cache status(fresh=True) just filled
 
 
-def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
+def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None,
+                  check: bool = False) -> dict:
     """The nightly timer: apply only in Automatic, only this box's channel release (stable: a promoted stable
     release; latest: the newest Latest release, #458), never on an unpinned box, and not while the agent is working
-    (skipped; the next nightly window tries again)."""
+    (skipped; the next nightly window tries again).
+
+    `check`: the same decision without starting anything; `due` is True when this call would start the update now.
+    A host that saves a disk copy first (HOST_UPDATES) asks this before it stops the box for that copy."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
     st = status(home, base, fresh=True)
@@ -660,6 +714,8 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
                 "note": f"stable {target} has no valid promotion record; Automatic waits for a tested release"}
     if (is_busy or (lambda: busy(service_origin(home))))():
         return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
+    if check:
+        return {**st, "started": False, "due": True}
     res = apply(home, base, runner, target=target)
     if res.get("started") and retrying:
         _auto_retry_mark(home, target)
