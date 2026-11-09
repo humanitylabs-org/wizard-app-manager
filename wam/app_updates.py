@@ -209,6 +209,27 @@ def status(c=None) -> dict:
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
 
 
+# ---------------------------------------------------------------- Settings > About & updates (wizard-ux#1191)
+
+SWITCH = "wizard/app-updates-list"   # the same off-by-default switch as the Apps list in Settings
+
+
+def switch_on(home: Path | None = None) -> bool:
+    from . import feature_switches
+    return feature_switches.is_on(SWITCH, home)
+
+
+def owner_status(c=None) -> dict:
+    """status() plus what the owner needs to read a failure: the version that failed, when, and why (plain text).
+    Read only; the same state file the nightly run writes, never a copy."""
+    from . import cli
+    c = c or cli.Config()
+    failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300]}
+              for k, v in _failed(c.home).items()}
+    last = _state(c.home).get("last")
+    return {**status(c), "failed": failed, "last": last if isinstance(last, dict) else None}
+
+
 # ---------------------------------------------------------------- verify / roll back
 
 def _containers(urn: str) -> list[str]:
@@ -523,9 +544,10 @@ def apply_if_auto(c=None, is_busy=None) -> dict:
     return apply(c)
 
 
-def start_detached(runner=subprocess.run) -> dict:
-    """The App Manager's Update apps button: the same run as the nightly timer, in the background, in any mode."""
+def start_detached(runner=subprocess.run, only: list[str] | None = None) -> dict:
+    """The App Manager's Update apps button: the same run as the nightly timer, in the background, in any mode.
+    `only` (Settings' Update now / Retry on one app) is `wam app-updates --apply <id>`."""
     wam = str(Path.home() / ".local/bin/wam")
     p = runner(["systemd-run", "--user", "--collect", f"--unit={UNIT}-now-{int(time.time())}", wam, "app-updates",
-                "--apply"], capture_output=True, text=True, timeout=30)
+                "--apply", *(only or [])], capture_output=True, text=True, timeout=30)
     return {"started": p.returncode == 0, **({} if p.returncode == 0 else {"error": (p.stderr or p.stdout)[-300:]})}

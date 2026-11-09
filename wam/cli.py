@@ -1847,6 +1847,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
             return self._feature_switches(method)
+        if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (switch wizard/app-updates-list)
+            return self._app_updates(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -2108,6 +2110,42 @@ class StoreHandler(BaseHTTPRequestHandler):
         except fs.SwitchError as e:
             return self._json(e.code, {"error": str(e)})
 
+    def _app_updates(self, method: str) -> None:
+        """App updates for Settings, behind the off-by-default switch wizard/app-updates-list (404 while it is off).
+        GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped). POST {"mode": "auto"|
+        "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry),
+        which runs in the background like the nightly timer. _go already checked the owner (and Origin for POST)."""
+        from . import app_updates as au, store_install as si
+        c = self.cfg
+        if not au.switch_on(c.home):
+            return self._json(404, {"error": "not found"})
+        if method == "GET":
+            try:
+                return self._json(200, au.owner_status(c))
+            except Exception as e:  # noqa: BLE001 - Runtipi unreachable: say so, never a stack trace
+                return self._json(503, {"error": f"app updates can't be read right now ({type(e).__name__})"})
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise ValueError("expected an object")
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        app = body.get("app", body.get("hold", body.get("unhold")))
+        if app is not None and not (isinstance(app, str) and si.ID.fullmatch(app)):
+            return self._json(400, {"error": "not an app id"})
+        if body.get("action") == "apply" and set(body) <= {"action", "app"}:
+            res = au.start_detached(only=[app] if app else None)
+            return self._json(200 if res.get("started") else 409, res)
+        if set(body) == {"mode"} and body["mode"] in au.MODES:
+            return self._json(200, au.set_mode(body["mode"], c.home))
+        if set(body) in ({"hold"}, {"unhold"}):
+            return self._json(200, au.hold(app, "hold" in body, c.home))
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"hold": id}, {"unhold": id} or '
+                                         '{"action": "apply"} (optional "app": id)'})
+
     def _updates(self, method: str) -> None:
         """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
         POST {"channel": "stable"|"latest"} saves the channel;
@@ -2149,6 +2187,7 @@ class GatewayStoreHandler(StoreHandler):
 
 
 UPDATES_PATH = "_updates"
+APP_UPDATES_PATH = "_app-updates"
 FEATURE_SWITCHES_PATH = "_feature-switches"
 MAIN_COMPARE_PATH = "_main-compare"
 DISK_PATH = "_disk"
