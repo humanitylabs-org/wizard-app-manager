@@ -155,3 +155,41 @@ def test_gateway_admits_the_app_updates_route():
     from wam import store_install as si
     assert si.gateway_path_ok("/_app-updates") and "_app-updates" in si.GATEWAY_CONTROL
     assert not si.gateway_path_ok("/_app-updates/x")
+
+
+def _store_copy(c, app_id, tipi, front):
+    d = c.runtipi_root / "repos" / "wizardapps" / "apps" / app_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text(json.dumps({"id": app_id, "tipi_version": tipi}))
+    (d / "wizard.md").write_text(f"---\nid: {app_id}\n{front}---\n\n# {app_id}\n")
+
+
+def test_owner_status_carries_one_line_whats_new_from_the_store_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(au, "_release_managed", lambda: set())
+    c = _cfg(tmp_path)
+    _store_copy(c, "messenger", 97, "whats_new: |\n  Replies stay in their thread.\n  Faster start.\n")
+    _store_copy(c, "movies", 5, "summary: Films\n")                       # no whats_new: no line
+    _store_copy(c, "notes", 3, "whats_new: [not, a, string]\n")           # not text: no line
+    _store_copy(c, "wizard-ux", 2, "whats_new: '" + "x" * 300 + "'\n")     # capped at one short line
+    s = au.owner_status(c)
+    assert s["notes"]["messenger"] == {"version": 97, "text": "Replies stay in their thread. Faster start."}
+    assert "movies" not in s["notes"] and "notes" not in s["notes"]
+    assert s["notes"]["wizard-ux"] == {"version": 2, "text": "x" * au.WHATS_NEW_MAX}
+
+
+def test_whats_new_never_fails_on_broken_or_foreign_copies(tmp_path):
+    root = tmp_path / "tipi"
+    d = root / "repos" / "wizardapps" / "apps" / "broken"
+    d.mkdir(parents=True)
+    (d / "wizard.md").write_text("no front matter")
+    (d / "config.json").write_text("{")
+    rows = [{"app": {"appName": "broken", "appStoreSlug": "wizardapps"}},
+            {"app": {"appName": "../etc", "appStoreSlug": "wizardapps"}},
+            {"app": {"appName": "other", "appStoreSlug": "another-store"}},
+            {"app": {"appName": "missing", "appStoreSlug": "wizardapps"}}, {}]
+    assert au.whats_new(rows, store="wizardapps", runtipi_root=root) == {}
+
+
+def test_owner_status_without_store_copies_has_empty_notes(tmp_path, monkeypatch):
+    monkeypatch.setattr(au, "_release_managed", lambda: set())
+    assert au.owner_status(_cfg(tmp_path))["notes"] == {}

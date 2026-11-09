@@ -43,7 +43,7 @@ chat run is active or a WizardOS update is installing. The installer sets the ti
 | `wam app-updates --ask` / `--auto` | turn nightly app updates off / on (Automatic is the default) |
 | `wam app-updates --hold <id>` / `--unhold <id>` | keep one app where it is |
 | `GET/POST /api/app-updates` | the same for the App Manager UI: `{"mode"}`, `{"hold"}`, `{"unhold"}`, `{"action": "apply"}` (runs in the background) |
-| `GET/POST /wizard-os-home/store-install/_app-updates` | the same for Settings > About & updates (owner only, same origin, like `_updates`), plus each failed version's reason and time; `{"action": "apply", "app": id}` is Update now / Retry for one app. Behind the feature switch `wizard/app-updates-list` (off by default): 404 while it is off (wizard-ux#1191) |
+| `GET/POST /wizard-os-home/store-install/_app-updates` | the same for Settings > About & updates (owner only, same origin, like `_updates`), plus each failed version's reason and time, and `notes`: each app's one-line What's new (`{id: {version, text}}`, from the optional wizard.md front matter key `whats_new` in the App Store's copy of the app); `{"action": "apply", "app": id}` is Update now / Retry for one app. Behind the feature switch `wizard/app-updates-list` (off by default): 404 while it is off (wizard-ux#1191) |
 
 **Never moved here:** the shell (`wizard-ux`), the Agent Service, Hermes and apps the WizardOS release pins (they
 move with the release), apps prepared from an exact owner-local selection (`.wizard-selection`), and versions the owner

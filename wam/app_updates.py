@@ -28,6 +28,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -201,10 +202,11 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
     return sorted(out, key=lambda r: r["id"])
 
 
-def status(c=None) -> dict:
+def status(c=None, installed: list[dict] | None = None) -> dict:
     from . import cli
     c = c or cli.Config()
-    rows = candidates(c.runtipi().installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+    installed = c.runtipi().installed() if installed is None else installed
+    rows = candidates(installed, store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
     return {"app_mode": mode(c.home), "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
 
@@ -219,15 +221,50 @@ def switch_on(home: Path | None = None) -> bool:
     return feature_switches.is_on(SWITCH, home)
 
 
+WHATS_NEW_MAX = 140                  # one line, like wizard.md `summary`
+_APP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+
+
+def whats_new(installed: list[dict], *, store: str, runtipi_root: Path) -> dict:
+    """{id: {"version": tipi_version, "text": one line}} for each installed app of the store whose App Store copy
+    says what changed: the optional wizard.md front matter key `whats_new` at the commit the Store holds now.
+
+    That copy is the version an update would install (metadata.latestVersion is its config.json tipi_version), and,
+    once the app has updated, the version it runs. Apps without the key are left out; the reader never fails."""
+    from . import wizardmd
+    out = {}
+    for row in installed:
+        app = row.get("app") or {}
+        app_id = app.get("appName")
+        if app.get("appStoreSlug") != store or not isinstance(app_id, str) or not _APP_ID.fullmatch(app_id):
+            continue
+        folder = Path(runtipi_root) / "repos" / store / "apps" / app_id
+        try:
+            with open(folder / "wizard.md", encoding="utf-8", errors="replace") as f:
+                text = wizardmd.front_matter(f.read(65536)).get("whats_new")
+            version = int(json.loads((folder / "config.json").read_text()).get("tipi_version"))
+        except Exception:  # noqa: BLE001 - no notes, unreadable or odd files: just no line for this app
+            continue
+        if not isinstance(text, str):
+            continue
+        line = " ".join(text.split())   # one line, whatever the writer typed
+        if line:
+            out[app_id] = {"version": version, "text": line[:WHATS_NEW_MAX]}
+    return out
+
+
 def owner_status(c=None) -> dict:
-    """status() plus what the owner needs to read a failure: the version that failed, when, and why (plain text).
-    Read only; the same state file the nightly run writes, never a copy."""
+    """status() plus what the owner needs to read a failure: the version that failed, when, and why (plain text),
+    and each app's one-line What's new (whats_new()). Read only; the same state file the nightly run writes and the
+    Store's own copy of each app, never a second copy."""
     from . import cli
     c = c or cli.Config()
+    installed = c.runtipi().installed()
     failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300]}
               for k, v in _failed(c.home).items()}
     last = _state(c.home).get("last")
-    return {**status(c), "failed": failed, "last": last if isinstance(last, dict) else None}
+    return {**status(c, installed), "failed": failed, "last": last if isinstance(last, dict) else None,
+            "notes": whats_new(installed, store=cli.STORE, runtipi_root=c.runtipi_root)}
 
 
 # ---------------------------------------------------------------- verify / roll back
