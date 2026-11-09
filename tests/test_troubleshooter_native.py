@@ -400,7 +400,7 @@ def test_an_unreadable_saved_choice_stays_report_only(tmp_path, stubs, monkeypat
 
 
 def test_a_missing_saved_choice_is_the_default_not_unreadable(tmp_path, stubs, monkeypatch):
-    home, wh = _ready(tmp_path, stubs, monkeypatch)
+    _home, wh = _ready(tmp_path, stubs, monkeypatch)
     assert T.guardian_choice(wh) is None
     (wh / "guardian.json").write_text("{broken")
     assert T.guardian_choice(wh) is T.UNREADABLE
