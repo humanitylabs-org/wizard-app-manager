@@ -865,3 +865,9 @@ Channel: on latest only (until promoted).
 Canonical: wizard-os releases/0.3.144.json (humanitylabs-org/wizard-os#487). SHA256: `934db0bf36d2e27e723e28b7c632147feecdc6bbb69ff2ddb42ed5d306affb3b`.
 Latest 0.3.142 with the same App Manager pin (7d60346f) and the corrected Troubleshooter note; stays ahead of the Stable candidate.
 Channel: on latest only.
+
+## stable 0.3.143
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/488 (promotion). `releases/stable` → 0.3.143 (sha256 `f6894d9004a8f8abb94f01c066aee26d4121da98bfcb2a91ed6e6ed9cf48511b`); `promotions/0.3.143.json` sha256 `20e3dd0153a908f3ba1b45dda2fb5c7de2e38c613193b1292258c9808254597b`.
+Stable 0.3.134 with only the App Manager moved, 525e9d3d -> 7d60346f. Fast-tracked as **feature** (DECISIONS #93; James, 9 Nov 2026): #542 the Troubleshooter guardian repairs a broken link by itself by default (GUARDIAN_ACT=1), #548 an owner's `wam troubleshooter --report-only` choice is never lost; #546 rides along behind feature switch wizard/gateway-keys (off). Installed upgrade 0.3.134 → 0.3.143 passed on a disposable KVM guest (guardian act 0 → 1, set_by default; candidate served from wizard-os 83b5d8c, sha256 identical to this mirror's `0.3.143.json`): wizard-os docs/acceptance/promote-0.3.143.md. Replaces 0.3.140, which wizard-os recorded as Stable but this mirror never served as Stable.
+Rollback: point `releases/stable` back at 0.3.134 (it already has a valid promotion record) in both repos.
