@@ -360,8 +360,10 @@ def _notify(c, title: str, message: str, priority: str = "default", required: bo
         return False
 
 
-def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list = ()) -> tuple[str, str, str] | None:
-    """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue)."""
+def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list = (),
+             told: set | frozenset = frozenset()) -> tuple[str, str, str] | None:
+    """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue).
+    `told`: ids of failed/rolled-back apps already reported to the team (update_reports, switch-gated)."""
     if not (done or rolled or failed or needs or renamed):
         return None
 
@@ -377,18 +379,22 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
     if rolled:
         parts.append("Kept the previous version of " + ", ".join(nm(r) for r in rolled)
                      + " because the new one did not work; it is tried again when a newer version ships.")
+        if all(r.get("id") in told for r in rolled):
+            parts.append("The team was told about it.")
     if needs:
         parts.append("Waiting for you: " + "; ".join(f"{nm(n)}: {n['reason']}" for n in needs) + ".")
     if failed:
         parts.append("Could not update " + "; ".join(f"{nm(f)}: {f['reason']}" for f in failed)
-                     + ". Ask your Wizard to look at it.")
+                     + (". The team was told, so you don't need to report it." if all(f.get("id") in told for f in failed)
+                        else ". Ask your Wizard to look at it."))
     bad = rolled or failed or needs
     n = len(done) + len(renamed)
     title = "App updates need a look" if bad else (f"{n} app{'s' if n != 1 else ''} updated")
     return title, " ".join(parts), "high" if failed else "default"
 
 
-def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None) -> dict:
+def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
+          reporter=None) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -433,7 +439,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                     failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
                                    "reason": "moving it to its new name did not work, so it stays as it was"
                                    + ("" if res.get("rolled_back", True) else " (needs a look)"),
-                                   "rollback": res})
+                                   "rollback": res, "step": "move to its new name"})
             if renamed:
                 moved = {r["id"] for r in renamed}
                 rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
@@ -457,6 +463,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except Exception as e:  # noqa: BLE001 - one app never stops the others
                 res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
             problem = verify(c, rt, urn, r["id"], res, before)
+            step = "update" if res.get("error") else "check after update"
             if problem is None:
                 fails.pop(r["id"], None)
                 done.append({**r, "version": res.get("version")})
@@ -467,7 +474,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except (TypeError, ValueError):
                 unchanged = False
             if unchanged:   # the update never applied: the previous version still runs, nothing to restore
-                failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None})
+                failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None,
+                               "step": step})
                 continue
             print(f"{r['id']}: {problem}; rolling back", file=sys.stderr, flush=True)
             try:
@@ -475,7 +483,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except Exception as e:  # noqa: BLE001
                 rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
             (rolled if rb.get("rolled_back") else failed).append(
-                {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb})
+                {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb,
+                 "step": step})
         try:
             cli.write_registry(c, rt)
         except Exception:  # noqa: BLE001
@@ -484,11 +493,20 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
                 "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
         _write(c.home, failed=fails, last=last)
-        msg = _summary(done, rolled, failed, needs, renamed)
+        reports = {}
+        if notify and (rolled or failed):   # tell the team too (#524): only with oscar/update-bug-reports on
+            try:
+                from . import update_reports
+                reports = (reporter or update_reports.report_all)(c, rolled + failed, store=cli.STORE)
+            except Exception as e:  # noqa: BLE001 - reporting never fails the run
+                print(f"WARNING: update failures not reported: {type(e).__name__}", file=sys.stderr)
+        told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
+        msg = _summary(done, rolled, failed, needs, renamed, told)
         if notify and msg:
             _notify(c, *msg)
         return {"started": True, "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
-                "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None}
+                "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
+                **({"reported": reports} if reports else {})}
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()

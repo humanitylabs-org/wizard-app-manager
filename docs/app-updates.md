@@ -17,6 +17,12 @@ reached new installs only; existing boxes (including the publisher's own) kept t
 4. **Roll back** anything that fails from the backup the update just made. If the update never applied (Runtipi kept
    the old version), nothing is restored. A failed version is skipped for 7 days or until a newer version ships.
 5. **Tell the owner** in one Notifications line: what was updated, what was kept back and why.
+6. **Tell the team** (feature switch `oscar/update-bug-reports`, off by default, testers only; `wam/update_reports.py`):
+   each failed or rolled-back app files a bug labelled `bug` in the repo the app was installed from, or comments on
+   the open bug with the same failure (app, target version, failing step). It says box (short host name), app,
+   from/to version, failing step and the error, with home folders and tailnet names scrubbed. It writes with this
+   box's GitHub login (`private.token()`); without one nothing is filed. When it was filed, the owner's notice says
+   the team was told instead of "Ask your Wizard to look at it."
 
 **When.** `wizard-app-updates.timer` (systemd user timer, nightly 04:30 + up to 1 h, persistent), skipped while a
 chat run is active or a WizardOS update is installing. The installer sets the timer up on every run
