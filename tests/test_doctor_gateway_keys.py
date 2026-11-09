@@ -69,11 +69,33 @@ def test_missing_and_malformed_keys_are_flagged_without_printing_keys(box):
     assert KEY not in detail and "not-a-key" not in detail
 
 
+def app_rows(box, app_id, keys):
+    """The app's own layer-2 file with a host:agent-service row per key."""
+    f = box.runtipi_root / "app-data" / "wizardapps" / app_id / "wizard" / "grants.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"outgoing": {}, "enforce": True,
+                             "incoming": [{"from": "host:agent-service", "sha256": gateway_keys.digest(k)} for k in keys]}))
+    return f
+
+
 def test_all_keys_present_passes(box):
     d = service_home(box)
     write_keys(d, {"messenger": KEY, "notes": "cd" * 32})
+    app_rows(box, "messenger", [KEY])
+    app_rows(box, "notes", ["cd" * 32])
     [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
     assert ok and detail.startswith("2 apps")
+
+
+def test_key_without_the_apps_row_is_flagged(box):
+    """AI review on #387: a gateway key the app doesn't hold (no host:agent-service row) still leaves tools hidden."""
+    d = service_home(box)
+    write_keys(d, {"messenger": KEY, "notes": "cd" * 32})
+    app_rows(box, "messenger", [KEY])
+    app_rows(box, "notes", ["ef" * 32])
+    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    assert not ok and "host:agent-service row) for notes" in detail and "messenger" not in detail
+    assert "cd" * 32 not in detail
 
 
 def test_no_agent_service_or_no_tools_adds_no_row(box):
@@ -95,6 +117,8 @@ def test_unreadable_file_is_read_through_the_runtipi_container(box, monkeypatch)
     real = Path.read_bytes
     monkeypatch.setattr(Path, "read_bytes",
                         lambda self: (_ for _ in ()).throw(PermissionError("0600 root")) if self == f else real(self))
+    app_rows(box, "messenger", [KEY])
+    app_rows(box, "notes", [KEY])
     row = gateway_keys.check(REG, box.home, box.runtipi_root, rt_read=rt_read)
     assert row and row[1] and seen == ["/data/app-data/wizardapps/wizard-agent-service/data/wizard-os/grants/agent-service.json"]
 
