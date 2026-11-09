@@ -2281,7 +2281,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
         if body.get("action") == "apply" and set(body) == {"action"}:
-            res = updates.apply()
+            # A Mac's VM: the Mac copies the disk first, then starts it (updates.request_host_apply).
+            res = updates.request_host_apply() if updates.by_host() else updates.apply()
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
         if set(body) == {"mode"} and body["mode"] in updates.MODES:
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
@@ -2648,6 +2649,7 @@ def main(argv: list[str] | None = None) -> int:
     upg.add_argument("--channel", choices=("stable", "latest"),
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
+    up.add_argument("--check", action="store_true", help="with --apply-if-auto: decide only (due: true), start nothing")
     upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
     up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
     au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
@@ -2721,9 +2723,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.force and not args.apply:
             print("--force only goes with --apply", file=sys.stderr)
             return 2
+        if args.check and not args.apply_if_auto:
+            print("--check only goes with --apply-if-auto", file=sys.stderr)
+            return 2
         res = (updates.set_channel(args.channel) if args.channel
                else updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
-               else updates.apply(force=args.force) if args.apply else updates.apply_if_auto() if args.apply_if_auto
+               else updates.apply(force=args.force) if args.apply else updates.apply_if_auto(check=args.check) if args.apply_if_auto
                else updates.ensure_timer() if args.ensure_timer else updates.status(fresh=True))
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0
