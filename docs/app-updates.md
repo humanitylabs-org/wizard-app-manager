@@ -19,7 +19,7 @@ reached new installs only; existing boxes (including the publisher's own) kept t
 5. **Tell the owner** in one Notifications line: what was updated, what was kept back and why.
 6. **Tell the team** (feature switch `oscar/update-bug-reports`, off by default, testers only; `wam/update_reports.py`):
    each failed or rolled-back app files a bug labelled `bug` in the repo the app was installed from, or comments on
-   the open bug with the same failure (app, target version, failing step). It says box (short host name), app,
+   the open bug with the same failure (app, target version, failing step). It says box (its short host name in a private, team-only repo; an anonymous stable `box-…` id in a public one), app,
    from/to version, failing step and the error, with home folders and tailnet names scrubbed. It writes with this
    box's GitHub login (`private.token()`); without one nothing is filed. When it was filed, the owner's notice says
    the team was told instead of "Ask your Wizard to look at it."

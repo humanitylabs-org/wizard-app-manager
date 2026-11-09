@@ -9,13 +9,14 @@ features or the WizardOS Tracker; off by default, and always off on For everyone
   - looks for an open issue labelled `bug` that carries the same failure mark (app, target version, failing step);
   - comments on it with this box's report, or files a new issue labelled `bug`.
 
-The report says: box (short host name only), app, from/to version, the failing step and the error. Home folders,
+The report says: box (its short host name in a private, team-only repo; an anonymous stable id in a public one), app, from/to version, the failing step and the error. Home folders,
 tailnet names and tailnet addresses are scrubbed from the error first. Writing uses this box's own GitHub login (the same
 one `private.token()` reads for private apps); without a login, or when GitHub refuses, nothing is filed and the owner's
 notice stays as it was. Reporting never fails or slows the update run beyond one short GitHub call per failure.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import socket
@@ -41,8 +42,19 @@ def switch_on() -> bool:
 
 
 def box_name() -> str:
-    """The box's short host name: never a full (tailnet) domain."""
+    """The box's short host name: never a full (tailnet) domain. Only sent to private (team-only) repos."""
     return (socket.gethostname() or "unknown").split(".", 1)[0][:63] or "unknown"
+
+
+def box_id() -> str:
+    """An anonymous, stable id for this box, for public repos: the team can match reports from one box without
+    learning its name. `wam app-updates` on the box prints nothing more; the owner can tell the team if they want."""
+    seed = socket.gethostname() or ""
+    try:
+        seed += Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        pass
+    return "box-" + hashlib.sha256(("wizard-update-report:" + seed).encode()).hexdigest()[:10]
 
 
 def scrub(text) -> str:
@@ -95,8 +107,9 @@ def draft(row: dict, box: str) -> dict:
     ])
     return {"key": key, "mark": MARK.format(key),
             "title": f"App update failed: {name} {frm} to {to} ({step})",
-            "body": (f"An automatic app update failed on a Wizard box. Filed by the App Manager (feature switch "
-                     f"`{SWITCH}`).\n\n{report}\n\n{MARK.format(key)}\n"),
+            "body": (f"An automatic app update failed on a Wizard box. Filed automatically by the App Manager because "
+                     f"the box owner turned on the feature switch `{SWITCH}`; like any agent-drafted bug it waits for "
+                     f"a human yes.\n\n{report}\n\n{MARK.format(key)}\n"),
             "comment": f"Same failure on another run:\n\n{report}\n"}
 
 
@@ -111,8 +124,10 @@ def _github(method: str, path: str, tok: str, body: dict | None = None):
 
 def report(row: dict, repo: str, tok: str, *, box: str | None = None, gh=_github) -> dict:
     """File or comment for one failure. Returns {"filed"|"commented": url} or {"error": text} (no token in it)."""
-    d = draft(row, box or box_name())
     try:
+        if box is None:   # the box's name goes only to a private (team-only) repo; public repos get an anonymous id
+            box = box_name() if (gh("GET", f"/repos/{repo}", tok) or {}).get("private") is True else box_id()
+        d = draft(row, box)
         open_bugs = gh("GET", f"/repos/{repo}/issues?state=open&labels=bug&per_page=100", tok) or []
         same = next((i for i in open_bugs if isinstance(i, dict) and not i.get("pull_request")
                      and d["mark"] in str(i.get("body") or "")), None)

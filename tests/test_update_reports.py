@@ -13,14 +13,16 @@ ROW = {"id": "wizard-messenger", "name": "Messenger", "from": 93, "to": 97, "to_
 
 
 class FakeGitHub:
-    def __init__(self, open_bugs=(), fail=None):
-        self.open_bugs, self.fail, self.calls = list(open_bugs), fail, []
+    def __init__(self, open_bugs=(), fail=None, private=False):
+        self.open_bugs, self.fail, self.calls, self.private = list(open_bugs), fail, [], private
 
     def __call__(self, method, path, tok, body=None):
         self.calls.append((method, path, body))
         assert tok == "tok-123"
         if self.fail:
             raise self.fail
+        if method == "GET" and "/issues" not in path:
+            return {"private": self.private}
         if method == "GET":
             return self.open_bugs
         if path.endswith("/comments"):
@@ -64,6 +66,19 @@ def test_files_a_new_bug_labelled_bug():
     method, path, body = gh.calls[-1]
     assert (method, path) == ("POST", "/repos/o/r/issues") and body["labels"] == ["bug"]
     assert "?state=open&labels=bug" in gh.calls[0][1]
+    assert "waits for a human yes" in body["body"]
+
+
+def test_box_name_goes_only_to_private_repos(monkeypatch):
+    monkeypatch.setattr(ur, "box_name", lambda: "owners-laptop")
+    public = FakeGitHub(private=False)
+    ur.report(ROW, "o/r", "tok-123", gh=public)
+    body = public.calls[-1][2]["body"]
+    assert "owners-laptop" not in body and f"Box: {ur.box_id()}" in body and ur.box_id().startswith("box-")
+    assert public.calls[0][1] == "/repos/o/r"
+    team = FakeGitHub(private=True)
+    ur.report(ROW, "o/r", "tok-123", gh=team)
+    assert "Box: owners-laptop" in team.calls[-1][2]["body"]
 
 
 def test_comments_on_the_open_bug_with_the_same_failure():
@@ -74,7 +89,7 @@ def test_comments_on_the_open_bug_with_the_same_failure():
     assert got["commented"].endswith("#issuecomment-1") and got["issue"] == "https://github.com/o/r/issues/7"
     method, path, body = gh.calls[-1]
     assert (method, path) == ("POST", "/repos/o/r/issues/7/comments") and "Box: other-box" in body["body"]
-    assert len(gh.calls) == 2
+    assert len(gh.calls) == 2   # box given: no visibility lookup
 
 
 def test_github_refusal_is_an_error_without_the_token():
@@ -99,7 +114,7 @@ def test_switched_on_reports_each_app_it_can(tmp_path):
     rows = [ROW, {**ROW, "id": "no-source"}]
     got = ur.report_all(c, rows, store="wizardapps", token=lambda: "tok-123", gh=gh, on=lambda: True)
     assert got["wizard-messenger"]["filed"] and got["no-source"] == {"error": "no recorded repo for this app"}
-    assert gh.calls[0][1].startswith("/repos/humanitylabs-org/wizard-messenger/")
+    assert all(p.startswith("/repos/humanitylabs-org/wizard-messenger") for _, p, _ in gh.calls)
     nolog = ur.report_all(c, [ROW], store="wizardapps", token=lambda: "", gh=gh, on=lambda: True)
     assert nolog == {"wizard-messenger": {"error": "this Wizard has no GitHub login"}}
 
