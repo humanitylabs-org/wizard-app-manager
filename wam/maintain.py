@@ -529,6 +529,7 @@ def updates_step(home: Path, quiet: bool) -> dict:
     from . import updates
     try:
         if updates.mode(home) != "auto":
+            updates.report_failure(home)   # an Update now that failed still tells the team (switch-gated, #524)
             return {"state": "ask", "mode": "ask"}
         if not quiet:
             return {"state": "deferred", "reason": "The box was busy; the update waits for the next quiet night."}

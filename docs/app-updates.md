@@ -23,6 +23,12 @@ reached new installs only; existing boxes (including the publisher's own) kept t
    from/to version, failing step and the error, with home folders and tailnet names scrubbed. It writes with this
    box's GitHub login (`private.token()`); without one nothing is filed. When it was filed, the owner's notice says
    the team was told instead of "Ask your Wizard to look at it."
+   A failed WizardOS update (the installer run, or its read-back) is reported the same way to
+   humanitylabs-org/wizard-os (`update_reports.report_os`, called by the nightly maintenance run in either update
+   mode and by the Automatic check before it retries). Each failed run is reported once; a later failure of the same
+   release and step comments on the open bug. The owner gets one Notifications line: what did not finish, at which
+   step, and that the team was told. The "from" version is the last release that read back cleanly while the switch
+   was on (`~/.wizard-os/update-report-os.json`), else "unknown".
 
 **When.** `wizard-app-updates.timer` (systemd user timer, nightly 04:30 + up to 1 h, persistent), skipped while a
 chat run is active or a WizardOS update is installing. The installer sets the timer up on every run
