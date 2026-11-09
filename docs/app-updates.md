@@ -17,7 +17,7 @@ reached new installs only; existing boxes (including the publisher's own) kept t
 4. **Roll back** anything that fails from the backup the update just made. If the update never applied (Runtipi kept
    the old version), nothing is restored. A failed version is skipped for 7 days or until a newer version ships.
 5. **Tell the owner** in one Notifications line: what was updated, what was kept back and why.
-6. **Tell the team** (feature switch `oscar/update-bug-reports`, off by default, testers only; `wam/update_reports.py`):
+6. **Tell the team** (feature switch `wizard/update-bug-reports`, off by default, testers only; `wam/update_reports.py`):
    each failed or rolled-back app files a bug labelled `bug` in the repo the app was installed from, or comments on
    the open bug with the same failure (app, target version, failing step). It says box (its short host name in a private, team-only repo; an anonymous stable `box-…` id in a public one), app,
    from/to version, failing step and the error, with home folders and tailnet names scrubbed. It writes with this

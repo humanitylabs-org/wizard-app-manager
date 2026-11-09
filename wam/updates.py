@@ -617,7 +617,7 @@ def _auto_retry_clear(home: Path | None) -> None:
 
 def report_failure(home: Path | None = None) -> dict:
     """A failed WizardOS update files or links a bug in wizard-os, once per failed run, only with the feature switch
-    `oscar/update-bug-reports` on (wam/update_reports.py, #524). Never raises."""
+    `wizard/update-bug-reports` on (wam/update_reports.py, #524). Never raises."""
     try:
         from . import update_reports
         return update_reports.report_os(home)

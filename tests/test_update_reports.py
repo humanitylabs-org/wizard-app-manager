@@ -1,6 +1,6 @@
 """A failed app update tells the team (#524): file a bug in the app's repo, or comment on the open one.
 
-Behind the off-by-default feature switch `oscar/update-bug-reports` (wam/update_reports.py)."""
+Behind the off-by-default feature switch `wizard/update-bug-reports` (wam/update_reports.py)."""
 import json
 import urllib.error
 

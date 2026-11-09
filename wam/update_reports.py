@@ -1,7 +1,7 @@
 """Tell the team when an app update fails: file a bug in the app's repo, or comment on the open one (#524).
 
 Before this, a failed or rolled-back app update only reached the owner ("Ask your Wizard to look at it"), so the team
-heard about it only if the owner reported it. With the feature switch `oscar/update-bug-reports` on (Settings > Try new
+heard about it only if the owner reported it. With the feature switch `wizard/update-bug-reports` on (Settings > Try new
 features or the WizardOS Tracker; off by default, and always off on For everyone), the nightly app-update run
 (`app_updates.apply`) hands each failure to `report_all`, which for every app:
 
@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-SWITCH = "oscar/update-bug-reports"   # feature switch, off by default
+SWITCH = "wizard/update-bug-reports"   # feature switch, off by default
 OS_REPO = "humanitylabs-org/wizard-os"
 OS_STATE = "update-report-os.json"    # in ~/.wizard-os: the last clean release and the failed run already reported
 API_URL = "https://api.github.com"
@@ -44,7 +44,7 @@ _PRIVATE = [(re.compile("/" + "home" + r"/[^/\s'\"]+"), "/" + "home" + "/<user>"
 
 
 def switch_on() -> bool:
-    """Whether the owner turned on `oscar/update-bug-reports` (tests monkeypatch this)."""
+    """Whether the owner turned on `wizard/update-bug-reports` (tests monkeypatch this)."""
     from . import feature_switches
     return feature_switches.is_on(SWITCH)
 
