@@ -47,7 +47,23 @@ class SideBranches(unittest.TestCase):
         git(o, 'checkout', '-q', '-b', 'live-unique', 'main')
         commit(o, 'd', 'd\n')
         commit(o, 'e', 'e\n')
+        # landed commits, but the merge itself staged content that never reached main
+        git(o, 'checkout', '-q', '-b', 'tmp-side', 'main')
+        commit(o, 'f', 'side\n')
+        git(o, 'checkout', '-q', '-b', 'integration/resolved', 'main')
+        commit(o, 'g', 'other\n')
+        git(o, 'merge', '-q', '--no-ff', '--no-commit', 'tmp-side')
+        (Path(o) / 'h').write_text('only in the merge\n')
+        git(o, 'add', 'h')
+        git(o, 'commit', '-q', '--no-edit')
+        git(o, 'checkout', '-q', 'main')
+        git(o, 'cherry-pick', 'tmp-side')
+        git(o, 'cherry-pick', 'integration/resolved^1')
+        # a clean merge of main into a landed branch adds nothing
+        git(o, 'checkout', '-q', '-b', 'integration/clean-merge', 'main~1')
+        git(o, 'merge', '-q', '--no-ff', '--no-edit', 'main')
         # never matched
+        git(o, 'checkout', '-q', 'main')
         git(o, 'checkout', '-q', '-b', 'owner-snapshot/keep', 'live-unique')
         git(o, 'checkout', '-q', '-b', 'feature/other', 'live-unique')
         git(o, 'checkout', '-q', 'main')
@@ -58,17 +74,35 @@ class SideBranches(unittest.TestCase):
 
     def test_matches_only_side_branch_prefixes(self):
         self.assertEqual(sb.side_branches('origin', cwd=str(self.clone)),
-                         ['integration/merged', 'live-unique', 'live/picked'])
+                         ['integration/clean-merge', 'integration/merged', 'integration/resolved',
+                          'live-unique', 'live/picked'])
 
     def test_counts_unique_commits_by_patch_id(self):
         rows = {r['branch']: r['unique_commits'] for r in sb.report(cwd=str(self.clone))}
-        self.assertEqual(rows, {'integration/merged': 0, 'live/picked': 0, 'live-unique': 2})
+        self.assertEqual(rows['integration/merged'], 0)
+        self.assertEqual(rows['live/picked'], 0)
+        self.assertEqual(rows['live-unique'], 2)
+
+    def test_merge_with_own_content_is_not_safe(self):
+        rows = {r['branch']: r['unique_commits'] for r in sb.report(cwd=str(self.clone))}
+        self.assertEqual(rows['integration/clean-merge'], 0)
+        self.assertGreaterEqual(rows['integration/resolved'], 1)
+
+    def test_missing_remote_or_main_is_an_error_not_clean(self):
+        import os
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.clone)
+            self.assertEqual(sb.main(['--remote', 'nosuch']), 2)
+            self.assertEqual(sb.main(['--main', 'nosuch']), 2)
+        finally:
+            os.chdir(cwd)
 
     def test_render_splits_safe_and_decision(self):
         text = sb.render(sb.report(cwd=str(self.clone)))
-        self.assertIn('Side branches left: 3', text)
-        self.assertIn('No unique commits (safe to delete): 2', text)
-        self.assertIn('Unique commits, need a decision: 1', text)
+        self.assertIn('Side branches left: 5', text)
+        self.assertIn('No unique commits (safe to delete): 3', text)
+        self.assertIn('Unique commits, need a decision: 2', text)
         self.assertNotIn('owner-snapshot', text)
 
     def test_exit_code_is_zero_only_when_none_left(self):
@@ -77,7 +111,7 @@ class SideBranches(unittest.TestCase):
         try:
             os.chdir(self.clone)
             self.assertEqual(sb.main(['--json']), 1)
-            for b in ('integration/merged', 'live/picked', 'live-unique'):
+            for b in sb.side_branches('origin'):
                 git(str(self.clone), 'update-ref', '-d', f'refs/remotes/origin/{b}')
             self.assertEqual(sb.main([]), 0)
         finally:

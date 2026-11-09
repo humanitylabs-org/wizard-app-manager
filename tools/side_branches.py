@@ -4,13 +4,15 @@
 Live == main: `integration/*`, `live/*` and `live-*` branches on the remote are
 left over from live-first integration. This lists each one and says whether it
 still carries commits that are not on main, compared by patch id (`git cherry`),
-so a cherry-picked or squash-equivalent commit counts as landed.
+so a cherry-picked or squash-equivalent commit counts as landed. Merge commits
+not on main count too unless they are a clean re-merge of their parents.
 
 It never deletes or pushes anything. People with push rights act on the list.
 `owner-snapshot/*` branches are never matched (some live work is only there).
 
 Usage: python3 tools/side_branches.py [--remote origin] [--main main] [--json]
-Exit 0 when no side branches are left, 1 when some are, 2 on a git error.
+Exit 0 when no side branches are left, 1 when some are, 2 on a git error
+(including a remote or main tracking ref that does not exist).
 Run `git fetch --prune <remote>` first so the remote refs are current.
 """
 from __future__ import annotations
@@ -31,7 +33,9 @@ def is_side_branch(name: str) -> bool:
     return name.startswith(PATTERNS)
 
 
-def side_branches(remote: str, cwd: str | None = None) -> list[str]:
+def side_branches(remote: str, cwd: str | None = None, main: str = "main") -> list[str]:
+    # An empty list must mean "clean", never "wrong remote": fail when main is missing.
+    git("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{main}^{{commit}}", cwd=cwd)
     prefix = f"refs/remotes/{remote}/"
     out = git("for-each-ref", "--format=%(refname)", prefix, cwd=cwd)
     names = [line[len(prefix):] for line in out.splitlines() if line.startswith(prefix)]
@@ -44,17 +48,42 @@ def unique_commits(remote: str, main: str, branch: str, cwd: str | None = None) 
     return sum(1 for line in out.splitlines() if line.startswith("+"))
 
 
+def unique_merges(remote: str, main: str, branch: str, cwd: str | None = None) -> int:
+    """Merge commits not on main that carry content of their own.
+
+    `git cherry` skips merges, so a conflict resolution or extra staged change
+    would be invisible. A two-parent merge whose tree equals a clean re-merge of
+    its parents adds nothing; anything else (conflicts, edits, octopus) counts.
+    """
+    out = git("rev-list", "--merges", f"{remote}/{main}..{remote}/{branch}", cwd=cwd)
+    count = 0
+    for sha in out.split():
+        parents = git("rev-list", "--parents", "-n", "1", sha, cwd=cwd).split()[1:]
+        if len(parents) != 2:
+            count += 1
+            continue
+        try:
+            remerged = git("merge-tree", "--write-tree", *parents, cwd=cwd).split()[0]
+        except subprocess.CalledProcessError:
+            count += 1  # conflicted: the resolution is the merge's own content
+            continue
+        if remerged != git("rev-parse", f"{sha}^{{tree}}", cwd=cwd).strip():
+            count += 1
+    return count
+
+
 def last_commit_date(remote: str, branch: str, cwd: str | None = None) -> str:
     return git("log", "-1", "--format=%cs", f"{remote}/{branch}", cwd=cwd).strip()
 
 
 def report(remote: str = "origin", main: str = "main", cwd: str | None = None) -> list[dict]:
     rows = []
-    for name in side_branches(remote, cwd=cwd):
+    for name in side_branches(remote, cwd=cwd, main=main):
         rows.append({
             "branch": name,
             "last": last_commit_date(remote, name, cwd=cwd),
-            "unique_commits": unique_commits(remote, main, name, cwd=cwd),
+            "unique_commits": unique_commits(remote, main, name, cwd=cwd)
+            + unique_merges(remote, main, name, cwd=cwd),
         })
     return rows
 
@@ -79,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rows = report(args.remote, args.main)
     except subprocess.CalledProcessError as e:
-        print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
+        detail = (e.stderr or "").strip() or "ref not found"
+        print(f"git failed: {' '.join(e.cmd)}: {detail}", file=sys.stderr)
         return 2
     print(json.dumps(rows, indent=2) if args.json else render(rows))
     return 1 if rows else 0
