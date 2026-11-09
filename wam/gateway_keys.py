@@ -78,7 +78,10 @@ def check(reg: dict, home: Path | None, runtipi_root: Path | None, rt_read=None)
     apps = [a for a in (reg or {}).get("apps") or [] if isinstance(a, dict)]
     if not any(a.get("id") in AGENT_SERVICE_APPS for a in apps):
         return None
-    tools = sorted({a["id"] for a in apps if a.get("mcp") and a.get("id") and a["id"] not in AGENT_SERVICE_APPS})
+    # Apps from other stores keep their grants in their own store's reconcile: the producer leaves them alone, so the
+    # check does too (Codex on #546).
+    tools = sorted({a["id"] for a in apps if a.get("mcp") and a.get("id") and a["id"] not in AGENT_SERVICE_APPS
+                    and _store(a) == STORE})
     if not tools:
         return None
     p = path(home, runtipi_root)
@@ -164,6 +167,11 @@ class RuntipiFiles:
                 self._inner(p), format(mode, "o"), str(uid), str(gid), stdin=data), f"write {p}")
 
 
+def _store(a: dict) -> str:
+    """The store an installed app came from (registry `urn` is `<id>:<store>`); no urn counts as Wizard Apps."""
+    return str(a.get("urn") or f"_:{STORE}").partition(":")[2]
+
+
 def _provider_file(runtipi_root: Path, app_id: str) -> Path:
     """The app's layer-2 file, written by the backend's reconcile (wizard-app-grants.ts): app-data/<store>/<id>/wizard."""
     return Path(runtipi_root) / "app-data" / STORE / app_id / "wizard" / "grants.json"
@@ -200,6 +208,19 @@ def _save_state(home: Path, managed: set[str]) -> None:
 
 
 def sync(reg: dict, home: Path, runtipi_root: Path, files=None, mint=lambda: secrets.token_hex(32)) -> dict:
+    """One sync at a time per box: registry writers run concurrently (installer, API, network watcher), and two
+    first-time syncs must not mint different keys for one app (Codex on #546). See `_sync`."""
+    import fcntl
+    Path(home).mkdir(parents=True, exist_ok=True)
+    fd = os.open(Path(home) / (STATE + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return _sync(reg, home, runtipi_root, files, mint)
+    finally:
+        os.close(fd)
+
+
+def _sync(reg: dict, home: Path, runtipi_root: Path, files, mint) -> dict:
     """Give the gateway one key for every installed Wizard Apps app with tools. Returns a summary with app ids only.
 
     Order (spec/PERMISSIONS.md layer 2, providers first): every app's `host:agent-service` row is published before the
@@ -235,7 +256,7 @@ def sync(reg: dict, home: Path, runtipi_root: Path, files=None, mint=lambda: sec
         i = a["id"]
         if i in AGENT_SERVICE_APPS or not a.get("mcp"):
             continue
-        if not str(a.get("urn", "")).endswith(f":{STORE}"):
+        if _store(a) != STORE:
             out["skipped"][i] = "not from Wizard Apps (its grants are kept by its own store)"
             continue
         tools[i] = a
@@ -260,9 +281,15 @@ def sync(reg: dict, home: Path, runtipi_root: Path, files=None, mint=lambda: sec
             key = mint()
             out["minted"].append(i)
         h = digest(key)
-        if not any(r["from"] == HOST and r["sha256"] == h for r in pdoc["incoming"]):
-            pdoc["incoming"].append({"from": HOST, "sha256": h})
-            files.write(pf, _dump(pdoc), pst[0], pst[1], pst[2])
+        # The gateway can only send `key`, so any other host:agent-service row is an old (maybe exposed) key: drop it,
+        # keep every other caller's row and a matching hand-written row exactly as they are (Codex on #546).
+        keep = [r for r in pdoc["incoming"] if r["from"] != HOST or r["sha256"] == h]
+        added = not any(r["from"] == HOST for r in keep)
+        if added:
+            keep.append({"from": HOST, "sha256": h})
+        if keep != pdoc["incoming"]:
+            files.write(pf, _dump({**pdoc, "incoming": keep}), pst[0], pst[1], pst[2])
+        if added:
             out["rows_added"].append(i)
         outgoing[i] = key
         managed.add(i)

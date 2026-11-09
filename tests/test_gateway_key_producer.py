@@ -229,3 +229,43 @@ def test_a_failure_never_breaks_the_registry_write(box, monkeypatch):
 def test_write_registry_calls_the_hook(monkeypatch):
     import inspect
     assert "gateway_keys.sync_if_on(c, reg)" in inspect.getsource(cli.write_registry)
+
+
+def test_a_new_key_replaces_old_gateway_rows_but_keeps_other_callers(box):
+    """Codex on #546: when the gateway gets a new key, an older host:agent-service row must stop working."""
+    box.gw.parent.mkdir()
+    box.gw.write_text(json.dumps({"outgoing": {"messenger": "not valid"}}))
+    old = {"from": HOST, "sha256": gateway_keys.digest(HAND)}
+    other = {"from": "calendar", "sha256": "cc" * 32}
+    m = app_file(box, "messenger", [other, old])
+    gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=box.files, mint=lambda: "33" * 32)
+    assert gateway(box) == {"messenger": "33" * 32}
+    assert rows(m) == [other, {"from": HOST, "sha256": gateway_keys.digest("33" * 32)}]
+
+
+def test_concurrent_syncs_agree_on_one_key(box):
+    """Codex on #546: registry writers overlap; two first-time syncs must not publish different keys."""
+    import threading
+    m = app_file(box, "messenger")
+    errors = []
+
+    def run():
+        try:
+            gateway_keys.sync(reg(app("messenger")), box.home, box.runtipi_root, files=LocalFiles(box.files.owners))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=run) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert not errors
+    assert rows(m) == [{"from": HOST, "sha256": gateway_keys.digest(gateway(box)["messenger"])}]
+
+
+def test_doctor_leaves_other_stores_apps_to_their_store(box):
+    """Codex on #546: an app from another store is not checked against app-data/wizardapps."""
+    app_file(box, "messenger")
+    r = reg(app("messenger"), app("mine", store="private-store"))
+    gateway_keys.sync(r, box.home, box.runtipi_root, files=box.files)
+    _, ok, detail = gateway_keys.check(r, box.home, box.runtipi_root)
+    assert ok and detail.startswith("1 apps")
