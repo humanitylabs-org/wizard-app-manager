@@ -613,7 +613,7 @@ def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
     # Rewrite only on a real change, and keep the comment lines other writers put on top (`wam network reconcile`'s
     # header): rewriting identical content without them made every installer rerun look like a change and restarted
-    # Hermes on every Wizard OS update, killing the agent's background tasks (Mac VM, 10 Nov 2026).
+    # Hermes on every WizardOS update, killing the agent's background tasks (Mac VM, 10 Nov 2026).
     if dump_yaml(doc) != unchanged:
         head = ''.join(line + '\n' for line in itertools.takewhile(lambda l: l.startswith('#'), text.splitlines()))
         _atomic(override, head + dump_yaml(doc))
