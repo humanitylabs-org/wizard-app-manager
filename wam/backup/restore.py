@@ -32,6 +32,7 @@ import os
 import shutil
 import time
 import uuid
+import zipfile
 from .filesystem import Path
 from . import filesystem as datafs
 
@@ -39,7 +40,7 @@ from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
 from .appdata import ROOTS as APP_ROOTS, AppDataError
 from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
-                  box_digest, digest_differences, human, log, need_space, root_runtime_digest_path, skip_home_entry)
+                  box_digest, digest_differences, human, log, need_space, need_spaces, root_runtime_digest_path, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -346,16 +347,103 @@ class _Restore:
         self.save()
 
 
+def _undo_bytes(box: Box, m: dict, p: dict) -> int:
+    """Uncompressed upper estimate for retained app Undo archives, not just app-data.
+
+    Wizard/agent/Files originals use renames, so their sizes are not copied again.
+    Count shared volumes in each retained archive; the margin covers compression overhead.
+    Cross-provider Agent Service restore snapshots the destination, not the source app.
+    """
+    installed = box.installed()
+    apps = [a for a in m.get("apps", []) if a["id"] in p["install"] + p["replace"]
+            and a.get("data") in DATA_KINDS]
+    replaced = {a["urn"]: a for a in apps if a["urn"] in installed}
+    here = _here_apps(box, installed)
+    for kept in p["kept_here"]:
+        if kept["slot"] == "agent-service":
+            for dest in here:
+                if dest["id"] == kept["here"]:
+                    replaced[dest["urn"]] = dest
+    size, orphan_volumes = 0, set()
+    for a in replaced.values():
+        for path in box.appdata.paths(a["store"], a["id"]).values():
+            tree = bundle.tree_size(Path(path))
+            size += tree["bytes"] + tree["count"] * 1024
+        # Each app gets its own archive, even if two apps share a named volume.
+        size += box.appdata.volume_bytes(box.appdata.volumes(a["store"], a["id"]))
+    for a in apps:
+        if a["urn"] not in installed:
+            orphan_volumes.update(v for v in a.get("volumes") or [] if box.appdata.volume_exists(v))
+    return size + box.appdata.volume_bytes(sorted(orphan_volumes))
+
+
+def _budget(box: Box, wants: list[tuple[Path, int, str]]) -> None:
+    try:
+        need_spaces(box, wants)
+    except SpaceError as e:
+        raise SpaceError(f"{e}. Nothing was changed. Free some space and try again.") from None
+
+
 def _space_check(box: Box, r: _Restore, m: dict) -> None:
+    # Before writing staging: allow both the outer bundle's contents and their
+    # expanded app/agent data, PLUS all Undo snapshots retained until Undo/cleanup.
+    # The encrypted input is already on disk and reflected in disk_free.
     files = (m.get("files") or {}).get("bytes", 0) if (m.get("files") or {}).get("included") else 0
     rest = max(int(m.get("estimate_bytes") or 0) - files, 0)
-    home_dev = os.stat(_existing(box.home)).st_dev
-    files_dev = os.stat(_existing(r.files_root)).st_dev
-    if home_dev == files_dev:
-        need_space(box, box.home, rest + files + MARGIN, "restoring this backup")
-    else:
-        need_space(box, box.home, rest + MARGIN, "restoring this backup's apps, agents and settings")
-        need_space(box, r.files_root, files + MARGIN, "restoring this backup's files")
+    undo = _undo_bytes(box, m, plan(box, m, probe=False))
+    _budget(box, [(box.home, rest + undo + MARGIN, "backup staging and undo copies"),
+                  (box.runtipi_root, rest + MARGIN, "expanded restore data"),
+                  (r.files_root, files + MARGIN, "this backup's files")])
+
+
+def _space_after_stage(box: Box, r: _Restore, p: dict) -> None:
+    """Recheck exact expanded archive sizes before stopping anything or publishing last.json.
+
+    Staging is already charged against free space. Never trust a manifest estimate
+    to bound highly compressed inner tar/ZIP payloads (including old bundles).
+    """
+    from .appdata import check_archive
+    m = r.journal["manifest"]
+    undo = _undo_bytes(box, m, p)
+    expanded = 0
+    for a in m.get("apps", []):
+        if a["id"] not in p["install"] + p["replace"] + [k["bundle"] for k in p["kept_here"]]:
+            continue
+        archive = r.root / "stage/apps" / a["id"] / "data.tar.gz"
+        if archive.is_file():
+            with datafs.open(archive, "rb") as f:
+                report = check_archive(f)
+            expanded += report["bytes"] + report["entries"] * 1024
+    # Existing kept-in-place app data can be copied into swap staging as well.
+    wants = [(box.home, undo + MARGIN, "undo copies"),
+             (box.runtipi_root, expanded + undo + MARGIN, "expanded app data and kept folders")]
+    existing = {a.id: a for a in box.agents()}
+    refused = {a["id"] for a in p.get("refused") or []}
+    for a in m.get("agents", []):
+        if a.get("app") in refused:
+            continue
+        archive = r.root / "stage/agents" / a["id"] / "hermes-backup.zip"
+        with datafs.open(archive, "rb") as f, zipfile.ZipFile(f) as z:
+            size = sum(i.file_size + 1024 for i in z.infolist())
+        wants.append((_target_agent(box, a, existing).home, size + MARGIN, "expanded agent data"))
+    _budget(box, wants)
+    # Existing named volumes may be on a different filesystem from Runtipi.
+    # Conservatively charge all incoming app bytes per volume filesystem, plus
+    # any host-side writes on that same device. Do not create absent volumes.
+    names = {v for a in m.get("apps", [])
+             if a["id"] in p["install"] + p["replace"]
+             for v in a.get("volumes") or [] if box.appdata.volume_exists(v)}
+    by_dev = {}
+    for row in box.appdata.volume_usage(sorted(names)):
+        by_dev.setdefault(row["device"], []).append(row)
+    for dev, rows in by_dev.items():
+        host_need = sum(n for path, n, _ in wants if os.stat(_existing(path)).st_dev == dev)
+        need = host_need + expanded + MARGIN
+        free = min(row["free"] for row in rows)
+        if free < need:
+            raise SpaceError(f"not enough free space for restoring this backup's named volumes: "
+                             f"need {human(need)}, {human(free)} free. Nothing was changed. "
+                             "Free some space and try again.")
 
 
 def _existing(p: Path) -> Path:
@@ -467,6 +555,7 @@ def import_bundle(box: Box, path: Path, keys: fmt.Keys | None, *, yes: bool = Fa
     m = r.journal["manifest"]
     try:
         p = plan(box, m, stage=r.root / "stage")
+        _space_after_stage(box, r, p)
     except BaseException:
         discard(r)
         raise
