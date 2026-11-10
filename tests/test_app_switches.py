@@ -143,13 +143,40 @@ def test_unknown_app_switch_or_bad_ids_are_refused_plainly(box):
         fs.set_switch("messenger:drafts-first", "yes", box)
 
 
-def test_an_app_without_a_key_or_a_wrong_key_is_reported_not_fatal(box):
+def test_a_wrong_key_is_reported_not_fatal(box):
     (box / "messenger-owner" / "proof").write_bytes(b"x" * 32)
     rows, status = aps.listing(box)
     assert rows == [] and status[0]["ok"] is False and status[0]["status"] == 403
+
+
+def test_without_a_key_the_call_goes_through_the_box_serve_url(box):
     (box / "messenger-owner" / "proof").unlink()
-    rows, status = aps.listing(box)
-    assert rows == [] and "no owner proof key" in status[0]["error"]
+    seen = []
+
+    class Resp:
+        def __init__(self, doc):
+            self.doc = doc
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.doc).encode()
+
+    def opener(req, timeout=None):
+        seen.append((req.get_method(), req.full_url, dict(req.header_items())))
+        return Resp({"contract": aps.CONTRACT, "switches": [{"id": "drafts-first", "name": "D", "on": True}]})
+    rows, status = aps.listing(box, opener=opener)
+    assert status[0]["ok"] is True and rows[0]["on"] is True
+    method, url, headers = seen[-1]
+    assert url == "https://box.example:8444/messenger/api/view/switches"
+    assert headers.get("X-wizard-switch") == "1" and headers.get("Origin") == "https://box.example:8444"
+    assert not any(k.lower() == owner_proof.HEADER.lower() for k in headers)
+    row = aps.set_switch("messenger:drafts-first", True, box, opener=opener)
+    assert row["on"] is True and seen[-1][0] == "POST"
 
 
 def test_platform_edge_key_wins_over_a_hand_built_one(box):
