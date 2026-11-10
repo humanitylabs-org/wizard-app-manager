@@ -269,6 +269,9 @@ def check(repo: Path, github: str | None = None) -> list[tuple[str, bool, str]]:
             rule("owner_proof valid", True)
         except ValueError as e:
             rule("owner_proof valid", False, str(e))
+    if "switches" in d:
+        from .app_switches import parse as switches_path
+        rule("switches valid (wizard.app-switches/1 path)", switches_path(d.get("switches")) is not None, str(d.get("switches"))[:80])
     rule("spec version known", d.get("wizard") in SPECS, str(d.get("wizard")))
     rule("id valid", bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(d.get("id", "")))), str(d.get("id")))
     t = d.get("type")

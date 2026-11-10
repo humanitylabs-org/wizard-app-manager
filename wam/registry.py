@@ -78,6 +78,11 @@ def routes(root: Path | None = None) -> dict:
     return ok
 
 
+def _switches(w: dict) -> str | None:
+    from .app_switches import parse
+    return parse(w.get("switches")) if isinstance(w, dict) else None
+
+
 def _owner_proof(w: dict) -> dict | None:
     from . import owner_proof
     try:
@@ -136,6 +141,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             # Optional (wizard-os spec/OWNER_PROOF.md): the platform's owner edge signs this app's owner requests.
             # A malformed declaration is dropped here (wam check reports it), so the app keeps its own sign-in.
             **({"owner_proof": proof} if owner_proof_enabled and (proof := _owner_proof(w)) else {}),
+            # Optional (wizard-os docs/APP_SWITCHES.md): the app's feature-switch endpoint, merged into the box's one
+            # switch catalog (app_switches.py) so the Tracker's Try it can flip it.
+            **({"switches": sw} if (sw := _switches(w)) else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
