@@ -168,6 +168,14 @@ def public_projection(reg: dict) -> dict:
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
 
 
+def is_projection(reg: dict) -> bool:
+    """True for a registry re-read from apps.json: `build` gives every app a `_skill_src` key (None when it ships no
+    SKILL.md) and the public projection strips it. An empty app list is never treated as one, so a box whose apps are
+    all gone still has their skills removed."""
+    apps = reg.get("apps") or []
+    return bool(apps) and not any("_skill_src" in a for a in apps)
+
+
 def read_grants_file(path: Path) -> list | None:
     """Read public grant metadata when accessible; never require root-owned backend state."""
     try:
@@ -233,7 +241,11 @@ def write(reg: dict, root: Path | None = None) -> Path:
         reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
         reg['slots']['chats']['default'] = chats_views.BUILTIN
     sk.mkdir(exist_ok=True)
-    write_skills(sk, reg["apps"])
+    if not is_projection(reg):
+        write_skills(sk, reg["apps"])
+    # else: a re-read apps.json (public projection, no `_skill_src`) carries no skill sources. Copying from it would
+    # look like "no app has a skill" and prune every skills/<app>/ folder (#596: Store install/update emptied
+    # ~/.wizard-os/skills). The skills a build wrote stay as they are.
     prev = root / "apps.json"
     old = {}
     if prev.is_file():
