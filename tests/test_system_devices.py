@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from wam import cli, devices, links, resources
+from wam import cli, devices, links, resources, store_install
 
 MAC = """os=Darwin
 cpus=10
@@ -152,10 +152,12 @@ def test_devices_route_identity_required_read_only_generic_failure(tmp_path, mon
             raise RuntimeError('synthetic secret detail')
         return {'devices': [], 'managed': [{'id': 'acme', 'name': 'Acme', 'url': 'https://acme.example/'}]}
     monkeypatch.setattr(devices, 'reader_for', lambda home: read)
+    monkeypatch.setattr(store_install, 'owner_login', lambda: 'Owner@example.com')
     server, thread, url = _serve(tmp_path)
     who = {'Tailscale-User-Login': 'owner@example.com'}
     try:
         for method, headers, status in [('GET', {}, 403), ('GET', {**who, 'Sec-Fetch-Site': 'cross-site'}, 403),
+                                        ('GET', {'Tailscale-User-Login': 'guest@example.com'}, 403),
                                         ('POST', who, 401)]:
             with pytest.raises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen(urllib.request.Request(url, method=method, headers=headers))
@@ -167,6 +169,10 @@ def test_devices_route_identity_required_read_only_generic_failure(tmp_path, mon
         with pytest.raises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(urllib.request.Request(url, headers=who))
         assert e.value.code == 503 and json.load(e.value) == {'error': 'devices_unavailable'}
+        monkeypatch.setattr(store_install, 'owner_login', lambda: '')   # owner unknown: refused, never assumed
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(urllib.request.Request(url, headers=who))
+        assert e.value.code == 403 and json.load(e.value) == {'error': 'owner_only'}
     finally:
         server.shutdown()
         server.server_close()
@@ -181,6 +187,7 @@ def test_devices_route_reads_the_box_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(devices, 'probe_local', lambda: devices.parse_probe(LINUX))
     monkeypatch.setattr(devices, 'tailnet_status', lambda: None)
     monkeypatch.setattr(devices, '_readers', {})
+    monkeypatch.setattr(store_install, 'owner_login', lambda: 'o@example.com')
     server, thread, url = _serve(tmp_path)
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={'Tailscale-User-Login': 'o@example.com'})) as r:
