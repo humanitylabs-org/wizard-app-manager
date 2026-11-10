@@ -18,11 +18,13 @@ installed or updated with the declaration.
 
 Calls are server-side, on the app's loopback port (its registry `view.local`), with the OWNER's authority: the platform
 owner proof (wizard-os spec/OWNER_PROOF.md, `X-Wizard-App-Owner-Proof`, hmac-v1, bound to the app id, method and
-target) signed with the app's proof key, plus the box's own Origin and `X-Wizard-Switch: 1`. So a flip works the same
+target) signed with the app's proof key, plus the box's own Origin and `X-Wizard-Switch: 1`. An app without a proof key
+is called through the box's own Tailscale Serve URL (`<box origin>/<app path>/...`): Serve names the owner for every
+request that starts on this box, which is the identity the app already checks for its owner pages. So a flip works the same
 from every browser and device, with no app cookie in the browser. The proof key is the edge key the App Manager mints
 for apps that declare `owner_proof` (owner_proof.edge_key_path), or a box's adopted hand-built one
-(`<home>/<app>-owner/proof`). An app without a key is listed with `ok: false` and the Tracker falls back to its
-same-origin browser call (Tracker 0.21).
+(`<home>/<app>-owner/proof`). An app that answers neither way is listed in `apps` with `ok: false` and the Tracker
+falls back to its same-origin browser call (Tracker 0.21).
 
 Ids in the merged catalog are `<app id>:<switch id>` (core ids are `<author>/<id>`), so the two never collide.
 App switches follow the app's own state; they are not locked by the box channel (the app keeps them off by default).
@@ -102,10 +104,13 @@ def declared(home=None) -> list[dict]:
         if not APP_ID.fullmatch(store):
             store = "wizardapps"
         path = parse(_wizard_md(root, store, a["id"]).get("switches")) or parse(a.get("switches"))
-        local = str(((a.get("view") or {}).get("local")) or "")
+        view = a.get("view") or {}
+        local = str(view.get("local") or "")
+        prefix = str(view.get("url") or "")
         if not path or not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}/?", local):
             continue
-        out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80], "path": path, "local": local.rstrip("/")})
+        out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80], "path": path, "local": local.rstrip("/"),
+                    "prefix": prefix.rstrip("/") if re.fullmatch(r"/[a-z0-9][a-z0-9-]{0,62}/?", prefix) else ""})
     return out
 
 
@@ -146,21 +151,30 @@ def box_origin(home: Path) -> str | None:
 
 
 def _call(home: Path, app: dict, body: dict | None = None, origin: str | None = None, opener=None) -> dict:
+    """One switch request to the app as the owner. With the app's owner-proof key: its loopback port, signed. Without
+    one: the box's own Tailscale Serve URL of the app (`<box origin><view url><path>`), which names the owner for
+    every request that starts on this box (store_install.from_box), the identity the app already trusts for its
+    owner pages. Either way the box Origin and `X-Wizard-Switch: 1` ride along."""
     from . import owner_proof
     key = proof_key(home, app["id"])
-    if key is None:
-        raise AppSwitchError(f"{app['name']} has no owner proof key on this Wizard", 503)
     method = "POST" if body is not None else "GET"
-    headers = {"Accept": "application/json", "X-Wizard-Switch": "1",
-               owner_proof.HEADER: owner_proof.sign(key, app["id"], method, app["path"])}
     o = origin or box_origin(home)
+    headers = {"Accept": "application/json", "X-Wizard-Switch": "1"}
+    if key is not None:
+        headers[owner_proof.HEADER] = owner_proof.sign(key, app["id"], method, app["path"])
+        url = app["local"] + app["path"]
+    elif o and app.get("prefix"):
+        url = o + app["prefix"] + app["path"]
+        headers["Sec-Fetch-Site"] = "same-origin"
+    else:
+        raise AppSwitchError(f"{app['name']} has no owner proof key and no Wizard address on this box", 503)
     if o:
         headers["Origin"] = o
     data = None
     if body is not None:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(app["local"] + app["path"], data=data, method=method, headers=headers)
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT) as r:
             j = json.loads(r.read() or b"{}")
