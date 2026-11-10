@@ -15,7 +15,7 @@ Nothing signs in until WizardOS has an OAuth App. Create it under `humanitylabs-
 The client id is read from, first found wins:
 
 1. the environment: `WAM_GITHUB_CLIENT_ID`
-2. `~/.wizard-os/app-manager.json`: `{"github_client_id": "Iv1...."}`
+2. `<Wizard home>/app-manager.json`: `{"github_client_id": "Iv1...."}` (`WIZARD_OS_HOME`, default `~/.wizard-os`)
 
 With neither, the state is `not_configured` and the Store shows that sign-in is not set up yet.
 
@@ -33,22 +33,26 @@ On the owner-gated store listener (`127.0.0.1:7791`, mounted at `/wizard-os-home
 | `POST _github/start` `{}` | Begin sign-in; same shape, state `pending` with the code. Repeating it while pending returns the same code. `409` + `switched_off` while the feature switch is off, `409` + `not_configured` when there is no client id. |
 | `POST _github/signout` `{}` | Delete the saved token and username, end any sign-in in progress; returns the status. |
 
-`state`: `signed_out`, `pending`, `signed_in`, `expired`, `denied`, `error`, `not_configured`, `switched_off`. `login` is the GitHub username while `signed_in`, else `""`. `source` is `file` (saved by this sign-in, or a hand-placed `github-token`: Sign out removes it) or `env` (`GITHUB_TOKEN`, `GH_TOKEN` or the `gh` CLI: signed in, Sign out cannot remove it). `user_code`, `verification_uri`, `expires_in` and `interval` appear only while `pending`. A body other than `{}` is refused.
+`state`: `signed_out`, `pending`, `signed_in`, `expired`, `denied`, `error`, `not_configured`, `switched_off`. `login` is the GitHub username while `signed_in`, else `""`. `source` is `file` (saved by this sign-in, or a hand-placed `github-token` in the selected Wizard home: Sign out removes it) or `env` (`GITHUB_TOKEN`, `GH_TOKEN`, the read-only legacy fallback or the `gh` CLI: signed in, Sign out cannot remove it). `user_code`, `verification_uri`, `expires_in` and `interval` appear only while `pending`. A body other than `{}` is refused.
 
 ## How the flow runs
 
 `start` asks GitHub for a device code and starts one background thread. The thread polls GitHub at its `interval`, adds its new interval or five seconds on `slow_down`, and stops on success, `expired_token` (or the code's own expiry), `access_denied`, any other GitHub error, or five failed polls in a row. The browser only polls `GET _github`. A sign-out while the thread is waiting stops it and nothing is saved.
 
-On success the App Manager checks the token with `GET /user`, then writes the username and the token, each by an atomic 0600 write into a 0700 folder.
+On success the App Manager checks the token with `GET /user`, then writes a token-bound account label and the token, each by an atomic 0600 write into a 0700 folder. The label includes a SHA-256 token digest, never the token. Status trusts it only when the digest matches the active token. A hand-replaced token, legacy plain username or malformed sidecar uses the existing digest-keyed `GET /user` lookup instead; if verification is unavailable the login is blank. Status never rewrites owner-supplied tokens or legacy sidecars. If token publication fails after label publication, the unmatched label cannot rename a pre-existing token's account.
 
-## Files (`~/.wizard-os/`)
+## Files (selected Wizard home)
+
+`registry.home()` selects `WIZARD_OS_HOME` (including `~` expansion), defaulting to `~/.wizard-os`. New sign-ins write only there and Sign out deletes only there. Reads agree between Store status and private installs: `GITHUB_TOKEN`, `GH_TOKEN`, selected `github-token`, legacy `~/.wizard-os/github-token`, then `gh auth token`, first nonempty credential wins. For a custom home, the legacy default-home token remains an explicit **read-only compatibility fallback**, reported as external `source: env`; neither it nor its sidecar is migrated, overwritten or deleted. After removing a custom home's token, status can therefore remain signed in using that external fallback. It must be managed at its original installation.
 
 | File | Holds | Notes |
 |---|---|---|
 | `github-token` | the access token | the file `wam/private.py` `token()` already reads; 0600, folder 0700 |
-| `github-login` | the username only | 0600; never a token |
+| `github-login` | JSON `login` and `token_sha256` | 0600; never a token; old plain usernames remain readable as untrusted hints and are not rewritten by status |
 
-Both are per-machine: `wam/backup/box.py` `PER_MACHINE` lists them, so neither is captured in a backup or replaced by an import. `private.token()` still prefers `GITHUB_TOKEN`/`GH_TOKEN`, then this file, then `gh auth token`.
+Both are per-machine: `wam/backup/box.py` `PER_MACHINE` lists them, so neither is captured in a backup or replaced by an import.
+
+This identity correction does not resolve the separate activation hold over new broad-scope credentials stored as plaintext 0600 under the protected-credential rule. The switch remains off by default; no OAuth provisioning, scope change or feature enablement is part of this fix.
 
 ## Secrets handling
 

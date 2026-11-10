@@ -9,13 +9,13 @@ the shell's own origin, JSON and `X-Wizard-Store: 1`. The private-gateway listen
   POST _github/signout  {}  delete the saved login and end any flow in progress
 
 `state` is signed_out | pending | signed_in | expired | denied | error | not_configured | switched_off. `source` is `file` (the
-sign-in this module saved, removable) or `env` (a token from the environment or the `gh` CLI: signed in, but Sign out
+sign-in this module saved, removable) or `env` (a token from the environment, legacy read fallback or the `gh` CLI: signed in, but Sign out
 cannot remove it). `login` is the GitHub username and only while signed in.
 
 The device flow runs in one background thread started by `start`; the browser only polls the status. The device
 code never leaves this process. On approval the access token is written, atomically, to the file `private.token()`
-already reads (`~/.wizard-os/github-token`, 0600, folder 0700) and only the username goes to a sidecar
-(`~/.wizard-os/github-login`). The token appears in no HTTP response, log line, error text or receipt, and is only ever
+already reads (`registry.home()/github-token`, 0600, folder 0700); the username and token digest go to a sidecar
+(`registry.home()/github-login`). The token appears in no HTTP response, log line, error text or receipt, and is only ever
 used by the App Manager and the catalog adapter on this box, for read calls.
 
 Client id (a public value, no secret): env `WAM_GITHUB_CLIENT_ID`, then `app-manager.json` `github_client_id`. Without
@@ -159,20 +159,17 @@ def _gh_cached() -> str:
 
 
 def saved() -> str:
-    try:
-        return token_path().read_text().strip()
-    except OSError:
-        return ""
+    return private.saved_token()[1]
 
 
 def current() -> tuple[str, str]:
-    """(source, token) in the order `private.token()` uses: environment, the saved file, then the `gh` CLI."""
+    """Same read order as `private.token()`, including the read-only legacy fallback."""
     for k in ("GITHUB_TOKEN", "GH_TOKEN"):
         if os.environ.get(k):
             return "env", os.environ[k]
-    tok = saved()
+    source, tok = private.saved_token()
     if tok:
-        return "file", tok
+        return source, tok
     tok = _gh_cached()
     return ("env", tok) if tok else ("", "")
 
@@ -237,12 +234,20 @@ def _login_for(tok: str) -> str:
     return login
 
 
-def _sidecar_login() -> str:
+def _sidecar_login(tok: str) -> str:
+    """Trust only a label bound to the active token. Legacy plain labels need GET /user.
+
+    Do not rewrite legacy files during status: owner-supplied credentials and labels
+    remain intact, even if GitHub is unreachable (in which case no label is shown).
+    """
     try:
-        v = login_path().read_text(errors="replace").strip()
-    except OSError:
+        v = json.loads(login_path().read_text(errors="replace"))
+    except (OSError, ValueError):
         return ""
-    return v if LOGIN.fullmatch(v) else ""
+    if not isinstance(v, dict) or v.get("token_sha256") != hashlib.sha256(tok.encode()).hexdigest():
+        return ""
+    login = v.get("login")
+    return login if isinstance(login, str) and LOGIN.fullmatch(login) else ""
 
 
 # ---------------------------------------------------------------- status
@@ -251,7 +256,7 @@ def status() -> dict:
     """What the Store may show. Never contains a token or the device code."""
     with _lock:   # the same lock the final save holds: a half-finished save is never seen
         source, tok = current()
-        sidecar = _sidecar_login() if source == "file" else ""
+        sidecar = _sidecar_login(tok) if source == "file" else ""
         flow = _flow
         if not tok and flow:
             if flow["state"] == "pending" and _clock() >= flow["expires_at"]:
@@ -397,10 +402,12 @@ def _finish(flow: dict, tok: str) -> None:
         if _flow is not flow or flow["stop"].is_set():   # signed out (or restarted) while GitHub was answering
             return
         try:
-            # The username first: the token's arrival is what makes the box "signed in", and it must find it.
+            # Label first, bound to this token: a failed token publication cannot
+            # attach the new account's name to a pre-existing token.
             _remove(login_path())
             if login:
-                _write_private(login_path(), login + "\n")
+                _write_private(login_path(), json.dumps({
+                    "login": login, "token_sha256": hashlib.sha256(tok.encode()).hexdigest()}) + "\n")
             _write_private(token_path(), tok + "\n")
         except OSError as e:
             log(f"could not save the GitHub login ({type(e).__name__})")
@@ -412,7 +419,7 @@ def _finish(flow: dict, tok: str) -> None:
 
 
 def signout() -> dict:
-    """Delete the saved login and username, end any flow in progress. An environment token stays (source `env`)."""
+    """Delete only this installation's login/label and end its flow. External tokens stay (source `env`)."""
     global _flow, _gh_cache, _signouts
     with _lock:
         _signouts += 1
