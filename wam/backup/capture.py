@@ -132,12 +132,13 @@ def _app_archive(box: Box, urn: str, info: dict, work: Path, volumes: list[str])
         gone = _missing_images(box, urn)
         if gone:                       # checked before the manifest too; this catches an image pruned since then
             raise _WouldNotRestart(", ".join(gone))
-        box.rt.stop(urn)
-        st = box.wait_status(urn, {"stopped"}, timeout=600)
-        if st != "stopped":
-            raise ExportError(f"{app_id} did not stop for its backup (status {st})")
     out = work / f"app-{app_id}.tar.gz"
     try:
+        if was_running:
+            box.rt.stop(urn)
+            st = box.wait_status(urn, {"stopped"}, timeout=600)
+            if st != "stopped":
+                raise ExportError(f"{app_id} did not stop for its backup (status {st})")
         rep = box.appdata.archive(store, app_id, out, volumes=volumes)
     except AppDataError as e:
         raise ExportError(f"app {app_id}: {e}") from None
