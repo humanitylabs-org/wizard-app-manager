@@ -2280,10 +2280,17 @@ class StoreHandler(BaseHTTPRequestHandler):
                 raise ValueError("expected an object")
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
-        if body.get("action") == "apply" and set(body) == {"action"}:
+        if body.get("action") == "apply" and set(body) <= {"action", "anyway", "when_idle"} and \
+                all(isinstance(body.get(k, False), bool) for k in ("anyway", "when_idle")):
             # A Mac's VM: the Mac copies the disk first, then starts it (updates.request_host_apply).
-            res = updates.request_host_apply() if updates.by_host() else updates.apply()
+            # While Wizard is working on something the update would stop, the answer is `waiting` + `waiting_for`;
+            # the owner then sends anyway (Update anyway) or when_idle (Update when they finish).
+            kw = {"anyway": body.get("anyway", False), "when_idle": body.get("when_idle", False)}
+            res = updates.request_host_apply(**kw) if updates.by_host() else updates.apply(**kw)
             return self._json(200 if res.get("started") or not res.get("error") else 409, res)
+        if body.get("action") in ("when_idle_cancel", "when_idle_quiet") and set(body) == {"action"}:
+            # Asked again after 6 hours of waiting: Cancel (the update stays ready in Settings) or Stop reminding me.
+            return self._json(200, updates.when_idle_answer(None, body["action"].rsplit("_", 1)[1]))
         if body.get("action") == "postpone" and set(body) == {"action"} and updates.by_host():
             # Not tonight, the answer to a Mac's 5-minute heads-up before an Automatic update.
             res = updates.postpone_host()
@@ -2292,8 +2299,9 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(200, {**updates.set_mode(body["mode"]), **updates.status()})
         if set(body) == {"channel"} and body["channel"] in updates.CHANNELS:
             return self._json(200, {**updates.set_channel(body["channel"]), **updates.status()})
-        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"} or '
-                                         '{"action": "apply"}'})
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"channel": "stable"|"latest"}, '
+                                         '{"action": "apply"[, "anyway": true | "when_idle": true]} or '
+                                         '{"action": "when_idle_cancel"|"when_idle_quiet"}'})
 
     def do_GET(self):  # noqa: N802
         self._go("GET")
@@ -2654,6 +2662,11 @@ def main(argv: list[str] | None = None) -> int:
                      help="stable: tested releases (default); latest: every release as soon as it is cut")
     up.add_argument("--force", action="store_true", help="with --apply: also update an unpinned (hand-updated) box")
     up.add_argument("--check", action="store_true", help="with --apply-if-auto: decide only (due: true), start nothing")
+    up.add_argument("--anyway", action="store_true",
+                    help="with --apply/--apply-if-auto: start even while Wizard works on something the update stops")
+    up.add_argument("--when-idle", action="store_true",
+                    help="with --apply: if Wizard is working, update as soon as it has finished")
+    up.add_argument("--when-idle-tick", action="store_true", help=argparse.SUPPRESS)
     upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
     up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
     au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
@@ -2661,6 +2674,10 @@ def main(argv: list[str] | None = None) -> int:
     aug = au.add_mutually_exclusive_group()
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
+    wk = sub.add_parser("work", help="what is running on this box (chat replies, agent turns, scheduled jobs, "
+                                     "background tasks), and what the next Wizard OS update would wait for")
+    wk.add_argument("--impact", choices=("none", "ui", "service", "hermes", "os"),
+                    help="only what an update that stops this much would wait for")
     fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the same state "
                                                   "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
@@ -2699,6 +2716,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"phone-sync {outcome}")
         return 0
+    if args.cmd == "work":
+        from . import work
+        items = work.inventory()
+        print(json.dumps(work.blocking(items, args.impact) if args.impact else items, indent=2))
+        return 0
     if args.cmd == "feature-switches":
         from . import feature_switches as fs
         try:
@@ -2732,7 +2754,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         res = (updates.set_channel(args.channel) if args.channel
                else updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
-               else updates.apply(force=args.force) if args.apply else updates.apply_if_auto(check=args.check) if args.apply_if_auto
+               else updates.apply(force=args.force, anyway=args.anyway, when_idle=args.when_idle) if args.apply
+               else updates.apply_if_auto(check=args.check, anyway=args.anyway) if args.apply_if_auto
+               else updates.when_idle_tick() if args.when_idle_tick
                else updates.ensure_timer() if args.ensure_timer else updates.status(fresh=True))
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0

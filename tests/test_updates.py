@@ -15,6 +15,13 @@ def _no_cache():
     updates._latest.clear()
 
 
+@pytest.fixture(autouse=True)
+def _idle_box(monkeypatch):
+    """Nothing running unless a test says so: the inventory would otherwise read this machine's own Hermes."""
+    from wam import work
+    monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: [])
+
+
 def _base(tmp_path, stable, promoted=True):
     d = tmp_path / "rel"; d.mkdir(exist_ok=True)
     (d / "stable").write_text(stable + "\n")
@@ -236,7 +243,11 @@ def test_store_listener_updates_route(tmp_path, monkeypatch):
     assert call("POST", {"mode": "ask"})[0] == 200 and calls[-1] == "ask"
     assert call("POST", {"mode": "never"})[0] == 400
     assert call("POST", {"action": "apply", "force": True})[0] == 400    # the browser can never force
-    assert call("POST", {"action": "apply"}) == (200, {"started": True}) and calls[-1] == {}
+    assert call("POST", {"action": "apply"}) == (200, {"started": True})
+    assert calls[-1] == {"anyway": False, "when_idle": False}
+    assert call("POST", {"action": "apply", "anyway": True})[0] == 200 and calls[-1]["anyway"] is True
+    assert call("POST", {"action": "apply", "when_idle": True})[0] == 200 and calls[-1]["when_idle"] is True
+    assert call("POST", {"action": "apply", "anyway": "yes"})[0] == 400
     monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 1000)
     assert call("GET")[0] == 403
 
@@ -445,3 +456,98 @@ def test_status_says_how_the_install_read_back(tmp_path):
     (h / "release.json").write_text(json.dumps({"release": "0.3.16", "status": "drift"}))
     st = updates.status(h, base)
     assert (st["installed"], st["receipt"]) == ("0.3.16", "drift")
+
+
+
+def _release_box(tmp_path, monkeypatch):
+    """A Linux box on 0.3.15 with 0.3.16 out (release files unreadable here, so its impact counts as hermes)."""
+    monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "no-host-marker")
+    h = tmp_path / "wos"
+    _pin(h, "0.3.15")
+    return h, _base(tmp_path, "0.3.16")
+
+
+def _busy(monkeypatch, *items):
+    from wam import work
+    monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: list(items))
+
+
+BUILD = {"kind": "task", "name": "npm run build (in site)", "stops_at": "hermes", "source": "process"}
+REPLY = {"kind": "agent", "name": "A chat reply", "stops_at": "service", "source": "agent-service"}
+
+
+def test_update_now_names_what_it_would_stop_and_starts_only_anyway(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    _busy(monkeypatch, BUILD)
+    calls = []
+    st = updates.status(h, base)
+    assert st["impact"]["interrupts"] == "hermes" and [w["name"] for w in st["waiting_for"]] == [BUILD["name"]]
+    res = updates.apply(h, base, _ok_runner(calls))
+    assert res["started"] is False and res["waiting"] is True and calls == []
+    assert updates.apply(h, base, _ok_runner(calls), anyway=True)["started"] is True
+
+
+def test_update_when_they_finish_waits_then_starts_by_itself(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    _busy(monkeypatch, BUILD)
+    calls = []
+    res = updates.apply(h, base, _ok_runner(calls), when_idle=True)
+    assert res["started"] is False and res["when_idle"]["target"] == "0.3.16" and res["when_idle"]["asked"] is False
+    assert any("systemd-run" in str(c) for c in calls)                  # polls every minute
+    assert updates.when_idle_tick(h, base, _ok_runner(calls))["started"] is False
+    _busy(monkeypatch)                                                   # the build finished
+    assert updates.when_idle_tick(h, base, _ok_runner(calls))["started"] is True
+    assert updates.when_idle(h) is None
+
+
+def test_after_six_hours_the_owner_is_asked_again_and_can_cancel_or_quiet_it(tmp_path, monkeypatch):
+    import time as _t
+    h, base = _release_box(tmp_path, monkeypatch)
+    _busy(monkeypatch, BUILD)
+    updates.apply(h, base, _ok_runner([]), when_idle=True)
+    assert updates.when_idle(h)["asked"] is False
+    assert updates.when_idle(h, now=_t.time() + 6 * 3600 + 1)["asked"] is True
+    updates.when_idle_answer(h, "quiet", _ok_runner([]))
+    assert updates.when_idle(h, now=_t.time() + 7 * 3600)["asked"] is False   # keeps waiting, stops asking
+    updates.when_idle_answer(h, "cancel", _ok_runner([]))
+    assert updates.when_idle(h) is None and updates.status(h, base)["update_available"] is True
+
+
+def test_an_interface_only_update_never_waits_for_a_build(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    _busy(monkeypatch, BUILD, REPLY)
+    monkeypatch.setattr(updates, "impact_of", lambda *a, **k: {"impact": "ui", "interrupts": "ui", "parts": ["wizard-ux"],
+                                                              "reload": True})
+    assert updates.status(h, base)["waiting_for"] == []
+    monkeypatch.setattr(updates, "impact_of", lambda *a, **k: {"impact": "service", "interrupts": "service",
+                                                              "parts": ["wizard-agent-service"], "reload": False})
+    assert [w["name"] for w in updates.status(h, base)["waiting_for"]] == ["A chat reply"]
+
+
+def test_on_a_mac_vm_the_disk_copy_restart_stops_everything(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    marker = tmp_path / "updates-by-host"
+    marker.write_text("")
+    monkeypatch.setattr(updates, "HOST_UPDATES", marker)
+    monkeypatch.setattr(updates, "impact_of", lambda *a, **k: {"impact": "ui", "interrupts": "ui", "parts": [],
+                                                              "reload": True})
+    _busy(monkeypatch, BUILD)
+    st = updates.status(h, base)
+    assert st["impact"]["interrupts"] == "os" and st["waiting_for"]
+    res = updates.request_host_apply(h, base)
+    assert res["waiting"] is True and updates.host_pending(h) is None
+    res = updates.request_host_apply(h, base, when_idle=True)
+    assert res["host_pending"]["when_idle"] is True and updates.when_idle(h)["target"] == "0.3.16"
+    assert updates.request_host_apply(h, base, anyway=True)["host_pending"].get("when_idle") is None
+    marker.write_text("live-backup\n")                                  # the Mac copies the disk live (Phase 5)
+    assert updates.status(h, base)["waiting_for"] == []
+
+
+def test_automatic_skips_with_names_and_the_host_can_go_after_its_check(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    updates.set_mode("auto", h, unit_dir=tmp_path / "units", systemctl=False)
+    monkeypatch.setattr(updates, "promoted", lambda *a, **k: True)
+    _busy(monkeypatch, BUILD)
+    res = updates.apply_if_auto(h, base, _ok_runner([]))
+    assert res["skipped"] == "busy" and "npm run build" in res["note"]
+    assert updates.apply_if_auto(h, base, _ok_runner([]), anyway=True)["started"] is True
