@@ -109,11 +109,27 @@ def in_agent_container(source: Path = SOURCE, env=None) -> bool:
     return box_wam(source) is None and not runtipi_present(env)
 
 
+BUNDLE_VALUE_OPTIONS = frozenset({'--migrate-local-copy', '--revision', '--hermes-home'})   # builder_bundle.main
+
+
+def _bundle_action(args):
+    """The positional `builder-bundle` action, skipping option values (`--revision r rollback` is rollback)."""
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in BUNDLE_VALUE_OPTIONS:
+            skip = True
+        elif not a.startswith('-'):
+            return a
+    return None
+
+
 def container_stop(argv: list[str], source: Path = SOURCE, env=None, out=None) -> bool:
     """Stop a box command run in the agent's container before it does anything. True when it was stopped."""
     if not argv or argv[0] in CONTAINER_OK:
         return False
-    if argv[0] == 'builder-bundle' and next((a for a in argv[1:] if not a.startswith('-')), None) in BUNDLE_LOCAL:
+    if argv[0] == 'builder-bundle' and (_bundle_action(argv[1:]) in BUNDLE_LOCAL or {'-h', '--help'} & set(argv[1:])):
         return False
     if not in_agent_container(source, env):
         return False

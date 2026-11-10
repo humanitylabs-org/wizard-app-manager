@@ -51,14 +51,17 @@ def test_box_commands_stop_in_the_agent_container(container, cmd):
     assert _stop([cmd, 'x'], container) == (True, [bd.BOX_ONLY])
 
 
-@pytest.mark.parametrize('action', ['fresh', 'install', 'restore-local-copy'])
-def test_builder_bundle_box_actions_stop(container, action):
-    assert _stop(['builder-bundle', action], container) == (True, [bd.BOX_ONLY])
+@pytest.mark.parametrize('argv', [['fresh'], ['install'], ['restore-local-copy'], ['--revision', 'doctor', 'install'],
+                                  ['--hermes-home', 'h', 'fresh', '--restart'], []])
+def test_builder_bundle_box_actions_stop(container, argv):
+    assert _stop(['builder-bundle', *argv], container) == (True, [bd.BOX_ONLY])
 
 
 @pytest.mark.parametrize('argv', [[c, 'src'] for c in sorted(bd.BUILDER_COMMANDS)]
                          + [['search', 'x'], ['doctor'], ['--help'], [], ['builder-bundle', 'doctor'],
-                            ['builder-bundle', 'rollback', '--revision', 'r']])
+                            ['builder-bundle', 'rollback', '--revision', 'r'],
+                            ['builder-bundle', '--revision', 'r', 'rollback'], ['builder-bundle', '--help'],
+                            ['builder-bundle', 'fresh', '-h'], ['builder-bundle', '--hermes-home', 'h', 'doctor']])
 def test_builder_commands_doctor_and_search_keep_working(container, argv):
     assert _stop(argv, container) == (False, [])
 
