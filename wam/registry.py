@@ -6,7 +6,9 @@ with wizard.md and SKILL.md).
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -160,6 +162,208 @@ def public_projection(reg: dict) -> dict:
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
 
 
+# Launcher icon: the app's own one-colour silhouette, served by the app itself at <view>/icon.svg (the template's
+# web/icon.svg). The shell draws it as a mask (wizard-ux core/sigils.js), so it shows on the next launcher load after
+# an install or update, with no shell release. No wizard.md field: the registry asks the running app for the file and
+# offers it only when it really is a silhouette. A favicon with a full-bleed backdrop would mask to a solid slab, so
+# it is skipped and the shell keeps its own glyph or letter.
+ICON_FILE = "icon.svg"
+ICON_MAX_BYTES = 64 * 1024
+_SVG = "{http://www.w3.org/2000/svg}"
+# Children of these never paint on their own (masks, gradients, reusable defs).
+_NON_PAINTING = {"defs", "mask", "clipPath", "pattern", "symbol", "marker", "linearGradient", "radialGradient",
+                 "filter", "title", "desc", "metadata", "style"}
+
+
+def launcher_icon_url(view, name: str | None) -> str | None:
+    """Same-origin URL of the app's icon file under its view path, or None when the view is not same-origin."""
+    url = view.get("url") if isinstance(view, dict) else None
+    if name != ICON_FILE or not isinstance(url, str) or not re.fullmatch(r"/(?!/)[A-Za-z0-9._~/-]*", url) \
+            or ".." in url.split("/"):
+        return None
+    return url.split("#")[0].rstrip("/") + "/" + ICON_FILE
+
+
+def icon_file(icon, view) -> str | None:
+    """An icon URL already projected by an earlier registry write (still under this view) keeps its file."""
+    return ICON_FILE if isinstance(icon, str) and icon == launcher_icon_url(view, ICON_FILE) else None
+
+
+_SVG_NUMBER = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+
+
+def _num(v, whole: float) -> float | None:
+    try:
+        s = str(v).strip()
+        if not re.fullmatch(_SVG_NUMBER + r"(?:px|%)?", s):
+            return None
+        result = float(s[:-1]) * whole / 100 if s.endswith("%") else float(re.sub(r"px$", "", s))
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def svg_silhouette(body: bytes) -> bool:
+    """True for a small SVG that reads as a silhouette when used as a mask: no embedded raster or script and no
+    unmasked shape covering (nearly) the whole canvas. App favicons usually paint a coloured rounded square first;
+    those return False."""
+    import xml.etree.ElementTree as ET
+    if len(body) > ICON_MAX_BYTES or re.search(rb"<!(?:DOCTYPE|ENTITY)", body, re.I):
+        return False
+    try:
+        root = ET.fromstring(body)
+    except (ET.ParseError, LookupError, ValueError):
+        return False
+    if root.tag not in (f"{_SVG}svg", "svg"):
+        return False
+    try:
+        viewbox = root.get("viewBox")
+        if viewbox is not None:
+            vb = re.split(r"[\s,]+", viewbox.strip())
+            if len(vb) != 4 or any(not re.fullmatch(_SVG_NUMBER, value) for value in vb):
+                return False
+            vx, vy, w, h = map(float, vb)
+        else:
+            vx, vy = 0.0, 0.0
+            w, h = _num(root.get("width"), 0), _num(root.get("height"), 0)
+        if w is None or h is None or not all(math.isfinite(v) for v in (vx, vy, w, h)) or w <= 0 or h <= 0:
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+    # Validate geometry even in masked/definition children; malformed numbers are not zero.
+    for child in root.iter():
+        tag = child.tag.split("}")[-1]
+        if tag in ("image", "script", "foreignObject"):
+            return False
+        for attr in ("x", "y", "cx", "cy", "x1", "x2", "y1", "y2", "width", "height", "r", "rx", "ry"):
+            if attr not in child.attrib:
+                continue
+            value = _num(child.get(attr), h if attr in ("y", "cy", "y1", "y2", "height", "ry") else w)
+            if value is None:
+                return False
+            if attr in ("width", "height", "r", "rx", "ry") and (
+                value < 0 or (value == 0 and (attr in ("width", "height", "r") or tag == "ellipse"))
+            ):
+                return False
+
+    def walk(el):
+        for child in el:
+            tag = child.tag.split("}")[-1]
+            if tag in ("image", "script", "foreignObject"):
+                return True
+            if tag in _NON_PAINTING:
+                continue
+            if child.get("fill") != "none" and not child.get("mask") and not child.get("clip-path"):
+                if tag == "rect":
+                    x, y = _num(child.get("x", 0), w) or 0, _num(child.get("y", 0), h) or 0
+                    cw, ch = _num(child.get("width"), w) or 0, _num(child.get("height"), h) or 0
+                    if x <= vx + w * .05 and y <= vy + h * .05 and cw >= w * .9 and ch >= h * .9:
+                        return True
+                if tag in ("circle", "ellipse"):
+                    rx = _num(child.get("r") or child.get("rx"), w) or 0
+                    ry = _num(child.get("r") or child.get("ry"), h) or 0
+                    if rx >= w * .48 and ry >= h * .48:
+                        return True
+            if walk(child):
+                return True
+        return False
+
+    try:
+        return not walk(root)
+    except (RecursionError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def _canonical_icon_base(base) -> str | None:
+    """Literal loopback HTTP only; localhost is pinned, never resolved through DNS."""
+    from urllib.parse import urlparse, urlunparse
+    if not isinstance(base, str) or re.search(r"[\s\\\x00-\x1f\x7f]", base):
+        return None
+    try:
+        parsed = urlparse(base)
+        if parsed.scheme != "http" or not parsed.netloc or parsed.username is not None or parsed.password is not None:
+            return None
+        host = parsed.hostname
+        port = parsed.port
+        if not host or "%" in host or parsed.query or parsed.params or (port is not None and not 1 <= port <= 65535):
+            return None
+        if host == "localhost":
+            host = "127.0.0.1"
+        else:
+            address = ipaddress.ip_address(host)
+            if (not address.is_loopback or str(address) != host
+                    or isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None):
+                return None
+            host = str(address)
+        path = parsed.path or "/"
+        if not re.fullmatch(r"/[A-Za-z0-9._~/-]*", path) or ".." in path.split("/"):
+            return None
+        authority = f"[{host}]" if ":" in host else host
+        if port is not None:
+            authority += f":{port}"
+        return urlunparse(("http", authority, path, "", "", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _probe_icon(base: str, timeout: float) -> bool | None:
+    """True/False = the app answered (has a silhouette or not); None = it could not be reached (keep what we had)."""
+    import urllib.error
+    import urllib.request
+    canonical = _canonical_icon_base(base)
+    if canonical is None:
+        return False
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    # Ignore proxy environment variables: even loopback must go directly to the box.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    url = canonical.rstrip("/") + "/" + ICON_FILE
+    req = urllib.request.Request(url, headers={"User-Agent": "wizard-app-manager", "Accept": "image/svg+xml"})
+    try:
+        with opener.open(req, timeout=timeout) as r:   # noqa: S310 - canonical literal loopback, no redirects
+            if r.status != 200 or "image/svg+xml" not in (r.headers.get("Content-Type") or "").lower():
+                return False
+            return svg_silhouette(r.read(ICON_MAX_BYTES + 1))
+    except urllib.error.HTTPError:
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def resolve_icons(reg: dict, previous: dict | None = None, timeout: float = 1.5) -> dict:
+    """Mark each app whose running copy serves a silhouette icon.svg (`_icon`, projected to `icon` by write).
+    Only box-local app addresses are asked, in parallel; an app that is down keeps its previous answer."""
+    from concurrent.futures import ThreadPoolExecutor
+    if os.environ.get("WAM_ICON_PROBE", "1") == "0":
+        return reg
+    before = {a.get("app_id") or a.get("id"): a for a in ((previous or {}).get("apps") or []) if isinstance(a, dict)}
+    jobs = {}
+    for a in reg.get("apps") or []:
+        v = a.get("view")
+        base = (v.get("local") or v.get("url")) if isinstance(v, dict) else None
+        canonical = _canonical_icon_base(base)
+        if canonical is not None:
+            jobs[a["id"]] = canonical
+    if not jobs:
+        return reg
+    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        found = dict(zip(jobs, pool.map(lambda b: _probe_icon(b, timeout), jobs.values())))
+    for a in reg["apps"]:
+        got = found.get(a["id"])
+        old = before.get(a["id"]) or {}
+        if got is None and a["id"] in found:
+            got = isinstance(old.get("icon"), str) and old["icon"].endswith("/" + ICON_FILE)
+        if got:
+            a["_icon"] = ICON_FILE
+        else:
+            a.pop("_icon", None)
+    return reg
+
+
 def read_grants_file(path: Path) -> list | None:
     """Read public grant metadata when accessible; never require root-owned backend state."""
     try:
@@ -246,6 +450,10 @@ def write(reg: dict, root: Path | None = None) -> Path:
         if owner_routes_enabled and out.get("view") is not None:
             # Never publish a raw host URL as the view: the UX opens views same-origin through the gateway.
             out["view"] = {"url": r["view"]} if r.get("view") else None
+        icon = launcher_icon_url(out.get("view"), a.get("_icon") or icon_file(out.get("icon"), out.get("view")))
+        out.pop("icon", None)
+        if icon:
+            out["icon"] = icon
         if r.get("staged_as") and not a.get('chats_view'):
             out.update({"id": r["staged_as"], "app_id": a["id"], "name": f"{out.get('name') or a['id']} (test)",
                         "staged": True})
