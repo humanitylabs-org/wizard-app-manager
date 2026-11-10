@@ -299,6 +299,22 @@ def test_start_when_signed_in_does_not_begin_a_flow(box):
     assert code == 200 and st["state"] == "signed_in" and box.calls.count("/login/device/code") == 1
 
 
+def test_a_second_sign_in_with_a_different_account_replaces_the_first(box):
+    """Sign out, then sign in as someone else: one active account, never the first one's token or name."""
+    second = "_".join(["gho", "SECONDACCOUNT0123456789abcdefABCDEF"])
+    box.polls = [{"access_token": TOKEN}]
+    gs.start()
+    assert _wait_state("signed_in")["login"] == "octo-friend"
+    assert gs.signout()["state"] == "signed_out" and not gs.token_path().exists() and not gs.login_path().exists()
+    box.user_reply = (200, {"login": "other-friend"})
+    box.polls = [{"access_token": second}]
+    gs.start()
+    done = _wait_state("signed_in")
+    assert done == {"state": "signed_in", "login": "other-friend", "source": "file"}
+    assert private.token() == second and "octo-friend" not in gs.login_path().read_text()
+    assert gs.status()["login"] == "other-friend"
+
+
 def test_signout_removes_file_and_sidecar_and_ends_a_pending_flow(box):
     gs.start()
     flow = gs._flow
