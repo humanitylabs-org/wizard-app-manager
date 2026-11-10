@@ -1110,7 +1110,7 @@ def test_bootstrap_moves_an_installed_release_default_to_the_new_release_commit(
         (d / "config.json").write_text('{}')
         (d / "wizard.md").write_text('---\nversion: 1\n---\n')
         return {"id": ref}
-    def update(c, app):
+    def update(c, app, **k):
         calls.append(("update", app))
         d = tmp_path / "apps" / cli.STORE / app
         (d / ".wizard-commit").write_text(new)

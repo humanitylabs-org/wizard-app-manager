@@ -394,8 +394,8 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
 def reconcile_settings(c, rt, app_id: str) -> list[str]:
     """Fill settings the new version newly requires, with the same rules as install (shared secrets from the apps
     it uses, generated passwords, owner origins), keeping every saved value. Runtipi refuses an update whose
-    required variable is unset ("Variable ... is required"), so this runs first. Returns what only the owner can
-    give (then nothing is changed)."""
+    required variable is unset ("Variable ... is required"), so app_update runs this once the update is admitted
+    (after the owner gate), right before queueing it. Returns what only the owner can give (then nothing is changed)."""
     from . import cli
     urn = f"{app_id}:{cli.STORE}"
     recipe = Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id
@@ -536,12 +536,9 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
-                missing = reconcile_settings(c, rt, r["id"])
-                if missing:   # the new version needs a setting only the owner can give: nothing changed
-                    needs.append({"id": r["id"], "reason": "the new version needs " + "; ".join(missing)[:200]})
-                    continue
-                res = cli.app_update(c, r["id"])
-            except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
+                # new required settings are filled inside app_update, only once the update is admitted (#582)
+                res = cli.app_update(c, r["id"], settings=lambda rt_, urn_, i=r["id"]: reconcile_settings(c, rt_, i))
+            except SystemExit as e:   # owner gate, a setting only the owner can give, or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
                 continue
             except Exception as e:  # noqa: BLE001 - one app never stops the others

@@ -85,7 +85,7 @@ def test_release_rerun_skips_hermes_but_updates_unrelated_app(tmp_path, monkeypa
             (staged / '.wizard-commit').write_text('b' * 40)
         package(tmp_path, app, 'b' * 40, '1', store=True)
         return {}
-    def update(_, app):
+    def update(_, app, **k):
         calls.append(('update', app))
         package(tmp_path, app, 'b' * 40, '1')
         return {'status': 'stopped'}
@@ -117,7 +117,7 @@ def test_release_rerun_authorizes_before_preparing_approved_hermes(tmp_path, mon
         calls.append('resolve')
         package(tmp_path, 'hermes-agent', row['commit'], '1', store=True)
         return {}
-    def update(*a):
+    def update(*a, **k):
         calls.append('update')
         package(tmp_path, 'hermes-agent', row['commit'], '1')
         return {'status': 'stopped'}

@@ -111,7 +111,7 @@ def test_store_selection_of_the_new_repo_is_no_longer_a_conflict(box, monkeypatc
         (folder / ".wizard-source").write_text(json.dumps({"repo": repo, "source": kw["source"]}))
         return dict(NEW_REC)
 
-    def update(c, app_id):
+    def update(c, app_id, **k):
         live = c.runtipi_root / "apps/wizardapps" / app_id
         (live / ".wizard-source").write_text(json.dumps({"repo": NEW, "source": "standard"}))
         return {"status": "running"}
