@@ -135,3 +135,5 @@ Browser QA resolves `QA_PLAYWRIGHT` first, then installed `playwright`, then
 portable-paths guard runs in Python CI (`python tests/test_portable_paths.py`)
 and is included in `pytest` discovery; the TypeScript workspace still uses
 `bun run test` / `turbo test`.
+
+<!-- internal Mac update test: WAM-only change for Phase 0 (mac.12) -->
