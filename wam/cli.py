@@ -2125,7 +2125,9 @@ class StoreHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):
                 raise ValueError("expected an object")
-            return self._json(200, fs.set_switch(body.get("id"), body.get("on"), by="owner"))
+            # Origin was checked by _go (the shell's own); an app switch call carries it to the app.
+            return self._json(200, fs.set_switch(body.get("id"), body.get("on"), by="owner",
+                                                 origin=self.headers.get("Origin")))
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
         except fs.SwitchError as e:

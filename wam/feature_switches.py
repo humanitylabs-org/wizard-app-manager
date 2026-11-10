@@ -25,6 +25,12 @@ Who may call (the owner, nothing else; no app key, no container networking, noth
 
 Both HTTP routes: GET -> listing(); POST {"id": "<author>/<id>", "on": true|false} -> set_switch().
 401/403 without the owner, 409 on For everyone.
+
+One catalog for core AND apps (Miguel, 10 Nov 2026): listing() also carries the switches of every installed app that
+implements wizard.app-switches/1 (app_switches.py; ids `<app id>:<switch id>`, `kind: "app"`, each with the `issues`
+it delivers), and set_switch() flips those in the app, server-side with the owner's proof. Core rows say `kind: "core"`
+and carry `issues` from their manifest when it names them. `apps` lists each switch-declaring app and whether it
+answered.
 """
 from __future__ import annotations
 
@@ -36,6 +42,7 @@ from pathlib import Path
 
 STORE_PATH = "_feature-switches"     # under /wizard-os-home/store-install/ (StoreHandler)
 ID = re.compile(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*")
+ISSUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}#\d{1,7}")
 LOOK = "/wizard/v1/pages/wizard-look/look.json"
 
 
@@ -91,8 +98,9 @@ def catalog(home: Path | None = None, fetch=_get) -> list[dict]:
             m = {}
         if not isinstance(m, dict) or m.get("view"):
             continue                                   # a shell view is a way to see the shell, chosen in Settings
+        issues = [str(i) for i in (m.get("issues") or []) if isinstance(i, str) and ISSUE.fullmatch(i)][:12]
         out.append({"id": tid, "name": str(m.get("name") or tid)[:120], "description": str(m.get("description") or "")[:600],
-                    "author": tid.split("/")[0]})
+                    "author": tid.split("/")[0], "kind": "core", "issues": issues})
     return sorted(out, key=lambda t: (t["name"].lower(), t["id"]))
 
 
@@ -187,17 +195,29 @@ def _channel(home: Path | None) -> str:
     return channel(home)
 
 
-def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None) -> dict:
-    """Every feature switch with whether it is on for this box. On For everyone all are off and locked."""
+def _app_rows(home, app_rows):
+    if app_rows is not None:
+        return app_rows
+    from . import app_switches
+    try:
+        return app_switches.listing(home)
+    except Exception as e:                      # noqa: BLE001 - an app never takes the core catalog down
+        return [], [{"id": "", "ok": False, "error": f"app switches: {str(e)[:120]}"}]
+
+
+def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, app_rows=None) -> dict:
+    """Every feature switch with whether it is on for this box. On For everyone all core ones are off and locked;
+    app switches (`kind: "app"`) follow the app's own state."""
     chan = _channel(home)
     locked = chan != "latest"
     doc, _ = (pages or _pages(home)).get()
     saved = _tweaks(doc) if _readable(doc) else {}
     rows = [{**t, "on": (not locked) and saved.get(t["id"], {}).get("on") is True, "locked": locked}
             for t in catalog(home, fetch)]
+    apps, status = _app_rows(home, app_rows)
     return {"channel": chan, "channel_name": "For testers" if chan == "latest" else "For everyone", "locked": locked,
             "note": ("Feature switches are for testers: choose For testers in Settings › About & updates."
-                     if locked else ""), "switches": rows}
+                     if locked else ""), "switches": rows + list(apps), "apps": list(status)}
 
 
 def is_on(tid: str, home: Path | None = None, pages: Pages | None = None) -> bool:
@@ -213,8 +233,21 @@ def is_on(tid: str, home: Path | None = None, pages: Pages | None = None) -> boo
 
 
 def set_switch(tid: str, on: bool, home: Path | None = None, fetch=_get, pages: Pages | None = None,
-               by: str = "owner") -> dict:
-    """Turn one feature switch on or off for this box (every device of the owner follows within ~30 s)."""
+               by: str = "owner", origin: str | None = None) -> dict:
+    """Turn one feature switch on or off for this box (every device of the owner follows within ~30 s).
+    `<app id>:<switch id>` flips that app's own switch in the app (app_switches.set_switch), as the owner."""
+    if isinstance(tid, str) and ":" in tid:
+        from . import app_switches
+        try:
+            row = app_switches.set_switch(tid, on, home, origin=origin)
+        except app_switches.AppSwitchError as e:
+            raise SwitchError(str(e), e.code) from None
+        try:
+            out = listing(home, fetch, pages)
+        except SwitchError:                     # the app flipped; the core half can't be read right now
+            apps, status = _app_rows(home, None)
+            out = {"switches": list(apps), "apps": list(status)}
+        return {**out, "changed": {"id": tid, "on": row["on"], "by": by}}
     if not isinstance(tid, str) or not ID.fullmatch(tid):
         raise SwitchError("send {\"id\": \"<author>/<id>\", \"on\": true|false}")
     if not isinstance(on, bool):

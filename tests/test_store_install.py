@@ -290,7 +290,7 @@ def test_gateway_feature_switches_reuses_owner_gate_and_exact_route(monkeypatch,
         assert si.gateway_path_ok("/_feature-switches")
         assert _get(srv, "/_feature-switches", GW) == (200, listing)
         assert _post(srv, "/_feature-switches", GW, body) == (200, {"ok": True})
-        assert calls == [(body["id"], True, {"by": "owner"})]
+        assert calls == [(body["id"], True, {"by": "owner", "origin": "https://box.tail1.ts.net"})]
         calls.clear()
         for overrides in ({"X-Wizard-Store-Proof": None}, {"X-Wizard-Store-Proof": "forged"},
                           {"Tailscale-User-Login": None}, {"Tailscale-User-Login": "guest@x.com"}):
