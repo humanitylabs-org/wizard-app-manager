@@ -97,3 +97,12 @@ def test_status_reports_impact_and_reads_unreadable_releases_as_hermes(monkeypat
     s = updates.impact_of("0.3.125", "0.3.126", None, quick=True)
     assert (s["impact"], s["interrupts"], s["reload"]) == ("ui", "ui", True)
     assert updates.impact_of("0.3.125", "0.3.127", None)["interrupts"] == "hermes"
+
+
+def test_the_same_image_under_another_tag_is_not_a_change():
+    want = copy.deepcopy(BASE)
+    want["images"]["wizard-ux"]["ref"] = "ghcr.io/o/wizard-ux:another-tag"
+    want["images"]["wizard-ux"]["ci_run"] = "https://ci/2"
+    assert ui.impact(BASE, want) == "none"
+    want["images"]["wizard-ux"]["digest"] = "sha256:" + "8" * 64
+    assert ui.impact(BASE, want) == "ui"

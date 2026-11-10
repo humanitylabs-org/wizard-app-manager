@@ -13,6 +13,8 @@ Levels, weakest first:
 """
 from __future__ import annotations
 
+import json
+
 LEVELS = ("none", "ui", "service", "hermes", "os")
 META = frozenset({"version", "name", "date", "about", "notes"})
 UI_PARTS = frozenset({"wizard-ux"})
@@ -43,7 +45,9 @@ def changed_parts(have: dict | None, want: dict | None) -> set[str]:
         a, b = have.get(key), want.get(key)
         if key in META or a == b:
             continue
-        if key in ("components", "images") and isinstance(a, dict) and isinstance(b, dict):
+        if key == "images" and isinstance(a, dict) and isinstance(b, dict):
+            parts |= {name for name in set(a) | set(b) if _image_key(a.get(name)) != _image_key(b.get(name))}
+        elif key == "components" and isinstance(a, dict) and isinstance(b, dict):
             parts |= {name for name in set(a) | set(b) if a.get(name) != b.get(name)}
         elif key == "default_apps" and isinstance(a, dict) and isinstance(b, dict):
             for slot in set(a) | set(b):
@@ -54,6 +58,13 @@ def changed_parts(have: dict | None, want: dict | None) -> set[str]:
         else:
             parts.add(key)
     return parts
+
+
+def _image_key(image):
+    """An image runs the same bits when its digest is the same, whatever tag or build record it carries."""
+    if isinstance(image, dict) and image.get("digest"):
+        return ("digest", image["digest"])
+    return ("raw", json.dumps(image, sort_keys=True, default=str))
 
 
 def part_level(part: str) -> str:
