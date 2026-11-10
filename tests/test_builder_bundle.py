@@ -166,6 +166,29 @@ def test_fresh_keeps_compose_merge_tags_in_the_override(homes, tmp_path):
     assert any(isinstance(v, dict) and v.get('target') == bb.RUNTIME for v in service['volumes'])
 
 
+
+def test_fresh_on_an_unchanged_box_is_not_a_change(homes, tmp_path):
+    """Every installer rerun restarted Hermes: fresh() rewrote the override without the comment header
+    `wam network reconcile` puts on top, so the bytes always differed and `restart-required` was set again, even for a
+    words-only release (Mac VM, 10 Nov 2026). A rerun on an unchanged box must leave the override and Hermes alone."""
+    osh, hh = homes
+    c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
+    data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+    data.mkdir(parents=True)
+    shutil.copy(hh / 'config.yaml', data / 'config.yaml')
+    override = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    override.parent.mkdir(parents=True)
+    from wam.network import HEADER
+    override.write_text(HEADER + 'services:\n  hermes-agent-engine:\n    networks: !override\n'
+                        '      wizard-app-hermes-agent:\n        gw_priority: 1\n')
+    assert bb.fresh(c)['restart_required']          # first link: a real change
+    assert override.read_text().startswith(HEADER)  # the header survives the write
+    (osh / 'builder/restart-required').unlink()     # what the restart does
+    linked = override.read_bytes(), (data / 'config.yaml').read_bytes()
+    again = bb.fresh(c)
+    assert not again['restart_required']
+    assert (override.read_bytes(), (data / 'config.yaml').read_bytes()) == linked
+
 @pytest.fixture
 def wizard(homes, monkeypatch):
     loader = importlib.machinery.SourceFileLoader('wizard_test_bundle', str(bb.SOURCE / 'wizard-cli/wizard'))
