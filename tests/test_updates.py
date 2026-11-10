@@ -15,12 +15,6 @@ def _no_cache():
     updates._latest.clear()
 
 
-@pytest.fixture(autouse=True)
-def _idle_box(monkeypatch):
-    """Nothing running unless a test says so: the inventory would otherwise read this machine's own Hermes."""
-    from wam import work
-    monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: [])
-
 
 def _base(tmp_path, stable, promoted=True):
     d = tmp_path / "rel"; d.mkdir(exist_ok=True)
