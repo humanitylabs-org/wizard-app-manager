@@ -161,3 +161,32 @@ def test_follow_all_checks_only_installed_wizard_store_apps(box, monkeypatch):
     seen.clear()
     repo_moves.follow_all(box, rows, only=["files"])
     assert seen == ["files"]
+
+
+def test_a_failed_write_puts_back_what_it_wrote_and_keeps_the_live_record_last(box):
+    before, order = _files(box), []
+
+    def write(root, rel, data):
+        order.append(rel)
+        if rel.endswith("apps/wizardapps/wizard-mail/.wizard-selection") and rel.startswith("apps/") and \
+                json.loads(data).get("repo") == NEW:
+            raise OSError("disk full")
+        repo_moves._write(root, rel, data)
+
+    assert repo_moves.follow(box, "wizard-mail", write=write, **lookups()) is None
+    assert _files(box) == before   # everything already written was put back
+    ok = []
+    assert repo_moves.follow(box, "wizard-mail", write=lambda r, rel, d: ok.append(rel) or repo_moves._write(r, rel, d),
+                             **lookups())
+    assert ok[-1] == "apps/wizardapps/wizard-mail/.wizard-source"   # the record every check reads goes last
+
+
+def test_apply_result_stays_json_after_an_id_rename(box, monkeypatch):
+    rt = SimpleNamespace(installed=lambda: [])
+    box.runtipi = lambda: rt
+    monkeypatch.setattr(app_updates, "_release_managed", lambda: set())
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: None)
+    res = app_updates.apply(box, notify=False, renames=lambda c, rt: [{"renamed": True, "to": "mail", "from": "wizard-mail"}],
+                            moves=lambda *a, **k: [{"id": "x", "from": OLD, "to": NEW, "changed": []}])
+    json.dumps(res)
+    assert res["repo_moved"] == [{"id": "x", "from": OLD, "to": NEW, "changed": []}]

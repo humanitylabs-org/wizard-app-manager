@@ -484,13 +484,13 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
-        moved = []
+        repo_moved = []
         if not dry_run:
             # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
             # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
             from . import repo_moves
             try:
-                moved = (moves or repo_moves.follow_all)(c, rt.installed(), only=only)
+                repo_moved = (moves or repo_moves.follow_all)(c, rt.installed(), only=only)
             except Exception as e:  # noqa: BLE001 - a move check never stops the updates
                 print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
@@ -593,7 +593,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         msg = _summary(done, rolled, failed, needs, renamed, told)
         if notify and msg:
             _notify(c, *msg)
-        return {"started": True, **({"repo_moved": moved} if moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
+        return {"started": True, **({"repo_moved": repo_moved} if repo_moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
                 "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
                 **({"reported": reports} if reports else {})}
     finally:

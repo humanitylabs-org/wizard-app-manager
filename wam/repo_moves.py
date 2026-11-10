@@ -124,13 +124,16 @@ def _points_at(url, repo: str) -> bool:
 
 
 def rewrite(root: Path, store: str, app_id: str, old: str, rec: dict, *, read=_read, write=_write) -> list[str]:
-    """Point the recorded source of `app_id` at `rec`'s repo in both app folders. Returns the files changed."""
+    """Point the recorded source of `app_id` at `rec`'s repo in both app folders. Returns the files changed.
+
+    The live `.wizard-source` (the record every check reads) is written last, and a failed write puts back what
+    was already written, so an interrupted rewrite still reads as the old name and the next run finishes it."""
     new = rec["repo"]
     git = (rec.get("install") or {}).get("git")
     git = git if isinstance(git, str) and _points_at(git, new) else _github_url(new)
-    changed = []
-    for d in (f"apps/{store}/{app_id}", f"repos/{store}/apps/{app_id}"):
-        for name in (".wizard-source", ".wizard-selection", "config.json"):
+    plan = []
+    for d in (f"repos/{store}/apps/{app_id}", f"apps/{store}/{app_id}"):
+        for name in ("config.json", ".wizard-selection", ".wizard-source"):
             rel = f"{d}/{name}"
             raw = read(root, rel)
             try:
@@ -151,9 +154,20 @@ def rewrite(root: Path, store: str, app_id: str, old: str, rec: dict, *, read=_r
                 if name == ".wizard-source" and "git" in doc:
                     doc["git"] = git
                 out = json.dumps(doc) + "\n"
-            write(root, rel, out.encode())
-            changed.append(rel)
-    return changed
+            plan.append((rel, raw, out.encode()))
+    done = []
+    try:
+        for rel, raw, data in plan:
+            write(root, rel, data)
+            done.append((rel, raw))
+    except BaseException:
+        for rel, raw in reversed(done):
+            try:
+                write(root, rel, raw)
+            except Exception:  # noqa: BLE001 - best effort; the live record still names the old repo
+                pass
+        raise
+    return [rel for rel, _ in done]
 
 
 def follow(c, app_id: str, *, want: str | None = None, read=_read, write=_write, **lookups) -> dict | None:
