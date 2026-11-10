@@ -476,6 +476,8 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     if run == "failed":
         reason = (installer.get("failure_reason") or installer.get("message")
                   or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
+    quick = _quick_now(home, installer, run) if run == "running" else \
+        bool(newer and not failed and retry is None and _quick(home, want, base))
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
             "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
@@ -491,9 +493,21 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "receipt": receipt_status(home),
             "host_update": host_update(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
-            "quick": _quick_now(home, installer, run) if run == "running" else
-                     bool(newer and not failed and retry is None and _quick(home, want, base)),
+            "quick": quick,
+            # What the next release touches and what applying it here stops (decides what an update waits for).
+            "impact": impact_of(have, want, base, quick) if newer or retry is not None else None,
             "hermes": hermes_update.status(home, base)}
+
+
+def impact_of(have: str | None, want: str | None, base: str | None, quick: bool = False) -> dict:
+    """update_impact.summary of moving `have` → `want`; a release file that can't be read counts as touching
+    everything up to Hermes (never as nothing)."""
+    from . import quick_update, update_impact
+    a = quick_update.release_doc(have, base) if have else None
+    b = quick_update.release_doc(want, base) if want else None
+    if not a or not b:
+        return {"impact": "hermes", "interrupts": "hermes", "parts": ["?"], "reload": True}
+    return update_impact.summary(a[0], b[0], "quick" if quick else "installer")
 
 
 def _quick(home: Path | None, want: str | None, base: str | None) -> bool:
