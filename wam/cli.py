@@ -1436,7 +1436,9 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
         except (OSError, ValueError):
             continue
         if source != row["repo"]:
-            continue
+            from . import repo_moves   # the release pins the repo's new name after a GitHub move (#578)
+            if not repo_moves.follow(c, app_id, want=row["repo"]):
+                continue
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
         if commit == row["commit"] and (not row.get("index_version") or
                                           str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
