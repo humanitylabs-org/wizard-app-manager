@@ -136,14 +136,14 @@ def test_release_update_preserves_stopped_state_and_rejects_unfinished_update(tm
     c, rt, configs, _, _ = box(tmp_path, monkeypatch)
     monkeypatch.setattr(rt, 'app', lambda urn: {'app': {'status': 'stopped', 'config': configs[urn.split(':')[0]]}})
     update = cli.app_update
-    def stopped(c, app):
-        update(c, app)
+    def stopped(c, app, **k):
+        update(c, app, **k)
         return {'status': 'stopped'}
     monkeypatch.setattr(cli, 'app_update', stopped)
     assert cli.release_updates(c, rt, {}) == ['wizard-claude', 'files']
     for app in configs:
         package(tmp_path, app, 'a' * 40, '0.1.2')
-    monkeypatch.setattr(cli, 'app_update', lambda c, app: {'status': 'updating'})
+    monkeypatch.setattr(cli, 'app_update', lambda c, app, **k: {'status': 'updating'})
     failed = {}
     assert cli.release_updates(c, rt, failed) == []
     assert all('did not finish' in e for e in failed.values())
