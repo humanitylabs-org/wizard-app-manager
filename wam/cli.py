@@ -1537,7 +1537,33 @@ def doctor_gateway_keys(c: Config, reg: dict, switch_on=None) -> list[tuple[str,
     return [row] if row else []
 
 
-def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
+# The box rows of `wam doctor`; inside the agent's container they report NOT_APPLICABLE (ok None), not failures.
+BOX_DOCTOR_ROWS = ("Wizard builder agent terminal reachability", "App Manager API reachable",
+                   "Wizard store reads the index", "App Store lists index apps", "API is box-only",
+                   "API token present (0600)", "apps.json written")
+
+
+def container_doctor(c: Config) -> list[tuple[str, bool | None, str]]:
+    """`wam doctor` in the stock agent's container (no box wam, no Runtipi): the bundle and the index are real checks;
+    the App Manager's rows are not applicable there, and nothing is written or repaired."""
+    from . import builder_bundle
+    from .bundle_delegate import NOT_APPLICABLE
+    hh = os.environ.get("HERMES_HOME")
+    hh = Path(hh) if hh and (Path(hh) / "config.yaml").is_file() else None
+    out = list(builder_bundle.health(c.home, hh, builder_bundle.RUNTIME + "/current/system-skills" if hh else None))
+    try:
+        n = len(index.search(c.index, ""))
+        out.append(("index reachable", True, f"{c.index} ({n} apps on the first page)"))
+    except Exception as e:  # noqa: BLE001
+        out.append(("index reachable", False, str(e)[:200]))
+    out.extend((label, None, NOT_APPLICABLE) for label in BOX_DOCTOR_ROWS)
+    return out
+
+
+def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
+    from .bundle_delegate import in_agent_container
+    if in_agent_container():
+        return container_doctor(c)
     out = []
     from . import builder_bundle
     if fix:
@@ -2377,6 +2403,9 @@ def main(argv: list[str] | None = None) -> int:
         from .bundle_delegate import delegate
         if delegate(sys.argv[1:]):
             return 0   # a downgrade the bundle refused and reported (exec never returns)
+        from .bundle_delegate import container_stop
+        if container_stop(sys.argv[1:]):
+            return 1   # a box command in the agent's container: said so in one line, nothing ran
         from .docker_group import reexec_with_docker_group
         reexec_with_docker_group()
     argv = sys.argv[1:] if argv is None else argv
@@ -2714,11 +2743,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else standard.describe(res))
             return 1 if res["custom"] else 0
         elif args.cmd == "doctor":
-            c.api_token()
+            from .bundle_delegate import in_agent_container
+            if not in_agent_container():   # the agent's container has no box API token to create
+                c.api_token()
             res = doctor(c, fix=args.fix)
             for n, ok, det in res:
-                print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
-            return 0 if all(ok for _, ok, _ in res) else 1
+                print(f"{'N/A ' if ok is None else 'PASS' if ok else 'FAIL'}  {n}  {det}")
+            return 0 if all(ok is not False for _, ok, _ in res) else 1
         elif args.cmd == "store-data":
             res = store_data_cmd(c, apply=not args.dry_run)
             print(json.dumps(res, indent=2))

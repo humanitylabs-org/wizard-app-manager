@@ -584,6 +584,9 @@ def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False
     Does not replace the terminal backend: VM factory SSH still runs host tools;
     local terminals use the read-only mounted bundle and stock Python environment.
     """
+    from .bundle_delegate import BOX_ONLY, in_agent_container
+    if in_agent_container():   # no Runtipi here: never write an override or claim a restart would help (#589)
+        raise ValueError(BOX_ONLY)
     receipt = install(c.home, allow_downgrade=allow_downgrade)
     data = c.runtipi_root / 'app-data' / store / app_id / 'data'
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
