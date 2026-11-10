@@ -67,6 +67,16 @@ describe('setAppDataDirPermissions', () => {
     expect(await mode(path.join(grants(), 'agent-service.json'))).toBe(0o600);
   });
 
+  it('sets owner-only grant keys with the wrong owner bits back to exactly 0700 / 0600', async () => {
+    await fs.chmod(path.join(grants(), 'agent-service.json'), 0o700);
+    await fs.chmod(grants(), 0o600);
+
+    await manager.setAppDataDirPermissions('wizard-agent-service:wizardapps' as AppUrn);
+
+    expect(await mode(grants())).toBe(0o700);
+    expect(await mode(path.join(grants(), 'agent-service.json'))).toBe(0o600);
+  });
+
   it('never follows a link out of the app data folder', async () => {
     await fs.symlink(path.join(outside, 'target'), path.join(app(), 'data/state/link'));
     await fs.symlink(outside, path.join(app(), 'data/state/dir-link'));

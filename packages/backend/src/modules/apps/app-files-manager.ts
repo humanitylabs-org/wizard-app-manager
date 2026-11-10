@@ -19,7 +19,10 @@ import { type } from 'arktype';
  */
 export const PRIVATE_APP_DATA_DIRS = ['data/wizard-os/grants'];
 
-/** Folder 0700, its regular files 0600; owners unchanged, links and anything else left alone. Only ever tightens. */
+/**
+ * Folder exactly 0700, its regular files exactly 0600 (what the gateway requires); owners unchanged, links and
+ * anything else left alone. Never opens anything to group or others.
+ */
 async function tightenPrivateDir(dir: string) {
   const NOFOLLOW = fsp.constants.O_RDONLY | fsp.constants.O_NOFOLLOW | fsp.constants.O_NONBLOCK;
   const tighten = async (p: string, mode: number, kind: 'file' | 'dir') => {
@@ -27,7 +30,7 @@ async function tightenPrivateDir(dir: string) {
     if (!fh) return;
     try {
       const st = await fh.stat();
-      if ((kind === 'dir' ? st.isDirectory() : st.isFile()) && st.mode & 0o077) await fh.chmod(mode);
+      if ((kind === 'dir' ? st.isDirectory() : st.isFile()) && (st.mode & 0o777) !== mode) await fh.chmod(mode);
     } finally {
       await fh.close();
     }
