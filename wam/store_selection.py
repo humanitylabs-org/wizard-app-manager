@@ -100,7 +100,11 @@ def execute(c, app_id, selection):
         except (OSError, ValueError):
             raise ValueError('installed repository identity unavailable; nothing changed') from None
         if existing.get('repo') != selection['repo'] and not _private_to_standard(existing, selection):
-            raise ValueError('installed repository conflict; nothing changed')
+            # The app's repo was renamed or moved to another owner on GitHub (#578): record the new name when
+            # GitHub redirects the old repo to exactly this one and it publishes the same app; else refuse.
+            from . import repo_moves
+            if not repo_moves.follow(c, app_id, want=selection['repo']):
+                raise ValueError('installed repository conflict; nothing changed')
         if source == 'link' and existing.get('source') != 'link':
             raise ValueError('installed source is not link; nothing changed')
     if source not in ('standard', 'owner-private', 'link'):

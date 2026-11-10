@@ -469,7 +469,7 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
 
 
 def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
-          reporter=None) -> dict:
+          reporter=None, moves=None) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -484,6 +484,15 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
+        moved = []
+        if not dry_run:
+            # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
+            # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
+            from . import repo_moves
+            try:
+                moved = (moves or repo_moves.follow_all)(c, rt.installed(), only=only)
+            except Exception as e:  # noqa: BLE001 - a move check never stops the updates
+                print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:
             unknown = sorted(set(only) - {r["id"] for r in rows})
@@ -584,7 +593,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         msg = _summary(done, rolled, failed, needs, renamed, told)
         if notify and msg:
             _notify(c, *msg)
-        return {"started": True, "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
+        return {"started": True, **({"repo_moved": moved} if moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
                 "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
                 **({"reported": reports} if reports else {})}
     finally:
