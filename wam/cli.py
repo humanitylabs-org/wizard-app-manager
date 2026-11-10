@@ -1724,6 +1724,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
                 return self._json(503, {"error": "server_resources_unavailable"})
+        if u.path == "/api/system/devices":
+            # The box's machines and saved Wizards (devices.py, wizard-os spec/DEVICES.md), the same contract as the
+            # wizard-ux resources sidecar: only through Tailscale Serve (it sets the caller's login), never cross-site.
+            # Owner only, like the Store listener: another tailnet user must not read this box's machines and Wizards.
+            from . import devices, store_install as si
+            who = (self.headers.get("Tailscale-User-Login") or "").strip().lower()
+            if not who:
+                return self._json(403, {"error": "private_access_required"})
+            owner = si.owner_login().strip().lower()
+            if not owner or who != owner:
+                return self._json(403, {"error": "owner_only"})
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
+            try:
+                return self._json(200, devices.reader_for(c.home)())
+            except Exception:
+                return self._json(503, {"error": "devices_unavailable"})
         grant_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/proposed-grants", u.path)
         if grant_match:
             if not self._authorized(): return
