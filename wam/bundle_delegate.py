@@ -6,7 +6,10 @@ with every update. On 2 Nov 2026 a `wam install` from a builder session ran an O
 owner-gateway fix in links.py and rewrote Messenger's launcher to its raw port. So on a host with a box wam, only the
 builder commands below run from the bundle; install, links, apps, updates, views, builder-bundle and everything else
 exec the box's wam, and a stale bundle can never write the box's registry, routes or apps. Inside a stock agent container
-there is no box wam, and the bundle keeps running every command itself, exactly as before.
+there is no box wam: there the bundle runs builder commands itself, and box commands stop with one plain line
+(`container_stop`), because the container has no Runtipi, no Docker socket and no box App Manager to act on
+(wizard-app-manager#589, 10 Nov 2026: `app-updates --apply` crashed on a missing runtipi/.env and `builder-bundle fresh`
+wrote its override under the container's own paths, then claimed a restart would fix it).
 
 The reverse also happens: the box's wam can be older than the bundle (7 Nov 2026: a bundle published from a newer
 App Manager; the box's older wam called it outdated and its `builder-bundle install` put the older code back). So
@@ -30,6 +33,13 @@ GUARD = 'WAM_FROM_BUILDER_BUNDLE'   # set on the exec'd box wam: never delegate 
 BUILDER_COMMANDS = frozenset({'new', 'check', 'verify', 'install-local', 'update-local', 'publish', 'package-inline'})
 # `builder-bundle` actions the bundle runs itself: they read or switch only ~/.wizard-os/builder, with this newer code.
 BUNDLE_LOCAL = frozenset({'doctor', 'rollback'})
+# What still runs inside an agent container with no box wam: builder commands, help, the read-only index search,
+# `doctor` (box rows read "not applicable") and the bundle-local `builder-bundle` actions. Everything else is a box
+# command and stops with BOX_ONLY.
+CONTAINER_OK = BUILDER_COMMANDS | {'search', 'doctor', '-h', '--help'}
+BOX_ONLY = ("This runs on the box, not in the agent's container. "
+            "To update an app, use Tracker \u203a Settings \u203a Update or Settings \u203a Updates.")
+NOT_APPLICABLE = 'not applicable in the agent container'
 
 
 def bundle_root(source: Path = SOURCE) -> Path | None:
@@ -72,6 +82,43 @@ def box_source(cmd: Path | None = None) -> Path | None:
         return None
     path = Path(m.group(1) or m.group(2) or m.group(3))
     return path if (path / 'wam').is_dir() else None
+
+
+def runtipi_present(env=None) -> bool:
+    """Whether this machine has a Runtipi install the App Manager could act on (its .env, which every box has)."""
+    env = os.environ if env is None else env
+    root = env.get('RUNTIPI_ROOT')
+    if not root:
+        cfg_file = Path(env.get('WIZARD_OS_HOME') or Path.home() / '.wizard-os').expanduser() / 'app-manager.json'
+        try:
+            cfg = json.loads(cfg_file.read_text()) if cfg_file.is_file() else {}
+            root = cfg.get('runtipi_root') if isinstance(cfg, dict) else None
+        except (OSError, ValueError):
+            root = None
+    try:
+        return (Path(root or Path.home() / 'runtipi').expanduser() / '.env').is_file()
+    except OSError:
+        return False
+
+
+def in_agent_container(source: Path = SOURCE, env=None) -> bool:
+    """A builder bundle with no box wam and no Runtipi: the stock agent's container, which can't reach the box."""
+    env = os.environ if env is None else env
+    if env.get(GUARD) or bundle_root(source) is None:
+        return False
+    return box_wam(source) is None and not runtipi_present(env)
+
+
+def container_stop(argv: list[str], source: Path = SOURCE, env=None, out=None) -> bool:
+    """Stop a box command run in the agent's container before it does anything. True when it was stopped."""
+    if not argv or argv[0] in CONTAINER_OK:
+        return False
+    if argv[0] == 'builder-bundle' and next((a for a in argv[1:] if not a.startswith('-')), None) in BUNDLE_LOCAL:
+        return False
+    if not in_agent_container(source, env):
+        return False
+    (out or (lambda line: print(line, file=__import__('sys').stderr)))(BOX_ONLY)
+    return True
 
 
 def _bundle_args(argv, source, cmd, out):
