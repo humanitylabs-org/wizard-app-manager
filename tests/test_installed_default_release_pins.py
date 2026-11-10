@@ -42,7 +42,11 @@ def box(tmp_path, monkeypatch, *, rollback=False, required_type='password', save
         configs[app] = form
         patches.append(app)
     rt = SimpleNamespace(app=lambda urn: {'app': {'status': 'running', 'config': configs[urn.split(':')[0]]}}, req=req)
-    def update(c, app):
+    def update(c, app, settings=None):
+        if settings is not None:   # as cli.app_update: settings are filled only once the update is admitted
+            missing = settings(rt, f'{app}:{cli.STORE}')
+            if missing:
+                raise SystemExit('the new version needs ' + '; '.join(missing) + '\nNothing changed')
         updated.append(app)
         if app == 'wizard-claude':
             assert configs[app].get('HERMES_DASHBOARD_BASIC_AUTH_PASSWORD')
@@ -84,7 +88,7 @@ def test_new_required_owner_input_fails_without_attempting_update(tmp_path, monk
     c, rt, _, patches, updated = box(tmp_path, monkeypatch, required_type='text')
     failed = {}
     assert cli.release_updates(c, rt, failed) == ['files']
-    assert 'new required settings need owner input' in failed['wizard-claude']
+    assert 'the new version needs HERMES_DASHBOARD_BASIC_AUTH_PASSWORD' in failed['wizard-claude']
     assert patches == [] and updated == ['files']
 
 

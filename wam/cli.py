@@ -325,7 +325,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
                 form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
             missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
-    if saved:
+    if saved and not missing:   # incomplete form: nothing is used, so nothing generated is kept either
         c.secrets.mkdir(mode=0o700, exist_ok=True)
         p = c.secrets / f"{app_id}.json"
         p.write_text(json.dumps({**previous, **saved}, indent=2) + "\n")
@@ -1450,19 +1450,23 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             # shared-secret/default rules as install, without resetting any owner settings.
             urn = f"{app_id}:{STORE}"
             before = (rt.app(urn) or {}).get("app") or {}
-            current = before.get("config") or {}
             recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
             target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
             if row.get("index_version") and target_version != row["index_version"]:
                 raise RuntimeError("prepared recipe version does not match the release pin")
             info = json.loads((recipe / "config.json").read_text())
-            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
-            if missing:
-                raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
-            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
-            if form != current:
-                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
-            res = app_update(c, app_id)
+
+            def fill(rt_, urn_, info=info, uses=rec.get("uses") or []):
+                # runs inside app_update once the update is admitted, so a refused update changes nothing (#582)
+                current = ((rt_.app(urn_) or {}).get("app") or {}).get("config") or {}
+                form, missing = build_form(c, app_id, info, current, uses=uses)
+                if missing:
+                    return missing
+                form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
+                if form != current:
+                    rt_.req("PATCH", f"/app-lifecycle/{urn_}/update-config", form, timeout=120)
+                return []
+            res = app_update(c, app_id, settings=fill)
             if res.get("error"):
                 raise RuntimeError(res["error"])
             expected_status = 'running' if before.get('status') == 'running' else 'stopped'
@@ -2276,9 +2280,15 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+               settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
-    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
+
+    `settings(rt, urn) -> missing`: fills the saved settings the new version newly requires (app_updates /
+    release_updates). It runs only once the update is admitted (installed, owner gate for new host access passed),
+    so a refused update never changes saved settings; when it returns what only the owner can give, nothing
+    changes and the update stops (SystemExit, first line \"the new version needs ...\")."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
         from .hermes_lock import authorize
         try:
@@ -2310,6 +2320,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                              f"  wam app update {app} --allow-host-access")
         if gated and new and not _gate.valid(c.home, app, new, "update", rh):
             raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
+        if settings is not None:   # admitted: only now may new required settings be written (#582)
+            missing = settings(rt, urn)
+            if missing:
+                raise SystemExit("the new version needs " + "; ".join(missing) +
+                                 f"\nNothing changed: {app} keeps its current version.")
         if new:
             label = "owner allowed" if gated else "owner flag"
             print(f"WARNING: {app} is updated WITH HOST ACCESS ({label}): " + "; ".join(new), file=sys.stderr)
