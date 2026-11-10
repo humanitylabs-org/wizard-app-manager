@@ -574,6 +574,10 @@ def register(hermes_home, os_home, runtime=None):
     return path
 
 
+# An installer rerun on an unchanged box leaves Hermes running (update_impact reads this to know what an update stops).
+LINK_IS_IDEMPOTENT = True
+
+
 def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False):
     """Prepare the stock Runtipi Hermes data directory and additive override.
 
