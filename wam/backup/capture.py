@@ -182,8 +182,13 @@ def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: lis
     skipped += [f"{app_id}: {x}" for x in rep["skipped"]]
 
 
-def _du(path: Path) -> int:
-    return bundle.tree_size(path)["bytes"] if path.is_dir() else 0
+def _du(path: Path, skip=None) -> int:
+    # a space estimate: a folder that cannot be listed must not abort the backup (the capture itself decides)
+    return bundle.tree_size(path, skip, skip_denied=True)["bytes"] if path.is_dir() else 0
+
+
+def _agent_skip(rel: str, is_dir: bool) -> bool:
+    return agentlib.keep_in_place(rel)  # per-machine entries (cache/, logs/, ...) are never captured
 
 
 @datafs.with_access
@@ -225,7 +230,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
     home_size = bundle.tree_size(box.home, skip_home_entry)
     est = files_size["bytes"] + home_size["bytes"]
-    agents_bytes = sum(_du(a.home) for a in agents)
+    agents_bytes = sum(_du(a.home, _agent_skip) for a in agents)
     app_sizes = [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
                  + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
                  for urn, info in installed.items() if urn not in agent_urns]

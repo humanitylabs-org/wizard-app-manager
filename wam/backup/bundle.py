@@ -198,13 +198,15 @@ def gzip_file(src: Path, dst: Path) -> None:
         shutil.copyfileobj(s, g, COPY)
 
 
-def tree_size(root: Path, skip=None) -> dict:
-    """Count and bytes of what add_tree would take, without reading file contents."""
+def tree_size(root: Path, skip=None, *, skip_denied: bool = False) -> dict:
+    """Count and bytes of what add_tree would take, without reading file contents.
+
+    skip_denied=True leaves out folders that cannot be listed instead of failing; for size estimates only."""
     count = size = 0
     root = Path(root)
     if not root.is_dir():
         return {"count": 0, "bytes": 0}
-    for dirpath, dirnames, filenames in datafs.walk(root):
+    for dirpath, dirnames, filenames in datafs.walk(root, skip_denied=skip_denied):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(root).as_posix()
         dirnames[:] = [d for d in dirnames if not (dp / d).is_symlink()
@@ -217,6 +219,10 @@ def tree_size(root: Path, skip=None) -> dict:
                 st = datafs.lstat(dp / fn)
             except FileNotFoundError:
                 continue
+            except PermissionError:
+                if skip_denied:
+                    continue
+                raise
             if stat.S_ISREG(st.st_mode):
                 count += 1
                 size += st.st_size
