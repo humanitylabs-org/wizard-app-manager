@@ -197,7 +197,7 @@ def manager_jobs(home: Path | None) -> list[dict]:
     h = updates._home(home)
     out = []
     if updates.install_state(home) == "running":
-        out.append(_item("task", "Wizard OS update", "installer", "service"))
+        out.append(_item("task", "WizardOS update", "installer", "service"))
     # Not maintenance.lock: nightly maintenance is what starts a Linux box's Automatic update. `wam backup` keeps its
     # lock elsewhere (follow-up: list a running backup too).
     for lock, name in (("app-updates.lock", "App updates"), ("hermes-update.lock", "Hermes update"),

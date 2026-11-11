@@ -422,7 +422,7 @@ def request_host_apply(home: Path | None = None, base: str | None = None, anyway
     doc = {"target": st["latest"], "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _write_doc(_home(home) / HOST_REQUEST, doc)
     return {**st, "started": False, "host_pending": doc,
-            "note": "Your Mac saves a copy of Wizard OS first, then starts the update. Wizard restarts once."}
+            "note": "Your Mac saves a copy of WizardOS first, then starts the update. Wizard restarts once."}
 
 
 def installing(home: Path | None = None) -> bool:
@@ -523,7 +523,7 @@ def host_backup_stops_box() -> bool:
 
 def _box_impact(imp: dict | None) -> dict | None:
     if imp and by_host() and host_backup_stops_box():
-        return {**imp, "interrupts": "os", "note": "the Mac's disk copy restarts Wizard OS"}
+        return {**imp, "interrupts": "os", "note": "the Mac's disk copy restarts WizardOS"}
     return imp
 
 

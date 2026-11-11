@@ -2675,7 +2675,7 @@ def main(argv: list[str] | None = None) -> int:
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
     wk = sub.add_parser("work", help="what is running on this box (chat replies, agent turns, scheduled jobs, "
-                                     "background tasks), and what the next Wizard OS update would wait for")
+                                     "background tasks), and what the next WizardOS update would wait for")
     wk.add_argument("--impact", choices=("none", "ui", "service", "hermes", "os"),
                     help="only what an update that stops this much would wait for")
     fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the same state "

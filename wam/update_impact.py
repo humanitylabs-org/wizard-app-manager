@@ -1,4 +1,4 @@
-"""What a Wizard OS release touches, and what applying it on this box will stop.
+"""What a WizardOS release touches, and what applying it on this box will stop.
 
 `impact` is about the release: the strongest part its pins move, compared with the installed release.
 `interrupts` is about this box: the update path can stop more than the release touches (today every installer run
