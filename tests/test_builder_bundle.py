@@ -166,6 +166,29 @@ def test_fresh_keeps_compose_merge_tags_in_the_override(homes, tmp_path):
     assert any(isinstance(v, dict) and v.get('target') == bb.RUNTIME for v in service['volumes'])
 
 
+
+def test_fresh_on_an_unchanged_box_is_not_a_change(homes, tmp_path):
+    """Every installer rerun restarted Hermes: fresh() rewrote the override without the comment header
+    `wam network reconcile` puts on top, so the bytes always differed and `restart-required` was set again, even for a
+    words-only release (Mac VM, 10 Nov 2026). A rerun on an unchanged box must leave the override and Hermes alone."""
+    osh, hh = homes
+    c = SimpleNamespace(home=osh, runtipi_root=tmp_path / 'runtipi')
+    data = c.runtipi_root / 'app-data/wizardapps/hermes-agent/data'
+    data.mkdir(parents=True)
+    shutil.copy(hh / 'config.yaml', data / 'config.yaml')
+    override = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    override.parent.mkdir(parents=True)
+    from wam.network import HEADER
+    override.write_text(HEADER + 'services:\n  hermes-agent-engine:\n    networks: !override\n'
+                        '      wizard-app-hermes-agent:\n        gw_priority: 1\n')
+    assert bb.fresh(c)['restart_required']          # first link: a real change
+    assert override.read_text().startswith(HEADER)  # the header survives the write
+    (osh / 'builder/restart-required').unlink()     # what the restart does
+    linked = override.read_bytes(), (data / 'config.yaml').read_bytes()
+    again = bb.fresh(c)
+    assert not again['restart_required']
+    assert (override.read_bytes(), (data / 'config.yaml').read_bytes()) == linked
+
 @pytest.fixture
 def wizard(homes, monkeypatch):
     loader = importlib.machinery.SourceFileLoader('wizard_test_bundle', str(bb.SOURCE / 'wizard-cli/wizard'))
@@ -212,6 +235,118 @@ def test_link_repeat_refresh_unlink_and_owner_edits(homes, wizard, tmp_path):
     cfg = yaml.safe_load((hh / 'config.yaml').read_text())
     assert cfg['skills']['external_dirs'] == [str(tmp_path / 'owner-added')]
     assert cfg['owner'] == 'kept'
+
+
+def test_mcp_entry_is_lazy_and_keeps_owner_options():
+    # Runs without ruamel (CI skips the full link tests), so the alongside entry is always checked.
+    loader = importlib.machinery.SourceFileLoader('wizard_test_entry', str(bb.SOURCE / 'wizard-cli/wizard'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    w = importlib.util.module_from_spec(spec)
+    loader.exec_module(w)
+    auth = {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}
+    assert w.mcp_entry('http://g/wizard/mcp') == {'url': 'http://g/wizard/mcp', 'headers': auth, 'lazy': True}
+    old = {'url': 'http://old/wizard/mcp', 'headers': {'Authorization': 'x'}, 'timeout': 42}
+    assert w.mcp_entry('http://g/wizard/mcp', old) == {'url': 'http://g/wizard/mcp', 'headers': auth,
+                                                       'timeout': 42, 'lazy': True}
+    assert w.mcp_entry('http://g/wizard/mcp', {**old, 'lazy': False})['lazy'] is False
+    assert 'lazy' not in old
+    kept = w.mcp_entry('http://g/wizard/mcp', {**old, 'headers': {'X-Custom': 'v', 'Authorization': 'x'}})
+    assert kept['headers'] == {'X-Custom': 'v', **auth}
+
+
+def test_unlink_restores_owner_headers(homes, wizard):
+    _, hh = homes
+    w, _ = wizard
+    cfgp = hh / 'config.yaml'
+    cfg = yaml.safe_load(cfgp.read_text())
+    cfg['mcp_servers'] = {'wizard': {'url': 'http://x/wizard/mcp', 'headers': {'X-Custom': 'v'}}}
+    cfgp.write_text(yaml.safe_dump(cfg))
+    original = cfgp.read_bytes()
+    w.cmd_link(ns(hh))
+    headers = yaml.safe_load(cfgp.read_text())['mcp_servers']['wizard']['headers']
+    assert headers['X-Custom'] == 'v' and headers['Authorization'].startswith('Bearer ')
+    w.cmd_unlink(ns(hh))
+    assert cfgp.read_bytes() == original
+
+
+@pytest.mark.parametrize('lazy', [None, False, True])
+def test_link_writes_lazy_and_restores_original_bytes(homes, wizard, lazy):
+    _, hh = homes
+    w, _ = wizard
+    cfgp = hh / 'config.yaml'
+    if lazy is not None:
+        cfg = yaml.safe_load(cfgp.read_text())
+        cfg['mcp_servers'] = {'wizard': {'url': 'http://x/wizard/mcp', 'lazy': lazy, 'timeout': 42}}
+        cfgp.write_text(yaml.safe_dump(cfg))
+    original = cfgp.read_bytes()
+    w.cmd_link(ns(hh))
+    entry = yaml.safe_load(cfgp.read_text())['mcp_servers']['wizard']
+    assert entry['lazy'] is (True if lazy is None else lazy)
+    if lazy is not None:
+        assert entry['timeout'] == 42
+    w.cmd_unlink(ns(hh))
+    assert cfgp.read_bytes() == original
+
+
+@pytest.mark.parametrize('owner_edit', ['none', 'before', 'after', 'false'])
+def test_repeat_link_migrates_legacy_entry_and_journals_original(homes, wizard, monkeypatch, owner_edit):
+    _, hh = homes
+    w, _ = wizard
+    cfgp = hh / 'config.yaml'
+    original = cfgp.read_bytes()
+    # Produce a real old-style link journal, not a hand-written already-linked record.
+    with monkeypatch.context() as old:
+        old.setattr(w, 'mcp_entry', lambda url, *args: {
+            'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}})
+        w.cmd_link(ns(hh))
+    legacy = w.read_record()
+    assert 'lazy' not in yaml.safe_load(cfgp.read_text())['mcp_servers']['wizard']
+
+    def edit_owner():
+        cfg = yaml.safe_load(cfgp.read_text())
+        cfg['owner'] = 'kept'
+        cfg['mcp_servers']['other'] = {'url': 'http://other/mcp', 'lazy': False}
+        cfg['mcp_servers']['wizard']['timeout'] = 42
+        if owner_edit == 'false':
+            cfg['mcp_servers']['wizard']['lazy'] = False
+        cfgp.write_text(yaml.safe_dump(cfg))
+
+    if owner_edit in ('before', 'false'):
+        edit_owner()
+    assert w.cmd_link(ns(hh))['already_linked']
+    entry = yaml.safe_load(cfgp.read_text())['mcp_servers']['wizard']
+    assert entry['lazy'] is (owner_edit != 'false')
+    record = w.read_record()
+    assert record['backup'] == legacy['backup']
+    assert record['config_sha_before'] == legacy['config_sha_before']
+    if owner_edit != 'false':
+        assert record['edits'][-1] == {'key': 'mcp_servers.wizard.lazy',
+                                      'before': {'present': False}, 'after': True}
+    config_bytes = cfgp.read_bytes()
+    w.cmd_link(ns(hh))
+    assert cfgp.read_bytes() == config_bytes
+    assert w.read_record()['edits'] == record['edits']
+    if owner_edit == 'after':
+        edit_owner()
+        cfg = yaml.safe_load(cfgp.read_text())
+        cfg['mcp_servers']['wizard']['lazy'] = False
+        cfgp.write_text(yaml.safe_dump(cfg))
+    unlinked = w.cmd_unlink(ns(hh))
+    if owner_edit == 'none':
+        assert cfgp.read_bytes() == original
+    else:
+        cfg = yaml.safe_load(cfgp.read_text())
+        assert cfg['owner'] == 'kept'
+        assert cfg['mcp_servers']['other'] == {'url': 'http://other/mcp', 'lazy': False}
+        assert cfg['mcp_servers']['wizard']['timeout'] == 42
+        # Preserve an owner's edited server as a complete, structurally valid entry,
+        # not an orphaned timeout/lazy stub after removing its URL.
+        assert cfg['mcp_servers']['wizard']['url'] == w.gateway_url(ns(hh))
+        assert unlinked['preserved_owner_mcp_entry'] is True
+        assert 'owner-edited Wizard MCP entry was preserved' in unlinked['note']
+        if owner_edit in ('false', 'after'):
+            assert cfg['mcp_servers']['wizard']['lazy'] is False
 
 
 def test_modified_plugin_refresh_is_refused(homes, wizard):

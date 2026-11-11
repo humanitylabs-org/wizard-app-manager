@@ -60,7 +60,7 @@ def test_doctor_cli_fails_on_an_interrupted_update(box, monkeypatch, capsys, kin
     monkeypatch.setattr(sys, 'argv', ['wam', 'doctor'])
     assert cli.main() == 1
     text = capsys.readouterr().out
-    assert 'FAIL  Wizard OS update completed' in text
+    assert 'FAIL  WizardOS update completed' in text
     assert 'interrupted' in text and 'https://aiwizards.com/os.sh' in text
     assert json.loads((box.home / 'install-status.json').read_text())['state'] == 'interrupted'
     if kind != 'already-interrupted':
@@ -89,6 +89,6 @@ def test_doctor_does_not_invent_an_interruption(box, kind):
 def test_doctor_fix_does_not_hide_the_unfinished_update(box):
     state(box)
     checks = cli.doctor(box, fix=True)
-    assert any(n == 'Wizard OS update completed' and not ok for n, ok, _ in checks)
+    assert any(n == 'WizardOS update completed' and not ok for n, ok, _ in checks)
     state(box, state='done')
     assert all(ok for _, ok, _ in cli.doctor(box))

@@ -78,6 +78,11 @@ def routes(root: Path | None = None) -> dict:
     return ok
 
 
+def _switches(w: dict) -> str | None:
+    from .app_switches import parse
+    return parse(w.get("switches")) if isinstance(w, dict) else None
+
+
 def _owner_proof(w: dict) -> dict | None:
     from . import owner_proof
     try:
@@ -136,6 +141,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             # Optional (wizard-os spec/OWNER_PROOF.md): the platform's owner edge signs this app's owner requests.
             # A malformed declaration is dropped here (wam check reports it), so the app keeps its own sign-in.
             **({"owner_proof": proof} if owner_proof_enabled and (proof := _owner_proof(w)) else {}),
+            # Optional (wizard-os docs/APP_SWITCHES.md): the app's feature-switch endpoint, merged into the box's one
+            # switch catalog (app_switches.py) so the Tracker's Try it can flip it.
+            **({"switches": sw} if (sw := _switches(w)) else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
@@ -158,6 +166,14 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
 def public_projection(reg: dict) -> dict:
     """Exclude copy-only app metadata from every JSON serialization boundary."""
     return {**reg, "apps": [{k: v for k, v in a.items() if not k.startswith("_")} for a in reg["apps"]]}
+
+
+def is_projection(reg: dict) -> bool:
+    """True for a registry re-read from apps.json: `build` gives every app a `_skill_src` key (None when it ships no
+    SKILL.md) and the public projection strips it. An empty app list is never treated as one, so a box whose apps are
+    all gone still has their skills removed."""
+    apps = reg.get("apps") or []
+    return bool(apps) and not any("_skill_src" in a for a in apps)
 
 
 def read_grants_file(path: Path) -> list | None:
@@ -225,7 +241,11 @@ def write(reg: dict, root: Path | None = None) -> Path:
         reg['slots']['chats']['candidates'].insert(0, chats_views.BUILTIN)
         reg['slots']['chats']['default'] = chats_views.BUILTIN
     sk.mkdir(exist_ok=True)
-    write_skills(sk, reg["apps"])
+    if not is_projection(reg):
+        write_skills(sk, reg["apps"])
+    # else: a re-read apps.json (public projection, no `_skill_src`) carries no skill sources. Copying from it would
+    # look like "no app has a skill" and prune every skills/<app>/ folder (#596: Store install/update emptied
+    # ~/.wizard-os/skills). The skills a build wrote stay as they are.
     prev = root / "apps.json"
     old = {}
     if prev.is_file():

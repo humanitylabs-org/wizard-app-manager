@@ -8,6 +8,8 @@ import shutil
 
 FIELDS = ('cpuLoad', 'percentUsedMemory', 'percentUsed', 'memoryTotal', 'diskUsed', 'diskSize')
 PATH = '/api/system/load'
+DEVICES_PATH = '/api/system/devices'   # served by devices.py (wizard-app-manager#568)
+PUBLISHED = (PATH, DEVICES_PATH)
 
 
 def _host_disk(path):
@@ -34,20 +36,25 @@ def read(rt, disk_path=None):
     return out
 
 
-def publish(host, port, api_port, apply=True):
-    """Publish just this GET route beside the shell. Never replace an owner's route."""
+def publish(host, port, api_port, apply=True, path=PATH):
+    """Publish just this GET route beside the shell. Never replace an owner's route.
+
+    `path` is one of the exact read-only routes this host API serves for the shell: /api/system/load (here) and
+    /api/system/devices (devices.py). Each is published on its own, never a prefix."""
     from . import links
-    target = f'http://127.0.0.1:{api_port}{PATH}'
-    out = {'path': PATH, 'target': target, 'state': 'ready'}
+    if path not in PUBLISHED:
+        raise ValueError('not a published resource route')
+    target = f'http://127.0.0.1:{api_port}{path}'
+    out = {'path': path, 'target': target, 'state': 'ready'}
     if not apply:
         return {**out, 'dry_run': True}
-    status = links.route_status(links.serve_status(), host, port, PATH, target)
+    status = links.route_status(links.serve_status(), host, port, path, target)
     if status == 'conflict':
         raise ValueError('existing resource Serve route differs; left untouched')
     if status == 'missing':
-        r = links._run(['tailscale', 'serve', '--bg', f'--https={port}', f'--set-path={PATH}', target], 60)
+        r = links._run(['tailscale', 'serve', '--bg', f'--https={port}', f'--set-path={path}', target], 60)
         if r.returncode:
             raise ValueError('resource Serve route could not be published')
-    if links.route_status(links.serve_status(), host, port, PATH, target) != 'match':
+    if links.route_status(links.serve_status(), host, port, path, target) != 'match':
         raise ValueError('resource Serve route readback did not match')
     return out

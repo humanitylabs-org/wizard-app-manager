@@ -3,6 +3,7 @@
 Every command prints one JSON object with --json and short human text otherwise; progress goes to stderr.
 Exit status 0 = done (or a scheduled run with nothing to do), 1 = refused or failed, 2 = usage, 3 = import partly
 done: some apps were not restored because the backup is from a newer release than this box offers (never downgraded).
+75 = backup stopped to protect the live Wizard from a full disk.
 """
 from __future__ import annotations
 
@@ -125,6 +126,8 @@ def _plan_text(p: dict) -> str:
 
 
 def _human(cmd: str, res: dict) -> str:
+    if res.get("stopped_low_disk"):
+        return str(res["message"])
     if cmd == "import" and res.get("partial"):
         return ("partly restored (" + str(res["stamp"]) + "):\n" + "\n".join("  " + x for x in res["not_restored"])
                 + "\nEverything else is restored. Messaging is off and scheduled jobs are paused until you run "
@@ -175,6 +178,8 @@ def main(argv: list[str] | None = None, box: Box | None = None) -> int:
     try:
         res = _dispatch(args, box)
         code = 0 if res.get("ok", True) else (PARTIAL if res.get("partial") else 1)
+        if res.get("stopped_low_disk"):
+            code = 75
     except schedule.Busy as e:
         res, code = ({"ok": True, "skipped": str(e)}, 0) if args.cmd == "run" else ({"ok": False, "error": str(e)}, 1)
     except (BackupCryptoError, restore.RestoreError, capture.ExportError, SpaceError, schedule.ScheduleError,

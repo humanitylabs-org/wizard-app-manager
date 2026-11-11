@@ -26,7 +26,7 @@ mounts:
 
 # Hermes Agent (legacy store recipe)
 
-This manifest adds the Wizard OS #79/#80 share contract to the existing store app. The Claude app owns `data/claude`; App Manager mounts its `claude-login` share at `/claude` only while the owner grants it. The official Claude Code client uses the entire folder, including its refresh lock. The recipe never hard-codes a provider host path or a shared named volume.
+This manifest adds the WizardOS #79/#80 share contract to the existing store app. The Claude app owns `data/claude`; App Manager mounts its `claude-login` share at `/claude` only while the owner grants it. The official Claude Code client uses the entire folder, including its refresh lock. The recipe never hard-codes a provider host path or a shared named volume.
 
 The App Manager storage compiler reads the installed app's `wizard.md` alongside its `config.json` and compose file. Stock Runtipi alone ignores `mounts:`; use the matching App Manager share-grant implementation. Revoke removes the mount on restart; it does not erase the provider's files.
 

@@ -135,7 +135,7 @@ def test_detached_status_records_real_failure_line_and_clears_it_on_success(tmp_
     status = h / 'install-status.json'
     status.write_text('{"state":"running"}')
     log = h / 'install.log'
-    log.write_text('Installing Wizard OS 0.3.33\n\x1b[31mcheckout has local changes; refusing pinned install.\x1b[0m\n')
+    log.write_text('Installing WizardOS 0.3.33\n\x1b[31mcheckout has local changes; refusing pinned install.\x1b[0m\n')
     source = (Path(__file__).resolve().parents[1] / 'get.sh').read_text()
     code = source.split("STATUS_PY='\n", 1)[1].split("\n'\ninstall_status()", 1)[0]
     subprocess.run([sys.executable, '-c', code, str(status), str(log), 'end', '1'], check=True)
@@ -194,7 +194,7 @@ def test_untracked_target_path_without_proof_is_never_forced(box):
 
 @pytest.mark.parametrize('tail,expected', [
     ('fatal: unable to access https://oscar:ghp_abcdefghijklmnopqrstuvwx@github.com/x.git/: 403\n'
-     '\nWizard OS 0.3.33: what runs vs the release\n  FAIL  read-back: error\n  -> install-failed; recorded in /h/release.json\n',
+     '\nWizardOS 0.3.33: what runs vs the release\n  FAIL  read-back: error\n  -> install-failed; recorded in /h/release.json\n',
      'fatal: unable to access https://***@github.com/x.git/: 403'),
     ('pull failed: token=supersecretvalue123 for https://r.test/p?sig=abc&x=1\n',
      'pull failed: token=*** for https://r.test/p?sig=***&x=1'),

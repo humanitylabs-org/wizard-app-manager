@@ -122,7 +122,7 @@ def test_existing_install_uses_consistent_docker_privileges(tmp_path, docker_acc
     # wizard-os#28: a clean run says so, and records it
     assert outcome is not None
     assert (outcome["status"], outcome["failed"], outcome["degraded"]) == ("ok", [], [])
-    assert "Wizard OS is installed (box-only" in p.stdout
+    assert "WizardOS is installed (box-only" in p.stdout
 
 
 # ---- wizard-os#28: the installer never reports success over a failed required step
@@ -136,8 +136,8 @@ def test_a_failed_link_fails_the_install_and_leaves_hermes_alone(tmp_path):
     assert p.returncode == 1, p.stdout + p.stderr
     assert outcome["status"] == "failed"
     assert any("'wizard link' failed" in f for f in outcome["failed"])
-    assert "Wizard OS did NOT finish installing" in p.stderr
-    assert "Wizard OS is installed" not in p.stdout
+    assert "WizardOS did NOT finish installing" in p.stderr
+    assert "WizardOS is installed" not in p.stdout
     assert sorted(x.name for x in hermes.iterdir()) == ["SOUL.md"]   # nothing written into the owner's Hermes
 
 
@@ -148,7 +148,7 @@ def test_failed_default_apps_are_reported_as_degraded(tmp_path):
     assert outcome["status"] == "degraded"
     assert outcome["degraded"] == ["some default apps did not install: transcriber: image pull denied"]
     assert "not everything is working" in p.stdout and "transcriber: image pull denied" in p.stdout
-    assert "Wizard OS is installed (box-only" not in p.stdout
+    assert "WizardOS is installed (box-only" not in p.stdout
     p, *_ = sandbox(tmp_path / "strict", BOOTSTRAP_OUT=boot, WIZARD_STRICT="1")
     assert p.returncode == 3
 
@@ -184,7 +184,7 @@ def test_a_failed_install_never_links_the_owners_hermes(tmp_path):
 
 
 def test_a_failed_shell_or_agent_service_fails_the_install(tmp_path):
-    # PR19 review P2: the shell / agent-service spots are the only way to use Wizard OS.
+    # PR19 review P2: the shell / agent-service spots are the only way to use WizardOS.
     # read the spot defaults, so the test follows wam/defaults.json (shell + agent-service are separate apps now)
     spots = json.loads((REPO / "wam/defaults.json").read_text())["slots"]
     shell, service = spots["shell"]["app"], spots["agent-service"]["app"]
@@ -192,14 +192,14 @@ def test_a_failed_shell_or_agent_service_fails_the_install(tmp_path):
     p, home, root, calls, outcome = sandbox(tmp_path, BOOTSTRAP_OUT=boot)
     assert p.returncode == 1, p.stdout + p.stderr
     assert outcome["status"] == "failed"
-    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so Wizard OS can't be used: "
+    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so WizardOS can't be used: "
                                  f"{shell}: image pull denied"]
     assert outcome["degraded"] == ["some default apps did not install: browser: timeout"]
-    assert "Wizard OS did NOT finish installing" in p.stderr
+    assert "WizardOS did NOT finish installing" in p.stderr
     boot = json.dumps({"installed": [shell], "failed": {service: "health check timed out"}})
     p, home, root, calls, outcome = sandbox(tmp_path / "service", BOOTSTRAP_OUT=boot)
     assert p.returncode == 1, p.stdout + p.stderr
-    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so Wizard OS can't be used: "
+    assert outcome["failed"] == ["the Wizard shell / Agent Service did not install, so WizardOS can't be used: "
                                  f"{service}: health check timed out"]
 
 
@@ -209,7 +209,7 @@ def test_the_outcome_path_is_printed_only_when_it_was_written(tmp_path):
         (home / ".wizard-os/install-outcome.json").mkdir(parents=True)   # a directory: the write fails
     p, home, root, calls, outcome = sandbox(tmp_path, before=block, HEALTH="down", WIZARD_HEALTH_TRIES="2")
     assert p.returncode == 1, p.stdout + p.stderr
-    assert "Wizard OS did NOT finish installing" in p.stderr
+    assert "WizardOS did NOT finish installing" in p.stderr
     assert "Recorded in" not in p.stderr
     p, *_ = sandbox(tmp_path / "ok", HEALTH="down", WIZARD_HEALTH_TRIES="2")
     assert "Recorded in" in p.stderr

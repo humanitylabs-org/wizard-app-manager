@@ -437,7 +437,7 @@ def native(on, rel = None):
             APT_NATIVE_OFF.unlink()
     else:
         changed = not APT_NATIVE_OFF.exists()
-        APT_NATIVE_OFF.write_text("// Wizard OS runs security patches itself (wam maintain), without service restarts.\n"
+        APT_NATIVE_OFF.write_text("// WizardOS runs security patches itself (wam maintain), without service restarts.\n"
                                   "// Remove this file, or run `wam maintain --os-security check`, to give them back.\n"
                                   'APT::Periodic::Unattended-Upgrade "0";\n')
     return {"family": "apt", "changed": changed, "native_auto": b.native_auto()}

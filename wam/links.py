@@ -431,6 +431,11 @@ def _publish(reg: dict, home: Path, shell_ids: set[str] | None, apply: bool, api
                 result["resources"] = resources.publish(ts["host"], shell_port, api_port, apply)
             except (OSError, subprocess.TimeoutExpired, ValueError):
                 result["errors"]["resources"] = "Private resource route unavailable; existing routes left untouched"
+            # The box's device registry (Resources > Devices, the Wizard switcher) beside it, under the same rules.
+            try:
+                result["devices"] = resources.publish(ts["host"], shell_port, api_port, apply, resources.DEVICES_PATH)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                result["errors"]["devices"] = "Private devices route unavailable; existing routes left untouched"
     if not apply:
         return {**result, "dry_run": True}
     home.mkdir(parents=True, exist_ok=True)

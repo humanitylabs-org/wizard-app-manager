@@ -45,7 +45,7 @@ RESTORE_DIR = ".wizard-restore"
 # per-machine identity and wiring (this box's tokens, operator login, runtime helper, mode and links to its own
 # Hermes, its App Manager config and GitHub login), regenerated state, and the backup engine's own working state.
 PER_MACHINE = {"api-token", "mcp-token", "runtipi-operator.json", "agent-runtime", "alongside.json", "linked.json",
-               "app-manager.json", "github-token", "host-dashboard.env",
+               "app-manager.json", "github-token", "github-login", "host-dashboard.env",
                # this box's own install: the Wizard Builder release the agents mount, the wam shim, and the record of
                # which Wizard release/pins were installed here (a restore must not replace them with another box's)
                "builder", "bin", "release.json", "release-pins.json", "install-outcome.json",

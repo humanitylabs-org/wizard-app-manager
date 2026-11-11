@@ -196,17 +196,17 @@ def test_approved_link_runs_only_the_root_step_then_finishes_as_owner(box, relay
     assert p.returncode == 0, p.stdout + p.stderr
     assert "sudo env" not in p.stderr, "the agent no longer gets the terminal command first"
     # the link can be shown a moment before the state flips to needs_owner; wait for both (CI race)
-    out = _wait_for(box, env, lambda o: o[:1] == ["Wizard OS install: needs_owner"]
+    out = _wait_for(box, env, lambda o: o[:1] == ["WizardOS install: needs_owner"]
                     and any(l.startswith("Owner action: Open this link") for l in o))
-    assert out[0] == "Wizard OS install: needs_owner"
-    assert "Owner action: Open this link and enter your server password once to approve the Wizard OS install:" in out
+    assert out[0] == "WizardOS install: needs_owner"
+    assert "Owner action: Open this link and enter your server password once to approve the WizardOS install:" in out
     cap = _link(out, relay)
     row = relay.rows[hashlib.sha256(cap.encode()).hexdigest()]
     assert row["user"] == "dana" and "runtipi" in row["needs"]
     relay.submit(cap, PASSWORD, tmp_path)
-    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed",
-                                                       "Wizard OS install: needs_admin"))
-    assert out[0] == "Wizard OS install: done", "\n".join(out)
+    out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: done", "WizardOS install: failed",
+                                                       "WizardOS install: needs_admin"))
+    assert out[0] == "WizardOS install: done", "\n".join(out)
     log = box.log.read_text()
     assert "PREP owner=dana only=1 root=1 uid=0" in log, log
     sudo_calls = [l for l in log.splitlines() if l.startswith("sudo-S ok:")]
@@ -229,9 +229,9 @@ def test_wrong_password_shows_a_fresh_link_then_approves(box, relay, tmp_path):
     second = _link(out, relay)
     assert relay.rows[hashlib.sha256(first.encode()).hexdigest()]["state"] == "wrong_password"
     relay.submit(second, PASSWORD, tmp_path)
-    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed",
-                                                       "Wizard OS install: needs_admin"))
-    assert out[0] == "Wizard OS install: done", "\n".join(out)
+    out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: done", "WizardOS install: failed",
+                                                       "WizardOS install: needs_admin"))
+    assert out[0] == "WizardOS install: done", "\n".join(out)
     assert sum(l.startswith("sudo-S ok:") for l in box.log.read_text().splitlines()) == 1
     _no_secret_anywhere(box)
 
@@ -244,8 +244,8 @@ def test_expired_link_is_replaced_by_a_fresh_one(box, relay, tmp_path):
     out = _wait_for(box, env, lambda o: any(l.startswith(relay.url + "#") and l.split("#")[1] != first for l in o))
     assert "Note: The approval link expired; a fresh one is shown." in out
     relay.submit(_link(out, relay), PASSWORD, tmp_path)
-    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed"))
-    assert out[0] == "Wizard OS install: done"
+    out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: done", "WizardOS install: failed"))
+    assert out[0] == "WizardOS install: done"
 
 
 def _closed_port_url() -> str:
@@ -254,9 +254,9 @@ def _closed_port_url() -> str:
 
 
 def _expect_terminal_fallback(box: Box, env: dict, why: str) -> list[str]:
-    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: needs_admin", "Wizard OS install: done",
-                                                       "Wizard OS install: failed"))
-    assert out[0] == "Wizard OS install: needs_admin", "\n".join(out)
+    out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: needs_admin", "WizardOS install: done",
+                                                       "WizardOS install: failed"))
+    assert out[0] == "WizardOS install: needs_admin", "\n".join(out)
     assert why in out[1]
     cmd = out[2]
     assert cmd.startswith("curl -fsSL https://aiwizards.com/os.sh | sudo env WIZARD_HERMES_USER=dana HERMES_HOME=")
@@ -315,9 +315,9 @@ def test_no_root_needed_starts_without_any_approval(box, relay, tmp_path):
         pre = box.run("dana", "--check", script=src, **env)
         assert "needs root once:   no (Docker, the runtime, linger and Tailscale operator are already in place)" in pre.stdout
         assert box.run("dana", "start", script=src, **env).returncode == 0
-        out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed",
-                                                           "Wizard OS install: needs_admin", "Wizard OS install: needs_owner"))
-        assert out[0] == "Wizard OS install: done", "\n".join(out)
+        out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: done", "WizardOS install: failed",
+                                                           "WizardOS install: needs_admin", "WizardOS install: needs_owner"))
+        assert out[0] == "WizardOS install: done", "\n".join(out)
         assert relay.rows == {} and "sudo-S" not in box.log.read_text()
     finally:
         s.close()
@@ -338,7 +338,7 @@ def test_installer_changed_while_waiting_is_not_run_as_root(box, relay, tmp_path
     assert box.run("dana", "start", **env).returncode == 0
     cap = _link(_wait_for(box, env, lambda o: any(l.startswith("Owner action: Open this link") for l in o)), relay)
     relay.submit(cap, PASSWORD, tmp_path)
-    out = _wait_for(box, env, lambda o: o and o[0] in ("Wizard OS install: done", "Wizard OS install: failed"))
-    assert out[0] == "Wizard OS install: failed"
+    out = _wait_for(box, env, lambda o: o and o[0] in ("WizardOS install: done", "WizardOS install: failed"))
+    assert out[0] == "WizardOS install: failed"
     assert "PREP owner=" not in box.log.read_text()
     assert "The installer changed while waiting" in (box.users["dana"][1] / ".wizard-os/install.log").read_text()

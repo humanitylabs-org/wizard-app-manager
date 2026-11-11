@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wizard OS host integration: Tailscale is the default private-access provider.
+# WizardOS host integration: Tailscale is the default private-access provider.
 # This is NOT an ordinary store container: the daemon belongs on the host.
 # Does not expose ports, enable Funnel/SSH, advertise routes, or change an existing tailnet.
 #
@@ -241,10 +241,10 @@ if [ "$current" = "Running" ] && [ "$serve" != on ]; then
   echo "Private access: Tailscale connected, but $what is off on your tailnet, so there are no private links yet."
   echo "Turn on MagicDNS and HTTPS certificates here, then run the install command again:"
   echo "$ADMIN_DNS"
-  echo "[wizard-os] note: $what is off on your tailnet. Turn on MagicDNS and HTTPS certificates at $ADMIN_DNS, then run the install command again. Until then Wizard OS is box-only."
+  echo "[wizard-os] note: $what is off on your tailnet. Turn on MagicDNS and HTTPS certificates at $ADMIN_DNS, then run the install command again. Until then WizardOS is box-only."
 elif [ "$current" = "Running" ]; then
   echo "Private access: Tailscale connected (existing settings preserved)."
 else
   echo "Private access: Tailscale preinstalled, not connected yet. Later: sudo tailscale up"
-  echo "[wizard-os] note: Tailscale is not connected yet, so Wizard OS is box-only. Connect it, then run the install command again."
+  echo "[wizard-os] note: Tailscale is not connected yet, so WizardOS is box-only. Connect it, then run the install command again."
 fi

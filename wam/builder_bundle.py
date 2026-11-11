@@ -6,6 +6,7 @@ and in stock agent containers. Generated app skills are never used as storage.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -573,12 +574,19 @@ def register(hermes_home, os_home, runtime=None):
     return path
 
 
+# An installer rerun on an unchanged box leaves Hermes running (update_impact reads this to know what an update stops).
+LINK_IS_IDEMPOTENT = True
+
+
 def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False):
     """Prepare the stock Runtipi Hermes data directory and additive override.
 
     Does not replace the terminal backend: VM factory SSH still runs host tools;
     local terminals use the read-only mounted bundle and stock Python environment.
     """
+    from .bundle_delegate import BOX_ONLY, in_agent_container
+    if in_agent_container():   # no Runtipi here: never write an override or claim a restart would help (#589)
+        raise ValueError(BOX_ONLY)
     receipt = install(c.home, allow_downgrade=allow_downgrade)
     data = c.runtipi_root / 'app-data' / store / app_id / 'data'
     override = c.runtipi_root / 'user-config' / store / app_id / 'docker-compose.yml'
@@ -587,7 +595,9 @@ def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False
     # The override carries Compose merge tags (`networks: !override`, written by `wam network`); safe_load can't
     # read them and safe_dump would drop them, so read and write it with the tag-preserving YAML helpers.
     from .network import dump_yaml, load_yaml
-    doc = load_yaml(override.read_text()) or {} if override.exists() else {}
+    text = override.read_text() if override.exists() else ''
+    doc = load_yaml(text) or {} if text else {}
+    unchanged = dump_yaml(doc) if doc else None
     service = doc.setdefault('services', {}).setdefault(app_id + '-engine', {})
     mount = {'type': 'bind', 'source': str(Path(c.home).resolve() / 'builder'), 'target': RUNTIME, 'read_only': True}
     vols = service.setdefault('volumes', [])
@@ -604,7 +614,12 @@ def fresh(c, app_id='hermes-agent', store='wizardapps', *, allow_downgrade=False
     if mount not in vols:
         vols.append(mount)
     env['WIZARD_BUILDER_ROOT'] = RUNTIME
-    _atomic(override, dump_yaml(doc))
+    # Rewrite only on a real change, and keep the comment lines other writers put on top (`wam network reconcile`'s
+    # header): rewriting identical content without them made every installer rerun look like a change and restarted
+    # Hermes on every WizardOS update, killing the agent's background tasks (Mac VM, 10 Nov 2026).
+    if dump_yaml(doc) != unchanged:
+        head = ''.join(line + '\n' for line in itertools.takewhile(lambda l: l.startswith('#'), text.splitlines()))
+        _atomic(override, head + dump_yaml(doc))
     after = (override.read_bytes(), _read_bytes(data / 'config.yaml'))
     pending = Path(c.home) / 'builder/restart-required'
     if before != after:

@@ -584,10 +584,24 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
         }
     uses = [str(u) for u in (w.get("uses") or []) if isinstance(u, str)]
     rf = w.get("renamed_from")
+    # An update's pre-update override lists the NEW recipe's networks, but Runtipi's update `stop` (and its rollback)
+    # still read the installed generated compose, which may not define them: Compose then refuses the whole project
+    # (#520). Remember the app-own networks only the incoming recipe defines, so the override declares them too.
+    carry = {}
+    if fresh and gen.is_file():
+        try:
+            installed_nets = (load_yaml(gen.read_text()) or {}).get("networks") or {}
+        except (OSError, yaml.YAMLError):
+            installed_nets = None
+        if isinstance(installed_nets, dict):
+            for k, v in (rdoc.get("networks") or {}).items():
+                v = _plain(v)
+                if str(k) not in installed_nets and str(k) != SHARED and (v is None or isinstance(v, dict)):
+                    carry[str(k)] = dict(v or {})
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "renamed_from": [str(x) for x in (rf if isinstance(rf, list) else [rf] if isinstance(rf, str) else [])],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
-           "host_access": host_access(rdoc, app_id, store), "wizard": kinds.fields(w)}
+           "host_access": host_access(rdoc, app_id, store), "wizard": kinds.fields(w), "carry_networks": carry}
     taken = sorted({n for s in services.values() for n in s["docker_networks"] if ours(n)})
     if taken:   # a recipe must never attach itself to a link or gateway network: refused at install, never isolated
         out["custom"] = f"its compose attaches to reserved Wizard networks ({', '.join(taken)})"
@@ -1000,6 +1014,9 @@ def overlay_for(a: dict) -> dict:
                 cfg["gw_priority"] = 1     # the app's own bridge is its way out (link networks are internal)
             nets[net] = cfg
             top[net] = {"name": net, "external": True}
+        for k in nets:   # app-own networks the installed compose doesn't define yet (an update adds them, #520)
+            if k in (a.get("carry_networks") or {}) and k not in top:
+                top[k] = dict(a["carry_networks"][k])
         services[s] = {k: (v or None) for k, v in nets.items()}
     return {"services": services, "networks": top}
 
@@ -1044,8 +1061,12 @@ def write_overlay(path: Path, overlay: dict | None) -> bool:
         for name, nets in overlay["services"].items():
             s = svcs.setdefault(name, {})
             s["networks"] = _Tagged("!override", nets)
-        doc.setdefault("networks", {}).update(overlay["networks"])
-        doc[MARK] = {"services": sorted(overlay["services"]), "networks": sorted(overlay["networks"])}
+        top = doc.setdefault("networks", {})
+        # An app-own network carried for an update (#520) that the owner's override already declares stays theirs:
+        # never replaced, and not recorded as ours (strip_overlay would delete their settings later).
+        theirs = {n for n, d in overlay["networks"].items() if n in top and not (isinstance(d, dict) and d.get("external"))}
+        top.update({n: d for n, d in overlay["networks"].items() if n not in theirs})
+        doc[MARK] = {"services": sorted(overlay["services"]), "networks": sorted(set(overlay["networks"]) - theirs)}
     body = dump_yaml(doc) if doc else ""
     head = []   # keep the comment header other writers put on top (alongside, Claude login)
     for line in (before or "").splitlines():
@@ -1281,7 +1302,7 @@ def connection_state(c, rt) -> dict | None:
 
 SETTLED = "connection_mode_settled"   # app-manager.json: the upgrade settled this box's mode once (settle_mode)
 UPGRADE_NOTICE = ("Your apps stay connected",
-                  "Wizard OS can now keep apps apart. Your apps stay connected as before, so nothing you use stops "
+                  "WizardOS can now keep apps apart. Your apps stay connected as before, so nothing you use stops "
                   "working. To keep apps apart, open Settings › Connections, tap Details and turn on Keep apps apart.")
 
 

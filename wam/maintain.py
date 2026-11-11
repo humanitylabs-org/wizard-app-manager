@@ -1,4 +1,4 @@
-"""System maintenance on every Wizard OS box: one nightly run the platform owns, not an agent cron job.
+"""System maintenance on every WizardOS box: one nightly run the platform owns, not an agent cron job.
 
     wam maintain                      status: the owner's settings, the last run, what is pending
     wam maintain run [--wait-quiet S] the nightly run (the timer calls this)
@@ -8,7 +8,7 @@
 
 One run, in order: (1) backups: `wam backup` keeps its own schedule and lock; this run catches up a missed backup
 and reports whether the last one succeeded and was read back; (2) OS security patches (wam/os_patch.py: any Linux,
-through its own package manager and security channel); (3) the owner's Automatic Wizard OS update (stable releases
+through its own package manager and security channel); (3) the owner's Automatic WizardOS update (stable releases
 only; this timer replaces the separate 03:30 one). Hermes updates stay explicit (`wam hermes update`). History goes
 to ~/.wizard-os/maintenance and Home > Resources > Health.
 
@@ -354,13 +354,13 @@ def remove(runner=subprocess.run) -> dict:
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
     return {
         unit_dir / f"{UNIT}.service": (
-            "[Unit]\nDescription=Wizard OS nightly maintenance (wam maintain run)\n\n"
+            "[Unit]\nDescription=WizardOS nightly maintenance (wam maintain run)\n\n"
             "[Service]\nType=oneshot\nEnvironment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin\n"
             "Nice=10\nIOSchedulingClass=idle\nTimeoutStartSec=3h\n"
             f"ExecStart={wam} maintain run\n"),
         unit_dir / f"{UNIT}.timer": (
-            "[Unit]\nDescription=Wizard OS nightly maintenance\n\n"
-            # after the 00:00 backup, before the 03:30 Wizard OS update window (box-local time)
+            "[Unit]\nDescription=WizardOS nightly maintenance\n\n"
+            # after the 00:00 backup, before the 03:30 WizardOS update window (box-local time)
             "[Timer]\nOnCalendar=*-*-* 02:00\nRandomizedDelaySec=45m\nPersistent=true\n\n"
             "[Install]\nWantedBy=timers.target\n"),
     }
@@ -368,7 +368,7 @@ def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
 
 def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemctl: bool = True) -> dict:
     """The nightly maintenance timer is always on: it owns the box's nightly work (backup check, OS security, the
-    Automatic Wizard OS update). The separate Wizard OS update timer is retired once this one exists; `wam updates`
+    Automatic WizardOS update). The separate WizardOS update timer is retired once this one exists; `wam updates`
     sees this timer and never reinstalls its own."""
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
@@ -523,10 +523,11 @@ def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> 
 
 
 def updates_step(home: Path, quiet: bool) -> dict:
-    """The owner's Automatic Wizard OS update (the box's channel release: promoted stable, or the newest Latest),
+    """The owner's Automatic WizardOS update (the box's channel release: promoted stable, or the newest Latest),
     formerly its own 03:30 timer.
     Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
     from . import updates
+    updates.report_failure(home)   # a failed update tells the team in either mode, busy or not (switch-gated, #524)
     try:
         if updates.mode(home) != "auto":
             return {"state": "ask", "mode": "ask"}
@@ -583,7 +584,7 @@ def run(home: Path | None = None, runner=subprocess.run, wait: float = 1800, is_
                     return ["The root helper may still be running after a timeout."]
                 reasons = list((is_busy or (lambda: busy_reasons(h)))())
                 if updates.installing(h):
-                    reasons.append("A Wizard OS installer is running.")
+                    reasons.append("A WizardOS installer is running.")
                 return reasons
             restarts = qr.safe_step(qr.run, h, os_res, runner, wait, restart_probe, sleep)
             if restarts.get("helper_may_be_running"):
@@ -715,7 +716,7 @@ def _backup_item(b: dict, now: float) -> dict | None:
 def _updates_item(last: dict) -> dict | None:
     u = (last or {}).get("updates") or {}
     st = u.get("state")
-    item = {"key": "wizard-updates", "label": "Wizard OS updates", "quiet": True}
+    item = {"key": "wizard-updates", "label": "WizardOS updates", "quiet": True}
     if st == "error":
         return {**item, "status": "error", "value": "update failed", "detail": str(u.get("reason"))[:300]}
     if st == "started":

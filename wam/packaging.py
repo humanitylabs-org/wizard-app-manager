@@ -12,6 +12,8 @@ import posixpath
 import shutil
 from pathlib import Path
 
+from . import dirswap
+
 PACKAGES = {"source", "build", "image"}
 SOURCE_ROOT = ".wizard-source"
 SOURCE_LIMIT_BYTES = 256 * 1024 * 1024
@@ -130,8 +132,7 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
         shutil.rmtree(tmp, ignore_errors=True)
         _copy_as_runtipi(src, Path(target))
         return True
-    shutil.rmtree(target, ignore_errors=True)
-    tmp.rename(target)
+    dirswap.replace_dir(tmp, Path(target))
     return True
 
 

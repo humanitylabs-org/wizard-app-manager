@@ -1,6 +1,6 @@
 ---
 name: wizard-builder
-description: Use when building, porting or changing apps for Wizard OS (wizard.md packages).
+description: Use when building, porting or changing apps for WizardOS (wizard.md packages).
 version: 0.3.0
 author: James DeFleur (defleur-agents), Hermes Agent
 license: GPL-3.0-only
@@ -10,7 +10,7 @@ metadata:
     tags: [wizard-apps, builder]
     related_skills: []
 ---
-# Build an app for Wizard OS
+# Build an app for WizardOS
 
 Build from tested parts; the platform is tested once, not per app. A new app targets **about 20 minutes and 30 tool
 calls**. Never write new test harnesses, Playwright scripts or release packets for a single app: `wam verify` is the
@@ -61,6 +61,12 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
    using it is the final check; fix what he reports in the app and ship the fix the same way.
 6. **Stop rule.** Five failed `wam verify` runs in total ends the loop: stop and report what works, what fails (the
    last receipt) and the one decision or fix needed. Do not build a harness to investigate.
+
+## Every app serves Try it switches (Miguel, 11 Nov 2026)
+Every app ships the switch contract from its first PR (wizard-os `docs/APP_SWITCHES.md`): `switches:` in `wizard.md`
+and owner-only `GET/POST /api/switches`. `wam new` templates already carry it (`SWITCHES = []` in `app/server.py`).
+Every new feature appends a switch (off by default, `issues: ["owner/repo#N"]`) and gates on `switch_on(id)`; keep
+the block when you edit the server. `wam check` warns when it is missing.
 
 ## Chat is the Chats thread (James, 22 Oct 2026)
 Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant") opens the real Chats thread over the

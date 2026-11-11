@@ -218,7 +218,10 @@ back a share of the data within the last week. One run at a time; a second run e
 
 `backup-status.json`: `ok`, `snapshot`, `data_added` (new bytes this run, before restic's compression),
 `data_added_packed`, `capture_bytes`, `repository_bytes`, `snapshots`, `retention`, `check`, `read_data`,
-`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`.
+`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`. A low-disk stop records
+`ok: false`, `verified: false`, `error: "stopped: free disk below floor"`, `stopped_low_disk: true`, `free_bytes`
+(the free space when stopped), `min_free_bytes` (the floor on that filesystem), and a plain `message` saying how to
+retry. `last_success_at` still refers to the previous successful run.
 
 **Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
 agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, and each app's
@@ -229,6 +232,22 @@ records the peak as `peak_extra_disk_bytes`; restic's local cache (`~/.cache/wiz
 `restic_cache_bytes`, tens of KB on that box) comes on top. Next step if this matters: stream each app's tar straight
 into the capture (one counting pass for the tar header's size, one streaming pass, app still stopped), which brings
 the peak down to the agents' archives.
+
+The capture also checks available space **before starting, every 15 seconds while running, and before closing the
+finished stream to restic** on the filesystems holding the work folder (`WAM_BACKUP_WORK`, normally
+`~/.wizard-os/backup-work`) and `runtipi/backups` (its nearest existing parent if absent). Below **the larger of
+2 GiB or 5% of each filesystem's total capacity**, it interrupts capture, lets its normal cleanup restart any app
+it stopped, removes only this run's temporary work/archive files, and stops restic before closing an unfinished
+stream. restic gets SIGINT, then SIGTERM after 10 seconds if needed, and is killed after a further 5 seconds if it
+still has not exited. An unfinished stream is never published as a snapshot; retention/checks are not run after a
+stopped capture. Owner data, earlier work folders/app archives and earlier snapshots are left alone.
+
+To choose an absolute floor instead, add a positive integer `min_free_bytes` to `backup.json` at the top level
+(for example `10737418240` for 10 GiB); it applies to both filesystems, contains no secrets and survives
+`schedule set`. Omit it or use `null` for the automatic floor. `wam backup run` (manual or scheduled) exits **75**
+and says: `Backup stopped to protect your Wizard: only X free, needs Y. Free some space; nothing was changed.`
+This guard is not a disk reservation: other writers can use space between polls. It runs on the CLI's main thread
+with a scoped real-time alarm so even a blocked archive command is interrupted, not just the next stream write.
 
 **Dedupe-friendly capture.** restic splits the stream into content-defined chunks (512 KiB–8 MiB, about 1 MiB on
 average) and stores each chunk once, so compressed members would defeat it. The stream therefore holds agent archives
@@ -353,7 +372,7 @@ Choices the contract left open, as built in `wam/backup/`:
 - **Recovery slot**: wrap key = HKDF-SHA256(recovery key, salt = slot salt, info = "wizard-backup slot").
 - **Per-machine** (never captured, never replaced): `api-token`, `mcp-token`, `runtipi-operator.json`,
   `agent-runtime/`, `agent-ssh/` (the agent's terminal key for this box on a Mac), plus `alongside.json`, `linked.json`,
-  `app-manager.json`, `github-token`, `host-dashboard.env`
+  `app-manager.json`, `github-token`, `github-login`, `host-dashboard.env`
   (this box's mode, Hermes links, App Manager config and logins). Regenerated: `apps.json`, `skills/`,
   `system-skills/`, `cache/`, `dev/`, `staged-apps/`. Agent homes keep their own `bin/`, `logs/`, `runtime/`,
   caches, locks, the Hermes code checkout and Wizard's plugins (rules adapted from try-wizard

@@ -28,7 +28,7 @@ The same listener and gate also serve the Store's **Remove app**. App ids can't 
 
 ## Share-link selections
 
-A link request supplies exactly `{source: 'link', repo: 'OWNER/REPO', commit: '<40 lowercase hex>', operation: 'install'}`. The commit is mandatory; branches, tags, URLs and browser-supplied manifest/policy fields are refused. The repository must match `[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*`. No catalog membership or Alpha subscription is required. WAM fetches the exact commit with the existing SHA-verified `private.fetch` path, runs the shipped `wizardmd.check` rules, and requires the manifest id to equal the requested app id. The resolved entry is built only from server-fetched source. Preparation repeats the checker before packaging or lifecycle side effects. Public links need no GitHub token; private links use the server's GitHub login, including `GITHUB_TOKEN` or `~/.wizard-os/github-token`. Git authentication is passed per command as an environment-configured HTTP header, never saved in Git config, a URL, a receipt or logs.
+A link request supplies exactly `{source: 'link', repo: 'OWNER/REPO', commit: '<40 lowercase hex>', operation: 'install'}`. The commit is mandatory; branches, tags, URLs and browser-supplied manifest/policy fields are refused. The repository must match `[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*`. No catalog membership or Alpha subscription is required. WAM fetches the exact commit with the existing SHA-verified `private.fetch` path, runs the shipped `wizardmd.check` rules, and requires the manifest id to equal the requested app id. The resolved entry is built only from server-fetched source. Preparation repeats the checker before packaging or lifecycle side effects. Public links need no GitHub token; private links use the server's GitHub login, including `GITHUB_TOKEN` or `~/.wizard-os/github-token` (written by the Store's Sign in to GitHub: [github-signin.md](github-signin.md)). Git authentication is passed per command as an environment-configured HTTP header, never saved in Git config, a URL, a receipt or logs.
 
 Link `update` and `switch` require an installed `.wizard-source` with the same repository **and** `source: 'link'`; a link cannot silently take over a Standard, owner-private, Alpha or legacy unlabelled install. Existing non-link selection policy is unchanged. Installs and release changes retain native manager install/update/backup handling.
 
@@ -46,7 +46,7 @@ Alpha uses the installed shell's bundled `wizard-alpha.mjs` and its existing own
 
 Jobs retain a public selection receipt. Repeated taps join only the same source/repository/commit/operation. A conflicting operation returns 409. Receipts contain no credentials, policy commands, filesystem paths or raw catalog entries. The UI checks the receipt and registered installed commit before saying ready.
 
-Deploy the manager image containing `.wizard-selection` support **before** the companion Python API and shell UI. This changes no stable release pointer; normal Wizard OS releases remain independently pinned snapshots.
+Deploy the manager image containing `.wizard-selection` support **before** the companion Python API and shell UI. This changes no stable release pointer; normal WizardOS releases remain independently pinned snapshots.
 
 Verification:
 - `python -m pytest -q`

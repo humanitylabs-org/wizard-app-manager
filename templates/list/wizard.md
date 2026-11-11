@@ -33,6 +33,9 @@ system: false
 uses: []
 needs: []
 health: /healthz
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # My List

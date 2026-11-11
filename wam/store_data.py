@@ -21,6 +21,8 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+from . import dirswap
+
 REPO = "humanitylabs-org/wizard-ux"
 FILES = ("store-data-origin.mjs", "store-index-views.mjs", "system-overview.mjs", "store-private-catalog.mjs")
 REQUIRED = {"store-data-origin.mjs", "store-index-views.mjs", "system-overview.mjs"}
@@ -175,8 +177,7 @@ def fetch_tools(sha: str, dest_root: Path, fetch=None) -> Path:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     final_root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(final_root, ignore_errors=True)
-    tmp.rename(final_root)
+    dirswap.replace_dir(tmp, final_root)
     return final
 
 

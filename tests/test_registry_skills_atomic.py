@@ -113,3 +113,48 @@ def test_collision_check_still_refuses_a_real_wizard_builder(tmp_path):
         assert "wizard-builder name collision" in str(e)
     else:
         raise AssertionError("a real wizard-builder collision must still be refused")
+
+
+def test_rewriting_the_public_projection_keeps_every_apps_skill(tmp_path):
+    """#596: store_install._links re-writes the projection write_registry returns (apps.json, no `_skill_src`).
+    That must not read as "no app has a skill" and empty skills/."""
+    import json
+    root = tmp_path / "home"
+    sk = root / "skills"
+    _write(root, _apps(tmp_path, ["files", "browser"]))
+    (sk / "wizard-job-files").mkdir()
+    (sk / "wizard-job-files" / "SKILL.md").write_text("routing")
+    projection = json.loads((root / "apps.json").read_text())
+    assert all("_skill_src" not in a for a in projection["apps"])
+    registry.write(projection, root)
+    assert sorted(p.name for p in sk.iterdir()) == ["browser", "files", "wizard-job-files"]
+    assert (sk / "files" / "SKILL.md").read_text().endswith("files v1\n")
+
+
+def test_a_built_registry_still_prunes_removed_apps_and_an_empty_one_prunes_all(tmp_path):
+    root = tmp_path / "home"
+    sk = root / "skills"
+    _write(root, _apps(tmp_path, ["files", "gone"]))
+    _write(root, _apps(tmp_path, ["files"]) + [{"id": "noskill", "_skill_src": None}])
+    assert sorted(p.name for p in sk.iterdir()) == ["files"]
+    registry.write({"apps": []}, root)
+    assert list(sk.iterdir()) == []
+
+
+def test_store_install_links_keeps_the_skills_write_registry_wrote(tmp_path, monkeypatch):
+    """The real Store install/update path: write_registry (build with `_skill_src`) then _links' second write."""
+    import json
+    from wam import cli, links, store_install
+    root = tmp_path / "home"
+    apps = _apps(tmp_path, ["files", "wizardos-tracker"])
+
+    def fake_write_registry(c):
+        _write(root, apps)
+        return json.loads((root / "apps.json").read_text())
+
+    monkeypatch.setattr(cli, "write_registry", fake_write_registry)
+    monkeypatch.setattr(cli, "share_registry", lambda c: None)
+    monkeypatch.setattr(links, "registry_addresses", lambda home: {})
+    monkeypatch.setattr(links, "publish", lambda reg, home, ids, **kw: {"links": [], "errors": {}})
+    store_install._links(type("C", (), {"home": root})())
+    assert sorted(p.name for p in (root / "skills").iterdir()) == ["files", "wizardos-tracker"]

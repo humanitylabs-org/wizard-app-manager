@@ -33,7 +33,8 @@ def test_edit_adds_gateway_skills_and_token_then_is_idempotent(tmp_path):
     assert cfg['model'] == {'provider': 'p', 'default': 'm'}
     assert cfg['mcp_servers']['other'] == {'url': 'http://x/mcp'}
     assert cfg['mcp_servers']['wizard'] == {'url': agent_link.GATEWAY_URL,
-                                            'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
+                                            'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'},
+                                            'lazy': True}
     assert cfg['skills']['external_dirs'] == ['/opt/wizard-builder/current/system-skills', str(tmp_path / 'skills-view')]
     assert (tmp_path / '.env').read_text() == 'KEEP=1\nWIZARD_MCP_TOKEN=tok-1\n'
     assert oct((tmp_path / '.env').stat().st_mode & 0o777) == '0o600'
@@ -50,11 +51,38 @@ def test_edit_rotates_token_without_duplicates(tmp_path):
     assert (tmp_path / '.env').read_text() == 'WIZARD_MCP_TOKEN=b\n'
 
 
+@pytest.mark.parametrize('lazy', [None, False, True])
+def test_edit_refreshes_lazy_without_losing_owner_options(tmp_path, lazy):
+    entry = {'url': agent_link.GATEWAY_URL,
+             'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}, 'timeout': 42}
+    if lazy is not None:
+        entry['lazy'] = lazy
+    other = {'url': 'http://other/mcp', 'lazy': False}
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({'mcp_servers': {'wizard': entry, 'other': other}}))
+    result = run_edit(tmp_path)
+    assert result.returncode == 0, result.stderr
+    cfg = yaml.safe_load((tmp_path / 'config.yaml').read_text())
+    assert cfg['mcp_servers']['wizard'] == {**entry, 'lazy': True if lazy is None else lazy}
+    assert cfg['mcp_servers']['other'] == other
+    before = (tmp_path / 'config.yaml').read_bytes()
+    assert not json.loads(run_edit(tmp_path).stdout)['config_changed']
+    assert (tmp_path / 'config.yaml').read_bytes() == before
+
+
+def test_edit_keeps_owner_headers(tmp_path):
+    entry = {'url': agent_link.GATEWAY_URL, 'headers': {'X-Custom': 'v', 'Authorization': 'old'}}
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({'mcp_servers': {'wizard': entry}}))
+    assert run_edit(tmp_path).returncode == 0
+    cfg = yaml.safe_load((tmp_path / 'config.yaml').read_text())
+    assert cfg['mcp_servers']['wizard']['headers'] == {'X-Custom': 'v', 'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}
+    assert cfg['mcp_servers']['wizard']['lazy'] is True
+
+
 def test_edit_refuses_foreign_wizard_server(tmp_path):
     raw = yaml.safe_dump({'mcp_servers': {'wizard': {'url': 'http://someone-else/mcp'}}})
     (tmp_path / 'config.yaml').write_text(raw)
     p = run_edit(tmp_path)
-    assert p.returncode != 0 and 'not Wizard OS' in p.stderr
+    assert p.returncode != 0 and 'not WizardOS' in p.stderr
     assert (tmp_path / 'config.yaml').read_text() == raw
 
 

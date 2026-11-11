@@ -28,7 +28,7 @@ if [ ! -f "$RUNTIPI_ROOT/.env" ]; then
   # Reach them later through Cloudflare Tunnel or Tailscale.
   mkdir -p "$RUNTIPI_ROOT/user-config"
   [ -f "$RUNTIPI_ROOT/user-config/tipi-compose.yml" ] || cat > "$RUNTIPI_ROOT/user-config/tipi-compose.yml" <<'YML'
-# Wizard OS: box-only. Nothing listens on the public interface; use Cloudflare Tunnel or Tailscale to reach it.
+# WizardOS: box-only. Nothing listens on the public interface; use Cloudflare Tunnel or Tailscale to reach it.
 services:
   runtipi-reverse-proxy:
     ports: !override
@@ -58,7 +58,7 @@ pick_py() {
   return 1
 }
 PY="$(pick_py)" || { sudo apt-get install -y python3-yaml >/dev/null; PY="$(pick_py)"; } \
-  || { echo "Wizard OS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again." >&2; exit 1; }
+  || { echo "WizardOS needs Python 3 with PyYAML (apt-get install -y python3-yaml), then run the command again." >&2; exit 1; }
 command -v git >/dev/null || sudo apt-get install -y git
 # An existing sudo user who isn't in the docker group yet (Runtipi's setup installs Docker but doesn't add
 # the user) gets "permission denied" from plain `docker`. Use sudo for Docker then.
@@ -145,7 +145,7 @@ RUNTIPI_ROOT="$RUNTIPI_ROOT" "$HOME/.local/bin/wam" phone-sync --ensure-timer ||
 "$HOME/.local/bin/wam" maintain --ensure-timer >/dev/null 2>&1 || echo "note: could not set up the nightly maintenance timer (wam maintain --ensure-timer)"
 
 # Every required step below either succeeds or is recorded here; the summary at the end reports exactly what
-# happened (wizard-os#28). FAILED = Wizard OS is not usable as installed; DEGRADED = usable, something is missing.
+# happened (wizard-os#28). FAILED = WizardOS is not usable as installed; DEGRADED = usable, something is missing.
 FAILED=()
 DEGRADED=()
 OUTCOME="$HOME/.wizard-os/install-outcome.json"
@@ -197,7 +197,7 @@ fi
 [ -z "$WIZ_CLI" ] || sed -i "1s|.*|#!$PY|" "$WIZ_CLI"
 
 # Run by a Hermes agent (get.sh sets WIZARD_AGENT_SAFE=1 when this runs under a Hermes gateway, e.g. a chat asked its
-# agent to install Wizard OS)? Restarting the gateway now would kill the agent running this script and cut off its
+# agent to install WizardOS)? Restarting the gateway now would kill the agent running this script and cut off its
 # reply. Then everything else finishes first, and the restart is scheduled detached, after the summary.
 # wizard-install: defers-hermes-restart   (get.sh checks this marker before an agent-run install)
 RESTART_NOW=1
@@ -205,7 +205,7 @@ RESTART_NOW=1
 RESTART_LATER=""
 hermes_restart_job() {  # $1 = hermes binary. Hermes >=0.22 refuses a restart (exit 1) while a chat turn is live, and the
   # installing agent's own turn is usually still live when this fires: retry until the turn ends (15 s steps,
-  # 30 min), then interrupt deliberately so Wizard OS never stays half-linked. Older Hermes restarts at once.
+  # 30 min), then interrupt deliberately so WizardOS never stays half-linked. Older Hermes restarts at once.
   local hh="HERMES_HOME='${HERMES_HOME:-$HOME/.hermes}'" every="${WIZARD_RESTART_RETRY_SECS:-15}" tries="${WIZARD_RESTART_TRIES:-120}"
   case "$every" in ''|*[!0-9]*) every=15 ;; esac; case "$tries" in ''|*[!0-9]*) tries=120 ;; esac
   printf '%s' "ok=0; for _ in \$(seq 1 $tries); do $hh '$1' gateway restart && { ok=1; break; }; echo \"\$(date -u +%FT%TZ) Hermes is busy (a chat turn is live); restart retried in ${every}s\"; sleep $every; done; [ \$ok = 1 ] || $hh '$1' gateway restart --yes"
@@ -214,7 +214,7 @@ schedule_hermes_restart() {  # outside this process tree (its own systemd unit),
   local delay="${WIZARD_RESTART_DELAY:-20}" hermes log="$HOME/.wizard-os/hermes-restart.log" job
   case "$delay" in ''|*[!0-9]*) delay=20 ;; esac
   hermes="${WIZARD_HERMES_BIN:-$(command -v hermes || echo "$HOME/.local/bin/hermes")}"
-  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for Wizard OS\"; $(hermes_restart_job "$hermes"); sleep 20; '$HOME/.local/bin/wizard' doctor"
+  job="sleep 2; echo \"\$(date -u +%FT%TZ) restarting the Hermes gateway for WizardOS\"; $(hermes_restart_job "$hermes"); sleep 20; '$HOME/.local/bin/wizard' doctor"
   local -a run=(systemd-run --user)
   [ "$(id -u)" -eq 0 ] && run=(systemd-run)
   if command -v systemd-run >/dev/null && "${run[@]}" --quiet --collect --unit "wizard-hermes-restart-$(date +%s)" \
@@ -233,7 +233,7 @@ schedule_hermes_restart() {  # outside this process tree (its own systemd unit),
 if [ "${WIZARD_MODE:-fresh}" = "alongside" ] && [ ${#FAILED[@]} -gt 0 ]; then
   echo "Alongside mode: the install already failed, so your Hermes (${HERMES_HOME:-$HOME/.hermes}) was not touched."
 elif [ "${WIZARD_MODE:-fresh}" = "alongside" ]; then
-  echo "Alongside mode: Wizard OS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
+  echo "Alongside mode: WizardOS runs next to your Hermes (${HERMES_HOME:-$HOME/.hermes}); nothing in it is moved."
   # Active threads use the supported Hermes HTTP session reader. Keep archive/database sharing opt-in.
   # `wam alongside` also recreates connection apps (ChatGPT, Claude) whose agent address changed or whose running
   # containers still hold an old one (e.g. after a tailnet move); one it could not restart is reported.
@@ -282,7 +282,7 @@ fi
 #    Spots with no published default yet are skipped. WAM_NO_BOOTSTRAP=1 installs the App Manager only.
 if [ "${WAM_NO_BOOTSTRAP:-0}" != "1" ] && [ "$healthy" = 1 ]; then
   if boot="$("$HOME/.local/bin/wam" bootstrap)"; then
-    # The apps in the shell / agent-service spots are the only way to use Wizard OS: if one of them failed the
+    # The apps in the shell / agent-service spots are the only way to use WizardOS: if one of them failed the
     # install failed. Any other default app that failed leaves a usable box (degraded). Line 1 = failed core apps,
     # line 2 = the rest; bootstrap only installs the defaults named in wam/defaults.json.
     split="$(printf '%s' "$boot" | python3 -c 'import json,sys
@@ -294,7 +294,7 @@ print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam
       || printf '\n(unreadable bootstrap result)')"
     core_failed="$(printf '%s\n' "$split" | sed -n 1p)"
     failed_apps="$(printf '%s\n' "$split" | sed -n 2p)"
-    [ -z "$core_failed" ] || FAILED+=("the Wizard shell / Agent Service did not install, so Wizard OS can't be used: $core_failed")
+    [ -z "$core_failed" ] || FAILED+=("the Wizard shell / Agent Service did not install, so WizardOS can't be used: $core_failed")
     [ -z "$failed_apps" ] || DEGRADED+=("some default apps did not install: $failed_apps")
   else
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")
@@ -385,7 +385,7 @@ if [ -n "$RESTART_LATER" ] && [ "$status" != failed ]; then
     echo "Hermes restart is pending the outer installer's release verification."
   else
     schedule_hermes_restart
-    echo "Hermes will restart in ~${WIZARD_RESTART_DELAY:-20}s to load Wizard OS (this chat pauses briefly; send any"
+    echo "Hermes will restart in ~${WIZARD_RESTART_DELAY:-20}s to load WizardOS (this chat pauses briefly; send any"
     echo "message after a minute). The restart and a fresh 'wizard doctor' are logged in ~/.wizard-os/hermes-restart.log."
     echo
   fi
@@ -398,16 +398,16 @@ if [ "$status" != failed ] && [ "${WIZARD_MODE:-fresh}" = fresh ] && [ -n "${WIZ
 fi
 case "$status" in
   ok)
-    echo "Wizard OS is installed (box-only: nothing listens on the public interface)."
+    echo "WizardOS is installed (box-only: nothing listens on the public interface)."
     echo "Next: run 'wam slots' or 'wam apps' as $(id -un). Re-run the same curl command any time to update." ;;
   degraded)
-    echo "Wizard OS is installed, but not everything is working:"
+    echo "WizardOS is installed, but not everything is working:"
     printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"}
     echo "Re-run the same curl command to retry; 'wam doctor' shows the current state."
     # Unattended image builds keep working by default; WIZARD_STRICT=1 makes a degraded install exit non-zero.
     [ "${WIZARD_STRICT:-0}" != 1 ] || exit 3 ;;
   failed)
-    echo "Wizard OS did NOT finish installing:" >&2
+    echo "WizardOS did NOT finish installing:" >&2
     printf '  - %s\n' ${FAILED[@]+"${FAILED[@]}"} >&2
     [ ${#DEGRADED[@]} -eq 0 ] || printf '  - %s\n' ${DEGRADED[@]+"${DEGRADED[@]}"} >&2
     if [ -f "$OUTCOME" ]; then

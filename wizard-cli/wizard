@@ -758,8 +758,18 @@ def gateway_url(ns) -> str:
     return f"http://127.0.0.1:{int(port)}/wizard/mcp"
 
 
-def mcp_entry(url: str) -> dict:
-    return {"url": url, "headers": {"Authorization": f"Bearer ${{{TOKEN_ENV}}}"}}
+def mcp_entry(url: str, existing=None) -> dict:
+    """The wizard MCP entry with lazy discovery (WAM#591, from #437/#439), keeping the owner's options.
+
+    An owner's own `lazy` value (true or false) wins. The gateway's tools/list carries ttlMs since
+    wizard-agent-service#439, so Hermes' cached schema list expires.
+    """
+    entry = dict(existing or {})
+    # Keep the owner's other headers, so unlink can still put the entry back as it was.
+    headers = entry.get("headers") if isinstance(entry.get("headers"), dict) else {}
+    entry.update(url=url, headers={**headers, "Authorization": f"Bearer ${{{TOKEN_ENV}}}"})
+    entry.setdefault("lazy", True)
+    return entry
 
 
 def read_record() -> dict | None:
@@ -1004,7 +1014,42 @@ def refresh_owned_plugin(home, rec, ns):
 
 
 def reverse_edit(home, e):
-    if e['key'] == 'skills.external_dirs':
+    if e['key'] == f'mcp_servers.{MCP_NAME}' and isinstance(e['after'], dict):
+        try:
+            current = raw_get(raw_config(home), e['key'])
+        except KeyError:
+            return False
+        if not e['before']['present']:
+            if current != e['after']:
+                # An edited entry belongs to its owner. Keep it whole instead of
+                # deleting its address and stranding owner options without a URL.
+                return True
+            hcfg_unset(home, e['key'])
+            return False
+        # Reverse only leaves still equal to what link wrote, keeping later owner edits.
+        before = e['before'].get('value') or {}
+        def leaves(key, old, after):
+            for name, value in after.items():
+                path = key + '.' + name
+                original = old.get(name) if isinstance(old, dict) else None
+                if isinstance(value, dict):
+                    leaves(path, original or {}, value)
+                else:
+                    reverse_edit(home, {'key': path, 'before': {
+                        'present': isinstance(old, dict) and name in old, 'value': original}, 'after': value})
+        leaves(e['key'], before, e['after'])
+    elif e['key'].startswith(f'mcp_servers.{MCP_NAME}.'):
+        try:
+            now = raw_get(raw_config(home), e['key'])
+        except KeyError:
+            return
+        if now != e['after']:
+            return
+        if e['before']['present']:
+            hcfg_set(home, e['key'], e['before']['value'])
+        else:
+            hcfg_unset(home, e['key'])
+    elif e['key'] == 'skills.external_dirs':
         try:
             now = list(raw_get(raw_config(home), e['key']) or [])
         except KeyError:
@@ -1041,6 +1086,17 @@ def cmd_link(ns) -> dict:
         if Path(rec['hermes_home']) != home:
             raise Fail('usage', 'Wizard OS is linked to a different Hermes home; unlink it first')
         refresh_owned_plugin(home, rec, ns)
+        entry = (raw_config(home).get('mcp_servers') or {}).get(MCP_NAME)
+        if isinstance(entry, dict) and '/wizard/mcp' in str(entry.get('url', '')) and 'lazy' not in entry:
+            key = f'mcp_servers.{MCP_NAME}.lazy'
+            rec['edits'].append({'key': key, 'before': {'present': False}, 'after': True})
+            save_record(rec)  # Write-ahead; retain the original pre-link backup and hash.
+            fault(f'before:{key}')
+            hcfg_set(home, key, True)
+            fault(f'mid:{key}')
+            rec.setdefault('known_config_shas', []).append(sha256_file(cfgp))
+            save_record(rec)
+            fault(f'after:{key}')
         dirs = list((raw_config(home).get('skills') or {}).get('external_dirs') or [])
         wanted = [str(os_home() / 'skills'), builder['system_skills']]
         after = dirs + [d for d in wanted if d not in dirs]
@@ -1119,7 +1175,7 @@ def cmd_link(ns) -> dict:
 
     try:
         # 1. the one MCP entry (never touches other mcp_servers entries)
-        remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url))
+        remember(f"mcp_servers.{MCP_NAME}", mcp_entry(url, existing))
         # 2. app + pointer skills as an extra skills dir
         try:
             dirs = list(raw_get(raw_config(home), "skills.external_dirs") or [])
@@ -1284,8 +1340,9 @@ def cmd_unlink(ns) -> dict:
             rec['plugin_installed'] = False
         else:
             remove_installed_plugin(home, rec)
+    preserved_owner_mcp_entry = False
     for e in reversed(rec["edits"]):
-        reverse_edit(home, e)
+        preserved_owner_mcp_entry = reverse_edit(home, e) is True or preserved_owner_mcp_entry
     # Byte-for-byte: when nothing else changed since link (the reversed document means exactly what the backup
     # meant), put the original bytes back, so even whitespace is the owner's.
     backup_cfg = bdir / "config.yaml"
@@ -1327,10 +1384,14 @@ def cmd_unlink(ns) -> dict:
     restarted = False
     if ns.restart:
         restarted = run_hermes(home, "gateway", "restart", check=False, timeout=180).returncode == 0
+    note = "" if byte_identical else "the owner edited config.yaml after linking; only Wizard OS keys were reversed"
+    if preserved_owner_mcp_entry:
+        note += "; owner-edited Wizard MCP entry was preserved; its connection is no longer managed"
     return {"ok": True, "linked": False, "config_byte_identical": byte_identical, "env_restored": env_ok,
+            "preserved_owner_mcp_entry": preserved_owner_mcp_entry,
             "reversed": [e["key"] for e in rec["edits"]], "plugin_removed": bool(rec.get("plugin_installed")),
             "env_removed": rec.get("env_added") or [], "gateway_restarted": restarted,
-            "note": "" if byte_identical else "the owner edited config.yaml after linking; only Wizard OS keys were reversed"}
+            "note": note}
 
 
 def _check(rows: list, name: str, ok: bool, detail: str = "") -> bool:

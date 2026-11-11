@@ -1,6 +1,6 @@
 """Automatic app updates: every box gets the new version of its apps soon after a publisher ships it.
 
-A Wizard OS release only moves the system apps it pins (shell, Agent Service, Hermes, release defaults). Every other
+A WizardOS release only moves the system apps it pins (shell, Agent Service, Hermes, release defaults). Every other
 app installed from the Wizard App Index stayed on the version it was installed at until someone ran
 `wam app update <id>` by hand, so publishing a fix reached new installs only. This module closes that gap:
 
@@ -14,11 +14,11 @@ app installed from the Wizard App Index stayed on the version it was installed a
 - a nightly systemd user timer (wizard-app-updates.timer) runs apply when the app-update mode is "auto";
 - the owner is told what changed through the Notifications app when it is installed.
 
-The app-update mode is separate from the Wizard OS update mode (updates.py): system releases default to Ask me
+The app-update mode is separate from the WizardOS update mode (updates.py): system releases default to Ask me
 (James, alpha), app updates default to Automatic because each one is small, backed up and rolled back on failure.
 Owners can switch to "ask" (`wam app-updates --ask`) or hold single apps (`--hold <id>`).
 
-Never touched here: the shell, the Agent Service, Hermes and anything the Wizard OS release pins (they move with the
+Never touched here: the shell, the Agent Service, Hermes and anything the WizardOS release pins (they move with the
 release), apps prepared from an exact owner-local selection (.wizard-selection), and versions the owner ignored.
 
 State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {id: tipi}, "last": {...}}.
@@ -28,6 +28,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -44,7 +45,7 @@ SETTLE_SECONDS = 20          # an app must stay up this long after its update be
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
 FRESH_SLACK_MS = 120_000     # the rollback backup must be at least this recent relative to the update start
 RETRY_DAYS = 7               # a version that failed is tried again after this long (a box-side fix may land meanwhile)
-# Moved only by a Wizard OS release (updates.py / release_updates), never by this module.
+# Moved only by a WizardOS release (updates.py / release_updates), never by this module.
 SYSTEM_APPS = frozenset({"hermes-agent", "wizard-ux", "wizard-agent-service", "wizard-shell"})
 
 
@@ -184,7 +185,7 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
             continue
         skip = None
         if app_id in SYSTEM_APPS or app_id in managed:
-            skip = "system"            # moves with the Wizard OS release
+            skip = "system"            # moves with the WizardOS release
         elif _selection_pinned(runtipi_root, store, app_id):
             skip = "pinned"            # an exact owner-local selection
         elif app.get("ignoredVersion") is not None and str(app.get("ignoredVersion")) == str(latest):
@@ -201,12 +202,86 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
     return sorted(out, key=lambda r: r["id"])
 
 
-def status(c=None) -> dict:
+def status(c=None, installed: list[dict] | None = None) -> dict:
     from . import cli
     c = c or cli.Config()
-    rows = candidates(c.runtipi().installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+    installed = c.runtipi().installed() if installed is None else installed
+    rows = candidates(installed, store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
     return {"app_mode": mode(c.home), "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
+
+
+# ---------------------------------------------------------------- Settings > About & updates (wizard-ux#1191)
+
+SWITCH = "wizard/app-updates-list"   # the same off-by-default switch as the Apps list in Settings
+
+
+def switch_on(home: Path | None = None) -> bool:
+    from . import feature_switches
+    return feature_switches.is_on(SWITCH, home)
+
+
+WHATS_NEW_MAX = 140                  # one line, like wizard.md `summary`
+_APP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+
+
+def whats_new(installed: list[dict], *, store: str, runtipi_root: Path) -> dict:
+    """{id: {"version": tipi_version, "text": one line}} for each installed app of the store whose App Store copy
+    says what changed: the optional wizard.md front matter key `whats_new` at the commit the Store holds now.
+
+    That copy is the version an update would install (metadata.latestVersion is its config.json tipi_version), and,
+    once the app has updated, the version it runs. Apps without the key are left out; the reader never fails."""
+    from . import wizardmd
+    out = {}
+    for row in installed:
+        app = row.get("app") or {}
+        app_id = app.get("appName")
+        if app.get("appStoreSlug") != store or not isinstance(app_id, str) or not _APP_ID.fullmatch(app_id):
+            continue
+        folder = Path(runtipi_root) / "repos" / store / "apps" / app_id
+        try:
+            with open(folder / "wizard.md", encoding="utf-8", errors="replace") as f:
+                text = wizardmd.front_matter(f.read(65536)).get("whats_new")
+            version = int(json.loads((folder / "config.json").read_text()).get("tipi_version"))
+        except Exception:  # noqa: BLE001 - no notes, unreadable or odd files: just no line for this app
+            continue
+        if not isinstance(text, str):
+            continue
+        line = " ".join(text.split())   # one line, even from a copy published before the checker rule (spec 8d)
+        if line:
+            out[app_id] = {"version": version, "text": line[:WHATS_NEW_MAX]}
+    return out
+
+
+_BUG_URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]{0,9}")
+
+
+def bug_url(url) -> str | None:
+    """A GitHub issue URL as update_reports files or finds it, else None (nothing else is ever linked)."""
+    return url if isinstance(url, str) and _BUG_URL.fullmatch(url) else None
+
+
+def _reports_on() -> bool:
+    """Whether wizard/update-bug-reports (#524) is on; tests monkeypatch this."""
+    from . import update_reports
+    return update_reports.switch_on()
+
+
+def owner_status(c=None) -> dict:
+    """status() plus what the owner needs to read a failure: the version that failed, when, and why (plain text),
+    the bug the team was told in (`bug`, only with wizard/update-bug-reports on and a bug filed or found), and each
+    app's one-line What's new (whats_new()). Read only; the same state file the nightly run writes and the
+    Store's own copy of each app, never a second copy."""
+    from . import cli
+    c = c or cli.Config()
+    installed = c.runtipi().installed()
+    linked = _reports_on()   # the bug link only while the owner lets the box report failures (#524)
+    failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300],
+                  **({"bug": bug_url(v.get("bug"))} if linked and bug_url(v.get("bug")) else {})}
+              for k, v in _failed(c.home).items()}
+    last = _state(c.home).get("last")
+    return {**status(c, installed), "failed": failed, "last": last if isinstance(last, dict) else None,
+            "notes": whats_new(installed, store=cli.STORE, runtipi_root=c.runtipi_root)}
 
 
 # ---------------------------------------------------------------- verify / roll back
@@ -319,8 +394,8 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
 def reconcile_settings(c, rt, app_id: str) -> list[str]:
     """Fill settings the new version newly requires, with the same rules as install (shared secrets from the apps
     it uses, generated passwords, owner origins), keeping every saved value. Runtipi refuses an update whose
-    required variable is unset ("Variable ... is required"), so this runs first. Returns what only the owner can
-    give (then nothing is changed)."""
+    required variable is unset ("Variable ... is required"), so app_update runs this once the update is admitted
+    (after the owner gate), right before queueing it. Returns what only the owner can give (then nothing is changed)."""
     from . import cli
     urn = f"{app_id}:{cli.STORE}"
     recipe = Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id
@@ -360,8 +435,10 @@ def _notify(c, title: str, message: str, priority: str = "default", required: bo
         return False
 
 
-def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list = ()) -> tuple[str, str, str] | None:
-    """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue)."""
+def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list = (),
+             told: set | frozenset = frozenset()) -> tuple[str, str, str] | None:
+    """The owner's notice. Apps are named as the owner sees them (Movies), never by internal id (cinequeue).
+    `told`: ids of failed/rolled-back apps already reported to the team (update_reports, switch-gated)."""
     if not (done or rolled or failed or needs or renamed):
         return None
 
@@ -377,18 +454,22 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
     if rolled:
         parts.append("Kept the previous version of " + ", ".join(nm(r) for r in rolled)
                      + " because the new one did not work; it is tried again when a newer version ships.")
+        if all(r.get("id") in told for r in rolled):
+            parts.append("The team was told about it.")
     if needs:
         parts.append("Waiting for you: " + "; ".join(f"{nm(n)}: {n['reason']}" for n in needs) + ".")
     if failed:
         parts.append("Could not update " + "; ".join(f"{nm(f)}: {f['reason']}" for f in failed)
-                     + ". Ask your Wizard to look at it.")
+                     + (". The team was told, so you don't need to report it." if all(f.get("id") in told for f in failed)
+                        else ". Ask your Wizard to look at it."))
     bad = rolled or failed or needs
     n = len(done) + len(renamed)
     title = "App updates need a look" if bad else (f"{n} app{'s' if n != 1 else ''} updated")
     return title, " ".join(parts), "high" if failed else "default"
 
 
-def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None) -> dict:
+def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
+          reporter=None, moves=None) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures."""
     from . import cli, updates
     c = c or cli.Config()
@@ -401,8 +482,17 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         return {"started": False, "skipped": "running", "note": "app updates are already running"}
     try:
         if updates.installing(c.home):
-            return {"started": False, "skipped": "installing", "note": "a Wizard OS update is running; next window"}
+            return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
+        repo_moved = []
+        if not dry_run:
+            # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
+            # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
+            from . import repo_moves
+            try:
+                repo_moved = (moves or repo_moves.follow_all)(c, rt.installed(), only=only)
+            except Exception as e:  # noqa: BLE001 - a move check never stops the updates
+                print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:
             unknown = sorted(set(only) - {r["id"] for r in rows})
@@ -433,7 +523,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                     failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
                                    "reason": "moving it to its new name did not work, so it stays as it was"
                                    + ("" if res.get("rolled_back", True) else " (needs a look)"),
-                                   "rollback": res})
+                                   "rollback": res, "step": "move to its new name"})
             if renamed:
                 moved = {r["id"] for r in renamed}
                 rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
@@ -446,17 +536,15 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
             try:
-                missing = reconcile_settings(c, rt, r["id"])
-                if missing:   # the new version needs a setting only the owner can give: nothing changed
-                    needs.append({"id": r["id"], "reason": "the new version needs " + "; ".join(missing)[:200]})
-                    continue
-                res = cli.app_update(c, r["id"])
-            except SystemExit as e:   # owner gate (new host access) or not installed: nothing changed
+                # new required settings are filled inside app_update, only once the update is admitted (#582)
+                res = cli.app_update(c, r["id"], settings=lambda rt_, urn_, i=r["id"]: reconcile_settings(c, rt_, i))
+            except SystemExit as e:   # owner gate, a setting only the owner can give, or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
                 continue
             except Exception as e:  # noqa: BLE001 - one app never stops the others
                 res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
             problem = verify(c, rt, urn, r["id"], res, before)
+            step = "update" if res.get("error") else "check after update"
             if problem is None:
                 fails.pop(r["id"], None)
                 done.append({**r, "version": res.get("version")})
@@ -467,7 +555,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except (TypeError, ValueError):
                 unchanged = False
             if unchanged:   # the update never applied: the previous version still runs, nothing to restore
-                failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None})
+                failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None,
+                               "step": step})
                 continue
             print(f"{r['id']}: {problem}; rolling back", file=sys.stderr, flush=True)
             try:
@@ -475,7 +564,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             except Exception as e:  # noqa: BLE001
                 rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
             (rolled if rb.get("rolled_back") else failed).append(
-                {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb})
+                {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb,
+                 "step": step})
         try:
             cli.write_registry(c, rt)
         except Exception:  # noqa: BLE001
@@ -484,11 +574,25 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
                 "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
         _write(c.home, failed=fails, last=last)
-        msg = _summary(done, rolled, failed, needs, renamed)
+        reports = {}
+        if notify and (rolled or failed):   # tell the team too (#524): only with wizard/update-bug-reports on
+            try:
+                from . import update_reports
+                reports = (reporter or update_reports.report_all)(c, rolled + failed, store=cli.STORE)
+            except Exception as e:  # noqa: BLE001 - reporting never fails the run
+                print(f"WARNING: update failures not reported: {type(e).__name__}", file=sys.stderr)
+        told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
+        bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
+        if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
+            for k, url in bugs.items():
+                fails[k] = {**fails[k], "bug": url}
+            _write(c.home, failed=fails)
+        msg = _summary(done, rolled, failed, needs, renamed, told)
         if notify and msg:
             _notify(c, *msg)
-        return {"started": True, "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
-                "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None}
+        return {"started": True, **({"repo_moved": repo_moved} if repo_moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
+                "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
+                **({"reported": reports} if reports else {})}
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
@@ -505,9 +609,10 @@ def apply_if_auto(c=None, is_busy=None) -> dict:
     return apply(c)
 
 
-def start_detached(runner=subprocess.run) -> dict:
-    """The App Manager's Update apps button: the same run as the nightly timer, in the background, in any mode."""
+def start_detached(runner=subprocess.run, only: list[str] | None = None) -> dict:
+    """The App Manager's Update apps button: the same run as the nightly timer, in the background, in any mode.
+    `only` (Settings' Update now / Retry on one app) is `wam app-updates --apply <id>`."""
     wam = str(Path.home() / ".local/bin/wam")
     p = runner(["systemd-run", "--user", "--collect", f"--unit={UNIT}-now-{int(time.time())}", wam, "app-updates",
-                "--apply"], capture_output=True, text=True, timeout=30)
+                "--apply", *(only or [])], capture_output=True, text=True, timeout=30)
     return {"started": p.returncode == 0, **({} if p.returncode == 0 else {"error": (p.stderr or p.stdout)[-300:]})}

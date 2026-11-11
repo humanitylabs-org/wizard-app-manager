@@ -1,6 +1,6 @@
 # Portable builder candidate
 
-Status: unmerged candidate adapted from Wizard OS PR24. Approved manifest checks are unchanged; API/view-source metadata checks are opt-in proposal mode. The James-approved shared-system-function source gate is mandatory in every builder check/scaffold/stage/update/publication-preparation path. This is source-bundle distribution (install with `python3 -m pip install -e .`), not wheel-only packaging.
+Status: unmerged candidate adapted from WizardOS PR24. Approved manifest checks are unchanged; API/view-source metadata checks are opt-in proposal mode. The James-approved shared-system-function source gate is mandatory in every builder check/scaffold/stage/update/publication-preparation path. This is source-bundle distribution (install with `python3 -m pip install -e .`), not wheel-only packaging.
 
 `wam new`, `wam check [--proposal]`, `wam install-local <local-folder> --stage-only [--run]`, `wam publish --repo ... --output ...` and `wam builder-skill [--hermes-home ...]` dispatch through isolated builder modules. Public execution refuses. Local install never edits apps.json/registry.py or restarts Hermes. System skill lives outside generated app skills.
 

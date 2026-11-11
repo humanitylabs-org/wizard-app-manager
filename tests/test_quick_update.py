@@ -14,7 +14,7 @@ D = lambda c: "sha256:" + c * 64   # noqa: E731
 
 def _rel(version, ux="1", ux_commit="b", agent="2", wam_commit=WAM, files_commit="d"):
     return {
-        "version": version, "name": f"Wizard OS {version}", "date": "2026-10-28", "about": "words", "notes": "words",
+        "version": version, "name": f"WizardOS {version}", "date": "2026-10-28", "about": "words", "notes": "words",
         "install": {"command": "curl -fsSL aiwizards.com/os.sh | bash"},
         "components": {"wizard-app-manager": {"repo": "humanitylabs-org/wizard-app-manager", "commit": wam_commit},
                        "wizard-ux": {"repo": "humanitylabs-org/wizard-ux", "commit": ux_commit * 40},

@@ -1,7 +1,7 @@
 """The host Hermes dashboard for alongside boxes.
 
 Some apps sign in through the agent's own dashboard API (e.g. ChatGPT: Hermes' device-code login, and the
-Wizard OS plugin's read-only usage route). In fresh mode they reach the Hermes Agent app by name; on an alongside
+WizardOS plugin's read-only usage route). In fresh mode they reach the Hermes Agent app by name; on an alongside
 box Hermes runs on the host and has no dashboard running. This module runs stock `hermes dashboard` as a user
 service and points those apps at it:
 

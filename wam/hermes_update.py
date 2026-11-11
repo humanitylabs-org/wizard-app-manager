@@ -116,7 +116,7 @@ def _self_updating(repo: Path) -> bool:
 
 
 OFFICIAL_REASON = ("This Hermes was installed by the official Hermes installer and updates itself: run `hermes update` "
-                   "(as the Hermes owner, outside a chat turn). Wizard OS updates never change its version.")
+                   "(as the Hermes owner, outside a chat turn). WizardOS updates never change its version.")
 
 
 def _health(origin: str) -> str | None:
@@ -164,7 +164,7 @@ def status(home: Path | None = None, base: str | None = None) -> dict:
         out.update(install)
         pin = target(h, base)
         if pin is None:
-            return {**out, 'reason': 'This Wizard OS release has no Hermes pin; nothing to update.'}
+            return {**out, 'reason': 'This WizardOS release has no Hermes pin; nothing to update.'}
         out.update(target_tag=pin['tag'], target_commit=pin['commit'])
         if install['install_type'] == 'container':
             return {**out, 'state': 'container', 'reason': "Hermes moves with the release's default app, not this command."}

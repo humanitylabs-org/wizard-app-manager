@@ -25,6 +25,10 @@ Only session counts/schema and the new Wizard test conversation were inspected.
   API. `wam links` publishes only `/api/system/load` on the shell's existing private Tailscale origin,
   reads back the exact route, refuses conflicting owner routes and Funnel, and never publishes the
   App Manager API root or credential files. Browser headers are not forwarded to Runtipi.
+- `/api/system/devices` (wizard-app-manager#568): `wam.devices` is a port of wizard-ux
+  `tools/system-devices.mjs` served by the same host API, and `wam links` publishes that exact path
+  beside `/api/system/load` under the same rules. It needs the Tailscale-User-Login header Serve sets and
+  refuses cross-site reads, so every device signed into the box reads one registry (`~/.wizard-os/devices.json`).
 - Multi-provider bootstrap ensures the selected default is present even when another provider app
   already fills that slot. A new release can select ChatGPT without removing an existing Claude app.
   The existing host-dashboard bridge provisions the ChatGPT app with host dashboard Basic auth;

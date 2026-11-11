@@ -1,0 +1,16 @@
+{
+  "version": "0.3.134",
+  "latest_since": "2026-11-09T10:03:23Z",
+  "promoted_at": "2026-11-09T10:41:31Z",
+  "upgrade_test": {
+    "from": "0.3.102",
+    "to": "0.3.134",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.134.md"
+  },
+  "fast_track": {
+    "classification": "feature",
+    "reason": "Fresh installs and Stable boxes get the Troubleshooter that recovers a locked-out box on its own (wizard-troubleshooter 3e56f66 -> 9088a25, #24-#42); #36/#38/#42 add owner-approved repair plans with backups and Undo, on by default (feature, DECISIONS #93). Only that pin moves; every other pin is 0.3.102. Installed upgrade 0.3.102 -> 0.3.134 passed on a disposable KVM guest on forum: 123 s, pinned, 27 checks 0 failed, wizard/wam doctor 0 FAIL, Hermes config/.env/SOUL unchanged. Troubleshooter CI green (#42).",
+    "notes": "Guardian stays report-only (GUARDIAN_ACT=0, unchanged). Candidate served to the rig from wizard-os main 8402c55 (releases/0.3.134.json sha256 1ae716ae..., identical to the public mirror), not fetched from the public mirror; 0.3.102 came from the public mirror. Not checked: installed Troubleshooter commit read back on the guest, real Tailscale/Serve (rig has none, so the Troubleshooter is not mounted on every shell address), real chats, phones, a fresh install."
+  }
+}

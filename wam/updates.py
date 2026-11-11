@@ -432,12 +432,12 @@ def _quick_now(home: Path | None, installer: dict, run: str | None) -> bool:
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
     return {
         unit_dir / f"{UNIT}.service": (
-            "[Unit]\nDescription=Wizard OS automatic update (owner setting: Automatic)\n\n"
+            "[Unit]\nDescription=WizardOS automatic update (owner setting: Automatic)\n\n"
             "[Service]\nType=oneshot\nEnvironment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin\n"
             # the installer's detached runner must outlive this oneshot when systemd-run is unavailable
             f"KillMode=process\nExecStart={wam} updates --apply-if-auto\n"),
         unit_dir / f"{UNIT}.timer": (
-            "[Unit]\nDescription=Nightly Wizard OS update check\n\n"
+            "[Unit]\nDescription=Nightly WizardOS update check\n\n"
             "[Timer]\nOnCalendar=*-*-* 03:30\nRandomizedDelaySec=1h\nPersistent=true\n\n"
             "[Install]\nWantedBy=timers.target\n"),
     }
@@ -629,6 +629,16 @@ def _auto_retry_clear(home: Path | None) -> None:
         pass
 
 
+def report_failure(home: Path | None = None) -> dict:
+    """A failed WizardOS update files or links a bug in wizard-os, once per failed run, only with the feature switch
+    `wizard/update-bug-reports` on (wam/update_reports.py, #524). Never raises."""
+    try:
+        from . import update_reports
+        return update_reports.report_os(home)
+    except Exception:  # noqa: BLE001 - reporting never stops an update check
+        return {}
+
+
 def auto_target(st: dict, base: str | None = None) -> str | None:
     """The release Automatic installs on this box: its channel's release (#458).
 
@@ -646,6 +656,7 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     (skipped; the next nightly window tries again)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
+    report_failure(home)           # tell the team about a failed run before retrying it (switch-gated, #524)
     st = status(home, base, fresh=True)
     stable = st["stable"]
     target = auto_target(st, base)

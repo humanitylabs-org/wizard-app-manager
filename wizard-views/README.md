@@ -24,7 +24,7 @@ To merge natively, call the render functions from `renderLauncher` and `renderSe
   - `GET /api/apps/installed` and `GET /api/system/load`
   - `POST /api/app-lifecycle/{urn}/install|start|stop`, `PATCH .../update`, and `POST /api/app-lifecycle/start-all|stop-all|restart-all`
   - Logos at `/api/marketplace/apps/{urn}/image`. The urn is `<id>:wizardapps`.
-- **Wizard OS front:**
+- **WizardOS front:**
   - `GET /wizard/v1/wizard-apps` serves apps.json (type, category, uses, provides, view).
   - `/wizard/v1/index/*` proxies the public index `https://apps.aiwizards.com/v1`, so your CSP's `connect-src 'self'` still holds.
   - `/wizard/v1/apps` lists only installed apps whose screen the browser can reach.

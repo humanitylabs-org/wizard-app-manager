@@ -20,6 +20,8 @@ Wizard additions:
   wam bootstrap                 install the default app for every empty spot (skips spots with no default yet)
   wam links [--json] [--dry-run] put every installed app page on your Tailscale and print the links
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
+    [--report-only|--act]       the guardian repairs broken links by itself; --report-only keeps it to reporting
+                                (saved, kept across updates); --act turns repairs back on
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
                                 checked and rolled back on failure)
   wam doctor [--fix]            check the whole chain
@@ -62,7 +64,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins, update_backups
+from . import alongside, index, private, registry, session_mounts, slots, release_pins, update_backups
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -183,6 +185,8 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
+    from . import gateway_keys   # #387: the gateway's grant keys, only with feature switch wizard/gateway-keys on
+    gateway_keys.sync_if_on(c, reg)
     # Return the exact owner-route projection we persisted, including staged view IDs.
     # Internal _skill_src remains available for both copy passes, never in API/CLI output.
     return json.loads((c.home / "apps.json").read_text())
@@ -321,7 +325,7 @@ def build_form(c: Config, app_id: str, info: dict, given: dict[str, str], uses: 
                 form[var] = saved[var] = secrets.token_urlsafe(max(24, int(f.get("min") or 16)))
         elif f.get("required"):
             missing.append(f"{var} ({f.get('label', '')}: {f.get('hint', '')})")
-    if saved:
+    if saved and not missing:   # incomplete form: nothing is used, so nothing generated is kept either
         c.secrets.mkdir(mode=0o700, exist_ok=True)
         p = c.secrets / f"{app_id}.json"
         p.write_text(json.dumps({**previous, **saved}, indent=2) + "\n")
@@ -1068,11 +1072,13 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
         removed += [a for a in claude_login_off(c) if a not in removed]
+        session_mounts.ensure_timer(c.home, c.runtipi_root, False)
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
     st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
     out = {k: v for k, v in st.items() if k != "detected"}
     out["detected"] = st["detected"]
+    out["session_mounts_timer"] = session_mounts_timer(c, st)
     try:
         rt = c.runtipi()
         apps = _alongside_apps(c, rt)
@@ -1114,6 +1120,56 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    return out
+
+
+def _shares_session_files(st: dict | None) -> bool:
+    shell = (st or {}).get("shell") or {}
+    return bool(shell.get("share_sessions")) and not shell.get("share_history")
+
+
+def session_mounts_timer(c: Config, st: dict) -> str:
+    """The every-minute remount timer runs only while --share-sessions file mounts are in use (#577)."""
+    return session_mounts.ensure_timer(c.home, c.runtipi_root, _shares_session_files(st))
+
+
+def _agent_side(c: Config, st: dict, rt: Runtipi | None = None) -> tuple[str, str]:
+    """(app id, role) of the side that reads Hermes's state.db: the Agent Service after the split, else the bundle."""
+    apps = _alongside_apps(c, rt)
+    active = bool((st.get("service") or {}).get("active"))
+    want = "service" if active else "bundle"
+    app_id = next((x for x, r in apps.items() if r == want),
+                  "wizard-agent-service" if active else alongside.LEGACY_BUNDLE)
+    return app_id, apps.get(app_id) or want
+
+
+def refresh_session_mounts(c: Config) -> dict:
+    """`wam alongside --refresh-mounts` (the timer): when Hermes replaced state.db-wal/-shm since the Agent Service's
+    file mounts were made, and all three files exist again, rewrite its override and restart it so the container
+    reads the live files (#577). Otherwise change nothing."""
+    st = alongside.load(c.home)
+    if not st or not _shares_session_files(st):
+        return {"state": "skipped", "reason": "session files are not shared (wam alongside --share-sessions)"}
+    app_id, role = _agent_side(c, st)
+    ovr = c.runtipi_root / "user-config" / STORE / app_id / "docker-compose.yml"
+    text = ovr.read_text() if ovr.is_file() else ""
+    if 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' not in text:
+        return {"state": "skipped", "app": app_id, "reason": "no session mounts in the override yet"}
+    out = {"app": app_id, **session_mounts.plan(text, st["agent"]["hermes_home"])}
+    if out["state"] != "stale":
+        return out
+    alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+    try:
+        res = recreate_apps(c, c.runtipi(), [app_id])[app_id]
+    except (RuntipiError, OSError) as e:
+        res = f"error: {str(e)[:160]}"
+    out["restart"] = res
+    if res.startswith("error"):
+        # The container still holds the old files: put the old stamp back so the next run retries.
+        ovr.write_text(text)
+        out["state"] = "error"
+    else:   # recreated, or stopped (its next start mounts the live files)
+        out["state"] = "refreshed" if res == "recreated" else "rewritten"
     return out
 
 
@@ -1432,7 +1488,9 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
         except (OSError, ValueError):
             continue
         if source != row["repo"]:
-            continue
+            from . import repo_moves   # the release pins the repo's new name after a GitHub move (#578)
+            if not repo_moves.follow(c, app_id, want=row["repo"]):
+                continue
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
         if commit == row["commit"] and (not row.get("index_version") or
                                           str((meta or {}).get("w", {}).get("version", "")) == row["index_version"]):
@@ -1444,19 +1502,23 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             # shared-secret/default rules as install, without resetting any owner settings.
             urn = f"{app_id}:{STORE}"
             before = (rt.app(urn) or {}).get("app") or {}
-            current = before.get("config") or {}
             recipe = c.runtipi_root / "repos" / STORE / "apps" / app_id
             target_version = str(registry._front((recipe / "wizard.md").read_text()).get("version", ""))
             if row.get("index_version") and target_version != row["index_version"]:
                 raise RuntimeError("prepared recipe version does not match the release pin")
             info = json.loads((recipe / "config.json").read_text())
-            form, missing = build_form(c, app_id, info, current, uses=rec.get("uses") or [])
-            if missing:
-                raise RuntimeError("new required settings need owner input: " + "; ".join(missing))
-            form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
-            if form != current:
-                rt.req("PATCH", f"/app-lifecycle/{urn}/update-config", form, timeout=120)
-            res = app_update(c, app_id)
+
+            def fill(rt_, urn_, info=info, uses=rec.get("uses") or []):
+                # runs inside app_update once the update is admitted, so a refused update changes nothing (#582)
+                current = ((rt_.app(urn_) or {}).get("app") or {}).get("config") or {}
+                form, missing = build_form(c, app_id, info, current, uses=uses)
+                if missing:
+                    return missing
+                form = {**form, **current}  # preserve ports, exposure, credentials, and unknown saved fields
+                if form != current:
+                    rt_.req("PATCH", f"/app-lifecycle/{urn_}/update-config", form, timeout=120)
+                return []
+            res = app_update(c, app_id, settings=fill)
             if res.get("error"):
                 raise RuntimeError(res["error"])
             expected_status = 'running' if before.get('status') == 'running' else 'stopped'
@@ -1531,7 +1593,33 @@ def doctor_gateway_keys(c: Config, reg: dict, switch_on=None) -> list[tuple[str,
     return [row] if row else []
 
 
-def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
+# The box rows of `wam doctor`; inside the agent's container they report NOT_APPLICABLE (ok None), not failures.
+BOX_DOCTOR_ROWS = ("Wizard builder agent terminal reachability", "App Manager API reachable",
+                   "Wizard store reads the index", "App Store lists index apps", "API is box-only",
+                   "API token present (0600)", "apps.json written")
+
+
+def container_doctor(c: Config) -> list[tuple[str, bool | None, str]]:
+    """`wam doctor` in the stock agent's container (no box wam, no Runtipi): the bundle and the index are real checks;
+    the App Manager's rows are not applicable there, and nothing is written or repaired."""
+    from . import builder_bundle
+    from .bundle_delegate import NOT_APPLICABLE
+    hh = os.environ.get("HERMES_HOME")
+    hh = Path(hh) if hh and (Path(hh) / "config.yaml").is_file() else None
+    out = list(builder_bundle.health(c.home, hh, builder_bundle.RUNTIME + "/current/system-skills" if hh else None))
+    try:
+        n = len(index.search(c.index, ""))
+        out.append(("index reachable", True, f"{c.index} ({n} apps on the first page)"))
+    except Exception as e:  # noqa: BLE001
+        out.append(("index reachable", False, str(e)[:200]))
+    out.extend((label, None, NOT_APPLICABLE) for label in BOX_DOCTOR_ROWS)
+    return out
+
+
+def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
+    from .bundle_delegate import in_agent_container
+    if in_agent_container():
+        return container_doctor(c)
     out = []
     from . import builder_bundle
     if fix:
@@ -1577,7 +1665,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
     from . import updates
     run = updates.install_state(c.home)  # also heals a stale running state and its lock (wizard-os#90)
     if run == "interrupted":
-        out.append(("Wizard OS update completed", False,
+        out.append(("WizardOS update completed", False,
                     "the last install or update was interrupted before it finished; retry with "
                     "`wam updates --apply`, or `curl -fsSL https://aiwizards.com/os.sh | bash -s start`"))
     st = alongside.load(c.home)
@@ -1610,7 +1698,8 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
             stale = alongside.stale_session_mounts(text, a["hermes_home"]) if mounted else []
             out.append(("alongside: session database shared read-only (no credentials)", mounted and db.is_file() and not stale,
                         f"{db} -> /hermes/state.db" if mounted and not stale else
-                        f"Hermes replaced {', '.join(stale)} since the mount: run `wam app update {agent_side}`" if stale else
+                        f"Hermes replaced {', '.join(stale)} since the mount: remounted within a minute by "
+                        f"{session_mounts.UNIT}.timer (now: `wam alongside --refresh-mounts`)" if stale else
                         f"not in the override yet: run `wam alongside` then `wam app update {agent_side}`"))
         else:
             out.append(("alongside: Hermes home not shared with the shell", True,
@@ -1632,6 +1721,14 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool, str]]:
                     "every app can reach every other app"))
     except Exception as e:  # noqa: BLE001
         out.append(("app networks readable", False, str(e)[:200]))
+    try:   # wizard-os docs/APP_SWITCHES.md: every installed app serves the Try it switch contract (warning only)
+        from . import app_switches
+        gaps = app_switches.missing(c.home)
+        out.append(("Installed apps serve Try it switches", None if gaps else True,
+                    ("no endpoint: " + ", ".join(g["id"] for g in gaps[:12]) + (" …" if len(gaps) > 12 else "")
+                     + " (wam check --installed)") if gaps else "every app with a page declares wizard.app-switches/1"))
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Installed apps serve Try it switches", None, str(e)[:120]))
     return out
 
 
@@ -1720,6 +1817,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
                 return self._json(503, {"error": "server_resources_unavailable"})
+        if u.path == "/api/system/devices":
+            # The box's machines and saved Wizards (devices.py, wizard-os spec/DEVICES.md), the same contract as the
+            # wizard-ux resources sidecar: only through Tailscale Serve (it sets the caller's login), never cross-site.
+            # Owner only, like the Store listener: another tailnet user must not read this box's machines and Wizards.
+            from . import devices, store_install as si
+            who = (self.headers.get("Tailscale-User-Login") or "").strip().lower()
+            if not who:
+                return self._json(403, {"error": "private_access_required"})
+            owner = si.owner_login().strip().lower()
+            if not owner or who != owner:
+                return self._json(403, {"error": "owner_only"})
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._json(403, {"error": "cross_site_refused"})
+            try:
+                return self._json(200, devices.reader_for(c.home)())
+            except Exception:
+                return self._json(503, {"error": "devices_unavailable"})
         grant_match = re.fullmatch(r"/api/apps/([a-z0-9][a-z0-9-]{1,40})/proposed-grants", u.path)
         if grant_match:
             if not self._authorized(): return
@@ -1847,6 +1961,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
             return self._feature_switches(method)
+        if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (switch wizard/app-updates-list)
+            return self._app_updates(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -1867,6 +1983,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._chats_default(method)
         if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
             return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
+        if app_id == '_github' or app_id.startswith('_github/'):   # Store "Sign in to GitHub" (github_signin.py)
+            return self._github(method, app_id.removeprefix('_github').lstrip('/'))
         if app_id.startswith('_host-access/'):   # the owner's own device accepts host access (host_access_gate.py)
             return self._host_access(method, app_id.removeprefix('_host-access/'))
         if app_id == '_recommended':
@@ -2026,6 +2144,29 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(500, {'error': f"The App Manager couldn't check this removal ({type(e).__name__}). "
                                              "Nothing was removed."})
 
+    def _github(self, method: str, sub: str) -> None:
+        """GET: the sign-in state. POST start / signout with body {}: begin or end it. The owner gate in _go already ran
+        (check_request for a POST). Never answers with a token or the device code (github_signin.status())."""
+        from . import github_signin as gs
+        if sub not in ('', 'start', 'signout'):
+            return self._json(404, {'error': 'not found'})
+        if (method == 'GET') != (sub == ''):
+            return self._json(405, {'error': 'GET _github, or POST _github/start and _github/signout'})
+        try:
+            if method == 'GET':
+                return self._json(200, gs.status())
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 <= size <= 64:
+                return self._json(400, {'error': 'invalid body size'})
+            if size and json.loads(self.rfile.read(size)) != {}:
+                return self._json(400, {'error': 'send {}'})
+            return self._json(*(gs.start() if sub == 'start' else (200, gs.signout())))
+        except (ValueError, OSError) as e:
+            return self._json(400, {'error': str(e)[:200]})
+        except Exception as e:  # noqa: BLE001 - answer with the type only: a message could carry request detail
+            sys.stderr.write(f"wam store: github sign-in failed: {type(e).__name__}\n")
+            return self._json(500, {'error': f"The App Manager couldn't do that ({type(e).__name__})."})
+
     def _chats_default(self, method: str) -> None:
         from . import chats_views
         try:
@@ -2077,11 +2218,50 @@ class StoreHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):
                 raise ValueError("expected an object")
-            return self._json(200, fs.set_switch(body.get("id"), body.get("on"), by="owner"))
+            # Origin was checked by _go (the shell's own); an app switch call carries it to the app.
+            return self._json(200, fs.set_switch(body.get("id"), body.get("on"), by="owner",
+                                                 origin=self.headers.get("Origin")))
         except (ValueError, OSError) as e:
             return self._json(400, {"error": str(e)[:200]})
         except fs.SwitchError as e:
             return self._json(e.code, {"error": str(e)})
+
+    def _app_updates(self, method: str) -> None:
+        """App updates for Settings, behind the off-by-default switch wizard/app-updates-list (404 while it is off).
+        GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped, notes = one-line
+        What's new per app). POST {"mode": "auto"|
+        "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry),
+        which runs in the background like the nightly timer. _go already checked the owner (and Origin for POST)."""
+        from . import app_updates as au, store_install as si
+        c = self.cfg
+        if not au.switch_on(c.home):
+            return self._json(404, {"error": "not found"})
+        if method == "GET":
+            try:
+                return self._json(200, au.owner_status(c))
+            except Exception as e:  # noqa: BLE001 - Runtipi unreachable: say so, never a stack trace
+                return self._json(503, {"error": f"app updates can't be read right now ({type(e).__name__})"})
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 1024:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise ValueError("expected an object")
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        app = body.get("app", body.get("hold", body.get("unhold")))
+        if app is not None and not (isinstance(app, str) and si.ID.fullmatch(app)):
+            return self._json(400, {"error": "not an app id"})
+        if body.get("action") == "apply" and set(body) <= {"action", "app"}:
+            res = au.start_detached(only=[app] if app else None)
+            return self._json(200 if res.get("started") else 409, res)
+        if set(body) == {"mode"} and body["mode"] in au.MODES:
+            return self._json(200, au.set_mode(body["mode"], c.home))
+        if set(body) in ({"hold"}, {"unhold"}):
+            return self._json(200, au.hold(app, "hold" in body, c.home))
+        return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"hold": id}, {"unhold": id} or '
+                                         '{"action": "apply"} (optional "app": id)'})
 
     def _updates(self, method: str) -> None:
         """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
@@ -2124,6 +2304,7 @@ class GatewayStoreHandler(StoreHandler):
 
 
 UPDATES_PATH = "_updates"
+APP_UPDATES_PATH = "_app-updates"
 FEATURE_SWITCHES_PATH = "_feature-switches"
 MAIN_COMPARE_PATH = "_main-compare"
 DISK_PATH = "_disk"
@@ -2160,9 +2341,15 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+               settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
-    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
+    whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
+
+    `settings(rt, urn) -> missing`: fills the saved settings the new version newly requires (app_updates /
+    release_updates). It runs only once the update is admitted (installed, owner gate for new host access passed),
+    so a refused update never changes saved settings; when it returns what only the owner can give, nothing
+    changes and the update stops (SystemExit, first line \"the new version needs ...\")."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
         from .hermes_lock import authorize
         try:
@@ -2194,6 +2381,11 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                              f"  wam app update {app} --allow-host-access")
         if gated and new and not _gate.valid(c.home, app, new, "update", rh):
             raise SystemExit(_gate.refusal(app, new, "update") + "\nNothing changed.")
+        if settings is not None:   # admitted: only now may new required settings be written (#582)
+            missing = settings(rt, urn)
+            if missing:
+                raise SystemExit("the new version needs " + "; ".join(missing) +
+                                 f"\nNothing changed: {app} keeps its current version.")
         if new:
             label = "owner allowed" if gated else "owner flag"
             print(f"WARNING: {app} is updated WITH HOST ACCESS ({label}): " + "; ".join(new), file=sys.stderr)
@@ -2287,6 +2479,9 @@ def main(argv: list[str] | None = None) -> int:
         from .bundle_delegate import delegate
         if delegate(sys.argv[1:]):
             return 0   # a downgrade the bundle refused and reported (exec never returns)
+        from .bundle_delegate import container_stop
+        if container_stop(sys.argv[1:]):
+            return 1   # a box command in the agent's container: said so in one line, nothing ran
         from .docker_group import reexec_with_docker_group
         reexec_with_docker_group()
     argv = sys.argv[1:] if argv is None else argv
@@ -2425,12 +2620,19 @@ def main(argv: list[str] | None = None) -> int:
     opp.add_argument("--json", action="store_true"); opp.add_argument("--dry-run", action="store_true")
     tr = sub.add_parser("troubleshooter", help="install/update the native Troubleshooter (/troubleshoot/) for this box")
     tr.add_argument("--json", action="store_true"); tr.add_argument("--dry-run", action="store_true")
+    trg = tr.add_mutually_exclusive_group()
+    trg.add_argument("--report-only", dest="guardian", action="store_false", default=None,
+                     help="the guardian only reports what it would fix (saved; kept across updates)")
+    trg.add_argument("--act", dest="guardian", action="store_true", default=None,
+                     help="the guardian repairs broken links by itself (the default)")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    al.add_argument("--refresh-mounts", action="store_true",
+                    help="remount Hermes's session files in the Agent Service if Hermes replaced them (the timer)")
     dk = sub.add_parser("disk", help="disk encryption: status (read-only: encrypted, sealed to the security chip, "
                                      "recovery key); reseal (sudo, at the box, after a deliberate firmware or Secure "
                                      "Boot change). wizard-os spec/DISK_ENCRYPTION.md")
@@ -2454,7 +2656,7 @@ def main(argv: list[str] | None = None) -> int:
     aug.add_argument("--apply", nargs="*", metavar="APP", help="update now (all due apps, or only these)")
     aug.add_argument("--apply-if-auto", action="store_true", help="the nightly timer")
     fsw = sub.add_parser("feature-switches", help="new-feature switches for this box (For testers only); the same state "
-                                                  "as Settings and the Wizard OS Tracker")
+                                                  "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
     fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
@@ -2619,15 +2821,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else standard.describe(res))
             return 1 if res["custom"] else 0
         elif args.cmd == "doctor":
-            c.api_token()
+            from .bundle_delegate import in_agent_container
+            if not in_agent_container():   # the agent's container has no box API token to create
+                c.api_token()
             res = doctor(c, fix=args.fix)
             for n, ok, det in res:
-                print(f"{'PASS' if ok else 'FAIL'}  {n}  {det}")
-            return 0 if all(ok for _, ok, _ in res) else 1
+                print(f"{'N/A ' if ok is None else 'PASS' if ok else 'FAIL'}  {n}  {det}")
+            return 0 if all(ok is not False for _, ok, _ in res) else 1
         elif args.cmd == "store-data":
             res = store_data_cmd(c, apply=not args.dry_run)
             print(json.dumps(res, indent=2))
             return 0 if res.get("state") in ("ready", "skipped") else 1
+        elif args.cmd == "alongside" and args.refresh_mounts:
+            res = refresh_session_mounts(c)
+            print(json.dumps(res))
+            return 1 if res.get("state") == "error" else 0
         elif args.cmd == "alongside":
             res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history,
                                 args.share_sessions)
@@ -2636,7 +2844,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if res["found"] else 3
         elif args.cmd == "troubleshooter":
             from . import troubleshooter
-            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run)
+            res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
         elif args.cmd == "owner-edge":

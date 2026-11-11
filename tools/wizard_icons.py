@@ -5,7 +5,7 @@
 
 Writes OUT_DIR/<name>-<size>.png at 1024, 512, 192, 180, 96, 48, 32, 16 for:
   oscar     Oscar (personal Wizard App)   violet -> pink, wizard hat
-  wizardos  Wizard OS (James's Wizard UX) cyan -> violet, sparkle
+  wizardos  WizardOS (James's Wizard UX) cyan -> violet, sparkle
   wam       Wizard App Manager            mint -> blue, app graph (three linked nodes)
 Every icon is full-bleed with the orb inside the 80% maskable safe zone, so one image serves
 "any", "maskable" and apple-touch.
@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageFilter
 S = 1024
 BG = np.array([5, 3, 12], dtype=np.float32)
 
-# Oscar matches the Wizard App's own black-and-white look; Wizard OS and the App Manager share Wizard UX purple.
+# Oscar matches the Wizard App's own black-and-white look; WizardOS and the App Manager share Wizard UX purple.
 PALETTES = {
     "oscar": ((236, 236, 242), (120, 120, 134)),
     "wizardos": ((143, 99, 255), (255, 92, 207)),
