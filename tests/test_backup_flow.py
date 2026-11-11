@@ -582,3 +582,12 @@ def test_agent_zip_without_per_machine_entries_is_left_as_hermes_wrote_it(tmp_pa
     drop = capture.agentlib.export_drop(src)
     bundle.zip_rewrite(src, tmp_path / "b.zip", drop, stored=False)
     assert zipfile.ZipFile(tmp_path / "b.zip").namelist() == [".hermes/config.yaml", ".hermes/memories/MEMORY.md"]
+
+
+def test_agent_estimate_counts_sqlite_wal_pages(tmp_path):
+    """A -wal file is not archived, but Hermes' SQLite backup folds its pages into the archived database."""
+    (tmp_path / "state.db").write_bytes(b"d" * 10)
+    (tmp_path / "state.db-wal").write_bytes(b"w" * 1000)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs/x-wal").write_bytes(b"l" * 5)          # inside a per-machine folder: still left out
+    assert capture._du(tmp_path, capture._agent_skip) == 1010

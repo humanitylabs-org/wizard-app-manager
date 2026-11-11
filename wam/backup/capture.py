@@ -188,7 +188,9 @@ def _du(path: Path, skip=None) -> int:
 
 
 def _agent_skip(rel: str, is_dir: bool) -> bool:
-    return agentlib.keep_in_place(rel)  # per-machine entries (cache/, logs/, ...): dropped from the agent zip below
+    # per-machine entries (cache/, logs/, ...): dropped from the agent zip below. A SQLite -wal file is never archived
+    # either, but its pages are: Hermes snapshots each database with the SQLite backup API, so it is counted.
+    return agentlib.keep_in_place(rel) and (is_dir or not rel.endswith("-wal"))
 
 
 # What stock `hermes backup` itself never archives (hermes_cli/backup.py: _EXCLUDED_DIRS anywhere, the code checkout
