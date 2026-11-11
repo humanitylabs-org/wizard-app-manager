@@ -107,7 +107,7 @@ def declared(home=None) -> list[dict]:
         view = a.get("view") or {}
         local = str(view.get("local") or "")
         prefix = str(view.get("url") or "")
-        if not path or not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}/?", local):
+        if not path or not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}(/[a-z0-9][a-z0-9-]{0,62})?/?", local):
             continue
         out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80], "path": path, "local": local.rstrip("/"),
                     "prefix": prefix.rstrip("/") if re.fullmatch(r"/[a-z0-9][a-z0-9-]{0,62}/?", prefix) else ""})
