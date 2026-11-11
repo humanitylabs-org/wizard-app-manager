@@ -481,3 +481,35 @@ def test_restore_never_presents_a_data_less_app_as_restored(world, monkeypatch):
     fresh = restore.plan(world["new"].box(), m)         # not installed: installed empty, and the plan says so
     assert "notes-app" in fresh["install"]
     assert any("notes-app: the backup has no data for it; it is installed empty" in w for w in fresh["warnings"])
+
+
+def test_export_survives_an_unreadable_folder_in_an_agent_cache(world, monkeypatch):
+    """A container-owned folder under an agent's cache/ (never captured) must not abort the backup's size estimate."""
+    import os
+    locked = world["old"].home / "agents/research/home/cache/scratch/tmp.x/data"
+    locked.mkdir(parents=True)
+    (locked / "big.bin").write_bytes(b"x" * 10)
+    real = os.listdir
+
+    def listdir(path="."):
+        if str(path) == str(locked):
+            raise PermissionError(13, "simulated container-owned folder", str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    out, res = _export(world)
+    assert res["ok"] and out.is_file()
+
+
+def test_size_estimate_skips_unreadable_folders_only_when_asked(tmp_path, monkeypatch):
+    import os
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok/a").write_bytes(b"abc")
+    (tmp_path / "locked").mkdir()
+    real = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda p=".": (_ for _ in ()).throw(PermissionError(13, "denied", str(p)))
+                        if str(p).endswith("/locked") else real(p))
+    assert bundle.tree_size(tmp_path, skip_denied=True) == {"count": 1, "bytes": 3}
+    with pytest.raises(PermissionError):
+        bundle.tree_size(tmp_path)
+    assert capture._du(tmp_path) == 3
