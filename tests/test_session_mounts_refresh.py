@@ -63,6 +63,17 @@ def test_hermes_restart_remounts_and_restarts_the_agent_service(box):
     assert cli.refresh_session_mounts(c)["state"] == "fresh" and restarts == ["wizard-agent-service"]   # once
 
 
+def test_a_failed_restart_is_retried(box, monkeypatch):
+    """The App Manager was down: the container still holds the old files, so the next run must try again."""
+    c, hh, ovr, restarts = box
+    before = ovr.read_text()
+    _hermes_restart(hh)
+    monkeypatch.setattr(cli, "recreate_apps", lambda c, r, ids: {i: "error: App Manager not reachable" for i in ids})
+    assert cli.refresh_session_mounts(c)["state"] == "error"
+    assert ovr.read_text() == before and session_mounts.plan(before, str(hh))["state"] == "stale"
+    assert cli.main(["alongside", "--refresh-mounts"]) == 1
+
+
 def test_waits_while_hermes_has_its_wal_files_removed(box):
     """Between close and reopen -wal/-shm are missing: a restart then would make Docker create a directory in the
     Hermes home (or fail), so nothing happens until they are back."""

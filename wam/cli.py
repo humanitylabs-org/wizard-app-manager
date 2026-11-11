@@ -1164,7 +1164,12 @@ def refresh_session_mounts(c: Config) -> dict:
     except (RuntipiError, OSError) as e:
         res = f"error: {str(e)[:160]}"
     out["restart"] = res
-    out["state"] = "refreshed" if res == "recreated" else "error" if res.startswith("error") else "rewritten"
+    if res.startswith("error"):
+        # The container still holds the old files: put the old stamp back so the next run retries.
+        ovr.write_text(text)
+        out["state"] = "error"
+    else:   # recreated, or stopped (its next start mounts the live files)
+        out["state"] = "refreshed" if res == "recreated" else "rewritten"
     return out
 
 
