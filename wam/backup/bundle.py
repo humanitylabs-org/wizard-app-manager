@@ -173,14 +173,22 @@ class BundleWriter:
         return body
 
 
-def zip_stored(src: Path, dst: Path) -> int:
+def zip_stored(src: Path, dst: Path, drop=None) -> int:
     """Rewrite a zip with every member stored (uncompressed), same names, dates and modes: a stock `hermes backup`
     archive becomes dedupe-friendly for restic and still imports with stock `hermes import`. Returns dst's size."""
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED, allowZip64=True) as zout:
+    return zip_rewrite(src, dst, drop, stored=True)
+
+
+def zip_rewrite(src: Path, dst: Path, drop=None, *, stored: bool) -> int:
+    """Copy a zip member by member, same names, dates and modes, leaving out members drop(name) is true for.
+    stored=True writes every member uncompressed, else deflated. Returns dst's size."""
+    method = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", method, allowZip64=True) as zout:
         for info in zin.infolist():
+            if drop and drop(info.filename):
+                continue
             ni = zipfile.ZipInfo(info.filename, info.date_time)
-            ni.external_attr, ni.create_system, ni.compress_type = info.external_attr, info.create_system, \
-                zipfile.ZIP_STORED
+            ni.external_attr, ni.create_system, ni.compress_type = info.external_attr, info.create_system, method
             if info.is_dir():
                 zout.writestr(ni, b"")
                 continue

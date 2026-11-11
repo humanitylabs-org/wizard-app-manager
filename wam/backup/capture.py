@@ -188,7 +188,24 @@ def _du(path: Path, skip=None) -> int:
 
 
 def _agent_skip(rel: str, is_dir: bool) -> bool:
-    return agentlib.keep_in_place(rel)  # per-machine entries (cache/, logs/, ...) are never captured
+    return agentlib.keep_in_place(rel)  # per-machine entries (cache/, logs/, ...): dropped from the agent zip below
+
+
+# What stock `hermes backup` itself never archives (hermes_cli/backup.py: _EXCLUDED_DIRS anywhere, the code checkout
+# at the top, and cache/ but for the media and citation folders). Only to bound the size of the zip it writes before
+# the per-machine entries are dropped from it; leaving out less than Hermes does only makes the bound safer.
+_HERMES_SKIP_DIRS = {"node_modules", ".venv", "venv", "site-packages", "__pycache__", ".git", "backups",
+                     "state-snapshots", "checkpoints", ".cache"}
+_HERMES_CACHE_KEPT = {"images", "audio", "videos", "documents", "screenshots", "citations", "generated"}
+
+
+def _hermes_skip(rel: str, is_dir: bool) -> bool:
+    if not is_dir:
+        return False
+    if rel == "hermes-agent" or rel.rsplit("/", 1)[-1] in _HERMES_SKIP_DIRS:
+        return True
+    parts = rel.split("/")
+    return len(parts) == 2 and parts[0] == "cache" and parts[1] not in _HERMES_CACHE_KEPT
 
 
 @datafs.with_access
@@ -230,14 +247,16 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
     home_size = bundle.tree_size(box.home, skip_home_entry)
     est = files_size["bytes"] + home_size["bytes"]
-    agents_bytes = sum(_du(a.home, _agent_skip) for a in agents)
+    agents_bytes = sum(_du(a.home, _agent_skip) for a in agents)       # what the backup keeps of each agent
+    agents_raw = sum(_du(a.home, _hermes_skip) for a in agents)          # the zip `hermes backup` writes first
     app_sizes = [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
                  + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
                  for urn, info in installed.items() if urn not in agent_urns]
     est += agents_bytes + sum(app_sizes)
-    # the work folder holds every agent's zip (twice for a stream: snapshot + stored rewrite) and ONE app archive at
-    # a time; the output and the work folder may share a disk, so the needs are added per filesystem
-    work_need = (2 if plain_stream is not None else 1) * agents_bytes + max(app_sizes, default=0) + MARGIN
+    # the work folder holds every agent's kept zip, plus, while one is rewritten, the zip `hermes backup` wrote (it
+    # also holds per-machine entries such as logs/), and ONE app archive at a time; the output and the work folder
+    # may share a disk, so the needs are added per filesystem
+    work_need = agents_bytes + agents_raw + max(app_sizes, default=0) + MARGIN
     if plain_stream is None:
         need_spaces(box, [(out.parent, est + MARGIN, "the backup file"), (box.work_dir(), work_need, "the work folder")])
     else:
@@ -258,12 +277,16 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             except HermesError as e:
                 raise ExportError(f"agent {a.id}: {e}") from None
             temps.append(z)
-            if plain_stream is not None:
-                stored = work / f"agent-{a.id}-stored.zip"
-                bundle.zip_stored(z, stored)
-                temps.append(stored)
+            # stock Hermes also archives per-machine entries (logs/, bin/, *.lock, ...); the size check counted the
+            # agent without them and an import leaves them out, so the backup never carries them. A stream gets
+            # every member stored (dedupe-friendly), in the same pass.
+            drop = agentlib.export_drop(z)
+            if plain_stream is not None or drop:
+                kept = work / f"agent-{a.id}-kept.zip"
+                bundle.zip_rewrite(z, kept, drop, stored=plain_stream is not None)
+                temps.append(kept)
                 z.unlink()
-                z = stored
+                z = kept
             agent_zips[a.id] = z
             agent_rows.append({**a.describe(), "bytes": z.stat().st_size, "active": agentlib.active_from_zip(z)})
 
