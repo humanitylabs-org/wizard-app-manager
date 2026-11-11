@@ -299,6 +299,10 @@ def check_app(root, proposal=False):
                          'detail': 'a value containing ": " is read as quoted text; `wam package-inline <source>` writes the quotes'})
         doc = wizardmd.front_matter(text)
         rows += confinement_rows(root, doc)
+        if 'switches' not in doc:   # wizard-os docs/APP_SWITCHES.md: every app ships the contract, even with no switches
+            rows.append({'rule': 'switches: Try it contract declared (wizard.app-switches/1)', 'ok': False, 'severity': 'warning',
+                         'detail': 'add `switches: {contract: wizard.app-switches/1, path: /api/switches}` to wizard.md and serve '
+                                   'GET/POST /api/switches (an empty list is fine); see templates/hello-wizard app/server.py'})
         rows += app_standard.id_rows(doc)
         if proposal:
             rows += app_standard.check(root, doc)
@@ -579,7 +583,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd', required=True)
     n = sub.add_parser('new'); n.add_argument('id'); n.add_argument('--request', default=''); n.add_argument('--name'); n.add_argument('--dev-root', type=Path)
     n.add_argument('--kind', choices=sorted(KINDS), default='hello', help='Start from the closest kind: list (groups, items, done/undo) or hello (the minimal reference).')
-    c = sub.add_parser('check'); c.add_argument('source', type=Path); c.add_argument('--proposal', action='store_true')
+    c = sub.add_parser('check'); c.add_argument('source', type=Path, nargs='?'); c.add_argument('--proposal', action='store_true')
+    c.add_argument('--installed', action='store_true', help='Warn about installed apps that serve no Try it switch endpoint (wizard.app-switches/1).')
     i = sub.add_parser('install-local'); i.add_argument('source', type=Path); i.add_argument('--stage-only', action='store_true'); i.add_argument('--run', action='store_true'); i.add_argument('--port', type=int, default=18799); i.add_argument('--trust-origin', action='append', default=[], help='Extra exact origin allowed to call the app, e.g. a private preview proxy.')
     p = sub.add_parser('publish'); p.add_argument('source', type=Path); p.add_argument('--repo', required=True); p.add_argument('--output', type=Path); p.add_argument('--execute', action='store_true')
     up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
@@ -589,6 +594,15 @@ def main(argv=None):
     try:
         if a.cmd == 'new':
             out = {'source': str(new_app(a.id, a.dev_root, a.request, name=a.name, kind=a.kind)), 'state': 'local_draft'}
+        elif a.cmd == 'check' and (a.installed or a.source is None):
+            if a.source is not None:
+                raise ValueError('wam check --installed takes no source')
+            from . import app_switches
+            gaps = app_switches.missing()
+            out = {'ok': True, 'installed': 'switches', 'warnings': [
+                {'rule': f"switches: {g['id']} serves the Try it contract", 'ok': False, 'severity': 'warning',
+                 'detail': f"{g['name']} {g['version']}: {g['why']}; update it to a release with wizard.app-switches/1"} for g in gaps]}
+            print(json.dumps(out, indent=2)); return 0
         elif a.cmd == 'check':
             out = check_app(a.source, a.proposal)
             print(json.dumps(out, indent=2)); return 0 if out['ok'] else 1

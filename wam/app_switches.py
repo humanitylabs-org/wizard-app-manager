@@ -114,6 +114,34 @@ def declared(home=None) -> list[dict]:
     return out
 
 
+def missing(home=None) -> list[dict]:
+    """Installed apps with a page that declare no switch endpoint (Miguel, 11 Nov 2026: every Wizard app ships
+    wizard.app-switches/1, even with an empty list). `wam check --installed` and `wam doctor` warn about them."""
+    h = _home(home)
+    try:
+        reg = json.loads((h / "apps.json").read_text())
+    except (OSError, ValueError):
+        return []
+    root = _runtipi_root(h)
+    have = {a["id"] for a in declared(h)}
+    out = []
+    for a in reg.get("apps") or []:
+        if not isinstance(a, dict) or not APP_ID.fullmatch(str(a.get("id") or "")) or a["id"] in have:
+            continue
+        view = a.get("view") or {}
+        if not view.get("url") and not view.get("local"):
+            continue   # no page, nothing for Try it to reach
+        store = (str(a.get("urn") or "").split(":", 1) + ["wizardapps"])[1] or "wizardapps"
+        if not APP_ID.fullmatch(store):
+            store = "wizardapps"
+        doc = _wizard_md(root, store, a["id"])
+        why = "wizard.md has no `switches:`" if not parse(doc.get("switches")) and not parse(a.get("switches")) \
+            else "no loopback view to call"
+        out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80], "version": str(doc.get("version") or a.get("version") or ""),
+                    "why": why})
+    return out
+
+
 def proof_key(home: Path, app_id: str) -> bytes | None:
     """The app's owner-proof key: the platform edge key, else a box's adopted hand-built one."""
     from . import owner_proof
