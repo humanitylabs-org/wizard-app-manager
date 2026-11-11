@@ -452,20 +452,45 @@ class HermesRunner:
         return p.stdout
 
     # ---- container agents
+    def compose_projects(self, agent: Agent) -> list[str]:
+        """Compose projects that may run this agent: Runtipi's `<app>_<store>`, then the restricted-agent runtime's
+        bare `<app>` (~/.wizard-os/agent-runtime/restricted-agent names its project after the app id alone)."""
+        urn = agent.urn or ""
+        out = [urn.replace(":", "_")]
+        app_id = urn.split(":", 1)[0]
+        if app_id and app_id not in out:
+            out.append(app_id)
+        return out
+
+    @staticmethod
+    def _same_path(a, b) -> bool:
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except (OSError, RuntimeError, TypeError):
+            return False
+
     def image(self, agent: Agent) -> str:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
-        (Runtipi's stop is `compose down`, so a stopped app has no container)."""
-        project = (agent.urn or "").replace(":", "_")
-        ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
-        if ids:
+        (Runtipi's stop is `compose down`, so a stopped app has no container). A container found under the bare
+        restricted-agent project name only counts when it mounts this agent's own home at /opt/data."""
+        any_ids = False
+        for n, project in enumerate(self.compose_projects(agent)):
+            ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter",
+                             f"label=com.docker.compose.project={project}"]).split()
+            if not ids:
+                continue
+            any_ids = True
             info = json.loads(self._run([*docker(self.box.child_env), "inspect", *ids]) or "[]")
             for c in info:
-                if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
-                    return c["Config"]["Image"]
+                for m in c.get("Mounts") or []:
+                    if m.get("Destination") != "/opt/data":
+                        continue
+                    if n == 0 or self._same_path(m.get("Source"), agent.home):
+                        return c["Config"]["Image"]
         img = self.compose_image(agent)
         if img:
             return img
-        if not ids:
+        if not any_ids:
             raise HermesError(f"the agent app {agent.urn} has no container and no compose file on this box")
         raise HermesError(f"no container of {agent.urn} mounts an agent home at /opt/data")
 
