@@ -481,3 +481,113 @@ def test_restore_never_presents_a_data_less_app_as_restored(world, monkeypatch):
     fresh = restore.plan(world["new"].box(), m)         # not installed: installed empty, and the plan says so
     assert "notes-app" in fresh["install"]
     assert any("notes-app: the backup has no data for it; it is installed empty" in w for w in fresh["warnings"])
+
+
+def test_export_survives_an_unreadable_folder_in_an_agent_cache(world, monkeypatch):
+    """A container-owned folder under an agent's cache/ (never captured) must not abort the backup's size estimate."""
+    import os
+    locked = world["old"].home / "agents" / "research" / "home" / "cache" / "scratch" / "tmp.x" / "data"
+    locked.mkdir(parents=True)
+    (locked / "big.bin").write_bytes(b"x" * 10)
+    real = os.listdir
+
+    def listdir(path="."):
+        if str(path) == str(locked):
+            raise PermissionError(13, "simulated container-owned folder", str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    out, res = _export(world)
+    assert res["ok"] and out.is_file()
+
+
+def test_size_estimate_skips_unreadable_folders_only_when_asked(tmp_path, monkeypatch):
+    import os
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok/a").write_bytes(b"abc")
+    (tmp_path / "locked").mkdir()
+    real = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda p=".": (_ for _ in ()).throw(PermissionError(13, "denied", str(p)))
+                        if str(p).endswith("/locked") else real(p))
+    assert bundle.tree_size(tmp_path, skip_denied=True) == {"count": 1, "bytes": 3}
+    with pytest.raises(PermissionError):
+        bundle.tree_size(tmp_path)
+    assert capture._du(tmp_path) == 3
+
+
+def _agent_zip_names(c: dict, agent: str) -> list[str]:
+    return zipfile.ZipFile(io.BytesIO(c[f"agents/{agent}/hermes-backup.zip"])).namelist()
+
+
+def _space_asks(monkeypatch) -> list:
+    asks = []
+    monkeypatch.setattr(capture, "need_spaces", lambda box, rows: asks.extend(rows))
+    monkeypatch.setattr(capture, "need_space", lambda box, path, need, what: asks.append((path, need, what)))
+    return asks
+
+
+def test_agent_zip_carries_only_what_the_size_check_counted(world, monkeypatch):
+    """#621: stock `hermes backup` also archives per-machine entries (logs/, bin/, *.lock); the size check leaves
+    them out, so the backup must too, or a big log can pass the check with less room than the archive needs."""
+    home = world["old"].home / "agents/research/home"
+    (home / "logs/agent.log.1").write_bytes(os.urandom(1 << 20))
+    (home / "gateway.lock").write_text("123")
+    (home / "cache/images").mkdir(parents=True)
+    (home / "cache/images/a.png").write_bytes(b"p" * 100)
+    asks = _space_asks(monkeypatch)
+    out, res = _export(world)
+    assert res["ok"]
+    c = _contents(out, world["key"])
+    for agent in ("hermes", "research"):
+        names = _agent_zip_names(c, agent)
+        assert "config.yaml" in names and "memories/MEMORY.md" in names and "state.db" in names
+        assert "plugins/own-plugin/plugin.py" in names
+        dropped = [n for n in names if capture.agentlib.keep_in_place(n)]
+        assert dropped == [], (agent, dropped)
+    # the estimate counted exactly the members the archive carries
+    rs = zipfile.ZipFile(io.BytesIO(c["agents/research/hermes-backup.zip"]))
+    assert sum(i.file_size for i in rs.infolist()) == capture._du(home, capture._agent_skip)
+    # the work folder budget also covers the zip Hermes wrote first, logs and all
+    work = [need for _p, need, what in asks if what == "the work folder"][0]
+    assert work - capture.MARGIN >= capture._du(home) - capture._du(home / "hermes-agent")
+
+
+def test_scheduled_stream_agent_zip_is_stored_and_filtered(world, monkeypatch):
+    home = world["old"].home / "agents/research/home"
+    (home / "logs/agent.log.1").write_bytes(os.urandom(1 << 20))
+    asks = _space_asks(monkeypatch)
+    stream = io.BytesIO()
+    res = capture.export(world["old"].box(), plain_stream=stream)
+    assert res["ok"]
+    with tarfile.open(fileobj=io.BytesIO(stream.getvalue()), mode="r:") as t:
+        c = {m.name: t.extractfile(m).read() for m in t if m.isreg()}
+    z = zipfile.ZipFile(io.BytesIO(c["agents/research/hermes-backup.zip"]))
+    assert "config.yaml" in z.namelist() and not [n for n in z.namelist() if n.startswith(("logs/", "bin/"))]
+    assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())
+    kept = capture._du(home, capture._agent_skip)
+    work = [need for _p, need, what in asks if what == "the work folder"][0]
+    # stored rewrite (kept) + the zip Hermes wrote (logs included) at the same time
+    assert work - capture.MARGIN >= kept + (1 << 20)
+
+
+def test_agent_zip_without_per_machine_entries_is_left_as_hermes_wrote_it(tmp_path):
+    src = tmp_path / "a.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr(".hermes/config.yaml", "x")
+        z.writestr(".hermes/memories/MEMORY.md", "m")
+    assert capture.agentlib.export_drop(src) is None
+    with zipfile.ZipFile(src, "a") as z:
+        z.writestr(".hermes/logs/agent.log", "l")
+        z.writestr(".hermes/state.db.lock", "")
+    drop = capture.agentlib.export_drop(src)
+    bundle.zip_rewrite(src, tmp_path / "b.zip", drop, stored=False)
+    assert zipfile.ZipFile(tmp_path / "b.zip").namelist() == [".hermes/config.yaml", ".hermes/memories/MEMORY.md"]
+
+
+def test_agent_estimate_counts_sqlite_wal_pages(tmp_path):
+    """A -wal file is not archived, but Hermes' SQLite backup folds its pages into the archived database."""
+    (tmp_path / "state.db").write_bytes(b"d" * 10)
+    (tmp_path / "state.db-wal").write_bytes(b"w" * 1000)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs/x-wal").write_bytes(b"l" * 5)          # inside a per-machine folder: still left out
+    assert capture._du(tmp_path, capture._agent_skip) == 1010
