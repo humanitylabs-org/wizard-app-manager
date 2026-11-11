@@ -391,8 +391,8 @@ class Ops:
     def start_installer(self, version: str, auto: bool) -> bool:
         from .updates import INSTALLER
         env = ("WIZARD_HERMES_PROMOTION= " if auto else "") + f"WIZARD_RELEASE={version} "
-        # pipefail: a failed download must not look like a started installer (`false | bash -s start` exits 0).
-        r = subprocess.run(["bash", "-c", f"set -o pipefail; curl -fsSL --retry 4 --retry-delay 2 {INSTALLER} | {env}bash -s start"], capture_output=True,
+        # Stage before execution: curl retries must never feed a partial script to bash.
+        r = subprocess.run(["bash", "-c", f"t=$(mktemp) || exit 1; trap 'rm -f \"$t\"' EXIT; curl -fsSL --retry 4 --retry-delay 2 {INSTALLER} -o \"$t\" && {env}bash -s start < \"$t\""], capture_output=True,
                            text=True, timeout=600)
         for line in (r.stdout + r.stderr).splitlines():
             self.log(line)

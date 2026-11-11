@@ -121,7 +121,11 @@ def test_apply_uses_the_installer_when_the_release_moves_more(box):
     calls = []
     res = updates.apply(h, rel.as_uri(), lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     assert res["started"] is True and not res.get("quick")
-    assert "aiwizards.com/os.sh | WIZARD_RELEASE=0.9.2 bash -s start" in calls[0][-1]
+    assert calls[0][-1] == (
+        't=$(mktemp) || exit 1; trap \'rm -f "$t"\' EXIT; '
+        'curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh -o "$t" '
+        '&& WIZARD_RELEASE=0.9.2 bash -s start < "$t"'
+    )
 
 
 class FakeOps:
