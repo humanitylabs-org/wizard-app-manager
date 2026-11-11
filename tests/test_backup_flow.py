@@ -486,7 +486,7 @@ def test_restore_never_presents_a_data_less_app_as_restored(world, monkeypatch):
 def test_export_survives_an_unreadable_folder_in_an_agent_cache(world, monkeypatch):
     """A container-owned folder under an agent's cache/ (never captured) must not abort the backup's size estimate."""
     import os
-    locked = world["old"].home / "agents/research/home/cache/scratch/tmp.x/data"
+    locked = world["old"].home / "agents" / "research" / "home" / "cache" / "scratch" / "tmp.x" / "data"
     locked.mkdir(parents=True)
     (locked / "big.bin").write_bytes(b"x" * 10)
     real = os.listdir
