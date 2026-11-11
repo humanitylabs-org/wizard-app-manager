@@ -8,6 +8,7 @@ import pytest
 from wam import host_dashboard as hd
 from wam import mirrors
 from wam import network
+from wam import session_mounts
 from wam import store_install
 
 
@@ -40,3 +41,8 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(hd, "_systemctl", lambda *a: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     monkeypatch.setattr(hd, "disable", lambda unit_dir=None: real_disable(unit_dir or units))
     monkeypatch.setattr(hd, "ensure", lambda *a, unit_dir=None, **k: real_ensure(*a, unit_dir=unit_dir or units, **k))
+    # Same for the --share-sessions remount timer (#577): temp unit folder, no real systemctl.
+    real_timer = session_mounts.ensure_timer
+    monkeypatch.setattr(session_mounts, "_systemctl", lambda *a: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr(session_mounts, "ensure_timer",
+                        lambda home, root, on, unit_dir=None: real_timer(home, root, on, unit_dir or units))

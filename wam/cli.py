@@ -64,7 +64,7 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from . import alongside, index, private, registry, slots, release_pins, update_backups
+from . import alongside, index, private, registry, session_mounts, slots, release_pins, update_backups
 from .runtipi import Runtipi, RuntipiError, read_env
 
 STORE = "wizardapps"
@@ -1072,11 +1072,13 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         apps = sorted(_alongside_apps(c))
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
         removed += [a for a in claude_login_off(c) if a not in removed]
+        session_mounts.ensure_timer(c.home, c.runtipi_root, False)
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,
                 "next": " && ".join(f"wam app update {a}" for a in removed) or "nothing to update"}
     st = alongside.enable(c.home, home, shell_port, share_history, share_sessions)
     out = {k: v for k, v in st.items() if k != "detected"}
     out["detected"] = st["detected"]
+    out["session_mounts_timer"] = session_mounts_timer(c, st)
     try:
         rt = c.runtipi()
         apps = _alongside_apps(c, rt)
@@ -1118,6 +1120,56 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    return out
+
+
+def _shares_session_files(st: dict | None) -> bool:
+    shell = (st or {}).get("shell") or {}
+    return bool(shell.get("share_sessions")) and not shell.get("share_history")
+
+
+def session_mounts_timer(c: Config, st: dict) -> str:
+    """The every-minute remount timer runs only while --share-sessions file mounts are in use (#577)."""
+    return session_mounts.ensure_timer(c.home, c.runtipi_root, _shares_session_files(st))
+
+
+def _agent_side(c: Config, st: dict, rt: Runtipi | None = None) -> tuple[str, str]:
+    """(app id, role) of the side that reads Hermes's state.db: the Agent Service after the split, else the bundle."""
+    apps = _alongside_apps(c, rt)
+    active = bool((st.get("service") or {}).get("active"))
+    want = "service" if active else "bundle"
+    app_id = next((x for x, r in apps.items() if r == want),
+                  "wizard-agent-service" if active else alongside.LEGACY_BUNDLE)
+    return app_id, apps.get(app_id) or want
+
+
+def refresh_session_mounts(c: Config) -> dict:
+    """`wam alongside --refresh-mounts` (the timer): when Hermes replaced state.db-wal/-shm since the Agent Service's
+    file mounts were made, and all three files exist again, rewrite its override and restart it so the container
+    reads the live files (#577). Otherwise change nothing."""
+    st = alongside.load(c.home)
+    if not st or not _shares_session_files(st):
+        return {"state": "skipped", "reason": "session files are not shared (wam alongside --share-sessions)"}
+    app_id, role = _agent_side(c, st)
+    ovr = c.runtipi_root / "user-config" / STORE / app_id / "docker-compose.yml"
+    text = ovr.read_text() if ovr.is_file() else ""
+    if 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' not in text:
+        return {"state": "skipped", "app": app_id, "reason": "no session mounts in the override yet"}
+    out = {"app": app_id, **session_mounts.plan(text, st["agent"]["hermes_home"])}
+    if out["state"] != "stale":
+        return out
+    alongside.write_shell_override(c.runtipi_root, STORE, app_id, c.home, role)
+    try:
+        res = recreate_apps(c, c.runtipi(), [app_id])[app_id]
+    except (RuntipiError, OSError) as e:
+        res = f"error: {str(e)[:160]}"
+    out["restart"] = res
+    if res.startswith("error"):
+        # The container still holds the old files: put the old stamp back so the next run retries.
+        ovr.write_text(text)
+        out["state"] = "error"
+    else:   # recreated, or stopped (its next start mounts the live files)
+        out["state"] = "refreshed" if res == "recreated" else "rewritten"
     return out
 
 
@@ -1646,7 +1698,8 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
             stale = alongside.stale_session_mounts(text, a["hermes_home"]) if mounted else []
             out.append(("alongside: session database shared read-only (no credentials)", mounted and db.is_file() and not stale,
                         f"{db} -> /hermes/state.db" if mounted and not stale else
-                        f"Hermes replaced {', '.join(stale)} since the mount: run `wam app update {agent_side}`" if stale else
+                        f"Hermes replaced {', '.join(stale)} since the mount: remounted within a minute by "
+                        f"{session_mounts.UNIT}.timer (now: `wam alongside --refresh-mounts`)" if stale else
                         f"not in the override yet: run `wam alongside` then `wam app update {agent_side}`"))
         else:
             out.append(("alongside: Hermes home not shared with the shell", True,
@@ -2570,6 +2623,8 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--no-share-history", dest="share_history", action="store_false")
     al.add_argument("--share-sessions", dest="share_sessions", action="store_true", default=None)
     al.add_argument("--no-share-sessions", dest="share_sessions", action="store_false")
+    al.add_argument("--refresh-mounts", action="store_true",
+                    help="remount Hermes's session files in the Agent Service if Hermes replaced them (the timer)")
     dk = sub.add_parser("disk", help="disk encryption: status (read-only: encrypted, sealed to the security chip, "
                                      "recovery key); reseal (sudo, at the box, after a deliberate firmware or Secure "
                                      "Boot change). wizard-os spec/DISK_ENCRYPTION.md")
@@ -2769,6 +2824,10 @@ def main(argv: list[str] | None = None) -> int:
             res = store_data_cmd(c, apply=not args.dry_run)
             print(json.dumps(res, indent=2))
             return 0 if res.get("state") in ("ready", "skipped") else 1
+        elif args.cmd == "alongside" and args.refresh_mounts:
+            res = refresh_session_mounts(c)
+            print(json.dumps(res))
+            return 1 if res.get("state") == "error" else 0
         elif args.cmd == "alongside":
             res = alongside_cmd(c, args.detect, args.off, args.hermes_home, args.shell_port, args.share_history,
                                 args.share_sessions)
