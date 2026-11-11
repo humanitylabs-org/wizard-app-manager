@@ -189,7 +189,8 @@ if have is not None and not (isinstance(have, dict) and '/wizard/mcp' in str(hav
 # start. Keep the owner's own options, including their own `lazy` value. The gateway's tools/list carries
 # ttlMs/cacheScope since wizard-agent-service#439, so a cached list expires.
 want = dict(have or {})
-want.update(url=url, headers={'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'})
+hdrs = want.get('headers') if isinstance(want.get('headers'), dict) else {}
+want.update(url=url, headers={**hdrs, 'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'})
 want.setdefault('lazy', True)
 if have != want:
     servers[name] = want

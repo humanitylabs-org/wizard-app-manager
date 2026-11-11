@@ -251,6 +251,23 @@ def test_mcp_entry_is_lazy_and_keeps_owner_options():
                                                        'timeout': 42, 'lazy': True}
     assert w.mcp_entry('http://g/wizard/mcp', {**old, 'lazy': False})['lazy'] is False
     assert 'lazy' not in old
+    kept = w.mcp_entry('http://g/wizard/mcp', {**old, 'headers': {'X-Custom': 'v', 'Authorization': 'x'}})
+    assert kept['headers'] == {'X-Custom': 'v', **auth}
+
+
+def test_unlink_restores_owner_headers(homes, wizard):
+    _, hh = homes
+    w, _ = wizard
+    cfgp = hh / 'config.yaml'
+    cfg = yaml.safe_load(cfgp.read_text())
+    cfg['mcp_servers'] = {'wizard': {'url': 'http://x/wizard/mcp', 'headers': {'X-Custom': 'v'}}}
+    cfgp.write_text(yaml.safe_dump(cfg))
+    original = cfgp.read_bytes()
+    w.cmd_link(ns(hh))
+    headers = yaml.safe_load(cfgp.read_text())['mcp_servers']['wizard']['headers']
+    assert headers['X-Custom'] == 'v' and headers['Authorization'].startswith('Bearer ')
+    w.cmd_unlink(ns(hh))
+    assert cfgp.read_bytes() == original
 
 
 @pytest.mark.parametrize('lazy', [None, False, True])

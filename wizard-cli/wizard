@@ -765,7 +765,9 @@ def mcp_entry(url: str, existing=None) -> dict:
     wizard-agent-service#439, so Hermes' cached schema list expires.
     """
     entry = dict(existing or {})
-    entry.update(url=url, headers={"Authorization": f"Bearer ${{{TOKEN_ENV}}}"})
+    # Keep the owner's other headers, so unlink can still put the entry back as it was.
+    headers = entry.get("headers") if isinstance(entry.get("headers"), dict) else {}
+    entry.update(url=url, headers={**headers, "Authorization": f"Bearer ${{{TOKEN_ENV}}}"})
     entry.setdefault("lazy", True)
     return entry
 
