@@ -182,10 +182,16 @@ if not isinstance(cfg, dict):
 servers = cfg.get('mcp_servers') or {}
 if not isinstance(servers, dict):
     raise SystemExit('mcp_servers is not a mapping; left alone')
-want = {'url': url, 'headers': {'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'}}
 have = servers.get(name)
 if have is not None and not (isinstance(have, dict) and '/wizard/mcp' in str(have.get('url', ''))):
     raise SystemExit("an MCP server called '%s' that is not WizardOS exists; left it alone" % name)
+# Lazy discovery (WAM#591, from #437/#439): Hermes registers the app tools from its schema cache at chat
+# start. Keep the owner's own options, including their own `lazy` value. The gateway's tools/list carries
+# ttlMs/cacheScope since wizard-agent-service#439, so a cached list expires.
+want = dict(have or {})
+hdrs = want.get('headers') if isinstance(want.get('headers'), dict) else {}
+want.update(url=url, headers={**hdrs, 'Authorization': 'Bearer ${WIZARD_MCP_TOKEN}'})
+want.setdefault('lazy', True)
 if have != want:
     servers[name] = want
     cfg['mcp_servers'] = servers
