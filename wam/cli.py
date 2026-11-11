@@ -1721,6 +1721,14 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
                     "every app can reach every other app"))
     except Exception as e:  # noqa: BLE001
         out.append(("app networks readable", False, str(e)[:200]))
+    try:   # wizard-os docs/APP_SWITCHES.md: every installed app serves the Try it switch contract (warning only)
+        from . import app_switches
+        gaps = app_switches.missing(c.home)
+        out.append(("Installed apps serve Try it switches", None if gaps else True,
+                    ("no endpoint: " + ", ".join(g["id"] for g in gaps[:12]) + (" …" if len(gaps) > 12 else "")
+                     + " (wam check --installed)") if gaps else "every app with a page declares wizard.app-switches/1"))
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Installed apps serve Try it switches", None, str(e)[:120]))
     return out
 
 

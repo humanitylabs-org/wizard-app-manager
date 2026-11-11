@@ -62,6 +62,12 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
 6. **Stop rule.** Five failed `wam verify` runs in total ends the loop: stop and report what works, what fails (the
    last receipt) and the one decision or fix needed. Do not build a harness to investigate.
 
+## Every app serves Try it switches (Miguel, 11 Nov 2026)
+Every app ships the switch contract from its first PR (wizard-os `docs/APP_SWITCHES.md`): `switches:` in `wizard.md`
+and owner-only `GET/POST /api/switches`. `wam new` templates already carry it (`SWITCHES = []` in `app/server.py`).
+Every new feature appends a switch (off by default, `issues: ["owner/repo#N"]`) and gates on `switch_on(id)`; keep
+the block when you edit the server. `wam check` warns when it is missing.
+
 ## Chat is the Chats thread (James, 22 Oct 2026)
 Any feature where the owner talks to a model ("Ask AI", "discuss", "assistant") opens the real Chats thread over the
 app with `WizardApp.nav.openThread(sessionId, {reply})`; the app supplies only context and the item → session mapping.
