@@ -173,14 +173,22 @@ class BundleWriter:
         return body
 
 
-def zip_stored(src: Path, dst: Path) -> int:
+def zip_stored(src: Path, dst: Path, drop=None) -> int:
     """Rewrite a zip with every member stored (uncompressed), same names, dates and modes: a stock `hermes backup`
     archive becomes dedupe-friendly for restic and still imports with stock `hermes import`. Returns dst's size."""
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED, allowZip64=True) as zout:
+    return zip_rewrite(src, dst, drop, stored=True)
+
+
+def zip_rewrite(src: Path, dst: Path, drop=None, *, stored: bool) -> int:
+    """Copy a zip member by member, same names, dates and modes, leaving out members drop(name) is true for.
+    stored=True writes every member uncompressed, else deflated. Returns dst's size."""
+    method = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", method, allowZip64=True) as zout:
         for info in zin.infolist():
+            if drop and drop(info.filename):
+                continue
             ni = zipfile.ZipInfo(info.filename, info.date_time)
-            ni.external_attr, ni.create_system, ni.compress_type = info.external_attr, info.create_system, \
-                zipfile.ZIP_STORED
+            ni.external_attr, ni.create_system, ni.compress_type = info.external_attr, info.create_system, method
             if info.is_dir():
                 zout.writestr(ni, b"")
                 continue
@@ -198,13 +206,15 @@ def gzip_file(src: Path, dst: Path) -> None:
         shutil.copyfileobj(s, g, COPY)
 
 
-def tree_size(root: Path, skip=None) -> dict:
-    """Count and bytes of what add_tree would take, without reading file contents."""
+def tree_size(root: Path, skip=None, *, skip_denied: bool = False) -> dict:
+    """Count and bytes of what add_tree would take, without reading file contents.
+
+    skip_denied=True leaves out folders that cannot be listed instead of failing; for size estimates only."""
     count = size = 0
     root = Path(root)
     if not root.is_dir():
         return {"count": 0, "bytes": 0}
-    for dirpath, dirnames, filenames in datafs.walk(root):
+    for dirpath, dirnames, filenames in datafs.walk(root, skip_denied=skip_denied):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(root).as_posix()
         dirnames[:] = [d for d in dirnames if not (dp / d).is_symlink()
@@ -217,6 +227,10 @@ def tree_size(root: Path, skip=None) -> dict:
                 st = datafs.lstat(dp / fn)
             except FileNotFoundError:
                 continue
+            except PermissionError:
+                if skip_denied:
+                    continue
+                raise
             if stat.S_ISREG(st.st_mode):
                 count += 1
                 size += st.st_size
