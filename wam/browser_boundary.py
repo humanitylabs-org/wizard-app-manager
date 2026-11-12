@@ -157,41 +157,32 @@ def _strip(doc: dict) -> dict:
     return doc
 
 
-def check_overlay(path, block: dict | None) -> None:
-    """Raise ValueError when write_overlay would refuse, without writing anything."""
-    from pathlib import Path
-    from .network import load_yaml
-    path = Path(path)
-    if not block or not path.is_file():
-        return
-    doc = load_yaml(path.read_text()) or {}
-    if not isinstance(doc, dict):
-        raise ValueError(f"{path}: expected a compose mapping")
-    doc = _strip(doc)
-    svc = ((doc.get("services") or {}) if isinstance(doc.get("services"), dict) else {}).get(block["service"]) or {}
-    env = svc.get("environment") if isinstance(svc, dict) else None
-    if env is not None and not isinstance(env, dict):
-        raise ValueError(f"{path}: {block['service']}.environment must be a mapping to add the browser boundary")
-    clash = [k for k in block["environment"] if k in (env or {}) and env[k] != block["environment"][k]]
-    if clash:
-        raise ValueError(f"{path}: hand-written {', '.join(clash)} present; remove it first")
-
-
-def write_overlay(path, block: dict | None) -> bool:
-    """Put (or with None remove) the boundary block in one app's user-config override; keep every other line's
-    meaning. Returns True when the file changed. Never touches a file without the block when removing."""
+def render(path, block: dict | None):
+    """What write_overlay would write: (before, after) texts, after None for "remove the file", or None when nothing
+    changes. Raises ValueError for any override it can't safely edit, so callers can check every app first."""
     from pathlib import Path
     from .network import load_yaml, dump_yaml
     path = Path(path)
     before = path.read_text() if path.is_file() else None
     if block is None and (before is None or MARK not in before):
-        return False
-    doc = (load_yaml(before) or {}) if before else {}
+        return None
+    try:
+        doc = (load_yaml(before) or {}) if before else {}
+    except Exception as e:   # noqa: BLE001 - a broken override is refused, never half-edited
+        raise ValueError(f"{path}: not readable compose YAML ({str(e)[:120]})") from e
     if not isinstance(doc, dict):
         raise ValueError(f"{path}: expected a compose mapping")
+    if not isinstance(doc.get("services", {}), dict):
+        raise ValueError(f"{path}: services must be a mapping")
+    mark = doc.get(MARK)
+    if mark is not None and not (isinstance(mark, dict) and isinstance(doc.get("services", {}).get(mark.get("service"), {}), dict)):
+        raise ValueError(f"{path}: the {MARK} block is malformed; fix it by hand")
     doc = _strip(doc)
     if block:
-        svc = doc.setdefault("services", {}).setdefault(block["service"], {})
+        svcs = doc.setdefault("services", {})
+        svc = svcs.setdefault(block["service"], {})
+        if not isinstance(svc, dict):
+            raise ValueError(f"{path}: services.{block['service']} must be a mapping")
         env = svc.get("environment")
         if env is None:
             env = svc["environment"] = {}
@@ -200,8 +191,10 @@ def write_overlay(path, block: dict | None) -> bool:
         clash = [k for k in block["environment"] if k in env and env[k] != block["environment"][k]]
         if clash:
             raise ValueError(f"{path}: hand-written {', '.join(clash)} present; remove it first")
-        env.update(block["environment"])
         vols = svc.setdefault("volumes", [])
+        if not isinstance(vols, list):
+            raise ValueError(f"{path}: {block['service']}.volumes must be a list")
+        env.update(block["environment"])
         vols.extend(v for v in block["volumes"] if v not in vols)
         doc[MARK] = {"service": block["service"], "environment": sorted(block["environment"]),
                      "volumes": list(block["volumes"])}
@@ -212,8 +205,20 @@ def write_overlay(path, block: dict | None) -> bool:
         head.append(line + "\n")
     text = "".join(head) + dump_yaml(doc) if doc else ""
     if text == (before or ""):
+        return None
+    return before, (text if doc else None)
+
+
+def write_overlay(path, block: dict | None) -> bool:
+    """Put (or with None remove) the boundary block in one app's user-config override; keep every other line's
+    meaning. Returns True when the file changed. Never touches a file without the block when removing."""
+    from pathlib import Path
+    path = Path(path)
+    r = render(path, block)
+    if r is None:
         return False
-    if not doc:
+    text = r[1]
+    if text is None:
         path.unlink(missing_ok=True)
         return True
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,7 +266,7 @@ def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = F
     # Every override must accept the block before anything is recorded or written, so a refusal never leaves a
     # half-on box (the App Manager gating while the shell has no token).
     for app_id in app_ids:
-        check_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None)
+        render(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None)
     sp = state_path(home)
     sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     sp.write_text(json.dumps({"on": on}) + "\n")
