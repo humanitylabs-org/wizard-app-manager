@@ -221,9 +221,13 @@ def _sync(reg: dict, home: Path, runtipi_root: Path, files, mint) -> dict:
     files = files or RuntipiFiles(runtipi_root)
     out: dict = {"keys": [], "minted": [], "rows_added": [], "removed": [], "skipped": {}}
     apps = [a for a in (reg or {}).get("apps") or [] if isinstance(a, dict) and a.get("id")]
-    if not any(a["id"] == "wizard-agent-service" and str(a.get("urn", "")).endswith(f":{STORE}") for a in apps):
+    # The gateway is the split Agent Service, or on older boxes the pre-split `wizard-shell` bundle (same order as
+    # `path()`, so the doctor check and the producer always look at one file; Codex on #632).
+    installed = {a["id"] for a in apps if str(a.get("urn", "")).endswith(f":{STORE}")}
+    gateway = next((g for g in AGENT_SERVICE_APPS if g in installed), None)
+    if gateway is None:
         return {**out, "skipped": {"*": "no Agent Service from Wizard Apps installed"}}
-    data = Path(runtipi_root) / "app-data" / STORE / "wizard-agent-service" / "data"
+    data = Path(runtipi_root) / "app-data" / STORE / gateway / "data"
     os_home = data / "wizard-os"
     st = files.stat(os_home)
     if st is None:

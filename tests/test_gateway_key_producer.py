@@ -203,6 +203,24 @@ def test_the_registry_hook_runs_the_producer_with_no_switch(box):
     assert res["keys"] == ["messenger"] and "messenger" in gateway(box)
 
 
+def test_the_pre_split_wizard_shell_gateway_gets_its_keys_too(tmp_path):
+    """Codex on #632: a box still on the pre-split `wizard-shell` bundle uses the same file `path()` and the doctor
+    check look at, so the producer must write it there instead of skipping the box."""
+    home, root = tmp_path / "wizard-os", tmp_path / "runtipi"
+    home.mkdir()
+    os_home = root / "app-data" / "wizardapps" / "wizard-shell" / "data" / "wizard-os"
+    os_home.mkdir(parents=True)
+    files = LocalFiles({str(os_home): (1000, 1000)})
+    box = SimpleNamespace(home=home, runtipi_root=root, files=files)
+    app_file(box, "messenger")
+    r = {"apps": [app("wizard-shell"), app("messenger")]}
+    res = gateway_keys.sync(r, home, root, files=files)
+    assert res["keys"] == ["messenger"]
+    gw = os_home / "grants" / "agent-service.json"
+    assert gateway_keys.path(home, root) == gw and "messenger" in json.loads(gw.read_text())["outgoing"]
+    assert gateway_keys.check(r, home, root)[1] is True
+
+
 def test_no_feature_switch_is_read(monkeypatch):
     import inspect
     from wam import feature_switches
