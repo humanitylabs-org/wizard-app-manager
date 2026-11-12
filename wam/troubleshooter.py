@@ -497,6 +497,11 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         shell_ports = [lay["shell_port"]]
     origins = [f"https://{ts['host']}" + ("" if port == 443 else f":{port}") for port in shell_ports]
     env = environment(lay, ts["host"], origins, owner, home, act)
+    # Browser owner boundary (wizard-os#133): the repair page may not call the Agent Service itself under it, so the
+    # Troubleshooter asks for it, box-local. It reads this file on every call and sends the token only when the file
+    # holds one, so `wam browser-boundary on|off` (which mints or removes it) needs no Troubleshooter restart.
+    from . import browser_boundary
+    env[browser_boundary.TOKEN_FILE] = str(browser_boundary.token_path(wizard_home))
     if not apply:
         return {**res, "env": env, "dry_run": True}
     try:

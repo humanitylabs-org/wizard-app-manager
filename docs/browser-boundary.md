@@ -36,6 +36,11 @@ mode rewrites keep it, and an app installed later gets it). It restarts those ap
 picks the same file up when it next starts (an explicit `WIZARD_BROWSER_BOUNDARY` in its environment always wins).
 `wam browser-boundary off` removes the blocks and the token. `--dry-run` and `--json` work as elsewhere.
 
+The native Troubleshooter (`wam troubleshooter`) gets `WIZARD_SHELL_TOKEN_FILE=<wam home>/browser-boundary/shell-token`
+in its `host.env` whether the box is on or off. It reads the file on every call and sends the token only when the file
+holds one, for its one box-local Agent Service read (the repair page's sign-in recovery card), so `on` and `off` need
+no Troubleshooter restart. It never sets `WIZARD_BROWSER_BOUNDARY` and never hands the token to its page.
+
 Never run `on` before the shell sends the token (wizard-ux, next slice): every Store, Settings and chat call from the
 shell would be refused too. With the box off (the default) there is no token file and no block, so nothing changes.
 

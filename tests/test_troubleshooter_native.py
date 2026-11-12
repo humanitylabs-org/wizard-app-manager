@@ -130,6 +130,11 @@ def test_fresh_box_gets_the_pinned_native_service_wired_to_this_box(tmp_path, st
     assert env["HERMES_CONTAINER"] == "hermes-agent_wizardapps-hermes-agent-engine-1"
     assert env["SHELL_PORT"] == "8444" and env["AGENT_PORT"] == "8798"
     assert env["CHATGPT_AUTH_FILE"].endswith("app-data/wizardapps/hermes-agent/data/auth.json")
+    # Browser owner boundary (wizard-os#133): the Troubleshooter is told where the shell token lives, the same file
+    # `wam browser-boundary on` mints (it reads it per call, so a box with the boundary off just has no file there).
+    from wam import browser_boundary
+    assert env["WIZARD_SHELL_TOKEN_FILE"] == str(browser_boundary.token_path(wh))
+    assert "WIZARD_BROWSER_BOUNDARY" not in env, "the box switch stays the App Manager's; nothing is turned on here"
     # Both owner shell origins are trusted and routed (8806 is a shell alias with the store-install route).
     assert env["WIZARD_PRIVATE_ORIGINS"] == "https://box.tail.ts.net:8444,https://box.tail.ts.net:8806"
     for port in ("8444", "8806"):
