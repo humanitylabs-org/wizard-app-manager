@@ -34,6 +34,7 @@ import calendar
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -48,6 +49,12 @@ SOAK_HOURS = 72               # a release runs on latest this long before it can
 FAST_TRACK_CLASSES = ("fix", "feature")   # DECISIONS #82 + #93 (wizard-os): any release with a passed upgrade test may skip the soak
 GRANDFATHERED_THROUGH = "0.3.25"   # stable when the channels split; every later promotion passes the full gate
 RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases"
+# A box whose host starts its updates (Wizard for Mac: it saves a copy of the VM disk first and puts it back if the
+# update fails). Root-owned and shipped in the host's guest image, so nothing in the box can drop it. On such a box
+# nothing here starts an Automatic update by itself: no 03:30 timer and no update in the nightly maintenance run.
+# The owner's Automatic / Ask me choice and Update now are unchanged; the host reads the choice through
+# `wam updates --apply-if-auto [--check]`.
+HOST_UPDATES = Path("/etc/wizard/updates-by-host")
 INSTALLER = "https://aiwizards.com/os.sh"
 
 
@@ -106,6 +113,12 @@ def mode(home: Path | None = None) -> str:
 def channel(home: Path | None = None) -> str:
     c = _settings(home).get("channel")
     return c if c in CHANNELS else DEFAULT_CHANNEL
+
+
+def receipt_status(home: Path | None = None) -> str | None:
+    """release.json's status: pinned | drift | unpinned | failed…; None without a receipt."""
+    st = _read_status(_home(home) / "release.json") or {}
+    return st.get("status") if isinstance(st.get("status"), str) else None
 
 
 def installed(home: Path | None = None) -> str | None:
@@ -343,6 +356,109 @@ def install_state(home: Path | None = None, boot_path: Path | None = None, stat_
             os.close(fd)
 
 
+def by_host() -> bool:
+    """The host starts this box's Automatic updates (HOST_UPDATES)."""
+    return HOST_UPDATES.exists()
+
+
+# Updates wait only for work they would stop (impact × running work: status `impact`, `waiting_for`, `when_idle`;
+# Update now answers `waiting`; Automatic skips while it would stop something). New, so off by default
+# (AGENTS.md): on a Linux box only with this feature switch on (Settings › Try new features, For testers only).
+# A host-run box (Wizard for Mac, HOST_UPDATES) always has it: its host decides from `waiting_for` before it stops
+# the box for its disk copy, and the marker itself is that rollout's control. Switch off: exactly the old behaviour
+# (Update now starts, Automatic skips only while a chat run is active, no impact probing).
+WAITS_SWITCH = "wizard/os-update-waits"
+
+
+def waits_for_work(home: Path | None = None) -> bool:
+    """Whether updates on this box wait for running work (WAITS_SWITCH). Never raises; an unreadable switch is off."""
+    if by_host():
+        return True
+    try:
+        from . import feature_switches
+        return feature_switches.is_on(WAITS_SWITCH, home) is True
+    except Exception:  # noqa: BLE001 - a switch that can't be read never changes how updates behave
+        return False
+
+
+HOST_REQUEST = "host-update-request.json"
+# Automatic on a host-run box: the host announces the night's update 5 minutes ahead (host_headsup, written by the
+# host through wizard-ctl); "Not tonight" from any of the owner's devices leaves host-update-postpone.json, which the
+# host reads and honours until the next night.
+HOST_HEADSUP = "host-update-headsup.json"
+HOST_POSTPONE = "host-update-postpone.json"
+# The host's progress and result for the update it runs (written by the host through wizard-ctl update-phase), so
+# every device shows the same "Updating WizardOS" and how it ended: {id, phase, target, result, reason, at}.
+HOST_PHASE = "host-update-phase.json"
+HOST_PHASES = ("stopping", "updating", "verifying", "restoring", "done")
+HOST_RESULTS = ("ok", "restored", "failed", "skipped")
+
+
+def host_update(home: Path | None = None) -> dict | None:
+    """The host's last update: in progress (phase) or finished (result). An unfinished one older than 3 hours, or a
+    finished one older than a day, is not news."""
+    doc = _read_status(_home(home) / HOST_PHASE)
+    if not doc or doc.get("phase") not in HOST_PHASES or not isinstance(doc.get("at"), (int, float)) \
+            or not isinstance(doc.get("id"), str) or not isinstance(doc.get("target"), str):
+        return None
+    if doc.get("result") not in (None, *HOST_RESULTS):
+        return None
+    age = time.time() - doc["at"]
+    if age > (86400 if doc["phase"] == "done" else 3 * 3600):
+        return None
+    return {k: doc.get(k) for k in ("id", "phase", "target", "result", "reason", "at")}
+
+
+def host_headsup(home: Path | None = None) -> dict | None:
+    """{"target", "at"}: Automatic installs `target` at epoch `at` unless the owner says Not tonight."""
+    doc = _read_status(_home(home) / HOST_HEADSUP)
+    if not doc or not isinstance(doc.get("at"), (int, float)) or doc["at"] < time.time() - 15 * 60:
+        return None   # a heads-up the host never cleared (it stopped) is not news
+    return doc
+
+
+def postpone_host(home: Path | None = None) -> dict:
+    """Not tonight: the owner's answer to the heads-up. The host skips the rest of tonight."""
+    h = _home(home)
+    doc = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "target": (host_headsup(h) or {}).get("target")}
+    h.mkdir(parents=True, exist_ok=True)
+    tmp = h / (HOST_POSTPONE + ".tmp")
+    tmp.write_text(json.dumps(doc) + "\n")
+    os.replace(tmp, h / HOST_POSTPONE)
+    (h / HOST_HEADSUP).unlink(missing_ok=True)
+    return {**status(h), "postponed": doc, "note": "Not tonight. WizardOS tries again tomorrow night; Install in Settings updates any time."}
+
+
+def host_pending(home: Path | None = None) -> dict | None:
+    """The owner's Update now, waiting for the host to copy the disk and start it (request_host_apply)."""
+    return _read_status(_home(home) / HOST_REQUEST)
+
+
+def when_idle_fn(home):     # request_host_apply's `when_idle` argument shadows when_idle()
+    return when_idle(home)
+
+
+def request_host_apply(home: Path | None = None, base: str | None = None, anyway: bool = False,
+                       when_idle: bool = False) -> dict:
+    """Update now on a host-run box (Settings, from any of the owner's devices): ask the host to start the update
+    after its disk copy instead of starting it here. The host picks the request up within a minute and runs
+    `wam updates --apply`, which consumes it."""
+    st = status(home, base, fresh=True)
+    if st["installing"] or not st["update_available"] or st["unpinned"]:
+        return {**st, "started": False}
+    if st["waiting_for"] and not anyway:
+        if not when_idle:     # the interface names them and offers "Update when they finish" / "Update anyway"
+            return {**st, "started": False, "waiting": True}
+        doc = _when_idle_doc(st["latest"])
+        _write_doc(_home(home) / HOST_REQUEST, doc)
+        return {**st, "started": False, "host_pending": doc, "when_idle": when_idle_fn(home),
+                "note": "WizardOS updates as soon as Wizard has finished."}
+    doc = {"target": st["latest"], "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    _write_doc(_home(home) / HOST_REQUEST, doc)
+    return {**st, "started": False, "host_pending": doc,
+            "note": "Your Mac saves a copy of WizardOS first, then starts the update. Wizard restarts once."}
+
+
 def installing(home: Path | None = None) -> bool:
     """An installer run (e.g. an update just started) is still going; a run cut short by a reboot is not."""
     return install_state(home) == "running"
@@ -403,6 +519,8 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
     if run == "failed":
         reason = (installer.get("failure_reason") or installer.get("message")
                   or f"Installer failed (exit {installer.get('exit_code', 'unknown')}).")
+    quick = _quick_now(home, installer, run) if run == "running" else \
+        bool(newer and not failed and retry is None and _quick(home, want, base))
     return {"mode": mode(home), "chosen": _choice(home) is not None, "channel": chan, "installed": have,
             "latest": want, "stable": stable,
             "update_available": newer or retry is not None, "unpinned": unpinned, "checked": want is not None,
@@ -411,10 +529,166 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "interrupted": run == "interrupted",
             "failed": failed, "failure_reason": reason if failed else None,
             "retry_target": retry, "superseded": superseded,
+            # The host starts Automatic updates (Wizard for Mac, after its disk copy), not this box's own timer.
+            "by_host": by_host(), "host_pending": host_pending(home), "host_headsup": host_headsup(home),
+            # How the last install read back: "pinned" (exactly the release) or "drift" (installed, but something
+            # isn't the release's, e.g. an image that couldn't be pulled). A host that verifies its update needs it.
+            "receipt": receipt_status(home),
+            "host_update": host_update(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
-            "quick": _quick_now(home, installer, run) if run == "running" else
-                     bool(newer and not failed and retry is None and _quick(home, want, base)),
+            "quick": quick,
+            # Updates wait for running work here (WAITS_SWITCH). False: the three keys below stay empty and an
+            # update never answers `waiting`.
+            "waits_for_work": (waits := waits_for_work(home)),
+            # What the next release touches and what applying it here stops (decides what an update waits for).
+            "impact": (imp := _box_impact(impact_of(have, want, base, quick))
+                       if waits and (newer or retry is not None) else None),
+            # What applying it now would cut off: the owner sees these names before Update now / a heads-up.
+            "waiting_for": _waiting_for(home, imp),
+            # "Update when they finish": the waiting request, and whether its 6 hours are up (ask the owner again).
+            "when_idle": when_idle(home) if waits else None,
             "hermes": hermes_update.status(home, base)}
+
+
+def host_backup_stops_box() -> bool:
+    """True while the host's disk copy shuts this box down (every update then stops everything). A host that copies
+    the disk live (freeze + pause, seconds) writes `live-backup` into the marker."""
+    try:
+        return "live-backup" not in HOST_UPDATES.read_text()
+    except OSError:
+        return True
+
+
+def _box_impact(imp: dict | None) -> dict | None:
+    if imp and by_host() and host_backup_stops_box():
+        return {**imp, "interrupts": "os", "note": "the Mac's disk copy restarts WizardOS"}
+    return imp
+
+
+WHEN_IDLE = "update-when-idle.json"
+WHEN_IDLE_SECONDS = 6 * 3600
+WHEN_IDLE_UNIT = "wizard-update-when-idle"
+
+
+def when_idle(home: Path | None = None, now: float | None = None) -> dict | None:
+    """The owner's "Update when they finish" (this box's request, or the host request on a Mac's VM). `asked`: its
+    6 hours are up and the owner hasn't said "stop reminding me", so the interface asks again."""
+    h = _home(home)
+    doc = _read_status(h / WHEN_IDLE)
+    if not doc:
+        req = host_pending(home)
+        doc = req if isinstance(req, dict) and req.get("when_idle") else None
+    if not isinstance(doc, dict):
+        return None
+    now = time.time() if now is None else now
+    try:
+        due = float(doc.get("ask_at") or 0)
+    except (TypeError, ValueError):
+        due = 0
+    return {**doc, "asked": bool(due and now >= due and not doc.get("quiet"))}
+
+
+def _write_doc(path: Path, doc: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc) + "\n")
+    os.replace(tmp, path)
+
+
+def _when_idle_doc(target: str) -> dict:
+    now = time.time()
+    return {"target": target, "when_idle": True, "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "ask_at": now + WHEN_IDLE_SECONDS, "quiet": False}
+
+
+def _run_env(home: Path | None, base: str | None) -> dict:
+    """What a detached `wam updates` run needs to check the same box and release feed as this one."""
+    return {k: v for k, v in (("WIZARD_OS_HOME", str(home) if home else os.environ.get("WIZARD_OS_HOME")),
+                              ("WIZARD_RELEASE_BASE", base or os.environ.get("WIZARD_RELEASE_BASE")),
+                              ("PATH", os.environ.get("PATH"))) if v}
+
+
+def request_when_idle(home: Path | None, target: str, runner=subprocess.run, base: str | None = None) -> dict:
+    """Linux box: remember the request and poll every minute (a transient user timer) until nothing the update
+    would stop is running. The timer's run gets this run's WIZARD_OS_HOME / WIZARD_RELEASE_BASE (as _start_quick)."""
+    doc = _when_idle_doc(target)
+    _write_doc(_home(home) / WHEN_IDLE, doc)
+    wam = shutil.which("wam") or str(Path.home() / ".local/bin/wam")
+    runner(["systemctl", "--user", "stop", f"{WHEN_IDLE_UNIT}.timer", f"{WHEN_IDLE_UNIT}.service"],
+           capture_output=True, text=True, timeout=30)
+    runner(["systemd-run", "--user", "--quiet", f"--unit={WHEN_IDLE_UNIT}", "--on-active=60", "--on-unit-active=60",
+            *(f"--setenv={k}={v}" for k, v in _run_env(home, base).items()),
+            wam, "updates", "--when-idle-tick"], capture_output=True, text=True, timeout=30)
+    return {"when_idle": when_idle(home), "note": "WizardOS updates as soon as Wizard has finished."}
+
+
+def when_idle_answer(home: Path | None, answer: str, runner=subprocess.run) -> dict:
+    """The owner's answer when asked again: "cancel" drops the waiting update (it stays ready in Settings),
+    "quiet" keeps waiting without asking again. ("Update now" is apply(anyway=True).)"""
+    h = _home(home)
+    paths = [h / WHEN_IDLE] + ([h / HOST_REQUEST] if (host_pending(home) or {}).get("when_idle") else [])
+    for path in paths:
+        doc = _read_status(path)
+        if not isinstance(doc, dict):
+            continue
+        if answer == "cancel":
+            path.unlink(missing_ok=True)
+        else:
+            _write_doc(path, {**doc, "quiet": True})
+    if answer == "cancel":
+        _stop_when_idle_timer(runner)
+    return status(home)
+
+
+def _stop_when_idle_timer(runner=subprocess.run) -> None:
+    try:
+        runner(["systemctl", "--user", "stop", f"{WHEN_IDLE_UNIT}.timer"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def when_idle_tick(home: Path | None = None, base: str | None = None, runner=subprocess.run) -> dict:
+    """One poll of a Linux box's "Update when they finish": start the update once nothing it would stop runs."""
+    req = when_idle(home)
+    if req and not waits_for_work(home):   # the switch went off: drop the request, start nothing (stays in Settings)
+        (_home(home) / WHEN_IDLE).unlink(missing_ok=True)
+        req = None
+    if not req:
+        _stop_when_idle_timer(runner)
+        return {"started": False, "note": "no waiting update"}
+    st = status(home, base, fresh=True)
+    if not st["update_available"]:
+        (_home(home) / WHEN_IDLE).unlink(missing_ok=True)
+        _stop_when_idle_timer(runner)
+        return {**st, "started": False}
+    if st["waiting_for"]:
+        return {**st, "started": False, "skipped": "busy"}
+    res = apply(home, base, runner, anyway=True)
+    if res.get("started"):
+        _stop_when_idle_timer(runner)
+    return res
+
+
+def _waiting_for(home: Path | None, imp: dict | None) -> list[dict]:
+    if not imp:
+        return []
+    from . import work
+    try:
+        return work.blocking(work.inventory(home), imp.get("interrupts"))
+    except Exception as e:   # noqa: BLE001 - a broken probe must never read as "nothing running"
+        return [{"kind": "unknown", "name": "Couldn't check what is running", "source": "work",
+                 "stops_at": "hermes", "since": None, "why": str(e)[:200]}]
+
+
+def impact_of(have: str | None, want: str | None, base: str | None, quick: bool = False) -> dict:
+    """update_impact.summary of moving `have` → `want`; a release file that can't be read counts as touching
+    everything up to Hermes (never as nothing)."""
+    from . import quick_update, update_impact
+    a = quick_update.release_doc(have, base) if have else None
+    b = quick_update.release_doc(want, base) if want else None
+    if not a or not b:
+        return {"impact": "hermes", "interrupts": "hermes", "parts": ["?"], "reload": True}
+    return update_impact.summary(a[0], b[0], "quick" if quick else "installer")
 
 
 def _quick(home: Path | None, want: str | None, base: str | None) -> bool:
@@ -458,6 +732,17 @@ def ensure_timer(home: Path | None = None, unit_dir: Path | None = None, systemc
     ud = unit_dir or Path.home() / ".config/systemd/user"
     files = _timer_files(ud, str(Path.home() / ".local/bin/wam"))
     run = _systemctl(systemctl)
+    if by_host():   # the host starts updates; a timer here would update without the host's disk copy
+        if (ud / f"{UNIT}.timer").exists():
+            run("disable", "--now", f"{UNIT}.timer")
+        for p in files:
+            p.unlink(missing_ok=True)
+        run("daemon-reload")
+        out = {"mode": m, "timer": False, "nightly": "host"}
+        if unit_dir is None:
+            from . import app_updates
+            out.update(app_updates.ensure_timer(home, None, systemctl))
+        return out
     if (ud / "wizard-os-maintain.timer").exists():   # the nightly maintenance run applies Automatic (wam/maintain.py)
         if (ud / f"{UNIT}.timer").exists():
             run("disable", "--now", f"{UNIT}.timer")
@@ -502,13 +787,27 @@ def set_channel(new: str, home: Path | None = None) -> dict:
 
 
 def apply(home: Path | None = None, base: str | None = None, runner=subprocess.run, force: bool = False,
-          target: str | None = None) -> dict:
+          target: str | None = None, anyway: bool = False, when_idle: bool = False) -> dict:
     """Start the update now: the installer's own detached, agent-safe rerun. Progress: `os.sh | bash -s status`.
 
     The installer is told the exact release this check found (WIZARD_RELEASE), so a pointer that moves in between
     cannot change what gets installed, and a latest-channel box gets its channel's release. `target` (Automatic)
     names the channel release apply_if_auto checked. `force` is the only way to rerun the installer on an unpinned box (it then
-    moves onto stable pins)."""
+    moves onto stable pins). While something this update would stop is running (status `waiting_for`) it starts only
+    with `anyway`; `when_idle` instead waits for it (request_when_idle).
+
+    The owner's host request and the host's heads-up (HOST_REQUEST, HOST_HEADSUP) are cleared once the update has
+    started or there is nothing left to install, never by a call that starts nothing (pointer unreadable, another
+    install running, waiting for work, a failed start): the request then stays for the next try."""
+    res = _apply(home, base, runner, force, target, anyway, when_idle)
+    if res.get("started") or (res.get("checked") and not res.get("installing") and not res.get("update_available")
+                              and not res.get("error")):
+        for name in (HOST_REQUEST, HOST_HEADSUP):   # the host acted on the owner's request or its own heads-up
+            (_home(home) / name).unlink(missing_ok=True)
+    return res
+
+
+def _apply(home, base, runner, force, target, anyway, when_idle) -> dict:
     st = status(home, base, fresh=True)
     retry = st["retry_target"]
     if target:
@@ -528,6 +827,11 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     if not st["update_available"] and not (st["unpinned"] and force):
         return {**st, "started": False}
     pin = st["latest"] if st["latest"] and VERSION.fullmatch(st["latest"]) else None
+    if st.get("waiting_for") and not (anyway or force):
+        if when_idle and pin:
+            return {**st, "started": False, **request_when_idle(home, pin, runner, base)}
+        return {**st, "started": False, "waiting": True}
+    (_home(home) / WHEN_IDLE).unlink(missing_ok=True)
     if pin and not st["unpinned"] and retry is None and _quick(home, pin, base):
         return {**st, **_start_quick(home, pin, base, runner, auto=bool(target))}
     env = f"WIZARD_RELEASE={pin} " if pin else ""
@@ -547,9 +851,7 @@ def _start_quick(home: Path | None, pin: str, base: str | None, runner, auto: bo
     import shlex
     wam = str(Path.home() / ".local/bin/wam")
     args = [wam, "updates", "--quick-apply", pin] + (["--quick-auto"] if auto else [])
-    env = {k: v for k, v in (("WIZARD_OS_HOME", str(home) if home else os.environ.get("WIZARD_OS_HOME")),
-                              ("WIZARD_RELEASE_BASE", base or os.environ.get("WIZARD_RELEASE_BASE")),
-                              ("PATH", os.environ.get("PATH"))) if v}
+    env = _run_env(home, base)
     sets = " ".join(f"--setenv={k}={shlex.quote(v)}" for k, v in env.items())
     cmd = " ".join(shlex.quote(a) for a in args)
     envs = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
@@ -650,10 +952,18 @@ def auto_target(st: dict, base: str | None = None) -> str | None:
     return latest(base, chan="latest") or st.get("stable")   # the cache status(fresh=True) just filled
 
 
-def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None) -> dict:
+def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subprocess.run, is_busy=None,
+                  check: bool = False, anyway: bool = False) -> dict:
     """The nightly timer: apply only in Automatic, only this box's channel release (stable: a promoted stable
     release; latest: the newest Latest release, #458), never on an unpinned box, and not while the agent is working
-    (skipped; the next nightly window tries again)."""
+    (skipped; the next nightly window tries again).
+
+    `check`: the same decision without starting anything; `due` is True when this call would start the update now.
+    A host that saves a disk copy first (HOST_UPDATES) asks this before it stops the box for that copy.
+    With updates waiting for work (waits_for_work: a host-run box, or WAITS_SWITCH on) it waits only for work this
+    update would stop (status `waiting_for`: impact × what is running); otherwise only while a chat run is active, as
+    before. `anyway`: the host already decided with `check` before its copy (its restart can make resumed work look
+    new)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
     report_failure(home)           # tell the team about a failed run before retrying it (switch-gated, #524)
@@ -683,9 +993,20 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     if (st["channel"] != "latest" or target == stable) and not promoted(target, base):
         return {**st, "started": False, "skipped": "unpromoted",
                 "note": f"stable {target} has no valid promotion record; Automatic waits for a tested release"}
-    if (is_busy or (lambda: busy(service_origin(home))))():
-        return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    res = apply(home, base, runner, target=target)
+    if not st["waits_for_work"]:   # WAITS_SWITCH off: the old rule, skip only while a chat run is active
+        if not anyway and (is_busy or (lambda: busy(service_origin(home))))():
+            return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
+    else:
+        waiting = [] if anyway else (
+            [{"kind": "agent", "name": "A chat reply", "stops_at": "service"}] if is_busy and is_busy() else
+            [] if is_busy else st.get("waiting_for") or [])
+        if waiting:
+            names = ", ".join(w.get("name", "?") for w in waiting[:3]) + (" …" if len(waiting) > 3 else "")
+            return {**st, "started": False, "skipped": "busy", "waiting_for": waiting,
+                    "note": f"Wizard is working ({names}); trying again next window"}
+    if check:
+        return {**st, "started": False, "due": True}
+    res = apply(home, base, runner, target=target, anyway=True)
     if res.get("started") and retrying:
         _auto_retry_mark(home, target)
     return res
