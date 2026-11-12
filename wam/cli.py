@@ -1366,17 +1366,11 @@ def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = No
         return install(c, app_id, given, wait=wait, **kw)
 
 
-CLI_INSTALL_LINKS = "wizard/cli-install-links"   # feature switch (Settings › Try new features), off by default
-
-
-def cli_install_links(c: Config, res: dict, publish=None, switch_on=None) -> dict:
+def cli_install_links(c: Config, res: dict, publish=None) -> dict:
     """After `wam install`, publish links the same way Store install does (store_install._links), so a connected box
-    needs no manual `wam links` (#400). Only when the off-by-default feature switch `wizard/cli-install-links` is on."""
+    needs no manual `wam links` (#400). Always on: a bug fix, no feature switch.
+    Only after a good install, and best effort: a links error never fails the install."""
     if res.get("status") not in ("running", "stopped", "already installed"):
-        return res
-    if switch_on is None:
-        from .feature_switches import is_on as switch_on
-    if not switch_on(CLI_INSTALL_LINKS, c.home):
         return res
     if publish is None:
         from .store_install import _links as publish
