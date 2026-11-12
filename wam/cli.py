@@ -24,6 +24,8 @@ Wizard additions:
                                 (saved, kept across updates); --act turns repairs back on
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
                                 checked and rolled back on failure)
+  wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (switch wizard/graceful-restart):
+                                chats still run past the limit, so wait longer, restart now or call it off
   wam doctor [--fix]            check the whole chain
   wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
                                 access, and a live check of Docker's networks against the declarations
@@ -810,9 +812,19 @@ LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stoppe
 
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
-    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
-    rt = c.runtipi()
+    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53).
+    A restart of the Agent Service waits for its running chats first when `wizard/graceful-restart` is on (#642)."""
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if verb == "restart":
+        from . import graceful_restart
+        if graceful_restart.applies(urn, getattr(c, "home", None), STORE):
+            return graceful_restart.restart(c, urn, lambda: _app_lifecycle(c, verb, app_id, urn, timeout),
+                                            reason="restart")
+    return _app_lifecycle(c, verb, app_id, urn, timeout)
+
+
+def _app_lifecycle(c: "Config", verb: str, app_id: str, urn: str, timeout: int = 300) -> dict:
+    rt = c.runtipi()
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
     getattr(rt, verb)(urn)
@@ -1768,6 +1780,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     FEATURE_SWITCHES = "/api/feature-switches"
+    AGENT_RESTART = "/api/agent-restart"
+
+    def _agent_restart(self, method: str):
+        """GET: the waiting Agent Service restart (wam/graceful_restart, #642). POST {"action": "wait"|"now"|"cancel",
+        "minutes": n}: the owner's answer when chats still run past the wait limit."""
+        from . import graceful_restart as gr     # caller already passed _authorized()
+        if method == "GET":
+            return self._json(200, gr.status(self.cfg.home))
+        b = self._body()
+        try:
+            return self._json(200, gr.choose(str(b.get("action", "")), b.get("minutes"), self.cfg.home))
+        except ValueError as e:
+            return self._json(409 if "no Agent Service restart" in str(e) else 400, {"error": str(e)})
 
     def _authorized(self) -> bool:
         got = self.headers.get("Authorization", "")
@@ -1891,6 +1916,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+        if u.path == self.AGENT_RESTART:         # owner token only
+            return self._agent_restart("GET") if self._authorized() else None
         if u.path == self.FEATURE_SWITCHES:      # owner token only
             return self._feature_switches("GET") if self._authorized() else None
         return self._json(404, {"error": "not found"})
@@ -1901,6 +1928,8 @@ class Handler(BaseHTTPRequestHandler):
         c, path = self.cfg, urlparse(self.path).path
         if path == self.FEATURE_SWITCHES:
             return self._feature_switches("POST")
+        if path == self.AGENT_RESTART:
+            return self._agent_restart("POST")
         try:
             if path == "/api/install":
                 b = self._body()
@@ -2379,6 +2408,18 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
 
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
                settings=None) -> dict:
+    """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
+    running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
+    from . import graceful_restart
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if not graceful_restart.applies(urn, getattr(c, "home", None), STORE):
+        return _app_update(c, app_id, backup, timeout, allow_host_access, settings)
+    return graceful_restart.update(c, urn, lambda: _app_update(c, app_id, backup, timeout, allow_host_access,
+                                                                settings), backup=backup)
+
+
+def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+                settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
 
@@ -2699,6 +2740,10 @@ def main(argv: list[str] | None = None) -> int:
                                                   "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
     fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
+    arp = sub.add_parser("agent-restart", help="a waiting Agent Service restart (switch wizard/graceful-restart): "
+                                               "status, or wait [--minutes N] / now / cancel")
+    arp.add_argument("action", nargs="?", default="status", choices=("status", "wait", "now", "cancel"))
+    arp.add_argument("--minutes", type=int, default=None)
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
     aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
     aug.add_argument("--ensure-timer", action="store_true")
@@ -2732,6 +2777,14 @@ def main(argv: list[str] | None = None) -> int:
             print("phone-sync failed:timer_setup")
             return 1
         print(f"phone-sync {outcome}")
+        return 0
+    if args.cmd == "agent-restart":
+        from . import graceful_restart as gr
+        try:
+            res = gr.status() if args.action == "status" else gr.choose(args.action, args.minutes)
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}, indent=2)); return 1
+        print(json.dumps(res, indent=2))
         return 0
     if args.cmd == "feature-switches":
         from . import feature_switches as fs
