@@ -14,8 +14,8 @@ import pytest
 from wam import browser_boundary as bb, cli, resources, store_install as si
 
 TOKEN = "ab" * 32
-SHELL = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@x.com",
-         "Origin": "https://box.tail1.ts.net:8796", "X-Wizard-Store": "1", "Content-Type": "application/json",
+SHELL = {"Tailscale-User-Login": "owner@x.com",
+         "Origin": "https://box.example.ts.net:8796", "X-Wizard-Store": "1", "Content-Type": "application/json",
          "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "empty"}
 
 # Every route the Store/Settings listener answers (StoreHandler._go). The gate must run before each.
@@ -61,6 +61,9 @@ def test_on_without_a_usable_token_fails_closed(on, monkeypatch, tmp_path):
     assert bb.refusal(good) == bb.REFUSED
     monkeypatch.delenv(bb.TOKEN_FILE)
     assert bb.refusal(good) == bb.REFUSED
+    on.write_bytes(b"\xff" * 64)                   # not text: still a plain refusal, never a crash
+    monkeypatch.setenv(bb.TOKEN_FILE, str(on))
+    assert bb.refusal(good) == bb.REFUSED
 
 
 @pytest.fixture
@@ -72,7 +75,7 @@ def store(monkeypatch, tmp_path):
     monkeypatch.setattr(si, "check_request", lambda *a: None)
     monkeypatch.setattr(si, "start", lambda *a, **k: (299, {"reached": "install"}))
     monkeypatch.setattr(si, "status", lambda a: (299, {"reached": "status"}))
-    (tmp_path / "links.json").write_text(json.dumps({"host": "box.tail1.ts.net"}))
+    (tmp_path / "links.json").write_text(json.dumps({"host": "box.example.ts.net"}))
     for name in HANDLERS:
         monkeypatch.setattr(cli.StoreHandler, name, lambda self, *a, _n=name: self._json(299, {"reached": _n}))
     from wam import disk, main_compare, recommended

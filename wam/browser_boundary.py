@@ -39,7 +39,7 @@ def token(env=None) -> str:
     try:
         with open(env.get(TOKEN_FILE) or "", encoding="utf-8") as f:
             got = f.read().strip()
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         raise BoundaryError(f"{SWITCH}=1 needs a readable {TOKEN_FILE}") from e
     if not _HEX64.fullmatch(got):
         raise BoundaryError("the shell token must be 32 random bytes as lowercase hex")
