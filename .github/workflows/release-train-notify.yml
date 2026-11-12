@@ -44,6 +44,7 @@ jobs:
       - name: WizardOS Builder app token
         id: app
         if: steps.gate.outputs.go == 'true'
+        continue-on-error: true   # no key here: the empty-token guard below passes; the daily sweep still cuts
         uses: actions/create-github-app-token@v1
         with:
           app-id: 5723441
