@@ -2,13 +2,11 @@
 
 The gateway reads its app keys from `<WIZARD_OS_HOME>/grants/agent-service.json` (`{"outgoing": {"<app id>": "<key>"}}`,
 spec/PERMISSIONS.md layer 2) and sends `X-Wizard-Grant`. Without a key the app treats every agent as unknown and its
-tools silently vanish, while Settings still shows the owner's chosen level. Nothing in the App Manager writes that file
-yet (the producer is separate work on #387), so this check only makes the gap visible. Read-only: it never creates,
-changes or prints a key; it reports app ids only.
+tools silently vanish, while Settings still shows the owner's chosen level. The producer below writes that file; this check
+makes any gap left (e.g. an unreadable data folder) visible. Read-only: it never creates,
+changes or prints a key; it reports app ids only. Always on (a bug fix, #387).
 
-Behind the off-by-default feature switch `wizard/doctor-gateway-keys` (Settings › Try new features, For testers).
-
-The producer (`sync`, below) is behind its own off-by-default switch `wizard/gateway-keys`: after every registry write
+The producer (`sync`, below) is always on too (bug lane, no switch; it used to sit behind `wizard/gateway-keys`): after every registry write
 (install, update, uninstall) it gives every installed Wizard Apps app with tools one key, publishes the key's hash to the
 app as a `{"from": "host:agent-service", "sha256": ...}` row in its `wizard/grants.json` `incoming` (the row the App
 Manager backend's reconcile keeps as an unmanaged row), and only then writes the key to the gateway file (0600, owned by
@@ -24,8 +22,6 @@ import re
 import secrets
 from pathlib import Path
 
-SWITCH = "wizard/doctor-gateway-keys"
-PRODUCER_SWITCH = "wizard/gateway-keys"
 NAME = "agent connections: gateway holds a key for every app with tools"
 KEY = re.compile(r"[0-9a-f]{64}")
 READER_KEY = re.compile(r"[A-Za-z0-9_-]{32,256}")      # what the gateway accepts (agent-bridge.mjs GRANT_KEY)
@@ -122,13 +118,7 @@ def check(reg: dict, home: Path | None, runtipi_root: Path | None, rt_read=None)
     return (NAME, True, f"{len(tools)} apps ({p})")
 
 
-# ---------------------------------------------------------------- the producer (#387), switch wizard/gateway-keys
-
-def switch_on(home: Path | None = None) -> bool:
-    """Whether the owner turned the producer on (tests monkeypatch this)."""
-    from .feature_switches import is_on
-    return is_on(PRODUCER_SWITCH, home)
-
+# ---------------------------------------------------------------- the producer (#387), always on
 
 def digest(key: str) -> str:
     """The hash an app stores for a key: lowercase hex SHA-256 of the key's text (same as the backend's reconcile)."""
@@ -324,10 +314,9 @@ def _sync(reg: dict, home: Path, runtipi_root: Path, files, mint) -> dict:
 
 
 def sync_if_on(c, reg: dict, files=None) -> dict | None:
-    """The registry hook: run `sync` when the owner turned `wizard/gateway-keys` on, else do nothing. Never raises."""
+    """The registry hook: run `sync` after every registry write (always on since #387 shipped as a bug fix; the name
+    stays for callers). Never raises."""
     try:
-        if not switch_on(c.home):
-            return None
         return sync(reg, Path(c.home), Path(c.runtipi_root), files=files)
     except Exception as e:  # noqa: BLE001 - a registry write must never fail on this
         return {"error": str(e)[:200]}
