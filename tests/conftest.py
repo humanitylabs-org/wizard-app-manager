@@ -5,6 +5,7 @@
 silently broke the ChatGPT/Tinfoil apps. Default every unit dir to a temp folder and stub systemctl."""
 import pytest
 
+from wam import gateway_keys
 from wam import host_dashboard as hd
 from wam import mirrors
 from wam import network
@@ -46,3 +47,12 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(session_mounts, "_systemctl", lambda *a: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     monkeypatch.setattr(session_mounts, "ensure_timer",
                         lambda home, root, on, unit_dir=None: real_timer(home, root, on, unit_dir or units))
+    # Gateway keys (#387) run after every registry write: never read or write the real runtipi container's files.
+    class _NoRuntipiFiles:
+        def __init__(self, root):
+            pass
+
+        def _no(self, *a, **k):
+            raise RuntimeError("the runtipi container is disabled in unit tests")
+        read = stat = write = _no
+    monkeypatch.setattr(gateway_keys, "RuntipiFiles", _NoRuntipiFiles)

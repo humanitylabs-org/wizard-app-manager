@@ -192,35 +192,44 @@ def test_a_wrong_mode_gateway_file_is_fixed(box):
     assert box.files.writes == [("agent-service.json", 0o600, 1000, 1000)]
 
 
-# ---------------------------------------------------------------- the switch
+# ---------------------------------------------------------------- always on (bug lane, no switch)
 
 
-def test_switch_off_by_default_writes_nothing(box, monkeypatch):
-    monkeypatch.setattr(gateway_keys, "switch_on", lambda *a: False)
-    app_file(box, "messenger")
-    c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
-    assert gateway_keys.sync_if_on(c, reg(app("messenger")), files=box.files) is None
-    assert box.files.writes == [] and not box.gw.exists()
-
-
-def test_switch_on_runs_the_producer(box, monkeypatch):
-    seen = []
-    monkeypatch.setattr(gateway_keys, "switch_on", lambda home: seen.append(home) or True)
+def test_the_registry_hook_runs_the_producer_with_no_switch(box):
+    """#387 ships as a bug fix: no feature switch; the hook always gives the gateway its keys."""
     app_file(box, "messenger")
     c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
     res = gateway_keys.sync_if_on(c, reg(app("messenger")), files=box.files)
-    assert seen == [box.home] and res["keys"] == ["messenger"] and "messenger" in gateway(box)
+    assert res["keys"] == ["messenger"] and "messenger" in gateway(box)
 
 
-def test_the_switch_reads_feature_switch_wizard_gateway_keys(monkeypatch):
+def test_the_pre_split_wizard_shell_gateway_gets_its_keys_too(tmp_path):
+    """Codex on #632: a box still on the pre-split `wizard-shell` bundle uses the same file `path()` and the doctor
+    check look at, so the producer must write it there instead of skipping the box."""
+    home, root = tmp_path / "wizard-os", tmp_path / "runtipi"
+    home.mkdir()
+    os_home = root / "app-data" / "wizardapps" / "wizard-shell" / "data" / "wizard-os"
+    os_home.mkdir(parents=True)
+    files = LocalFiles({str(os_home): (1000, 1000)})
+    box = SimpleNamespace(home=home, runtipi_root=root, files=files)
+    app_file(box, "messenger")
+    r = {"apps": [app("wizard-shell"), app("messenger")]}
+    res = gateway_keys.sync(r, home, root, files=files)
+    assert res["keys"] == ["messenger"]
+    gw = os_home / "grants" / "agent-service.json"
+    assert gateway_keys.path(home, root) == gw and "messenger" in json.loads(gw.read_text())["outgoing"]
+    assert gateway_keys.check(r, home, root)[1] is True
+
+
+def test_no_feature_switch_is_read(monkeypatch):
+    import inspect
     from wam import feature_switches
-    seen = []
-    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None: seen.append(tid) or False)
-    assert gateway_keys.switch_on() is False and seen == ["wizard/gateway-keys"]
+    monkeypatch.setattr(feature_switches, "is_on", lambda *a, **k: (_ for _ in ()).throw(AssertionError("switch read")))
+    src = inspect.getsource(gateway_keys)
+    assert "feature_switches" not in src and "wizard/gateway-keys" not in src.replace("used to sit behind `wizard/gateway-keys`", "")
 
 
 def test_a_failure_never_breaks_the_registry_write(box, monkeypatch):
-    monkeypatch.setattr(gateway_keys, "switch_on", lambda *a: True)
     monkeypatch.setattr(gateway_keys, "sync", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("docker down")))
     c = SimpleNamespace(home=box.home, runtipi_root=box.runtipi_root)
     assert gateway_keys.sync_if_on(c, reg()) == {"error": "docker down"}

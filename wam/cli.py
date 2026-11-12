@@ -185,7 +185,7 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    from . import gateway_keys   # #387: the gateway's grant keys, only with feature switch wizard/gateway-keys on
+    from . import gateway_keys   # #387: the gateway's grant keys (always on)
     gateway_keys.sync_if_on(c, reg)
     # Return the exact owner-route projection we persisted, including staged view IDs.
     # Internal _skill_src remains available for both copy passes, never in API/CLI output.
@@ -1575,14 +1575,9 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
 
 
-def doctor_gateway_keys(c: Config, reg: dict, switch_on=None) -> list[tuple[str, bool, str]]:
-    """#387: flag apps with tools that the Agent Service's gateway holds no grant key for (read-only). Only when the
-    off-by-default feature switch `wizard/doctor-gateway-keys` is on."""
+def doctor_gateway_keys(c: Config, reg: dict) -> list[tuple[str, bool, str]]:
+    """#387: flag apps with tools that the Agent Service's gateway holds no grant key for (read-only, always on)."""
     from . import gateway_keys
-    if switch_on is None:
-        from .feature_switches import is_on as switch_on
-    if not switch_on(gateway_keys.SWITCH, c.home):
-        return []
     row = gateway_keys.check(reg, c.home, c.runtipi_root)
     return [row] if row else []
 
