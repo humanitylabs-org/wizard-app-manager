@@ -26,6 +26,19 @@ With it on:
 - Only the Connections view's own page files (GET `_connections/…` outside `api/`) skip it, because they load as a
   frame and hold no owner data. Its `api/` calls are gated.
 
+## Turning it on for a box: `wam browser-boundary on|off|status`
+
+`wam browser-boundary on` mints the token once (32 random bytes as lowercase hex, `<wam home>/browser-boundary/shell-token`,
+the folder 0700) and hands it read-only to the Agent Service and the shell (wizard-ux, or the pre-split wizard-shell)
+as `/run/wizard-shell/token`, with `WIZARD_BROWSER_BOUNDARY=1` and `WIZARD_SHELL_TOKEN_FILE`, through a block of their
+stock user-config override marked `x-wizard-browser-boundary` (only that block is ever rewritten or removed; alongside
+mode rewrites keep it, and an app installed later gets it). It restarts those apps (`--no-restart` to skip). `wam serve`
+picks the same file up when it next starts (an explicit `WIZARD_BROWSER_BOUNDARY` in its environment always wins).
+`wam browser-boundary off` removes the blocks and the token. `--dry-run` and `--json` work as elsewhere.
+
+Never run `on` before the shell sends the token (wizard-ux, next slice): every Store, Settings and chat call from the
+shell would be refused too. With the box off (the default) there is no token file and no block, so nothing changes.
+
 This is an extra gate: the owner login, tailscaled peer, origin, `X-Wizard-Store` and from-box checks still run first.
 
 Tests: `tests/test_browser_boundary.py` lists every listener route and every published host route and asserts an

@@ -422,6 +422,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
+    if role and not al:   # wizard-os#133: the shell token block, only when the box switched the boundary on
+        from . import browser_boundary as _bb
+        _bb.sync_app(c.home, c.runtipi_root, STORE, app_id)
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
@@ -1171,6 +1174,27 @@ def refresh_session_mounts(c: Config) -> dict:
     else:   # recreated, or stopped (its next start mounts the live files)
         out["state"] = "refreshed" if res == "recreated" else "rewritten"
     return out
+
+
+def browser_boundary_cmd(c: Config, args) -> int:
+    """`wam browser-boundary status|on|off` (wizard-os#133). On mints the shell-only token and hands it to the Agent
+    Service and the shell; off removes both. Do not turn it on before the shell sends the token (wizard-ux): every
+    Store, Settings and chat call would be refused. Turning it on for anyone is Miguel's call (release stop)."""
+    from . import browser_boundary as bb
+    try:
+        rt = c.runtipi()
+    except (RuntipiError, OSError):
+        rt = None
+    ids = sorted(_alongside_apps(c, rt))
+    if args.action == "status":
+        res = bb.status(c.home, c.runtipi_root, STORE, ids)
+    else:
+        res = bb.set_box(c.home, c.runtipi_root, STORE, ids, args.action == "on", dry_run=args.dry_run)
+        if res["changed"] and not args.no_restart and rt is not None:
+            res["restart"] = recreate_apps(c, rt, res["changed"])
+        res["next"] = "restart the App Manager (wam serve) so its own routes follow"
+    print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
+    return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
 
 
 def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
@@ -2618,6 +2642,10 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    bbp = sub.add_parser("browser-boundary", help="shell-only token for owner routes (wizard-os#133; off by default)")
+    bbp.add_argument("action", choices=["status", "on", "off"])
+    bbp.add_argument("--no-restart", action="store_true", help="write the settings only; restart the apps yourself")
+    bbp.add_argument("--json", action="store_true"); bbp.add_argument("--dry-run", action="store_true")
     oe = sub.add_parser("owner-edge", help="serve the owner edge for apps that declare owner_proof (systemd unit)")
     oe.add_argument("action", choices=["serve"])
     opp = sub.add_parser("owner-proof", help="owner proof keys for apps that declare owner_proof (spec OWNER_PROOF.md)")
@@ -2855,6 +2883,8 @@ def main(argv: list[str] | None = None) -> int:
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "browser-boundary":
+            return browser_boundary_cmd(c, args)
         elif args.cmd == "owner-edge":
             from . import owner_edge
             owner_edge.run(c.home)
@@ -2893,7 +2923,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
-            from . import recommended
+            from . import browser_boundary as _bb, recommended
+            if _bb.apply_box_state(c.home):   # wizard-os#133: `wam browser-boundary on` gates this process too
+                print("browser boundary on: owner routes need the shell token", flush=True)
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
