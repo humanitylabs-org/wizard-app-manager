@@ -332,3 +332,33 @@ def test_runtipi_passthrough_cannot_restart_the_service_behind_the_gate(tmp_path
     assert passed == [["app", "update", "--no-backup", "wizard-ux"]]
     monkeypatch.setattr(gr, "switch_on", lambda home=None: False)
     assert cli.main(["app", "update", "--all"]) == 0 and passed[-1] == ["app", "update", "--all"]
+
+
+def test_the_shells_restart_now_on_the_service_restarts_now(tmp_path):
+    answers = iter([(200, {"phase": "overdue"}), (200, {"phase": "overdue", "restart_now": True})])
+
+    def svc(method, url, body=None, timeout=10):
+        return (200, {"phase": "waiting"}) if method == "POST" else next(answers)
+    res, told = run_gate(tmp_path, svc)
+    assert res["state"] == "now" and len(told) == 1
+
+
+def test_the_shells_wait_longer_starts_a_new_overdue_spell(tmp_path):
+    answers = iter([(200, {"phase": "overdue"}), (200, {"phase": "waiting"}), (200, {"phase": "overdue"}),
+                    (200, {"phase": "ready"})])
+
+    def svc(method, url, body=None, timeout=10):
+        return (200, {"phase": "waiting"}) if method == "POST" else next(answers)
+    res, told = run_gate(tmp_path, svc)
+    assert res["state"] == "ready" and len(told) == 2     # told again when the new limit ran out too
+    assert not (tmp_path / gr.STATE).exists()
+
+
+def test_the_shells_wait_longer_resets_the_no_answer_timer(tmp_path):
+    seq = ["overdue"] * 5 + ["waiting"] + ["overdue"] * 5 + ["ready"]
+    answers = iter([(200, {"phase": p}) for p in seq])
+
+    def svc(method, url, body=None, timeout=10):
+        return (200, {"phase": "waiting"}) if method == "POST" else next(answers)
+    res, _ = run_gate(tmp_path, svc, ask_seconds=20)      # 5 polls = 15 s per spell, under the 20 s limit each time
+    assert res["state"] == "ready"

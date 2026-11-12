@@ -10,8 +10,10 @@ gate (wizard-agent-service docs/graceful-restart.md, which needs `WIZARD_GRACEFU
 1. `POST /wizard/v1/restart` holds new sends (saved, launched after the restart) and lets running turns finish;
    `GET` is polled until `phase` is `ready`, then the restart runs. An Agent Service without the gate (404) or one
    that does not answer is restarted as before: there is nothing to wait for.
-2. `overdue` (turns still running past the wait limit): the owner is told what still runs (Notifications app, and
-   `wam agent-restart` / `GET /api/agent-restart`) and chooses `wait` (POST again with a new limit) or `now`.
+2. `overdue` (turns still running past the wait limit): the owner is told what still runs (Notifications app, the
+   shell's restart note, and `wam agent-restart` / `GET /api/agent-restart`) and chooses `wait` (POST again with a
+   new limit) or `now`. The shell sends its Wait longer / Restart now to the service itself (`restart_now: true`, or a
+   new `wait_until` that takes the phase back to `waiting`), and the gate follows it.
    `cancel` calls the restart off. With no answer within ASK_SECONDS the restart is called off: nothing changes,
    so a turn is never cut without the owner's yes.
 3. After the restart `/wizard/health` must answer. For an update that fails it, the backup the update just made is
@@ -162,7 +164,8 @@ def _tell_owner(c, st: dict) -> None:
         from .app_updates import _notify
         _notify(c, "Agent restart waiting",
                 f"The Agent Service wants to restart ({st.get('reason') or 'update'}) but {_describe(st.get('turns'))} "
-                "is still running. Choose: wait longer, restart now, or cancel (`wam agent-restart wait|now|cancel`).")
+                "is still running. Choose Wait longer or Restart now in Wizard's restart note, or on the box "
+                "`wam agent-restart wait|now|cancel`.")
     except Exception:  # noqa: BLE001 - telling the owner never fails the restart
         pass
 
@@ -209,6 +212,11 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
             phase = st.get("phase")
             if phase == "ready" and not st.get("active_unknown"):
                 return {"state": "ready", "origin": origin}
+            if st.get("restart_now") is True:   # the owner chose Restart now in the shell (POST {"now": true})
+                return {"state": "now", "origin": origin}
+            if phase != "overdue" and overdue_at is not None:   # the owner chose Wait longer in the shell
+                overdue_at = None
+                _clear_state(home)
             if phase == "overdue":
                 pick = None
                 if overdue_at is None:   # tell the owner once per overdue spell (never blocks)
