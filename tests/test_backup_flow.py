@@ -570,6 +570,24 @@ def test_scheduled_stream_agent_zip_is_stored_and_filtered(world, monkeypatch):
     assert work - capture.MARGIN >= kept + (1 << 20)
 
 
+def test_work_folder_budget_counts_only_the_largest_raw_agent_zip(world, monkeypatch):
+    """Each raw Hermes zip is trimmed and removed before the next agent's is written, so the work folder needs room
+    for every kept zip plus the largest raw one, not the sum of all raw ones (Codex review on #621)."""
+    old = world["old"]
+    homes = [old.runtipi / "app-data/wizardapps/hermes-agent/data", old.home / "agents/research/home"]
+    for h in homes:
+        (h / "logs").mkdir(exist_ok=True)
+        (h / "logs/agent.log.1").write_bytes(os.urandom(4 << 20))
+    asks = _space_asks(monkeypatch)
+    out, res = _export(world)
+    assert res["ok"]
+    work = [need for _p, need, what in asks if what == "the work folder"][0] - capture.MARGIN
+    kept = sum(capture._du(h, capture._agent_skip) for h in homes)
+    raws = [capture._du(h, capture._hermes_skip) for h in homes]
+    assert work >= kept + max(raws)
+    assert work < kept + sum(raws)
+
+
 def test_agent_zip_without_per_machine_entries_is_left_as_hermes_wrote_it(tmp_path):
     src = tmp_path / "a.zip"
     with zipfile.ZipFile(src, "w") as z:

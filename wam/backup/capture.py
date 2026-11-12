@@ -250,14 +250,15 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     home_size = bundle.tree_size(box.home, skip_home_entry)
     est = files_size["bytes"] + home_size["bytes"]
     agents_bytes = sum(_du(a.home, _agent_skip) for a in agents)       # what the backup keeps of each agent
-    agents_raw = sum(_du(a.home, _hermes_skip) for a in agents)          # the zip `hermes backup` writes first
+    # the zip `hermes backup` writes first: one agent's at a time (rewritten and removed before the next agent)
+    agents_raw = max((_du(a.home, _hermes_skip) for a in agents), default=0)
     app_sizes = [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
                  + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
                  for urn, info in installed.items() if urn not in agent_urns]
     est += agents_bytes + sum(app_sizes)
     # the work folder holds every agent's kept zip, plus, while one is rewritten, the zip `hermes backup` wrote (it
-    # also holds per-machine entries such as logs/), and ONE app archive at a time; the output and the work folder
-    # may share a disk, so the needs are added per filesystem
+    # also holds per-machine entries such as logs/; only the largest counts, they never coexist), and ONE app archive
+    # at a time; the output and the work folder may share a disk, so the needs are added per filesystem
     work_need = agents_bytes + agents_raw + max(app_sizes, default=0) + MARGIN
     if plain_stream is None:
         need_spaces(box, [(out.parent, est + MARGIN, "the backup file"), (box.work_dir(), work_need, "the work folder")])
