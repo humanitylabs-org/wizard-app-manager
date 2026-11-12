@@ -284,6 +284,37 @@ def style_rows(root):
     return rows
 
 
+# wizard-os#133 browser boundary: an app window is a sandboxed frame (an opaque origin), so the browser asks for a
+# module script, or any file marked `crossorigin`, with `Origin: null` and needs a CORS answer. A server that gives
+# none leaves a blank page (Notes, Music and the Recorder's live view did). Classic `<script defer>` files load as before.
+_CORS_PAGE = re.compile(r'''<script\b[^>]*\btype\s*=\s*['"]?module\b|<(?:script|link)\b[^>]*\scrossorigin\b''', re.I)
+_CORS_ANSWER = re.compile(r'access-control-allow-origin', re.I)
+_SERVER_CODE = {'.py', '.mjs', '.cjs', '.js', '.ts', '.go', '.rs', '.rb', '.php', '.conf'}
+
+
+def boundary_rows(root):
+    """A warning when the app's page needs a CORS answer in a sandboxed window and no server code gives one."""
+    root = Path(root)
+    pages = []
+    for p in _own_files(root, {'.html', '.htm'}):
+        if p.relative_to(root).parts[0] in _TEST_DIRS:
+            continue
+        if _CORS_PAGE.search(re.sub(r'<!--.*?-->', '', p.read_text(errors='replace'), flags=re.S)):
+            pages.append(str(p.relative_to(root)))
+    if not pages:
+        return []
+    for p in _own_files(root, _SERVER_CODE):
+        if p.relative_to(root).parts[0] not in _TEST_DIRS and _CORS_ANSWER.search(p.read_text(errors='replace')):
+            return []
+    return [{'rule': 'browser boundary: page files load in a sandboxed window', 'ok': False, 'severity': 'warning',
+             'detail': f"{', '.join(pages[:4])} loads a module script or a `crossorigin` file. In a sandboxed Wizard "
+                       "window (wizard-os#133) the browser asks for it with `Origin: null` and the page stays blank "
+                       "unless the server answers GET/HEAD of the app's own public files (scripts, styles, fonts, "
+                       "pictures; never the page, API or writes) with `Access-Control-Allow-Origin: *` and no "
+                       "credentials. Do that (as wizard-notes and wizard-music do), or load classic `<script defer>` "
+                       "files like templates/hello-wizard."}]
+
+
 def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
@@ -291,6 +322,7 @@ def check_app(root, proposal=False):
     rows += system_functions.check(root)
     rows += kit_rows(root)
     rows += design_rows(root)
+    rows += boundary_rows(root)
     rows += style_rows(root)
     if wizardmd.passed(approved):
         text = (root / 'wizard.md').read_text()
