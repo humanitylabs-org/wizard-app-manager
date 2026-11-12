@@ -14,6 +14,9 @@ gate (wizard-agent-service docs/graceful-restart.md, which needs `WIZARD_GRACEFU
    shell's restart note, and `wam agent-restart` / `GET /api/agent-restart`) and chooses `wait` (POST again with a
    new limit) or `now`. The shell sends its Wait longer / Restart now to the service itself (`restart_now: true`, or a
    new `wait_until` that takes the phase back to `waiting`), and the gate follows it.
+   A hold the service lost (it restarted by itself, the lease ran out, another restarter released it: `GET` answers
+   `holding: false` / `idle`) is taken again with a new `POST`, never waited on for ever; a hold that will not stick
+   (MAX_REHOLDS times, or LOST_SECONDS) calls the restart off.
    `cancel` calls the restart off. With no answer within ASK_SECONDS the restart is called off: nothing changes,
    so a turn is never cut without the owner's yes.
 3. After the restart `/wizard/health` must answer. For an update that fails it, the backup the update just made is
@@ -43,6 +46,7 @@ POLL_S = 3                   # well inside the service's 2-minute hold lease
 ASK_SECONDS = int(os.environ.get("WAM_GRACEFUL_RESTART_ASK_S") or 1800)
 HEALTH_SECONDS = 180
 LOST_SECONDS = 60            # polls that fail this long after the hold was taken call the restart off
+MAX_REHOLDS = 5              # a hold the service keeps dropping (crash loop, a racing restarter) calls it off
 ACTIONS = ("wait", "now", "cancel")
 
 
@@ -205,11 +209,32 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
         return {"state": "unsupported", "origin": origin, "error": f"HTTP {code}"}
     limit = ASK_SECONDS if ask_seconds is None else ask_seconds
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    overdue_at = lost_at = None
+    overdue_at = lost_at = hold_lost_at = None
+    reholds = 0
     _clear_state(home)
     try:
         while True:
             phase = st.get("phase")
+            if st.get("holding") is False or phase == "idle":
+                # The hold is gone (the service restarted by itself and holds live in memory, the lease ran out, or
+                # another restarter released it): sends are no longer held and the shell shows no note. Take the hold
+                # again; never poll an idle gate for ever (wizard-app-manager#642 review).
+                hold_lost_at = clock() if hold_lost_at is None else hold_lost_at
+                if reholds >= MAX_REHOLDS or clock() - hold_lost_at >= LOST_SECONDS:
+                    raise CalledOff("the Agent Service kept dropping the restart hold; nothing changed")
+                if reholds:
+                    sleep(POLL_S)
+                reholds += 1
+                if overdue_at is not None:
+                    overdue_at = None
+                    _clear_state(home)
+                code, got = req("POST", url, {"reason": reason, "wait_s": wait_s})
+                if code == 200:
+                    st, lost_at = got, None
+                elif code == 404:   # the service came back without its gate: chats may run, so never restart blind
+                    raise CalledOff("the Agent Service no longer has its restart gate; nothing changed")
+                continue
+            hold_lost_at = None
             if phase == "ready" and not st.get("active_unknown"):
                 return {"state": "ready", "origin": origin}
             if st.get("restart_now") is True:   # the owner chose Restart now in the shell (POST {"now": true})
