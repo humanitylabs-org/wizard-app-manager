@@ -101,7 +101,7 @@ def box_on(home) -> bool:
         return False
 
 
-def ensure_token(home) -> "Path":
+def ensure_token(home, minted: list | None = None) -> "Path":
     """Mint the token once (32 random bytes, lowercase hex). The folder is 0700, so no other host user can reach
     it; the file itself is 0644 so a container user other than the owner's mapped uid can read its own mount."""
     import secrets
@@ -119,6 +119,8 @@ def ensure_token(home) -> "Path":
         f.write(secrets.token_hex(32) + "\n")
     os.chmod(tmp, 0o644)
     tmp.replace(p)
+    if minted is not None:   # a new file is a new inode: running containers still hold the old one
+        minted.append(p)
     return p
 
 
@@ -155,21 +157,32 @@ def _strip(doc: dict) -> dict:
     return doc
 
 
-def write_overlay(path, block: dict | None) -> bool:
-    """Put (or with None remove) the boundary block in one app's user-config override; keep every other line's
-    meaning. Returns True when the file changed. Never touches a file without the block when removing."""
+def render(path, block: dict | None):
+    """What write_overlay would write: (before, after) texts, after None for "remove the file", or None when nothing
+    changes. Raises ValueError for any override it can't safely edit, so callers can check every app first."""
     from pathlib import Path
     from .network import load_yaml, dump_yaml
     path = Path(path)
     before = path.read_text() if path.is_file() else None
     if block is None and (before is None or MARK not in before):
-        return False
-    doc = (load_yaml(before) or {}) if before else {}
+        return None
+    try:
+        doc = (load_yaml(before) or {}) if before else {}
+    except Exception as e:   # noqa: BLE001 - a broken override is refused, never half-edited
+        raise ValueError(f"{path}: not readable compose YAML ({str(e)[:120]})") from e
     if not isinstance(doc, dict):
         raise ValueError(f"{path}: expected a compose mapping")
+    if not isinstance(doc.get("services", {}), dict):
+        raise ValueError(f"{path}: services must be a mapping")
+    mark = doc.get(MARK)
+    if mark is not None and not (isinstance(mark, dict) and isinstance(doc.get("services", {}).get(mark.get("service"), {}), dict)):
+        raise ValueError(f"{path}: the {MARK} block is malformed; fix it by hand")
     doc = _strip(doc)
     if block:
-        svc = doc.setdefault("services", {}).setdefault(block["service"], {})
+        svcs = doc.setdefault("services", {})
+        svc = svcs.setdefault(block["service"], {})
+        if not isinstance(svc, dict):
+            raise ValueError(f"{path}: services.{block['service']} must be a mapping")
         env = svc.get("environment")
         if env is None:
             env = svc["environment"] = {}
@@ -178,8 +191,10 @@ def write_overlay(path, block: dict | None) -> bool:
         clash = [k for k in block["environment"] if k in env and env[k] != block["environment"][k]]
         if clash:
             raise ValueError(f"{path}: hand-written {', '.join(clash)} present; remove it first")
-        env.update(block["environment"])
         vols = svc.setdefault("volumes", [])
+        if not isinstance(vols, list):
+            raise ValueError(f"{path}: {block['service']}.volumes must be a list")
+        env.update(block["environment"])
         vols.extend(v for v in block["volumes"] if v not in vols)
         doc[MARK] = {"service": block["service"], "environment": sorted(block["environment"]),
                      "volumes": list(block["volumes"])}
@@ -190,8 +205,20 @@ def write_overlay(path, block: dict | None) -> bool:
         head.append(line + "\n")
     text = "".join(head) + dump_yaml(doc) if doc else ""
     if text == (before or ""):
+        return None
+    return before, (text if doc else None)
+
+
+def write_overlay(path, block: dict | None) -> bool:
+    """Put (or with None remove) the boundary block in one app's user-config override; keep every other line's
+    meaning. Returns True when the file changed. Never touches a file without the block when removing."""
+    from pathlib import Path
+    path = Path(path)
+    r = render(path, block)
+    if r is None:
         return False
-    if not doc:
+    text = r[1]
+    if text is None:
         path.unlink(missing_ok=True)
         return True
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,17 +263,28 @@ def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = F
     if dry_run:
         out["would_change"] = list(app_ids)
         return out
+    # Every override must accept the block before anything is recorded or written, so a refusal never leaves a
+    # half-on box (the App Manager gating while the shell has no token).
+    for app_id in app_ids:
+        render(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None)
     sp = state_path(home)
     sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     sp.write_text(json.dumps({"on": on}) + "\n")
+    minted: list = []
     if on:
-        ensure_token(home)
+        ensure_token(home, minted)
     for app_id in app_ids:
-        if write_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None):
+        if write_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None) \
+                or (minted and status_one(runtipi_root, store, app_id)):
             out["changed"].append(app_id)
     if not on:
         token_path(home).unlink(missing_ok=True)
     return out
+
+
+def status_one(runtipi_root, store: str, app_id: str) -> bool:
+    p = override_path(runtipi_root, store, app_id)
+    return p.is_file() and MARK in p.read_text()
 
 
 def status(home, runtipi_root, store: str, app_ids) -> dict:
@@ -255,8 +293,5 @@ def status(home, runtipi_root, store: str, app_ids) -> dict:
         usable = bool(_HEX64.fullmatch(tok.read_text().strip()))
     except OSError:
         usable = False
-    apps = {}
-    for app_id in app_ids:
-        p = override_path(runtipi_root, store, app_id)
-        apps[app_id] = p.is_file() and MARK in p.read_text()
+    apps = {app_id: status_one(runtipi_root, store, app_id) for app_id in app_ids}
     return {"on": box_on(home), "token": usable, "apps": apps}

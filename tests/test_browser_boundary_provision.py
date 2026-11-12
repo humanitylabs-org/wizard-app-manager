@@ -115,3 +115,53 @@ def test_dry_run_changes_nothing(tmp_path):
     res = bb.set_box(home, rt, STORE, APPS, True, dry_run=True)
     assert res["would_change"] == APPS and not bb.state_path(home).exists()
     assert json.loads(json.dumps(res))
+
+
+def test_a_refused_override_leaves_the_box_untouched(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    p = _ovr(rt, "wizard-ux")
+    p.parent.mkdir(parents=True)
+    p.write_text("services:\n  wizard-ux:\n    environment:\n      WIZARD_BROWSER_BOUNDARY: '0'\n")
+    try:
+        bb.set_box(home, rt, STORE, ["wizard-agent-service", "wizard-ux"], True)
+    except ValueError:
+        pass
+    assert not bb.box_on(home) and not bb.token_path(home).exists()
+    assert not _ovr(rt, "wizard-agent-service").exists()          # the earlier app was not changed either
+
+
+def test_a_new_token_restarts_every_app_that_mounts_it(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    bb.set_box(home, rt, STORE, APPS, True)
+    assert bb.set_box(home, rt, STORE, APPS, True)["changed"] == []   # same token: nothing to restart
+    bb.token_path(home).write_text("broken\n")
+    assert bb.set_box(home, rt, STORE, APPS, True)["changed"] == APPS
+
+
+def test_malformed_overrides_are_refused_before_anything_changes(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    for bad in ("services: []\n", "services:\n  wizard-ux: []\n", "services:\n  wizard-ux:\n    volumes: x\n"):
+        p = _ovr(rt, "wizard-ux")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(bad)
+        try:
+            bb.set_box(home, rt, STORE, APPS, True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected a refusal for {bad!r}")
+        assert not bb.box_on(home) and not _ovr(rt, "wizard-agent-service").exists() and p.read_text() == bad
+
+
+def test_off_with_a_malformed_block_keeps_the_box_on(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    bb.set_box(home, rt, STORE, APPS, True)
+    _ovr(rt, "wizard-ux").write_text(f"{bb.MARK}: broken\nservices: []\n")
+    try:
+        bb.set_box(home, rt, STORE, APPS, False)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected a refusal")
+    assert bb.box_on(home) and bb.token_path(home).exists()
+    assert bb.status_one(rt, STORE, "wizard-agent-service")      # the other app was not changed
