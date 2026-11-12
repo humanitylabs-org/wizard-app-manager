@@ -141,7 +141,7 @@ def test_apply_reruns_the_installer_only_when_newer(tmp_path):
     assert updates.apply_if_auto(h, _base(tmp_path, "0.3.8"), run)["started"] is False and calls == []  # Ask me
     res = updates.apply(h, _base(tmp_path, "0.3.8"), run)
     assert res["started"] is True
-    assert calls[-1] == ["bash", "-c", "curl -fsSL --retry 4 --retry-delay 2 https://aiwizards.com/os.sh | WIZARD_RELEASE=0.3.8 bash -s start"]
+    assert calls[-1] == ["bash", "-c", updates.installer_script("WIZARD_RELEASE=0.3.8 ")]
     _pin(h, "0.3.8")
     assert updates.apply(h, _base(tmp_path, "0.3.8"), run)["started"] is False and len(calls) == 1
     _pin(h, "0.3.7")

@@ -56,6 +56,20 @@ RELEASE_BASE = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-ma
 # `wam updates --apply-if-auto [--check]`.
 HOST_UPDATES = Path("/etc/wizard/updates-by-host")
 INSTALLER = "https://aiwizards.com/os.sh"
+
+
+def installer_script(env: str = "", url: str | None = None) -> str:
+    """The `bash -c` text that downloads the installer and runs `<env>bash -s start` (#499).
+
+    Never `curl | bash`: a retried curl can stream a partial script into bash (which runs it) and then the whole
+    script again, and without pipefail an exhausted download looked like a started installer. Download into an
+    exclusive temporary file, run it from stdin only after curl succeeded, and remove it on exit."""
+    import shlex
+    u = shlex.quote(url or INSTALLER)
+    return ('t="$(mktemp "${TMPDIR:-/tmp}/wizard-os-installer.XXXXXX")" || exit 1; '
+            "trap 'rm -f \"$t\"' EXIT; "
+            f'curl -fsSL --retry 4 --retry-delay 2 -o "$t" {u} || exit; '
+            f'{env}bash -s start < "$t"')
 UNIT = "wizard-os-update"
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
 CACHE_SECONDS = 600           # a shell polling for "Update available" stays cheap (one fetch per ~10 minutes)
@@ -777,7 +791,7 @@ def apply(home: Path | None = None, base: str | None = None, runner=subprocess.r
     env = f"WIZARD_RELEASE={pin} " if pin else ""
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
-    r = runner(["bash", "-c", f"curl -fsSL --retry 4 --retry-delay 2 {INSTALLER} | {env}bash -s start"], capture_output=True, text=True,
+    r = runner(["bash", "-c", installer_script(env)], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
     if ok and not target:
