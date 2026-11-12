@@ -1799,9 +1799,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if u.path == "/api/system/load":
             # Exact read-only numeric projection; never proxy arbitrary manager paths or credentials.
-            from . import resources
+            from . import browser_boundary as bb, resources
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self._json(403, {"error": "cross_site_refused"})
+            if why := bb.refusal(self.headers):   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+                return self._json(403, {"error": why})
             try:
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
@@ -1819,6 +1821,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(403, {"error": "owner_only"})
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self._json(403, {"error": "cross_site_refused"})
+            from . import browser_boundary as bb   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+            if why := bb.refusal(self.headers):
+                return self._json(403, {"error": why})
             try:
                 return self._json(200, devices.reader_for(c.home)())
             except Exception:
@@ -1944,6 +1949,10 @@ class StoreHandler(BaseHTTPRequestHandler):
         if why:
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
+        if not self._static_asset(method, app_id):
+            from . import browser_boundary as bb   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+            if why := bb.refusal(self.headers):
+                return self._json(403, {"error": why})
         if app_id == "_connections" or app_id.startswith("_connections/"):   # the Connections view (connections_view.py)
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
@@ -2049,6 +2058,16 @@ class StoreHandler(BaseHTTPRequestHandler):
     def devices(cls):
         from . import owner_devices
         return owner_devices.Enrollment(cls.cfg.home)
+
+    @staticmethod
+    def _static_asset(method: str, app_id: str) -> bool:
+        """The Connections view's own page files (no owner data) load as a frame, so they can't carry the shell
+        token; its `api/` calls and every other route still need it when the browser boundary is on."""
+        from . import connections_view as cv
+        if method != "GET" or not (app_id == cv.PREFIX or app_id.startswith(cv.PREFIX + "/")):
+            return False
+        sub = app_id.removeprefix(cv.PREFIX).lstrip("/")
+        return not sub.startswith("api/") and sub != "api"
 
     def _connections(self, method: str, path: str, query: dict | None = None) -> None:
         """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
