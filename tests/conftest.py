@@ -57,3 +57,14 @@ def _nothing_running(request, monkeypatch):
         return
     from wam import work
     monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: [])
+
+
+@pytest.fixture(autouse=True)
+def _os_update_waits_off(monkeypatch):
+    """The `wizard/os-update-waits` feature switch reads as off unless a test turns it on (the real read would ask
+    the box's Agent Service for look.json). Every other switch reads as before."""
+    from wam import feature_switches
+    real = feature_switches.is_on
+    monkeypatch.setattr(feature_switches, "is_on",
+                        lambda tid, home=None, pages=None: False if tid == "wizard/os-update-waits"
+                        else real(tid, home, pages))

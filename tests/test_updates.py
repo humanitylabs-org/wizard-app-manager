@@ -453,9 +453,17 @@ def test_status_says_how_the_install_read_back(tmp_path):
 
 
 
-def _release_box(tmp_path, monkeypatch):
-    """A Linux box on 0.3.15 with 0.3.16 out (release files unreadable here, so its impact counts as hermes)."""
+def _waits_switch(monkeypatch, on: bool):
+    from wam import feature_switches
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None:
+                        on and tid == "wizard/os-update-waits")
+
+
+def _release_box(tmp_path, monkeypatch, waits=True):
+    """A Linux box on 0.3.15 with 0.3.16 out (release files unreadable here, so its impact counts as hermes), with the
+    owner's `wizard/os-update-waits` switch on unless `waits=False`."""
     monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "no-host-marker")
+    _waits_switch(monkeypatch, waits)
     h = tmp_path / "wos"
     _pin(h, "0.3.15")
     return h, _base(tmp_path, "0.3.16")
@@ -545,3 +553,101 @@ def test_automatic_skips_with_names_and_the_host_can_go_after_its_check(tmp_path
     res = updates.apply_if_auto(h, base, _ok_runner([]))
     assert res["skipped"] == "busy" and "npm run build" in res["note"]
     assert updates.apply_if_auto(h, base, _ok_runner([]), anyway=True)["started"] is True
+
+
+# ---- the `wizard/os-update-waits` switch (off by default; a Mac's host marker turns it on) -------------------------
+
+def test_without_the_switch_update_now_works_as_on_main(tmp_path, monkeypatch):
+    """Switch off on a Linux box: nothing is probed, nothing new can hold Update now back."""
+    h, base = _release_box(tmp_path, monkeypatch, waits=False)
+    _busy(monkeypatch, BUILD)
+    monkeypatch.setattr(updates, "impact_of", lambda *a, **k: 1 / 0)    # no impact probing at all
+    st = updates.status(h, base)
+    assert (st["waits_for_work"], st["impact"], st["waiting_for"], st["when_idle"]) == (False, None, [], None)
+    calls = []
+    assert updates.apply(h, base, _ok_runner(calls))["started"] is True and len(calls) == 1
+    calls = []
+    res = updates.apply(h, base, _ok_runner(calls), when_idle=True)      # an old shell's "when they finish": now
+    assert res["started"] is True and not any("systemd-run" in str(c) and "when-idle" in str(c) for c in calls)
+
+
+def test_without_the_switch_automatic_keeps_mains_busy_check(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch, waits=False)
+    updates.set_mode("auto", h, unit_dir=tmp_path / "units", systemctl=False)
+    monkeypatch.setattr(updates, "promoted", lambda *a, **k: True)
+    _busy(monkeypatch, BUILD)                                            # not main's signal: ignored
+    monkeypatch.setattr(updates, "busy", lambda *a, **k: True)           # main's: a chat run is active
+    res = updates.apply_if_auto(h, base, _ok_runner([]))
+    assert (res["started"], res["skipped"], res["note"]) == (False, "busy", "a chat run is active; trying again next window")
+    monkeypatch.setattr(updates, "busy", lambda *a, **k: None)
+    assert updates.apply_if_auto(h, base, _ok_runner([]))["started"] is True
+
+
+def test_the_switch_or_the_host_marker_turns_waiting_on(tmp_path, monkeypatch):
+    from wam import feature_switches
+    h, base = _release_box(tmp_path, monkeypatch, waits=False)
+    asked = []
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None: asked.append((tid, home)) or True)
+    assert updates.WAITS_SWITCH == "wizard/os-update-waits"
+    st = updates.status(h, base)
+    assert st["waits_for_work"] is True and st["impact"]["interrupts"] == "hermes"
+    assert asked == [("wizard/os-update-waits", h)]                     # read once per status
+    def broken(*a, **k):
+        raise RuntimeError("Agent Service down")
+    monkeypatch.setattr(feature_switches, "is_on", broken)
+    assert updates.waits_for_work(h) is False and updates.status(h, base)["waits_for_work"] is False
+    marker = tmp_path / "updates-by-host"
+    marker.write_text("")
+    monkeypatch.setattr(updates, "HOST_UPDATES", marker)                # a Mac's VM: always on, no switch read
+    assert updates.waits_for_work(h) is True and updates.status(h, base)["waits_for_work"] is True
+
+
+def test_a_waiting_update_is_dropped_when_the_switch_goes_off(tmp_path, monkeypatch):
+    h, base = _release_box(tmp_path, monkeypatch)
+    _busy(monkeypatch, BUILD)
+    updates.apply(h, base, _ok_runner([]), when_idle=True)
+    assert updates.when_idle(h)["target"] == "0.3.16"
+    _waits_switch(monkeypatch, False)
+    calls = []
+    res = updates.when_idle_tick(h, base, _ok_runner(calls))
+    assert res["started"] is False and not (h / updates.WHEN_IDLE).exists()
+    assert any("stop" in c and f"{updates.WHEN_IDLE_UNIT}.timer" in c for c in calls)
+    assert not any("bash" in c for c in calls)                          # nothing installed
+
+
+def test_a_host_request_stays_until_an_update_starts(tmp_path, monkeypatch):
+    """Codex P2: the Mac runs `--apply` for the owner's request; one that starts nothing must not lose it."""
+    h, base = _release_box(tmp_path, monkeypatch)
+    req = {"target": "0.3.16", "requested_at": "2026-11-12T00:00:00Z"}
+    def put():
+        (h / updates.HOST_REQUEST).write_text(json.dumps(req))
+        (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": __import__("time").time() + 60}))
+    put()
+    calls = []
+    res = updates.apply(h, tmp_path.joinpath("gone").as_uri(), _ok_runner(calls))    # pointer unreadable
+    assert res["started"] is False and res.get("error") and calls == []
+    assert updates.host_pending(h) == req and (h / updates.HOST_HEADSUP).exists()
+    _busy(monkeypatch, BUILD)                                           # new work the update would stop
+    assert updates.apply(h, base, _ok_runner(calls))["waiting"] is True
+    assert updates.host_pending(h) == req and (h / updates.HOST_HEADSUP).exists()
+    fail = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "no installer")
+    assert updates.apply(h, base, fail, anyway=True)["started"] is False   # the start itself failed
+    assert updates.host_pending(h) == req
+    assert updates.apply(h, base, _ok_runner(calls), anyway=True)["started"] is True
+    assert updates.host_pending(h) is None and not (h / updates.HOST_HEADSUP).exists()
+    put()
+    _pin(h, "0.3.16")                                                   # nothing left to do: not kept forever
+    assert updates.apply(h, base, _ok_runner(calls))["started"] is False
+    assert updates.host_pending(h) is None and not (h / updates.HOST_HEADSUP).exists()
+
+
+def test_the_when_idle_timer_gets_the_update_environment(tmp_path, monkeypatch):
+    """Codex P2: the transient timer's `wam updates --when-idle-tick` must check the same home and release feed."""
+    h, base = _release_box(tmp_path, monkeypatch)
+    monkeypatch.setenv("WIZARD_OS_HOME", str(h))
+    _busy(monkeypatch, BUILD)
+    calls = []
+    updates.apply(None, base, _ok_runner(calls), when_idle=True)
+    run = next(c for c in calls if c[0] == "systemd-run")
+    assert f"--setenv=WIZARD_OS_HOME={h}" in run and f"--setenv=WIZARD_RELEASE_BASE={base}" in run
+    assert run[-2:] == ["updates", "--when-idle-tick"]

@@ -2283,7 +2283,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         if body.get("action") == "apply" and set(body) <= {"action", "anyway", "when_idle"} and \
                 all(isinstance(body.get(k, False), bool) for k in ("anyway", "when_idle")):
             # A Mac's VM: the Mac copies the disk first, then starts it (updates.request_host_apply).
-            # While Wizard is working on something the update would stop, the answer is `waiting` + `waiting_for`;
+            # While Wizard is working on something the update would stop and updates wait for work (status
+            # `waits_for_work`), the answer is `waiting` + `waiting_for`;
             # the owner then sends anyway (Update anyway) or when_idle (Update when they finish).
             kw = {"anyway": body.get("anyway", False), "when_idle": body.get("when_idle", False)}
             res = updates.request_host_apply(**kw) if updates.by_host() else updates.apply(**kw)
