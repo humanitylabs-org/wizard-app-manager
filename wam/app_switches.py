@@ -18,13 +18,13 @@ installed or updated with the declaration.
 
 Calls are server-side, on the app's loopback port (its registry `view.local`), with the OWNER's authority: the platform
 owner proof (wizard-os spec/OWNER_PROOF.md, `X-Wizard-App-Owner-Proof`, hmac-v1, bound to the app id, method and
-target) signed with the app's proof key, plus the box's own Origin and `X-Wizard-Switch: 1`. An app without a proof key
-is called through the box's own Tailscale Serve URL (`<box origin>/<app path>/...`): Serve names the owner for every
-request that starts on this box, which is the identity the app already checks for its owner pages. So a flip works the same
+target) signed with the app's proof key, plus the box's own Origin and `X-Wizard-Switch: 1`. So a flip works the same
 from every browser and device, with no app cookie in the browser. The proof key is the edge key the App Manager mints
 for apps that declare `owner_proof` (owner_proof.edge_key_path), or a box's adopted hand-built one
-(`<home>/<app>-owner/proof`). An app that answers neither way is listed in `apps` with `ok: false` and the Tracker
-falls back to its same-origin browser call (Tracker 0.21).
+(`<home>/<app>-owner/proof`). An app without a proof key is never called through the box's own Tailscale Serve URL:
+Serve names the owner for every request that starts on this box, which spec/OWNER_PROOF.md section 3 rules out
+(wizard-os#133). It is listed in `apps` with `ok: false` and the Tracker falls back to its same-origin browser call
+(Tracker 0.21), where Serve names the real owner of that browser.
 
 Ids in the merged catalog are `<app id>:<switch id>` (core ids are `<author>/<id>`), so the two never collide.
 App switches follow the app's own state; they are not locked by the box channel (the app keeps them off by default).
@@ -179,23 +179,19 @@ def box_origin(home: Path) -> str | None:
 
 
 def _call(home: Path, app: dict, body: dict | None = None, origin: str | None = None, opener=None) -> dict:
-    """One switch request to the app as the owner. With the app's owner-proof key: its loopback port, signed. Without
-    one: the box's own Tailscale Serve URL of the app (`<box origin><view url><path>`), which names the owner for
-    every request that starts on this box (store_install.from_box), the identity the app already trusts for its
-    owner pages. Either way the box Origin and `X-Wizard-Switch: 1` ride along."""
+    """One switch request to the app as the owner: its loopback port, signed with the app's owner-proof key, with the
+    box Origin and `X-Wizard-Switch: 1`. Without a key there is no server-side call (a box-local request through
+    Serve would carry the owner's login for any caller on the box; wizard-os#133)."""
     from . import owner_proof
     key = proof_key(home, app["id"])
     method = "POST" if body is not None else "GET"
     o = origin or box_origin(home)
     headers = {"Accept": "application/json", "X-Wizard-Switch": "1"}
-    if key is not None:
-        headers[owner_proof.HEADER] = owner_proof.sign(key, app["id"], method, app["path"])
-        url = app["local"] + app["path"]
-    elif o and app.get("prefix"):
-        url = o + app["prefix"] + app["path"]
-        headers["Sec-Fetch-Site"] = "same-origin"
-    else:
-        raise AppSwitchError(f"{app['name']} has no owner proof key and no Wizard address on this box", 503)
+    if key is None:
+        raise AppSwitchError(f"{app['name']} has no owner proof key; its switches are flipped from the owner's browser",
+                             503)
+    headers[owner_proof.HEADER] = owner_proof.sign(key, app["id"], method, app["path"])
+    url = app["local"] + app["path"]
     if o:
         headers["Origin"] = o
     data = None
