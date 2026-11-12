@@ -588,11 +588,21 @@ class HermesRunner:
     def container_owner(self, uid: int, gid: int) -> tuple[int, int]:
         """The `-u` for a one-off container that must act as a home's owner. Rootful Docker: the host ids. Rootless
         Docker: the ids inside its user namespace (a home owned by subuid 109999 is uid 10000 in a container);
-        passing the host ids there fails with `setgroups: invalid argument`."""
+        passing the host ids there fails with `setgroups: invalid argument`.
+
+        An id the namespace cannot map is refused before any container starts: reusing the host number inside the
+        namespace would run the helper as a different host identity (container uid 500 is host uid 100499 there).
+        The /etc/sub{uid,gid} fallback in `id_map` assumes dockerd runs as this process's user, which is how a
+        Wizard box runs rootless Docker."""
         if not self.rootless():
             return uid, gid
         u, g = self._inside(uid, self.id_map("uid")), self._inside(gid, self.id_map("gid"))
-        return (uid if u is None else u), (gid if g is None else g)
+        bad = [f"{kind} {n}" for kind, n, m in (("uid", uid, u), ("gid", gid, g)) if m is None]
+        if bad:
+            raise HermesError(f"rootless Docker cannot run as this agent home's owner: host {' and '.join(bad)} "
+                              f"is outside the Docker user namespace map, so a container would act as a different "
+                              f"host user; give the home an owner inside the map (the owner or their subordinate ids)")
+        return u, g
 
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:

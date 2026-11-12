@@ -86,6 +86,29 @@ def test_rootless_maps_a_subuid_home_owner_into_the_container(tmp_path, monkeypa
     assert r.container_owner(1000, 100999) == (0, 1000)          # the owner is root inside
 
 
+@pytest.mark.parametrize("uid,gid,which", [(500, 109999, "uid 500"), (109999, 500, "gid 500"),
+                                           (500, 500, "uid 500 and gid 500"), (200000, 109999, "uid 200000")])
+def test_rootless_refuses_an_owner_outside_the_namespace_map(tmp_path, monkeypatch, uid, gid, which):
+    r = HermesRunner(Box(tmp_path / "home", tmp_path / "rt", env={"PATH": "/usr/bin:/bin"}))
+    monkeypatch.setattr(r, "rootless", lambda: True)
+    monkeypatch.setattr(r, "id_map", lambda kind: ROWS)
+    with pytest.raises(HermesError, match=f"host {which} is outside the Docker user namespace map"):
+        r.container_owner(uid, gid)
+
+
+def test_rootless_unmapped_owner_fails_before_docker_run(tmp_path, monkeypatch):
+    a = _agent(tmp_path)
+    r = HermesRunner(Box(tmp_path / "home", tmp_path / "rt", env={"PATH": "/usr/bin:/bin"}))
+    monkeypatch.setattr(r, "rootless", lambda: True)
+    monkeypatch.setattr(r, "id_map", lambda kind: [(0, 999999, 1)])   # nothing maps the test's real home owner
+    monkeypatch.setattr(r, "image", lambda agent: "img")
+    seen = []
+    monkeypatch.setattr(r, "_run", lambda argv, **kw: seen.append(argv) or "")
+    with pytest.raises(HermesError, match="outside the Docker user namespace map"):
+        r._docker(a, "/bin/true", [], [])
+    assert not any("run" in argv for argv in seen)
+
+
 def test_rootful_docker_keeps_host_ids(tmp_path, monkeypatch):
     r = HermesRunner(Box(tmp_path / "home", tmp_path / "rt", env={"PATH": "/usr/bin:/bin"}))
     monkeypatch.setattr(r, "rootless", lambda: False)
