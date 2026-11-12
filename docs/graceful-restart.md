@@ -22,6 +22,8 @@ the service behind the gate.
    - `wam agent-restart wait [--minutes N]`: `POST` again with the new limit;
    - `wam agent-restart now`: restart now;
    - `wam agent-restart cancel`: call it off (`DELETE`), held sends launch at once, nothing changes.
+   The shell's restart note (wizard-ux, same switch) sends Wait longer / Restart now to the Agent Service itself;
+   the gate follows it (`restart_now: true` restarts now, a new limit takes the phase back to `waiting`).
    The same answer goes over the owner API: `GET/POST /api/agent-restart` on `wam serve` (bearer token),
    body `{"action": "wait"|"now"|"cancel", "minutes": n}`. With no answer within 30 min
    (`WAM_GRACEFUL_RESTART_ASK_S`) the restart is called off, so a turn is never cut without the owner's yes.
@@ -35,4 +37,3 @@ The waiting state and the owner's answer live in `<wizard-os home>/agent-restart
 
 - The full installer moves the service with `wam app update wizard-agent-service`, so it waits too; installer steps
   that restart Runtipi itself (all apps at once) do not go through this gate.
-- The shell's "Restarting when chats finish" state and wait / restart now buttons (wizard-ux) are their own issue.
