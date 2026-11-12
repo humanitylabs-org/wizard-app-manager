@@ -175,3 +175,14 @@ def test_every_host_api_route_published_beside_the_shell_is_gated(host_api, monk
         monkeypatch.setenv(bb.TOKEN_FILE, str(f))
         assert host_api(path, SHELL) == (403, {"error": bb.REFUSED}), path  # app page
         assert host_api(path, {**SHELL, bb.HEADER: TOKEN})[0] == 200, path  # the shell
+
+
+def test_connections_view_asks_the_shell_for_its_token_before_its_own_scripts():
+    """Settings › Connections under the boundary: the page's api/ calls need the shell token, which only the
+    top-level shell holds. The shell's core/shell-token.js runs first and asks it to arm this frame (wizard-ux)."""
+    from wam import connections_view as cv
+    html = cv.page("settings").decode()
+    first = html.index("<script")
+    assert html[first:].startswith('<script src="/wizard-os-home/core/shell-token.js"></script>')
+    assert first < html.index("app-client.js") and first < html.index("standalone.js")
+    assert 'defer src="/wizard-os-home/core/shell-token.js"' not in html and "async" not in html[first:first + 80]
