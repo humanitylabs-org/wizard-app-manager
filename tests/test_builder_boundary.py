@@ -44,6 +44,37 @@ def test_a_server_that_answers_cors_gets_no_warning(tmp_path):
     assert rules(root) == []
 
 
+def test_naming_the_header_is_no_answer_without_an_opaque_value(tmp_path):
+    root = builder.new_app('habit-tracker', tmp_path, 'Habits')
+    page(root, '<script type="module" src="app.js"></script>')
+    server = root / 'app' / 'server.py'
+    base = server.read_text()
+    not_proof = [
+        "\n# TODO send Access-Control-Allow-Origin: * for assets\n",                       # a comment
+        "\nORIGIN_HEADERS = {'Access-Control-Allow-Origin': 'https://box.example'}\n",    # the Wizard's own origin only
+        "\nH = {'Access-Control-Allow-Origin': origin}\n",                                # a variable: not proof
+    ]
+    for extra in not_proof:
+        server.write_text(base + extra)
+        assert len(rules(root)) == 1, extra
+    # Client code in the page's own folder that names the header (a request) is no server answer.
+    server.write_text(base)
+    (root / 'web' / 'net.js').write_text("fetch('x', {headers: {'Access-Control-Allow-Origin': '*'}})\n")
+    assert len(rules(root)) == 1
+    # The real shapes the fixed apps use all count.
+    for extra in ("\nself.send_header('Access-Control-Allow-Origin','*')\n", "\nout['Access-Control-Allow-Origin'] = '*'\n"):
+        server.write_text(base + extra)
+        assert rules(root) == [], extra
+    server.write_text(base)
+    (root / 'app' / 'serve.mjs').write_text("res.writeHead(200, {...(opaque ? {'access-control-allow-origin': '*'} : {})})\n")
+    assert rules(root) == []
+    (root / 'app' / 'serve.mjs').write_text("// res.setHeader('Access-Control-Allow-Origin', '*')\n")
+    assert len(rules(root)) == 1
+    (root / 'app' / 'serve.mjs').unlink()
+    (root / 'nginx.conf').write_text('location ~ \\.js$ { add_header Access-Control-Allow-Origin * always; }\n')
+    assert rules(root) == []
+
+
 def test_comments_tests_and_vendored_pages_do_not_count(tmp_path):
     root = builder.new_app('habit-tracker', tmp_path, 'Habits')
     page(root, '<!-- <script type="module" src="old.js"></script> --><script defer src="app.js"></script>')
