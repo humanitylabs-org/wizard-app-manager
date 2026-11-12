@@ -149,34 +149,21 @@ def test_a_wrong_key_is_reported_not_fatal(box):
     assert rows == [] and status[0]["ok"] is False and status[0]["status"] == 403
 
 
-def test_without_a_key_the_call_goes_through_the_box_serve_url(box):
+def test_without_a_key_there_is_no_box_local_serve_call(box):
+    # wizard-os#133: a request that starts on the box gets the owner's login from Serve, whoever sent it, so the App
+    # Manager never makes one. A keyless app is reported, and the Tracker flips it from the owner's browser.
     (box / "messenger-owner" / "proof").unlink()
     seen = []
 
-    class Resp:
-        def __init__(self, doc):
-            self.doc = doc
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self):
-            return json.dumps(self.doc).encode()
-
     def opener(req, timeout=None):
-        seen.append((req.get_method(), req.full_url, dict(req.header_items())))
-        return Resp({"contract": aps.CONTRACT, "switches": [{"id": "drafts-first", "name": "D", "on": True}]})
+        seen.append(req.full_url)
+        raise AssertionError("no server-side call without an owner proof key")
     rows, status = aps.listing(box, opener=opener)
-    assert status[0]["ok"] is True and rows[0]["on"] is True
-    method, url, headers = seen[-1]
-    assert url == "https://box.example:8444/messenger/api/view/switches"
-    assert headers.get("X-wizard-switch") == "1" and headers.get("Origin") == "https://box.example:8444"
-    assert not any(k.lower() == owner_proof.HEADER.lower() for k in headers)
-    row = aps.set_switch("messenger:drafts-first", True, box, opener=opener)
-    assert row["on"] is True and seen[-1][0] == "POST"
+    assert rows == [] and status[0]["ok"] is False and status[0]["status"] == 503
+    assert "browser" in status[0]["error"]
+    with pytest.raises(aps.AppSwitchError) as e:
+        aps.set_switch("messenger:drafts-first", True, box, opener=opener)
+    assert e.value.code == 503 and seen == []
 
 
 def test_platform_edge_key_wins_over_a_hand_built_one(box):

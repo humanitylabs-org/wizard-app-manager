@@ -63,6 +63,54 @@ def test_templates_declare_and_serve_the_contract(tmp_path, monkeypatch):
             srv.shutdown()
 
 
+def test_an_app_with_an_owner_proof_key_needs_the_signed_proof(tmp_path, monkeypatch):
+    # wizard-os#133 (11/12 Nov checks): Host, Origin, Tailscale-User-Login and X-Wizard-Switch are client-set, so any
+    # process on the box could flip a switch with them. An app that has the platform owner-proof key accepts only the
+    # App Manager's signed proof (spec/OWNER_PROOF.md), which also works on its loopback port.
+    from wam import owner_proof
+    key = bytes(range(32))
+    for template in ('hello-wizard', 'list'):
+        kf = tmp_path / f'{template}.key'
+        kf.write_bytes(key)
+        monkeypatch.setenv('WIZARD_OWNER_PROOF_KEY_FILE', str(kf))
+        monkeypatch.setenv('WIZARD_OWNER_PROOF_APP', template)
+        mod = _load(template, tmp_path / template, monkeypatch)
+        mod.SWITCHES.append({'id': 'a', 'name': 'A', 'description': '', 'default': False, 'issues': []})
+        srv = ThreadingHTTPServer(('127.0.0.1', 0), mod.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        body = b'{"id":"a","on":true}'
+        post = {'X-Wizard-Switch': '1', 'Content-Type': 'application/json'}
+
+        def signed(method, k=key, app=template, path='/api/switches', **extra):
+            return {'X-Wizard-Switch': '1', owner_proof.HEADER: owner_proof.sign(k, app, method, path, **extra)}
+        try:
+            # the forged owner headers that the keyless check accepts are refused here
+            assert _call(port, '/api/switches', headers=OWNER)[0] == 403
+            assert _call(port, '/api/switches', 'POST', {**OWNER, 'Content-Type': 'application/json'}, body)[0] == 403
+            # the App Manager's signed call to the loopback port works
+            assert _call(port, '/api/switches', headers=signed('GET'))[0] == 200
+            code, doc = _call(port, '/api/switches', 'POST', {**post, **signed('POST')}, body)
+            assert code == 200 and doc['switches'][0]['on'] is True
+            # wrong key, wrong app, wrong method, wrong target, stale, replayed, two proofs, a bearer: refused
+            assert _call(port, '/api/switches', headers=signed('GET', k=b'x' * 32))[0] == 403
+            assert _call(port, '/api/switches', headers=signed('GET', app='other'))[0] == 403
+            assert _call(port, '/api/switches', 'POST', {**post, **signed('GET')}, body)[0] == 403
+            assert _call(port, '/api/switches', headers=signed('GET', path='/x/api/switches'))[0] == 403
+            assert _call(port, '/api/switches', headers=signed('GET', now=__import__('time').time() - 120))[0] == 403
+            once = signed('GET')
+            assert _call(port, '/api/switches', headers=once)[0] == 200
+            assert _call(port, '/api/switches', headers=once)[0] == 403
+            assert _call(port, '/api/switches', headers={**signed('GET'), 'Authorization': 'Bearer x'})[0] == 403
+            assert _call(port, '/api/switches', headers={owner_proof.HEADER: signed('GET')[owner_proof.HEADER]})[0] == 403
+            # a key that is named but unreadable never falls back to the header check
+            kf.unlink()
+            assert _call(port, '/api/switches', headers=OWNER)[0] == 403
+            assert _call(port, '/api/switches', headers=signed('GET'))[0] == 403
+        finally:
+            srv.shutdown()
+
+
 def test_new_app_has_the_contract_and_check_warns_when_it_goes(tmp_path, monkeypatch):
     monkeypatch.setattr(builder, '_home', lambda: tmp_path)
     src = Path(builder.new_app('switch-probe', tmp_path / 'dev'))
