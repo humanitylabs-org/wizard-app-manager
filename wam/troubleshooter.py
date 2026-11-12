@@ -50,11 +50,11 @@ UNITS = ("wizard-troubleshooter.service", "wizard-guardian.service", "wizard-gua
 # host.env carries this line beside GUARDIAN_ACT so a later run can tell the value this command wrote from one the owner
 # typed in by hand. A host.env without it was written by an older App Manager, whose GUARDIAN_ACT=0 was its default.
 GUARDIAN_NOTE = "# wam troubleshooter wrote GUARDIAN_ACT={act}; `wam troubleshooter --report-only` keeps the guardian report-only"
-# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.2/SHASUMS256.txt), only when the box has no Node >= 20.
-NODE_VERSION = "22.23.2"
+# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.5/SHASUMS256.txt), only when the box has no Node >= 20.
+NODE_VERSION = "22.23.5"
 NODE_SHA256 = {
-    "x64": "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
-    "arm64": "fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8",
+    "x64": "cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8",
+    "arm64": "2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09",
 }
 
 
