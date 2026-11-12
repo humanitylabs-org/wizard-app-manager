@@ -452,20 +452,45 @@ class HermesRunner:
         return p.stdout
 
     # ---- container agents
+    def compose_projects(self, agent: Agent) -> list[str]:
+        """Compose projects that may run this agent: Runtipi's `<app>_<store>`, then the restricted-agent runtime's
+        bare `<app>` (~/.wizard-os/agent-runtime/restricted-agent names its project after the app id alone)."""
+        urn = agent.urn or ""
+        out = [urn.replace(":", "_")]
+        app_id = urn.split(":", 1)[0]
+        if app_id and app_id not in out:
+            out.append(app_id)
+        return out
+
+    @staticmethod
+    def _same_path(a, b) -> bool:
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except (OSError, RuntimeError, TypeError):
+            return False
+
     def image(self, agent: Agent) -> str:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
-        (Runtipi's stop is `compose down`, so a stopped app has no container)."""
-        project = (agent.urn or "").replace(":", "_")
-        ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
-        if ids:
+        (Runtipi's stop is `compose down`, so a stopped app has no container). A container found under the bare
+        restricted-agent project name only counts when it mounts this agent's own home at /opt/data."""
+        any_ids = False
+        for n, project in enumerate(self.compose_projects(agent)):
+            ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter",
+                             f"label=com.docker.compose.project={project}"]).split()
+            if not ids:
+                continue
+            any_ids = True
             info = json.loads(self._run([*docker(self.box.child_env), "inspect", *ids]) or "[]")
             for c in info:
-                if any(m.get("Destination") == "/opt/data" for m in c.get("Mounts") or []):
-                    return c["Config"]["Image"]
+                for m in c.get("Mounts") or []:
+                    if m.get("Destination") != "/opt/data":
+                        continue
+                    if n == 0 or self._same_path(m.get("Source"), agent.home):
+                        return c["Config"]["Image"]
         img = self.compose_image(agent)
         if img:
             return img
-        if not ids:
+        if not any_ids:
             raise HermesError(f"the agent app {agent.urn} has no container and no compose file on this box")
         raise HermesError(f"no container of {agent.urn} mounts an agent home at /opt/data")
 
@@ -510,10 +535,70 @@ class HermesRunner:
                               lambda m: env.get(m.group(1)) or m.group(2) or "", img)
         return None
 
+    # ---- rootless Docker: host ids -> the ids a container must run as
+    _rootless: bool | None = None
+
+    def rootless(self) -> bool:
+        if self._rootless is None:
+            try:
+                out = self._run([*docker(self.box.child_env), "info", "--format", "{{json .SecurityOptions}}"], timeout=30)
+            except HermesError:
+                out = ""
+            self._rootless = "rootless" in out
+        return self._rootless
+
+    def id_map(self, kind: str) -> list[tuple[int, int, int]]:
+        """(inside, outside, count) rows of rootless dockerd's user namespace: its own /proc/<pid>/<kind>_map when
+        the daemon's pid file is readable, else the owner's /etc/sub<kind> range (inside 0 is the owner)."""
+        rows: list[tuple[int, int, int]] = []
+        run = self.box.child_env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        try:
+            pid = int(Path(run, "docker.pid").read_text().strip())
+            for line in Path(f"/proc/{pid}/{kind}_map").read_text().splitlines():
+                a, b, c = (int(x) for x in line.split())
+                rows.append((a, b, c))
+        except (OSError, ValueError):
+            rows = []
+        if rows:
+            return rows
+        import pwd
+        own = os.getuid() if kind == "uid" else os.getgid()
+        try:
+            name = pwd.getpwuid(os.getuid()).pw_name
+        except KeyError:
+            name = None
+        rows = [(0, own, 1)]
+        try:
+            for line in Path(f"/etc/sub{kind}").read_text().splitlines():
+                f = line.strip().split(":")
+                if len(f) == 3 and f[0] in (name, str(os.getuid())):
+                    rows.append((1, int(f[1]), int(f[2])))
+                    break
+        except (OSError, ValueError):
+            pass
+        return rows
+
+    @staticmethod
+    def _inside(host_id: int, rows: list[tuple[int, int, int]]) -> int | None:
+        for inside, outside, count in rows:
+            if outside <= host_id < outside + count:
+                return inside + host_id - outside
+        return None
+
+    def container_owner(self, uid: int, gid: int) -> tuple[int, int]:
+        """The `-u` for a one-off container that must act as a home's owner. Rootful Docker: the host ids. Rootless
+        Docker: the ids inside its user namespace (a home owned by subuid 109999 is uid 10000 in a container);
+        passing the host ids there fails with `setgroups: invalid argument`."""
+        if not self.rootless():
+            return uid, gid
+        u, g = self._inside(uid, self.id_map("uid")), self._inside(gid, self.id_map("gid"))
+        return (uid if u is None else u), (gid if g is None else g)
+
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
                 stdin: str | None = None, timeout: int = 3600) -> str:
         st = datafs.stat(agent.home)
-        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", f"{st.st_uid}:{st.st_gid}",
+        uid, gid = self.container_owner(st.st_uid, st.st_gid)
+        cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", f"{uid}:{gid}",
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
         for src, dst, ro in mounts:
             cmd += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
