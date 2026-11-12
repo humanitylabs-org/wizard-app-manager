@@ -16,7 +16,9 @@ the service behind the gate.
 1. `POST /wizard/v1/restart` on the service's loopback port: new sends are saved and held, running turns go on.
 2. `GET` every 3 s (also renews the service's 2-minute hold lease) until `phase` is `ready`, then restart.
    A lost poll is retried, never read as "nothing runs"; a service that stays silent for 60 s after the hold was
-   taken calls the restart off.
+   taken calls the restart off. A hold the service lost (`holding: false` / `idle`: it restarted by itself, the
+   lease ran out, or another restarter released it) is taken again with a new `POST`; a hold that will not stick
+   (5 tries or 60 s) calls the restart off, so the wait never runs for ever.
 3. `overdue` (still running past the wait limit, 10 min by default): the owner is told what still runs (the
    Notifications app, and a line on the terminal; the gate keeps polling while it waits) and answers with
    - `wam agent-restart wait [--minutes N]`: `POST` again with the new limit;

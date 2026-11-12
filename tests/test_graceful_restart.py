@@ -362,3 +362,65 @@ def test_the_shells_wait_longer_resets_the_no_answer_timer(tmp_path):
         return (200, {"phase": "waiting"}) if method == "POST" else next(answers)
     res, _ = run_gate(tmp_path, svc, ask_seconds=20)      # 5 polls = 15 s per spell, under the 20 s limit each time
     assert res["state"] == "ready"
+
+
+class LosingService(FakeService):
+    """A gate whose GET answers come from a scripted list of whole docs (to drop the hold mid-wait)."""
+
+    def __init__(self, gets, post_docs=None, post_codes=None):
+        super().__init__(["waiting"])
+        self.gets = list(gets)
+        self.post_docs = list(post_docs or [])
+        self.post_codes = list(post_codes or [])
+
+    def __call__(self, method, url, body=None, timeout=10):
+        if method == "POST" and url == URL:
+            self.calls.append((method, url, body))
+            code = self.post_codes.pop(0) if self.post_codes else 200
+            doc = self.post_docs.pop(0) if self.post_docs else {"phase": "waiting", "holding": True, "active": 1}
+            return code, doc
+        if method == "GET" and url == URL:
+            self.calls.append((method, url, body))
+            return 200, (self.gets.pop(0) if len(self.gets) > 1 else self.gets[0])
+        return super().__call__(method, url, body, timeout)
+
+
+IDLE = {"phase": "idle", "holding": False}
+
+
+def test_a_lost_hold_is_taken_again_not_polled_for_ever(tmp_path):
+    # The Agent Service restarted by itself while we waited: the gate came back idle. Re-take the hold, then go on.
+    svc = LosingService([{"phase": "waiting", "holding": True, "active": 1}, IDLE, {"phase": "ready", "holding": True}],
+                        post_docs=[{"phase": "waiting", "holding": True, "active": 1},
+                                   {"phase": "waiting", "holding": True, "active": 0}])
+    res, _ = run_gate(tmp_path, svc)
+    assert res["state"] == "ready"
+    assert svc.methods() == ["POST", "GET", "GET", "POST", "GET"]
+
+
+def test_a_hold_lost_while_overdue_starts_over_and_clears_the_owner_note(tmp_path):
+    svc = LosingService([{"phase": "overdue", "holding": True, "turns": []}, IDLE, {"phase": "ready", "holding": True}])
+    res, told = run_gate(tmp_path, svc)
+    assert res["state"] == "ready" and len(told) == 1
+    assert not (tmp_path / gr.STATE).exists()
+
+
+def test_a_hold_that_never_sticks_calls_the_restart_off(tmp_path):
+    svc = LosingService([IDLE], post_docs=[{"phase": "waiting", "holding": True}] + [IDLE] * 20)
+    with pytest.raises(gr.CalledOff, match="dropping the restart hold"):
+        run_gate(tmp_path, svc)
+    assert svc.methods().count("POST") <= 1 + gr.MAX_REHOLDS
+    assert svc.methods()[-1] == "DELETE"
+
+
+def test_a_lost_hold_whose_retake_is_not_heard_is_bounded(tmp_path):
+    svc = LosingService([IDLE], post_codes=[200] + [0] * 50)
+    with pytest.raises(gr.CalledOff):
+        run_gate(tmp_path, svc)
+    assert svc.methods().count("POST") <= 1 + gr.MAX_REHOLDS
+
+
+def test_a_service_that_comes_back_without_its_gate_is_not_restarted_blind(tmp_path):
+    svc = LosingService([IDLE], post_codes=[200, 404])
+    with pytest.raises(gr.CalledOff, match="no longer has its restart gate"):
+        run_gate(tmp_path, svc)
