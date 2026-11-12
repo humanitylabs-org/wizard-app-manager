@@ -48,3 +48,15 @@ This is an extra gate: the owner login, tailscaled peer, origin, `X-Wizard-Store
 
 Tests: `tests/test_browser_boundary.py` lists every listener route and every published host route and asserts an
 app-page request is refused with the switch on, the shell still gets through, and nothing changes with it off.
+
+## App pages: `wam check` warns about a blank sandboxed window
+
+With the boundary on, every app window is a sandboxed frame (an opaque origin). The browser then asks for a module
+script (`<script type="module">`, which every Vite build writes) or any file marked `crossorigin` with `Origin: null`
+and needs a CORS answer; without one the page stays blank. `wam check` warns (`browser boundary: page files load in a
+sandboxed window`, `wam/builder.py` `boundary_rows`, never an error) when an app page loads such a file and none of the
+app's own server code sends `Access-Control-Allow-Origin`. The fix is the one wizard-notes, wizard-music and the
+Recorder's live view use: answer GET/HEAD of the app's own public files (scripts, styles, fonts, pictures; never the
+page, the API or a write) with `Access-Control-Allow-Origin: *` and no credentials. `templates/hello-wizard` loads
+classic `<script defer>` files and needs nothing (checked in real Chromium in a sandboxed frame: the habit list loads
+and Add saves through the shell). Tests: `tests/test_builder_boundary.py`.
