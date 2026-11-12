@@ -101,7 +101,7 @@ def box_on(home) -> bool:
         return False
 
 
-def ensure_token(home) -> "Path":
+def ensure_token(home, minted: list | None = None) -> "Path":
     """Mint the token once (32 random bytes, lowercase hex). The folder is 0700, so no other host user can reach
     it; the file itself is 0644 so a container user other than the owner's mapped uid can read its own mount."""
     import secrets
@@ -119,6 +119,8 @@ def ensure_token(home) -> "Path":
         f.write(secrets.token_hex(32) + "\n")
     os.chmod(tmp, 0o644)
     tmp.replace(p)
+    if minted is not None:   # a new file is a new inode: running containers still hold the old one
+        minted.append(p)
     return p
 
 
@@ -153,6 +155,26 @@ def _strip(doc: dict) -> dict:
     if isinstance(doc.get("services"), dict) and not doc["services"]:
         doc.pop("services")
     return doc
+
+
+def check_overlay(path, block: dict | None) -> None:
+    """Raise ValueError when write_overlay would refuse, without writing anything."""
+    from pathlib import Path
+    from .network import load_yaml
+    path = Path(path)
+    if not block or not path.is_file():
+        return
+    doc = load_yaml(path.read_text()) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: expected a compose mapping")
+    doc = _strip(doc)
+    svc = ((doc.get("services") or {}) if isinstance(doc.get("services"), dict) else {}).get(block["service"]) or {}
+    env = svc.get("environment") if isinstance(svc, dict) else None
+    if env is not None and not isinstance(env, dict):
+        raise ValueError(f"{path}: {block['service']}.environment must be a mapping to add the browser boundary")
+    clash = [k for k in block["environment"] if k in (env or {}) and env[k] != block["environment"][k]]
+    if clash:
+        raise ValueError(f"{path}: hand-written {', '.join(clash)} present; remove it first")
 
 
 def write_overlay(path, block: dict | None) -> bool:
@@ -236,17 +258,28 @@ def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = F
     if dry_run:
         out["would_change"] = list(app_ids)
         return out
+    # Every override must accept the block before anything is recorded or written, so a refusal never leaves a
+    # half-on box (the App Manager gating while the shell has no token).
+    for app_id in app_ids:
+        check_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None)
     sp = state_path(home)
     sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     sp.write_text(json.dumps({"on": on}) + "\n")
+    minted: list = []
     if on:
-        ensure_token(home)
+        ensure_token(home, minted)
     for app_id in app_ids:
-        if write_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None):
+        if write_overlay(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None) \
+                or (minted and status_one(runtipi_root, store, app_id)):
             out["changed"].append(app_id)
     if not on:
         token_path(home).unlink(missing_ok=True)
     return out
+
+
+def status_one(runtipi_root, store: str, app_id: str) -> bool:
+    p = override_path(runtipi_root, store, app_id)
+    return p.is_file() and MARK in p.read_text()
 
 
 def status(home, runtipi_root, store: str, app_ids) -> dict:
@@ -255,8 +288,5 @@ def status(home, runtipi_root, store: str, app_ids) -> dict:
         usable = bool(_HEX64.fullmatch(tok.read_text().strip()))
     except OSError:
         usable = False
-    apps = {}
-    for app_id in app_ids:
-        p = override_path(runtipi_root, store, app_id)
-        apps[app_id] = p.is_file() and MARK in p.read_text()
+    apps = {app_id: status_one(runtipi_root, store, app_id) for app_id in app_ids}
     return {"on": box_on(home), "token": usable, "apps": apps}

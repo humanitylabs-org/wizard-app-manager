@@ -1189,9 +1189,13 @@ def browser_boundary_cmd(c: Config, args) -> int:
     if args.action == "status":
         res = bb.status(c.home, c.runtipi_root, STORE, ids)
     else:
-        res = bb.set_box(c.home, c.runtipi_root, STORE, ids, args.action == "on", dry_run=args.dry_run)
-        if res["changed"] and not args.no_restart and rt is not None:
-            res["restart"] = recreate_apps(c, rt, res["changed"])
+        try:
+            res = bb.set_box(c.home, c.runtipi_root, STORE, ids, args.action == "on", dry_run=args.dry_run)
+        except ValueError as e:   # nothing was recorded or written
+            raise SystemExit(f"browser boundary unchanged: {e}")
+        if res["changed"] and not args.no_restart:
+            res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
+                              {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
         res["next"] = "restart the App Manager (wam serve) so its own routes follow"
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0

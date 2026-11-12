@@ -115,3 +115,24 @@ def test_dry_run_changes_nothing(tmp_path):
     res = bb.set_box(home, rt, STORE, APPS, True, dry_run=True)
     assert res["would_change"] == APPS and not bb.state_path(home).exists()
     assert json.loads(json.dumps(res))
+
+
+def test_a_refused_override_leaves_the_box_untouched(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    p = _ovr(rt, "wizard-ux")
+    p.parent.mkdir(parents=True)
+    p.write_text("services:\n  wizard-ux:\n    environment:\n      WIZARD_BROWSER_BOUNDARY: '0'\n")
+    try:
+        bb.set_box(home, rt, STORE, ["wizard-agent-service", "wizard-ux"], True)
+    except ValueError:
+        pass
+    assert not bb.box_on(home) and not bb.token_path(home).exists()
+    assert not _ovr(rt, "wizard-agent-service").exists()          # the earlier app was not changed either
+
+
+def test_a_new_token_restarts_every_app_that_mounts_it(tmp_path):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    bb.set_box(home, rt, STORE, APPS, True)
+    assert bb.set_box(home, rt, STORE, APPS, True)["changed"] == []   # same token: nothing to restart
+    bb.token_path(home).write_text("broken\n")
+    assert bb.set_box(home, rt, STORE, APPS, True)["changed"] == APPS
