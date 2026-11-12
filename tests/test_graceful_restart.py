@@ -80,7 +80,40 @@ def test_active_unknown_is_never_ready(tmp_path):
 def test_a_service_without_the_gate_restarts_as_before(tmp_path, code, state):
     svc = FakeService(["ready"], post_code=code)
     res, _ = run_gate(tmp_path, svc)
-    assert res["state"] == state and svc.methods() == ["POST"]
+    assert res["state"] == state and svc.methods() == ["POST"] * (3 if code == 0 else 1)
+
+
+def test_a_lost_poll_after_the_hold_is_retried_not_read_as_nothing_runs(tmp_path):
+    answers = iter([(0, {}), (500, {}), (200, {"phase": "waiting"}), (200, {"phase": "ready"})])
+    calls = []
+
+    def svc(method, url, body=None, timeout=10):
+        calls.append(method)
+        return (200, {"phase": "waiting"}) if method == "POST" else next(answers)
+    res, _ = run_gate(tmp_path, svc)
+    assert res["state"] == "ready" and calls == ["POST", "GET", "GET", "GET", "GET"]
+
+
+def test_a_service_silent_after_the_hold_calls_the_restart_off(tmp_path):
+    calls = []
+
+    def svc(method, url, body=None, timeout=10):
+        calls.append(method)
+        return (200, {"phase": "waiting"}) if method == "POST" and not calls.count("GET") else (0, {})
+    with pytest.raises(gr.CalledOff, match="stopped answering"):
+        run_gate(tmp_path, svc)
+    assert calls[-1] == "DELETE" and calls.count("GET") >= gr.LOST_SECONDS // gr.POLL_S
+
+
+def test_the_default_ask_never_blocks(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("must not wait for a terminal answer"))
+    svc = FakeService(["overdue"])
+    clock = Clock()
+    with pytest.raises(gr.CalledOff):
+        gr.gate(None, "update", home=tmp_path, origin=ORIGIN, req=svc, sleep=clock.sleep, clock=clock,
+                tell=lambda c, d: None, ask_seconds=30)
+    assert "wam agent-restart" in capsys.readouterr().err
+    assert svc.methods().count("GET") >= 10    # kept polling (renewing the hold) while waiting for an answer
 
 
 def test_overdue_asks_the_owner_and_wait_longer_posts_a_new_limit(tmp_path):
@@ -281,3 +314,21 @@ def test_owner_api_answers_a_waiting_restart_with_the_token_only(tmp_path, monke
         assert code == 200 and doc["choice"]["action"] == "cancel"
     finally:
         srv.shutdown()
+
+
+def test_runtipi_passthrough_cannot_restart_the_service_behind_the_gate(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
+    monkeypatch.setattr(gr, "switch_on", lambda home=None: True)
+    passed, routed = [], []
+    monkeypatch.setattr(cli, "runtipi_cli", lambda root, argv: passed.append(argv) or 0)
+    monkeypatch.setattr(cli, "app_update", lambda c, app, backup=True, allow_host_access=False: routed.append(
+        (app, backup)) or {"status": "running"})
+    assert cli.main(["app", "update", "--no-backup", "wizard-agent-service"]) == 0
+    assert routed == [("wizard-agent-service", False)]
+    assert cli.main(["app", "update", "--all"]) == 1
+    assert cli.main(["app", "update", "--no-backup", "wizard-ux", "wizard-agent-service"]) == 1
+    assert "on its own" in capsys.readouterr().err
+    assert cli.main(["app", "update", "--no-backup", "wizard-ux"]) == 0
+    assert passed == [["app", "update", "--no-backup", "wizard-ux"]]
+    monkeypatch.setattr(gr, "switch_on", lambda home=None: False)
+    assert cli.main(["app", "update", "--all"]) == 0 and passed[-1] == ["app", "update", "--all"]

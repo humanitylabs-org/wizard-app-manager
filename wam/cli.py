@@ -2534,6 +2534,33 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
             print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
 
 
+def _graceful_passthrough(argv: list[str]) -> int | None:
+    """With `wizard/graceful-restart` on (#642), runtipi-cli must not restart the Agent Service behind the gate's back:
+    a flag-first update/restart of it (`wam app update --no-backup wizard-agent-service`) goes through app_update /
+    app_lifecycle like the plain form, and a bulk form (`--all`, no target) is refused with the commands to use.
+    None: not concerned, hand it to runtipi-cli as before."""
+    if argv[:1] != ["app"] or len(argv) < 2 or argv[1] not in ("update", "restart"):
+        return None
+    from . import graceful_restart
+    targets = [a for a in argv[2:] if not a.startswith("-")]
+    if targets and not any(t.split(":", 1)[0] == graceful_restart.APP for t in targets):
+        return None
+    c = Config()
+    if not graceful_restart.switch_on(c.home):
+        return None
+    if not targets or len(targets) > 1:
+        print("the Agent Service waits for its running chats before a restart (switch wizard/graceful-restart), so "
+              f"it is not part of a bulk `wam app {argv[1]}`: run `wam app {argv[1]} {graceful_restart.APP}` on its own, "
+              "and name the other apps one by one", file=sys.stderr)
+        return 1
+    if argv[1] == "restart":
+        res = app_lifecycle(c, "restart", targets[0])
+    else:
+        res = app_update(c, targets[0], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
+    print(json.dumps(res, indent=2))
+    return 1 if res.get("error") else 0
+
+
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
     if args[:2] == ['app', 'update']:
         targets = [arg for arg in args[2:] if not arg.startswith('-')]
@@ -2656,6 +2683,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
+        routed = _graceful_passthrough(argv)
+        if routed is not None:
+            return routed
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)

@@ -40,6 +40,7 @@ WAIT_S = 600                 # the service's own default wait limit
 POLL_S = 3                   # well inside the service's 2-minute hold lease
 ASK_SECONDS = int(os.environ.get("WAM_GRACEFUL_RESTART_ASK_S") or 1800)
 HEALTH_SECONDS = 180
+LOST_SECONDS = 60            # polls that fail this long after the hold was taken call the restart off
 ACTIONS = ("wait", "now", "cancel")
 
 
@@ -80,7 +81,12 @@ def http(method: str, url: str, body: dict | None = None, timeout: float = 10) -
         "Accept": "application/json", **({"Content-Type": "application/json"} if data is not None else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - loopback origin from the registry
-            return r.status, json.loads(r.read(262144) or b"{}")
+            code, raw = r.status, r.read(262144)
+        try:
+            doc = json.loads(raw or b"{}")
+        except ValueError:
+            doc = {}
+        return code, doc if isinstance(doc, dict) else {}
     except urllib.error.HTTPError as e:
         try:
             return e.code, json.loads(e.read(65536) or b"{}")
@@ -161,21 +167,17 @@ def _tell_owner(c, st: dict) -> None:
         pass
 
 
-def _tty_choice(st: dict) -> dict | None:
-    if not (sys.stdin and sys.stdin.isatty()):
-        return None
-    try:
-        got = input(f"The Agent Service is still running {_describe(st.get('turns'))}. "
-                    "Wait 10 more minutes (w), restart now (n) or cancel (c)? [w/n/c] ").strip().lower()
-    except (EOFError, OSError):
-        return None
-    return {"w": {"action": "wait", "minutes": 10}, "n": {"action": "now"}, "c": {"action": "cancel"}}.get(got[:1])
+def _say(st: dict) -> None:
+    """Never blocks: the gate keeps polling (renewing the hold) while the owner answers from any shell or the API."""
+    print(f"The Agent Service is still running {_describe(st.get('turns'))}. Answer with `wam agent-restart wait "
+          "[--minutes N]`, `wam agent-restart now` or `wam agent-restart cancel`.", file=sys.stderr, flush=True)
+    return None
 
 
 # ---------------------------------------------------------------- the gate
 
 def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None, req=http, sleep=time.sleep,
-         clock=time.monotonic, ask=_tty_choice, tell=_tell_owner, wait_s: int = WAIT_S,
+         clock=time.monotonic, ask=_say, tell=_tell_owner, wait_s: int = WAIT_S,
          ask_seconds: int | None = None) -> dict:
     """Hold the Agent Service and wait until nothing runs (or the owner says restart now).
 
@@ -186,8 +188,13 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
     if not origin:
         return {"state": "unreachable", "origin": None}
     url = origin.rstrip("/") + ROUTE
-    code, st = req("POST", url, {"reason": reason, "wait_s": wait_s})
-    if code == 0:
+    for attempt in range(3):   # one lost request is no proof the service is down
+        code, st = req("POST", url, {"reason": reason, "wait_s": wait_s})
+        if code != 0:
+            break
+        if attempt < 2:
+            sleep(POLL_S)
+    if code == 0:   # down for ~6 s before any hold: nothing is running there to wait for
         return {"state": "unreachable", "origin": origin}
     if code == 404:
         return {"state": "unsupported", "origin": origin}   # the service's own switch is off, or an older service
@@ -195,7 +202,7 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
         return {"state": "unsupported", "origin": origin, "error": f"HTTP {code}"}
     limit = ASK_SECONDS if ask_seconds is None else ask_seconds
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    overdue_at = None
+    overdue_at = lost_at = None
     _clear_state(home)
     try:
         while True:
@@ -204,7 +211,7 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
                 return {"state": "ready", "origin": origin}
             if phase == "overdue":
                 pick = None
-                if overdue_at is None:   # tell the owner once per overdue spell; a terminal is asked right here
+                if overdue_at is None:   # tell the owner once per overdue spell (never blocks)
                     overdue_at = clock()
                     doc = {"phase": "overdue", "reason": reason, "since": since, "wait_until": st.get("wait_until"),
                            "turns": st.get("turns") or [], "active": st.get("active")}
@@ -219,20 +226,28 @@ def gate(c, reason: str, *, home: Path | None = None, origin: str | None = None,
                     raise CalledOff("the owner called the Agent Service restart off")
                 if action == "wait":
                     mins = int((pick or {}).get("minutes") or WAIT_S // 60)
-                    code, st = req("POST", url, {"reason": reason, "wait_s": mins * 60})
+                    code, got = req("POST", url, {"reason": reason, "wait_s": mins * 60})
                     overdue_at = None
                     _clear_state(home)
-                    if code == 0:
-                        return {"state": "unreachable", "origin": origin}
+                    if code == 200:
+                        st, lost_at = got, None
+                    else:   # not heard: like a lost poll, retried below, never read as "nothing runs"
+                        st, lost_at = {**st, "phase": "waiting"}, (clock() if lost_at is None else lost_at)
                     continue
                 if clock() - overdue_at >= limit:
                     raise CalledOff("chats were still running and nobody chose to restart; nothing changed")
             sleep(POLL_S)
-            code, st = req("GET", url)   # also renews the hold's lease
-            if code == 0:
-                return {"state": "unreachable", "origin": origin}   # it stopped by itself: nothing left to drain
-            if code == 404:
-                return {"state": "unsupported", "origin": origin}   # restarted without the gate meanwhile
+            code, got = req("GET", url)   # also renews the hold's lease
+            if code == 200:
+                st, lost_at = got, None
+                continue
+            # A lost poll is no proof that nothing runs: keep the last answer and retry; only a service that stays
+            # silent for LOST_SECONDS calls the restart off (a hung service may still run a turn).
+            lost_at = clock() if lost_at is None else lost_at
+            if clock() - lost_at >= LOST_SECONDS:
+                raise CalledOff(f"the Agent Service stopped answering while chats may still run (HTTP {code or 'none'}); "
+                                "nothing changed")
+            st = {**st, "phase": st.get("phase") if st.get("phase") != "ready" else "waiting"}
     except BaseException:
         release(origin, req=req)
         raise
