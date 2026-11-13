@@ -223,3 +223,73 @@ def test_new_required_settings_are_filled_before_the_update(tmp_path, monkeypatc
     rt.patched.clear()
     assert au.reconcile_settings(C(), rt, "wizard-claude")[0].startswith("API_KEY")
     assert rt.patched == []
+
+
+def _store_pin(rt_root, app_id, *, source="standard", pin="a" * 40, installed="a" * 40, repo="org/app"):
+    store = rt_root / "repos/wizardapps/apps" / app_id
+    live = rt_root / "apps/wizardapps" / app_id
+    store.mkdir(parents=True)
+    (store / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": pin}) + "\n")
+    if installed:
+        live.mkdir(parents=True)
+        (live / ".wizard-source").write_text(json.dumps({"repo": repo, "source": source}) + "\n")
+        (live / ".wizard-commit").write_text(installed + "\n")
+    return store / ".wizard-selection"
+
+
+def test_standard_store_pin_is_dropped_once_installed_and_real_pins_stay(tmp_path, monkeypatch):
+    """wizard-os#614: a Store Get/Update of the Standard release pinned the app forever (the index store never
+    looked again, so automatic updates never saw a new version). Only that pin goes; every real pin stays."""
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt = tmp_path / "runtipi"
+    pins = {
+        "notes": _store_pin(rt, "notes"),                                        # Standard Get done: dropped
+        "private-app": _store_pin(rt, "private-app", source="owner-private"),   # owner-local exact choice
+        "linked": _store_pin(rt, "linked", source="link"),                      # link source
+        "channel": _store_pin(rt, "channel", source="alpha-test"),              # subscribed channel
+        "mid-update": _store_pin(rt, "mid-update", installed="b" * 40),         # update still running
+        "mid-install": _store_pin(rt, "mid-install", installed=None),           # not installed yet
+        "files": _store_pin(rt, "files"),                                       # a release default
+        "hermes-agent": _store_pin(rt, "hermes-agent"),                         # frozen Hermes lock
+    }
+    monkeypatch.setattr(au, "_release_managed_strict", lambda: {"files"})
+    assert au.unpin_standard_all(rt, "wizardapps") == ["notes"]
+    assert {k for k, p in pins.items() if not p.exists()} == {"notes"}
+    assert au.unpin_standard_all(rt, "wizardapps") == []   # idempotent
+
+
+def test_store_pins_stay_when_the_release_file_cannot_be_read(tmp_path, monkeypatch):
+    rt = tmp_path / "runtipi"
+    pin = _store_pin(rt, "notes")
+    monkeypatch.setattr(au, "_release_managed_strict", lambda: None)
+    assert au.unpin_standard_all(rt, "wizardapps") == [] and pin.exists()
+
+
+def test_pinned_app_is_reported_even_without_a_newer_version(tmp_path):
+    """A real pin stops the index store from showing a newer version, so `wam app-updates` lists it as pinned
+    instead of leaving it out (wizard-os#614). Unpinned, system and release apps without one stay out."""
+    rt = tmp_path / "runtipi"
+    for app_id in ("pinned-app", "hermes-agent", "release-default"):
+        _store_pin(rt, app_id, source="owner-private")
+    rows = [row("pinned-app", 4, 4), row("plain", 3, 3), row("hermes-agent", 2, 2), row("release-default", 1, 1)]
+    got = au.candidates(rows, store="wizardapps", runtipi_root=rt, home=tmp_path / "home",
+                        release_managed={"release-default"})
+    assert [(r["id"], r["from"], r["to"], r["skip"]) for r in got] == [("pinned-app", 4, 4, "pinned")]
+
+
+def test_status_drops_a_standard_pin_before_asking_runtipi(tmp_path, monkeypatch):
+    """The check itself frees an app a Store Get pinned earlier, before Runtipi re-reads the index for it."""
+    from types import SimpleNamespace
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt_root = tmp_path / "runtipi"
+    pin = _store_pin(rt_root, "notes")
+    seen = []
+
+    class RT:
+        def installed(self):
+            seen.append(pin.exists())
+            return [row("notes", 1, 2)]
+
+    c = SimpleNamespace(runtipi_root=rt_root, home=tmp_path / "home", runtipi=lambda: RT())
+    out = au.status(c)
+    assert seen == [False] and [r["id"] for r in out["due"]] == ["notes"]

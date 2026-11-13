@@ -87,8 +87,11 @@ def test_owner_private_moves_to_standard_in_same_owner(box, monkeypatch, operati
         ident = json.loads((tree / '.wizard-source').read_text())
         assert (ident['repo'], ident['source']) == (PUBLIC, 'standard')
         assert (tree / '.wizard-commit').read_text().strip() == commit
-        # the old owner-private pin must not shadow the new Standard pin
-        assert json.loads((tree / '.wizard-selection').read_text()) == {'repo': PUBLIC, 'commit': commit}
+    installed = c.runtipi_root / 'apps' / cli.STORE / APP
+    # the old owner-private pin must not shadow the new Standard one, and the Standard one is not kept in the store
+    # copy either: the app follows the App Index again (wizard-os#614)
+    assert json.loads((installed / '.wizard-selection').read_text()) == {'repo': PUBLIC, 'commit': commit}
+    assert not (c.runtipi_root / 'repos' / cli.STORE / 'apps' / APP / '.wizard-selection').exists()
 
 
 @pytest.mark.parametrize('installed,selection,operation,reason', [

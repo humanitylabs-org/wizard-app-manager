@@ -159,6 +159,61 @@ def _selection_pinned(runtipi_root: Path, store: str, app_id: str) -> bool:
     return (runtipi_root / "repos" / store / "apps" / app_id / ".wizard-selection").is_file()
 
 
+def _release_managed_strict() -> set[str] | None:
+    """Like _release_managed, but None when a configured release file can't be read (then no pin is dropped)."""
+    from . import release_pins
+    try:
+        doc = release_pins.load() or {}
+    except (SystemExit, ValueError, OSError):
+        return None
+    return {str(row["app"]) for row in (doc.get("default_apps") or {}).values() if isinstance(row, dict) and row.get("app")}
+
+
+def unpin_standard(runtipi_root: Path, store: str, app_id: str, managed: set[str] | None = None) -> bool:
+    """Drop the pin a Standard Store Get/Update leaves behind (wizard-os#614).
+
+    A Standard selection is always the commit the Wizard App Index lists right now; the Store writes it to
+    `.wizard-selection` only so the install takes exactly that commit. Kept afterwards, the pin makes the index
+    store stop asking the index for that app, so its version never rises and automatic updates never reach it.
+    Once the installed copy is that same Standard commit, the pin has done its job and is removed.
+
+    Kept: the shell, Agent Service and Hermes, apps the WizardOS release pins (release defaults), owner-private,
+    link and channel selections (their installed source is not `standard`), and a pin whose commit is not the
+    installed one yet (an install or update still running)."""
+    if managed is None:
+        managed = _release_managed_strict()
+    if managed is None or app_id in SYSTEM_APPS or app_id in managed:
+        return False
+    pin = Path(runtipi_root) / "repos" / store / "apps" / app_id / ".wizard-selection"
+    live = Path(runtipi_root) / "apps" / store / app_id
+    try:
+        sel = json.loads(pin.read_text())
+        src = json.loads((live / ".wizard-source").read_text())
+        have = (live / ".wizard-commit").read_text().strip()
+    except (OSError, ValueError):
+        return False
+    if not isinstance(sel, dict) or not isinstance(src, dict) or src.get("source") != "standard":
+        return False
+    if not have or sel.get("commit") != have or sel.get("repo") != src.get("repo"):
+        return False
+    pin.unlink(missing_ok=True)
+    print(f"{app_id}: the Store pin to {have[:12]} is no longer needed; it follows the App Index again",
+          file=sys.stderr)
+    return True
+
+
+def unpin_standard_all(runtipi_root: Path, store: str) -> list[str]:
+    """unpin_standard for every installed app: boxes pinned by an earlier Store Get/Update get their updates back."""
+    managed = _release_managed_strict()
+    if managed is None:
+        return []
+    out = []
+    for pin in sorted((Path(runtipi_root) / "repos" / store / "apps").glob("*/.wizard-selection")):
+        if unpin_standard(runtipi_root, store, pin.parent.name, managed):
+            out.append(pin.parent.name)
+    return out
+
+
 def display_name(runtipi_root: Path, store: str, app_id: str) -> str:
     """The name the owner knows the app by (its store recipe's `name`, e.g. Movies), never the internal id."""
     try:
@@ -181,8 +236,14 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
             have, latest = int(app.get("version") or 0), int(meta.get("latestVersion") or 0)
         except (TypeError, ValueError):
             continue
-        if not app_id or slug != store or latest <= have:
+        if not app_id or slug != store:
             continue
+        if latest <= have:
+            # A real pin keeps the index store from ever showing a newer version; list it anyway so
+            # `wam app-updates` says why the app does not move (wizard-os#614).
+            if app_id in SYSTEM_APPS or app_id in managed or not _selection_pinned(runtipi_root, store, app_id):
+                continue
+            latest = have
         skip = None
         if app_id in SYSTEM_APPS or app_id in managed:
             skip = "system"            # moves with the WizardOS release
@@ -205,7 +266,9 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
 def status(c=None, installed: list[dict] | None = None) -> dict:
     from . import cli
     c = c or cli.Config()
-    installed = c.runtipi().installed() if installed is None else installed
+    if installed is None:
+        unpin_standard_all(c.runtipi_root, cli.STORE)   # before the check, so the index store looks again
+        installed = c.runtipi().installed()
     rows = candidates(installed, store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
     return {"app_mode": mode(c.home), "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
@@ -274,6 +337,7 @@ def owner_status(c=None) -> dict:
     Store's own copy of each app, never a second copy."""
     from . import cli
     c = c or cli.Config()
+    unpin_standard_all(c.runtipi_root, cli.STORE)
     installed = c.runtipi().installed()
     linked = _reports_on()   # the bug link only while the owner lets the box report failures (#524)
     failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300],
@@ -484,6 +548,10 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
+        try:   # a Store Get/Update no longer blocks this app's updates (wizard-os#614)
+            unpin_standard_all(c.runtipi_root, cli.STORE)
+        except Exception as e:  # noqa: BLE001 - never stops the updates
+            print(f"WARNING: Store pins not checked: {e}", file=sys.stderr)
         repo_moved = []
         if not dry_run:
             # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its

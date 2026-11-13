@@ -158,4 +158,9 @@ def execute(c, app_id, selection):
         raise ValueError('installed release identity did not match the selection')
     if actual.get('source') != source:
         raise ValueError('installed source did not match the selection')
+    if source == 'standard':
+        # The pin only made the install take this exact index commit; kept, it would stop every later update
+        # (wizard-os#614). Hermes, release defaults and private/link/channel selections keep theirs.
+        from . import app_updates
+        app_updates.unpin_standard(c.runtipi_root, cli.STORE, app_id)
     return result
