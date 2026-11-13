@@ -75,9 +75,9 @@ Wizard has three levels of change. Before you start, tell the owner which one th
 
 1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
 2. **Tweaks** (anything on screen, front end only): their own tweak is `Skins/My skin/skin.js`. It can add controls and gestures, and replace a whole front-end **part** through `api.parts.replace` (pins today; `api.parts.list()` shows what this Wizard offers). Shared settings that must match on every device go through `api.prefs`. After every edit the owner must tap Turn on in Settings › Look for that exact file. Updates never wipe or rebase a tweak; if an update changes a part, the tweak pauses with a note and you update it. Full API and a working example: `docs/TWEAKS.md` in humanitylabs-org/wizard-ux.
-3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of Standard / Early access; these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
+3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of a release channel (For everyone / For testers); these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
 
-Check the installed version before using these instructions. Replaceable parts, `api.prefs`, `docs/TWEAKS.md` and the Standard / Early access names arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. On earlier builds, Standard means Stable and Early access means Latest; keep tweaks within that build's documented API, or propose the change upstream.
+Check the installed version before using these instructions. Replaceable parts, `api.prefs` and `docs/TWEAKS.md` arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. The release channels are For everyone (called Stable on older builds) and For testers (Latest); keep tweaks within that build's documented API, or propose the change upstream.
 
 Rules:
 - If the change is only in the browser, make it a tweak. If it needs the server or stored data to change, it needs developer mode or a proposal: say "That needs developer mode. Want to turn it on, or should I propose it for everyone?"
@@ -92,11 +92,11 @@ Rules:
 
 ### Proposing a change for everyone
 
-When they want a change in Standard (or a tweak they like for everyone):
+When they want a change for everyone (or a tweak they like shipped to everyone):
 
 1. Write it up in three short lines (what happens now, what they want, why). Describe a tweak in words, or use only a privacy-scrubbed excerpt that fits the report's length limit; never paste the whole `skin.js`.
 2. The privacy scrub, complete-text preview and consent rules under "When you can't fix a Wizard problem" apply to Idea reports and code contributions too. Explain before approval: "This report will be public on GitHub, where anyone can read it." With their OK, send the approved report the same way as a problem report, with the title starting `Idea:`; use the private handoff if they decline public sharing. Open a pull request only if they asked you to and you have access; first show the exact proposed public content, privacy-scrub the code and metadata, and say which GitHub account will publish it, then get their OK.
-3. Once it ships in Standard, offer to turn their own copy off.
+3. Once it ships to everyone, offer to turn their own copy off.
 
 ### When you can't fix a Wizard problem
 
