@@ -647,6 +647,14 @@ def _record(h: Path, rec: dict) -> None:
     _save(d / "health.json", health(h, rec))
 
 
+def refresh_health(home: Path | None = None) -> None:
+    """Rewrite the Health projection from this box's own state. A restore brings the source box's health.json,
+    which was computed against that box's helper; without this the destination shows it until the next nightly run."""
+    d = _dir(home)
+    if d.is_dir() or (_home(home) / "maintenance.json").exists():
+        _save(d / "health.json", health(home, _load(d / "last.json")))
+
+
 def history(home: Path | None = None, n: int = 20) -> list[dict]:
     try:
         lines = (_dir(home) / "history.jsonl").read_text().splitlines()

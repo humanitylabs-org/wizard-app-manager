@@ -92,3 +92,23 @@ def test_helper_accepts_every_documented_command_and_nothing_else(monkeypatch):
         assert os_patch._main(cmd.split()) in (0, 1), cmd
     assert os_patch._main(["install", "curl"]) == 2
     assert os_patch._main(["check", "--refresh", "x"]) == 2
+
+
+def test_restore_recomputes_the_carried_health_projection(tmp_path, monkeypatch):
+    from wam.backup import restore
+    helper = tmp_path / "os-patch"
+    helper.write_text("x")
+    monkeypatch.setattr(maintain, "HELPER", helper)
+    home = tmp_path / "home"
+    (home / "maintenance").mkdir(parents=True)
+    (home / "maintenance.json").write_text(json.dumps({"helper_removed": True}))
+    # health.json as written on the source box, where the helper was gone
+    (home / "maintenance" / "health.json").write_text(json.dumps({"items": []}))
+
+    class FakeBox:
+        pass
+    box = FakeBox()
+    box.home = home
+    restore._maintenance_health_after_restore(box)
+    keys = [i["key"] for i in json.loads((home / "maintenance" / "health.json").read_text())["items"]]
+    assert "maintenance-helper" in keys
