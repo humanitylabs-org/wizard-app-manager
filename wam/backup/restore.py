@@ -986,6 +986,17 @@ def _keep_refused_secrets(held: Path, home: Path, refused: list[str]) -> None:
 def _schedule_off_after_restore(box: Box) -> None:
     from . import schedule
     schedule.after_restore(box)
+    _maintenance_health_after_restore(box)
+
+
+def _maintenance_health_after_restore(box: Box) -> None:
+    """The restored maintenance/health.json describes the source box; recompute it here (wizard-os#425)."""
+    try:
+        import pathlib
+        from .. import maintain
+        maintain.refresh_health(pathlib.Path(str(box.home)))
+    except Exception:  # noqa: BLE001 -- Health catches up on the next nightly run
+        pass
 
 
 def _regenerate(box: Box) -> list[str]:

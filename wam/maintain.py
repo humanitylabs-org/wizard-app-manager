@@ -647,6 +647,14 @@ def _record(h: Path, rec: dict) -> None:
     _save(d / "health.json", health(h, rec))
 
 
+def refresh_health(home: Path | None = None) -> None:
+    """Rewrite the Health projection from this box's own state. A restore brings the source box's health.json,
+    which was computed against that box's helper; without this the destination shows it until the next nightly run."""
+    d = _dir(home)
+    if d.is_dir() or (_home(home) / "maintenance.json").exists():
+        _save(d / "health.json", health(home, _load(d / "last.json")))
+
+
 def history(home: Path | None = None, n: int = 20) -> list[dict]:
     try:
         lines = (_dir(home) / "history.jsonl").read_text().splitlines()
@@ -667,8 +675,12 @@ def health(home: Path | None = None, last: dict | None = None, now: float | None
     """Home > Resources > Health rows (wizard-ux tools/system-health.mjs shape)."""
     last = last if last is not None else _load(_dir(home) / "last.json")
     now = time.time() if now is None else now
-    mode = settings(home)["os_security"]
+    cfg = settings(home)
+    mode = cfg["os_security"]
     items = []
+    h = _helper_removed_item(cfg)
+    if h:
+        items.append(h)
     b = _backup_item(backup_state(_home(home)), now)
     if b:
         items.append(b)
@@ -683,6 +695,19 @@ def health(home: Path | None = None, last: dict | None = None, now: float | None
     from . import quiet_restart
     items.extend(quiet_restart.items(_home(home), last))
     return {"generated_at": _now(), "items": items}
+
+
+def _helper_removed_item(cfg: dict) -> dict | None:
+    """`helper_removed` travels in maintenance.json, but the helper is per machine (wizard-os spec/BOX_STATE.md).
+    A restore onto a host whose installer already put the helper in place leaves the flag saying "removed" while a
+    helper is installed here, so later installer runs stop refreshing it and patching stops after the next helper
+    change. Never act as root on it; say so, and let the owner pick on this box."""
+    if not cfg.get("helper_removed") or not (HELPER.exists() or HELPER.is_symlink()):
+        return None
+    return {"key": "maintenance-helper", "label": "Maintenance helper", "status": "warn", "value": "needs a choice",
+            "detail": ("The root maintenance helper was removed earlier (maybe on the box this one was restored "
+                       "from), but one is installed here, and updates no longer refresh it. Run 'wam maintain setup' "
+                       "to keep it, or 'wam maintain remove' to remove it here too.")}
 
 
 def _backup_item(b: dict, now: float) -> dict | None:
