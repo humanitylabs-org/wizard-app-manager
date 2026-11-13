@@ -253,16 +253,29 @@ def test_standard_store_pin_is_dropped_once_installed_and_real_pins_stay(tmp_pat
         "hermes-agent": _store_pin(rt, "hermes-agent"),                         # frozen Hermes lock
     }
     monkeypatch.setattr(au, "_release_managed_strict", lambda: {"files"})
-    assert au.unpin_standard_all(rt, "wizardapps") == ["notes"]
+    installed = [row(k, 1, 1) for k in pins if k != "mid-install"]
+    assert au.unpin_standard_all(rt, "wizardapps", installed) == ["notes"]
     assert {k for k, p in pins.items() if not p.exists()} == {"notes"}
-    assert au.unpin_standard_all(rt, "wizardapps") == []   # idempotent
+    assert au.unpin_standard_all(rt, "wizardapps", installed) == []   # idempotent
+
+
+def test_store_pin_holds_while_its_update_is_still_running(tmp_path, monkeypatch):
+    """Runtipi copies the store folder twice during an update; the installed commit can already equal the pin
+    while the app is still updating. The pin goes only once Runtipi reports the app at rest."""
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt = tmp_path / "runtipi"
+    pin = _store_pin(rt, "notes")
+    for status in ("updating", "installing", "missing"):
+        assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1, status=status)]) == []
+    assert pin.exists()
+    assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1, status="stopped")]) == ["notes"]
 
 
 def test_store_pins_stay_when_the_release_file_cannot_be_read(tmp_path, monkeypatch):
     rt = tmp_path / "runtipi"
     pin = _store_pin(rt, "notes")
     monkeypatch.setattr(au, "_release_managed_strict", lambda: None)
-    assert au.unpin_standard_all(rt, "wizardapps") == [] and pin.exists()
+    assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1)]) == [] and pin.exists()
 
 
 def test_pinned_app_is_reported_even_without_a_newer_version(tmp_path):
@@ -277,8 +290,8 @@ def test_pinned_app_is_reported_even_without_a_newer_version(tmp_path):
     assert [(r["id"], r["from"], r["to"], r["skip"]) for r in got] == [("pinned-app", 4, 4, "pinned")]
 
 
-def test_status_drops_a_standard_pin_before_asking_runtipi(tmp_path, monkeypatch):
-    """The check itself frees an app a Store Get pinned earlier, before Runtipi re-reads the index for it."""
+def test_status_drops_a_standard_pin_and_asks_runtipi_again(tmp_path, monkeypatch):
+    """The check itself frees an app a Store Get pinned earlier, then asks again so the newer version shows."""
     from types import SimpleNamespace
     monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
     rt_root = tmp_path / "runtipi"
@@ -287,9 +300,10 @@ def test_status_drops_a_standard_pin_before_asking_runtipi(tmp_path, monkeypatch
 
     class RT:
         def installed(self):
+            # Runtipi's index store reads the index again only while no pin is there
             seen.append(pin.exists())
-            return [row("notes", 1, 2)]
+            return [row("notes", 1, 1 if pin.exists() else 2)]
 
     c = SimpleNamespace(runtipi_root=rt_root, home=tmp_path / "home", runtipi=lambda: RT())
     out = au.status(c)
-    assert seen == [False] and [r["id"] for r in out["due"]] == ["notes"]
+    assert seen == [True, False] and [r["id"] for r in out["due"]] == ["notes"]

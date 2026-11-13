@@ -202,16 +202,33 @@ def unpin_standard(runtipi_root: Path, store: str, app_id: str, managed: set[str
     return True
 
 
-def unpin_standard_all(runtipi_root: Path, store: str) -> list[str]:
-    """unpin_standard for every installed app: boxes pinned by an earlier Store Get/Update get their updates back."""
+def unpin_standard_all(runtipi_root: Path, store: str, installed: list[dict]) -> list[str]:
+    """unpin_standard for every installed app at rest: boxes pinned by an earlier Store Get/Update get their
+    updates back. Only apps Runtipi reports running or stopped: during an install or update Runtipi copies the
+    store folder more than once, and the pin must hold until the whole transaction is done."""
     managed = _release_managed_strict()
     if managed is None:
         return []
+    at_rest = {(r.get("app") or {}).get("appName") for r in installed or []
+               if (r.get("app") or {}).get("appStoreSlug") == store and (r.get("app") or {}).get("status") in ("running", "stopped")}
     out = []
     for pin in sorted((Path(runtipi_root) / "repos" / store / "apps").glob("*/.wizard-selection")):
-        if unpin_standard(runtipi_root, store, pin.parent.name, managed):
+        if pin.parent.name in at_rest and unpin_standard(runtipi_root, store, pin.parent.name, managed):
             out.append(pin.parent.name)
     return out
+
+
+def _installed_unpinned(c, rt) -> list[dict]:
+    """Runtipi's installed list after freeing apps a Store Get/Update pinned (wizard-os#614). When a pin went,
+    ask again: that read makes the index store look at the index for the app, so its newer version shows."""
+    from . import cli
+    installed = rt.installed()
+    try:
+        if unpin_standard_all(c.runtipi_root, cli.STORE, installed):
+            installed = rt.installed()
+    except Exception as e:  # noqa: BLE001 - never stops the check or the updates
+        print(f"WARNING: Store pins not checked: {e}", file=sys.stderr)
+    return installed
 
 
 def display_name(runtipi_root: Path, store: str, app_id: str) -> str:
@@ -267,8 +284,7 @@ def status(c=None, installed: list[dict] | None = None) -> dict:
     from . import cli
     c = c or cli.Config()
     if installed is None:
-        unpin_standard_all(c.runtipi_root, cli.STORE)   # before the check, so the index store looks again
-        installed = c.runtipi().installed()
+        installed = _installed_unpinned(c, c.runtipi())
     rows = candidates(installed, store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
     return {"app_mode": mode(c.home), "holds": holds(c.home), "due": [r for r in rows if not r["skip"]],
             "skipped": [r for r in rows if r["skip"]], "last": _state(c.home).get("last")}
@@ -337,8 +353,7 @@ def owner_status(c=None) -> dict:
     Store's own copy of each app, never a second copy."""
     from . import cli
     c = c or cli.Config()
-    unpin_standard_all(c.runtipi_root, cli.STORE)
-    installed = c.runtipi().installed()
+    installed = _installed_unpinned(c, c.runtipi())
     linked = _reports_on()   # the bug link only while the owner lets the box report failures (#524)
     failed = {k: {"to": v["to"], "at": int(v.get("at") or 0), "reason": str(v.get("reason") or "")[:300],
                   **({"bug": bug_url(v.get("bug"))} if linked and bug_url(v.get("bug")) else {})}
@@ -548,17 +563,14 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
-        try:   # a Store Get/Update no longer blocks this app's updates (wizard-os#614)
-            unpin_standard_all(c.runtipi_root, cli.STORE)
-        except Exception as e:  # noqa: BLE001 - never stops the updates
-            print(f"WARNING: Store pins not checked: {e}", file=sys.stderr)
         repo_moved = []
         if not dry_run:
             # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
             # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
             from . import repo_moves
             try:
-                repo_moved = (moves or repo_moves.follow_all)(c, rt.installed(), only=only)
+                # (and first frees apps a Store Get/Update pinned, so their updates show; wizard-os#614)
+                repo_moved = (moves or repo_moves.follow_all)(c, _installed_unpinned(c, rt), only=only)
             except Exception as e:  # noqa: BLE001 - a move check never stops the updates
                 print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
