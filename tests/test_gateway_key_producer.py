@@ -13,6 +13,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from wam import cli, gateway_keys  # noqa: E402
 
+RUNTIPI_FILES = gateway_keys.RuntipiFiles
+
 HAND = "ab" * 32
 HOST = "host:agent-service"
 
@@ -44,6 +46,16 @@ class LocalFiles:
         os.chmod(tmp, mode)
         tmp.replace(p)
         self.owners[str(p)] = (uid, gid)
+
+
+def test_runtipi_files_uses_the_app_manager_app_data_mount():
+    """Runtipi mounts app-data at /app-data, separately from the rest of its root at /data."""
+    files = RUNTIPI_FILES(Path("/srv/runtipi"))
+    assert files._inner(Path("/srv/runtipi/app-data")) == "/app-data"
+    assert files._inner(Path("/srv/runtipi/app-data/wizardapps/messenger/wizard/grants.json")) == (
+        "/app-data/wizardapps/messenger/wizard/grants.json"
+    )
+    assert files._inner(Path("/srv/runtipi/media/example.txt")) == "/data/media/example.txt"
 
 
 @pytest.fixture
