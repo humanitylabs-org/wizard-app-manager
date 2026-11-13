@@ -620,6 +620,8 @@ def write_shell_override(runtipi_root: Path, store: str, app_id: str, wizard_hom
     (d / "docker-compose.yml").write_text(shell_override(st, app_id, wizard_home, role,
                                                          None if role == "shell" else host_media_root(runtipi_root),
                                                          None if role == "shell" else transcriber_origin(runtipi_root, store)))
+    from . import browser_boundary   # wizard-os#133: keeps its own block (none unless the box switched it on)
+    browser_boundary.sync_app(wizard_home, runtipi_root, store, app_id)
     if role == "shell":   # the UX holds no gateway token
         (d / "app.env").unlink(missing_ok=True)
         return d / "docker-compose.yml"

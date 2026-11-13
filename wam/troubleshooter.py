@@ -50,11 +50,11 @@ UNITS = ("wizard-troubleshooter.service", "wizard-guardian.service", "wizard-gua
 # host.env carries this line beside GUARDIAN_ACT so a later run can tell the value this command wrote from one the owner
 # typed in by hand. A host.env without it was written by an older App Manager, whose GUARDIAN_ACT=0 was its default.
 GUARDIAN_NOTE = "# wam troubleshooter wrote GUARDIAN_ACT={act}; `wam troubleshooter --report-only` keeps the guardian report-only"
-# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.2/SHASUMS256.txt), only when the box has no Node >= 20.
-NODE_VERSION = "22.23.2"
+# Official Node.js LTS builds (https://nodejs.org/dist/v22.23.5/SHASUMS256.txt), only when the box has no Node >= 20.
+NODE_VERSION = "22.23.5"
 NODE_SHA256 = {
-    "x64": "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
-    "arm64": "fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8",
+    "x64": "cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8",
+    "arm64": "2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09",
 }
 
 
@@ -497,6 +497,11 @@ def install(wizard_home: Path, runtipi_root: Path, home: Path | None = None, app
         shell_ports = [lay["shell_port"]]
     origins = [f"https://{ts['host']}" + ("" if port == 443 else f":{port}") for port in shell_ports]
     env = environment(lay, ts["host"], origins, owner, home, act)
+    # Browser owner boundary (wizard-os#133): the repair page may not call the Agent Service itself under it, so the
+    # Troubleshooter asks for it, box-local. It reads this file on every call and sends the token only when the file
+    # holds one, so `wam browser-boundary on|off` (which mints or removes it) needs no Troubleshooter restart.
+    from . import browser_boundary
+    env[browser_boundary.TOKEN_FILE] = str(browser_boundary.token_path(wizard_home))
     if not apply:
         return {**res, "env": env, "dry_run": True}
     try:

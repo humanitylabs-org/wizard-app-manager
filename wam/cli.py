@@ -24,6 +24,8 @@ Wizard additions:
                                 (saved, kept across updates); --act turns repairs back on
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
                                 checked and rolled back on failure)
+  wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (switch wizard/graceful-restart):
+                                chats still run past the limit, so wait longer, restart now or call it off
   wam doctor [--fix]            check the whole chain
   wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
                                 access, and a live check of Docker's networks against the declarations
@@ -185,7 +187,7 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     slots.merge_into_registry(reg)
     registry.write(reg, c.home)   # second write adds `parking` (every spot, filled or not)
     share_registry(c)
-    from . import gateway_keys   # #387: the gateway's grant keys, only with feature switch wizard/gateway-keys on
+    from . import gateway_keys   # #387: the gateway's grant keys (always on)
     gateway_keys.sync_if_on(c, reg)
     # Return the exact owner-route projection we persisted, including staged view IDs.
     # Internal _skill_src remains available for both copy passes, never in API/CLI output.
@@ -422,6 +424,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             alongside.adopt_media(c.runtipi_root, _app_image(c, alongside.load(c.home) or al, app_id), alongside.container_user(al["agent"]))
         # fixed loopback ports: the agent's `wizard` MCP entry names the shell's; the shell names the service's
         form["port"] = alongside.service_port(al) if role == "service" else int(al["shell"]["port"])
+    if role and not al:   # wizard-os#133: the shell token block, only when the box switched the boundary on
+        from . import browser_boundary as _bb
+        _bb.sync_app(c.home, c.runtipi_root, STORE, app_id)
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
@@ -807,9 +812,19 @@ LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stoppe
 
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
-    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53)."""
-    rt = c.runtipi()
+    runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53).
+    A restart of the Agent Service waits for its running chats first when `wizard/graceful-restart` is on (#642)."""
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if verb == "restart":
+        from . import graceful_restart
+        if graceful_restart.applies(urn, getattr(c, "home", None), STORE):
+            return graceful_restart.restart(c, urn, lambda: _app_lifecycle(c, verb, app_id, urn, timeout),
+                                            reason="restart")
+    return _app_lifecycle(c, verb, app_id, urn, timeout)
+
+
+def _app_lifecycle(c: "Config", verb: str, app_id: str, urn: str, timeout: int = 300) -> dict:
+    rt = c.runtipi()
     if not ((rt.app(urn) or {}).get("app") or {}):
         raise SystemExit(f"{app_id} is not installed")
     getattr(rt, verb)(urn)
@@ -1173,6 +1188,31 @@ def refresh_session_mounts(c: Config) -> dict:
     return out
 
 
+def browser_boundary_cmd(c: Config, args) -> int:
+    """`wam browser-boundary status|on|off` (wizard-os#133). On mints the shell-only token and hands it to the Agent
+    Service and the shell; off removes both. Do not turn it on before the shell sends the token (wizard-ux): every
+    Store, Settings and chat call would be refused. Turning it on for anyone is Miguel's call (release stop)."""
+    from . import browser_boundary as bb
+    try:
+        rt = c.runtipi()
+    except (RuntipiError, OSError):
+        rt = None
+    ids = sorted(_alongside_apps(c, rt))
+    if args.action == "status":
+        res = bb.status(c.home, c.runtipi_root, STORE, ids)
+    else:
+        try:
+            res = bb.set_box(c.home, c.runtipi_root, STORE, ids, args.action == "on", dry_run=args.dry_run)
+        except ValueError as e:   # nothing was recorded or written
+            raise SystemExit(f"browser boundary unchanged: {e}")
+        if res["changed"] and not args.no_restart:
+            res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
+                              {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
+        res["next"] = "restart the App Manager (wam serve) so its own routes follow"
+    print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
+    return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
+
+
 def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
     """Restart (Runtipi regenerates app.env and force-recreates the containers) each RUNNING app; a stopped app
     picks the settings up on its next start. app id -> recreated | not running (...) | error: ..."""
@@ -1366,17 +1406,11 @@ def install_with_retry(c: Config, app_id: str, given: dict[str, str] | None = No
         return install(c, app_id, given, wait=wait, **kw)
 
 
-CLI_INSTALL_LINKS = "wizard/cli-install-links"   # feature switch (Settings › Try new features), off by default
-
-
-def cli_install_links(c: Config, res: dict, publish=None, switch_on=None) -> dict:
+def cli_install_links(c: Config, res: dict, publish=None) -> dict:
     """After `wam install`, publish links the same way Store install does (store_install._links), so a connected box
-    needs no manual `wam links` (#400). Only when the off-by-default feature switch `wizard/cli-install-links` is on."""
+    needs no manual `wam links` (#400). Always on: a bug fix, no feature switch.
+    Only after a good install, and best effort: a links error never fails the install."""
     if res.get("status") not in ("running", "stopped", "already installed"):
-        return res
-    if switch_on is None:
-        from .feature_switches import is_on as switch_on
-    if not switch_on(CLI_INSTALL_LINKS, c.home):
         return res
     if publish is None:
         from .store_install import _links as publish
@@ -1581,14 +1615,9 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
 
 
-def doctor_gateway_keys(c: Config, reg: dict, switch_on=None) -> list[tuple[str, bool, str]]:
-    """#387: flag apps with tools that the Agent Service's gateway holds no grant key for (read-only). Only when the
-    off-by-default feature switch `wizard/doctor-gateway-keys` is on."""
+def doctor_gateway_keys(c: Config, reg: dict) -> list[tuple[str, bool, str]]:
+    """#387: flag apps with tools that the Agent Service's gateway holds no grant key for (read-only, always on)."""
     from . import gateway_keys
-    if switch_on is None:
-        from .feature_switches import is_on as switch_on
-    if not switch_on(gateway_keys.SWITCH, c.home):
-        return []
     row = gateway_keys.check(reg, c.home, c.runtipi_root)
     return [row] if row else []
 
@@ -1751,6 +1780,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     FEATURE_SWITCHES = "/api/feature-switches"
+    AGENT_RESTART = "/api/agent-restart"
+
+    def _agent_restart(self, method: str):
+        """GET: the waiting Agent Service restart (wam/graceful_restart, #642). POST {"action": "wait"|"now"|"cancel",
+        "minutes": n}: the owner's answer when chats still run past the wait limit."""
+        from . import graceful_restart as gr     # caller already passed _authorized()
+        if method == "GET":
+            return self._json(200, gr.status(self.cfg.home))
+        b = self._body()
+        try:
+            return self._json(200, gr.choose(str(b.get("action", "")), b.get("minutes"), self.cfg.home))
+        except ValueError as e:
+            return self._json(409 if "no Agent Service restart" in str(e) else 400, {"error": str(e)})
 
     def _authorized(self) -> bool:
         got = self.headers.get("Authorization", "")
@@ -1810,9 +1852,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if u.path == "/api/system/load":
             # Exact read-only numeric projection; never proxy arbitrary manager paths or credentials.
-            from . import resources
+            from . import browser_boundary as bb, resources
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self._json(403, {"error": "cross_site_refused"})
+            if why := bb.refusal(self.headers):   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+                return self._json(403, {"error": why})
             try:
                 return self._json(200, resources.read(c.runtipi(), getattr(c, "runtipi_root", None)))
             except Exception:
@@ -1830,6 +1874,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(403, {"error": "owner_only"})
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self._json(403, {"error": "cross_site_refused"})
+            from . import browser_boundary as bb   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+            if why := bb.refusal(self.headers):
+                return self._json(403, {"error": why})
             try:
                 return self._json(200, devices.reader_for(c.home)())
             except Exception:
@@ -1869,6 +1916,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._view_file(u.path.removeprefix("/views").lstrip("/") or "index.html")
         if u.path == "/api/doctor":
             return self._json(200, [{"check": n, "ok": ok, "detail": d} for n, ok, d in doctor(c)])
+        if u.path == self.AGENT_RESTART:         # owner token only
+            return self._agent_restart("GET") if self._authorized() else None
         if u.path == self.FEATURE_SWITCHES:      # owner token only
             return self._feature_switches("GET") if self._authorized() else None
         return self._json(404, {"error": "not found"})
@@ -1879,6 +1928,8 @@ class Handler(BaseHTTPRequestHandler):
         c, path = self.cfg, urlparse(self.path).path
         if path == self.FEATURE_SWITCHES:
             return self._feature_switches("POST")
+        if path == self.AGENT_RESTART:
+            return self._agent_restart("POST")
         try:
             if path == "/api/install":
                 b = self._body()
@@ -1955,6 +2006,10 @@ class StoreHandler(BaseHTTPRequestHandler):
         if why:
             return self._json(403, {"error": why})
         app_id = urlparse(self.path).path.strip("/")
+        if not self._static_asset(method, app_id):
+            from . import browser_boundary as bb   # wizard-os#133: off unless WIZARD_BROWSER_BOUNDARY=1
+            if why := bb.refusal(self.headers):
+                return self._json(403, {"error": why})
         if app_id == "_connections" or app_id.startswith("_connections/"):   # the Connections view (connections_view.py)
             return self._connections(method, urlparse(self.path).path, parse_qs(urlparse(self.path).query))
         if app_id == UPDATES_PATH:   # Settings → Updates (app ids can't start with "_", so this never shadows one)
@@ -2060,6 +2115,16 @@ class StoreHandler(BaseHTTPRequestHandler):
     def devices(cls):
         from . import owner_devices
         return owner_devices.Enrollment(cls.cfg.home)
+
+    @staticmethod
+    def _static_asset(method: str, app_id: str) -> bool:
+        """The Connections view's own page files (no owner data) load as a frame, so they can't carry the shell
+        token; its `api/` calls and every other route still need it when the browser boundary is on."""
+        from . import connections_view as cv
+        if method != "GET" or not (app_id == cv.PREFIX or app_id.startswith(cv.PREFIX + "/")):
+            return False
+        sub = app_id.removeprefix(cv.PREFIX).lstrip("/")
+        return not sub.startswith("api/") and sub != "api"
 
     def _connections(self, method: str, path: str, query: dict | None = None) -> None:
         """The Connections view and its owner controls on the shell's origin. The owner gate in _go already ran
@@ -2357,6 +2422,18 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
 
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
                settings=None) -> dict:
+    """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
+    running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
+    from . import graceful_restart
+    urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
+    if not graceful_restart.applies(urn, getattr(c, "home", None), STORE):
+        return _app_update(c, app_id, backup, timeout, allow_host_access, settings)
+    return graceful_restart.update(c, urn, lambda: _app_update(c, app_id, backup, timeout, allow_host_access,
+                                                                settings), backup=backup)
+
+
+def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+                settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
 
@@ -2469,6 +2546,33 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
                 print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+
+
+def _graceful_passthrough(argv: list[str]) -> int | None:
+    """With `wizard/graceful-restart` on (#642), runtipi-cli must not restart the Agent Service behind the gate's back:
+    a flag-first update/restart of it (`wam app update --no-backup wizard-agent-service`) goes through app_update /
+    app_lifecycle like the plain form, and a bulk form (`--all`, no target) is refused with the commands to use.
+    None: not concerned, hand it to runtipi-cli as before."""
+    if argv[:1] != ["app"] or len(argv) < 2 or argv[1] not in ("update", "restart"):
+        return None
+    from . import graceful_restart
+    targets = [a for a in argv[2:] if not a.startswith("-")]
+    if targets and not any(t.split(":", 1)[0] == graceful_restart.APP for t in targets):
+        return None
+    c = Config()
+    if not graceful_restart.switch_on(c.home):
+        return None
+    if not targets or len(targets) > 1:
+        print("the Agent Service waits for its running chats before a restart (switch wizard/graceful-restart), so "
+              f"it is not part of a bulk `wam app {argv[1]}`: run `wam app {argv[1]} {graceful_restart.APP}` on its own, "
+              "and name the other apps one by one", file=sys.stderr)
+        return 1
+    if argv[1] == "restart":
+        res = app_lifecycle(c, "restart", targets[0])
+    else:
+        res = app_update(c, targets[0], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
+    print(json.dumps(res, indent=2))
+    return 1 if res.get("error") else 0
 
 
 def runtipi_cli(runtipi_root: Path, args: list[str]) -> int:
@@ -2593,6 +2697,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
+        routed = _graceful_passthrough(argv)
+        if routed is not None:
+            return routed
         return runtipi_cli(Config().runtipi_root, argv)
     ap = argparse.ArgumentParser(prog="wam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -2624,6 +2731,10 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
+    bbp = sub.add_parser("browser-boundary", help="shell-only token for owner routes (wizard-os#133; off by default)")
+    bbp.add_argument("action", choices=["status", "on", "off"])
+    bbp.add_argument("--no-restart", action="store_true", help="write the settings only; restart the apps yourself")
+    bbp.add_argument("--json", action="store_true"); bbp.add_argument("--dry-run", action="store_true")
     oe = sub.add_parser("owner-edge", help="serve the owner edge for apps that declare owner_proof (systemd unit)")
     oe.add_argument("action", choices=["serve"])
     opp = sub.add_parser("owner-proof", help="owner proof keys for apps that declare owner_proof (spec OWNER_PROOF.md)")
@@ -2683,6 +2794,10 @@ def main(argv: list[str] | None = None) -> int:
                                                   "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
     fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
+    arp = sub.add_parser("agent-restart", help="a waiting Agent Service restart (switch wizard/graceful-restart): "
+                                               "status, or wait [--minutes N] / now / cancel")
+    arp.add_argument("action", nargs="?", default="status", choices=("status", "wait", "now", "cancel"))
+    arp.add_argument("--minutes", type=int, default=None)
     aug.add_argument("--auto", action="store_true"); aug.add_argument("--ask", action="store_true")
     aug.add_argument("--hold", metavar="APP"); aug.add_argument("--unhold", metavar="APP")
     aug.add_argument("--ensure-timer", action="store_true")
@@ -2721,6 +2836,14 @@ def main(argv: list[str] | None = None) -> int:
         from . import work
         items = work.inventory()
         print(json.dumps(work.blocking(items, args.impact) if args.impact else items, indent=2))
+        return 0
+    if args.cmd == "agent-restart":
+        from . import graceful_restart as gr
+        try:
+            res = gr.status() if args.action == "status" else gr.choose(args.action, args.minutes)
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}, indent=2)); return 1
+        print(json.dumps(res, indent=2))
         return 0
     if args.cmd == "feature-switches":
         from . import feature_switches as fs
@@ -2881,6 +3004,8 @@ def main(argv: list[str] | None = None) -> int:
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "browser-boundary":
+            return browser_boundary_cmd(c, args)
         elif args.cmd == "owner-edge":
             from . import owner_edge
             owner_edge.run(c.home)
@@ -2919,7 +3044,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(res, indent=2) if args.json else links.describe(res))
             return 0 if not res["errors"] else 1
         elif args.cmd == "serve":
-            from . import recommended
+            from . import browser_boundary as _bb, recommended
+            if _bb.apply_box_state(c.home):   # wizard-os#133: `wam browser-boundary on` gates this process too
+                print("browser boundary on: owner routes need the shell token", flush=True)
             recommended.resume(c)
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c

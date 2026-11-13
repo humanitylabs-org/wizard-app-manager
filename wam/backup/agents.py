@@ -130,6 +130,27 @@ class ImportRefused(ValueError):
     pass
 
 
+def zip_prefix(names: list[str]) -> str:
+    """The one top folder (`.hermes/` or `hermes/`) every member of a Hermes backup sits under, or ""."""
+    files = [n for n in names if not n.endswith("/")]
+    firsts = {n.split("/", 1)[0] for n in files if "/" in n}
+    return (firsts.pop() + "/") if len(firsts) == 1 and firsts <= {".hermes", "hermes"} and \
+        all("/" in n for n in files) else ""
+
+
+def export_drop(zip_path: Path):
+    """For a stock `hermes backup` zip: a test that is true for the members a backup never carries (the per-machine
+    entries keep_in_place names, which an import leaves out anyway), or None when the zip has none of them."""
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+    prefix = zip_prefix(names)
+
+    def drop(name: str) -> bool:
+        rel = name[len(prefix):] if prefix and name.startswith(prefix) else name
+        return bool(rel.strip("/")) and keep_in_place(rel)
+    return drop if any(drop(n) for n in names) else None
+
+
 def check_and_filter(src: Path, dst: Path) -> dict:
     """Copy a stock `hermes backup` zip to dst without per-machine entries, refusing unsafe names."""
     kept, skipped, total = 0, [], 0
@@ -139,9 +160,7 @@ def check_and_filter(src: Path, dst: Path) -> dict:
         raise ImportRefused("the agent archive is not a zip") from None
     with z:
         names = [n for n in z.namelist() if not n.endswith("/")]
-        firsts = {n.split("/", 1)[0] for n in names if "/" in n}
-        prefix = (firsts.pop() + "/") if len(firsts) == 1 and firsts <= {".hermes", "hermes"} and \
-            all("/" in n for n in names) else ""
+        prefix = zip_prefix(names)
         rels = [n[len(prefix):] for n in names]
         if "config.yaml" not in rels:
             raise ImportRefused("the agent archive isn't a Hermes backup (no config.yaml)")
