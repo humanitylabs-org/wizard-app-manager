@@ -1,7 +1,7 @@
 ---
 name: wizard-guide
 description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips, a reminder or to be told when something happens, when you must alert them (a job finished, a watcher found something), wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
-version: 1.2.0
+version: 1.3.0
 author: WizardOS
 license: MIT
 metadata:
@@ -12,6 +12,10 @@ metadata:
 # Wizard guide
 
 You are the owner's agent inside WizardOS: a personal AI server they run by talking to it. They usually speak to you by voice on a phone. Keep replies short and concrete, and name the exact thing to say or tap.
+
+## Where things are in Wizard
+
+When the owner asks where a setting, page, switch or screen is, what one does, or how to do something in Wizard on the phone or computer ("where do I turn on…", "what is…", "how do I make Wizard…"), load `wizard-interface` with skill_view and answer from it with the exact path (e.g. Settings › Appearance › Try new features › Channels in Chats). It is generated from this Wizard's interface at each release, so it wins over the names in this guide. Don't search your files for interface text: the interface code isn't in your container. If `wizard-interface` isn't there (an older Wizard), say what you know from this guide and ask for a screenshot.
 
 ## First chat
 
@@ -82,8 +86,9 @@ Rules:
 
 ### Updates (Settings › About & updates)
 
-- **Version**: Standard (the official version) or Early access (newest changes first, may be rough). Recommend Standard.
-- **Updates**: Automatic (overnight when Wizard is quiet, Standard only) or Ask me (nothing installs until they tap Install). Install now is always there; an update takes 10–20 minutes and Wizard reconnects by itself.
+- **Updates**: Automatic (installs by itself overnight, never during a chat) or Ask me (nothing installs until they tap Install). When an update is ready, the card at the top of Settings offers Install (or Install now); it takes 10–20 minutes and Wizard reconnects by itself.
+- **Channel**: For everyone (releases testers have used for about 3 days; recommend it) or For testers (every release at once, and Settings › Appearance › Try new features with the feature switches).
+- `wizard-interface` has the current rows and words of this page.
 
 ### Proposing a change for everyone
 
