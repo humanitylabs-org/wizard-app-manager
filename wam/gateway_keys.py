@@ -127,13 +127,18 @@ def digest(key: str) -> str:
 
 class RuntipiFiles:
     """Files under the Runtipi root, which the App Manager and the Agent Service own (root or the service's uid):
-    read, stat and atomically replaced through the runtipi container, as `/data/...` (like app_rename)."""
+    read, stat and atomically replaced through the runtipi container. Runtipi mounts app-data separately at
+    `/app-data`; the other root folders remain under `/data` (like app_rename)."""
 
     def __init__(self, runtipi_root: Path):
         self.root = Path(runtipi_root)
 
     def _inner(self, p: Path) -> str:
-        return "/data/" + str(Path(p).relative_to(self.root))
+        relative = Path(p).relative_to(self.root)
+        if relative.parts and relative.parts[0] == "app-data":
+            remainder = Path(*relative.parts[1:]).as_posix() if len(relative.parts) > 1 else ""
+            return "/app-data" + ("/" + remainder if remainder else "")
+        return "/data/" + relative.as_posix()
 
     def read(self, p: Path) -> bytes | None:
         from .app_rename import rt_read
