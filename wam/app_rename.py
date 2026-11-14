@@ -246,6 +246,30 @@ def rename_compose_override(text: str, old: str, new: str, services: set[str]) -
     return "".join(out)
 
 
+def drop_image_pins(text: str) -> str:
+    """A staging copy's override may pin the branch build (`image:` / `build:` under a service). Moving to the
+    released app drops just those keys, so the released recipe's image runs; every other owner value stays."""
+    out, block, svc_indent, skip_deeper = [], None, None, None
+    for line in text.splitlines(keepends=True):
+        top = re.match(r"^([A-Za-z0-9_.-]+):", line)
+        if top:
+            block, svc_indent, skip_deeper = top.group(1), None, None
+            out.append(line)
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if skip_deeper is not None:
+            if not line.strip() or indent > skip_deeper:
+                continue
+            skip_deeper = None
+        if block == "services" and line.strip() and not line.lstrip().startswith("#"):
+            if svc_indent is None or indent <= svc_indent:
+                svc_indent = indent          # a service name line
+            elif re.match(r"^\s+(image|build)\s*:", line):
+                skip_deeper = indent         # drop the key and its nested lines
+                continue
+        out.append(line)
+    return "".join(out)
+
 
 # ---------------------------------------------------------------- agent access to the app (Agent Service, #58/#60)
 
@@ -355,7 +379,49 @@ def _source(runtipi_root: Path, store: str, app_id: str) -> dict:
         return {}
 
 
-def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly: bool = False) -> list[dict]:
+# A staging copy's id: the released id plus its label (search-preview, movies-next, agent-philosopher); see
+# app_standard.id_rows. Only these ids are looked up by name when their own source offers no update.
+STAGING_ID = re.compile(r"^(?:(?P<pre>agent|demo|test|preview)-)?(?P<base>[a-z0-9][a-z0-9-]*?)"
+                        r"(?:-(?P<label>preview|next|test|beta|alpha|agent|demo))?$")
+
+
+def staging_targets(app_id: str) -> list[str]:
+    """The released ids a staging copy stands for: search-preview -> [search, wizard-search]. [] for a plain id."""
+    m = STAGING_ID.fullmatch(app_id or "")
+    if not m or not (m.group("pre") or m.group("label")) or not m.group("base"):
+        return []
+    base = m.group("base")
+    return [base] if base.startswith("wizard-") else [base, f"wizard-{base}"]
+
+
+def _claimed_by_release(c, old: str, have: set, fetch, search) -> dict | None:
+    """A staging copy (installed from a branch, a local build or a private test pin, wizard-os#628) has no update
+    of its own. When the released app of the same name claims it (its wizard.md lists the staging id in
+    `renamed_from`), the copy moves to that app like any rename, keeping its data, settings and connections.
+    Nothing moves without that explicit claim by the publisher."""
+    for new in staging_targets(old):
+        if new == old or new in have:
+            continue
+        try:
+            hits = search(new)
+        except Exception:  # noqa: BLE001 - the index being down never blocks updates
+            continue
+        for h in hits or []:
+            repo = h.get("repo")
+            if h.get("id") != new or not isinstance(repo, str) or "/" not in repo:
+                continue
+            try:
+                rec = fetch(repo)
+            except Exception:  # noqa: BLE001
+                continue
+            if rec.get("id") == new and rec.get("listed", True) and old in renamed_from(rec.get("manifest") or {}):
+                return {"from": old, "to": new, "repo": rec.get("repo") or repo, "name": rec.get("name") or new,
+                        "staging": True}
+    return None
+
+
+def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly: bool = False,
+        search=None) -> list[dict]:
     """Installed apps whose source now publishes them under a new id that names this one in `renamed_from`.
     Public-index apps are checked through their recorded repo's index record (GitHub keeps the old repo name
     redirecting after a repo rename, and the index re-reads it). Private sources are moved with `wam app-rename`.
@@ -368,6 +434,7 @@ def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly:
     have = {(r.get("app") or {}).get("appName") for r in rows
             if (r.get("app") or {}).get("appStoreSlug") == cli.STORE}
     fetch = fetch or (lambda repo: index._get(f"{c.index}/v1/apps/{repo}"))
+    search = search or (lambda app_id: index.search(c.index, id=app_id))
     out = []
     skip: set = set()
     if nightly:
@@ -377,17 +444,22 @@ def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly:
             continue
         src = _source(c.runtipi_root, cli.STORE, old)
         repo = src.get("repo")
-        if not isinstance(repo, str) or src.get("private") or src.get("local") or "/" not in repo:
-            continue
-        try:
-            rec = fetch(repo)
-        except Exception:  # noqa: BLE001 - the index being down never blocks updates
-            continue
-        new = rec.get("id")
-        if not isinstance(new, str) or new == old or new in have or not rec.get("listed", True):
-            continue
-        if old in renamed_from(rec.get("manifest") or {}):
+        rec = None
+        if isinstance(repo, str) and not src.get("private") and not src.get("local") and "/" in repo:
+            try:
+                rec = fetch(repo)
+            except Exception:  # noqa: BLE001 - the index being down never blocks updates
+                rec = None
+        if rec is not None and rec.get("id") == old and rec.get("listed", True):
+            continue   # its own source still publishes it under this id: it updates normally
+        new = (rec or {}).get("id")
+        if (isinstance(new, str) and new != old and new not in have and rec.get("listed", True)
+                and old in renamed_from(rec.get("manifest") or {})):
             out.append({"from": old, "to": new, "repo": rec.get("repo") or repo, "name": rec.get("name") or new})
+            continue
+        claimed = _claimed_by_release(c, old, have, fetch, search)
+        if claimed:
+            out.append(claimed)
     return out
 
 
@@ -511,7 +583,8 @@ def _verify(c, rt, new: str, want_status: str, *, settle: float, probe_seconds: 
 
 
 def migrate(c=None, old: str = "", new: str | None = None, *, dry_run: bool = False, settle: float = 15,
-            probe_seconds: float = 120, backup_root: Path | None = None, repo: str | None = None) -> dict:
+            probe_seconds: float = 120, backup_root: Path | None = None, repo: str | None = None,
+            staging: bool = False) -> dict:
     """Move installed app `old` to id `new` (default: what its source now publishes). See the module docstring."""
     from . import cli
     c = c or cli.Config()
@@ -524,13 +597,13 @@ def migrate(c=None, old: str = "", new: str | None = None, *, dry_run: bool = Fa
         return {"error": "another app rename is running"}
     try:
         return _migrate(c, old, new, dry_run=dry_run, settle=settle, probe_seconds=probe_seconds,
-                        backup_root=backup_root, repo=repo)
+                        backup_root=backup_root, repo=repo, staging=staging)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
 
-def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=None):
+def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=None, staging=False):
     from . import cli, network
     store = cli.STORE
     rt = c.runtipi()
@@ -544,6 +617,9 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         if not found:
             return {"error": f"{old}: its source does not publish a renamed app (wizard.md renamed_from: [{old}])"}
         new = found[0]["to"]
+        if found[0].get("staging"):
+            staging = True
+            repo = repo or found[0]["repo"]   # a staging copy moves to the released app's repo, not its own source
     if not ID.fullmatch(new) or new == old:
         return {"error": f"bad new id {new!r}"}
     if new in have:
@@ -649,6 +725,7 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             ov = saved_files.get("override")
             if ov is not None:
                 text = rename_compose_override(ov.decode(), old, new, _recipe_services(c, new))
+                text = drop_image_pins(text) if staging else text
                 rt_write(pn["user"] + "/docker-compose.yml", text.encode())
             log("owner settings copied")
         if (g := saved_files["grants"]) is not None:
@@ -758,17 +835,22 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
     return result
 
 
-def rename_due(c=None, rt=None) -> list[dict]:
+def rename_due(c=None, rt=None, only: list[str] | None = None) -> list[dict]:
     """The nightly app-update run: move every installed app its source has renamed. One at a time, each verified
-    or rolled back on its own."""
-    from . import cli
+    or rolled back on its own. `only`: an update asked for by id moves just those apps (an explicit request, so
+    the nightly holds do not apply; system apps still move only with the WizardOS release)."""
+    from . import app_updates, cli
     c = c or cli.Config()
     rt = rt or c.runtipi()
     out = []
-    for d in due(c, rt, nightly=True):
+    rows = due(c, rt, nightly=not only)
+    if only:
+        rows = [d for d in rows if d["from"] in only and d["from"] not in app_updates.SYSTEM_APPS]
+    for d in rows:
         print(f"renaming {d['from']} -> {d['to']}", file=sys.stderr, flush=True)
         try:
-            out.append(migrate(c, d["from"], d["to"]))
+            extra = {"repo": d["repo"], "staging": True} if d.get("staging") else {}
+            out.append(migrate(c, d["from"], d["to"], **extra))
         except Exception as e:  # noqa: BLE001 - one app never stops the others
             out.append({"from": d["from"], "to": d["to"], "error": f"{type(e).__name__}: {e}"[:300]})
         out[-1].setdefault("name", d.get("name"))

@@ -451,3 +451,106 @@ def test_uses_of_an_old_id_follow_the_renamed_provider():
     assert network.follow_renames(apps)[0]["uses"] == ["connected-accounts", "agent-service"]
     both = [{"id": "a", "uses": ["old"]}, {"id": "old", "uses": []}, {"id": "new", "uses": [], "renamed_from": ["old"]}]
     assert network.follow_renames(both)[0]["uses"] == ["old"]
+
+
+# ---------------------------------------------------------------- staging copies (wizard-os#628)
+
+@pytest.mark.parametrize("app_id,want", [
+    ("search-preview", ["search", "wizard-search"]), ("movies-next", ["movies", "wizard-movies"]),
+    ("agent-philosopher", ["philosopher", "wizard-philosopher"]), ("wizard-notes-test", ["wizard-notes"]),
+    ("wizard-search", []), ("cinequeue", []), ("", []),
+])
+def test_staging_targets(app_id, want):
+    assert ar.staging_targets(app_id) == want
+
+
+SEARCH = {"id": "wizard-search", "name": "Search", "repo": "humanitylabs-org/wizard-search",
+          "manifest": {"id": "wizard-search", "renamed_from": ["search-preview"]}}
+
+
+def test_a_staging_copy_the_released_app_claims_is_due(tmp_path):
+    """search-preview was installed from a branch build (local source): it has no update of its own. The released
+    wizard-search lists it in renamed_from, so the next update moves it there."""
+    c = _box(tmp_path, {"search-preview": {"repo": "local/search-preview", "private": False},
+                        "movies-next": {"repo": "humanitylabs-org/movies", "local": True}})
+    rt = FakeRT({"search-preview": {"status": "running"}, "movies-next": {"status": "running"}})
+    searched = []
+    hits = {"wizard-search": [{"id": "wizard-search", "repo": "humanitylabs-org/wizard-search"}],
+            "movies": [{"id": "movies", "repo": "humanitylabs-org/movies"}]}
+    recs = {"humanitylabs-org/wizard-search": SEARCH,
+            "humanitylabs-org/movies": {"id": "movies", "manifest": {"id": "movies"}}}
+
+    def fetch(repo):
+        if repo not in recs:
+            raise OSError("404")
+        return recs[repo]
+
+    def search(app_id):
+        searched.append(app_id)
+        return hits.get(app_id, [])
+
+    got = ar.due(c, rt, fetch=fetch, search=search)
+    # the released Movies does not claim movies-next, so that copy stays as it is
+    assert got == [{"from": "search-preview", "to": "wizard-search", "repo": "humanitylabs-org/wizard-search",
+                    "name": "Search", "staging": True}]
+    assert "wizard-search" in searched
+    # no claim, no move; and never onto an id that is already installed
+    recs["humanitylabs-org/wizard-search"] = {**SEARCH, "manifest": {"id": "wizard-search"}}
+    assert ar.due(c, rt, fetch=fetch, search=search) == []
+    recs["humanitylabs-org/wizard-search"] = SEARCH
+    rt.apps["wizard-search"] = {"status": "running"}
+    assert ar.due(c, rt, fetch=fetch, search=search) == []
+
+
+def test_an_app_its_own_source_still_publishes_is_never_claimed(tmp_path):
+    c = _box(tmp_path, {"search-preview": {"repo": "someone/search-preview"}})
+    rt = FakeRT({"search-preview": {"status": "running"}})
+    recs = {"someone/search-preview": {"id": "search-preview", "manifest": {"id": "search-preview"}},
+            "humanitylabs-org/wizard-search": SEARCH}
+    assert ar.due(c, rt, fetch=lambda r: recs[r],
+                  search=lambda i: [{"id": "wizard-search", "repo": "humanitylabs-org/wizard-search"}]) == []
+
+
+def test_rename_due_moves_a_staging_copy_from_the_released_repo(tmp_path, monkeypatch):
+    c = _box(tmp_path, {})
+    rt = FakeRT({"search-preview": {"status": "running"}, "notes-next": {"status": "running"}})
+    rows = [{"from": "search-preview", "to": "wizard-search", "repo": "humanitylabs-org/wizard-search",
+             "name": "Search", "staging": True},
+            {"from": "notes-next", "to": "notes", "repo": "humanitylabs-org/notes", "name": "Notes"}]
+    seen, moved = [], []
+    monkeypatch.setattr(ar, "due", lambda c_, rt_, nightly=False: seen.append(nightly) or rows)
+    monkeypatch.setattr(ar, "migrate", lambda c_, old, new, repo=None, staging=False:
+                        moved.append((old, new, repo, staging)) or {"renamed": True})
+    ar.rename_due(c, rt)
+    assert seen == [True] and moved == [("search-preview", "wizard-search", "humanitylabs-org/wizard-search", True),
+                                        ("notes-next", "notes", None, False)]
+    # asked for by id (wam app-updates --apply search-preview): only that app, the nightly holds do not apply
+    seen.clear(), moved.clear()
+    ar.rename_due(c, rt, only=["search-preview"])
+    assert seen == [False] and moved == [("search-preview", "wizard-search", "humanitylabs-org/wizard-search", True)]
+
+
+def test_migrate_without_a_new_id_takes_the_staging_claims_repo(box, monkeypatch):
+    c, rt, fs, installs = box
+    monkeypatch.setattr(ar, "due", lambda c_, rt_: [{"from": "cinequeue", "to": "movies", "repo": "humanitylabs-org/movies",
+                                                     "name": "Movies", "staging": True}])
+    asked = []
+    real = ar._new_record
+    monkeypatch.setattr(ar, "_new_record", lambda c_, old, new, repo=None: asked.append(repo) or real(c_, old, new))
+    fs.files["/data/user-config/wizardapps/cinequeue/docker-compose.yml"] = (
+        b"services:\n  cinequeue:\n    image: local/search:d267a685\n    build:\n      context: .\n"
+        b"    network_mode: host\n")
+    res = ar.migrate(c, "cinequeue", settle=0, probe_seconds=0)
+    assert res.get("renamed") is True, res
+    assert asked == ["humanitylabs-org/movies"]
+    # the branch build pin is dropped so the released image runs; the owner's other values stay
+    assert fs.read("/data/user-config/wizardapps/movies/docker-compose.yml") == \
+        b"services:\n  movies:\n    network_mode: host\n"
+
+
+def test_drop_image_pins_keeps_everything_else():
+    text = ("services:\n  wizard-search:\n    image: x:1 # pinned\n    environment:\n      A: '1'\n"
+            "  other:\n    build:\n      context: .\n      dockerfile: D\n    ports: ['1:1']\n"
+            "x-wizard-networks:\n  image: keep\n")
+    assert ar.drop_image_pins(text) == ("services:\n  wizard-search:\n    environment:\n      A: '1'\n"
+                                        "  other:\n    ports: ['1:1']\nx-wizard-networks:\n  image: keep\n")
