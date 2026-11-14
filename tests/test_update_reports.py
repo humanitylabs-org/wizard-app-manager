@@ -341,7 +341,11 @@ def test_asking_for_a_staging_copy_by_id_moves_it_to_the_released_app(tmp_path, 
     """wizard-os#628: `--apply search-preview` said the id is unknown; a staging copy the released app claims moves."""
     from wam import app_rename, cli, updates
     monkeypatch.setattr(updates, "installing", lambda home: False)
-    monkeypatch.setattr(au, "candidates", lambda *a, **k: [])
+    other = {"id": "wizard-messenger", "name": "Messenger", "from": 93, "to": 97, "to_version": "0.9.7",
+             "status": "running", "skip": None}
+    monkeypatch.setattr(au, "candidates", lambda *a, **k: [dict(other)])
+    updated = []
+    monkeypatch.setattr(cli, "app_update", lambda c, app_id, **k: updated.append(app_id) or {"version": 97})
     monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
     monkeypatch.setattr(au, "_notify", lambda c, *msg: True)
     claim = {"from": "search-preview", "to": "wizard-search", "repo": "humanitylabs-org/wizard-search",
@@ -361,3 +365,5 @@ def test_asking_for_a_staging_copy_by_id_moves_it_to_the_released_app(tmp_path, 
     assert dry["moves"] == [claim] and dry["unknown"] == [] and asked == []
     out = au.apply(C(), only=["search-preview"], notify=False, moves=lambda *a, **k: [], reporter=lambda *a, **k: {})
     assert asked == [["search-preview"]] and out["renamed"] == [{"id": "wizard-search", "name": "Search"}]
+    # asking for one app never updates the others that happen to be due (Codex P1)
+    assert updated == [] and out["updated"] == []

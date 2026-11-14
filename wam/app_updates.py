@@ -618,6 +618,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             if renamed:
                 moved = {r["id"] for r in renamed}
                 rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+                if only:   # an update asked for by id still touches only those apps (Codex P1)
+                    rows = [r for r in rows if r["id"] in only]
+                    for r in rows:
+                        if r["skip"] in ("held", "failed", "ignored"):
+                            r["skip"] = None
                 due = [r for r in rows if not r["skip"] and r["id"] not in moved]
         fails = _failed(c.home)
         for r in due:
