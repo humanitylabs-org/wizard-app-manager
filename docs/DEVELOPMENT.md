@@ -44,7 +44,20 @@ node --test tests/backup-source-safety.test.mjs
 
 ## Browser and visual checks
 
-- Throwaway upstream dev stack (needs Docker and Portless, no real box): `bun run start:dev:portless`, then `portless get runtipi` for the URL (dev login in AGENTS.runtipi.md). `bun run test:e2e` clears the database and resets settings: run it only against that disposable stack.
+- Throwaway upstream dev stack (needs Docker and Portless, no real box): use a fresh clone on a disposable test host that is unreachable from outside (the dev Compose file publishes ports on all interfaces and mounts the Docker socket), with no owner installation or existing database. Before `bun run start:dev:portless`, copy the tracked example with `cp .env.example .env`. Export a unique `COMPOSE_PROJECT_NAME` and `RUNTIPI_DOCKER_NETWORK` in the launching shell; explicitly export `RUNTIPI_DEV_PORT=3000` and `RUNTIPI_DB_PORT=5432` only after confirming those ports are free on that disposable host. Export unused `RUNTIPI_HTTP_PORT`, `RUNTIPI_HTTPS_PORT` and `RUNTIPI_TRAEFIK_DASHBOARD_PORT` too. Do not reuse an existing Compose project, volume, network or `.internal` directory. The dev login is in [AGENTS.runtipi.md](../AGENTS.runtipi.md).
+- `bun run test:e2e` loads `.env` and `.env.e2e`, **deletes database rows and clears backup/user-config directories**, and resets settings. Before running it, create an untracked `.env.e2e` in that same fresh clone with the settings below. The database credentials are the synthetic values in `docker-compose.dev.yml`, not owner credentials. Configure the app's `.env` database host as `runtipi-db` (`POSTGRES_HOST=runtipi-db`, `POSTGRES_USERNAME=tipi`, `POSTGRES_DBNAME=tipi`, `POSTGRES_PORT=5432`); `POSTGRES_PASSWORD` may be absent from `.env` or exactly `postgres`, matching the dev Compose value and `.env.e2e`. The E2E process runs on the test host and uses `E2E_POSTGRES_HOST=127.0.0.1` instead.
+
+  ```dotenv
+  SERVER_IP=127.0.0.1
+  SERVER_PORT=3000
+  E2E_POSTGRES_HOST=127.0.0.1
+  POSTGRES_PASSWORD=postgres
+  BASE_PATH=.internal
+  ```
+
+  Before the run, confirm every key shared by `.env`, `.env.e2e` and the invoking shell is absent from the earlier source or has exactly the intended value above; do not assume the later dotenv file overrides an existing setting. Start the disposable stack and verify its own `/api/health` at `http://127.0.0.1:3000` before `bun run test:e2e`; Compose's separate internal healthcheck is not a substitute for this host-port check. Portless's browser URL is not the E2E base URL. The current DB helper hardcodes port **5432**; worktree-specific automatic DB ports are not supported by this recipe. If that port is occupied, stop here and use another disposable host—never point the tests at the existing listener. Confirm the launcher's printed `Docker project:` matches `$COMPOSE_PROJECT_NAME`. From the same shell, `docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.dev.yml port runtipi-db 5432` must report host port 5432 for that project's database container; check the project's `ps` output too. Recheck the selected project, fresh data paths, host-local database identity and all shared environment keys **after startup and the host health check, immediately before the destructive run**. This is source-checked setup guidance, not evidence that the stack or E2E suite has been executed.
+
+  After testing, stop only that verified disposable project from the same shell: `docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.dev.yml down -v`. The `-v` removes its throwaway database volume; never use this on an owner project.
 - Wizard views, synthetic data, no box state: `WIZARD_CORE_DIR=<wizard-ux checkout>/web/core PLAYWRIGHT_MODULE=<playwright module path> node qa/connections-appearance.cjs <outdir>` ([qa/connections-acceptance.md](../qa/connections-acceptance.md)). `qa/qa-playwright.cjs` resolves Playwright (`QA_PLAYWRIGHT`, `QA_CHROME`). Synthetic runs are not live or device proof; say what you could not run.
 
 ## How a change reaches users
