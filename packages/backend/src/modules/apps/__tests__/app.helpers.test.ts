@@ -6,6 +6,8 @@ import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@runtipi/common/schemas';
 import type { AppUrn } from '@runtipi/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
+import fs from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
@@ -447,6 +449,60 @@ describe('AppHelpers', () => {
 
       // Assert - should use false, not the default
       expect(envMap.get('BOOLEAN_WITH_DEFAULT')).toBe('false');
+    });
+  });
+
+  describe('source copies (wizard-recorder#17)', () => {
+    const sha = 'a'.repeat(40);
+    const oldSha = 'b'.repeat(40);
+    const mockAppInfo = fromPartial<AppInfo>({ id: 'test-app', urn: testAppUrn, port: 8080, version: '1.0.0', form_fields: [] });
+    let root: string;
+    let store: string;
+
+    beforeEach(() => {
+      root = '/data/app-data-recorder17';
+      fs.rmSync(root, { recursive: true, force: true });
+      store = path.join(root, '.wizard-source', 'test-store');
+      for (const name of [`test-app@${sha.slice(0, 12)}`, `test-app@${oldSha.slice(0, 12)}`])
+        fs.mkdirSync(path.join(store, name), { recursive: true });
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/runtipi',
+          userSettings: { appDataPath: '/opt/runtipi' },
+          directories: { appDataDir: root },
+        }),
+      );
+      envUtils.envStringToMap.mockReturnValue(new Map());
+      envUtils.envMapToString.mockReturnValue('');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
+      appFilesManager.getAppPaths.mockReturnValue({ appInstalledDir: '/data/apps/installed/test/test-app' } as ReturnType<
+        AppFilesManager['getAppPaths']
+      >);
+      appFilesManager.writeAppEnv.mockResolvedValue(true);
+      filesystem.readTextFile.mockImplementation(async (p: string) => (p.endsWith('.wizard-commit') ? `${sha}\n` : ''));
+      filesystem.isDirectory.mockImplementation(async (p: string) => fs.existsSync(p));
+    });
+
+    it('keeps the copy a running container mounts when an update writes the target env', async () => {
+      await appHelpers.generateEnvFile(testAppUrn, {}, { pruneSources: false });
+      expect(fs.readdirSync(store).sort()).toEqual([`test-app@${oldSha.slice(0, 12)}`, `test-app@${sha.slice(0, 12)}`].sort());
+    });
+
+    it('still removes older copies on a plain start, and pruneOldSources removes them after an update', async () => {
+      await appHelpers.generateEnvFile(testAppUrn, {});
+      expect(fs.readdirSync(store)).toEqual([`test-app@${sha.slice(0, 12)}`]);
+      fs.mkdirSync(path.join(store, `test-app@${oldSha.slice(0, 12)}`));
+      await appHelpers.pruneOldSources(testAppUrn);
+      expect(fs.readdirSync(store)).toEqual([`test-app@${sha.slice(0, 12)}`]);
+    });
+
+    it('pruneOldSources removes nothing when the installed copy is missing', async () => {
+      fs.rmSync(path.join(store, `test-app@${sha.slice(0, 12)}`), { recursive: true });
+      await appHelpers.pruneOldSources(testAppUrn);
+      expect(fs.readdirSync(store)).toEqual([`test-app@${oldSha.slice(0, 12)}`]);
     });
   });
 });

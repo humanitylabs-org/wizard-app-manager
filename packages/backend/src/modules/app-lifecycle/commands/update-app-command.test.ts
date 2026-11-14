@@ -470,3 +470,36 @@ test('opens app-data permissions after up so folders a new version adds are writ
   expect((await command.execute(appUrn, {})).success).toBe(true);
   expect(order.lastIndexOf('chmod')).toBeGreaterThan(order.lastIndexOf('compose:up'));
 });
+
+test('keeps the old source copy until the new containers are up (wizard-recorder#17)', async () => {
+  const { command, dockerService, appHelpers } = createCommand({ wasRunningBeforeUpdate: true });
+  const order: string[] = [];
+  dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+    order.push(`compose:${cmd.split(' ')[0]}`);
+    return { success: true, stdout: '', stderr: '' };
+  });
+  appHelpers.pruneOldSources.mockImplementation(async () => {
+    order.push('prune');
+  });
+
+  expect((await command.execute(appUrn, {})).success).toBe(true);
+  for (const call of appHelpers.generateEnvFile.mock.calls) expect(call[2]).toEqual({ pruneSources: false });
+  expect(order.filter((x) => x === 'prune')).toHaveLength(1);
+  expect(order.indexOf('prune')).toBeGreaterThan(order.lastIndexOf('compose:up'));
+});
+
+test('a failed update never removes the source copy the restored app runs from (wizard-recorder#17)', async () => {
+  const { command, dockerService, appHelpers } = createCommand({ wasRunningBeforeUpdate: true });
+  dockerService.composeApp.mockRejectedValueOnce(new Error('registry unavailable'));
+
+  expect((await command.execute(appUrn, {})).success).toBe(false);
+  expect(appHelpers.pruneOldSources).not.toHaveBeenCalled();
+  for (const call of appHelpers.generateEnvFile.mock.calls) expect(call[2]).toEqual({ pruneSources: false });
+});
+
+test('an old copy that cannot be removed does not fail the update', async () => {
+  const { command, appHelpers } = createCommand({ wasRunningBeforeUpdate: true });
+  appHelpers.pruneOldSources.mockRejectedValueOnce(new Error('busy'));
+
+  expect((await command.execute(appUrn, {})).success).toBe(true);
+});
