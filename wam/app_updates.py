@@ -584,15 +584,26 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             unknown = []
         due = [r for r in rows if not r["skip"]]
         if dry_run:
-            return {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
+            out = {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
+            if unknown and not renames:   # say what asking for it would do (a staging copy's move, wizard-os#628)
+                from . import app_rename
+                try:
+                    moves = [d for d in app_rename.due(c, rt) if d["from"] in unknown]
+                except Exception:  # noqa: BLE001 - a dry run never fails on the rename check
+                    moves = []
+                if moves:
+                    out["moves"] = moves
+                    out["unknown"] = [x for x in unknown if x not in {d["from"] for d in moves}]
+            return out
         done, rolled, failed, needs = [], [], [], []
         renamed = []
-        if not only:
+        if not only or unknown:
             # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
-            # back on its own; its update, if any, then runs under the new id on the next run.
+            # back on its own; its update, if any, then runs under the new id on the next run. Asked for by id, an
+            # app with no update of its own (a staging copy the released app claims, wizard-os#628) moves too.
             from . import app_rename
             try:
-                moves = (renames or app_rename.rename_due)(c, rt)
+                moves = (renames(c, rt) if renames else app_rename.rename_due(c, rt, only=unknown or None))
             except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
                 print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
                 moves = []
@@ -607,6 +618,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             if renamed:
                 moved = {r["id"] for r in renamed}
                 rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+                if only:   # an update asked for by id still touches only those apps (Codex P1)
+                    rows = [r for r in rows if r["id"] in only]
+                    for r in rows:
+                        if r["skip"] in ("held", "failed", "ignored"):
+                            r["skip"] = None
                 due = [r for r in rows if not r["skip"] and r["id"] not in moved]
         fails = _failed(c.home)
         for r in due:
