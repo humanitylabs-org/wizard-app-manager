@@ -22,7 +22,9 @@ app's port with its own per-app key.
 
 Also, for every owner-proof app alike:
   - while the app restarts, a page load gets a small "<App> is restarting" page that reopens it by itself (API calls
-    keep a JSON 502 so the app's own retry logic runs);
+    keep a JSON 502 so the app's own retry logic runs); when Runtipi says the app is stopped (or failed to start or
+    update), the page says "<App> is stopped. Ask your Wizard to start it." instead, with no spinner and no
+    `X-Wizard-Waiting`, because it will not come back by itself (#713);
   - a brief connection refusal while the app comes back is retried instead of becoming a 502;
   - <wizard-os>/owner-activity/<app> is touched (at most every 15 s) on page loads, writes and the app's declared
     `activity` paths, so deploys and nightly updates can wait until the owner is not using the app.
@@ -48,6 +50,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from . import owner_devices, owner_proof as op
+from .runtipi import Runtipi
 
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
        "transfer-encoding", "upgrade"}
@@ -66,6 +69,44 @@ WAITING = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta na
 .d{{width:28px;height:28px;margin:0 auto 14px;border-radius:50%;border:3px solid currentColor;border-right-color:transparent;animation:s 1s linear infinite}}
 @keyframes s{{to{{transform:rotate(360deg)}}}}</style></head><body><main><div><div class="d"></div><p>{name} is restarting. It will open by itself in a moment.</p></div></main>
 <script>(function(){{var t=1500;function k(){{fetch(location.href,{{cache:'no-store',credentials:'same-origin'}}).then(function(r){{if(r.ok&&!r.headers.get('x-wizard-waiting'))location.reload();else s()}}).catch(s)}}function s(){{t=Math.min(t*1.3,3000);setTimeout(k,t)}}setTimeout(k,t)}})();</script></body></html>"""
+# A stopped app will not come back by itself: no spinner, no X-Wizard-Waiting (the shell leaves pages with content
+# alone). It still checks quietly now and then, so it opens once the owner's Wizard has started it.
+STOPPED = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{name}</title><style>html,body{{margin:0;height:100%;background:transparent;font:15px/1.4 system-ui,sans-serif;color:#9a9aa2}}
+@media (prefers-color-scheme:light){{body{{color:#5a5a62}}}}main{{height:100%;display:grid;place-items:center;text-align:center;padding:24px}}</style></head>
+<body><main><p>{name} is stopped. Ask your Wizard to start it.</p></main>
+<script>(function(){{function k(){{fetch(location.href,{{cache:'no-store',credentials:'same-origin'}}).then(function(r){{if(r.ok&&!r.headers.get('x-wizard-waiting'))location.reload();else s()}}).catch(s)}}function s(){{setTimeout(k,10000)}}s()}})();</script></body></html>"""
+# Runtipi states in which the app is down and stays down until someone starts it.
+STOPPED_STATES = {"stopped", "start_error", "update_error", "restore_error"}
+STATUS_TTL_S = 3.0
+
+
+class AppStatus:
+    """The app's Runtipi status (`stopped`, `restarting`, ...), asked only when the app does not answer, cached a few
+    seconds. "" when Runtipi can't be asked: the edge then keeps the "restarting" page, as before."""
+
+    def __init__(self, runtipi_root: Path, store: str, ttl: float = STATUS_TTL_S, lookup=None):
+        self.root, self.store, self.ttl = Path(runtipi_root), store, ttl
+        self._lookup = lookup or self._runtipi
+        self._seen: dict[str, tuple[float, str]] = {}
+        self._lock = threading.Lock()
+
+    def _runtipi(self, app_id: str) -> str:
+        info = Runtipi.from_install(self.root).req("GET", f"/apps/{app_id}:{self.store}", timeout=3)
+        return str((info.get("app") or {}).get("status") or "")
+
+    def __call__(self, app_id: str) -> str:
+        with self._lock:
+            at, val = self._seen.get(app_id, (0.0, ""))
+            if time.monotonic() - at < self.ttl:
+                return val
+        try:
+            val = self._lookup(app_id)
+        except Exception:      # Runtipi down, slow or unreadable: never fail the request over it
+            val = ""
+        with self._lock:
+            self._seen[app_id] = (time.monotonic(), val)
+        return val
 
 
 # ---------------------------------------------------------------- who is calling
@@ -139,6 +180,7 @@ class _UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer
     peer_check = staticmethod(tailscaled_peer)
     key: "_KeyCache"
     active_at = 0.0
+    app_status = staticmethod(lambda _app_id: "")
 
     def verify_request(self, request, address):
         try:
@@ -252,12 +294,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _waiting_or_502(self) -> None:
         if self.command == "GET" and (self._one("Sec-Fetch-Mode") == "navigate" or "text/html" in (self._one("Accept") or "")):
-            page = WAITING.format(name=html.escape(self.server.app["name"])).encode()
+            stopped = self.server.app_status(self.server.app["id"]) in STOPPED_STATES
+            page = (STOPPED if stopped else WAITING).format(name=html.escape(self.server.app["name"])).encode()
             self.close_connection = True
             self.send_response(503)
-            for k, v in (("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"),
-                         ("Retry-After", "2"), ("X-Wizard-Waiting", "1"), ("Content-Length", str(len(page))),
-                         ("Connection", "close")):
+            extra = () if stopped else (("Retry-After", "2"), ("X-Wizard-Waiting", "1"))
+            for k, v in (("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"), *extra,
+                         ("Content-Length", str(len(page))), ("Connection", "close")):
                 self.send_header(k, v)
             self.end_headers()
             self.wfile.write(page)
@@ -371,9 +414,11 @@ class _KeyCache:
         return self._key
 
 
-def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_peer, devices=None) -> _UnixHTTPServer:
+def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_peer, devices=None,
+              app_status=None) -> _UnixHTTPServer:
     """Bind <home>/owner-edge/<app>.sock (0600 in a 0700 folder) for one app; returns the server (not started).
-    `devices.check(hop, login)` says whether the caller is one of the owner's enrolled devices (default: the real one)."""
+    `devices.check(hop, login)` says whether the caller is one of the owner's enrolled devices (default: the real one).
+    `app_status(app_id)` gives the app's Runtipi status when it does not answer (default: unknown)."""
     d = op.socket_dir(home)
     d.mkdir(mode=0o700, exist_ok=True)
     info = d.lstat()
@@ -392,6 +437,8 @@ def serve_app(home: Path, app: dict, identity: Identity, peer_check=tailscaled_p
     os.chmod(path, 0o600)
     server.home, server.app, server.identity, server.peer_check = Path(home), app, identity, peer_check
     server.devices = devices or owner_devices.Enrollment(home)
+    if app_status is not None:
+        server.app_status = app_status
     server.key = _KeyCache(op.edge_key_path(home, app["id"]))
     return server
 
@@ -417,7 +464,7 @@ def apps_from_registry(home: Path) -> dict[str, dict]:
 
 
 def run(home: Path, stop: threading.Event | None = None, every: float = 10.0, peer_check=tailscaled_peer,
-        identity: Identity | None = None) -> None:
+        identity: Identity | None = None, app_status=None) -> None:
     """Serve every owner-proof app; follow installs, removals and port changes from apps.json."""
     if not op.enabled(home):
         raise ValueError("owner proof is off; complete follow-up 2 before enabling owner_proof_enabled")
@@ -440,7 +487,7 @@ def run(home: Path, stop: threading.Event | None = None, every: float = 10.0, pe
             for app_id, app in want.items():
                 if app_id not in live:
                     try:
-                        srv = serve_app(home, app, identity, peer_check, devices)
+                        srv = serve_app(home, app, identity, peer_check, devices, app_status)
                     except (OSError, ValueError):
                         continue
                     threading.Thread(target=srv.serve_forever, daemon=True, name=f"owner-edge-{app_id}").start()
