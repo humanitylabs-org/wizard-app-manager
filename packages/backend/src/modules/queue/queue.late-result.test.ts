@@ -71,4 +71,64 @@ describe('Queue late results (WAM#711)', () => {
     t.queue.onEvent(async () => {});
     await expect(t.queue.publish({ command: 'start', requestId: 'r3' })).resolves.toEqual({ success: true, message: 'ok' });
   });
+
+  // WAM#721: a command outlasting both waits was still reported failed while it ran, so InstallAppHandler deleted the
+  // new app's row and UpdateAppHandler recorded it stopped mid-update.
+  it('keeps waiting past the second timeout while this process is still running the command', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = make(async () => {
+        throw timeoutError();
+      });
+      const event = { command: 'update', requestId: 'r4' };
+      let finish: () => void = () => {};
+      t.queue.onEvent(
+        (_data, reply) =>
+          new Promise<void>((resolve) => {
+            finish = () => reply({ success: true, message: 'updated late' }).then(resolve);
+          }),
+      );
+      let settled = false;
+      const published = t.queue.publish(event).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      const consumed = t.handlerRef()?.({ body: event }, async () => {});
+      await vi.advanceTimersByTimeAsync(10 * 1000);
+      expect(settled).toBe(false);
+      finish();
+      await consumed;
+      await expect(published).resolves.toEqual({ success: true, message: 'updated late' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a command whose caller gave up before it started, instead of running it behind the caller', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = make(async () => {
+        throw timeoutError();
+      });
+      const ran = vi.fn(async () => {});
+      t.queue.onEvent(ran);
+      const event = { command: 'install', requestId: 'r5' };
+      const published = t.queue.publish(event);
+      await vi.advanceTimersByTimeAsync(1001);
+      await expect(published).resolves.toEqual({ success: false, message: 'RPC response timed out' });
+
+      const replies: unknown[] = [];
+      await t.handlerRef()?.({ body: event }, async (r) => {
+        replies.push(r);
+      });
+      expect(ran).not.toHaveBeenCalled();
+      expect(replies).toEqual([{ success: false, message: 'Cancelled: the request timed out before it started.' }]);
+
+      // Only that request is cancelled: the next one with a new id runs.
+      await t.handlerRef()?.({ body: { command: 'install', requestId: 'r6' } }, async () => {});
+      expect(ran).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
