@@ -45,6 +45,8 @@ def test_alongside_is_unchanged(tmp_path, monkeypatch):
 
 
 def test_nothing_without_a_tailnet_host_shell_or_trust_variables(tmp_path, monkeypatch):
+    from wam import links
+    monkeypatch.setattr(links, "tailnet", lambda: {"state": "missing", "host": ""})
     c = _box(tmp_path, monkeypatch)
     (c.home / "links.json").write_text("{}")
     assert cli.trusted_origin_env(c, "mr", 8802) == {}
