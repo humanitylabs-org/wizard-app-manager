@@ -2090,6 +2090,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
             return self._chats_default(method)
+        if app_id.startswith('_start/'):   # Start a stopped app (store_start.py, #711)
+            return self._start(method, app_id.removeprefix('_start/'))
         if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
             return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
         if app_id == '_github' or app_id.startswith('_github/'):   # Store "Sign in to GitHub" (github_signin.py)
@@ -2111,6 +2113,10 @@ class StoreHandler(BaseHTTPRequestHandler):
                 if not si.ID.fullmatch(app_id):
                     raise ValueError("bad app id")
                 selection = store_selection.resolve(c, app_id, selection)
+                from . import store_start
+                busy = store_start.busy(c, app_id) if selection.get('operation') != 'install' else None
+                if busy:   # #711: never a second update on top of one Runtipi still runs (a retry after a timeout)
+                    return self._json(409, {"error": f"{app_id} is {busy}; wait for that to finish, then try again"})
                 code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
                                       lambda: installed_ids(c.runtipi()), selection=selection)
             except (ValueError, OSError, index.IndexError_) as e:
@@ -2122,6 +2128,25 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _start(self, method: str, app: str) -> None:
+        """POST _start/<app> {}: start a stopped app; GET _start/<app>: that job (store_start.py). The owner gate in
+        _go already ran (check_request for the POST: owner, another device, the shell's origin, JSON)."""
+        from . import store_start as ss
+        if not ss.ID.fullmatch(app):
+            return self._json(404, {"error": "not found"})
+        if method == "GET":
+            return self._json(*ss.status(app))
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 64:
+                return self._json(400, {"error": "send {}"})
+            return self._json(*ss.start(self.cfg, app, json.loads(self.rfile.read(size))))
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+            sys.stderr.write(f"wam store: start {app} failed: {type(e).__name__}: {e}\n")
+            return self._json(500, {"error": f"The App Manager couldn't start {app} ({type(e).__name__})."})
 
     def _host_access(self, method: str, app: str) -> None:
         """`POST /_host-access/<app>` {"for": "install"|"update"|"allow"}: the owner, on one of their enrolled devices,
