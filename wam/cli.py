@@ -2481,7 +2481,21 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+# Runtipi gives install/update max(QUEUE_TIMEOUT_IN_MINUTES, 30) minutes, then waits one more such period for the
+# command it is still running (queue/lifecycle-timeouts.ts, queue.entity.ts). Wait a little longer than both, or a big
+# app's update is "lost" here while it is still running and gets started or rolled back on top (#711).
+LONG_COMMAND_MINUTES = 30
+
+
+def update_wait_s(c: "Config") -> int:
+    try:
+        minutes = int(read_env(Path(c.runtipi_root) / ".env").get("QUEUE_TIMEOUT_IN_MINUTES") or 5)
+    except (OSError, ValueError, TypeError):
+        minutes = 5
+    return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
+
+
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
     running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
@@ -2493,7 +2507,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                                                                 settings), backup=backup)
 
 
-def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                 settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
@@ -2562,6 +2576,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 12
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
+    if timeout is None:
+        timeout = update_wait_s(c)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
@@ -2572,7 +2588,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 12
         raise
     after = ((rt.app(urn) or {}).get("app") or {})
     restarted = False
-    if was_running and status != "running":
+    if was_running and status not in ("running", "updating"):
+        # never while Runtipi still reports `updating`: the start would queue behind the update and time out (#711)
         rt.start(urn)
         status = rt.wait_status(urn, {"running"}, 300)
         restarted = True

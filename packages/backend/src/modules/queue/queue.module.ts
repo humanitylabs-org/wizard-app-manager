@@ -6,6 +6,7 @@ import { RepoEventsQueue, repoCommandSchema } from './entities/repo-events';
 import { SystemEventsQueue, systemCommandSchema } from './entities/system-events';
 import { QueueFactory } from './queue.factory';
 import { QueueHealthIndicator } from './queue.health';
+import { LONG_APP_COMMANDS, longCommandMinutes } from './lifecycle-timeouts';
 
 @Module({
   imports: [TerminusModule],
@@ -15,13 +16,15 @@ import { QueueHealthIndicator } from './queue.health';
     {
       provide: AppEventsQueue,
       useFactory: async (queueFactory: QueueFactory, config: ConfigurationService) => {
-        const timeout = config.get('userSettings').eventsTimeout * 60 * 1000;
+        const { eventsTimeout } = config.get('userSettings');
 
         return await queueFactory.createQueue({
           queueName: 'app-events-queue',
           workers: 3,
           eventSchema: appEventSchema,
-          timeout: timeout,
+          timeout: eventsTimeout * 60 * 1000,
+          longCommands: LONG_APP_COMMANDS,
+          longTimeout: longCommandMinutes(eventsTimeout) * 60 * 1000,
         });
       },
       inject: [QueueFactory, ConfigurationService],
