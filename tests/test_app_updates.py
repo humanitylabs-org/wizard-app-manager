@@ -176,7 +176,7 @@ def test_apply_if_auto_respects_ask_and_busy(tmp_path):
     au._write(tmp_path, mode="ask")
     assert au.apply_if_auto(C())["started"] is False
     au._write(tmp_path, mode="auto")
-    assert au.apply_if_auto(C(), is_busy=lambda: True)["skipped"] == "busy"
+    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=True)["skipped"] == "busy"
 
 
 def test_manual_update_button_runs_in_the_background():
@@ -307,3 +307,92 @@ def test_status_drops_a_standard_pin_and_asks_runtipi_again(tmp_path, monkeypatc
     c = SimpleNamespace(runtipi_root=rt_root, home=tmp_path / "home", runtipi=lambda: RT())
     out = au.status(c)
     assert seen == [True, False] and [r["id"] for r in out["due"]] == ["notes"]
+
+
+def _local(h, m, day=15):
+    import time
+    return time.mktime((2026, 11, day, h, m, 0, 0, 0, -1))
+
+
+def test_timer_ticks_hourly_and_off_switch_keeps_the_0430_run(tmp_path, monkeypatch):
+    """wizard-os#613: the unit ticks every hour; with wizard/app-updates-hourly off only the first tick from 04:30
+    each day runs (the old nightly timer), with it on every tick runs."""
+    home, ud = tmp_path / "home", tmp_path / "units"
+    au.ensure_timer(home, ud, systemctl=False)
+    timer = (ud / "wizard-app-updates.timer").read_text()
+    assert "OnCalendar=*-*-* *:30\n" in timer and "RandomizedDelaySec=10m" in timer and "Persistent=true" in timer
+
+    class C:
+        pass
+    C.home = home
+    ran = []
+    monkeypatch.setattr(au, "apply", lambda c, **k: ran.append(k) or {"started": True})
+    tick = lambda t, hourly=False: au.apply_if_auto(C(), is_busy=lambda: False, hourly=hourly, now=t)  # noqa: E731
+    assert tick(_local(3, 30))["skipped"] == "not-due"                 # off: before 04:30 nothing runs
+    assert tick(_local(4, 34))["started"] is True                      # the 04:30 tick runs
+    assert tick(_local(5, 31))["skipped"] == "not-due"                 # once a day
+    assert tick(_local(23, 30))["skipped"] == "not-due"
+    assert tick(_local(4, 31, day=16))["started"] is True              # next day again
+    assert [k["quiet_repeats"] for k in ran] == [False, False]
+    ran.clear()
+    assert tick(_local(5, 35, day=16), hourly=True)["started"] is True  # on: every tick runs
+    assert tick(_local(6, 35, day=16), hourly=True)["started"] is True
+    assert tick(_local(2, 30, day=17), hourly=True)["started"] is True
+    assert [k["quiet_repeats"] for k in ran] == [True, True, True]
+
+
+def test_off_switch_catches_up_a_missed_0430_and_busy_waits_for_tomorrow(tmp_path, monkeypatch):
+    class C:
+        home = tmp_path
+    monkeypatch.setattr(au, "apply", lambda c, **k: {"started": True})
+    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
+    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(11, 30))["started"] is True
+    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
+    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=False, now=_local(4, 33))["skipped"] == "busy"
+    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(5, 33))["skipped"] == "not-due"
+
+
+def test_hourly_switch_is_off_without_the_shell(tmp_path):
+    assert au.HOURLY_SWITCH == "wizard/app-updates-hourly"
+    assert au.hourly_on(tmp_path) is False
+
+
+def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, monkeypatch):
+    from wam import cli, updates
+    monkeypatch.setattr(updates, "installing", lambda home: False)
+    monkeypatch.setattr(au, "candidates", lambda *a, **k: [{"id": "money", "name": "Money", "from": 1, "to": 2,
+                                                            "to_version": "0.2", "status": "running", "skip": None}])
+    monkeypatch.setattr(au, "_containers", lambda urn: ["running"])
+    monkeypatch.setattr(au, "baseline", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "app_update", lambda c, app_id, **k: (_ for _ in ()).throw(SystemExit("needs your OK")))
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
+    sent = []
+    delivered = [False]
+    monkeypatch.setattr(au, "_notify", lambda c, *msg: sent.append(msg) or delivered[0])
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(au.time, "time", lambda: clock[0])
+
+    class C:
+        home = tmp_path
+        runtipi_root = tmp_path
+
+        def runtipi(self):
+            return type("Rt", (), {"installed": lambda self: []})()
+    run = lambda q=True: au.apply(C(), renames=lambda c, rt: [], moves=lambda *a, **k: [], quiet_repeats=q)  # noqa: E731
+    assert run()["needs_owner"] and len(sent) == 1       # Notifications not installed: nothing delivered...
+    clock[0] += 3600
+    run()
+    assert len(sent) == 2                                 # ...so the next hour tries again
+    delivered[0] = True
+    clock[0] += 3600
+    run()
+    assert len(sent) == 3                                 # delivered
+    for _ in range(5):
+        clock[0] += 3600
+        run()
+    assert len(sent) == 3                                 # same wait, later hours: quiet
+    clock[0] += 16 * 3600
+    run()
+    assert len(sent) == 4                                 # a day after the last reminder: told again
+    run(False)
+    assert len(sent) == 5                                 # the nightly run (switch off) tells every time, as before

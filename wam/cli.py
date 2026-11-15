@@ -22,8 +22,8 @@ Wizard additions:
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
     [--report-only|--act]       the guardian repairs broken links by itself; --report-only keeps it to reporting
                                 (saved, kept across updates); --act turns repairs back on
-  wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic,
-                                checked and rolled back on failure)
+  wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic, hourly
+                                with switch wizard/app-updates-hourly; checked and rolled back on failure)
   wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (switch wizard/graceful-restart):
                                 chats still run past the limit, so wait longer, restart now or call it off
   wam doctor [--fix]            check the whole chain
