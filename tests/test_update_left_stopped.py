@@ -94,7 +94,7 @@ def _update(tmp_path, monkeypatch, rt):
     monkeypatch.setattr(cli, "backfill_owner_login", lambda *a, **k: False)
     monkeypatch.setattr(cli, "keep_trusted_hosts", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
-    return c, cli._app_update(c, "messenger", backup=False)
+    return c, getattr(cli, "_app_update", cli.app_update)(c, "messenger", backup=False)
 
 
 def test_updating_an_app_a_failed_update_left_stopped_ends_running(tmp_path, monkeypatch):
