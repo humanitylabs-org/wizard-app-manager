@@ -1419,3 +1419,9 @@ Channel: Stable candidate, not on latest; For everyone only after its upgrade te
 Canonical: wizard-os releases/0.3.241.json (https://github.com/humanitylabs-org/wizard-os/pull/651). SHA256: `f5bb240f779faac24631d31287743360072232cbd65c4e13d134cf43e7581bba`.
 Latest 0.3.239, every pin unchanged. Cut only so For testers stays ahead of Stable candidate 0.3.240 (0.3.143 + the #711 App Manager fixes, which For testers already has since 0.3.238).
 Channel: on latest.
+
+## 0.3.240 promoted to stable
+
+Canonical: wizard-os releases/promotions/0.3.240.json (https://github.com/humanitylabs-org/wizard-os/pull/653, merge b319cc4c). SHA256: `4a589a180d64be84137b7e38f78d9e9cb67411d88c5cc07d117bb7fc61976f21`.
+Fix fast-track (DECISIONS #82): Stable 0.3.143 + App Manager 5fe14045 (#719: #712 + #716 for #711). Installed upgrade 0.3.143 -> 0.3.240 passed on the KVM rig: https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.240.md
+Rollback: stable -> 0.3.143.
