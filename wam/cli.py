@@ -2460,7 +2460,12 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+# Runtipi gives install/update at least 30 min before it calls the command failed (queue/lifecycle-timeouts.ts):
+# wait a little longer than that, or a big app's update is "lost" here while it is still running (#711).
+UPDATE_WAIT_S = 31 * 60 + 40
+
+
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UPDATE_WAIT_S, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
     running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
@@ -2472,7 +2477,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
                                                                 settings), backup=backup)
 
 
-def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False,
+def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UPDATE_WAIT_S, allow_host_access: bool = False,
                 settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
@@ -2551,7 +2556,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 12
         raise
     after = ((rt.app(urn) or {}).get("app") or {})
     restarted = False
-    if was_running and status != "running":
+    if was_running and status not in ("running", "updating"):
+        # never while Runtipi still reports `updating`: the start would queue behind the update and time out (#711)
         rt.start(urn)
         status = rt.wait_status(urn, {"running"}, 300)
         restarted = True

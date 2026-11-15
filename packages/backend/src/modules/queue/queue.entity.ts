@@ -24,7 +24,14 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
     private eventSchema: T,
     private resultSchema: R,
     private logger: LoggerService,
+    private long: { client: RPCClient; commands: readonly string[] } = { client: rpcClient, commands: [] },
   ) {}
+
+  /** The RPC client for this event: long-running commands get the client with the long timeout (WAM#711). */
+  public clientFor(event: unknown): RPCClient {
+    const command = (event as { command?: unknown } | null)?.command;
+    return typeof command === 'string' && this.long.commands.includes(command) ? this.long.client : this.rpcClient;
+  }
 
   public onEvent(callback: (data: Infer<T> & { eventId: string }, reply: (response: InferIn<R>) => Promise<void>) => Promise<void>) {
     try {
@@ -76,7 +83,7 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
         throw new Error(`Invalid event data: ${eventData.summary}`);
       }
 
-      const res = await this.rpcClient.send(this.queueName, eventData);
+      const res = await this.clientFor(eventData).send(this.queueName, eventData);
       const response = this.resultSchema(res.body as never);
       if (!(response instanceof type.errors)) {
         return response;
@@ -112,7 +119,7 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
 
     scheduleCron(cronPattern, async () => {
       try {
-        await this.rpcClient.send(this.queueName, eventData);
+        await this.clientFor(eventData).send(this.queueName, eventData);
       } catch (e) {
         Sentry.captureException(e, { tags: { queueName: this.queueName } });
         this.logger.error('Error in cron job:', e);

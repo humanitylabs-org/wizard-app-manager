@@ -10,6 +10,7 @@ import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { type ContainerFacts, statusFromTally, tallyContainers } from './app-status-tally';
+import { transitionalGraceSeconds } from '../queue/lifecycle-timeouts';
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -87,7 +88,7 @@ export class AppStatusSyncService {
         if (isTransitional) {
           const timeSinceUpdate = Math.floor(Date.now() / 1000) - app.updatedAt;
 
-          if (timeSinceUpdate < this.configuration.get('userSettings').eventsTimeout * 60) {
+          if (timeSinceUpdate < transitionalGraceSeconds(app.status, this.configuration.get('userSettings').eventsTimeout)) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
             skippedCount++;
             continue;
