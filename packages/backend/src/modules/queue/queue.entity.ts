@@ -32,7 +32,12 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
   private consuming = false;
   /** requestIds whose command this process's consumer is running right now: their publisher waits for the real result. */
   private running = new Set<string>();
-  /** requestIds whose publisher gave up before any consumer here started them: cancelled, never run late (WAM#721). */
+  /**
+   * requestIds whose publisher gave up before any consumer here started them: cancelled, never run late (WAM#721).
+   * In memory is enough: RPCClient.send publishes every request with an AMQP expiration of one timeout, so the broker
+   * never delivers it after that, also after a restart (requeued messages keep their expiry). The publisher gives up
+   * only after two timeouts, so this map covers just the messages already prefetched into this process.
+   */
   private abandoned = new Map<string, number>();
 
   /** The RPC client for this event: long-running commands get the client with the long timeout (WAM#711). */
