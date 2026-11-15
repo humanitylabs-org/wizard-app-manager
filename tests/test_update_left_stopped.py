@@ -92,7 +92,7 @@ def _update(tmp_path, monkeypatch, rt):
     monkeypatch.setattr(cli, "host_access_risks", lambda *a, **k: [])
     monkeypatch.setattr(cli, "network_step", lambda *a, **k: {})
     monkeypatch.setattr(cli, "backfill_owner_login", lambda *a, **k: False)
-    monkeypatch.setattr(cli, "keep_trusted_hosts", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "keep_trusted_hosts", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
     return c, cli._app_update(c, "messenger", backup=False)
 
