@@ -79,10 +79,3 @@ and must not be group/other-writable. Symlinked files/directories, hard-linked f
 or unsafe modes disable authentication; the reader never repairs permissions or creates a proof. Home itself must
 not be a symlink; its ancestors remain trusted installation paths. These checks do not provision/revoke gateway credentials or prove deployed gateway
 routing, container isolation, historical-secret confidentiality, or resistance to a concurrently malicious service user.
-
-Feature switches on such a box (#726): when apps.json has no `wizard-ux` / `wizard-agent-service` row and there is no
-`alongside.json`, `_feature-switches` finds the Agent Service at `WIZARD_AGENT_SERVICE_ORIGIN` or its default
-`127.0.0.1:8923` (when `/wizard/health` answers like one) and reads the shell catalog from that same process. When the
-Agent Service runs with an owner proof, wam sends it as `X-Wizard-Owner-Proof` on the Pages call, read per request from
-`WIZARD_OWNER_PROOF_FILE` in wam's environment, else `<wizard home>/owner-proof/agent-service-proof` (0600, own user),
-else the `WIZARD_OWNER_PROOF_FILE` of the Agent Service process listening on that port when it runs as the same user.
