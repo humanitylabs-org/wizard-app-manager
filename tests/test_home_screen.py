@@ -50,3 +50,28 @@ def test_bad_declaration_drops_only_the_capability(tmp_path):
     rows = [{'app': {'status': 'running', 'port': 8799}, 'info': {'urn': 'hello-wizard:wizardapps'}}]
     row = json.loads(registry.write(registry.build(rows, 'wizardapps', '127.0.0.1', tmp_path), tmp_path / 'owner2').read_text())['apps'][0]
     assert row['id'] == 'hello-wizard' and 'home_screen' not in row
+
+
+def _renamed(tmp_path, line):
+    app = tmp_path / 'repos' / 'wizardapps' / 'apps' / 'hello-wizard'
+    shutil.copytree(TEMPLATE, app)
+    shutil.copy2(app / 'runtipi' / 'config.json', app / 'config.json')
+    wm = app / 'wizard.md'
+    wm.write_text(wm.read_text().replace('wizard: 0.2', line + '\nwizard: 0.2'))
+    rows = [{'app': {'status': 'running', 'port': 8799}, 'info': {'urn': 'hello-wizard:wizardapps'}}]
+    return json.loads(registry.write(registry.build(rows, 'wizardapps', '127.0.0.1', tmp_path), tmp_path / 'owner').read_text())['apps'][0]
+
+
+def test_declared_rename_reaches_apps_json(tmp_path):
+    # wizard-ux issue 1471: the shell maps a pin made under an old id to the renamed app only if apps.json says so.
+    row = _renamed(tmp_path, 'renamed_from: [hello-preview, hello-wizard, "Bad Id", hello-preview]')
+    assert row['renamed_from'] == ['hello-preview']
+
+
+def test_no_rename_declared_leaves_apps_json_unchanged(tmp_path):
+    assert 'renamed_from' not in _renamed(tmp_path, '# no rename')
+
+
+def test_malformed_rename_entries_drop_out_without_breaking_the_registry(tmp_path):
+    row = _renamed(tmp_path, 'renamed_from: [{old: id}, [nested], hello-preview]')
+    assert row['id'] == 'hello-wizard' and row['renamed_from'] == ['hello-preview']

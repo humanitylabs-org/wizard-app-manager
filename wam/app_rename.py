@@ -50,7 +50,8 @@ def renamed_from(w: dict) -> list[str]:
     """The validated `renamed_from` ids of a wizard.md front matter (a string or a list), never the app's own id."""
     v = (w or {}).get("renamed_from")
     v = [v] if isinstance(v, str) else v if isinstance(v, list) else []
-    return [x for x in dict.fromkeys(v) if isinstance(x, str) and ID.fullmatch(x) and x != (w or {}).get("id")]
+    # Strings first: a malformed entry (a mapping, a nested list) is unhashable and must drop out, never raise.
+    return [x for x in dict.fromkeys(x for x in v if isinstance(x, str)) if ID.fullmatch(x) and x != (w or {}).get("id")]
 
 
 # ---------------------------------------------------------------- root-owned files through the runtipi container
