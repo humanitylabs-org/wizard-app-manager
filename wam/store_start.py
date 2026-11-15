@@ -9,7 +9,9 @@ own Origin, JSON with `X-Wizard-Store: 1`).
   POST _start/<app>  {}   start it in the background (202 + the job); a second tap joins the running job
   GET  _start/<app>       the job: {app, state: starting|running|failed, status, error?, started, finished?}
 
-Only an installed app that is not running, and not while a Store install/update of it runs. It starts the app
+Only an installed app that is not running, and not while a Store install/update of it runs. A Store update of an app
+Runtipi still reports as updating (or another transitional status) is refused too (409, `busy`), so a retry never
+starts a second update on top of the first. It starts the app
 through the App Manager API (`cli.app_lifecycle`, the path `wam app start` uses); nothing else changes.
 """
 from __future__ import annotations
@@ -30,6 +32,19 @@ def _status(c, app_id: str) -> str | None:
     from .cli import STORE
     row = ((c.runtipi().app(f"{app_id}:{STORE}") or {}).get("app") or {})
     return row.get("status") if row else None
+
+
+TRANSITIONAL = {"installing", "updating", "backing_up", "restoring", "starting", "stopping", "resetting", "uninstalling"}
+
+
+def busy(c, app_id: str) -> str | None:
+    """The transitional status Runtipi reports for the app (an update still running), or None. Unknown -> None: the
+    Store update path keeps its own checks."""
+    try:
+        status = _status(c, app_id)
+    except Exception:  # noqa: BLE001 - Runtipi unreadable: don't block on a guess
+        return None
+    return status if status in TRANSITIONAL else None
 
 
 def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:

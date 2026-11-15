@@ -108,3 +108,27 @@ def test_gateway_routes_start_for_the_owner_only(monkeypatch, tmp_path):
         assert seen == [("messenger", {})]
     finally:
         srv.shutdown()
+
+
+def test_store_update_is_refused_while_runtipi_still_updates(monkeypatch, tmp_path):
+    """A retry (Tracker, or a second tap) must never queue a second update on top of one still running."""
+    srv = _gateway(monkeypatch, tmp_path)
+    from wam import store_selection
+    monkeypatch.setattr(store_selection, "resolve", lambda c, a, sel: sel)
+    monkeypatch.setattr(si, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not update")))
+    monkeypatch.setattr(ss, "_status", lambda c, a: "updating")
+    sel = {"source": "standard", "repo": "org/app", "commit": "a" * 40, "operation": "update"}
+    try:
+        code, j = _post(srv, "/messenger", GW, sel)
+        assert code == 409 and "messenger is updating" in j["error"]
+    finally:
+        srv.shutdown()
+
+
+def test_busy_names_only_transitional_statuses():
+    assert ss.busy(C("stopped"), "x") is None and ss.busy(C("running"), "x") is None and ss.busy(C("backing_up"), "x") == "backing_up"
+
+    class Broken:
+        def runtipi(self):
+            raise OSError("no runtipi")
+    assert ss.busy(Broken(), "x") is None

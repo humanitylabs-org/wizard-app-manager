@@ -2113,6 +2113,10 @@ class StoreHandler(BaseHTTPRequestHandler):
                 if not si.ID.fullmatch(app_id):
                     raise ValueError("bad app id")
                 selection = store_selection.resolve(c, app_id, selection)
+                from . import store_start
+                busy = store_start.busy(c, app_id) if selection.get('operation') != 'install' else None
+                if busy:   # #711: never a second update on top of one Runtipi still runs (a retry after a timeout)
+                    return self._json(409, {"error": f"{app_id} is {busy}; wait for that to finish, then try again"})
                 code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
                                       lambda: installed_ids(c.runtipi()), selection=selection)
             except (ValueError, OSError, index.IndexError_) as e:
