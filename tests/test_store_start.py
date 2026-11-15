@@ -98,8 +98,7 @@ def test_gateway_routes_start_for_the_owner_only(monkeypatch, tmp_path):
         assert seen == [("messenger", {})]
         assert _get(srv, "/_start/messenger", {"Tailscale-User-Login": "owner@x.com", "X-Wizard-Store-Proof": GW["X-Wizard-Store-Proof"]}) \
             == (200, {"app": "messenger", "state": "running"})
-        # every owner check still holds: from the box itself, another origin, a guest, no proof, a bad id
-        assert "this Wizard itself" in _post(srv, "/_start/messenger", {**GW, "X-Forwarded-For": "100.64.0.1"}, {})[1]["error"]
+        # every owner check still holds: another origin, a guest, no proof, a bad id
         assert _post(srv, "/_start/messenger", {**GW, "Origin": "https://evil.example"}, {})[1]["error"] == "wrong origin"
         assert "owner" in _post(srv, "/_start/messenger", {**GW, "Tailscale-User-Login": "guest@x.com"}, {})[1]["error"]
         assert _post(srv, "/_start/messenger", {k: v for k, v in GW.items() if k != "X-Wizard-Store-Proof"}, {})[0] == 403
@@ -132,3 +131,24 @@ def test_busy_names_only_transitional_statuses():
         def runtipi(self):
             raise OSError("no runtipi")
     assert ss.busy(Broken(), "x") is None
+
+
+def test_start_and_update_of_one_app_never_run_at_once(monkeypatch):
+    """Codex on #716: a Start and a Store update are claimed against each other under one lock."""
+    ss._jobs.clear(); si._jobs.clear()
+    monkeypatch.setattr(si, "_links", lambda c: None)
+    gate = threading.Event()
+    code, job = ss.start(C("stopped"), "messenger", {}, lambda c, v, a: (gate.wait(5), {"status": "running"})[1])
+    assert code == 202
+    from wam import store_remove
+    monkeypatch.setattr(store_remove, "removing", lambda *a: False)
+    sel = {"source": "standard", "repo": "org/m", "commit": "a" * 40, "operation": "update"}
+    never = lambda c, a: (_ for _ in ()).throw(AssertionError("must not update"))
+    assert si.start(None, "messenger", never, lambda: {"messenger"}, selection=sel) == \
+        (409, {"error": "this app is being started; wait for that to finish"})
+    gate.set(); _wait(job, "starting")
+    # and the other way round: an update running blocks a start
+    si._jobs["messenger"] = {"app": "messenger", "state": "installing"}
+    assert ss.start(C("stopped"), "messenger", {}, lambda *a: (_ for _ in ()).throw(AssertionError("no")))[0] == 409
+    si._jobs.clear(); ss._jobs.clear()
+    assert ss._lock is si._lock

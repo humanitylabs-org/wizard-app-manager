@@ -19,12 +19,26 @@ from __future__ import annotations
 import threading
 import time
 
+from . import store_install as si
 from .store_install import ID
 
 PATH = "_start"
 _jobs: dict[str, dict] = {}
-_lock = threading.Lock()
+# One lock with Store install/update: a start and an update of the same app are claimed atomically against each other
+# (store_install.start checks `starting()` under the same lock), so they never run at once.
+_lock = si._lock
 STARTABLE = {"stopped", "start_error", "stop_error", "update_error", "restart_error"}
+
+
+def _installing(app_id: str) -> bool:
+    other = si._jobs.get(app_id)
+    return bool(other and other.get("state") == "installing")
+
+
+def starting(app_id: str) -> bool:
+    """A Store Start of this app is running (store_install.start calls this while holding the shared lock)."""
+    job = _jobs.get(app_id)
+    return bool(job and job["state"] == "starting")
 
 
 def _status(c, app_id: str) -> str | None:
@@ -52,13 +66,11 @@ def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:
         return 400, {"error": "bad app id"}
     if body != {}:
         return 400, {"error": "send {}"}
-    from . import store_install as si
     with _lock:
         job = _jobs.get(app_id)
         if job and job["state"] == "starting":
             return 202, job
-        other = si._jobs.get(app_id)
-        if other and other.get("state") == "installing":
+        if _installing(app_id):
             return 409, {"error": "this app is being installed or updated; wait for that to finish"}
     status = _status(c, app_id)
     if status is None:
@@ -69,10 +81,12 @@ def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:
         return 409, {"error": f"{app_id} is {status}; wait for that to finish, then start it"}
     if lifecycle is None:
         from .cli import app_lifecycle as lifecycle
-    with _lock:
+    with _lock:   # re-check both registries and claim in one step
         job = _jobs.get(app_id)
         if job and job["state"] == "starting":
             return 202, job
+        if _installing(app_id):
+            return 409, {"error": "this app is being installed or updated; wait for that to finish"}
         job = _jobs[app_id] = {"app": app_id, "state": "starting", "status": status, "started": int(time.time())}
 
     def run():

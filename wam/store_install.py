@@ -149,6 +149,9 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
             return 202, job
         if store_remove.removing(app_id):
             return 409, {"error": "this app is being removed; refresh when that finishes"}
+        from . import store_start
+        if store_start.starting(app_id):   # #711: a Store Start of it is running (same lock: no check-then-act gap)
+            return 409, {"error": "this app is being started; wait for that to finish"}
         job = _jobs[app_id] = {"app": app_id, "state": "installing", "started": int(time.time())}
         if selection:
             job["selection"] = {k: selection[k] for k in ("source", "repo", "commit", "operation")}
