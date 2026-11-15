@@ -30,6 +30,15 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
   /** Commands this process consumes, by requestId: a publisher whose RPC timed out waits here for the real result. */
   private lateResults = new Map<string, (response: { success: boolean; message: string }) => void>();
   private consuming = false;
+  /** requestIds whose command this process's consumer is running right now: their publisher waits for the real result. */
+  private running = new Set<string>();
+  /**
+   * requestIds whose publisher gave up before any consumer here started them: cancelled, never run late (WAM#721).
+   * In memory is enough: RPCClient.send publishes every request with an AMQP expiration of one timeout, so the broker
+   * never delivers it after that, also after a restart (requeued messages keep their expiry). The publisher gives up
+   * only after two timeouts, so this map covers just the messages already prefetched into this process.
+   */
+  private abandoned = new Map<string, number>();
 
   /** The RPC client for this event: long-running commands get the client with the long timeout (WAM#711). */
   public clientFor(event: unknown): RPCClient {
@@ -49,6 +58,14 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
           let rpcSuccess = false;
           let rpcResultMessage = '';
           let replied: { success: boolean; message: string } | undefined;
+          const requestId = typeof req.body?.requestId === 'string' ? (req.body.requestId as string) : undefined;
+          if (requestId && this.abandoned.delete(requestId)) {
+            // The caller already reported this command as failed; running it now would act behind its back (WAM#721).
+            this.logger.warn(`${this.queueName}: skipping ${requestId}; its caller gave up before it started`);
+            await rawReply({ success: false, message: 'Cancelled: the request timed out before it started.' });
+            return;
+          }
+          if (requestId) this.running.add(requestId);
           const reply = async (response: InferIn<R>) => {
             replied = response as { success: boolean; message: string };
             await rawReply(response);
@@ -64,6 +81,7 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
             rpcSuccess = false;
             rpcResultMessage = error instanceof Error ? error.message : String(error);
           } finally {
+            if (requestId) this.running.delete(requestId);
             const eventToPublish = {
               queueName: this.queueName,
               requestData: req.body,
@@ -123,8 +141,11 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
 
   /**
    * An RPC timeout does not stop the command: the consumer keeps running it. When this process consumes the queue
-   * itself, wait (up to one more timeout) for the real result instead of reporting a failure while the command still
-   * runs, so the caller records the true outcome (WAM#711: a big update was left `stopped` on its old version).
+   * itself, wait for the real result instead of reporting a failure while the command still runs, so the caller
+   * records the true outcome (WAM#711: a big update was left `stopped` on its old version).
+   * A command that has not started yet gets one more timeout. Once this process's consumer is running it, the
+   * publisher waits for its real result however long it takes (WAM#721). A command still not started when the
+   * extra wait ends is cancelled here, so the failure the caller records stays true.
    */
   private async sendAndWaitLate(client: RPCClient, eventData: unknown): Promise<unknown> {
     const requestId = (eventData as { requestId?: unknown } | null)?.requestId;
@@ -133,8 +154,12 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
     }
 
     let resolveLate: (response: { success: boolean; message: string }) => void = () => {};
+    let finished: { success: boolean; message: string } | undefined;
     const late = new Promise<{ success: boolean; message: string }>((resolve) => {
-      resolveLate = resolve;
+      resolveLate = (response) => {
+        finished = response;
+        resolve(response);
+      };
     });
     this.lateResults.set(requestId, resolveLate);
 
@@ -149,12 +174,28 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
       });
       try {
         return await Promise.race([late, giveUp]);
+      } catch (waitErr) {
+        if (finished) return finished;
+        if (this.running.has(requestId)) {
+          this.logger.warn(`${this.queueName}: ${requestId} is still running; waiting for its real result`);
+          return await late;
+        }
+        this.abandon(requestId);
+        throw waitErr;
       } finally {
         clearTimeout(timer);
       }
     } finally {
       this.lateResults.delete(requestId);
     }
+  }
+
+  private abandon(requestId: string) {
+    const now = Date.now();
+    for (const [id, at] of this.abandoned) {
+      if (now - at > 24 * 60 * 60_000) this.abandoned.delete(id);
+    }
+    this.abandoned.set(requestId, now);
   }
 
   private lateWaitMs(client: RPCClient) {
