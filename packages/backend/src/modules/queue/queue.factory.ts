@@ -101,7 +101,15 @@ export class QueueFactory {
     await this.initializeConnection();
   }
 
-  public async createQueue<T extends ArkTypeSchema>(params: { queueName: string; workers?: number; eventSchema: T; timeout?: number }) {
+  public async createQueue<T extends ArkTypeSchema>(params: {
+    queueName: string;
+    workers?: number;
+    eventSchema: T;
+    timeout?: number;
+    /** Commands (by `command` field) that get `longTimeout` instead of `timeout` (WAM#711). */
+    longCommands?: readonly string[];
+    longTimeout?: number;
+  }) {
     // Ensure connection is ready before creating queue
     if (!this.isReady()) {
       this.logger.warn('Queue connection not ready, waiting for initialization...');
@@ -112,15 +120,29 @@ export class QueueFactory {
     const resultSchema = type({ success: 'boolean', message: 'string' });
     publisher.initialize();
 
-    const { queueName, workers = 3, eventSchema, timeout } = params;
+    const { queueName, workers = 3, eventSchema, timeout, longCommands = [], longTimeout } = params;
 
+    // maxAttempts 1: rabbitmq-client re-publishes the SAME command on any error, RPC_TIMEOUT included, so a slow
+    // update used to run up to 3 times back to back while the caller had already recorded it as failed (WAM#711).
     const rpcClient = this.rabbit.createRPCClient({
       timeout,
       confirm: true,
-      maxAttempts: 3,
+      maxAttempts: 1,
       queues: [{ autoDelete: false, durable: true, queue: queueName }],
     });
+    const longRpcClient =
+      longCommands.length && longTimeout && longTimeout !== timeout
+        ? this.rabbit.createRPCClient({
+            timeout: longTimeout,
+            confirm: true,
+            maxAttempts: 1,
+            queues: [{ autoDelete: false, durable: true, queue: queueName }],
+          })
+        : rpcClient;
 
-    return new Queue(this.rabbit, rpcClient, publisher, queueName, workers, eventSchema, resultSchema, this.logger);
+    return new Queue(this.rabbit, rpcClient, publisher, queueName, workers, eventSchema, resultSchema, this.logger, {
+      client: longRpcClient,
+      commands: longCommands,
+    });
   }
 }

@@ -10,6 +10,9 @@ import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { type ContainerFacts, statusFromTally, tallyContainers } from './app-status-tally';
+import { transitionalGraceSeconds } from '../queue/lifecycle-timeouts';
+import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
+import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -32,6 +35,7 @@ export class AppStatusSyncService {
     private readonly systemEventsQueue: SystemEventsQueue,
     private readonly configuration: ConfigurationService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    @Inject(APP_ASYNC_MUTEX) private readonly mutex: AsyncMutex,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       this.logger.warn(
@@ -84,10 +88,16 @@ export class AppStatusSyncService {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
+        if (isTransitional && this.mutex.isLocked(appUrn)) {
+          // A lifecycle command for this app is still running here (a big update can take long): never guess (WAM#711).
+          this.logger.debug(`Skipping ${appUrn} - '${app.status}' command still running`);
+          skippedCount++;
+          continue;
+        }
         if (isTransitional) {
           const timeSinceUpdate = Math.floor(Date.now() / 1000) - app.updatedAt;
 
-          if (timeSinceUpdate < this.configuration.get('userSettings').eventsTimeout * 60) {
+          if (timeSinceUpdate < transitionalGraceSeconds(app.status, this.configuration.get('userSettings').eventsTimeout)) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
             skippedCount++;
             continue;

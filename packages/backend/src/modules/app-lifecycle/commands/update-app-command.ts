@@ -136,7 +136,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
       preservePermissions = (await appFilesManager.hasPrivateData(appUrn)) || preservePermissions;
       await this.ensureAppDir(appUrn, form, { pruneContainers: false, persistSubnet: false, ...permissionOptions() });
-      await appHelpers.generateEnvFile(appUrn, form);
+      await appHelpers.generateEnvFile(appUrn, form, { pruneSources: false });
       // Refuse invalid target storage/shares/legacy bridges while the old
       // deployment is still running, before backup stop or compose down.
       await dockerService.prepareApp(appUrn);
@@ -163,13 +163,20 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
       await this.ensureAppDir(appUrn, form, { pruneContainers: false, ...permissionOptions() });
-      await appHelpers.generateEnvFile(appUrn, form);
+      await appHelpers.generateEnvFile(appUrn, form, { pruneSources: false });
 
       if (this.wasRunningBeforeUpdate) {
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
         // Docker creates bind-mount folders a new version adds during `up`, after ensureAppDir's chmod; open them
         // here too (as install does) so a non-root container can write them before the app's next restart.
         if (!preservePermissions) await appFilesManager.setAppDataDirPermissions(appUrn);
+      }
+
+      // Only now does no container run from the old source copy (wizard-recorder#17). Cleanup never fails the update.
+      try {
+        await appHelpers.pruneOldSources(appUrn);
+      } catch (pruneError) {
+        logger.warn(`Old source copies of app ${appUrn} were not removed:`, pruneError);
       }
 
       return { success: true, message: `App ${appUrn} updated successfully` };

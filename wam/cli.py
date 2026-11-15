@@ -1871,6 +1871,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._view_revert(method, app_id.removeprefix('_views/'))
         if app_id == '_slots/chats':
             return self._chats_default(method)
+        if app_id.startswith('_start/'):   # Start a stopped app (store_start.py, #711)
+            return self._start(method, app_id.removeprefix('_start/'))
         if app_id == '_remove' or app_id.startswith('_remove/'):   # Store "Remove app" (store_remove.py)
             return self._remove(method, app_id.removeprefix('_remove').lstrip('/'))
         if app_id == '_github' or app_id.startswith('_github/'):   # Store "Sign in to GitHub" (github_signin.py)
@@ -1892,6 +1894,10 @@ class StoreHandler(BaseHTTPRequestHandler):
                 if not si.ID.fullmatch(app_id):
                     raise ValueError("bad app id")
                 selection = store_selection.resolve(c, app_id, selection)
+                from . import store_start
+                busy = store_start.busy(c, app_id) if selection.get('operation') != 'install' else None
+                if busy:   # #711: never a second update on top of one Runtipi still runs (a retry after a timeout)
+                    return self._json(409, {"error": f"{app_id} is {busy}; wait for that to finish, then try again"})
                 code, body = si.start(c, app_id, lambda c_, a: store_selection.execute(c_, a, selection),
                                       lambda: installed_ids(c.runtipi()), selection=selection)
             except (ValueError, OSError, index.IndexError_) as e:
@@ -1903,6 +1909,25 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _start(self, method: str, app: str) -> None:
+        """POST _start/<app> {}: start a stopped app; GET _start/<app>: that job (store_start.py). The owner gate in
+        _go already ran (check_request for the POST: owner, another device, the shell's origin, JSON)."""
+        from . import store_start as ss
+        if not ss.ID.fullmatch(app):
+            return self._json(404, {"error": "not found"})
+        if method == "GET":
+            return self._json(*ss.status(app))
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 64:
+                return self._json(400, {"error": "send {}"})
+            return self._json(*ss.start(self.cfg, app, json.loads(self.rfile.read(size))))
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        except Exception as e:  # noqa: BLE001 - answer with the reason; a dropped connection shows as a bare 502
+            sys.stderr.write(f"wam store: start {app} failed: {type(e).__name__}: {e}\n")
+            return self._json(500, {"error": f"The App Manager couldn't start {app} ({type(e).__name__})."})
 
     def _host_access(self, method: str, app: str) -> None:
         """`POST /_host-access/<app>` {"for": "install"|"update"|"allow"}: the owner, on one of their enrolled devices,
@@ -2229,7 +2254,21 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 1200, allow_host_access: bool = False) -> dict:
+# Runtipi gives install/update max(QUEUE_TIMEOUT_IN_MINUTES, 30) minutes, then waits one more such period for the
+# command it is still running (queue/lifecycle-timeouts.ts, queue.entity.ts). Wait a little longer than both, or a big
+# app's update is "lost" here while it is still running and gets started or rolled back on top (#711).
+LONG_COMMAND_MINUTES = 30
+
+
+def update_wait_s(c: "Config") -> int:
+    try:
+        minutes = int(read_env(Path(c.runtipi_root) / ".env").get("QUEUE_TIMEOUT_IN_MINUTES") or 5)
+    except (OSError, ValueError, TypeError):
+        minutes = 5
+    return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
+
+
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards."""
     if app_id.split(':', 1)[0] == 'hermes-agent':
@@ -2283,6 +2322,8 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
+    if timeout is None:
+        timeout = update_wait_s(c)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
@@ -2293,7 +2334,8 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 120
         raise
     after = ((rt.app(urn) or {}).get("app") or {})
     restarted = False
-    if was_running and status != "running":
+    if was_running and status not in ("running", "updating"):
+        # never while Runtipi still reports `updating`: the start would queue behind the update and time out (#711)
         rt.start(urn)
         status = rt.wait_status(urn, {"running"}, 300)
         restarted = True
