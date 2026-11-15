@@ -3053,7 +3053,7 @@ def main(argv: list[str] | None = None) -> int:
             return browser_boundary_cmd(c, args)
         elif args.cmd == "owner-edge":
             from . import owner_edge
-            owner_edge.run(c.home)
+            owner_edge.run(c.home, app_status=owner_edge.AppStatus(c.runtipi_root, STORE))
             return 0
         elif args.cmd == "owner-proof":
             from . import owner_proof

@@ -227,6 +227,57 @@ def test_restarting_app_page_load_gets_a_waiting_page_and_api_gets_json_502(edge
     assert status == 502 and json.loads(body)["error"]["code"] == "app_unavailable"
 
 
+@pytest.mark.parametrize("state", ["stopped", "start_error", "update_error"])
+def test_stopped_app_page_load_says_stopped_without_an_endless_spinner(edge, monkeypatch, state):
+    # #713: a stopped app was shown as "restarting" with a spinner that never ended.
+    monkeypatch.setattr(owner_edge, "BACKEND_RETRY_S", 0.2)
+    asked = []
+    edge["srv"].app_status = lambda app_id: asked.append(app_id) or state
+    edge["backend"].shutdown(); edge["backend"].server_close()
+    status, h, body = call(edge, path="/", headers=serve_headers(**{"Sec-Fetch-Mode": "navigate", "Accept": "text/html"}))
+    assert status == 503 and "x-wizard-waiting" not in h and "retry-after" not in h
+    assert b"Messenger is stopped. Ask your Wizard to start it." in body
+    assert b"restarting" not in body and b"animation" not in body
+    assert asked == ["messenger"]
+    status, _, body = call(edge, path="/api/status")
+    assert status == 502 and json.loads(body)["error"]["code"] == "app_unavailable"
+
+
+@pytest.mark.parametrize("state", ["restarting", "starting", "updating", ""])
+def test_an_app_on_its_way_back_still_gets_the_restarting_page(edge, monkeypatch, state):
+    monkeypatch.setattr(owner_edge, "BACKEND_RETRY_S", 0.2)
+    edge["srv"].app_status = lambda app_id: state
+    edge["backend"].shutdown(); edge["backend"].server_close()
+    status, h, body = call(edge, path="/", headers=serve_headers(**{"Sec-Fetch-Mode": "navigate", "Accept": "text/html"}))
+    assert status == 503 and h["x-wizard-waiting"] == "1" and b"Messenger is restarting" in body
+
+
+def test_app_status_caches_and_never_raises(tmp_path):
+    calls = []
+    def lookup(app_id):
+        calls.append(app_id)
+        if len(calls) == 1:
+            return "stopped"
+        raise OSError("runtipi down")
+    st = owner_edge.AppStatus(tmp_path, "wizardapps", ttl=60, lookup=lookup)
+    assert st("messenger") == "stopped" and st("messenger") == "stopped" and calls == ["messenger"]
+    st.ttl = 0
+    assert st("messenger") == "" and len(calls) == 2
+    # No Runtipi install at all (no .env): unknown, so the edge keeps the restarting page.
+    assert owner_edge.AppStatus(tmp_path / "none", "wizardapps", ttl=0)("messenger") == ""
+
+
+def test_app_status_asks_runtipi_for_the_app_in_the_wizard_store(tmp_path, monkeypatch):
+    seen = []
+    class RT:
+        def req(self, method, path, timeout=60):
+            seen.append((method, path, timeout))
+            return {"app": {"status": "stopped"}}
+    monkeypatch.setattr(owner_edge.Runtipi, "from_install", classmethod(lambda cls, root: RT()))
+    assert owner_edge.AppStatus(tmp_path, "wizardapps")("messenger") == "stopped"
+    assert seen == [("GET", "/apps/messenger:wizardapps", 3)]
+
+
 def test_responses_stream_instead_of_buffering(edge):
     status, _, body = call(edge, path="/stream")
     assert status == 200 and body == b"part0\npart1\npart2\n"
