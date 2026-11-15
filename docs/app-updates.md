@@ -30,7 +30,10 @@ reached new installs only; existing boxes (including the publisher's own) kept t
    step, and that the team was told. The "from" version is the last release that read back cleanly while the switch
    was on (`~/.wizard-os/update-report-os.json`), else "unknown".
 
-**When.** `wizard-app-updates.timer` (systemd user timer, nightly 04:30 + up to 1 h, persistent), skipped while a
+**When.** `wizard-app-updates.timer` (systemd user timer, ticks hourly at :30 + up to 10 min, persistent). With
+feature switch `wizard/app-updates-hourly` off (the default) only the first tick from 04:30 local each day runs, as
+before; with it on (wizard-os#613) every tick runs, so a release reaches the box within about an hour. A notice that
+would only repeat the last hour's "Waiting for you" is not sent again. Skipped while a
 chat run is active or a WizardOS update is installing. The installer sets the timer up on every run
 (`wam updates --ensure-timer` also ensures this one).
 
