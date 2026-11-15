@@ -2485,9 +2485,10 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-# Runtipi gives install/update max(QUEUE_TIMEOUT_IN_MINUTES, 30) minutes, then waits one more such period for the
-# command it is still running (queue/lifecycle-timeouts.ts, queue.entity.ts). Wait a little longer than both, or a big
-# app's update is "lost" here while it is still running and gets started or rolled back on top (#711).
+# Runtipi gives install/update max(QUEUE_TIMEOUT_IN_MINUTES, 30) minutes, then waits one more such period for a
+# command that has not started, and for one it is running until it ends (queue/lifecycle-timeouts.ts,
+# queue.entity.ts, #721). Wait a little longer than both; past that the app still reports `updating` and is never
+# started on top of the running update (#711).
 LONG_COMMAND_MINUTES = 30
 
 
