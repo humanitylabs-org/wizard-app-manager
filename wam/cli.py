@@ -669,6 +669,12 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
         host = json.loads((c.home / "links.json").read_text()).get("host") or ""
     except (OSError, ValueError):
         host = ""
+    if not host and port:   # #708: links.json can say "missing" while the tailnet is up; ask Tailscale itself
+        try:
+            from . import links
+            host = links.tailnet().get("host") or ""
+        except Exception:  # noqa: BLE001 - no Tailscale answer: no derived hosts, as before
+            host = ""
     if not host or not port or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         return {}
     hosts, origins = [f"{host}:{port}", host], [f"https://{host}:{port}"]
@@ -693,6 +699,54 @@ def trusted_origin_env(c: Config, app_id: str, app_port: int | None = None) -> d
         if owner:
             env["WIZARD_OWNER_LOGINS"] = owner
     return env
+
+
+TRUST_KEYS = ("WIZARD_TRUSTED_HOSTS", "WIZARD_TRUSTED_ORIGINS")
+
+
+def keep_trusted_hosts(c: Config, app_id: str) -> dict[str, str]:
+    """An update regenerates the app's env (app-data/<store>/<id>/app.env) from its settings and the user-config
+    app.env; trusted hosts that live only in the generated file are lost, and the app then answers every Wizard
+    request with 403 "Unknown host" (#708). Before the update, write the hosts the app trusts now, plus the ones
+    trusted_origin_env() derives today, into the user-config app.env, which the update keeps. Only adds hosts,
+    never drops one (a list already in user-config wins over the generated one); nothing changes for an app whose
+    recipe takes no trusted hosts. Returns what it wrote."""
+    text = ""
+    for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
+                 c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
+        try:
+            text = comp.read_text()
+            break
+        except OSError:
+            continue
+    if "WIZARD_TRUSTED_HOSTS" not in text:
+        return {}
+    from .runtipi import read_env
+
+    def env_of(p: Path) -> dict[str, str]:
+        try:
+            return read_env(p)
+        except OSError:
+            return {}
+    user_p = c.runtipi_root / "user-config" / STORE / app_id / "app.env"
+    user, live = env_of(user_p), env_of(c.runtipi_root / "app-data" / STORE / app_id / "app.env")
+    port = live.get("APP_PORT") or ""
+    derived = trusted_origin_env(c, app_id, int(port) if port.isdigit() else None) if getattr(c, "home", None) else {}
+    out = {}
+    for k in TRUST_KEYS:
+        merged: list[str] = []
+        # A value already in user-config is the owner's (or an earlier install's) list: it wins over the generated
+        # one, so a host the owner removed there is never revived from app-data (Codex P1).
+        for src in (derived.get(k, ""), user[k] if k in user else live.get(k, "")):
+            for v in src.split(","):
+                v = v.strip()
+                if v and v not in merged and re.fullmatch(r"[A-Za-z0-9.:/\[\]-]+", v):
+                    merged.append(v)
+        if merged and ",".join(merged) != user.get(k, ""):
+            out[k] = ",".join(merged)
+    if out:
+        write_user_env(c.runtipi_root, app_id, out)
+    return out
 
 
 def backfill_owner_login(c: Config, app_id: str) -> bool:
@@ -2482,6 +2536,10 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 12
                 print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+        try:   # #708: the regenerated env must keep the hosts the app trusts, or it answers "Unknown host"
+            keep_trusted_hosts(c, app)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
     try:
         rt.update(urn, perform_backup=backup)
@@ -2520,7 +2578,7 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = 12
 def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
     """backfill_owner_login for each named store app, or every installed store app when none is named (--all)."""
     from types import SimpleNamespace
-    c = SimpleNamespace(runtipi_root=runtipi_root)
+    c = SimpleNamespace(runtipi_root=runtipi_root, home=registry.home())
     if targets:
         ids = [t.split(":", 1)[0] for t in targets if ":" not in t or t.split(":", 1)[1] == STORE]
     else:
@@ -2532,6 +2590,10 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
                 print(f"note: {app} now answers only the box owner's tailnet login", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: owner login not written for {app} ({str(e)[:120]})", file=sys.stderr)
+        try:   # #708: the bulk/flag-first update regenerates the env too
+            keep_trusted_hosts(c, app)
+        except Exception as e:  # noqa: BLE001 - never fail the update for it
+            print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
 
 
 def _graceful_passthrough(argv: list[str]) -> int | None:
