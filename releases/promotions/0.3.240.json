@@ -1,0 +1,16 @@
+{
+  "version": "0.3.240",
+  "latest_since": "2026-11-15T14:10:25Z",
+  "promoted_at": "2026-11-15T14:20:43Z",
+  "upgrade_test": {
+    "from": "0.3.143",
+    "to": "0.3.240",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.240.md"
+  },
+  "fast_track": {
+    "classification": "fix",
+    "reason": "Miguel approved shipping the App Manager update fix to every Wizard (15 Nov 2026, 'Ship'). 0.3.240 = Stable 0.3.143 + App Manager 5fe14045 (wizard-app-manager#719: backport of #712, big app updates are sent once, get a 30-minute limit and are waited for instead of started or rolled back on top, and #716, Store Start for an app an update left stopped, no second update over a running one, an update that leaves the app stopped says failed; both for #711). Fail-first 3 failed -> 4 passed, 36 targeted tests pass, CI green. KVM upgrade test 0.3.143 -> 0.3.240 passed (run 20261115T135344Z, 27 checks 0 failed, wizard doctor and wam doctor FAIL 0).",
+    "notes": "Rides along in the published main image db21345 (Latest since 0.3.238): wizard-app-manager #693, #592 (Recommended fixes) and #554 (Node runtime). Known follow-up: #720 (an update running > 60 min is still reported failed). Candidate served to the rig from wizard-os #651's head, byte-identical to main b8fd3bbc and the mirror. Rollback: stable -> 0.3.143."
+  }
+}
