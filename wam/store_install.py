@@ -156,13 +156,16 @@ def start(c, app_id: str, install_fn, installed_fn, *, selection=None) -> tuple[
     def run():
         try:
             res = install_fn(c, app_id)
-            ok = res.get("status") in ("running", "stopped", "already installed")
+            # An update that reports an error (the app was running and didn't come back, #711) is a failure, not
+            # "installed": the Tracker and the Store would otherwise say it updated while it sits stopped on its old
+            # version.
+            ok = res.get("status") in ("running", "stopped", "already installed") and not res.get("error")
             if ok:
                 # Publish the same-origin route and rewrite/share the registry BEFORE reporting `installed`: the
                 # Store then asks the shell to re-read its apps, and must find the app's openable URL already there.
                 _links(c)
             job.update(state="installed" if ok else "failed", status=res.get("status"),
-                       **({} if ok else {"error": f"finished as {res.get('status')}"}))
+                       **({} if ok else {"error": res.get("error") or f"finished as {res.get('status')}"}))
         except SystemExit as e:
             job.update(state="failed", error=str(e)[:400])
         except Exception as e:  # noqa: BLE001 - report, never crash the API server
@@ -255,10 +258,12 @@ GATEWAY_CONTROL = ("_updates", "_main-compare", "_connections", "_disk", "_featu
 
 def gateway_path_ok(path: str) -> bool:
     """The gateway listener answers a plain app id and the Settings/Tracker routes (Updates, About's main compare,
-    Connections, the disk encryption line, feature switches and app updates),
+    Connections, the disk encryption line, feature switches, app updates and Start of a stopped app),
     nothing else: removal, host-access and view reverts stay on the root-peer :7791 listener."""
     p = path.strip("/")
-    return bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches", "_app-updates") or p == "_connections" or p.startswith("_connections/")
+    return (bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches", "_app-updates")
+            or p == "_connections" or p.startswith("_connections/")
+            or (p.startswith("_start/") and bool(ID.fullmatch(p.removeprefix("_start/")))))
 
 
 def gateway_proof_ok(headers, home) -> bool:
