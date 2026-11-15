@@ -70,3 +70,8 @@ def test_declared_rename_reaches_apps_json(tmp_path):
 
 def test_no_rename_declared_leaves_apps_json_unchanged(tmp_path):
     assert 'renamed_from' not in _renamed(tmp_path, '# no rename')
+
+
+def test_malformed_rename_entries_drop_out_without_breaking_the_registry(tmp_path):
+    row = _renamed(tmp_path, 'renamed_from: [{old: id}, [nested], hello-preview]')
+    assert row['id'] == 'hello-wizard' and row['renamed_from'] == ['hello-preview']
