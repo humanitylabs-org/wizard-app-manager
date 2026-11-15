@@ -884,6 +884,9 @@ def _app_lifecycle(c: "Config", verb: str, app_id: str, urn: str, timeout: int =
     getattr(rt, verb)(urn)
     time.sleep(2)
     status = rt.wait_status(urn, LIFECYCLE_WANT[verb] | {"start_error", "stop_error", "restart_error", "missing"}, timeout)
+    if verb == "stop" or status == "running":   # an owner's Stop, or it runs again: no longer left stopped (#730)
+        from . import update_strand
+        update_strand.clear(getattr(c, "home", None), urn)
     out = {"id": app_id, "urn": urn, "action": verb, "status": status}
     if status not in LIFECYCLE_WANT[verb]:
         out["error"] = f"{verb} did not finish (status {status}); see `docker logs runtipi`"
@@ -1609,7 +1612,7 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             res = app_update(c, app_id, settings=fill)
             if res.get("error"):
                 raise RuntimeError(res["error"])
-            expected_status = 'running' if before.get('status') == 'running' else 'stopped'
+            expected_status = 'running' if before.get('status') == 'running' or res.get('revived') else 'stopped'
             if res.get('status') != expected_status:
                 raise RuntimeError("app update did not finish in its previous running/stopped state")
             # A failed queued update can roll back to running/stopped. That is NOT success.
@@ -1647,6 +1650,10 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
         if urn:
             installed[urn] = (row.get("app") or {}).get("status")
     want = [f"{a}:{STORE}" for a in core] + [u if ":" in u else f"{u}:{STORE}" for u in running]
+    # #730: apps an earlier update left stopped (#711) were running before it; an app the owner stopped stays stopped
+    from . import update_strand
+    stranded = [u for u, st in installed.items() if u not in want and update_strand.stranded(c, u, st)]
+    want += stranded
     started, failed, skipped = [], {}, []
     for urn in dict.fromkeys(want):
         app_id = urn.split(":", 1)[0]
@@ -1666,7 +1673,10 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
             failed[app_id] = str(e)[:200]
     if started:
         write_registry(c, rt)
-    return {"started": started, "failed": failed, "not_installed": skipped, "core": core}
+    out = {"started": started, "failed": failed, "not_installed": skipped, "core": core}
+    if stranded:
+        out["left_stopped_by_update"] = [u.split(":", 1)[0] for u in stranded]
+    return out
 
 
 def doctor_gateway_keys(c: Config, reg: dict) -> list[tuple[str, bool, str]]:
@@ -2533,6 +2543,10 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     if not before:
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
+    from . import update_strand
+    # #730: an app an earlier update left stopped (#711) was running before it: this update brings it back
+    revive = not was_running and update_strand.stranded(c, urn, before.get("status"))
+    was_running = was_running or revive
     app, store = urn.split(":", 1)
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
@@ -2587,7 +2601,9 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
         status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
-    except BaseException:
+    except BaseException as e:
+        if was_running:   # #730: if this left it stopped, the next update or recover starts it again
+            update_strand.mark(getattr(c, "home", None), urn, f"{type(e).__name__}: {e}")
         if store == STORE:   # the update was never queued (or we lost track of it): back to the installed topology
             network_step(c, rt, restart=False)
         raise
@@ -2600,8 +2616,13 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         restarted = True
     out = {"id": app_id, "urn": urn, "status": status, "version": after.get("version"),
            "from_version": before.get("version"), "restarted": restarted}
+    if revive:
+        out["revived"] = True   # it was left stopped by a failed update, so it is started again (#730)
     if status != "running" and was_running:
         out["error"] = "the app did not come back; see `docker logs runtipi`"
+        update_strand.mark(getattr(c, "home", None), urn, f"update ended {status}")
+    elif status == "running":
+        update_strand.clear(getattr(c, "home", None), urn)
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
     if backup and status in ("running", "stopped") and not out.get("error"):
