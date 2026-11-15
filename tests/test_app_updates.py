@@ -367,7 +367,10 @@ def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, mon
     monkeypatch.setattr(cli, "app_update", lambda c, app_id, **k: (_ for _ in ()).throw(SystemExit("needs your OK")))
     monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
     sent = []
-    monkeypatch.setattr(au, "_notify", lambda c, *msg: sent.append(msg))
+    delivered = [False]
+    monkeypatch.setattr(au, "_notify", lambda c, *msg: sent.append(msg) or delivered[0])
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(au.time, "time", lambda: clock[0])
 
     class C:
         home = tmp_path
@@ -375,9 +378,21 @@ def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, mon
 
         def runtipi(self):
             return type("Rt", (), {"installed": lambda self: []})()
-    run = lambda q: au.apply(C(), renames=lambda c, rt: [], moves=lambda *a, **k: [], quiet_repeats=q)  # noqa: E731
-    assert run(True)["needs_owner"] and len(sent) == 1                  # first time: told
-    run(True)
-    assert len(sent) == 1                                               # same wait, next hour: quiet
+    run = lambda q=True: au.apply(C(), renames=lambda c, rt: [], moves=lambda *a, **k: [], quiet_repeats=q)  # noqa: E731
+    assert run()["needs_owner"] and len(sent) == 1       # Notifications not installed: nothing delivered...
+    clock[0] += 3600
+    run()
+    assert len(sent) == 2                                 # ...so the next hour tries again
+    delivered[0] = True
+    clock[0] += 3600
+    run()
+    assert len(sent) == 3                                 # delivered
+    for _ in range(5):
+        clock[0] += 3600
+        run()
+    assert len(sent) == 3                                 # same wait, later hours: quiet
+    clock[0] += 16 * 3600
+    run()
+    assert len(sent) == 4                                 # a day after the last reminder: told again
     run(False)
-    assert len(sent) == 2                                               # the nightly run still tells every day
+    assert len(sent) == 5                                 # the nightly run (switch off) tells every time, as before

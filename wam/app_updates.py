@@ -46,6 +46,7 @@ LOCK = "app-updates.lock"
 SETTLE_SECONDS = 20          # an app must stay up this long after its update before it counts as working
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
 FRESH_SLACK_MS = 120_000     # the rollback backup must be at least this recent relative to the update start
+NEEDS_REMIND_SECONDS = 20 * 3600   # hourly runs repeat an unchanged "Waiting for you" about once a day
 RETRY_DAYS = 7               # a version that failed is tried again after this long (a box-side fix may land meanwhile)
 # Moved only by a WizardOS release (updates.py / release_updates), never by this module.
 SYSTEM_APPS = frozenset({"hermes-agent", "wizard-ux", "wizard-agent-service", "wizard-shell"})
@@ -573,8 +574,8 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
 def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
           reporter=None, moves=None, quiet_repeats: bool = False) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures.
-    `quiet_repeats` (the hourly timer): a notice that would only repeat the last run's "Waiting for you" is not sent
-    again, so an app waiting for the owner's OK does not notify every hour."""
+    `quiet_repeats` (the hourly timer): a notice that would only repeat a "Waiting for you" already delivered in the
+    last day is not sent again, so an app waiting for the owner's OK reminds once a day, not every hour."""
     from . import cli, updates
     c = c or cli.Config()
     h = _home(c.home)
@@ -694,10 +695,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
         last = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "renamed": [x["id"] for x in renamed],
                 "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
                 "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
-        prev_needs = sorted((_state(c.home).get("last") or {}).get("needs_owner") or [])
+        told_needs = _state(c.home).get("needs_told") or {}
         _write(c.home, failed=fails, last=last)
-        repeat = quiet_repeats and needs and not (done or rolled or failed or renamed) \
-            and sorted(last["needs_owner"]) == prev_needs
+        repeat = bool(quiet_repeats and needs and not (done or rolled or failed or renamed)
+                      and sorted(last["needs_owner"]) == told_needs.get("ids")
+                      and time.time() - float(told_needs.get("at") or 0) < NEEDS_REMIND_SECONDS)
         reports = {}
         if notify and (rolled or failed):   # tell the team too (#524): only with wizard/update-bug-reports on
             try:
@@ -712,8 +714,8 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 fails[k] = {**fails[k], "bug": url}
             _write(c.home, failed=fails)
         msg = _summary(done, rolled, failed, needs, renamed, told)
-        if notify and msg and not repeat:
-            _notify(c, *msg)
+        if notify and msg and not repeat and _notify(c, *msg) and needs:
+            _write(c.home, needs_told={"ids": sorted(last["needs_owner"]), "at": time.time()})
         return {"started": True, **({"repo_moved": repo_moved} if repo_moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
                 "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
                 **({"reported": reports} if reports else {})}
