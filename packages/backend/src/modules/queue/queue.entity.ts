@@ -27,6 +27,10 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
     private long: { client: RPCClient; commands: readonly string[] } = { client: rpcClient, commands: [] },
   ) {}
 
+  /** Commands this process consumes, by requestId: a publisher whose RPC timed out waits here for the real result. */
+  private lateResults = new Map<string, (response: { success: boolean; message: string }) => void>();
+  private consuming = false;
+
   /** The RPC client for this event: long-running commands get the client with the long timeout (WAM#711). */
   public clientFor(event: unknown): RPCClient {
     const command = (event as { command?: unknown } | null)?.command;
@@ -41,9 +45,14 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
           concurrency: this.workers,
           queueOptions: { autoDelete: false, durable: true },
         },
-        async (req, reply) => {
+        async (req, rawReply) => {
           let rpcSuccess = false;
           let rpcResultMessage = '';
+          let replied: { success: boolean; message: string } | undefined;
+          const reply = async (response: InferIn<R>) => {
+            replied = response as { success: boolean; message: string };
+            await rawReply(response);
+          };
 
           try {
             await callback(req.body, reply);
@@ -64,11 +73,15 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
               timestamp: new Date().toISOString(),
             };
 
+            const late = this.lateResults.get(req.body?.requestId);
+            if (late) late(replied ?? { success: rpcSuccess, message: rpcResultMessage });
+
             const routingKey = `rpc.${rpcSuccess ? 'processed' : 'error'}.${this.queueName}`;
             await this.publisher.publish(routingKey, eventToPublish);
           }
         },
       );
+      this.consuming = true;
     } catch (error) {
       this.logger.error(`Failed to create consumer for queue ${this.queueName}:`, error);
       Sentry.captureException(error, { tags: { queueName: this.queueName, action: 'onEvent' } });
@@ -83,8 +96,9 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
         throw new Error(`Invalid event data: ${eventData.summary}`);
       }
 
-      const res = await this.clientFor(eventData).send(this.queueName, eventData);
-      const response = this.resultSchema(res.body as never);
+      const client = this.clientFor(eventData);
+      const body = await this.sendAndWaitLate(client, eventData);
+      const response = this.resultSchema(body as never);
       if (!(response instanceof type.errors)) {
         return response;
       }
@@ -105,6 +119,47 @@ export class Queue<T extends ArkTypeSchema, R extends ArkTypeSchema<{ success: b
       Sentry.captureException(err, { tags: { queueName: this.queueName } });
       return { success: false, message: String(err) };
     }
+  }
+
+  /**
+   * An RPC timeout does not stop the command: the consumer keeps running it. When this process consumes the queue
+   * itself, wait (up to one more timeout) for the real result instead of reporting a failure while the command still
+   * runs, so the caller records the true outcome (WAM#711: a big update was left `stopped` on its old version).
+   */
+  private async sendAndWaitLate(client: RPCClient, eventData: unknown): Promise<unknown> {
+    const requestId = (eventData as { requestId?: unknown } | null)?.requestId;
+    if (!this.consuming || typeof requestId !== 'string') {
+      return (await client.send(this.queueName, eventData)).body;
+    }
+
+    let resolveLate: (response: { success: boolean; message: string }) => void = () => {};
+    const late = new Promise<{ success: boolean; message: string }>((resolve) => {
+      resolveLate = resolve;
+    });
+    this.lateResults.set(requestId, resolveLate);
+
+    try {
+      return (await client.send(this.queueName, eventData)).body;
+    } catch (err) {
+      if (!(err instanceof AMQPError) || err.code !== 'RPC_TIMEOUT') throw err;
+      this.logger.warn(`${this.queueName}: no reply in time for ${requestId}; waiting for the command to finish`);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const giveUp = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(err), this.lateWaitMs(client));
+      });
+      try {
+        return await Promise.race([late, giveUp]);
+      } finally {
+        clearTimeout(timer);
+      }
+    } finally {
+      this.lateResults.delete(requestId);
+    }
+  }
+
+  private lateWaitMs(client: RPCClient) {
+    const timeout = (client as unknown as { _props?: { timeout?: number } })._props?.timeout;
+    return typeof timeout === 'number' && timeout > 0 ? timeout : 30_000;
   }
 
   public publishRepeatable(data: unknown, cronPattern: string) {

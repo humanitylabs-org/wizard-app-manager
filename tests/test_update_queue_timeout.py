@@ -63,4 +63,13 @@ def test_wam_waits_longer_than_runtipi_gives_an_update(tmp_path, monkeypatch):
     _, calls = _update(tmp_path, monkeypatch, "running")
     src = (ROOT / "packages/backend/src/modules/queue/lifecycle-timeouts.ts").read_text()
     minutes = int(re.search(r"LONG_COMMAND_MINUTES = (\d+);", src).group(1))
-    assert calls["waits"][0] == cli.UPDATE_WAIT_S > minutes * 60
+    assert cli.LONG_COMMAND_MINUTES == minutes
+    # the backend's long timeout plus one more period waiting for the late result
+    assert calls["waits"][0] > 2 * minutes * 60
+
+
+def test_the_wait_follows_a_higher_configured_queue_timeout(tmp_path, monkeypatch):
+    (tmp_path / "rt").mkdir()
+    (tmp_path / "rt" / ".env").write_text("QUEUE_TIMEOUT_IN_MINUTES=90\n")
+    _, calls = _update(tmp_path, monkeypatch, "running")
+    assert calls["waits"][0] > 2 * 90 * 60

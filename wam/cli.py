@@ -2460,12 +2460,21 @@ def _short_ids(runtipi_root: Path, args: list[str]) -> list[str]:
     return out
 
 
-# Runtipi gives install/update at least 30 min before it calls the command failed (queue/lifecycle-timeouts.ts):
-# wait a little longer than that, or a big app's update is "lost" here while it is still running (#711).
-UPDATE_WAIT_S = 31 * 60 + 40
+# Runtipi gives install/update max(QUEUE_TIMEOUT_IN_MINUTES, 30) minutes, then waits one more such period for the
+# command it is still running (queue/lifecycle-timeouts.ts, queue.entity.ts). Wait a little longer than both, or a big
+# app's update is "lost" here while it is still running and gets started or rolled back on top (#711).
+LONG_COMMAND_MINUTES = 30
 
 
-def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UPDATE_WAIT_S, allow_host_access: bool = False,
+def update_wait_s(c: "Config") -> int:
+    try:
+        minutes = int(read_env(Path(c.runtipi_root) / ".env").get("QUEUE_TIMEOUT_IN_MINUTES") or 5)
+    except (OSError, ValueError, TypeError):
+        minutes = 5
+    return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
+
+
+def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
     running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
@@ -2477,7 +2486,7 @@ def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UPD
                                                                 settings), backup=backup)
 
 
-def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UPDATE_WAIT_S, allow_host_access: bool = False,
+def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                 settings=None) -> dict:
     """Update one app through the App Manager API (the queued, rolled-back path the web UI uses), not runtipi-cli,
     whose direct queue call can fail and leave the app stopped. A running app is running again afterwards.
@@ -2546,6 +2555,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int = UP
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
     started_ms = int(time.time() * 1000)
+    if timeout is None:
+        timeout = update_wait_s(c)
     try:
         rt.update(urn, perform_backup=backup)
         time.sleep(3)
