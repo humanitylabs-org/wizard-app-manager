@@ -65,7 +65,8 @@ def test_derived_and_kept_hosts_are_merged_never_dropped(tmp_path, monkeypatch):
     env = _user_env(c)
     assert env["OTHER"] == "1"
     assert env["WIZARD_TRUSTED_HOSTS"].split(",") == [
-        "new.tail1.ts.net:8796", "new.tail1.ts.net:8810", "new.tail1.ts.net", "old.tail1.ts.net", f"{HOST}:8796", HOST]
+        "new.tail1.ts.net:8796", "new.tail1.ts.net:8810", "new.tail1.ts.net", "old.tail1.ts.net"]
+    # the generated env's hosts are not revived over the owner's user-config list
     assert cli.keep_trusted_hosts(c, "tracker") == {}   # nothing new: the file is left alone
 
 

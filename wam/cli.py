@@ -709,7 +709,8 @@ def keep_trusted_hosts(c: Config, app_id: str) -> dict[str, str]:
     app.env; trusted hosts that live only in the generated file are lost, and the app then answers every Wizard
     request with 403 "Unknown host" (#708). Before the update, write the hosts the app trusts now, plus the ones
     trusted_origin_env() derives today, into the user-config app.env, which the update keeps. Only adds hosts,
-    never drops one; nothing changes for an app whose recipe takes no trusted hosts. Returns what it wrote."""
+    never drops one (a list already in user-config wins over the generated one); nothing changes for an app whose
+    recipe takes no trusted hosts. Returns what it wrote."""
     text = ""
     for comp in (c.runtipi_root / "repos" / STORE / "apps" / app_id / "docker-compose.yml",
                  c.runtipi_root / "apps" / STORE / app_id / "docker-compose.yml"):
@@ -734,7 +735,9 @@ def keep_trusted_hosts(c: Config, app_id: str) -> dict[str, str]:
     out = {}
     for k in TRUST_KEYS:
         merged: list[str] = []
-        for src in (derived.get(k, ""), user.get(k, ""), live.get(k, "")):
+        # A value already in user-config is the owner's (or an earlier install's) list: it wins over the generated
+        # one, so a host the owner removed there is never revived from app-data (Codex P1).
+        for src in (derived.get(k, ""), user[k] if k in user else live.get(k, "")):
             for v in src.split(","):
                 v = v.strip()
                 if v and v not in merged and re.fullmatch(r"[A-Za-z0-9.:/\[\]-]+", v):
