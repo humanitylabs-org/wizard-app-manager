@@ -43,6 +43,7 @@ DEFAULT_MODE = "auto"
 UNIT = "wizard-app-updates"
 STATE = "app-updates.json"
 LOCK = "app-updates.lock"
+RUNNING = "app-updates-running.json"   # #733: the app a run is on now, so pages can say "Updating…" after a reload
 SETTLE_SECONDS = 20          # an app must stay up this long after its update before it counts as working
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
 FRESH_SLACK_MS = 120_000     # the rollback backup must be at least this recent relative to the update start
@@ -384,7 +385,106 @@ def owner_status(c=None) -> dict:
               for k, v in _failed(c.home).items()}
     last = _state(c.home).get("last")
     return {**status(c, installed), "failed": failed, "last": last if isinstance(last, dict) else None,
-            "notes": whats_new(installed, store=cli.STORE, runtipi_root=c.runtipi_root)}
+            "notes": whats_new(installed, store=cli.STORE, runtipi_root=c.runtipi_root),
+            "running": running_all(c.home)}
+
+
+# ---------------------------------------------------------------- what is updating now (#733)
+
+def _int(v) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _set_running(h: Path, r: dict, step: str, started: int) -> None:
+    """Say which app this run is on and its step (preparing / updating / checking / rolling back). Never fails."""
+    doc = {"pid": os.getpid(), "app": r["id"], "from": _int(r.get("from")), "to": _int(r.get("to")),
+           "to_version": r.get("to_version") if isinstance(r.get("to_version"), str) else None,
+           "step": step, "started": started}
+    try:
+        tmp = h / (RUNNING + ".tmp")
+        tmp.write_text(json.dumps(doc) + "\n")
+        tmp.replace(h / RUNNING)
+    except OSError:
+        pass
+
+
+def _clear_running(h: Path) -> None:
+    try:
+        (h / RUNNING).unlink()
+    except OSError:
+        pass
+
+
+def _alive(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def running(home: Path | None = None) -> list[dict]:
+    """The app `wam app-updates --apply` is updating now, as [{app, from, to, to_version, step, started, by}], or [].
+    Trusted only while a run holds the lock: a file a killed run left behind is stale (and removed). Never blocks."""
+    h = _home(home)
+    path = h / RUNNING
+    if not path.exists():
+        return []
+    try:
+        fd = os.open(h / LOCK, os.O_RDONLY)
+    except OSError:
+        return []   # no lock file: no run ever took it
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            held = True
+        else:   # nothing holds the lock, so no run is active: the file is a leftover
+            held = False
+            _clear_running(h)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    if not held:
+        return []
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []   # the run just finished (or is between writes)
+    if not isinstance(doc, dict) or not _alive(doc.get("pid")) or not isinstance(doc.get("app"), str) \
+            or not _APP_ID.fullmatch(doc["app"]) or doc.get("step") not in ("preparing", "updating", "checking",
+                                                                            "rolling back"):
+        return []   # the lock is held by something else (maintenance, an OS update) over a dead run's file
+    return [{"app": doc["app"], "from": _int(doc.get("from")), "to": _int(doc.get("to")),
+             "to_version": doc.get("to_version") if isinstance(doc.get("to_version"), str) else None,
+             "step": doc["step"], "started": _int(doc.get("started")) or 0, "by": "app-updates"}]
+
+
+def store_running() -> list[dict]:
+    """Store Get/Update jobs still installing in this API process (store_install._jobs), same shape as running()."""
+    try:
+        from . import store_install
+        with store_install._lock:
+            jobs = [dict(j) for j in store_install._jobs.values()]
+    except Exception:  # noqa: BLE001 - never fail the status for it
+        return []
+    return [{"app": j["app"], "from": None, "to": None, "to_version": None, "step": "installing",
+             "started": _int(j.get("started")) or 0, "by": "store"}
+            for j in jobs if isinstance(j, dict) and j.get("state") == "installing" and isinstance(j.get("app"), str)]
+
+
+def running_all(home: Path | None = None) -> list[dict]:
+    """running() plus the Store's jobs, one entry per app (the app-updates run wins)."""
+    try:
+        out = running(home)
+    except Exception:  # noqa: BLE001 - never fail the status for it
+        out = []
+    seen = {e["app"] for e in out}
+    return out + sorted((e for e in store_running() if e["app"] not in seen), key=lambda e: e["app"])
 
 
 # ---------------------------------------------------------------- verify / roll back
@@ -586,6 +686,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
     except OSError:
         return {"started": False, "skipped": "running", "note": "app updates are already running"}
     try:
+        _clear_running(h)   # a run killed mid-update left its app behind (#733)
         if updates.installing(c.home):
             return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
         rt = c.runtipi()
@@ -652,19 +753,28 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 due = [r for r in rows if not r["skip"] and r["id"] not in moved]
         fails = _failed(c.home)
         for r in due:
+            started = int(time.time())
+            _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
             urn = f"{r['id']}:{cli.STORE}"
             states = _containers(urn)
             before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
             started_ms = int(time.time() * 1000)
             print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
+
+            def settings(rt_, urn_, r=r, started=started):
+                missing = reconcile_settings(c, rt_, r["id"])
+                if not missing:   # admitted: Runtipi's update is next (#733)
+                    _set_running(h, r, "updating", started)
+                return missing
             try:
                 # new required settings are filled inside app_update, only once the update is admitted (#582)
-                res = cli.app_update(c, r["id"], settings=lambda rt_, urn_, i=r["id"]: reconcile_settings(c, rt_, i))
+                res = cli.app_update(c, r["id"], settings=settings)
             except SystemExit as e:   # owner gate, a setting only the owner can give, or not installed: nothing changed
                 needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
                 continue
             except Exception as e:  # noqa: BLE001 - one app never stops the others
                 res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+            _set_running(h, r, "checking", started)
             problem = verify(c, rt, urn, r["id"], res, before)
             step = "update" if res.get("error") else "check after update"
             if problem is None:
@@ -681,6 +791,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                                "step": step})
                 continue
             print(f"{r['id']}: {problem}; rolling back", file=sys.stderr, flush=True)
+            _set_running(h, r, "rolling back", started)
             try:
                 rb = rollback(c, rt, urn, started_ms, before)
             except Exception as e:  # noqa: BLE001
@@ -688,6 +799,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             (rolled if rb.get("rolled_back") else failed).append(
                 {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb,
                  "step": step})
+        _clear_running(h)   # every app is done; what follows is bookkeeping (#733)
         try:
             cli.write_registry(c, rt)
         except Exception:  # noqa: BLE001
@@ -720,6 +832,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                 "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
                 **({"reported": reports} if reports else {})}
     finally:
+        _clear_running(h)   # before the lock goes, so a reader never sees a finished run (#733)
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
