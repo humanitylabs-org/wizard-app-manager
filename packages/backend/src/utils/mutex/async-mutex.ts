@@ -5,6 +5,11 @@ export class AsyncMutex {
     this.resourceLocks = new Map();
   }
 
+  /** True while a command holds or waits for this resource (an app lifecycle command is really running). */
+  isLocked(resourceId: string) {
+    return this.resourceLocks.has(resourceId);
+  }
+
   async acquire(resourceId: string) {
     const lastLock = this.resourceLocks.get(resourceId) || Promise.resolve();
 

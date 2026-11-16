@@ -176,7 +176,7 @@ def test_apply_if_auto_respects_ask_and_busy(tmp_path):
     au._write(tmp_path, mode="ask")
     assert au.apply_if_auto(C())["started"] is False
     au._write(tmp_path, mode="auto")
-    assert au.apply_if_auto(C(), is_busy=lambda: True)["skipped"] == "busy"
+    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=True)["skipped"] == "busy"
 
 
 def test_manual_update_button_runs_in_the_background():
@@ -223,3 +223,176 @@ def test_new_required_settings_are_filled_before_the_update(tmp_path, monkeypatc
     rt.patched.clear()
     assert au.reconcile_settings(C(), rt, "wizard-claude")[0].startswith("API_KEY")
     assert rt.patched == []
+
+
+def _store_pin(rt_root, app_id, *, source="standard", pin="a" * 40, installed="a" * 40, repo="org/app"):
+    store = rt_root / "repos/wizardapps/apps" / app_id
+    live = rt_root / "apps/wizardapps" / app_id
+    store.mkdir(parents=True)
+    (store / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": pin}) + "\n")
+    if installed:
+        live.mkdir(parents=True)
+        (live / ".wizard-source").write_text(json.dumps({"repo": repo, "source": source}) + "\n")
+        (live / ".wizard-commit").write_text(installed + "\n")
+    return store / ".wizard-selection"
+
+
+def test_standard_store_pin_is_dropped_once_installed_and_real_pins_stay(tmp_path, monkeypatch):
+    """wizard-os#614: a Store Get/Update of the Standard release pinned the app forever (the index store never
+    looked again, so automatic updates never saw a new version). Only that pin goes; every real pin stays."""
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt = tmp_path / "runtipi"
+    pins = {
+        "notes": _store_pin(rt, "notes"),                                        # Standard Get done: dropped
+        "private-app": _store_pin(rt, "private-app", source="owner-private"),   # owner-local exact choice
+        "linked": _store_pin(rt, "linked", source="link"),                      # link source
+        "channel": _store_pin(rt, "channel", source="alpha-test"),              # subscribed channel
+        "mid-update": _store_pin(rt, "mid-update", installed="b" * 40),         # update still running
+        "mid-install": _store_pin(rt, "mid-install", installed=None),           # not installed yet
+        "files": _store_pin(rt, "files"),                                       # a release default
+        "hermes-agent": _store_pin(rt, "hermes-agent"),                         # frozen Hermes lock
+    }
+    monkeypatch.setattr(au, "_release_managed_strict", lambda: {"files"})
+    installed = [row(k, 1, 1) for k in pins if k != "mid-install"]
+    assert au.unpin_standard_all(rt, "wizardapps", installed) == ["notes"]
+    assert {k for k, p in pins.items() if not p.exists()} == {"notes"}
+    assert au.unpin_standard_all(rt, "wizardapps", installed) == []   # idempotent
+
+
+def test_store_pin_holds_while_its_update_is_still_running(tmp_path, monkeypatch):
+    """Runtipi copies the store folder twice during an update; the installed commit can already equal the pin
+    while the app is still updating. The pin goes only once Runtipi reports the app at rest."""
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt = tmp_path / "runtipi"
+    pin = _store_pin(rt, "notes")
+    for status in ("updating", "installing", "missing"):
+        assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1, status=status)]) == []
+    assert pin.exists()
+    assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1, status="stopped")]) == ["notes"]
+
+
+def test_store_pins_stay_when_the_release_file_cannot_be_read(tmp_path, monkeypatch):
+    rt = tmp_path / "runtipi"
+    pin = _store_pin(rt, "notes")
+    monkeypatch.setattr(au, "_release_managed_strict", lambda: None)
+    assert au.unpin_standard_all(rt, "wizardapps", [row("notes", 1, 1)]) == [] and pin.exists()
+
+
+def test_pinned_app_is_reported_even_without_a_newer_version(tmp_path):
+    """A real pin stops the index store from showing a newer version, so `wam app-updates` lists it as pinned
+    instead of leaving it out (wizard-os#614). Unpinned, system and release apps without one stay out."""
+    rt = tmp_path / "runtipi"
+    for app_id in ("pinned-app", "hermes-agent", "release-default"):
+        _store_pin(rt, app_id, source="owner-private")
+    rows = [row("pinned-app", 4, 4), row("plain", 3, 3), row("hermes-agent", 2, 2), row("release-default", 1, 1)]
+    got = au.candidates(rows, store="wizardapps", runtipi_root=rt, home=tmp_path / "home",
+                        release_managed={"release-default"})
+    assert [(r["id"], r["from"], r["to"], r["skip"]) for r in got] == [("pinned-app", 4, 4, "pinned")]
+
+
+def test_status_drops_a_standard_pin_and_asks_runtipi_again(tmp_path, monkeypatch):
+    """The check itself frees an app a Store Get pinned earlier, then asks again so the newer version shows."""
+    from types import SimpleNamespace
+    monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
+    rt_root = tmp_path / "runtipi"
+    pin = _store_pin(rt_root, "notes")
+    seen = []
+
+    class RT:
+        def installed(self):
+            # Runtipi's index store reads the index again only while no pin is there
+            seen.append(pin.exists())
+            return [row("notes", 1, 1 if pin.exists() else 2)]
+
+    c = SimpleNamespace(runtipi_root=rt_root, home=tmp_path / "home", runtipi=lambda: RT())
+    out = au.status(c)
+    assert seen == [True, False] and [r["id"] for r in out["due"]] == ["notes"]
+
+
+def _local(h, m, day=15):
+    import time
+    return time.mktime((2026, 11, day, h, m, 0, 0, 0, -1))
+
+
+def test_timer_ticks_hourly_and_off_switch_keeps_the_0430_run(tmp_path, monkeypatch):
+    """wizard-os#613: the unit ticks every hour; with wizard/app-updates-hourly off only the first tick from 04:30
+    each day runs (the old nightly timer), with it on every tick runs."""
+    home, ud = tmp_path / "home", tmp_path / "units"
+    au.ensure_timer(home, ud, systemctl=False)
+    timer = (ud / "wizard-app-updates.timer").read_text()
+    assert "OnCalendar=*-*-* *:30\n" in timer and "RandomizedDelaySec=10m" in timer and "Persistent=true" in timer
+
+    class C:
+        pass
+    C.home = home
+    ran = []
+    monkeypatch.setattr(au, "apply", lambda c, **k: ran.append(k) or {"started": True})
+    tick = lambda t, hourly=False: au.apply_if_auto(C(), is_busy=lambda: False, hourly=hourly, now=t)  # noqa: E731
+    assert tick(_local(3, 30))["skipped"] == "not-due"                 # off: before 04:30 nothing runs
+    assert tick(_local(4, 34))["started"] is True                      # the 04:30 tick runs
+    assert tick(_local(5, 31))["skipped"] == "not-due"                 # once a day
+    assert tick(_local(23, 30))["skipped"] == "not-due"
+    assert tick(_local(4, 31, day=16))["started"] is True              # next day again
+    assert [k["quiet_repeats"] for k in ran] == [False, False]
+    ran.clear()
+    assert tick(_local(5, 35, day=16), hourly=True)["started"] is True  # on: every tick runs
+    assert tick(_local(6, 35, day=16), hourly=True)["started"] is True
+    assert tick(_local(2, 30, day=17), hourly=True)["started"] is True
+    assert [k["quiet_repeats"] for k in ran] == [True, True, True]
+
+
+def test_off_switch_catches_up_a_missed_0430_and_busy_waits_for_tomorrow(tmp_path, monkeypatch):
+    class C:
+        home = tmp_path
+    monkeypatch.setattr(au, "apply", lambda c, **k: {"started": True})
+    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
+    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(11, 30))["started"] is True
+    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
+    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=False, now=_local(4, 33))["skipped"] == "busy"
+    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(5, 33))["skipped"] == "not-due"
+
+
+def test_hourly_switch_is_off_without_the_shell(tmp_path):
+    assert au.HOURLY_SWITCH == "wizard/app-updates-hourly"
+    assert au.hourly_on(tmp_path) is False
+
+
+def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, monkeypatch):
+    from wam import cli, updates
+    monkeypatch.setattr(updates, "installing", lambda home: False)
+    monkeypatch.setattr(au, "candidates", lambda *a, **k: [{"id": "money", "name": "Money", "from": 1, "to": 2,
+                                                            "to_version": "0.2", "status": "running", "skip": None}])
+    monkeypatch.setattr(au, "_containers", lambda urn: ["running"])
+    monkeypatch.setattr(au, "baseline", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "app_update", lambda c, app_id, **k: (_ for _ in ()).throw(SystemExit("needs your OK")))
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
+    sent = []
+    delivered = [False]
+    monkeypatch.setattr(au, "_notify", lambda c, *msg: sent.append(msg) or delivered[0])
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(au.time, "time", lambda: clock[0])
+
+    class C:
+        home = tmp_path
+        runtipi_root = tmp_path
+
+        def runtipi(self):
+            return type("Rt", (), {"installed": lambda self: []})()
+    run = lambda q=True: au.apply(C(), renames=lambda c, rt: [], moves=lambda *a, **k: [], quiet_repeats=q)  # noqa: E731
+    assert run()["needs_owner"] and len(sent) == 1       # Notifications not installed: nothing delivered...
+    clock[0] += 3600
+    run()
+    assert len(sent) == 2                                 # ...so the next hour tries again
+    delivered[0] = True
+    clock[0] += 3600
+    run()
+    assert len(sent) == 3                                 # delivered
+    for _ in range(5):
+        clock[0] += 3600
+        run()
+    assert len(sent) == 3                                 # same wait, later hours: quiet
+    clock[0] += 16 * 3600
+    run()
+    assert len(sent) == 4                                 # a day after the last reminder: told again
+    run(False)
+    assert len(sent) == 5                                 # the nightly run (switch off) tells every time, as before

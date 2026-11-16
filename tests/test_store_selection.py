@@ -130,6 +130,14 @@ def test_selected_lifecycle_uses_prepared_record_and_native_backup_update(c,monk
     if operation=='install': assert calls[1][2]['_record']==ENTRY
     else: assert calls[1][2]=={} # native default backup=True, no uninstall or volume deletion
     assert json.loads((c.runtipi_root/'apps/wizardapps/demo/.wizard-selection').read_text())=={'repo':'org/demo','commit':PIN}
+    # wizard-os#614: a Standard Get/Update does not keep the app pinned; the next index commit reaches it.
+    from wam import app_updates as au
+    store_pin=c.runtipi_root/'repos/wizardapps/apps/demo/.wizard-selection'
+    assert store_pin.exists()==(source!='standard')
+    rows=[{'app':{'appName':'demo','version':1,'status':'running','appStoreSlug':'wizardapps','ignoredVersion':None},
+           'metadata':{'latestVersion':2}}]
+    got=au.candidates(rows,store='wizardapps',runtipi_root=c.runtipi_root,home=c.home,release_managed=set())
+    assert [(r['id'],r['skip']) for r in got]==[('demo',None if source=='standard' else 'pinned')]
 
 
 @pytest.mark.parametrize('source', ['standard', 'owner-private', 'alpha-test'])

@@ -30,7 +30,7 @@ export class AppHelpers {
    * @param {AppEventFormInput} form - The config object for the app.
    * @throws Will throw an error if the app has an invalid config.json file or if a required variable is missing.
    */
-  public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
+  public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput, options: { pruneSources?: boolean } = {}) => {
     const { internalIp, envFilePath, rootFolderHost, userSettings } = this.config.getConfig();
 
     const config = await this.appFilesManager.getInstalledAppInfo(appUrn);
@@ -61,7 +61,11 @@ export class AppHelpers {
       const { directories } = this.config.getConfig();
       if (await this.filesytem.isDirectory(sourceDir(directories.appDataDir, appStoreId, appName, commit))) {
         envMap.set('APP_SOURCE_DIR', sourceDir(`${userSettings.appDataPath}/app-data`, appStoreId, appName, commit));
-        await pruneSources(directories.appDataDir, appStoreId, appName, sourceDirName(appName, commit));
+        // An update writes the target env while the old containers still run from the old copy, and its rollback
+        // brings them back on it: it passes pruneSources: false and calls pruneOldSources once the new containers are up.
+        if (options.pruneSources !== false) {
+          await pruneSources(directories.appDataDir, appStoreId, appName, sourceDirName(appName, commit));
+        }
       }
     }
 
@@ -142,5 +146,19 @@ export class AppHelpers {
     if (!(await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap)))) {
       throw new Error(`Failed to write app environment for ${appUrn}`);
     }
+  };
+
+  /**
+   * Remove the source copies of every other commit of this app, keeping the installed one
+   * (wizard-recorder#17: never delete the folder a running container still mounts).
+   * Call only once no container of the app runs from an older copy.
+   */
+  public pruneOldSources = async (appUrn: AppUrn) => {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const commit = (await this.filesytem.readTextFile(path.join(this.appFilesManager.getAppPaths(appUrn).appInstalledDir, '.wizard-commit')))?.trim();
+    if (!commit || !/^[0-9a-f]{40}$/.test(commit)) return;
+    const { directories } = this.config.getConfig();
+    if (!(await this.filesytem.isDirectory(sourceDir(directories.appDataDir, appStoreId, appName, commit)))) return;
+    await pruneSources(directories.appDataDir, appStoreId, appName, sourceDirName(appName, commit));
   };
 }

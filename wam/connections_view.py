@@ -36,7 +36,11 @@ FILES = {"index.html", "standalone.js", "wizard-apps.js", "connections-map.js", 
 # Shared Wizard pieces the map reuses from the shell on the same origin (wizard-ux docs/COMPONENTS.md): the kit
 # tokens and look, its one pop-up (WzSheet) and the app glyphs (WizSigil). Linked before the page's own styles, so
 # the App Manager's rules win a tie; on a shell without them the view falls back to letters and a plain dialog.
-SHARED = (b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-tokens.css" data-wz-shared="tokens">\n  '
+# First of all, the shell's core/shell-token.js (wizard-os#133): with the browser boundary on, this page in Settings ›
+# Connections asks the top-level shell to send its api/ calls with the shell token (armFrame); its own page files load
+# without it (cli._static_asset). Off, or opened on its own, the script does nothing.
+SHARED = (b'<script src="/wizard-os-home/core/shell-token.js"></script>\n  '
+          b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-tokens.css" data-wz-shared="tokens">\n  '
           b'<link rel="stylesheet" href="/wizard-os-home/kit/wizard-ui.css" data-wz-shared="kit">\n  '
           b'<link rel="stylesheet" href="/wizard-os-home/core/sigils.css">\n  '
           b'<script defer src="/wizard-os-home/kit/wizard-sheet.js"></script>\n  '

@@ -357,10 +357,14 @@ class Path(type(HostPath())):
         except PermissionError: _fallback('rmdir', self)
 
 
-def walk(root):
+def walk(root, *, skip_denied=False):
+    """Top-down walk. skip_denied=True passes over folders this process cannot list (estimates only)."""
     root = Path(root)
     try: names = sorted(root.iterdir())
     except FileNotFoundError: return
+    except PermissionError:
+        if skip_denied: return
+        raise
     import stat as s
     dirs = [p.name for p in names if s.S_ISDIR(p.lstat().st_mode)]
     files = [p.name for p in names if p.name not in dirs]
@@ -368,4 +372,4 @@ def walk(root):
     for name in dirs:
         child = root / name
         if not child.is_symlink():
-            yield from walk(child)
+            yield from walk(child, skip_denied=skip_denied)

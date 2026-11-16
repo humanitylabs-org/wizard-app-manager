@@ -284,6 +284,52 @@ def style_rows(root):
     return rows
 
 
+# wizard-os#133 browser boundary: an app window is a sandboxed frame (an opaque origin), so the browser asks for a
+# module script, or any file marked `crossorigin`, with `Origin: null` and needs a CORS answer. A server that gives
+# none leaves a blank page (Notes, Music and the Recorder's live view did). Classic `<script defer>` files load as before.
+_CORS_PAGE = re.compile(r'''<script\b[^>]*\btype\s*=\s*['"]?module\b|<(?:script|link)\b[^>]*\scrossorigin\b''', re.I)
+# The answer an opaque page needs: the header set to `*` (or `null`), as a dict entry, a call or an nginx line. A
+# header named with any other value (the Wizard's own origin, a variable) is not proof, so it still warns.
+_CORS_ANSWER = re.compile(r'''access-control-allow-origin['"]?\]?[\s:,=]+['"]?(?:\*|null)(?![\w-])''', re.I)
+_SERVER_CODE = {'.py', '.mjs', '.cjs', '.js', '.ts', '.go', '.rs', '.rb', '.php', '.conf'}
+
+
+def _server_text(p):
+    text = p.read_text(errors='replace')
+    if p.suffix == '.py':   # `//` is floor division there: drop whole-line comments only
+        return re.sub(r'(?m)^\s*#.*$', '', text)
+    return re.sub(r'(?m)^\s*#.*$', '', system_functions._code(text)) if p.suffix == '.conf' else system_functions._code(text)
+
+
+def boundary_rows(root):
+    """A warning when the app's page needs a CORS answer in a sandboxed window and no server code gives one."""
+    root = Path(root)
+    pages = []
+    for p in _own_files(root, {'.html', '.htm'}):
+        if set(p.relative_to(root).parts[:-1]) & _TEST_DIRS:
+            continue
+        if _CORS_PAGE.search(re.sub(r'<!--.*?-->', '', p.read_text(errors='replace'), flags=re.S)):
+            pages.append(p.relative_to(root))
+    if not pages:
+        return []
+    # The page's own folders hold client code (a fetch naming the header is no answer); tests are no answer either.
+    client = {pg.parent for pg in pages}
+    for p in _own_files(root, _SERVER_CODE):
+        rel = p.relative_to(root)
+        if set(rel.parts[:-1]) & _TEST_DIRS or any(d == rel.parent or d in rel.parents for d in client if d != Path('.')):
+            continue
+        if _CORS_ANSWER.search(_server_text(p)):
+            return []
+    pages = [str(pg) for pg in pages]
+    return [{'rule': 'browser boundary: page files load in a sandboxed window', 'ok': False, 'severity': 'warning',
+             'detail': f"{', '.join(pages[:4])} loads a module script or a `crossorigin` file. In a sandboxed Wizard "
+                       "window (wizard-os#133) the browser asks for it with `Origin: null` and the page stays blank "
+                       "unless the server answers GET/HEAD of the app's own public files (scripts, styles, fonts, "
+                       "pictures; never the page, API or writes) with `Access-Control-Allow-Origin: *` and no "
+                       "credentials. Do that (as wizard-notes and wizard-music do), or load classic `<script defer>` "
+                       "files like templates/hello-wizard."}]
+
+
 def check_app(root, proposal=False):
     root = Path(root).resolve()
     approved = wizardmd.check(root)
@@ -291,6 +337,7 @@ def check_app(root, proposal=False):
     rows += system_functions.check(root)
     rows += kit_rows(root)
     rows += design_rows(root)
+    rows += boundary_rows(root)
     rows += style_rows(root)
     if wizardmd.passed(approved):
         text = (root / 'wizard.md').read_text()

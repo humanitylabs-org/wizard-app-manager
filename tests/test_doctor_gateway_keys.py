@@ -1,6 +1,5 @@
 """#387: `wam doctor` flags apps with tools that the Agent Service's gateway holds no grant key for, so a missing key
-shows as a disconnected agent connection instead of tools silently vanishing. Read-only, behind the off-by-default
-feature switch wizard/doctor-gateway-keys."""
+shows as a disconnected agent connection instead of tools silently vanishing. Read-only, always on (bug lane, no switch)."""
 import json
 import sys
 from pathlib import Path
@@ -41,20 +40,17 @@ def test_service_data_folder_wins_over_a_legacy_home_agents_folder(box):
     assert gateway_keys.path(box.home, box.runtipi_root) == data / "wizard-os" / "grants" / "agent-service.json"
 
 
-def test_switch_off_adds_no_row(box):
-    service_home(box)
-    assert cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: False) == []
-
-
-def test_switch_off_by_default_in_doctor(box):
+def test_doctor_always_shows_the_row(box):
+    """No feature switch: `wam doctor` flags a missing gateway key on every box (#387, bug lane)."""
     service_home(box)
     (box.home / "apps.json").write_text(json.dumps(REG))
-    assert not any(n == gateway_keys.NAME for n, _, _ in cli.doctor(box))
+    rows = [(ok, d) for n, ok, d in cli.doctor(box) if n == gateway_keys.NAME]
+    assert rows and rows[0][0] is False and "messenger, notes" in rows[0][1]
 
 
 def test_no_file_flags_every_app_with_tools(box):
     d = service_home(box)
-    [(name, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    [(name, ok, detail)] = cli.doctor_gateway_keys(box, REG)
     assert name == gateway_keys.NAME and not ok
     assert "no gateway key file for messenger, notes" in detail
     assert "wizard-agent-service" not in detail.split(":")[0] and "wizard-ux" not in detail
@@ -64,7 +60,7 @@ def test_no_file_flags_every_app_with_tools(box):
 def test_missing_and_malformed_keys_are_flagged_without_printing_keys(box):
     d = service_home(box)
     write_keys(d, {"messenger": KEY, "notes": "not-a-key"})
-    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG)
     assert not ok and "no valid key for notes" in detail and "messenger," not in detail
     assert KEY not in detail and "not-a-key" not in detail
 
@@ -83,7 +79,7 @@ def test_all_keys_present_passes(box):
     write_keys(d, {"messenger": KEY, "notes": "cd" * 32})
     app_rows(box, "messenger", [KEY])
     app_rows(box, "notes", ["cd" * 32])
-    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG)
     assert ok and detail.startswith("2 apps")
 
 
@@ -93,16 +89,14 @@ def test_key_without_the_apps_row_is_flagged(box):
     write_keys(d, {"messenger": KEY, "notes": "cd" * 32})
     app_rows(box, "messenger", [KEY])
     app_rows(box, "notes", ["ef" * 32])
-    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG)
     assert not ok and "host:agent-service row) for notes" in detail and "messenger" not in detail
     assert "cd" * 32 not in detail
 
 
 def test_no_agent_service_or_no_tools_adds_no_row(box):
-    on = lambda *a: True  # noqa: E731
-    assert cli.doctor_gateway_keys(box, {"apps": [{"id": "messenger", "mcp": {"url": "x"}}]}, switch_on=on) == []
-    assert cli.doctor_gateway_keys(box, {"apps": [{"id": "wizard-agent-service", "mcp": {"url": "x"}}]},
-                                   switch_on=on) == []
+    assert cli.doctor_gateway_keys(box, {"apps": [{"id": "messenger", "mcp": {"url": "x"}}]}) == []
+    assert cli.doctor_gateway_keys(box, {"apps": [{"id": "wizard-agent-service", "mcp": {"url": "x"}}]}) == []
 
 
 def test_unreadable_file_is_read_through_the_runtipi_container(box, monkeypatch):
@@ -127,5 +121,5 @@ def test_invalid_json_fails(box):
     d = service_home(box)
     (d / "grants").mkdir()
     (d / "grants" / "agent-service.json").write_text("{")
-    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG, switch_on=lambda *a: True)
+    [(_, ok, detail)] = cli.doctor_gateway_keys(box, REG)
     assert not ok and "not valid JSON" in detail

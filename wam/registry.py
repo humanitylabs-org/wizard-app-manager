@@ -109,6 +109,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             raise ValueError(f"Duplicate installed Wizard app id: {name}")
         w, cfg = meta["w"], meta["cfg"]
         from .wizardmd import home_screen, voice_names
+        from .app_rename import renamed_from
         try:
             spoken = voice_names(w)
         except ValueError:
@@ -131,6 +132,9 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             "summary": w.get("summary", ""),
             **({"voice_names": spoken} if spoken else {}),
             **({"home_screen": pins} if pins else {}),
+            # Earlier ids the app declares (wizard.md renamed_from): the shell keeps a home-screen pin or link made under
+            # an old id opening this app after `wam app-rename` (wizard-ux issue 1471).
+            **({"renamed_from": old_ids} if (old_ids := [x for x in renamed_from(w) if x != name]) else {}),
             "shares": w.get("shares") or [], "mounts": w.get("mounts") or [],
             **({'chats_view': {**chats, 'module': f"/wizard/v1/chats-views/{name}/{chats['sha256']}.js"},
                 '_chats_src': str(meta['dir'] / chats['module'])} if chats else {}),
