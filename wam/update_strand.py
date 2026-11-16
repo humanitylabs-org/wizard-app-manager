@@ -6,8 +6,8 @@ skips it. This module tells such an app apart from one the owner stopped, so the
 
 - wam records the app here (<wizard-os home>/update-stranded.json) when an update of a running app ends without it
   running again;
-- Runtipi's own log (logs/app.log) shows, for boxes an earlier update already broke, an update failure after the app's
-  last start, with no stop by the owner since.
+- Runtipi's own log (logs/app.log.history, which Runtipi fills on each start, then logs/app.log) shows, for boxes an
+  earlier update already broke, an update failure after the app's last start, with no stop by the owner since.
 
 An owner's Stop always wins: any `Stopping app <urn>` after the failure (or after wam's record) means it stays stopped.
 """
@@ -21,8 +21,6 @@ from pathlib import Path
 
 STATE = "update-stranded.json"
 TAIL_BYTES = 8 * 1024 * 1024
-# Failures where Runtipi sets `stopped` whatever the app was before (no rollback to the old state).
-HARD = ("RPC response timed out", "Recovery failed", "Failed to process update result")
 
 
 def _home(home) -> Path:
@@ -75,8 +73,8 @@ def marked(home) -> dict:
     return _load(home)
 
 
-def log_files(runtipi_root) -> list[Path]:
-    """Runtipi's app.log: RUNTIPI_LOGS_PATH from its .env, else the compose defaults (<root>/logs, .internal/logs)."""
+def log_dirs(runtipi_root) -> list[Path]:
+    """Runtipi's logs folder: RUNTIPI_LOGS_PATH from its .env, else the compose defaults (<root>/logs, .internal/logs)."""
     root = Path(runtipi_root)
     bases = []
     try:
@@ -90,10 +88,16 @@ def log_files(runtipi_root) -> list[Path]:
     bases += [root, root / ".internal"]
     out = []
     for b in bases:
-        f = b / "logs" / "app.log"
-        if f.is_file() and f not in out:
-            out.append(f)
+        d = b / "logs"
+        if (d / "app.log").is_file() or (d / "app.log.history").is_file():
+            if d not in out:
+                out.append(d)
     return out
+
+
+def log_text(folder: Path) -> str:
+    """Runtipi moves app.log into app.log.history on every start (LoggerService.streamLogToHistory): oldest first."""
+    return "\n".join(_tail(folder / f) for f in ("app.log.history", "app.log"))
 
 
 def _tail(path: Path) -> str:
@@ -109,7 +113,7 @@ def _tail(path: Path) -> str:
 
 
 def events(text: str, urn: str) -> list[tuple[str, str]]:
-    """(timestamp, kind) for one app from Runtipi's log, oldest first. kind: started, stopping, failed, failed_hard."""
+    """(timestamp, kind) for one app from Runtipi's log, oldest first. kind: started, stopping, failed."""
     u = re.escape(urn)
     end = r"(?![\w.-]|:\w)"
     pats = [
@@ -123,8 +127,6 @@ def events(text: str, urn: str) -> list[tuple[str, str]]:
             continue
         for kind, rx in pats:
             if rx.search(line):
-                if kind == "failed" and any(h in line for h in HARD):
-                    kind = "failed_hard"
                 out.append((line.split(" - ", 1)[0].strip(), kind))
                 break
     return out
@@ -132,15 +134,15 @@ def events(text: str, urn: str) -> list[tuple[str, str]]:
 
 def from_log(evs: list[tuple[str, str]]) -> tuple[bool, str | None]:
     """(left stopped by a failed update, timestamp of the owner's last Stop or None)."""
-    running = None      # unknown until the log shows a start or a stop
-    stranded = False
+    running = False     # only a start in the log proves it ran: a failure alone never does (an owner may update a
+    stranded = False    # stopped app, and Runtipi says `stopped` after that failure too)
     last_stop = None
     for ts, kind in evs:
         if kind == "started":
             running, stranded = True, False
         elif kind == "stopping":
             running, stranded, last_stop = False, False, ts
-        elif running is True or (running is None and kind == "failed_hard"):
+        elif running:
             stranded = True
     return stranded, last_stop
 
@@ -153,8 +155,8 @@ def stranded(c, urn: str, status: str | None) -> bool:
     home = getattr(c, "home", None)
     try:
         evs = []
-        for f in log_files(c.runtipi_root):
-            evs = events(_tail(f), urn)
+        for d in log_dirs(c.runtipi_root):
+            evs = events(log_text(d), urn)
             if evs:
                 break
         by_log, last_stop = from_log(evs)
