@@ -52,7 +52,20 @@ def test_logs_path_from_runtipi_env_and_no_log_means_stopped_on_purpose(tmp_path
     other = tmp_path / "elsewhere"
     _log(other, TIMED_OUT)
     (c.runtipi_root / ".env").write_text(f"RUNTIPI_LOGS_PATH={other}\n")
-    assert update_strand.stranded(c, URN, "stopped")   # a timeout forces `stopped` whatever it was before
+    assert not update_strand.stranded(c, URN, "stopped")   # a failure alone never proves it ran before
+    _log(other, STARTED, TIMED_OUT)
+    assert update_strand.stranded(c, URN, "stopped")
+
+
+def test_the_start_runtipi_moved_into_the_history_file_counts(tmp_path):
+    c = _c(tmp_path)
+    _log(c.runtipi_root, STARTED, TIMED_OUT)
+    logs = c.runtipi_root / "logs"
+    (logs / "app.log").rename(logs / "app.log.history")   # what Runtipi does on every start
+    (logs / "app.log").write_text("")
+    assert update_strand.stranded(c, URN, "stopped")
+    (logs / "app.log").write_text(f"{STOPPING[0]} - info > \t{STOPPING[2]}\n")
+    assert not update_strand.stranded(c, URN, "stopped")
 
 
 def test_wams_record_counts_until_the_owner_stops_it(tmp_path):
