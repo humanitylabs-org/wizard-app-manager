@@ -2,6 +2,7 @@
 import io
 import json
 import subprocess
+import time
 
 import pytest
 
@@ -655,7 +656,7 @@ def test_a_waiting_update_is_dropped_when_the_switch_goes_off(tmp_path, monkeypa
 def test_a_host_request_stays_until_an_update_starts(tmp_path, monkeypatch):
     """Codex P2: the Mac runs `--apply` for the owner's request; one that starts nothing must not lose it."""
     h, base = _release_box(tmp_path, monkeypatch)
-    req = {"target": "0.3.16", "requested_at": "2026-11-12T00:00:00Z"}
+    req = {"target": "0.3.16", "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}   # fresh (HOST_REQUEST_TTL)
     def put():
         (h / updates.HOST_REQUEST).write_text(json.dumps(req))
         (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": __import__("time").time() + 60}))
@@ -711,3 +712,22 @@ def test_listing_without_pages_reads_look_json_with_the_usual_timeout(tmp_path, 
     except feature_switches.SwitchError:
         pass
     assert seen == [10]
+
+
+def test_a_host_request_the_mac_never_took_expires(tmp_path, monkeypatch):
+    import time
+    """#696 review 4b: an Update now the Mac couldn't act on (e.g. a Wizard.app upgrade open) must not read as
+    pending forever: every device would keep showing Updating and hold its sends. when_idle waits by design."""
+    import calendar as cal
+    h = tmp_path / "home"
+    h.mkdir()
+    asked = cal.timegm(time.strptime("2026-11-17T07:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
+    (h / updates.HOST_REQUEST).write_text(json.dumps({"target": "0.3.243", "requested_at": "2026-11-17T07:00:00Z"}))
+    assert updates.host_pending(h, now=asked + 60)["target"] == "0.3.243"
+    assert updates.host_pending(h, now=asked + updates.HOST_REQUEST_TTL - 1) is not None
+    assert updates.host_pending(h, now=asked + updates.HOST_REQUEST_TTL + 1) is None
+    (h / updates.HOST_REQUEST).write_text(json.dumps({"target": "0.3.243", "requested_at": "2026-11-17T07:00:00Z",
+                                                      "when_idle": True}))
+    assert updates.host_pending(h, now=asked + 6 * 3600)["when_idle"] is True        # Update when they finish waits
+    (h / updates.HOST_REQUEST).write_text(json.dumps({"target": "0.3.243"}))          # no time: as before
+    assert updates.host_pending(h, now=asked + 86400)["target"] == "0.3.243"

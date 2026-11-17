@@ -439,9 +439,28 @@ def postpone_host(home: Path | None = None) -> dict:
     return {**st, "postponed": doc, "note": note}
 
 
-def host_pending(home: Path | None = None) -> dict | None:
+# An Update now the host hasn't taken this long after it was asked (it picks one up within a minute when it can; a
+# Wizard.app upgrade or a stopped VM can block it) has expired: it no longer reads as pending, so no device keeps
+# showing "Updating" and holding its sends. The Mac drops it the same way (try-wizard Host/OSUpdates.swift
+# requestTTL). "Update when they finish" (when_idle) waits by design and never expires here.
+HOST_REQUEST_TTL = 15 * 60
+
+
+def _request_age(doc: dict, now: float) -> float | None:
+    try:
+        return now - calendar.timegm(time.strptime(str(doc.get("requested_at")), "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return None
+
+
+def host_pending(home: Path | None = None, now: float | None = None) -> dict | None:
     """The owner's Update now, waiting for the host to copy the disk and start it (request_host_apply)."""
-    return _read_status(_home(home) / HOST_REQUEST)
+    doc = _read_status(_home(home) / HOST_REQUEST)
+    if isinstance(doc, dict) and not doc.get("when_idle"):
+        age = _request_age(doc, time.time() if now is None else now)
+        if age is not None and age > HOST_REQUEST_TTL:
+            return None
+    return doc
 
 
 def when_idle_fn(home):     # request_host_apply's `when_idle` argument shadows when_idle()
