@@ -35,6 +35,8 @@ def package_inline(root):
         # owner's Tailscale name); without them the app answers only loopback, by design.
         'environment': {'PORT':'8799','DATA_DIR':'/data','WIZARD_TRUSTED_HOSTS':'${WIZARD_TRUSTED_HOSTS:-}','WIZARD_TRUSTED_ORIGINS':'${WIZARD_TRUSTED_ORIGINS:-}'},
         'volumes': ['${APP_DATA_DIR}/data:/data'], 'read_only': True, 'command': ['python', '-c', code],
+        # Python as PID 1 ignores `docker stop`; Docker's init passes the signal on (wizard-app-manager#738).
+        'init': True,
         'x-runtipi': {'is_main': True, 'internal_port':8799}}},
         'x-runtipi': {'schema_version':2, 'overrides':[]}}
     (root / 'runtipi/docker-compose.yml').write_text(yaml.safe_dump(compose, sort_keys=False, width=100000))

@@ -167,6 +167,8 @@ def configure_manager(path, image, pins):
             "x-wizard-release-pins": True, "image": image, "pull_policy": "if_not_present",
             "entrypoint": ["node", "/release-index.mjs"], "command": [],
             "restart": "unless-stopped", "read_only": True, "user": "1000:1000",
+            # Node as PID 1 ignores `docker stop`; Docker's init passes the signal on (wizard-app-manager#738).
+            "init": True,
             "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
             "networks": ["tipi_main_network"],
             "volumes": [f"{(assets / 'release-index.mjs').resolve()}:/release-index.mjs:ro",
