@@ -420,6 +420,20 @@ def test_heads_up_and_not_tonight_on_a_host_run_box(tmp_path, monkeypatch):
     assert not (h / updates.HOST_HEADSUP).exists()
 
 
+def test_not_now_on_for_testers_says_when_the_mac_tries_again(tmp_path, monkeypatch):
+    """For testers updates at any hour on a Mac, so the answer to the heads-up is Not now (a few hours), not tonight."""
+    import time as _t
+    h = tmp_path / "wos"
+    monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "updates-by-host")
+    _pin(h, "0.3.15")
+    (h / updates.HOST_HEADSUP).write_text(json.dumps({"target": "0.3.16", "at": _t.time() + 300}))
+    assert updates.postpone_host(h)["note"].startswith("Not tonight.")
+    (h / "updates.json").write_text(json.dumps({"mode": "auto", "channel": "latest"}))
+    res = updates.postpone_host(h)
+    assert res["note"].startswith(f"Not now. WizardOS tries again in {updates.TESTER_POSTPONE_HOURS} hours")
+    assert json.loads((h / updates.HOST_POSTPONE).read_text())["at"]
+
+
 def test_host_update_progress_and_result(tmp_path, monkeypatch):
     """The Mac's progress/result (wizard-ctl update-phase) reaches every device through status()."""
     import time as _t

@@ -382,11 +382,13 @@ def waits_for_work(home: Path | None = None) -> bool:
 
 
 HOST_REQUEST = "host-update-request.json"
-# Automatic on a host-run box: the host announces the night's update 5 minutes ahead (host_headsup, written by the
-# host through wizard-ctl); "Not tonight" from any of the owner's devices leaves host-update-postpone.json, which the
-# host reads and honours until the next night.
+# Automatic on a host-run box: the host announces the update 5 minutes ahead (host_headsup, written by the host
+# through wizard-ctl); "Not tonight" from any of the owner's devices leaves host-update-postpone.json, which the host
+# reads and honours until the next night. For testers (channel latest) the host updates at any hour, so their answer
+# is "Not now" and the host waits TESTER_POSTPONE_HOURS instead.
 HOST_HEADSUP = "host-update-headsup.json"
 HOST_POSTPONE = "host-update-postpone.json"
+TESTER_POSTPONE_HOURS = 3   # try-wizard next/mac/Host/OSUpdates.swift testerPostpone
 # The host's progress and result for the update it runs (written by the host through wizard-ctl update-phase), so
 # every device shows the same "Updating WizardOS" and how it ended: {id, phase, target, result, reason, at}.
 HOST_PHASE = "host-update-phase.json"
@@ -418,7 +420,8 @@ def host_headsup(home: Path | None = None) -> dict | None:
 
 
 def postpone_host(home: Path | None = None) -> dict:
-    """Not tonight: the owner's answer to the heads-up. The host skips the rest of tonight."""
+    """Not tonight (For testers: Not now): the owner's answer to the heads-up. The host skips the rest of tonight, or
+    on For testers the next TESTER_POSTPONE_HOURS."""
     h = _home(home)
     doc = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "target": (host_headsup(h) or {}).get("target")}
     h.mkdir(parents=True, exist_ok=True)
@@ -426,7 +429,11 @@ def postpone_host(home: Path | None = None) -> dict:
     tmp.write_text(json.dumps(doc) + "\n")
     os.replace(tmp, h / HOST_POSTPONE)
     (h / HOST_HEADSUP).unlink(missing_ok=True)
-    return {**status(h), "postponed": doc, "note": "Not tonight. WizardOS tries again tomorrow night; Install in Settings updates any time."}
+    st = status(h)
+    note = (f"Not now. WizardOS tries again in {TESTER_POSTPONE_HOURS} hours; Install in Settings updates any time."
+            if st.get("channel") == "latest" else
+            "Not tonight. WizardOS tries again tomorrow night; Install in Settings updates any time.")
+    return {**st, "postponed": doc, "note": note}
 
 
 def host_pending(home: Path | None = None) -> dict | None:
