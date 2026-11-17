@@ -368,6 +368,9 @@ def by_host() -> bool:
 # the box for its disk copy, and the marker itself is that rollout's control. Switch off: exactly the old behaviour
 # (Update now starts, Automatic skips only while a chat run is active, no impact probing).
 WAITS_SWITCH = "wizard/os-update-waits"
+# updates.status() reads the switch on every Settings poll: a slow or stopped Agent Service must not hold that up, so
+# the read gets a short timeout (unreadable = off, the old behaviour).
+WAITS_SWITCH_TIMEOUT = 2
 
 
 def waits_for_work(home: Path | None = None) -> bool:
@@ -376,7 +379,7 @@ def waits_for_work(home: Path | None = None) -> bool:
         return True
     try:
         from . import feature_switches
-        return feature_switches.is_on(WAITS_SWITCH, home) is True
+        return feature_switches.is_on(WAITS_SWITCH, home, timeout=WAITS_SWITCH_TIMEOUT) is True
     except Exception:  # noqa: BLE001 - a switch that can't be read never changes how updates behave
         return False
 

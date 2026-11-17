@@ -107,10 +107,11 @@ def catalog(home: Path | None = None, fetch=_get) -> list[dict]:
 class Pages:
     """look.json through the Agent Service Pages file API on loopback (the shell's own path, the same history)."""
 
-    def __init__(self, origin: str | None):
+    def __init__(self, origin: str | None, timeout: float = 10):
         if not origin:
             raise SwitchError("can't reach the Agent Service (Pages)", 503)
         self.origin = origin
+        self.timeout = timeout
 
     def _req(self, method: str, body: dict | None = None):
         data = json.dumps(body).encode() if body is not None else None
@@ -118,7 +119,7 @@ class Pages:
                                    headers={"Accept": "application/json",
                                             **({"Content-Type": "application/json"} if data else {})})
         try:
-            with urllib.request.urlopen(r, timeout=10) as resp:
+            with urllib.request.urlopen(r, timeout=self.timeout) as resp:
                 return resp.status, json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
@@ -169,9 +170,9 @@ def _refuse_unreadable(doc) -> None:
                           "fix or update it first", 409)
 
 
-def _pages(home: Path | None) -> Pages:
+def _pages(home: Path | None, timeout: float = 10) -> Pages:
     from .updates import service_origin
-    return Pages(service_origin(home))
+    return Pages(service_origin(home), timeout)
 
 
 def _tweaks(doc: dict) -> dict:
@@ -210,7 +211,7 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, ap
     app switches (`kind: "app"`) follow the app's own state."""
     chan = _channel(home)
     locked = chan != "latest"
-    doc, _ = (pages or _pages(home)).get()
+    doc, _ = (pages or _pages(home, timeout)).get()
     saved = _tweaks(doc) if _readable(doc) else {}
     rows = [{**t, "on": (not locked) and saved.get(t["id"], {}).get("on") is True, "locked": locked}
             for t in catalog(home, fetch)]
@@ -220,13 +221,14 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, ap
                      if locked else ""), "switches": rows + list(apps), "apps": list(status)}
 
 
-def is_on(tid: str, home: Path | None = None, pages: Pages | None = None) -> bool:
+def is_on(tid: str, home: Path | None = None, pages: Pages | None = None, timeout: float = 10) -> bool:
     """Whether the owner turned feature switch `tid` on, for box-side code gated on a switch (#400). Reads the same
-    look.json `tweaks` map as listing(); always False on For everyone and whenever look.json can't be read."""
+    look.json `tweaks` map as listing(); always False on For everyone and whenever look.json can't be read.
+    `timeout`: seconds for the Pages read; a caller on a hot path (updates.status) passes a short one."""
     try:
         if not ID.fullmatch(tid) or _channel(home) != "latest":
             return False
-        doc, _ = (pages or _pages(home)).get()
+        doc, _ = (pages or _pages(home, timeout)).get()
         return _readable(doc) and _tweaks(doc).get(tid, {}).get("on") is True
     except (SwitchError, OSError, ValueError):
         return False

@@ -469,7 +469,7 @@ def test_status_says_how_the_install_read_back(tmp_path):
 
 def _waits_switch(monkeypatch, on: bool):
     from wam import feature_switches
-    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None:
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None, **k:
                         on and tid == "wizard/os-update-waits")
 
 
@@ -601,7 +601,7 @@ def test_the_switch_or_the_host_marker_turns_waiting_on(tmp_path, monkeypatch):
     from wam import feature_switches
     h, base = _release_box(tmp_path, monkeypatch, waits=False)
     asked = []
-    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None: asked.append((tid, home)) or True)
+    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None, **k: asked.append((tid, home)) or True)
     assert updates.WAITS_SWITCH == "wizard/os-update-waits"
     st = updates.status(h, base)
     assert st["waits_for_work"] is True and st["impact"]["interrupts"] == "hermes"
@@ -614,6 +614,29 @@ def test_the_switch_or_the_host_marker_turns_waiting_on(tmp_path, monkeypatch):
     marker.write_text("")
     monkeypatch.setattr(updates, "HOST_UPDATES", marker)                # a Mac's VM: always on, no switch read
     assert updates.waits_for_work(h) is True and updates.status(h, base)["waits_for_work"] is True
+
+
+def test_the_switch_read_in_status_has_a_short_timeout(tmp_path, monkeypatch):
+    """updates.status() runs on every Settings poll: a slow Agent Service must not hold it up for the usual 10 s."""
+    from wam import feature_switches
+    monkeypatch.undo()   # drop the suite-wide stub: read the switch for real, through Pages
+    monkeypatch.setattr(updates, "HOST_UPDATES", tmp_path / "no-host-marker")
+    monkeypatch.setattr(feature_switches, "_channel", lambda home: "latest")
+    seen = []
+
+    class SlowPages:
+        def get(self):
+            raise feature_switches.SwitchError("can't reach the Agent Service (timed out)", 503)
+
+    def pages(home, timeout=10):
+        seen.append(timeout)
+        return SlowPages()
+    monkeypatch.setattr(feature_switches, "_pages", pages)
+    assert updates.waits_for_work(tmp_path) is False                   # unreadable: off, the old behaviour
+    assert seen == [updates.WAITS_SWITCH_TIMEOUT] and updates.WAITS_SWITCH_TIMEOUT <= 2
+    seen.clear()
+    feature_switches.is_on("wizard/other-switch", tmp_path)            # other callers keep the usual timeout
+    assert seen == [10]
 
 
 def test_a_waiting_update_is_dropped_when_the_switch_goes_off(tmp_path, monkeypatch):

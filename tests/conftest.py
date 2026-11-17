@@ -76,5 +76,5 @@ def _os_update_waits_off(monkeypatch):
     from wam import feature_switches
     real = feature_switches.is_on
     monkeypatch.setattr(feature_switches, "is_on",
-                        lambda tid, home=None, pages=None: False if tid == "wizard/os-update-waits"
-                        else real(tid, home, pages))
+                        lambda tid, home=None, pages=None, **k: False if tid == "wizard/os-update-waits"
+                        else real(tid, home, pages, **k))
