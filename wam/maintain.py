@@ -525,13 +525,18 @@ def backup_step(home: Path, runner=subprocess.run, now: float | None = None) -> 
 def updates_step(home: Path, quiet: bool) -> dict:
     """The owner's Automatic WizardOS update (the box's channel release: promoted stable, or the newest Latest),
     formerly its own 03:30 timer.
-    Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic)."""
+    Ask me: nothing. Hermes updates stay explicit (`wam hermes update`, never automatic).
+    `quiet` is the run's own busy rule (any Hermes work). With updates waiting for work (updates.waits_for_work, the
+    `wizard/os-update-waits` switch) it doesn't apply here: apply_if_auto waits only for work this release would
+    stop, the same decision as Update now."""
     from . import updates
     updates.report_failure(home)   # a failed update tells the team in either mode, busy or not (switch-gated, #524)
     try:
         if updates.mode(home) != "auto":
             return {"state": "ask", "mode": "ask"}
-        if not quiet:
+        if updates.by_host():
+            return {"state": "host", "note": "This Wizard's Mac starts the update after saving a copy of its disk."}
+        if not quiet and not updates.waits_for_work(home):
             return {"state": "deferred", "reason": "The box was busy; the update waits for the next quiet night."}
         res = updates.apply_if_auto(home)
     except Exception as exc:   # an update check must never sink the nightly run

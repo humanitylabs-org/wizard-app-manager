@@ -56,3 +56,25 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
             raise RuntimeError("the runtipi container is disabled in unit tests")
         read = stat = write = _no
     monkeypatch.setattr(gateway_keys, "RuntipiFiles", _NoRuntipiFiles)
+
+
+@pytest.fixture(autouse=True)
+def _nothing_running(request, monkeypatch):
+    """Update decisions see an idle box unless a test says otherwise: the running-work inventory (wam/work.py)
+    would otherwise read this machine's own Hermes (~/.hermes), which is busy while a developer's Hermes runs.
+    test_work.py tests the inventory itself, against its own fixture homes."""
+    if request.module.__name__.endswith("test_work"):
+        return
+    from wam import work
+    monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: [])
+
+
+@pytest.fixture(autouse=True)
+def _os_update_waits_off(monkeypatch):
+    """The `wizard/os-update-waits` feature switch reads as off unless a test turns it on (the real read would ask
+    the box's Agent Service for look.json). Every other switch reads as before."""
+    from wam import feature_switches
+    real = feature_switches.is_on
+    monkeypatch.setattr(feature_switches, "is_on",
+                        lambda tid, home=None, pages=None, **k: False if tid == "wizard/os-update-waits"
+                        else real(tid, home, pages, **k))
