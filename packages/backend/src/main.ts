@@ -11,6 +11,7 @@ import { AppModule } from './app.module';
 import { AppService } from './app.service';
 import { APP_DIR } from './common/constants';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
+import { exitOnStopSignals } from './common/helpers/stop-signals';
 
 async function setupSwagger(app: INestApplication) {
   const { NODE_ENV } = process.env;
@@ -35,9 +36,13 @@ async function setupSwagger(app: INestApplication) {
 }
 
 async function bootstrap() {
+  // Before anything slow, so a stop during start-up exits too (wizard-app-manager#738).
+  let app: NestExpressApplication | undefined;
+  exitOnStopSignals(() => app?.close());
+
   await generateSystemEnvFile();
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+  app = await NestFactory.create<NestExpressApplication>(AppModule, {
     abortOnError: true,
     logger: [process.env.LOG_LEVEL as LogLevel, 'error', 'warn', 'fatal'],
   });

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
+import { addStopInit } from './wizard-stop-init';
 import { servicesForArchitecture } from './builders/compose.builder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -140,7 +141,8 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
           )
           .map(([name]) => name);
       }
-      const enforced = await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices);
+      // Python first processes get Docker's init so they stop on SIGTERM instead of after Docker's timeout (#738).
+      const enforced = addStopInit(await enforceAppNetworks(appUrn, prepared, this.config.get('directories').dataDir, publishedServices));
       if (enforced !== generated.content) {
         await fs.writeFile(`${generated.path}.tmp-storage`, enforced);
         await fs.rename(`${generated.path}.tmp-storage`, generated.path);
