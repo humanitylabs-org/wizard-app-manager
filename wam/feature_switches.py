@@ -211,7 +211,7 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, ap
     app switches (`kind: "app"`) follow the app's own state."""
     chan = _channel(home)
     locked = chan != "latest"
-    doc, _ = (pages or _pages(home, timeout)).get()
+    doc, _ = (pages or _pages(home)).get()
     saved = _tweaks(doc) if _readable(doc) else {}
     rows = [{**t, "on": (not locked) and saved.get(t["id"], {}).get("on") is True, "locked": locked}
             for t in catalog(home, fetch)]

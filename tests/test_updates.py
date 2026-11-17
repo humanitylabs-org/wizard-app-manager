@@ -688,3 +688,26 @@ def test_the_when_idle_timer_gets_the_update_environment(tmp_path, monkeypatch):
     run = next(c for c in calls if c[0] == "systemd-run")
     assert f"--setenv=WIZARD_OS_HOME={h}" in run and f"--setenv=WIZARD_RELEASE_BASE={base}" in run
     assert run[-2:] == ["updates", "--when-idle-tick"]
+
+
+def test_listing_without_pages_reads_look_json_with_the_usual_timeout(tmp_path, monkeypatch):
+    """`wam feature-switches` and the switches GET call listing() with no Pages: it builds one itself (Codex P1 on
+    #736: the short-timeout change must not leave listing() with an undefined timeout)."""
+    from wam import feature_switches
+    seen = []
+
+    class NoPages:
+        def get(self):
+            raise feature_switches.SwitchError("can't reach the Agent Service", 503)
+
+    def pages(home, timeout=10):
+        seen.append(timeout)
+        return NoPages()
+    monkeypatch.setattr(feature_switches, "_pages", pages)
+    monkeypatch.setattr(feature_switches, "catalog", lambda home=None, fetch=None: [])
+    monkeypatch.setattr(feature_switches, "_app_rows", lambda home, rows: ([], []))
+    try:
+        feature_switches.listing(tmp_path)
+    except feature_switches.SwitchError:
+        pass
+    assert seen == [10]
