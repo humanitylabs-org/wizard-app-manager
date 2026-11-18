@@ -695,10 +695,11 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             # no run holds it: it may have just ended, so try once more
     released = False
     try:
-        lock.seek(0)
-        lock.truncate()
-        lock.write(f"{os.getpid()}\n")   # says an app-updates run holds the lock (not maintenance, #764)
-        lock.flush()
+        if not dry_run:   # a dry run takes no requests, so it never says it is a run (Codex P2)
+            lock.seek(0)
+            lock.truncate()
+            lock.write(f"{os.getpid()}\n")   # says an app-updates run holds the lock (not maintenance, #764)
+            lock.flush()
         _clear_running(h)   # a run killed mid-update left its app behind (#733)
         kw = {"dry_run": dry_run, "notify": notify, "renames": renames, "reporter": reporter, "moves": moves,
               "quiet_repeats": quiet_repeats}
@@ -712,9 +713,13 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                     _release(h, lock)   # under the queue lock: a request now either sees no run or was taken
                     released = True
                     break
-            ids = None if any(e["app"] is None for e in entries) else sorted({e["app"] for e in entries})
-            print(f"queued: updating {', '.join(ids) if ids else 'all apps'}", file=sys.stderr, flush=True)
-            out = _merge(out, _apply_locked(c, h, ids, **kw), ids)
+            # Every due app first, then the apps asked for by name: an explicit request (Retry, Update now on a held
+            # app) overrides holds and past failures only when it runs as its own `only` batch (Codex P1).
+            ids = sorted({e["app"] for e in entries if e["app"] is not None})
+            batches = ([None] if any(e["app"] is None for e in entries) else []) + ([ids] if ids else [])
+            for only_ in batches:
+                print(f"queued: updating {', '.join(only_) if only_ else 'all apps'}", file=sys.stderr, flush=True)
+                out = _merge(out, _apply_locked(c, h, only_, **kw), only_)
         return out
     finally:
         if not released:
@@ -843,7 +848,7 @@ def request(only: list[str] | None, home: Path | None = None) -> dict | None:
         now = int(time.time())
         have = {e["app"] for e in entries}
         for app in (only or [None]):
-            if app not in have and None not in have:
+            if app not in have:   # named apps stay even beside an all-app request: they run as their own batch
                 entries.append({"app": app, "at": now})
                 have.add(app)
         _queue_write(h, entries)

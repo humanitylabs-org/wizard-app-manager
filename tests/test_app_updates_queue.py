@@ -142,3 +142,37 @@ def test_route_queues_during_a_run_and_lists_it(tmp_path, monkeypatch):
         run.close()
     assert call("GET")[1]["queued"] == [{"app": a, "at": q, "name": a} for a, q in
                                          [(e["app"], e["at"]) for e in au._queue_read(c.home)]]
+
+
+def test_named_requests_beside_an_all_app_request_run_as_their_own_batch(tmp_path, monkeypatch):
+    """Codex P1: Update all, then Retry on a failed app. The named app keeps its override of holds/failures."""
+    home = tmp_path / "wos"
+    run = _hold_run(home)
+    try:
+        au.request(None, home)
+        au.request(["notes"], home)
+    finally:
+        run.close()
+    assert [e["app"] for e in au._queue_read(home)] == [None, "notes"]
+    batches = []
+
+    def fake(c, h, only, **kw):
+        batches.append(only)
+        return {"started": True, "updated": [{"id": x} for x in (only or ["money"])]}
+    monkeypatch.setattr(au, "_apply_locked", fake)
+    out = au.apply(type("C", (), {"home": home})(), only=["plans"])
+    assert batches == [["plans"], None, ["notes"]]
+    assert [x["id"] for x in out["updated"]] == ["plans", "money", "notes"] and out["queued_ran"] == [["*"], ["notes"]]
+
+
+def test_a_dry_run_is_not_a_run_requests_wait_for(tmp_path, monkeypatch):
+    """Codex P2: a dry run never drains, so it must not make real requests queue behind it."""
+    home = tmp_path / "wos"
+    seen = []
+
+    def fake(c, h, only, **kw):
+        seen.append((au.run_active(h), au.request(["notes"], h)))
+        return {"dry_run": True}
+    monkeypatch.setattr(au, "_apply_locked", fake)
+    au.apply(type("C", (), {"home": home})(), dry_run=True)
+    assert seen == [(False, None)] and not (home / au.QUEUE).exists()
