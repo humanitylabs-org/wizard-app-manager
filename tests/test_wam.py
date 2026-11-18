@@ -1109,22 +1109,24 @@ def test_recover_does_not_fail_an_app_that_runs_after_its_start_errored(tmp_path
 def test_recover_names_each_failed_app_and_its_reason_and_keeps_going(tmp_path, monkeypatch, capsys):
     import socket
     installed = [("wizard-ux:wizardapps", "running"), ("wizard-agent-service:wizardapps", "running"),
-                 ("files:wizardapps", "running")]
+                 ("files:wizardapps", "running"), ("notes:wizardapps", "running")]
     c, started, written = _recover_env(tmp_path, monkeypatch, installed, {"files:wizardapps": ["exited"]})
 
     def start(c, verb, urn):
         if "agent" in urn:
             raise socket.timeout("timed out")
         if "ux" in urn:
+            raise SystemExit("wizard-ux is not installed")   # gone between the list and the start (Codex P2)
+        if "notes" in urn:
             raise ValueError("bad json")   # the old code let this escape: the whole command failed
         started.append(urn)
         return {"status": "running"}
     monkeypatch.setattr(cli, "app_lifecycle", start)
     monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: (_ for _ in ()).throw(OSError("disk full")))
-    res = cli.recover(c, ["files"])
-    assert started == ["files:wizardapps"] and res["started"] == ["files"]
-    assert set(res["failed"]) == {"wizard-ux", "wizard-agent-service"}
-    assert "timed out" in res["failed"]["wizard-agent-service"] and "bad json" in res["failed"]["wizard-ux"]
+    res = cli.recover(c, ["notes", "files"])
+    assert started == ["files:wizardapps"] and res["started"] == ["files"]   # files still started after notes failed
+    assert set(res["failed"]) == {"wizard-ux", "wizard-agent-service", "notes"} and "bad json" in res["failed"]["notes"]
+    assert "timed out" in res["failed"]["wizard-agent-service"] and "not installed" in res["failed"]["wizard-ux"]
     assert "disk full" in res["registry_error"]
     err = capsys.readouterr().err
     assert "wam recover: wizard-agent-service: could not start" in err and "wam recover: wizard-ux:" in err

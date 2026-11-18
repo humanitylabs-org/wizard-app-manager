@@ -1709,7 +1709,7 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
             _recover_note(app_id, f"containers {','.join(states) or 'missing'}: starting it")
             res = app_lifecycle(c, "start", urn)
             err = res.get("error")
-        except Exception as e:  # noqa: BLE001 - one app's error is reported, the others still start
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - one app's error is reported, the others still start
             err = f"{type(e).__name__}: {e}"
         if not err:
             started.append(app_id)
