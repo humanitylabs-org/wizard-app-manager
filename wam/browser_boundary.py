@@ -132,8 +132,8 @@ def overlay(home, service: str) -> dict:
     return {"service": service, "environment": {SWITCH: "1", TOKEN_FILE: MOUNT}, "volumes": [f"{src}:{MOUNT}:ro"]}
 
 
-def _strip(doc: dict) -> dict:
-    mark = doc.pop(MARK, None)
+def _strip(doc: dict, marker: str = MARK) -> dict:
+    mark = doc.pop(marker, None)
     if not isinstance(mark, dict):
         return doc
     svcs = doc.get("services") if isinstance(doc.get("services"), dict) else {}
@@ -157,14 +157,15 @@ def _strip(doc: dict) -> dict:
     return doc
 
 
-def render(path, block: dict | None):
+def render(path, block: dict | None, marker: str = MARK):
     """What write_overlay would write: (before, after) texts, after None for "remove the file", or None when nothing
-    changes. Raises ValueError for any override it can't safely edit, so callers can check every app first."""
+    changes. Raises ValueError for any override it can't safely edit, so callers can check every app first.
+    `marker` names the block, so another owner-chosen setting (private_first) can keep its own block beside this one."""
     from pathlib import Path
     from .network import load_yaml, dump_yaml
     path = Path(path)
     before = path.read_text() if path.is_file() else None
-    if block is None and (before is None or MARK not in before):
+    if block is None and (before is None or marker not in before):
         return None
     try:
         doc = (load_yaml(before) or {}) if before else {}
@@ -174,10 +175,10 @@ def render(path, block: dict | None):
         raise ValueError(f"{path}: expected a compose mapping")
     if not isinstance(doc.get("services", {}), dict):
         raise ValueError(f"{path}: services must be a mapping")
-    mark = doc.get(MARK)
+    mark = doc.get(marker)
     if mark is not None and not (isinstance(mark, dict) and isinstance(doc.get("services", {}).get(mark.get("service"), {}), dict)):
-        raise ValueError(f"{path}: the {MARK} block is malformed; fix it by hand")
-    doc = _strip(doc)
+        raise ValueError(f"{path}: the {marker} block is malformed; fix it by hand")
+    doc = _strip(doc, marker)
     if block:
         svcs = doc.setdefault("services", {})
         svc = svcs.setdefault(block["service"], {})
@@ -187,16 +188,16 @@ def render(path, block: dict | None):
         if env is None:
             env = svc["environment"] = {}
         if not isinstance(env, dict):
-            raise ValueError(f"{path}: {block['service']}.environment must be a mapping to add the browser boundary")
+            raise ValueError(f"{path}: {block['service']}.environment must be a mapping to add the {marker} block")
         clash = [k for k in block["environment"] if k in env and env[k] != block["environment"][k]]
         if clash:
             raise ValueError(f"{path}: hand-written {', '.join(clash)} present; remove it first")
-        vols = svc.setdefault("volumes", [])
+        vols = svc.setdefault("volumes", []) if block["volumes"] else svc.get("volumes", [])
         if not isinstance(vols, list):
             raise ValueError(f"{path}: {block['service']}.volumes must be a list")
         env.update(block["environment"])
-        vols.extend(v for v in block["volumes"] if v not in vols)
-        doc[MARK] = {"service": block["service"], "environment": sorted(block["environment"]),
+        vols.extend(v for v in block["volumes"] if v not in vols)   # an env-only block adds no volumes key
+        doc[marker] = {"service": block["service"], "environment": sorted(block["environment"]),
                      "volumes": list(block["volumes"])}
     head = []   # keep the leading comment header exactly as other writers left it
     for line in (before or "").splitlines():
@@ -209,12 +210,12 @@ def render(path, block: dict | None):
     return before, (text if doc else None)
 
 
-def write_overlay(path, block: dict | None) -> bool:
+def write_overlay(path, block: dict | None, marker: str = MARK) -> bool:
     """Put (or with None remove) the boundary block in one app's user-config override; keep every other line's
     meaning. Returns True when the file changed. Never touches a file without the block when removing."""
     from pathlib import Path
     path = Path(path)
-    r = render(path, block)
+    r = render(path, block, marker)
     if r is None:
         return False
     text = r[1]

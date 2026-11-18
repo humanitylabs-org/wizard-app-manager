@@ -226,6 +226,18 @@ schedule_hermes_restart() {  # outside this process tree (its own systemd unit),
   setsid nohup /bin/bash -c "sleep $delay; exec >>'$log' 2>&1; $job" </dev/null >/dev/null 2>&1 &
 }
 
+# 2a) Private first (WAM#759, wizard-os#676): WIZARD_PRIVATE_FIRST=1|0 puts that value in the Agent Service's env
+#     (kept across updates), so first-run setup starts private on a box with no Look file yet. Recorded before
+#     bootstrap and alongside create the Agent Service. Unset (the default): nothing is recorded or changed.
+case "${WIZARD_PRIVATE_FIRST:-}" in
+  "") ;;
+  1|on|true|yes) "$HOME/.local/bin/wam" private-first on >/dev/null \
+      || DEGRADED+=("could not set WIZARD_PRIVATE_FIRST=1 for the Agent Service (wam private-first on)") ;;
+  0|off|false|no) "$HOME/.local/bin/wam" private-first off >/dev/null \
+      || DEGRADED+=("could not set WIZARD_PRIVATE_FIRST=0 for the Agent Service (wam private-first off)") ;;
+  *) echo "note: WIZARD_PRIVATE_FIRST='${WIZARD_PRIVATE_FIRST}' is not 1 or 0; left unset" ;;
+esac
+
 # 2b) Alongside an existing Hermes (WIZARD_MODE=alongside, set by get.sh): the host's Hermes fills the agent spot
 #     and is linked to the apps; the hermes-agent app is never installed. `wizard unlink` reverses the link.
 #     A failed link rolls itself back (Hermes is left exactly as it was) and fails the install.
