@@ -224,14 +224,22 @@ back a share of the data within the last week. One run at a time; a second run e
 retry. `last_success_at` still refers to the previous successful run.
 
 **Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
-agent's `hermes backup` archive (it snapshots `state.db` consistently) plus its uncompressed rewrite, and each app's
-data archive (made with the app stopped, as for an export), one app at a time, deleted right after it is read. So the
-peak is about the largest single app archive plus the agents' archives. On a test box whose transcriber app holds
+agent's `hermes backup` archive **without its SQLite databases** (the scheduled run asks Hermes, through wam's
+one-run patch, to put an empty member naming each `*.db` in their place), then, one agent at a time just before that
+agent streams, a consistent snapshot of its databases (the same one-step SQLite backup copy, made by the agent's own
+Hermes as the home's owner). The agent's archive is built while it streams: a stored zip of the Hermes members (minus
+per-machine entries) and the snapshots, read straight into the stream, with no second, uncompressed copy on disk;
+the snapshots are deleted right after (#771). Each app's data archive (made with the app stopped, as for an export)
+follows, one app at a time, deleted right after it is read. So the peak is about the larger of one agent's
+databases and the largest single app archive, plus the agents' small database-free archives: for a box whose agent
+has a 41.7 GB `state.db`, about 42 GB rather than about twice that. On a test box whose transcriber app holds
 ~0.97 GB of model files the peak was 0.99 GB for a 1.08 GB capture: that one app dominates. The run samples this and
 records the peak as `peak_extra_disk_bytes`; restic's local cache (`~/.cache/wizard-backup/restic`,
-`restic_cache_bytes`, tens of KB on that box) comes on top. Next step if this matters: stream each app's tar straight
-into the capture (one counting pass for the tar header's size, one streaming pass, app still stopped), which brings
-the peak down to the agents' archives.
+`restic_cache_bytes`, tens of KB on that box) comes on top. A Hermes the patch does not fit backs its databases up
+inside its own archive as before (that archive is still streamed without a rewritten copy). The databases are
+snapshotted a little later than the agent's other files (after the Wizard home is read); each database is itself
+consistent. Next step if app archives matter: stream each app's tar straight into the capture (one counting pass for
+the tar header's size, one streaming pass, app still stopped), which brings the peak down to one agent's databases.
 
 The capture also checks available space **before starting, every 15 seconds while running, and before closing the
 finished stream to restic** on the filesystems holding the work folder (`WAM_BACKUP_WORK`, normally
@@ -251,8 +259,9 @@ with a scoped real-time alarm so even a blocked archive command is interrupted, 
 
 **Dedupe-friendly capture.** restic splits the stream into content-defined chunks (512 KiB–8 MiB, about 1 MiB on
 average) and stores each chunk once, so compressed members would defeat it. The stream therefore holds agent archives
-rewritten with **stored** (uncompressed) zip members (stock `hermes backup` has no stored mode; the rewrite keeps names,
-dates and modes, so stock `hermes import` reads it unchanged) and app data archives **decompressed** to
+rebuilt with **stored** (uncompressed) zip members as they stream (stock `hermes backup` has no stored mode; the
+rebuild keeps names, dates and modes and writes each member's CRC and sizes after its data, so stock `hermes import`
+reads it unchanged) and app data archives **decompressed** to
 `apps/<id>/data.tar` (gzip'd back into `data.tar.gz` on restore, then the file import path). restic compresses chunks
 itself (zstd). Measured on the test box (1.08 GB capture, two agents, ten apps): run 1 added 573 MB (529 MB packed);
 after a new owner file and a new agent session, run 2 added 12.5 MB (6.3 MB packed); bucket 529.1 MB → 535.4 MB.

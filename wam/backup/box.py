@@ -346,6 +346,7 @@ class HermesError(RuntimeError):
 HERMES_BACKUP_PATCH = r"""
 import os as _o, sqlite3 as _sq, sys as _s
 from pathlib import Path as _P
+_hb = None
 try:
     import hermes_cli.backup as _hb
     try:                                   # newer Hermes moved the copy into its own module; v2026.9.24 has it inline
@@ -390,9 +391,41 @@ try:
         if _hbs is not None and callable(getattr(_hbs, "_safe_copy_db", None)):
             _hbs._safe_copy_db = _one_step_copy
         _hb._write_zip_entries = _entries
+        # A scheduled run streams the agent into restic (#771): each SQLite database goes into the zip as an empty
+        # member that names it, and wam snapshots it just before it streams the agent, so no copy of a big
+        # state.db sits in the work folder beside the zip.
+        if _o.environ.get("WAM_BACKUP_DEFER_DBS") == "1" and callable(getattr(_hb, "_zip_sqlite_snapshot", None)):
+            import zipfile as _zf, time as _t
+
+            def _defer_db(zf, abs_path, rel_path, out_path):
+                info = _zf.ZipInfo(str(rel_path), _t.localtime()[:6])
+                info.external_attr = 0o100600 << 16
+                info.comment = ("wam-defer-db:" + str(_P(abs_path).absolute())).encode("utf-8", "surrogateescape")
+                zf.writestr(info, b"")
+                return 0
+            _hb._zip_sqlite_snapshot = _defer_db
 except Exception as _e:                    # a Hermes without these names: run it stock
     print("wam: hermes backup runs stock (%s)" % _e, file=_s.stderr)
+# The other half of the deferred run (#771): with WAM_BACKUP_SNAPSHOT_DBS=1 this run only snapshots the databases
+# named on stdin ({"dir": D, "dbs": [[src, name], ...]}) with the same one-step copy, prints the result and exits
+# before Hermes' own main. A database deleted since is reported "gone".
+if _o.environ.get("WAM_BACKUP_SNAPSHOT_DBS") == "1":
+    import json as _j
+    _req, _res = _j.loads(_s.stdin.read()), {}
+    for _src, _name in _req["dbs"]:
+        _dst = _P(_req["dir"]) / _name
+        if not _o.path.exists(_src):
+            _res[_name] = "gone"
+            continue
+        if not callable(getattr(_hb, "_safe_copy_db", None)) or not _hb._safe_copy_db(_P(_src), _dst):
+            print(_j.dumps({"ok": False, "failed": _src}))
+            _s.exit(1)
+        _o.chmod(_dst, 0o644)              # read by wam; the work folder itself stays the box owner's, 0700
+        _res[_name] = "ok"
+    print(_j.dumps({"ok": True, "dbs": _res}))
+    _s.exit(0)
 """
+DEFER_DB_MARK = b"wam-defer-db:"          # the comment of a database member HERMES_BACKUP_PATCH deferred
 HERMES_MAIN = "from hermes_cli.main import main\nsys.argv[0] = 'hermes'\nsys.exit(main())\n"
 
 
@@ -605,11 +638,13 @@ class HermesRunner:
         return u, g
 
     def _docker(self, agent: Agent, entry: str, args: list[str], mounts: list[tuple[Path, str, bool]],
-                stdin: str | None = None, timeout: int = 3600) -> str:
+                stdin: str | None = None, timeout: int = 3600, env: dict | None = None) -> str:
         st = datafs.stat(agent.home)
         uid, gid = self.container_owner(st.st_uid, st.st_gid)
         cmd = [*docker(self.box.child_env), "run", "--rm", "-i", "--network", "none", "-u", f"{uid}:{gid}",
                "-e", "HERMES_HOME=/opt/data", "-e", "HOME=/opt/data", "-v", f"{agent.home}:/opt/data"]
+        for k, v in (env or {}).items():
+            cmd += ["-e", f"{k}={v}"]
         for src, dst, ro in mounts:
             cmd += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
         cmd += ["--entrypoint", entry, self.image(agent), *args]
@@ -643,21 +678,58 @@ class HermesRunner:
         return {**self.box.child_env, "HERMES_HOME": str(agent.home)}
 
     # ---- the three operations
-    def backup(self, agent: Agent, out_zip: Path) -> None:
-        """Stock `hermes backup` (SQLite backup API, Hermes' own excludes) into out_zip."""
+    def backup(self, agent: Agent, out_zip: Path, defer_dbs: bool = False) -> None:
+        """Stock `hermes backup` (SQLite backup API, Hermes' own excludes) into out_zip. defer_dbs: each SQLite
+        database becomes an empty member whose comment names it (DEFER_DB_MARK), for `snapshot_dbs` to copy just
+        before the zip is streamed (#771). A Hermes the patch does not fit backs them up as usual."""
         out_zip.parent.mkdir(parents=True, exist_ok=True)
+        defer = {"WAM_BACKUP_DEFER_DBS": "1"} if defer_dbs else {}
         if agent.runtime == "host":
             argv = hermes_backup_argv(Path(self.host_binary()).resolve()) or [self.host_binary()]
-            self._run([*argv, "backup", "-o", str(out_zip)], env=self._host_env(agent))
+            self._run([*argv, "backup", "-o", str(out_zip)], env={**self._host_env(agent), **defer})
         else:
             os.chmod(out_zip.parent, 0o777)   # the one-off container runs as the home's owner
             try:
-                self._docker(agent, self.IMAGE_HERMES, ["backup", "-o", f"/work/{out_zip.name}"],
-                             [(out_zip.parent, "/work", False)])
+                if defer_dbs:
+                    self._docker(agent, self.IMAGE_PYTHON, ["-c", "import sys\n" + HERMES_BACKUP_PATCH + HERMES_MAIN,
+                                                            "backup", "-o", f"/work/{out_zip.name}"],
+                                 [(out_zip.parent, "/work", False)], env=defer)
+                else:
+                    self._docker(agent, self.IMAGE_HERMES, ["backup", "-o", f"/work/{out_zip.name}"],
+                                 [(out_zip.parent, "/work", False)])
             finally:
                 os.chmod(out_zip.parent, 0o700)
         if not out_zip.is_file():
             raise HermesError(f"hermes backup wrote no archive for agent {agent.id}")
+
+    def snapshot_dbs(self, agent: Agent, dbs: list[tuple[str, str]], work: Path) -> dict[str, str]:
+        """Consistent copies of the databases a deferred backup named ([(path in the agent's runtime, file name in
+        work)]), made by the agent's own Hermes Python as the home's owner. Returns {name: "ok" | "gone"}."""
+        req = json.dumps({"dir": str(work) if agent.runtime == "host" else "/work", "dbs": [list(d) for d in dbs]})
+        snap = {"WAM_BACKUP_SNAPSHOT_DBS": "1"}
+        if agent.runtime == "host":
+            # the same patched launcher as the backup (only that one can have deferred anything)
+            argv = hermes_backup_argv(Path(self.host_binary()).resolve())
+            if not argv:
+                raise HermesError(f"cannot run the host Hermes to snapshot the databases of agent {agent.id}")
+            out = self._run(argv, env={**self._host_env(agent), **snap}, stdin=req, timeout=4 * 3600)
+        else:
+            os.chmod(work, 0o777)
+            try:
+                out = self._docker(agent, self.IMAGE_PYTHON, ["-c", "import sys\n" + HERMES_BACKUP_PATCH + HERMES_MAIN],
+                                   [(work, "/work", False)], stdin=req, timeout=4 * 3600, env=snap)
+            finally:
+                os.chmod(work, 0o700)
+        res = {}
+        for line in reversed((out or "").strip().splitlines()):
+            try:
+                res = json.loads(line)
+                break
+            except ValueError:
+                continue
+        if not res.get("ok") or not isinstance(res.get("dbs"), dict):
+            raise HermesError(f"could not snapshot the databases of agent {agent.id}")
+        return res["dbs"]
 
     def import_zip(self, agent: Agent, zip_path: Path) -> None:
         """Stock `hermes import --force` of zip_path into the agent's home."""

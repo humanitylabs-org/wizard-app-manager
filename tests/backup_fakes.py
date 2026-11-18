@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import os
 import shutil
 import stat
@@ -43,6 +44,57 @@ HERMES_MODS = {
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1); out[k.strip()] = v.strip()
             return out
+    ''',
+    # the parts of stock hermes_cli/backup.py that wam's HERMES_BACKUP_PATCH replaces, and `hermes backup` built
+    # from them the way stock is: every *.db through _zip_sqlite_snapshot (a temp SQLite copy beside the zip)
+    "hermes_cli/backup.py": '''
+        import os, sqlite3, tempfile, zipfile
+        from pathlib import Path
+        def _safe_copy_db(src, dst, *, timeout_seconds=10.0):
+            s = sqlite3.connect(Path(src).resolve().as_uri() + "?mode=ro", uri=True)
+            d = sqlite3.connect(str(dst))
+            try:
+                s.backup(d)
+                return True
+            finally:
+                d.close(); s.close()
+        def _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path):
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
+                tmp_db = Path(tmp.name)
+            try:
+                if not _safe_copy_db(abs_path, tmp_db):
+                    return None
+                zf.write(tmp_db, arcname=str(rel_path))
+                return tmp_db.stat().st_size
+            finally:
+                tmp_db.unlink(missing_ok=True)
+        def _write_zip_entries(zf, files_to_add, out_path, *, on_db_failure, on_error, on_progress, track_bytes):
+            for abs_path, rel_path in files_to_add:
+                if abs_path.suffix == ".db":
+                    if _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path) is None:
+                        on_db_failure(rel_path)
+                else:
+                    zf.write(abs_path, arcname=str(rel_path))
+            return 0
+        def run_backup(out_path):
+            home = Path(os.environ["HERMES_HOME"])
+            files = [(p, p.relative_to(home)) for p in sorted(home.rglob("*"))
+                     if p.is_file() and not p.is_symlink() and not p.relative_to(home).as_posix().startswith("hermes-agent/")]
+            errors = []
+            with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                _write_zip_entries(zf, files, out_path, on_db_failure=errors.append,
+                                   on_error=lambda r, e: errors.append(r), on_progress=None, track_bytes=True)
+            return not errors
+    ''',
+    "hermes_cli/main.py": '''
+        import sys
+        from pathlib import Path
+        def main():
+            a = sys.argv[1:]
+            if a[0] == "backup":
+                from hermes_cli.backup import run_backup
+                return 0 if run_backup(Path(a[a.index("-o") + 1])) else 1
+            sys.exit("fake hermes main: unknown " + a[0])
     ''',
     "cron/__init__.py": "",
     "cron/jobs.py": '''
@@ -200,10 +252,15 @@ elif a[0] == "run":
                 return src + p[len(dst):]
         return p
     env = {**os.environ, "HERMES_HOME": mounts["/opt/data"], "PYTHONPATH": os.environ["FAKE_HERMES_MODS"]}
+    env.update({k: host(v) for k, v in envs.items() if k.startswith("WAM_")})
     if entry.endswith("/hermes"):
         r = subprocess.run([sys.executable, os.environ["FAKE_HERMES_PY"]] + [host(x) for x in rest], env=env)
     else:
-        r = subprocess.run([sys.executable] + rest, env=env, stdin=sys.stdin)
+        data = sys.stdin.read()
+        for dst, src in mounts.items():
+            if dst != "/opt/data":
+                data = data.replace(json.dumps(dst), json.dumps(src))
+        r = subprocess.run([sys.executable] + [host(x) for x in rest], env=env, input=data, text=True)
     sys.exit(r.returncode)
 else:
     sys.exit("fake docker: unsupported " + a[0])
@@ -416,7 +473,12 @@ def hermes_home(home: Path, *, wiring: bool, messaging: bool, jobs: list[dict], 
     _w(home / "config.yaml", yaml.safe_dump(cfg, sort_keys=False))
     _w(home / ".env", "\n".join(env) + "\n", 0o600)
     _w(home / "cron" / "jobs.json", json.dumps({"jobs": jobs}))
-    _w(home / "state.db", f"sessions of {marker}")
+    home.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(home / "state.db")        # a real SQLite database: backups snapshot it as stock does
+    db.execute("create table sessions(text)")
+    db.execute("insert into sessions values (?)", (f"sessions of {marker}",))
+    db.commit()
+    db.close()
     _w(home / "memories" / "MEMORY.md", f"memory of {marker}")
     _w(home / "logs" / "agent.log", f"log of {marker}")
     _w(home / "bin" / "tool", f"binary of {marker}")

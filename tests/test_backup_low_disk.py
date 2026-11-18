@@ -92,8 +92,8 @@ def test_mid_capture_stop_cleans_only_this_run_and_records_status(source, tmp_pa
     real = box.runner.backup
     created = []
 
-    def growing_archive(agent, out):
-        real(agent, out)
+    def growing_archive(agent, out, **kw):
+        real(agent, out, **kw)
         created.append(Path(out))
         low["now"] = True
         # No writes to restic here: a stream-only guard would miss this phase.

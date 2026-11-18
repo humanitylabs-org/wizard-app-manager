@@ -28,13 +28,14 @@ import shutil
 import socket
 import tempfile
 import time
+import zipfile
 from .filesystem import Path
 from . import filesystem as datafs
 
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
 from .appdata import AppDataError
-from .box import (MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log, need_space, need_spaces,
-                  skip_home_entry)
+from .box import (DEFER_DB_MARK, MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log,
+                  need_space, need_spaces, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -182,6 +183,60 @@ def _emit_app_archive(box: Box, bw, app_id: str, urn: str, info: dict, vols: lis
     skipped += [f"{app_id}: {x}" for x in rep["skipped"]]
 
 
+def _stream_agent_zip(box: Box, bw, a: Agent, z: Path, work: Path) -> None:
+    """Stream one agent's archive into the bundle as a stored zip, without its per-machine entries, built while it
+    streams (#771). A database the deferred `hermes backup` only named is snapshotted now, read straight into the
+    stream and deleted: the work folder holds one agent's databases at a time and never a second copy of them."""
+    drop = agentlib.export_drop(z)
+    zin = zipfile.ZipFile(z)
+    snaps: list[Path] = []
+    try:
+        infos = [i for i in zin.infolist() if not (drop and drop(i.filename))]
+        deferred = {}
+        for i in infos:
+            if i.comment.startswith(DEFER_DB_MARK) and not i.is_dir():
+                src = i.comment[len(DEFER_DB_MARK):].decode("utf-8", "surrogateescape")
+                if not src.endswith(".db"):
+                    raise ExportError(f"agent {a.id}: unexpected database entry {i.filename[:120]}")
+                deferred[i.filename] = (src, f"agent-{a.id}-db{len(deferred)}.db")
+        done = {}
+        if deferred:
+            log(f"agent {a.id}: snapshotting {len(deferred)} database(s)")
+            snaps = [work / name for _src, name in deferred.values()]
+            try:
+                done = box.runner.snapshot_dbs(a, list(deferred.values()), work)
+            except HermesError as e:
+                raise ExportError(f"agent {a.id}: {e}") from None
+        entries = []
+        for i in infos:
+            e = bundle.ZipEntry(i.filename, i.date_time, i.external_attr, i.create_system)
+            if i.filename in deferred:
+                name = deferred[i.filename][1]
+                if done.get(name) == "gone":
+                    continue                       # deleted since `hermes backup` listed it: nothing to keep
+                if done.get(name) != "ok":
+                    raise ExportError(f"agent {a.id}: no snapshot of {i.filename[:120]}")
+                p = work / name
+                e.size, e.open = datafs.stat(p).st_size, (lambda p=p: datafs.open(p, "rb"))
+            elif not i.is_dir():
+                e.size, e.open = i.file_size, (lambda i=i: zin.open(i))
+            entries.append(e)
+        try:
+            bw.add_stored_zip(f"agents/{a.id}/hermes-backup.zip", entries)
+        except (ValueError, zipfile.BadZipFile) as e:
+            raise ExportError(f"agent {a.id}: {e}") from None
+    finally:
+        zin.close()
+        for p in snaps:
+            p.unlink(missing_ok=True)
+        z.unlink(missing_ok=True)
+
+
+def _db_skip(rel: str, is_dir: bool) -> bool:
+    # only the SQLite databases (and their -wal pages, which a snapshot folds in) of what `hermes backup` reads
+    return _hermes_skip(rel, is_dir) or (not is_dir and not rel.endswith((".db", ".db-wal")))
+
+
 def _du(path: Path, skip=None) -> int:
     # a space estimate: a folder that cannot be listed must not abort the backup (the capture itself decides)
     return bundle.tree_size(path, skip, skip_denied=True)["bytes"] if path.is_dir() else 0
@@ -256,10 +311,18 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                  + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
                  for urn, info in installed.items() if urn not in agent_urns]
     est += agents_bytes + sum(app_sizes)
-    # the work folder holds every agent's kept zip, plus, while one is rewritten, the zip `hermes backup` wrote (it
-    # also holds per-machine entries such as logs/; only the largest counts, they never coexist), and ONE app archive
-    # at a time; the output and the work folder may share a disk, so the needs are added per filesystem
-    work_need = agents_bytes + agents_raw + max(app_sizes, default=0) + MARGIN
+    if plain_stream is None:
+        # the work folder holds every agent's kept zip, plus, while one is rewritten, the zip `hermes backup` wrote
+        # (it also holds per-machine entries such as logs/; only the largest counts, they never coexist), and ONE
+        # app archive at a time; the output and the work folder may share a disk, so the needs are added per
+        # filesystem
+        work_need = agents_bytes + agents_raw + max(app_sizes, default=0) + MARGIN
+    else:
+        # streamed (#771): every agent's zip without its databases, then, one agent at a time, that agent's
+        # database snapshots while it streams; the app archives come after, one at a time
+        dbs = [_du(a.home, _db_skip) for a in agents]
+        rest = sum(_du(a.home, _hermes_skip) for a in agents) - sum(dbs)
+        work_need = rest + max(max(dbs, default=0), max(app_sizes, default=0)) + MARGIN
     if plain_stream is None:
         need_spaces(box, [(out.parent, est + MARGIN, "the backup file"), (box.work_dir(), work_need, "the work folder")])
     else:
@@ -276,17 +339,25 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             z = work / f"agent-{a.id}.zip"
             log(f"agent {a.id}: hermes backup")
             try:
-                box.runner.backup(a, z)
+                # a stream leaves the databases out here and snapshots them when the agent streams (#771)
+                if plain_stream is not None:
+                    box.runner.backup(a, z, defer_dbs=True)
+                else:
+                    box.runner.backup(a, z)
             except HermesError as e:
                 raise ExportError(f"agent {a.id}: {e}") from None
             temps.append(z)
             # stock Hermes also archives per-machine entries (logs/, bin/, *.lock, ...); the size check counted the
             # agent without them and an import leaves them out, so the backup never carries them. A stream gets
-            # every member stored (dedupe-friendly), in the same pass.
+            # every member stored (dedupe-friendly) as it streams, with no rewritten copy on disk (#771).
+            if plain_stream is not None:
+                agent_zips[a.id] = z
+                agent_rows.append({**a.describe(), "bytes": None, "active": agentlib.active_from_zip(z)})
+                continue
             drop = agentlib.export_drop(z)
-            if plain_stream is not None or drop:
+            if drop:
                 kept = work / f"agent-{a.id}-kept.zip"
-                bundle.zip_rewrite(z, kept, drop, stored=plain_stream is not None)
+                bundle.zip_rewrite(z, kept, drop, stored=False)
                 temps.append(kept)
                 z.unlink()
                 z = kept
@@ -367,7 +438,10 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
                 else:
                     bw.add_json(f"agents/{a.id}/agent.json", {"schema": 1, "id": a.id, "main": a.main,
                                                                "runtime": {"kind": a.runtime, "app_id": (a.urn or ":").split(":")[0] or None}})
-                bw.add_file(f"agents/{a.id}/hermes-backup.zip", agent_zips[a.id])
+                if plain_stream is not None:
+                    _stream_agent_zip(box, bw, a, agent_zips[a.id], work)
+                else:
+                    bw.add_file(f"agents/{a.id}/hermes-backup.zip", agent_zips[a.id])
                 if a.folder:
                     bw.add_dir(f"agents/{a.id}/folder")
                     bw.add_tree(f"agents/{a.id}/folder", a.folder,

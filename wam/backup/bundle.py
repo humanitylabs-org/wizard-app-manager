@@ -119,6 +119,19 @@ class BundleWriter:
         self.bytes += size
         return size
 
+    def add_stored_zip(self, name: str, entries: list, mode: int = 0o600, mtime: float | None = None) -> int:
+        """A zip of `entries` (ZipEntry), every member stored, built while it streams into the tar: no copy of it
+        on disk. One size pass (no member is read; the tar header needs the size first), one streaming pass."""
+        size = stored_zip_size(entries)
+        chunks = _ChunkReader(stored_zip_chunks(entries))
+        r = _SizedReader(chunks, size)
+        self.tar.addfile(self._info(name, size, mode, mtime or time.time()), r)
+        if r.changed or chunks.read(1):
+            raise ValueError(f"{name}: the zip came out a different size than planned")
+        self.sums[name] = {"sha256": r.h.hexdigest(), "size": size}
+        self.bytes += size
+        return size
+
     def add_tree(self, prefix: str, root: Path, skip=None, progress=None) -> dict:
         """Every regular file and directory under `root` as `prefix/<rel>`. Links and special files are skipped and
         listed (they never travel). `skip(rel, is_dir)` excludes entries."""
@@ -171,6 +184,106 @@ class BundleWriter:
         self.tar.addfile(ti, io.BytesIO(data))
         self.tar.close()
         return body
+
+
+class ZipEntry:
+    """One member of a stored zip built while it streams: `name` (a trailing / for a folder), its zip date and mode
+    bits, its size and `open()` returning a binary reader of exactly that many bytes."""
+
+    def __init__(self, name: str, date_time, external_attr: int, create_system: int, size: int = 0,
+                 open=None) -> None:
+        self.name, self.date_time, self.external_attr, self.create_system = name, date_time, external_attr, \
+            create_system
+        self.size, self.open = size, open
+
+
+class _ZipSink:
+    """What zipfile writes, kept until taken. It cannot seek, so zipfile puts each member's CRC and sizes in a data
+    descriptor after its data: nothing has to be known before a member is written but its size."""
+
+    def __init__(self, keep: bool) -> None:
+        self.keep, self.n, self.parts = keep, 0, []
+
+    def write(self, b) -> int:
+        n = len(b)
+        self.n += n
+        if self.keep and n:
+            self.parts.append(bytes(b))
+        return n
+
+    def flush(self) -> None:
+        pass
+
+    def take(self) -> bytes:
+        out = b"".join(self.parts)
+        self.parts.clear()
+        return out
+
+
+_ZEROS = bytes(COPY)
+
+
+def _stored_zip(entries: list[ZipEntry], sink: _ZipSink, read: bool):
+    """Yield a zip of `entries`, every member stored, in pieces as it is made. read=False writes zeros instead of
+    each member's data: the same bytes but for the data and CRCs, so the same length (the size pass)."""
+    with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+        for e in entries:
+            ni = zipfile.ZipInfo(e.name, e.date_time)
+            ni.external_attr, ni.create_system, ni.compress_type = e.external_attr, e.create_system, zipfile.ZIP_STORED
+            if e.name.endswith("/"):
+                z.writestr(ni, b"")
+                yield sink.take()
+                continue
+            ni.file_size = e.size
+            left = e.size
+            with z.open(ni, "w", force_zip64=e.size >= (1 << 31)) as d:
+                src = e.open() if read else None
+                try:
+                    while left:
+                        n = min(COPY, left)
+                        b = src.read(n) if src is not None else memoryview(_ZEROS)[:n]
+                        if not b:
+                            raise ValueError(f"{e.name} got shorter while it was being read")
+                        d.write(b)
+                        left -= len(b)
+                        if read:
+                            yield sink.take()
+                finally:
+                    if src is not None:
+                        src.close()
+            yield sink.take()
+    yield sink.take()
+
+
+def stored_zip_size(entries: list[ZipEntry]) -> int:
+    """The exact length `stored_zip_chunks(entries)` will have (no member is read)."""
+    sink = _ZipSink(keep=False)
+    for _ in _stored_zip(entries, sink, read=False):
+        pass
+    return sink.n
+
+
+def stored_zip_chunks(entries: list[ZipEntry]):
+    return _stored_zip(entries, _ZipSink(keep=True), read=True)
+
+
+class _ChunkReader:
+    """A reader over an iterator of byte strings; read(n) returns n bytes until the iterator ends."""
+
+    def __init__(self, chunks) -> None:
+        self.it, self.buf = iter(chunks), bytearray()
+
+    def read(self, n: int = -1) -> bytes:
+        while n < 0 or len(self.buf) < n:
+            try:
+                self.buf += next(self.it)
+            except StopIteration:
+                break
+        if n < 0:
+            n = len(self.buf)
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
 
 
 def zip_stored(src: Path, dst: Path, drop=None) -> int:
