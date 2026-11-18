@@ -19,6 +19,10 @@ from . import updates
 
 # Read from the public App Manager release mirror, beside the box snapshots; wizard-os (canonical) is private.
 POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json"
+# The phone.json of the newest published wizard-ux release. The Phone release workflow (wizard-ux#1400) publishes
+# android-v<version> from main but cannot edit the pointer above, so without this a CI release never reached a box
+# (wizard-ux#1399). Prereleases and drafts are never "latest"; validate() still pins the signer and the asset URL.
+RELEASE_POINTER = "https://github.com/humanitylabs-org/wizard-ux/releases/latest/download/phone.json"
 SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
 UNIT = "wizard-phone-sync"
 MAX_POINTER = 64 * 1024
@@ -112,19 +116,87 @@ def _atomic_json(path, value):
         Path(tmp).unlink(missing_ok=True)
 
 
-def sync(home: Path, runtipi_root: Path, *, pointer_url=POINTER, fixture=False):
-    """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only."""
+def _pointer(opener, url, fixture):
+    with _open(opener, url, 20) as response:
+        raw = response.read(MAX_POINTER + 1)
+        if len(raw) > MAX_POINTER:
+            raise ValueError('pointer too large')
+    return validate(json.loads(raw), fixture=fixture)
+
+
+def _outcome(error, url):
+    if isinstance(error, urllib.error.HTTPError):
+        return 'skipped:pointer_404' if error.code == 404 and error.url == url else f'skipped:http_{error.code}'
+    # Offline and invalid releases never break maintenance. Do not log remote text or URLs.
+    return 'skipped:unavailable_or_invalid'
+
+
+_SKIP = (urllib.error.HTTPError, OSError, ValueError, TypeError, AttributeError, http.client.HTTPException)
+
+
+def _publish(directory, opener, p):
+    feed = directory / 'latest.json'
+    current = json.loads(feed.read_text()) if feed.exists() else {}
+    code = current.get('versionCode', 0)
+    if type(code) is not int or code < 0:
+        raise ValueError('unreadable existing versionCode')
+    if code > p['versionCode']:
+        return 'skipped:no_downgrade'
+    name = f"wizard-os-{p['versionName']}.apk"
+    apk = directory / name
+    if code == p['versionCode'] and current.get('sha256', '').lower() == p['sha256'].lower() and current.get('url') == name and _verify(apk, p['bytes'], p['sha256']):
+        return 'unchanged'
+    # A versioned URL is immutable. Never replace bytes a still-published old feed references.
+    if current.get('url') == name and current.get('sha256', '').lower() != p['sha256'].lower():
+        raise ValueError('conflicting immutable APK URL')
+    fd, tmp = tempfile.mkstemp(prefix='.phone-apk-', dir=directory)
+    try:
+        total, digest, deadline = 0, hashlib.sha256(), time.monotonic() + 300
+        with os.fdopen(fd, 'wb') as out, _open(opener, p['asset_url'], 30) as response:
+            declared = response.headers.get('Content-Length')
+            if declared is not None and int(declared) != p['bytes']:
+                raise ValueError('APK Content-Length mismatch')
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > min(MAX_APK, p['bytes']) or time.monotonic() > deadline:
+                    raise ValueError('APK limit exceeded')
+                digest.update(chunk); out.write(chunk)
+            if total != p['bytes'] or digest.hexdigest() != p['sha256'].lower():
+                raise ValueError('APK bytes/sha256 mismatch')
+            out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
+        os.replace(tmp, apk)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    _atomic_json(feed, {k: p[k] for k in ('app', 'versionName', 'versionCode', 'bytes', 'sha256', 'signer')} |
+                 {'version': p['versionName'], 'url': name, 'notes': p.get('notes', '')})
+    for old in directory.glob('wizard-os-*.apk'):
+        if old.name != name and APK_NAME.fullmatch(old.name):
+            old.unlink()
+    return f"updated:versionCode={p['versionCode']}"
+
+
+def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False):
+    """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only.
+
+    Reads the mirror pointer and the newest wizard-ux release's phone.json and mirrors the highest valid
+    versionCode the box admits. A test that passes only pointer_url reads only that pointer."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
+    urls = [pointer_url or POINTER] + ([release_url] if release_url else [] if pointer_url else [RELEASE_POINTER])
+    found, failures = [], []
+    for url in urls:
+        try:
+            found.append(_pointer(opener, url, fixture))
+        except _SKIP as e:
+            failures.append(_outcome(e, url))
+    if not found:
+        return failures[0]
     try:
-        with _open(opener, pointer_url, 20) as response:
-            raw = response.read(MAX_POINTER + 1)
-            if len(raw) > MAX_POINTER:
-                raise ValueError('pointer too large')
-        p = validate(json.loads(raw), fixture=fixture)
         installed = updates.installed(home)
-        if installed is None or _version(installed) < _version(p['min_box_snapshot']):
+        admitted = [p for p in found if installed is not None and _version(installed) >= _version(p['min_box_snapshot'])]
+        if not admitted:
             return 'skipped:min_box_snapshot'
+        admitted.sort(key=lambda c: c['versionCode'], reverse=True)
         directory.parent.mkdir(parents=True, exist_ok=True)
         directory.parent.chmod(0o755)  # same public projection modes as cli.share_registry
         directory.mkdir(exist_ok=True)
@@ -134,49 +206,15 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=POINTER, fixture=False):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return 'skipped:busy'
-            feed = directory / 'latest.json'
-            current = json.loads(feed.read_text()) if feed.exists() else {}
-            code = current.get('versionCode', 0)
-            if type(code) is not int or code < 0:
-                raise ValueError('unreadable existing versionCode')
-            if code > p['versionCode']:
-                return 'skipped:no_downgrade'
-            name = f"wizard-os-{p['versionName']}.apk"
-            apk = directory / name
-            if code == p['versionCode'] and current.get('sha256', '').lower() == p['sha256'].lower() and current.get('url') == name and _verify(apk, p['bytes'], p['sha256']):
-                return 'unchanged'
-            # A versioned URL is immutable. Never replace bytes a still-published old feed references.
-            if current.get('url') == name and current.get('sha256', '').lower() != p['sha256'].lower():
-                raise ValueError('conflicting immutable APK URL')
-            fd, tmp = tempfile.mkstemp(prefix='.phone-apk-', dir=directory)
-            try:
-                total, digest, deadline = 0, hashlib.sha256(), time.monotonic() + 300
-                with os.fdopen(fd, 'wb') as out, _open(opener, p['asset_url'], 30) as response:
-                    declared = response.headers.get('Content-Length')
-                    if declared is not None and int(declared) != p['bytes']:
-                        raise ValueError('APK Content-Length mismatch')
-                    while chunk := response.read(1024 * 1024):
-                        total += len(chunk)
-                        if total > min(MAX_APK, p['bytes']) or time.monotonic() > deadline:
-                            raise ValueError('APK limit exceeded')
-                        digest.update(chunk); out.write(chunk)
-                    if total != p['bytes'] or digest.hexdigest() != p['sha256'].lower():
-                        raise ValueError('APK bytes/sha256 mismatch')
-                    out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
-                os.replace(tmp, apk)
-            finally:
-                Path(tmp).unlink(missing_ok=True)
-            _atomic_json(feed, {k: p[k] for k in ('app', 'versionName', 'versionCode', 'bytes', 'sha256', 'signer')} |
-                         {'version': p['versionName'], 'url': name, 'notes': p.get('notes', '')})
-            for old in directory.glob('wizard-os-*.apk'):
-                if old.name != name and APK_NAME.fullmatch(old.name):
-                    old.unlink()
-            return f"updated:versionCode={p['versionCode']}"
-    except urllib.error.HTTPError as e:
-        return 'skipped:pointer_404' if e.code == 404 and e.url == pointer_url else f'skipped:http_{e.code}'
-    except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
-        # Offline and invalid releases never break maintenance. Do not log remote text or URLs.
-        return 'skipped:unavailable_or_invalid'
+            # Newest first; if its APK cannot be fetched or verified, a valid older source still gets mirrored.
+            for i, p in enumerate(admitted):
+                try:
+                    return _publish(directory, opener, p)
+                except _SKIP:
+                    if i == len(admitted) - 1:
+                        raise
+    except _SKIP as e:
+        return _outcome(e, None)
 
 
 def ensure_timer(home: Path, runtipi_root: Path, *, unit_dir=None, runner=subprocess.run):
