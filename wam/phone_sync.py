@@ -19,6 +19,10 @@ from . import updates
 
 # Read from the public App Manager release mirror, beside the box snapshots; wizard-os (canonical) is private.
 POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json"
+# The phone.json of the newest published wizard-ux release. The Phone release workflow (wizard-ux#1400) publishes
+# android-v<version> from main but cannot edit the pointer above, so without this a CI release never reached a box
+# (wizard-ux#1399). Prereleases and drafts are never "latest"; validate() still pins the signer and the asset URL.
+RELEASE_POINTER = "https://github.com/humanitylabs-org/wizard-ux/releases/latest/download/phone.json"
 SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
 UNIT = "wizard-phone-sync"
 MAX_POINTER = 64 * 1024
@@ -112,19 +116,46 @@ def _atomic_json(path, value):
         Path(tmp).unlink(missing_ok=True)
 
 
-def sync(home: Path, runtipi_root: Path, *, pointer_url=POINTER, fixture=False):
-    """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only."""
+def _pointer(opener, url, fixture):
+    with _open(opener, url, 20) as response:
+        raw = response.read(MAX_POINTER + 1)
+        if len(raw) > MAX_POINTER:
+            raise ValueError('pointer too large')
+    return validate(json.loads(raw), fixture=fixture)
+
+
+def _outcome(error, url):
+    if isinstance(error, urllib.error.HTTPError):
+        return 'skipped:pointer_404' if error.code == 404 and error.url == url else f'skipped:http_{error.code}'
+    # Offline and invalid releases never break maintenance. Do not log remote text or URLs.
+    return 'skipped:unavailable_or_invalid'
+
+
+_SKIP = (urllib.error.HTTPError, OSError, ValueError, TypeError, AttributeError, http.client.HTTPException)
+
+
+def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False):
+    """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only.
+
+    Reads the mirror pointer and the newest wizard-ux release's phone.json and mirrors the highest valid
+    versionCode the box admits. A test that passes only pointer_url reads only that pointer."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
+    urls = [pointer_url or POINTER] + ([release_url] if release_url else [] if pointer_url else [RELEASE_POINTER])
+    found, failures = [], []
+    for url in urls:
+        try:
+            found.append(_pointer(opener, url, fixture))
+        except _SKIP as e:
+            failures.append(_outcome(e, url))
+    if not found:
+        return failures[0]
     try:
-        with _open(opener, pointer_url, 20) as response:
-            raw = response.read(MAX_POINTER + 1)
-            if len(raw) > MAX_POINTER:
-                raise ValueError('pointer too large')
-        p = validate(json.loads(raw), fixture=fixture)
         installed = updates.installed(home)
-        if installed is None or _version(installed) < _version(p['min_box_snapshot']):
+        admitted = [p for p in found if installed is not None and _version(installed) >= _version(p['min_box_snapshot'])]
+        if not admitted:
             return 'skipped:min_box_snapshot'
+        p = max(admitted, key=lambda c: c['versionCode'])
         directory.parent.mkdir(parents=True, exist_ok=True)
         directory.parent.chmod(0o755)  # same public projection modes as cli.share_registry
         directory.mkdir(exist_ok=True)
@@ -172,11 +203,8 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=POINTER, fixture=False):
                 if old.name != name and APK_NAME.fullmatch(old.name):
                     old.unlink()
             return f"updated:versionCode={p['versionCode']}"
-    except urllib.error.HTTPError as e:
-        return 'skipped:pointer_404' if e.code == 404 and e.url == pointer_url else f'skipped:http_{e.code}'
-    except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
-        # Offline and invalid releases never break maintenance. Do not log remote text or URLs.
-        return 'skipped:unavailable_or_invalid'
+    except _SKIP as e:
+        return _outcome(e, None)
 
 
 def ensure_timer(home: Path, runtipi_root: Path, *, unit_dir=None, runner=subprocess.run):

@@ -28,6 +28,9 @@ def mirror(tmp_path):
             if self.path == '/latest.json':
                 body = json.dumps(state['pointer']).encode()
                 self.send_response(state['status'])
+            elif self.path == '/release.json':
+                body = json.dumps(state.get('release')).encode()
+                self.send_response(200 if state.get('release') else 404)
             elif self.path == '/redirect.apk':
                 self.send_response(302); self.send_header('Location', '/phone.apk'); self.end_headers(); return
             else:
@@ -236,3 +239,67 @@ def test_published_mirror_pointer_validates():
     import json
     pointer = json.loads((Path(__file__).resolve().parents[1] / 'releases/phone/latest.json').read_text())
     assert ps.validate(pointer)['app'] == 'ai.wizards.os'
+
+
+# wizard-ux#1399: CI publishes android-v<version> on wizard-ux but cannot edit the mirror pointer, so boxes also
+# read the newest release's phone.json and mirror whichever valid release is newest.
+def _release(m, code, name, **extra):
+    m.state['release'] = dict(m.pointer, versionCode=code, versionName=name, **extra)
+    return lambda: ps.sync(m.home, m.root, pointer_url=m.url, release_url=m.url.replace('/latest.json', '/release.json'), fixture=True)
+
+
+def test_newer_ci_release_is_mirrored_over_stale_pointer(mirror):
+    run = _release(mirror, 115, '0.10.51')
+    assert run() == 'updated:versionCode=115'
+    feed = json.loads((mirror.feed / 'latest.json').read_text())
+    assert (feed['versionCode'], feed['url']) == (115, 'wizard-os-0.10.51.apk')
+    assert run() == 'unchanged'
+
+
+def test_older_release_never_beats_pointer(mirror):
+    run = _release(mirror, 70, '0.10.6')
+    assert run() == 'updated:versionCode=78'
+
+
+def test_missing_release_falls_back_to_pointer(mirror):
+    run = _release(mirror, 115, '0.10.51')
+    mirror.state['release'] = None
+    assert run() == 'updated:versionCode=78'
+
+
+def test_release_used_when_pointer_missing(mirror):
+    run = _release(mirror, 115, '0.10.51')
+    mirror.state['status'] = 404
+    assert run() == 'updated:versionCode=115'
+
+
+def test_invalid_release_is_ignored(mirror):
+    run = _release(mirror, 115, '0.10.51', signer='0' * 64)
+    assert run() == 'updated:versionCode=78'
+
+
+def test_release_needing_newer_box_falls_back_to_pointer(mirror):
+    run = _release(mirror, 115, '0.10.51', min_box_snapshot='9.0.0')
+    assert run() == 'updated:versionCode=78'
+
+
+def test_default_sync_reads_pointer_and_newest_release(mirror, monkeypatch):
+    seen = []
+    def fake(opener, url, fixture):
+        seen.append(url)
+        raise ValueError('offline')
+    monkeypatch.setattr(ps, '_pointer', fake)
+    assert ps.sync(mirror.home, mirror.root) == 'skipped:unavailable_or_invalid'
+    assert seen == [ps.POINTER, ps.RELEASE_POINTER]
+    assert ps.RELEASE_POINTER == 'https://github.com/humanitylabs-org/wizard-ux/releases/latest/download/phone.json'
+
+
+def test_ci_release_phone_json_validates():
+    # The phone.json the wizard-ux Phone release workflow published for android-v0.10.51.
+    released = {'app': 'ai.wizards.os', 'versionCode': 115, 'versionName': '0.10.51',
+                'sha256': '8f67e8b81a96766a74e1317bca4d372ee0ef64d58021c2a88e83af4f1ad85266', 'bytes': 29219224,
+                'signer': ps.SIGNER,
+                'asset_url': 'https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v0.10.51/wizard-os-0.10.51.apk',
+                'notes': 'Shared WizardOS phone release 0.10.51, built and signed from main; no owner address is built in.',
+                'min_box_snapshot': '0.3.40', 'source_commit': 'e9d143a4a34a389adbaf841b037302948572501f'}
+    assert ps.validate(released) == released

@@ -2,8 +2,13 @@
 
 `wam phone-sync` fetches
 `https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json`
-(the public mirror of the canonical wizard-os `releases/phone/latest.json`, beside the box snapshots; wizard-os itself is private, so boxes cannot read it) and mirrors the
-verified public Android release onto this box. It never installs anything, restarts a container, or changes a
+(the public mirror of the canonical wizard-os `releases/phone/latest.json`, beside the box snapshots; wizard-os itself is private, so boxes cannot read it) and and the
+`phone.json` of the newest published wizard-ux release
+(`https://github.com/humanitylabs-org/wizard-ux/releases/latest/download/phone.json`, written by the wizard-ux
+Phone release workflow, which cannot edit the pointer above), and mirrors the newest valid one this box admits
+(highest `versionCode` whose `min_box_snapshot` the box meets; either source may be missing or invalid, then the
+other is used). So a CI phone release reaches boxes within the hour with no pointer PR (wizard-ux#1399). It mirrors
+the verified public Android release onto this box. It never installs anything, restarts a container, or changes a
 maintenance/update setting. This is independent of DECISIONS #91's `check`/apply policy.
 
 ## Layout and timer
