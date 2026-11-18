@@ -1636,16 +1636,57 @@ def _app_container_states(urn: str) -> list[str]:
     return p.stdout.split()
 
 
+# #754: how long `wam recover` waits for Runtipi to answer and for an app that is still starting to settle. A fresh
+# install runs recover right after bootstrap, while apps are still coming up on a busy box.
+RECOVER_LIST_TRIES = 5
+RECOVER_SETTLE_S = 90
+STARTING_STATES = {"created", "restarting"}   # docker states of a container that is on its way up
+
+
+def _recover_note(app_id: str, msg: str) -> None:
+    print(f"wam recover: {app_id}: {msg}", file=sys.stderr, flush=True)
+
+
+def _recover_states(urn: str, settle: float) -> list[str]:
+    """Container states, waiting up to `settle` s while any container is still starting (#754: never race an app
+    that is coming up anyway)."""
+    deadline = time.time() + settle
+    while True:
+        states = _app_container_states(urn)
+        if not (set(states) & STARTING_STATES) or time.time() >= deadline:
+            return states
+        time.sleep(3)
+
+
+def _all_running(states: list[str]) -> bool:
+    return bool(states) and all(s == "running" for s in states)
+
+
+def _installed_with_retry(rt) -> list[dict]:
+    """Runtipi's installed list; right after bootstrap the App Manager can be busy for a moment (#754)."""
+    err = None
+    for n in range(RECOVER_LIST_TRIES):
+        try:
+            return rt.installed()
+        except (RuntipiError, OSError, ValueError) as e:
+            err = e
+            if n + 1 < RECOVER_LIST_TRIES:
+                time.sleep(min(5 * (n + 1), 15))
+    raise RuntimeError(f"the App Manager did not list the installed apps: {type(err).__name__}: {err}"[:300])
+
+
 def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     """wam#95: start installed apps whose containers are missing or not running while their records survive.
     Only the Wizard shell / Agent Service and the apps named in `running` (recorded running before this rerun) are
-    started: an app the owner stopped stays stopped. Apps whose containers all run are left alone (healthy no-op)."""
+    started: an app the owner stopped stays stopped. Apps whose containers all run are left alone (healthy no-op).
+    #754: every app it could not start is named with the reason (also on stderr, for the install log); an app that is
+    still starting is waited for, and one that runs after all is not a failure. One app's error never fails the rest."""
     rt = c.runtipi()
     defaults = slots.load_defaults()
     core = [(defaults.get(s) or {}).get("app") for s in ("shell", "agent-service")]
     core = [a for a in core if a]
     installed = {}
-    for row in rt.installed():
+    for row in _installed_with_retry(rt):
         urn = (row.get("info") or {}).get("urn") or ""
         if urn:
             installed[urn] = (row.get("app") or {}).get("status")
@@ -1660,20 +1701,36 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
         if urn not in installed:
             skipped.append(app_id)
             continue
+        states = []
         try:
-            states = _app_container_states(urn)
-            if states and all(s == "running" for s in states):
+            states = _recover_states(urn, RECOVER_SETTLE_S)
+            if _all_running(states):
                 continue
+            _recover_note(app_id, f"containers {','.join(states) or 'missing'}: starting it")
             res = app_lifecycle(c, "start", urn)
-            if res.get("error"):
-                failed[app_id] = res["error"][:200]
-            else:
-                started.append(app_id)
-        except (SystemExit, RuntimeError, RuntipiError, OSError, subprocess.SubprocessError) as e:
-            failed[app_id] = str(e)[:200]
-    if started:
-        write_registry(c, rt)
+            err = res.get("error")
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - one app's error is reported, the others still start
+            err = f"{type(e).__name__}: {e}"
+        if not err:
+            started.append(app_id)
+            continue
+        try:   # the start may have raced an app that came up on its own: running now is not a failure
+            states = _recover_states(urn, RECOVER_SETTLE_S)
+        except Exception as e:  # noqa: BLE001
+            err += f" (container check failed: {e})"
+        if _all_running(states):
+            _recover_note(app_id, f"start reported '{err[:120]}', but its containers run now: counted as started")
+            started.append(app_id)
+            continue
+        failed[app_id] = f"{err} [containers: {','.join(states) or 'none'}]"[:300]
+        _recover_note(app_id, f"could not start: {failed[app_id]}")
     out = {"started": started, "failed": failed, "not_installed": skipped, "core": core}
+    if started:
+        try:
+            write_registry(c, rt)
+        except Exception as e:  # noqa: BLE001 - the apps run; `wam apps` / doctor rewrite the list
+            out["registry_error"] = f"{type(e).__name__}: {e}"[:200]
+            print(f"wam recover: apps.json not rewritten: {out['registry_error']}", file=sys.stderr, flush=True)
     if stranded:
         out["left_stopped_by_update"] = [u.split(":", 1)[0] for u in stranded]
     return out
