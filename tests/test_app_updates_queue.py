@@ -47,10 +47,9 @@ def test_a_request_during_a_run_is_queued_once(tmp_path):
     try:
         assert au.run_active(home)
         assert au.request(["movies"], home) == {"started": False, "queued": ["movies"], "note": au.QUEUE_NOTE}
-        au.request(["movies", "notes"], home)
-        assert au.request(None, home)["queued"] == ["*"]
-        assert [e["app"] for e in au.queued(home)] == ["movies", "notes", None]
-        assert au.queued(home)[-1]["name"] == "All apps"
+        assert au.request(["notes", "movies", "notes"], home)["queued"] == ["notes", "movies"]
+        assert au.request([], home) == {"started": False, "queued": [], "note": au.QUEUE_NOTE}
+        assert [e["app"] for e in au.queued(home)] == ["movies", "notes"]   # deduped, first place kept
     finally:
         run.close()
 
@@ -130,11 +129,11 @@ def test_route_queues_during_a_run_and_lists_it(tmp_path, monkeypatch):
         code, b = call("POST", {"action": "apply", "app": "messenger"})
         assert code == 200 and b == {"started": False, "queued": ["messenger"], "note": au.QUEUE_NOTE}
         code, b = call("POST", {"action": "apply", "apps": ["notes", "movies", "notes"]})
-        assert code == 200 and b["queued"] == ["movies", "notes"]
+        assert code == 200 and b["queued"] == ["notes", "movies"]   # the order asked
         assert len(calls) == n   # nothing new started: the running update takes them
         code, b = call("GET")
         assert code == 200 and [(q["app"], q["name"]) for q in b["queued"]] == [
-            ("messenger", "messenger"), ("movies", "movies"), ("notes", "notes")]
+            ("messenger", "messenger"), ("notes", "notes"), ("movies", "movies")]
         assert call("POST", {"action": "apply", "apps": []})[0] == 400
         assert call("POST", {"action": "apply", "apps": ["../x"]})[0] == 400
         assert call("POST", {"action": "apply", "apps": ["notes"], "app": "movies"})[0] == 400
@@ -144,25 +143,25 @@ def test_route_queues_during_a_run_and_lists_it(tmp_path, monkeypatch):
                                          [(e["app"], e["at"]) for e in au._queue_read(c.home)]]
 
 
-def test_named_requests_beside_an_all_app_request_run_as_their_own_batch(tmp_path, monkeypatch):
-    """Codex P1: Update all, then Retry on a failed app. The named app keeps its override of holds/failures."""
+def test_queued_requests_run_as_one_named_batch_in_the_order_asked(tmp_path, monkeypatch):
+    """Codex P1: requests are named apps (Update all queues the ids due then), so each keeps its override of
+    holds/failures; the run's own apps leave the queue when it starts."""
     home = tmp_path / "wos"
     run = _hold_run(home)
     try:
-        au.request(None, home)
-        au.request(["notes"], home)
+        au.request(["notes", "plans", "money"], home)
     finally:
         run.close()
-    assert [e["app"] for e in au._queue_read(home)] == [None, "notes"]
     batches = []
 
     def fake(c, h, only, **kw):
         batches.append(only)
-        return {"started": True, "updated": [{"id": x} for x in (only or ["money"])]}
+        return {"started": True, "updated": [{"id": x} for x in only]}
     monkeypatch.setattr(au, "_apply_locked", fake)
     out = au.apply(type("C", (), {"home": home})(), only=["plans"])
-    assert batches == [["plans"], None, ["notes"]]
-    assert [x["id"] for x in out["updated"]] == ["plans", "money", "notes"] and out["queued_ran"] == [["*"], ["notes"]]
+    assert batches == [["plans"], ["notes", "money"]]
+    assert [x["id"] for x in out["updated"]] == ["plans", "notes", "money"] and out["queued_ran"] == [["notes", "money"]]
+    assert not (home / au.QUEUE).exists()
 
 
 def test_a_dry_run_is_not_a_run_requests_wait_for(tmp_path, monkeypatch):
@@ -176,3 +175,76 @@ def test_a_dry_run_is_not_a_run_requests_wait_for(tmp_path, monkeypatch):
     monkeypatch.setattr(au, "_apply_locked", fake)
     au.apply(type("C", (), {"home": home})(), dry_run=True)
     assert seen == [(False, None)] and not (home / au.QUEUE).exists()
+
+
+# ---------------------------------------------------------------- the Tracker contract (#764 follow-up)
+
+def test_update_all_during_a_run_queues_the_apps_due_now(tmp_path, monkeypatch):
+    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    run = _hold_run(c.home)
+    try:
+        code, b = call("POST", {"action": "apply"})
+        assert (code, b) == (200, {"started": False, "queued": ["messenger", "movies", "notes"], "note": au.QUEUE_NOTE})
+        assert all(isinstance(q["app"], str) and set(q) == {"app", "at", "name"} for q in call("GET")[1]["queued"])
+        # `wam app-updates --apply` (no ids) during the run does the same
+        assert au.apply(c)["queued"] == ["messenger", "movies", "notes"]
+        assert calls == []
+    finally:
+        run.close()
+
+
+def test_requests_wait_through_a_long_run_and_expire_only_without_one(tmp_path):
+    home = tmp_path / "wos"
+    home.mkdir(parents=True)
+    old = int(time.time()) - au.QUEUE_MAX_AGE - 60
+    (home / au.QUEUE).write_text(json.dumps([{"app": "movies", "at": old}]))
+    run = _hold_run(home)
+    try:
+        assert [e["app"] for e in au.queued(home)] == ["movies"]   # the run is still going: it gets there
+    finally:
+        run.close()
+    assert au.queued(home) == [] and not (home / au.QUEUE).exists()
+
+
+def test_a_full_queue_answers_only_what_it_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(au, "QUEUE_MAX", 3)
+    home = tmp_path / "wos"
+    run = _hold_run(home)
+    try:
+        au.request(["a", "b"], home)
+        assert au.request(["b", "x", "y"], home)["queued"] == ["b", "x"]
+        assert [e["app"] for e in au.queued(home)] == ["a", "b", "x"]
+    finally:
+        run.close()
+
+
+def test_route_takes_up_to_100_ids_in_one_body(tmp_path, monkeypatch):
+    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    full = ["a" * 60 + f"{i:03}" for i in range(au.QUEUE_MAX)]
+    assert call("POST", {"action": "apply", "apps": full}) == (200, {"started": True}) and calls[-1] == ("apply", full)
+    assert call("POST", {"action": "apply", "apps": full + ["b"]})[0] == 400
+    assert call("POST", {"action": "apply", "apps": "movies"})[0] == 400
+    monkeypatch.setattr(au, "start_detached", lambda runner=None, only=None: {"started": False, "error": "no systemd"})
+    assert call("POST", {"action": "apply", "app": "movies"}) == (409, {"started": False, "error": "no systemd"})
+
+
+def test_a_batch_that_fails_puts_its_requests_back(tmp_path, monkeypatch):
+    home = tmp_path / "wos"
+    run = _hold_run(home)
+    try:
+        au.request(["notes", "money"], home)
+    finally:
+        run.close()
+
+    def fake(c, h, only, **kw):
+        if only != ["plans"]:
+            au.request(["movies"], h)   # asked for while the batch ran
+            raise ConnectionError("Runtipi went away")
+        return {"started": True, "updated": []}
+    monkeypatch.setattr(au, "_apply_locked", fake)
+    try:
+        au.apply(type("C", (), {"home": home})(), only=["plans"])
+    except ConnectionError:
+        pass
+    assert [e["app"] for e in au._queue_read(home)] == ["notes", "money", "movies"]
+    assert not au.run_active(home)

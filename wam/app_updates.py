@@ -688,7 +688,7 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except OSError:
-            q = request(only, h) if queue and not dry_run else None
+            q = request_for(c, only) if queue and not dry_run else None
             if q is not None or attempt == 2:   # queued; or the lock is not a run's (maintenance, an OS update)
                 lock.close()
                 return q or {"started": False, "skipped": "running", "note": "app updates are already running"}
@@ -700,6 +700,9 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
             lock.truncate()
             lock.write(f"{os.getpid()}\n")   # says an app-updates run holds the lock (not maintenance, #764)
             lock.flush()
+            if only:   # asked for again while waiting: this run takes them now
+                with _queue_lock(h):
+                    _queue_write(h, [e for e in _queue_read(h, expire=False) if e["app"] not in set(only)])
         _clear_running(h)   # a run killed mid-update left its app behind (#733)
         kw = {"dry_run": dry_run, "notify": notify, "renames": renames, "reporter": reporter, "moves": moves,
               "quiet_repeats": quiet_repeats}
@@ -713,13 +716,16 @@ def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notif
                     _release(h, lock)   # under the queue lock: a request now either sees no run or was taken
                     released = True
                     break
-            # Every due app first, then the apps asked for by name: an explicit request (Retry, Update now on a held
-            # app) overrides holds and past failures only when it runs as its own `only` batch (Codex P1).
-            ids = sorted({e["app"] for e in entries if e["app"] is not None})
-            batches = ([None] if any(e["app"] is None for e in entries) else []) + ([ids] if ids else [])
-            for only_ in batches:
-                print(f"queued: updating {', '.join(only_) if only_ else 'all apps'}", file=sys.stderr, flush=True)
-                out = _merge(out, _apply_locked(c, h, only_, **kw), only_)
+            # The apps asked for by name, in the order asked, as one `only` batch: an explicit request (Retry, Update
+            # now on a held app) overrides holds and past failures, never system/pinned apps (Codex P1). Ids that are
+            # not installed or have nothing newer come back in `unknown`/nowhere and are not retried.
+            ids = list(dict.fromkeys(e["app"] for e in entries))
+            print(f"queued: updating {', '.join(ids)}", file=sys.stderr, flush=True)
+            try:
+                out = _merge(out, _apply_locked(c, h, ids, **kw), ids)
+            except BaseException:
+                _queue_put_back(h, entries)   # a Runtipi error or a stop loses no request: the next run takes it
+                raise
         return out
     finally:
         if not released:
@@ -758,6 +764,7 @@ def _merge(a: dict, b: dict, ids: list[str] | None) -> dict:
 QUEUE = "app-updates-queue.json"
 QUEUE_LOCK = "app-updates-queue.lock"
 QUEUE_MAX_AGE = 6 * 3600    # a request no run took within this long is dropped (a killed run never drains it)
+QUEUE_MAX = 100             # app ids per request, and requests kept
 QUEUE_NOTE = "queued behind the update that is running"
 
 
@@ -776,22 +783,25 @@ class _queue_lock:
         os.close(self.fd)
 
 
-def _queue_read(h: Path, now: float | None = None) -> list[dict]:
+def _queue_read(h: Path, now: float | None = None, expire: bool = True) -> list[dict]:
+    """[{app, at}], deduped by app (first kept), order kept. `expire`: drop requests older than QUEUE_MAX_AGE (only
+    while no run holds the lock; a long run still gets to them)."""
     try:
         doc = json.loads((h / QUEUE).read_text())
     except (OSError, ValueError):
         return []
     now = time.time() if now is None else now
-    out = []
+    out, seen = [], set()
     for e in doc if isinstance(doc, list) else []:
-        if not isinstance(e, dict) or not (e.get("app") is None or (isinstance(e.get("app"), str)
-                                                                    and _APP_ID.fullmatch(e["app"]))):
+        if not isinstance(e, dict) or not isinstance(e.get("app"), str) or not _APP_ID.fullmatch(e["app"]) \
+                or e["app"] in seen:
             continue
         at = _int(e.get("at"))
-        if at is None or now - at > QUEUE_MAX_AGE:
+        if at is None or (expire and now - at > QUEUE_MAX_AGE):
             continue
+        seen.add(e["app"])
         out.append({"app": e["app"], "at": at})
-    return out
+    return out[:QUEUE_MAX]
 
 
 def _queue_write(h: Path, entries: list[dict]) -> None:
@@ -807,9 +817,23 @@ def _queue_write(h: Path, entries: list[dict]) -> None:
 
 
 def _queue_take(h: Path) -> list[dict]:
-    entries = _queue_read(h)
+    entries = _queue_read(h, expire=False)   # the run holds the lock: nothing it was asked for is stale
     _queue_write(h, [])
     return entries
+
+
+def _queue_put_back(h: Path, entries: list[dict]) -> None:
+    """Requests a failed batch took go back in front of anything asked for since. Never fails."""
+    try:
+        with _queue_lock(h):
+            _queue_write(h, _dedupe(entries + _queue_read(h, expire=False)))
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: queued app updates not put back: {type(e).__name__}", file=sys.stderr)
+
+
+def _dedupe(entries: list[dict]) -> list[dict]:
+    seen: set = set()
+    return [e for e in entries if not (e["app"] in seen or seen.add(e["app"]))][:QUEUE_MAX]
 
 
 def run_active(h: Path) -> bool:
@@ -836,45 +860,62 @@ def run_active(h: Path) -> bool:
     return pid > 0 and _alive(pid)
 
 
-def request(only: list[str] | None, home: Path | None = None) -> dict | None:
-    """Queue an update request (`only` ids, or None for every due app) for the run that is going. None when no
+def request(only: list[str], home: Path | None = None) -> dict | None:
+    """Queue these app ids for the run that is going (an app already queued keeps its place). None when no
     app-updates run holds the lock (the caller starts one). Checked and written under the queue lock, which the run
-    also takes before it lets its lock go, so a request is never left behind by a run that just ended."""
+    also takes before it lets its lock go, so a request is never left behind by a run that just ended.
+    `queued` lists the ids the queue really holds (it keeps QUEUE_MAX)."""
     h = _home(home)
+    ids = list(dict.fromkeys(i for i in only or [] if isinstance(i, str) and _APP_ID.fullmatch(i)))[:QUEUE_MAX]
     with _queue_lock(h):
         if not run_active(h):
             return None
-        entries = _queue_read(h)
         now = int(time.time())
-        have = {e["app"] for e in entries}
-        for app in (only or [None]):
-            if app not in have:   # named apps stay even beside an all-app request: they run as their own batch
-                entries.append({"app": app, "at": now})
-                have.add(app)
-        _queue_write(h, entries)
-    return {"started": False, "queued": list(only) if only else ["*"], "note": QUEUE_NOTE}
+        entries = _dedupe(_queue_read(h, expire=False) + [{"app": i, "at": now} for i in ids])
+        if ids:
+            _queue_write(h, entries)
+    kept = {e["app"] for e in entries}
+    return {"started": False, "queued": [i for i in ids if i in kept], "note": QUEUE_NOTE}
+
+
+def request_for(c, only: list[str] | None) -> dict | None:
+    """request() for a page or `wam app-updates --apply`: `only` ids, or (None) every app due now. None when no
+    app-updates run is going."""
+    if not run_active(_home(c.home)):
+        return None
+    if only is None:
+        try:
+            only = [r["id"] for r in status(c)["due"]]
+        except Exception as e:  # noqa: BLE001 - Runtipi unreachable: nothing to queue, say why in the log
+            print(f"WARNING: due apps not read: {type(e).__name__}", file=sys.stderr)
+            only = []
+    return request(only, c.home)
+
+
+def request_apply(c, only: list[str] | None = None) -> dict:
+    """Update now / Update all from a page: queue behind the app-updates run going now (200 {"started": false,
+    "queued": [ids], "note"}), else start a run in the background ({"started": true} or {"started": false, "error"})."""
+    return request_for(c, only) or start_detached(only=only)
 
 
 def queued(home: Path | None = None, runtipi_root: Path | None = None, store: str | None = None) -> list[dict]:
-    """What waits for the running update, as [{app, at, name}] (`app` None: every due app). Requests older than
-    QUEUE_MAX_AGE with no run are dropped here too."""
+    """What waits for the running update, as [{app, at, name}]. Requests older than QUEUE_MAX_AGE while no run holds
+    the lock are dropped here."""
     h = _home(home)
     try:
         with _queue_lock(h):
-            entries = _queue_read(h)
-            if not run_active(h) and (h / QUEUE).exists():
+            active = run_active(h)
+            entries = _queue_read(h, expire=not active)
+            if not active and (h / QUEUE).exists():
                 _queue_write(h, entries)   # rewrite without the expired ones
     except OSError:
         return []
     out = []
     for e in entries:
-        if e["app"] is None:
-            name = "All apps"
-        else:
-            try:
-                name = display_name(runtipi_root, store, e["app"]) if runtipi_root and store else e["app"]
-            except Exception:  # noqa: BLE001 - a name never fails the status
-                name = e["app"]
+        try:
+            name = display_name(runtipi_root, store, e["app"]) if runtipi_root and store else e["app"]
+        except Exception:  # noqa: BLE001 - a name never fails the status
+            name = e["app"]
         out.append({"app": e["app"], "at": e["at"], "name": name})
     return out
 
