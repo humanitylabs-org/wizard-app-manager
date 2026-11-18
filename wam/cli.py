@@ -2475,8 +2475,9 @@ class StoreHandler(BaseHTTPRequestHandler):
         """App updates for Settings, behind the off-by-default switch wizard/app-updates-list (404 while it is off).
         GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped, notes = one-line
         What's new per app, running = the app updates in progress now, #733). POST {"mode": "auto"|
-        "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry),
-        which runs in the background like the nightly timer. _go already checked the owner (and Origin for POST)."""
+        "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry)
+        or "apps": [ids], which runs in the background like the nightly timer; while a run is going it is queued for
+        that run instead (200 {"started": false, "queued": [ids]}, #764). _go already checked the owner (and Origin for POST)."""
         from . import app_updates as au, store_install as si
         c = self.cfg
         if not au.switch_on(c.home):
@@ -2498,15 +2499,21 @@ class StoreHandler(BaseHTTPRequestHandler):
         app = body.get("app", body.get("hold", body.get("unhold")))
         if app is not None and not (isinstance(app, str) and si.ID.fullmatch(app)):
             return self._json(400, {"error": "not an app id"})
-        if body.get("action") == "apply" and set(body) <= {"action", "app"}:
-            res = au.start_detached(only=[app] if app else None)
-            return self._json(200 if res.get("started") else 409, res)
+        if body.get("action") == "apply" and set(body) <= {"action", "app", "apps"}:
+            apps = body.get("apps")
+            if apps is not None and not (isinstance(apps, list) and 0 < len(apps) <= 64 and "app" not in body
+                                         and all(isinstance(x, str) and si.ID.fullmatch(x) for x in apps)):
+                return self._json(400, {"error": '"apps" must be a list of app ids (or send one "app")'})
+            only = [app] if app else sorted(set(apps)) if apps else None
+            # While a run is going the request waits for it, not refused (#764): the run takes it next.
+            res = au.request(only, c.home) or au.start_detached(only=only)
+            return self._json(200 if res.get("started") or res.get("queued") else 409, res)
         if set(body) == {"mode"} and body["mode"] in au.MODES:
             return self._json(200, au.set_mode(body["mode"], c.home))
         if set(body) in ({"hold"}, {"unhold"}):
             return self._json(200, au.hold(app, "hold" in body, c.home))
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"hold": id}, {"unhold": id} or '
-                                         '{"action": "apply"} (optional "app": id)'})
+                                         '{"action": "apply"} (optional "app": id or "apps": [ids])'})
 
     def _updates(self, method: str) -> None:
         """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
