@@ -386,7 +386,7 @@ def owner_status(c=None) -> dict:
     last = _state(c.home).get("last")
     return {**status(c, installed), "failed": failed, "last": last if isinstance(last, dict) else None,
             "notes": whats_new(installed, store=cli.STORE, runtipi_root=c.runtipi_root),
-            "running": running_all(c.home)}
+            "running": running_all(c.home), "queued": queued(c.home, c.runtipi_root, cli.STORE)}
 
 
 # ---------------------------------------------------------------- what is updating now (#733)
@@ -672,169 +672,356 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
 
 
 def apply(c=None, *, only: list[str] | None = None, dry_run: bool = False, notify: bool = True, renames=None,
-          reporter=None, moves=None, quiet_repeats: bool = False) -> dict:
+          reporter=None, moves=None, quiet_repeats: bool = False, queue: bool = True) -> dict:
     """Update every due app (or `only` those), one at a time, verifying each and rolling back failures.
     `quiet_repeats` (the hourly timer): a notice that would only repeat a "Waiting for you" already delivered in the
-    last day is not sent again, so an app waiting for the owner's OK reminds once a day, not every hour."""
-    from . import cli, updates
+    last day is not sent again, so an app waiting for the owner's OK reminds once a day, not every hour.
+    While another app-updates run is going, the request is queued for that run (#764) unless `queue` is False (the
+    timer: its next tick comes anyway); the run takes queued requests after its own apps, under the same lock."""
+    from . import cli
     c = c or cli.Config()
     h = _home(c.home)
     h.mkdir(parents=True, exist_ok=True)
-    lock = open(h / LOCK, "w")
+    lock = open(h / LOCK, "a+")   # never "w": that would wipe the pid a running run wrote (#764)
+    for attempt in (1, 2):
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            q = request(only, h) if queue and not dry_run else None
+            if q is not None or attempt == 2:   # queued; or the lock is not a run's (maintenance, an OS update)
+                lock.close()
+                return q or {"started": False, "skipped": "running", "note": "app updates are already running"}
+            # no run holds it: it may have just ended, so try once more
+    released = False
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return {"started": False, "skipped": "running", "note": "app updates are already running"}
-    try:
+        lock.seek(0)
+        lock.truncate()
+        lock.write(f"{os.getpid()}\n")   # says an app-updates run holds the lock (not maintenance, #764)
+        lock.flush()
         _clear_running(h)   # a run killed mid-update left its app behind (#733)
-        if updates.installing(c.home):
-            return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
-        rt = c.runtipi()
-        repo_moved = []
-        if not dry_run:
-            # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
-            # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
-            from . import repo_moves
-            try:
-                # (and first frees apps a Store Get/Update pinned, so their updates show; wizard-os#614)
-                repo_moved = (moves or repo_moves.follow_all)(c, _installed_unpinned(c, rt), only=only)
-            except Exception as e:  # noqa: BLE001 - a move check never stops the updates
-                print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
-        rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
-        if only:
-            unknown = sorted(set(only) - {r["id"] for r in rows})
-            rows = [r for r in rows if r["id"] in only]
-            for r in rows:   # an explicit request overrides holds and a past failure, never system/pinned apps
-                if r["skip"] in ("held", "failed", "ignored"):
-                    r["skip"] = None
+        kw = {"dry_run": dry_run, "notify": notify, "renames": renames, "reporter": reporter, "moves": moves,
+              "quiet_repeats": quiet_repeats}
+        out = _apply_locked(c, h, only, **kw)
+        if dry_run or out.get("skipped") == "installing":
+            return out   # queued requests wait for the next run (a WizardOS update is going)
+        while True:
+            with _queue_lock(h):
+                entries = _queue_take(h)
+                if not entries:
+                    _release(h, lock)   # under the queue lock: a request now either sees no run or was taken
+                    released = True
+                    break
+            ids = None if any(e["app"] is None for e in entries) else sorted({e["app"] for e in entries})
+            print(f"queued: updating {', '.join(ids) if ids else 'all apps'}", file=sys.stderr, flush=True)
+            out = _merge(out, _apply_locked(c, h, ids, **kw), ids)
+        return out
+    finally:
+        if not released:
+            _release(h, lock)
+        lock.close()
+
+
+def _release(h: Path, lock) -> None:
+    _clear_running(h)   # before the lock goes, so a reader never sees a finished run (#733)
+    try:
+        lock.seek(0)
+        lock.truncate()   # the pid goes first: maintenance may take this lock next (#764)
+        lock.flush()
+    except OSError:
+        pass
+    fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+LISTS = ("renamed", "updated", "rolled_back", "failed", "needs_owner", "skipped", "unknown")
+
+
+def _merge(a: dict, b: dict, ids: list[str] | None) -> dict:
+    """One answer for a run plus the queued requests it took after its own apps (#764)."""
+    if not b.get("started"):
+        return {**a, "queued_ran": a.get("queued_ran", []) + [ids or ["*"]], "queued_note": b.get("note")}
+    out = {**a, **{k: list(a.get(k) or []) + list(b.get(k) or []) for k in LISTS}}
+    out["message"] = "\n".join(m for m in (a.get("message"), b.get("message")) if m) or None
+    out["queued_ran"] = a.get("queued_ran", []) + [ids or ["*"]]
+    if b.get("reported"):
+        out["reported"] = {**(a.get("reported") or {}), **b["reported"]}
+    return out
+
+
+# ---------------------------------------------------------------- queued requests (#764)
+
+QUEUE = "app-updates-queue.json"
+QUEUE_LOCK = "app-updates-queue.lock"
+QUEUE_MAX_AGE = 6 * 3600    # a request no run took within this long is dropped (a killed run never drains it)
+QUEUE_NOTE = "queued behind the update that is running"
+
+
+class _queue_lock:
+    def __init__(self, h: Path):
+        self.h = h
+
+    def __enter__(self):
+        self.h.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.h / QUEUE_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+
+
+def _queue_read(h: Path, now: float | None = None) -> list[dict]:
+    try:
+        doc = json.loads((h / QUEUE).read_text())
+    except (OSError, ValueError):
+        return []
+    now = time.time() if now is None else now
+    out = []
+    for e in doc if isinstance(doc, list) else []:
+        if not isinstance(e, dict) or not (e.get("app") is None or (isinstance(e.get("app"), str)
+                                                                    and _APP_ID.fullmatch(e["app"]))):
+            continue
+        at = _int(e.get("at"))
+        if at is None or now - at > QUEUE_MAX_AGE:
+            continue
+        out.append({"app": e["app"], "at": at})
+    return out
+
+
+def _queue_write(h: Path, entries: list[dict]) -> None:
+    if not entries:
+        try:
+            (h / QUEUE).unlink()
+        except OSError:
+            pass
+        return
+    tmp = h / (QUEUE + ".tmp")
+    tmp.write_text(json.dumps(entries) + "\n")
+    tmp.replace(h / QUEUE)
+
+
+def _queue_take(h: Path) -> list[dict]:
+    entries = _queue_read(h)
+    _queue_write(h, [])
+    return entries
+
+
+def run_active(h: Path) -> bool:
+    """True while an app-updates run (not maintenance or an OS update, which hold the same lock) holds the lock:
+    the holder wrote its pid into the lock file. Never blocks."""
+    try:
+        fd = os.open(h / LOCK, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            pass   # held
         else:
-            unknown = []
-        due = [r for r in rows if not r["skip"]]
-        if dry_run:
-            out = {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
-            if unknown and not renames:   # say what asking for it would do (a staging copy's move, wizard-os#628)
-                from . import app_rename
-                try:
-                    moves = [d for d in app_rename.due(c, rt) if d["from"] in unknown]
-                except Exception:  # noqa: BLE001 - a dry run never fails on the rename check
-                    moves = []
-                if moves:
-                    out["moves"] = moves
-                    out["unknown"] = [x for x in unknown if x not in {d["from"] for d in moves}]
-            return out
-        done, rolled, failed, needs = [], [], [], []
-        renamed = []
-        if not only or unknown:
-            # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
-            # back on its own; its update, if any, then runs under the new id on the next run. Asked for by id, an
-            # app with no update of its own (a staging copy the released app claims, wizard-os#628) moves too.
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        try:
+            pid = int(os.read(fd, 32).decode().strip() or 0)
+        except (OSError, ValueError):
+            return False
+    finally:
+        os.close(fd)
+    return pid > 0 and _alive(pid)
+
+
+def request(only: list[str] | None, home: Path | None = None) -> dict | None:
+    """Queue an update request (`only` ids, or None for every due app) for the run that is going. None when no
+    app-updates run holds the lock (the caller starts one). Checked and written under the queue lock, which the run
+    also takes before it lets its lock go, so a request is never left behind by a run that just ended."""
+    h = _home(home)
+    with _queue_lock(h):
+        if not run_active(h):
+            return None
+        entries = _queue_read(h)
+        now = int(time.time())
+        have = {e["app"] for e in entries}
+        for app in (only or [None]):
+            if app not in have and None not in have:
+                entries.append({"app": app, "at": now})
+                have.add(app)
+        _queue_write(h, entries)
+    return {"started": False, "queued": list(only) if only else ["*"], "note": QUEUE_NOTE}
+
+
+def queued(home: Path | None = None, runtipi_root: Path | None = None, store: str | None = None) -> list[dict]:
+    """What waits for the running update, as [{app, at, name}] (`app` None: every due app). Requests older than
+    QUEUE_MAX_AGE with no run are dropped here too."""
+    h = _home(home)
+    try:
+        with _queue_lock(h):
+            entries = _queue_read(h)
+            if not run_active(h) and (h / QUEUE).exists():
+                _queue_write(h, entries)   # rewrite without the expired ones
+    except OSError:
+        return []
+    out = []
+    for e in entries:
+        if e["app"] is None:
+            name = "All apps"
+        else:
+            try:
+                name = display_name(runtipi_root, store, e["app"]) if runtipi_root and store else e["app"]
+            except Exception:  # noqa: BLE001 - a name never fails the status
+                name = e["app"]
+        out.append({"app": e["app"], "at": e["at"], "name": name})
+    return out
+
+
+def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: bool, renames, reporter, moves,
+                  quiet_repeats: bool) -> dict:
+    """apply() once its lock is held: one pass over `only` (or every due app)."""
+    from . import cli, updates
+    if updates.installing(c.home):
+        return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
+    rt = c.runtipi()
+    repo_moved = []
+    if not dry_run:
+        # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
+        # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
+        from . import repo_moves
+        try:
+            # (and first frees apps a Store Get/Update pinned, so their updates show; wizard-os#614)
+            repo_moved = (moves or repo_moves.follow_all)(c, _installed_unpinned(c, rt), only=only)
+        except Exception as e:  # noqa: BLE001 - a move check never stops the updates
+            print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
+    rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+    if only:
+        unknown = sorted(set(only) - {r["id"] for r in rows})
+        rows = [r for r in rows if r["id"] in only]
+        for r in rows:   # an explicit request overrides holds and a past failure, never system/pinned apps
+            if r["skip"] in ("held", "failed", "ignored"):
+                r["skip"] = None
+    else:
+        unknown = []
+    due = [r for r in rows if not r["skip"]]
+    if dry_run:
+        out = {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
+        if unknown and not renames:   # say what asking for it would do (a staging copy's move, wizard-os#628)
             from . import app_rename
             try:
-                moves = (renames(c, rt) if renames else app_rename.rename_due(c, rt, only=unknown or None))
-            except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
-                print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
+                moves = [d for d in app_rename.due(c, rt) if d["from"] in unknown]
+            except Exception:  # noqa: BLE001 - a dry run never fails on the rename check
                 moves = []
-            for res in moves:
-                if res.get("renamed"):
-                    renamed.append({"id": res["to"], "name": res.get("name") or res["to"]})
-                else:
-                    failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
-                                   "reason": "moving it to its new name did not work, so it stays as it was"
-                                   + ("" if res.get("rolled_back", True) else " (needs a look)"),
-                                   "rollback": res, "step": "move to its new name"})
-            if renamed:
-                moved = {r["id"] for r in renamed}
-                rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
-                if only:   # an update asked for by id still touches only those apps (Codex P1)
-                    rows = [r for r in rows if r["id"] in only]
-                    for r in rows:
-                        if r["skip"] in ("held", "failed", "ignored"):
-                            r["skip"] = None
-                due = [r for r in rows if not r["skip"] and r["id"] not in moved]
-        fails = _failed(c.home)
-        for r in due:
-            started = int(time.time())
-            _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
-            urn = f"{r['id']}:{cli.STORE}"
-            states = _containers(urn)
-            before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
-            started_ms = int(time.time() * 1000)
-            print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
-
-            def settings(rt_, urn_, r=r, started=started):
-                missing = reconcile_settings(c, rt_, r["id"])
-                if not missing:   # admitted: Runtipi's update is next (#733)
-                    _set_running(h, r, "updating", started)
-                return missing
-            try:
-                # new required settings are filled inside app_update, only once the update is admitted (#582)
-                res = cli.app_update(c, r["id"], settings=settings)
-            except SystemExit as e:   # owner gate, a setting only the owner can give, or not installed: nothing changed
-                needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
-                continue
-            except Exception as e:  # noqa: BLE001 - one app never stops the others
-                res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
-            _set_running(h, r, "checking", started)
-            problem = verify(c, rt, urn, r["id"], res, before)
-            step = "update" if res.get("error") else "check after update"
-            if problem is None:
-                fails.pop(r["id"], None)
-                done.append({**r, "version": res.get("version")})
-                continue
-            fails[r["id"]] = {"to": r["to"], "at": int(time.time()), "reason": problem[:300]}
-            try:
-                unchanged = int(res.get("version") or 0) == r["from"] and res.get("status") == before["status"]
-            except (TypeError, ValueError):
-                unchanged = False
-            if unchanged:   # the update never applied: the previous version still runs, nothing to restore
-                failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None,
-                               "step": step})
-                continue
-            print(f"{r['id']}: {problem}; rolling back", file=sys.stderr, flush=True)
-            _set_running(h, r, "rolling back", started)
-            try:
-                rb = rollback(c, rt, urn, started_ms, before)
-            except Exception as e:  # noqa: BLE001
-                rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
-            (rolled if rb.get("rolled_back") else failed).append(
-                {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb,
-                 "step": step})
-        _clear_running(h)   # every app is done; what follows is bookkeeping (#733)
+            if moves:
+                out["moves"] = moves
+                out["unknown"] = [x for x in unknown if x not in {d["from"] for d in moves}]
+        return out
+    done, rolled, failed, needs = [], [], [], []
+    renamed = []
+    if not only or unknown:
+        # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
+        # back on its own; its update, if any, then runs under the new id on the next run. Asked for by id, an
+        # app with no update of its own (a staging copy the released app claims, wizard-os#628) moves too.
+        from . import app_rename
         try:
-            cli.write_registry(c, rt)
-        except Exception:  # noqa: BLE001
-            pass
-        last = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "renamed": [x["id"] for x in renamed],
-                "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
-                "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
-        told_needs = _state(c.home).get("needs_told") or {}
-        _write(c.home, failed=fails, last=last)
-        repeat = bool(quiet_repeats and needs and not (done or rolled or failed or renamed)
-                      and sorted(last["needs_owner"]) == told_needs.get("ids")
-                      and time.time() - float(told_needs.get("at") or 0) < NEEDS_REMIND_SECONDS)
-        reports = {}
-        if notify and (rolled or failed):   # tell the team too (#524): only with wizard/update-bug-reports on
-            try:
-                from . import update_reports
-                reports = (reporter or update_reports.report_all)(c, rolled + failed, store=cli.STORE)
-            except Exception as e:  # noqa: BLE001 - reporting never fails the run
-                print(f"WARNING: update failures not reported: {type(e).__name__}", file=sys.stderr)
-        told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
-        bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
-        if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
-            for k, url in bugs.items():
-                fails[k] = {**fails[k], "bug": url}
-            _write(c.home, failed=fails)
-        msg = _summary(done, rolled, failed, needs, renamed, told)
-        if notify and msg and not repeat and _notify(c, *msg) and needs:
-            _write(c.home, needs_told={"ids": sorted(last["needs_owner"]), "at": time.time()})
-        return {"started": True, **({"repo_moved": repo_moved} if repo_moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
-                "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
-                **({"reported": reports} if reports else {})}
-    finally:
-        _clear_running(h)   # before the lock goes, so a reader never sees a finished run (#733)
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+            moves = (renames(c, rt) if renames else app_rename.rename_due(c, rt, only=unknown or None))
+        except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
+            print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
+            moves = []
+        for res in moves:
+            if res.get("renamed"):
+                renamed.append({"id": res["to"], "name": res.get("name") or res["to"]})
+            else:
+                failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
+                               "reason": "moving it to its new name did not work, so it stays as it was"
+                               + ("" if res.get("rolled_back", True) else " (needs a look)"),
+                               "rollback": res, "step": "move to its new name"})
+        if renamed:
+            moved = {r["id"] for r in renamed}
+            rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+            if only:   # an update asked for by id still touches only those apps (Codex P1)
+                rows = [r for r in rows if r["id"] in only]
+                for r in rows:
+                    if r["skip"] in ("held", "failed", "ignored"):
+                        r["skip"] = None
+            due = [r for r in rows if not r["skip"] and r["id"] not in moved]
+    fails = _failed(c.home)
+    for r in due:
+        started = int(time.time())
+        _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
+        urn = f"{r['id']}:{cli.STORE}"
+        states = _containers(urn)
+        before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
+        started_ms = int(time.time() * 1000)
+        print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
+
+        def settings(rt_, urn_, r=r, started=started):
+            missing = reconcile_settings(c, rt_, r["id"])
+            if not missing:   # admitted: Runtipi's update is next (#733)
+                _set_running(h, r, "updating", started)
+            return missing
+        try:
+            # new required settings are filled inside app_update, only once the update is admitted (#582)
+            res = cli.app_update(c, r["id"], settings=settings)
+        except SystemExit as e:   # owner gate, a setting only the owner can give, or not installed: nothing changed
+            needs.append({"id": r["id"], "reason": str(e).splitlines()[0][:200]})
+            continue
+        except Exception as e:  # noqa: BLE001 - one app never stops the others
+            res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+        _set_running(h, r, "checking", started)
+        problem = verify(c, rt, urn, r["id"], res, before)
+        step = "update" if res.get("error") else "check after update"
+        if problem is None:
+            fails.pop(r["id"], None)
+            done.append({**r, "version": res.get("version")})
+            continue
+        fails[r["id"]] = {"to": r["to"], "at": int(time.time()), "reason": problem[:300]}
+        try:
+            unchanged = int(res.get("version") or 0) == r["from"] and res.get("status") == before["status"]
+        except (TypeError, ValueError):
+            unchanged = False
+        if unchanged:   # the update never applied: the previous version still runs, nothing to restore
+            failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None,
+                           "step": step})
+            continue
+        print(f"{r['id']}: {problem}; rolling back", file=sys.stderr, flush=True)
+        _set_running(h, r, "rolling back", started)
+        try:
+            rb = rollback(c, rt, urn, started_ms, before)
+        except Exception as e:  # noqa: BLE001
+            rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
+        (rolled if rb.get("rolled_back") else failed).append(
+            {**r, "reason": problem if rb.get("rolled_back") else f"{problem}; {rb.get('error')}", "rollback": rb,
+             "step": step})
+    _clear_running(h)   # every app is done; what follows is bookkeeping (#733)
+    try:
+        cli.write_registry(c, rt)
+    except Exception:  # noqa: BLE001
+        pass
+    last = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "renamed": [x["id"] for x in renamed],
+            "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
+            "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
+    told_needs = _state(c.home).get("needs_told") or {}
+    _write(c.home, failed=fails, last=last)
+    repeat = bool(quiet_repeats and needs and not (done or rolled or failed or renamed)
+                  and sorted(last["needs_owner"]) == told_needs.get("ids")
+                  and time.time() - float(told_needs.get("at") or 0) < NEEDS_REMIND_SECONDS)
+    reports = {}
+    if notify and (rolled or failed):   # tell the team too (#524): only with wizard/update-bug-reports on
+        try:
+            from . import update_reports
+            reports = (reporter or update_reports.report_all)(c, rolled + failed, store=cli.STORE)
+        except Exception as e:  # noqa: BLE001 - reporting never fails the run
+            print(f"WARNING: update failures not reported: {type(e).__name__}", file=sys.stderr)
+    told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
+    bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
+    if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
+        for k, url in bugs.items():
+            fails[k] = {**fails[k], "bug": url}
+        _write(c.home, failed=fails)
+    msg = _summary(done, rolled, failed, needs, renamed, told)
+    if notify and msg and not repeat and _notify(c, *msg) and needs:
+        _write(c.home, needs_told={"ids": sorted(last["needs_owner"]), "at": time.time()})
+    return {"started": True, **({"repo_moved": repo_moved} if repo_moved else {}), "renamed": renamed, "updated": done, "rolled_back": rolled, "failed": failed, "needs_owner": needs,
+            "skipped": [r for r in rows if r["skip"]], "unknown": unknown, "message": msg[1] if msg else None,
+            **({"reported": reports} if reports else {})}
 
 
 def apply_if_auto(c=None, is_busy=None, hourly=None, now: float | None = None) -> dict:
@@ -852,7 +1039,7 @@ def apply_if_auto(c=None, is_busy=None, hourly=None, now: float | None = None) -
         _write(c.home, nightly_at=now)
     if (is_busy or (lambda: updates.busy(updates.service_origin(c.home))))():
         return {"started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(c, quiet_repeats=every_hour)
+    return apply(c, quiet_repeats=every_hour, queue=False)
 
 
 def start_detached(runner=subprocess.run, only: list[str] | None = None) -> dict:
