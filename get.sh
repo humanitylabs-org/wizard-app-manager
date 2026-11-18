@@ -30,7 +30,8 @@
 #
 # Options (environment): WIZARD_MODE=auto|alongside|fresh (default auto: on a first install, alongside when an
 # existing Hermes is found; a re-run keeps the mode the box already has), WIZARD_USER (default wizard), WAM_DIR, WAM_IMAGE, WAM_REF (branch to install), WIZARD_GITHUB=1, GITHUB_TOKEN,
-# WIZARD_CHECK=1 (read-only preflight), WIZARD_HERMES_USER / HERMES_HOME (which Hermes), WIZARD_AGENT_SAFE=1|0.
+# WIZARD_CHECK=1 (read-only preflight), WIZARD_HERMES_USER / HERMES_HOME (which Hermes), WIZARD_AGENT_SAFE=1|0,
+# WIZARD_PRIVATE_FIRST=1|0 (Agent Service env: first-run setup starts private; unset by default, WAM#759).
 #
 # Release pins (wizard-os#27): the install follows one WizardOS release file, wizard-os/releases/<version>.json,
 # which names the App Manager commit and the image digests. WIZARD_RELEASE=<version> picks one; without it the
@@ -327,7 +328,7 @@ fwd_env() {
     WIZARD_SHELL_IMAGE="${WIZARD_SHELL_IMAGE:-}" WIZARD_PRIVATE_ACCESS="${WIZARD_PRIVATE_ACCESS:-tailscale}" \
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
     WIZARD_DETACHED="${WIZARD_DETACHED:-}" WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-}" \
-    WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}"
+    WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}" WIZARD_PRIVATE_FIRST="${WIZARD_PRIVATE_FIRST:-}"
 }
 # Cloud-init can race logind's D-Bus startup. Retry, but never hide exhaustion.
 enable_linger() {

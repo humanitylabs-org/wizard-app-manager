@@ -427,6 +427,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if role and not al:   # wizard-os#133: the shell token block, only when the box switched the boundary on
         from . import browser_boundary as _bb
         _bb.sync_app(c.home, c.runtipi_root, STORE, app_id)
+    if role in ("service", "bundle") and not al:   # WAM#759: the installer's WIZARD_PRIVATE_FIRST, only when one was given
+        from . import private_first as _pf
+        _pf.sync_app(c.home, c.runtipi_root, STORE, app_id)
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
@@ -1266,6 +1269,32 @@ def browser_boundary_cmd(c: Config, args) -> int:
             res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
                               {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
         res["next"] = "restart the App Manager (wam serve) so its own routes follow"
+    print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
+    return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
+
+
+def private_first_cmd(c: Config, args) -> int:
+    """`wam private-first status|on|off|clear` (WAM#759, wizard-os#676): put WIZARD_PRIVATE_FIRST=1 (on) or 0 (off) in
+    the Agent Service's env, or with clear take it out (the shell tweak wizard/private-first-setup decides again). The
+    installer runs it before bootstrap when given WIZARD_PRIVATE_FIRST, so first-run setup sees it on a box with no
+    Look file yet. Without it nothing is recorded and nothing changes."""
+    from . import private_first as pf
+    try:
+        rt = c.runtipi()
+    except (RuntipiError, OSError):
+        rt = None
+    ids = sorted(a for a, r in _alongside_apps(c, rt).items() if r in pf.ROLES)
+    if args.action == "status":
+        res = pf.status(c.home, c.runtipi_root, STORE, ids)
+    else:
+        value = {"on": "1", "off": "0", "clear": None}[args.action]
+        try:
+            res = pf.set_box(c.home, c.runtipi_root, STORE, ids, value, dry_run=args.dry_run)
+        except ValueError as e:   # nothing was recorded or written
+            raise SystemExit(f"private first unchanged: {e}")
+        if res["changed"] and not args.no_restart and not args.dry_run:
+            res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
+                              {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
 
@@ -2918,6 +2947,10 @@ def main(argv: list[str] | None = None) -> int:
     bbp.add_argument("action", choices=["status", "on", "off"])
     bbp.add_argument("--no-restart", action="store_true", help="write the settings only; restart the apps yourself")
     bbp.add_argument("--json", action="store_true"); bbp.add_argument("--dry-run", action="store_true")
+    pfp = sub.add_parser("private-first", help="WIZARD_PRIVATE_FIRST in the Agent Service env (WAM#759; unset by default)")
+    pfp.add_argument("action", choices=["status", "on", "off", "clear"])
+    pfp.add_argument("--no-restart", action="store_true", help="write the settings only; restart the apps yourself")
+    pfp.add_argument("--json", action="store_true"); pfp.add_argument("--dry-run", action="store_true")
     oe = sub.add_parser("owner-edge", help="serve the owner edge for apps that declare owner_proof (systemd unit)")
     oe.add_argument("action", choices=["serve"])
     opp = sub.add_parser("owner-proof", help="owner proof keys for apps that declare owner_proof (spec OWNER_PROOF.md)")
@@ -3189,6 +3222,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if res["state"] in ("failed", "degraded") else 0
         elif args.cmd == "browser-boundary":
             return browser_boundary_cmd(c, args)
+        elif args.cmd == "private-first":
+            return private_first_cmd(c, args)
         elif args.cmd == "owner-edge":
             from . import owner_edge
             owner_edge.run(c.home, app_status=owner_edge.AppStatus(c.runtipi_root, STORE))
