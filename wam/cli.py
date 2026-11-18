@@ -2489,7 +2489,7 @@ class StoreHandler(BaseHTTPRequestHandler):
                 return self._json(503, {"error": f"app updates can't be read right now ({type(e).__name__})"})
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 1024:
+            if not 0 < size <= 8192:   # "apps": up to QUEUE_MAX ids (#764)
                 return self._json(400, {"error": "invalid body size"})
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):
@@ -2501,13 +2501,14 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "not an app id"})
         if body.get("action") == "apply" and set(body) <= {"action", "app", "apps"}:
             apps = body.get("apps")
-            if apps is not None and not (isinstance(apps, list) and 0 < len(apps) <= 64 and "app" not in body
+            if apps is not None and not (isinstance(apps, list) and 0 < len(apps) <= au.QUEUE_MAX and "app" not in body
                                          and all(isinstance(x, str) and si.ID.fullmatch(x) for x in apps)):
-                return self._json(400, {"error": '"apps" must be a list of app ids (or send one "app")'})
-            only = [app] if app else sorted(set(apps)) if apps else None
-            # While a run is going the request waits for it, not refused (#764): the run takes it next.
-            res = au.request(only, c.home) or au.start_detached(only=only)
-            return self._json(200 if res.get("started") or res.get("queued") else 409, res)
+                return self._json(400, {"error": f'"apps" must be a list of 1 to {au.QUEUE_MAX} app ids (or send one "app")'})
+            only = [app] if app else list(dict.fromkeys(apps)) if apps else None
+            # While a run is going the request waits for it, not refused (#764): the run takes it next. Bare
+            # {"action": "apply"} queues every app due now.
+            res = au.request_apply(c, only)
+            return self._json(200 if res.get("started") or "queued" in res else 409, res)
         if set(body) == {"mode"} and body["mode"] in au.MODES:
             return self._json(200, au.set_mode(body["mode"], c.home))
         if set(body) in ({"hold"}, {"unhold"}):
