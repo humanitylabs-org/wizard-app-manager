@@ -566,7 +566,7 @@ def test_scheduled_stream_agent_zip_is_stored_and_filtered(world, monkeypatch):
     assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())
     kept = capture._du(home, capture._agent_skip)
     work = [need for _p, need, what in asks if what == "the work folder"][0]
-    # stored rewrite (kept) + the zip Hermes wrote (logs included) at the same time
+    # every agent's zip as Hermes wrote it (logs included; the stream drops them) beside one agent's databases
     assert work - capture.MARGIN >= kept + (1 << 20)
 
 

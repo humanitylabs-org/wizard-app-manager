@@ -1,6 +1,7 @@
 """Split/bundled system-slot moves, through isolated fake boxes and the public CLI."""
 import io
 import json
+import sqlite3
 import tarfile
 import sys
 from pathlib import Path
@@ -99,7 +100,9 @@ def test_provider_agent_homes_are_imported_separately_and_undo_exactly(world, so
     out, _ = _export(world)
     code, rep = _cli(new.box(), "import", str(out), "--key-file", str(world["keyfile"]), "--yes")
     assert code == 0, rep
-    assert (target_root / "research/home/state.db").read_text() == "sessions of research"
+    db = sqlite3.connect(target_root / "research/home/state.db")
+    assert db.execute("select text from sessions").fetchone()[0] == "sessions of research"
+    db.close()
     assert json.loads((target_root / ".main-agent.json").read_text())["marker"] == "old"
     code, rep = _cli(new.box(), "undo")
     assert code == 0 and rep["digest_match"], rep
