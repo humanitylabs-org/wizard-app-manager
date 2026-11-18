@@ -1144,8 +1144,13 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         was = alongside.disable(c.home)
         from . import host_dashboard
         host_dashboard.disable()
-        apps = sorted(_alongside_apps(c))
+        roles = _alongside_apps(c)
+        apps = sorted(roles)
         removed = [a for a in apps if alongside.remove_shell_override(c.runtipi_root, STORE, a)]
+        from . import private_first as _pf   # WAM#759: the fresh-mode override keeps the recorded private-first block
+        for a in removed:
+            if roles.get(a) in _pf.ROLES:
+                _pf.sync_app(c.home, c.runtipi_root, STORE, a)
         removed += [a for a in claude_login_off(c) if a not in removed]
         session_mounts.ensure_timer(c.home, c.runtipi_root, False)
         return {"mode": "fresh", "was_alongside": was, "shell_override_removed": bool(removed), "overrides_removed": removed,

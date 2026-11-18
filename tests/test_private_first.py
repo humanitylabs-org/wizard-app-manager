@@ -109,6 +109,24 @@ def test_alongside_rewrite_keeps_the_block_for_the_agent_service_only(tmp_path, 
     assert doc[pf.MARK]["service"] == AS and doc["services"][AS]["environment"]["WIZARD_PRIVATE_FIRST"] == "1"
 
 
+def test_leaving_alongside_mode_keeps_the_block(tmp_path, monkeypatch):
+    home, rt = tmp_path / "home", tmp_path / "rt"
+    _ovr(rt).parent.mkdir(parents=True)
+    _ovr(rt).write_text(ALONGSIDE_LIKE)
+    pf.set_box(home, rt, STORE, [AS], "1")
+    c = SimpleNamespace(home=home, runtipi_root=rt)
+    monkeypatch.setattr(alongside, "disable", lambda h: True)
+    monkeypatch.setattr(cli, "_alongside_apps", lambda c, r=None: {AS: "service"})
+    monkeypatch.setattr(cli, "claude_login_off", lambda c: [])
+    monkeypatch.setattr(cli.session_mounts, "ensure_timer", lambda *a: None)
+    import wam.host_dashboard as hd
+    monkeypatch.setattr(hd, "disable", lambda: None)
+    out = cli.alongside_cmd(c, False, True, None, None)
+    assert out["overrides_removed"] == [AS] and out["next"] == f"wam app update {AS}"
+    doc = load_yaml(_ovr(rt).read_text())                  # the alongside lines are gone, private first stays
+    assert doc["services"][AS] == {"environment": {"WIZARD_PRIVATE_FIRST": "1"}} and pf.MARK in doc
+
+
 def test_a_hand_written_value_is_never_overwritten(tmp_path):
     home, rt = tmp_path / "home", tmp_path / "rt"
     _ovr(rt).parent.mkdir(parents=True)
