@@ -303,3 +303,11 @@ def test_ci_release_phone_json_validates():
                 'notes': 'Shared WizardOS phone release 0.10.51, built and signed from main; no owner address is built in.',
                 'min_box_snapshot': '0.3.40', 'source_commit': 'e9d143a4a34a389adbaf841b037302948572501f'}
     assert ps.validate(released) == released
+
+
+def test_newest_release_with_bad_apk_falls_back_to_pointer(mirror):
+    # Codex P2 on WAM#779: metadata of the newest source validates but its APK bytes do not.
+    run = _release(mirror, 115, '0.10.51', sha256='1' * 64)
+    assert run() == 'updated:versionCode=78'
+    assert [p.name for p in mirror.feed.glob('*.apk')] == ['wizard-os-0.10.14.apk']
+    assert list(mirror.feed.glob('.phone-*')) == []
