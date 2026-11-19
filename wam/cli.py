@@ -189,6 +189,8 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     share_registry(c)
     from . import gateway_keys   # #387: the gateway's grant keys (always on)
     gateway_keys.sync_if_on(c, reg)
+    from . import inbox_tokens   # #804: each agent-inbox app holds its own Agent Service app token
+    inbox_tokens.sync_registry(c, rt, reg)
     # Return the exact owner-route projection we persisted, including staged view IDs.
     # Internal _skill_src remains available for both copy passes, never in API/CLI output.
     return json.loads((c.home / "apps.json").read_text())
@@ -443,6 +445,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     trust_env = trusted_origin_env(c, app_id, int(form.get("port") or info.get("port") or 0))
     if trust_env:
         write_user_env(c.runtipi_root, app_id, trust_env)
+    from . import inbox_tokens   # #804: the app starts with its agent inbox token (user-config app.env)
+    inbox_tokens.before_start(c, app_id, prefer="store")
     if al:   # e.g. Claude: the app must hold the host Hermes' own Claude Code sign-in, not a second one
         try:
             for name, r in claude_login_cmd(c, {app_id: rec.get("provides") or []}).get("apps", {}).items():
@@ -2705,6 +2709,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
             keep_trusted_hosts(c, app)
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
+        from . import inbox_tokens   # #804: a recipe that starts asking for its inbox token gets it now
+        inbox_tokens.before_start(c, app, prefer="store")
     started_ms = int(time.time() * 1000)
     if timeout is None:
         timeout = update_wait_s(c)
@@ -2769,6 +2775,8 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
             keep_trusted_hosts(c, app)
         except Exception as e:  # noqa: BLE001 - never fail the update for it
             print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
+        from . import inbox_tokens   # #804
+        inbox_tokens.before_start(c, app, prefer="store")
 
 
 def _graceful_passthrough(argv: list[str]) -> int | None:
