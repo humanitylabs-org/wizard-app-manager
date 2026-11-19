@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import updates
+from . import apk_sig, updates
 
 # Read from the public App Manager release mirror, beside the box snapshots; wizard-os (canonical) is private.
 POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager/main/releases/phone/latest.json"
@@ -23,7 +23,12 @@ POINTER = "https://raw.githubusercontent.com/humanitylabs-org/wizard-app-manager
 # android-v<version> from main but cannot edit the pointer above, so without this a CI release never reached a box
 # (wizard-ux#1399). Prereleases and drafts are never "latest"; validate() still pins the signer and the asset URL.
 RELEASE_POINTER = "https://github.com/humanitylabs-org/wizard-ux/releases/latest/download/phone.json"
+# sha256 of the WizardOS phone signing certificate. The APK's own v2/v3 signing block must carry it with a valid
+# signature (apk_sig.verify, #789); a release's `signer` field is only a hint.
 SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
+# A CI release may run at most this far ahead of the reviewed pointer; bigger jumps go through a pointer PR (#789),
+# so one forged or mistaken huge versionCode can never freeze the feed above every real release.
+MAX_CI_LEAD = 20
 UNIT = "wizard-phone-sync"
 MAX_POINTER = 64 * 1024
 MAX_APK = 200 * 1024 * 1024
@@ -134,17 +139,33 @@ def _outcome(error, url):
 _SKIP = (urllib.error.HTTPError, OSError, ValueError, TypeError, AttributeError, http.client.HTTPException)
 
 
-def _publish(directory, opener, p):
+def _signed(path):
+    try:
+        apk_sig.verify(path, SIGNER)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _current(directory):
     feed = directory / 'latest.json'
     current = json.loads(feed.read_text()) if feed.exists() else {}
     code = current.get('versionCode', 0)
     if type(code) is not int or code < 0:
         raise ValueError('unreadable existing versionCode')
-    if code > p['versionCode']:
+    return current, code
+
+
+def _publish(directory, opener, p, ceiling=None):
+    feed = directory / 'latest.json'
+    current, code = _current(directory)
+    # A feed above the ceiling came from a release past the cap (before #789); it never blocks real releases.
+    if code > p['versionCode'] and (ceiling is None or code <= ceiling):
         return 'skipped:no_downgrade'
     name = f"wizard-os-{p['versionName']}.apk"
     apk = directory / name
-    if code == p['versionCode'] and current.get('sha256', '').lower() == p['sha256'].lower() and current.get('url') == name and _verify(apk, p['bytes'], p['sha256']):
+    if (code == p['versionCode'] and current.get('sha256', '').lower() == p['sha256'].lower() and current.get('url') == name
+            and _verify(apk, p['bytes'], p['sha256']) and _signed(apk)):
         return 'unchanged'
     # A versioned URL is immutable. Never replace bytes a still-published old feed references.
     if current.get('url') == name and current.get('sha256', '').lower() != p['sha256'].lower():
@@ -164,6 +185,8 @@ def _publish(directory, opener, p):
             if total != p['bytes'] or digest.hexdigest() != p['sha256'].lower():
                 raise ValueError('APK bytes/sha256 mismatch')
             out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
+        # The bytes match what the release says; now check who really signed them (#789).
+        apk_sig.verify(tmp, SIGNER)
         os.replace(tmp, apk)
     finally:
         Path(tmp).unlink(missing_ok=True)
@@ -183,14 +206,31 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
     urls = [pointer_url or POINTER] + ([release_url] if release_url else [] if pointer_url else [RELEASE_POINTER])
-    found, failures = [], []
-    for url in urls:
+    found, failures, reviewed = [], [], None
+    for i, url in enumerate(urls):
         try:
-            found.append(_pointer(opener, url, fixture))
+            p = _pointer(opener, url, fixture)
         except _SKIP as e:
             failures.append(_outcome(e, url))
+            continue
+        if i == 0:
+            reviewed = p['versionCode']
+        found.append((i == 0, p))
     if not found:
         return failures[0]
+    try:
+        _, mirrored = _current(directory)
+    except _SKIP:
+        mirrored = 0
+    # The reviewed pointer is the authority for big jumps (#789). Without it (pointer offline), the CI release may
+    # still lead what this box already mirrors by the same margin; a fresh box with no pointer has no baseline.
+    base = reviewed if reviewed is not None else (mirrored or None)
+    ceiling = None if base is None else base + MAX_CI_LEAD
+    found = [p for is_pointer, p in found if is_pointer or ceiling is None or p['versionCode'] <= ceiling]
+    if not found:
+        return 'skipped:ci_release_too_far_ahead'
+    # Only the reviewed pointer may lift a feed that sits above the ceiling.
+    ceiling = None if reviewed is None else ceiling
     try:
         installed = updates.installed(home)
         admitted = [p for p in found if installed is not None and _version(installed) >= _version(p['min_box_snapshot'])]
@@ -209,7 +249,7 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
             # Newest first; if its APK cannot be fetched or verified, a valid older source still gets mirrored.
             for i, p in enumerate(admitted):
                 try:
-                    return _publish(directory, opener, p)
+                    return _publish(directory, opener, p, ceiling)
                 except _SKIP:
                     if i == len(admitted) - 1:
                         raise

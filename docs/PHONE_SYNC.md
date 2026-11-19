@@ -44,7 +44,21 @@ versionCode + digest is a no-op only after checking the APK size and hashing the
 APK URLs are immutable: a conflicting digest under an already published URL is rejected.
 
 Download to a unique temporary file in the feed directory, verify declared bytes and SHA-256, chmod 0644 and
-fsync, then rename the APK. Write/fsync/rename the JSON pointer only after the APK is ready. Superseded
+fsync, then check the APK's real signer (`wam/apk_sig.py`, wizard-app-manager#789), then rename the APK.
+
+**Signer check.** A release's `signer` field is only a hint. The APK's own v2/v3/v3.1 signing block decides: every
+signer must carry the certificate whose sha256 is `SIGNER`, its public key must be that certificate's key, its
+RSA PKCS#1 v1.5 (SHA-256/512) signature over the signed data must verify, and the signed content digests must match
+the APK's bytes. An APK with no v2/v3 block, another key, a copied certificate with a forged signature, or edited
+contents is refused, and an already mirrored APK that fails the check is never reported `unchanged`. Pure Python,
+no extra dependency.
+
+**CI lead cap.** A wizard-ux release whose `versionCode` is more than `MAX_CI_LEAD` (20) above the reviewed pointer's
+is ignored, so bigger jumps need a pointer PR and one odd release can't freeze the feed with `skipped:no_downgrade`.
+If the pointer is unreachable the cap is measured from what the box already mirrors (outcome
+`skipped:ci_release_too_far_ahead`). A feed already above the cap (mirrored before this check) is replaced by the
+newest admitted release while the reviewed pointer is reachable. The same cap and signer check must apply to any
+future Mac (or other) app mirror before it ships. Write/fsync/rename the JSON pointer only after the APK is ready. Superseded
 `wizard-os-*.apk` files are deleted only after publication. Failure never changes the old feed or removes its
 APK. Temporary files are cleaned up. The directory is 0755 for the non-owner container uid.
 

@@ -1,23 +1,127 @@
 import fcntl
+import functools
 import hashlib
+import io
 import os
 import json
+import random
+import struct
 import threading
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from wam import cli, phone_sync as ps
+from wam import apk_sig, cli, phone_sync as ps
+
+
+# ---- Real v2/v3-signed APKs for the tests, built in pure Python with throwaway keys (no key is committed). ----
+
+def _prime(rng, bits):
+    while True:
+        n = rng.getrandbits(bits) | (1 << (bits - 1)) | (1 << (bits - 2)) | 1
+        if all(n % p for p in (3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)) and all(
+                _mr(n, rng.randrange(2, n - 2)) for _ in range(24)):
+            return n
+
+
+def _mr(n, a):
+    d, r = n - 1, 0
+    while d % 2 == 0:
+        d, r = d // 2, r + 1
+    x = pow(a, d, n)
+    if x in (1, n - 1):
+        return True
+    for _ in range(r - 1):
+        x = pow(x, 2, n)
+        if x == n - 1:
+            return True
+    return False
+
+
+def _tlv(tag, value):
+    n = len(value)
+    head = bytes([n]) if n < 0x80 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    return bytes([tag]) + head + value
+
+
+def _int(v):
+    b = v.to_bytes(v.bit_length() // 8 + 1, 'big')
+    return _tlv(0x02, b)
+
+
+@functools.lru_cache(maxsize=None)
+def _key(seed):
+    """(n, e, d, certificate DER) for a deterministic throwaway 2048-bit RSA key."""
+    rng, e = random.Random(seed), 65537
+    while True:
+        p, q = _prime(rng, 1024), _prime(rng, 1024)
+        phi = (p - 1) * (q - 1)
+        if p != q and phi % e:
+            break
+    n, d = p * q, pow(e, -1, phi)
+    rsa_alg = _tlv(0x30, _tlv(0x06, apk_sig.RSA_OID) + b'\x05\x00')
+    spki = _tlv(0x30, rsa_alg + _tlv(0x03, b'\x00' + _tlv(0x30, _int(n) + _int(e))))
+    name = _tlv(0x30, _tlv(0x31, _tlv(0x30, _tlv(0x06, bytes.fromhex('550403')) + _tlv(0x0c, seed.encode()))))
+    validity = _tlv(0x30, _tlv(0x17, b'260101000000Z') + _tlv(0x17, b'510101000000Z'))
+    sig_alg = _tlv(0x30, _tlv(0x06, bytes.fromhex('2a864886f70d01010b')) + b'\x05\x00')
+    tbs = _tlv(0x30, _tlv(0xa0, _int(2)) + _int(1) + sig_alg + name + validity + name + spki)
+    return n, e, d, _tlv(0x30, tbs + sig_alg + _tlv(0x03, b'\x00' + b'\x01' * 256)), spki
+
+
+def _sign(key, message):
+    n, _e, d = key[:3]
+    k = (n.bit_length() + 7) // 8
+    digest = apk_sig.DIGEST_INFO[0x0103] + hashlib.sha256(message).digest()
+    em = b'\x00\x01' + b'\xff' * (k - len(digest) - 3) + b'\x00' + digest
+    return pow(int.from_bytes(em, 'big'), d, n).to_bytes(k, 'big')
+
+
+def _lp(b):
+    return struct.pack('<I', len(b)) + b
+
+
+def build_apk(seed='wizardos-test', *, cert_seed=None, schemes=('v2', 'v3'), payload=b'classes.dex bytes'):
+    """A small APK signed with key `seed`; cert_seed puts another key's certificate in the signed data."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('AndroidManifest.xml', b'manifest')
+        z.writestr('classes.dex', payload)
+    raw = buf.getvalue()
+    eocd = raw.rfind(b'PK\x05\x06')
+    cd_off = struct.unpack_from('<I', raw, eocd + 16)[0]
+    entries, cd, end = raw[:cd_off], raw[cd_off:eocd], raw[eocd:]
+    chunks = [hashlib.sha256(b'\xa5' + struct.pack('<I', len(x)) + x).digest() for x in (entries, cd, end) if x]
+    content = hashlib.sha256(b'\x5a' + struct.pack('<I', len(chunks)) + b''.join(chunks)).digest()
+    key, cert = _key(seed), _key(cert_seed or seed)[3]
+    pairs = b''
+    for scheme in schemes:
+        pid = {'v2': 0x7109871a, 'v3': 0xf05368c0}[scheme]
+        sdk = struct.pack('<II', 24, 0x7fffffff) if scheme == 'v3' else b''
+        signed = _lp(_lp(struct.pack('<I', 0x0103) + _lp(content))) + _lp(_lp(cert)) + sdk + _lp(b'')
+        signer = _lp(signed) + sdk + _lp(_lp(struct.pack('<I', 0x0103) + _lp(_sign(key, signed)))) + _lp(_key(cert_seed or seed)[4])
+        value = _lp(_lp(signer))
+        pairs += struct.pack('<QI', len(value) + 4, pid) + value
+    size = len(pairs) + 8 + 16
+    block = struct.pack('<Q', size) + pairs + struct.pack('<Q', size) + apk_sig.MAGIC
+    end = end[:16] + struct.pack('<I', cd_off + len(block)) + end[20:]
+    return entries + block + cd + end
+
+
+def _signed_digest(seed='wizardos-test'):
+    return hashlib.sha256(_key(seed)[3]).hexdigest()
 
 
 @pytest.fixture
-def mirror(tmp_path):
+def mirror(tmp_path, monkeypatch):
     home, root = tmp_path / 'home', tmp_path / 'runtipi'
     home.mkdir()
     (home / 'release.json').write_text(json.dumps({'status': 'pinned', 'release': '0.3.40'}))
-    state = {'apk': b'fixture APK bytes', 'hits': [], 'status': 200, 'redirect': False}
+    # The fixture APK is really signed by a throwaway "WizardOS" key; SIGNER pins that key's certificate.
+    monkeypatch.setattr(ps, 'SIGNER', _signed_digest())
+    state = {'apk': build_apk(), 'hits': [], 'status': 200, 'redirect': False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -249,10 +353,10 @@ def _release(m, code, name, **extra):
 
 
 def test_newer_ci_release_is_mirrored_over_stale_pointer(mirror):
-    run = _release(mirror, 115, '0.10.51')
-    assert run() == 'updated:versionCode=115'
+    run = _release(mirror, 98, '0.10.34')
+    assert run() == 'updated:versionCode=98'
     feed = json.loads((mirror.feed / 'latest.json').read_text())
-    assert (feed['versionCode'], feed['url']) == (115, 'wizard-os-0.10.51.apk')
+    assert (feed['versionCode'], feed['url']) == (98, 'wizard-os-0.10.34.apk')
     assert run() == 'unchanged'
 
 
@@ -307,7 +411,98 @@ def test_ci_release_phone_json_validates():
 
 def test_newest_release_with_bad_apk_falls_back_to_pointer(mirror):
     # Codex P2 on WAM#779: metadata of the newest source validates but its APK bytes do not.
-    run = _release(mirror, 115, '0.10.51', sha256='1' * 64)
+    run = _release(mirror, 90, '0.10.26', sha256='1' * 64)
     assert run() == 'updated:versionCode=78'
     assert [p.name for p in mirror.feed.glob('*.apk')] == ['wizard-os-0.10.14.apk']
     assert list(mirror.feed.glob('.phone-*')) == []
+
+
+# ---- wizard-app-manager#789: the APK's real signer decides, and a CI release can't run far ahead of review. ----
+
+def _feed(m):
+    return json.loads((m.feed / 'latest.json').read_text()) if (m.feed / 'latest.json').exists() else None
+
+
+def _serve(m, apk):
+    m.state['apk'] = apk
+    m.pointer.update(sha256=hashlib.sha256(apk).hexdigest(), bytes=len(apk))
+
+
+def test_real_signed_fixture_verifies(tmp_path):
+    path = tmp_path / 'a.apk'
+    path.write_bytes(build_apk())
+    assert apk_sig.verify(path, _signed_digest()) == ['v2', 'v3']
+    assert apk_sig.signer_digests(path) == [('v2', _signed_digest()), ('v3', _signed_digest())]
+
+
+def test_v2_only_apk_is_accepted(mirror):
+    _serve(mirror, build_apk(schemes=('v2',)))
+    assert mirror.run() == 'updated:versionCode=78'
+
+
+@pytest.mark.parametrize('apk', [
+    pytest.param(lambda: build_apk('attacker'), id='other-key'),
+    pytest.param(lambda: build_apk('attacker', cert_seed='wizardos-test'), id='copied-cert-forged-signature'),
+    pytest.param(lambda: build_apk(schemes=()), id='no-v2-v3-signature'),
+    pytest.param(lambda: build_apk().replace(b'classes.dex bytes', b'classes.dex evil!'), id='edited-after-signing'),
+])
+def test_apk_signed_by_another_key_is_refused(mirror, apk):
+    # Correct sha256, size and the pinned `signer` field: only the APK's own signing block tells them apart.
+    _serve(mirror, apk())
+    assert mirror.pointer['signer'] == ps.SIGNER
+    assert mirror.run() == 'skipped:unavailable_or_invalid'
+    assert _feed(mirror) is None
+    assert list(mirror.feed.glob('*.apk')) == [] and list(mirror.feed.glob('.phone-*')) == []
+
+
+def test_foreign_ci_release_falls_back_to_reviewed_pointer(mirror):
+    assert mirror.run() == 'updated:versionCode=78'
+    good = mirror.state['apk']
+    run = _release(mirror, 79, '0.10.15')
+    forged = build_apk('attacker')
+    mirror.state['apk'] = forged  # the fixture serves it for every APK URL
+    mirror.state['release'].update(sha256=hashlib.sha256(forged).hexdigest(), bytes=len(forged))
+    assert run() == 'unchanged'
+    assert _feed(mirror)['versionCode'] == 78
+    assert [p.name for p in mirror.feed.glob('*.apk')] == ['wizard-os-0.10.14.apk']
+    assert (mirror.feed / 'wizard-os-0.10.14.apk').read_bytes() == good
+
+
+def test_mirrored_apk_with_a_foreign_signer_is_not_left_unchanged(mirror, monkeypatch):
+    assert mirror.run() == 'updated:versionCode=78'
+    monkeypatch.setattr(ps, 'SIGNER', _signed_digest('someone-else'))
+    assert mirror.run() == 'skipped:unavailable_or_invalid'
+
+
+def test_forged_versioncode_ci_release_is_ignored(mirror):
+    # A "latest" wizard-ux release more than MAX_CI_LEAD above the reviewed pointer never reaches the feed ...
+    run = _release(mirror, 78 + ps.MAX_CI_LEAD + 1, '0.10.99')
+    assert run() == 'updated:versionCode=78'
+    assert run() == 'unchanged'
+    # ... so a later real release still gets through (no skipped:no_downgrade freeze).
+    mirror.state['release'].update(versionCode=79, versionName='0.10.15')
+    assert run() == 'updated:versionCode=79'
+
+
+def test_ci_release_at_the_cap_is_mirrored(mirror):
+    run = _release(mirror, 78 + ps.MAX_CI_LEAD, '0.10.34')
+    assert run() == f'updated:versionCode={78 + ps.MAX_CI_LEAD}'
+
+
+def test_feed_frozen_by_a_forged_counter_recovers(mirror):
+    # A box that mirrored a huge versionCode before #789: the reviewed pointer lifts it back down.
+    mirror.feed.mkdir(parents=True)
+    (mirror.feed / 'latest.json').write_text(json.dumps({'versionCode': 2147483000, 'url': 'wizard-os-9.9.9.apk', 'sha256': '0' * 64}))
+    (mirror.feed / 'wizard-os-9.9.9.apk').write_bytes(b'forged')
+    assert mirror.run() == 'updated:versionCode=78'
+    assert [p.name for p in mirror.feed.glob('*.apk')] == ['wizard-os-0.10.14.apk']
+
+
+def test_pointer_offline_caps_ci_release_against_mirrored_feed(mirror):
+    assert mirror.run() == 'updated:versionCode=78'
+    mirror.state['status'] = 404
+    run = _release(mirror, 78 + ps.MAX_CI_LEAD + 1, '0.10.99')
+    assert run() == 'skipped:ci_release_too_far_ahead'
+    assert _feed(mirror)['versionCode'] == 78
+    mirror.state['release'].update(versionCode=80, versionName='0.10.16')
+    assert run() == 'updated:versionCode=80'
