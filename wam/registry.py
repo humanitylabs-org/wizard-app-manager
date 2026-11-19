@@ -83,6 +83,20 @@ def _switches(w: dict) -> str | None:
     return parse(w.get("switches")) if isinstance(w, dict) else None
 
 
+# Browser permissions an app frame may be granted (wizard-os spec/WIZARD_MD.md, wizard-ux#1629). The shell's
+# switch wizard/app-location decides whether a declared one is used; apps.json only carries the declaration.
+BROWSER_PERMISSIONS = ("geolocation",)
+
+
+def _permissions(w: dict) -> list[str]:
+    """wizard.md `permissions` reduced to the known browser permissions, in a fixed order. Anything else (unknown
+    values, a non-list, wrong case) is dropped here, never the app (`wam check` reports a malformed list)."""
+    value = w.get("permissions") if isinstance(w, dict) else None
+    if not isinstance(value, list):
+        return []
+    return [p for p in BROWSER_PERMISSIONS if p in {v for v in value if isinstance(v, str)}]
+
+
 def _owner_proof(w: dict) -> dict | None:
     from . import owner_proof
     try:
@@ -132,6 +146,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             "summary": w.get("summary", ""),
             **({"voice_names": spoken} if spoken else {}),
             **({"home_screen": pins} if pins else {}),
+            # Declared browser permissions (today only geolocation): the shell lets this app's frame ask for them.
+            **({"permissions": perms} if (perms := _permissions(w)) else {}),
             # Earlier ids the app declares (wizard.md renamed_from): the shell keeps a home-screen pin or link made under
             # an old id opening this app after `wam app-rename` (wizard-ux issue 1471).
             **({"renamed_from": old_ids} if (old_ids := [x for x in renamed_from(w) if x != name]) else {}),
