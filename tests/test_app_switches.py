@@ -193,10 +193,18 @@ def test_apps_without_view_local_are_found_from_health_mcp_or_config_port(box):
         d.mkdir(parents=True)
         (d / "wizard.md").write_text(f"---\nid: {app}\nswitches: /api/view/switches\n---\n")
     (rt / "apps" / "wizardapps" / "notes" / "config.json").write_text(json.dumps({"port": port}))
+    reg["apps"].append({"id": "moved", "name": "Moved", "urn": "moved:wizardapps", "view": {"url": "/moved/"}})
+    d = rt / "apps" / "wizardapps" / "moved"
+    d.mkdir(parents=True)
+    (d / "wizard.md").write_text("---\nid: moved\nswitches: /api/view/switches\n---\n")
+    (d / "config.json").write_text(json.dumps({"port": 1}))          # the recipe default, taken on this box
+    (rt / "app-data" / "wizardapps" / "moved").mkdir(parents=True)
+    (rt / "app-data" / "wizardapps" / "moved" / "app.env").write_text(f"APP_PORT={port}\n")
     (box / "apps.json").write_text(json.dumps(reg))
     got = {a["id"]: (a["local"], a["prefix"]) for a in aps.declared(box)}
     local = f"http://127.0.0.1:{port}"
-    assert got == {"messenger": (local, "/messenger"), "search": (local, "/search"), "notes": (local, "/notes")}
+    assert got == {"messenger": (local, "/messenger"), "search": (local, "/search"), "notes": (local, "/notes"),
+                   "moved": (local, "/moved")}
     assert "messenger" not in [g["id"] for g in aps.missing(box)]
     rows, status = aps.listing(box)
     assert {"messenger:drafts-first"} <= {r["id"] for r in rows}

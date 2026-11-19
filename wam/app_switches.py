@@ -100,7 +100,7 @@ def _port(url) -> int | None:
 
 def loopback(a: dict, root: Path, store: str) -> str | None:
     """The app's loopback base URL: its registry `view.local`, else the port of a loopback `view.url`, its `health`
-    or `mcp.url`, else the host port in its Runtipi app config (#802: a box whose gateway routes (routes.json) turn
+    or `mcp.url`, else the port Runtipi installed it on (app-data app.env APP_PORT), else its recipe config.json port (#802: a box whose gateway routes (routes.json) turn
     `view` into a same-origin path like `/wizard-search/` has no `view.local` at all). Only the port is taken from a
     fallback; the call always goes to 127.0.0.1 on that port."""
     view = a.get("view") if isinstance(a.get("view"), dict) else {}
@@ -110,13 +110,28 @@ def loopback(a: dict, root: Path, store: str) -> str | None:
     mcp = a.get("mcp") if isinstance(a.get("mcp"), dict) else {}
     port = next((p for p in map(_port, (view.get("url"), a.get("health"), mcp.get("url"))) if p), None)
     if port is None:
+        port = _num(_installed_port(root, store, a["id"]))
+    if port is None:
         try:
             cfg = json.loads((root / "apps" / store / a["id"] / "config.json").read_text())
-            raw = cfg.get("port") if isinstance(cfg, dict) else None
-            port = int(raw) if isinstance(raw, (int, str)) and str(raw).isdigit() and 0 < int(raw) < 65536 else None
+            port = _num(cfg.get("port") if isinstance(cfg, dict) else None)
         except (OSError, ValueError):
             port = None
     return f"http://127.0.0.1:{port}" if port else None
+
+
+def _num(raw) -> int | None:
+    return int(raw) if isinstance(raw, (int, str)) and str(raw).isdigit() and 0 < int(raw) < 65536 else None
+
+
+def _installed_port(root: Path, store: str, app_id: str):
+    """The port Runtipi installed the app on (APP_PORT in its app-data app.env); it differs from the recipe default
+    when the install moved the app off an occupied port (cli.install free_port)."""
+    from .runtipi import read_env
+    try:
+        return read_env(root / "app-data" / store / app_id / "app.env").get("APP_PORT")
+    except (OSError, ValueError):
+        return None
 
 
 def declared(home=None) -> list[dict]:
