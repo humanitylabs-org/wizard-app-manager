@@ -4,6 +4,7 @@ flips through feature_switches. No real box: a fake app on loopback verifies the
 import json
 import os
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -173,3 +174,48 @@ def test_platform_edge_key_wins_over_a_hand_built_one(box):
     os.chmod(p, 0o600)
     (box / "messenger-owner" / "proof").write_bytes(b"y" * 32)
     assert aps.proof_key(box, "messenger") == KEY
+
+
+def test_apps_without_view_local_are_found_from_health_mcp_or_config_port(box):
+    # #802: with gateway routes (routes.json) apps.json keeps only `view.url: /<app>/`, no `view.local`. The switch
+    # endpoint is still on the app's loopback port, known from its health URL, MCP URL or Runtipi config.
+    port = int(aps.declared(box)[0]["local"].rsplit(":", 1)[1])
+    reg = json.loads((box / "apps.json").read_text())
+    rt = Path(json.loads((box / "app-manager.json").read_text())["runtipi_root"])
+    for a in reg["apps"]:
+        if a["id"] == "messenger":
+            a["view"] = {"url": "/messenger/"}
+            a["health"] = f"http://192.168.1.5:{port}/health"
+    for app, extra in (("search", {"mcp": {"url": f"http://127.0.0.1:{port}/mcp"}}), ("notes", {})):
+        reg["apps"].append({"id": app, "name": app.title(), "urn": f"{app}:wizardapps", "view": {"url": f"/{app}/"},
+                            **extra})
+        d = rt / "apps" / "wizardapps" / app
+        d.mkdir(parents=True)
+        (d / "wizard.md").write_text(f"---\nid: {app}\nswitches: /api/view/switches\n---\n")
+    (rt / "apps" / "wizardapps" / "notes" / "config.json").write_text(json.dumps({"port": port}))
+    reg["apps"].append({"id": "moved", "name": "Moved", "urn": "moved:wizardapps", "view": {"url": "/moved/"}})
+    d = rt / "apps" / "wizardapps" / "moved"
+    d.mkdir(parents=True)
+    (d / "wizard.md").write_text("---\nid: moved\nswitches: /api/view/switches\n---\n")
+    (d / "config.json").write_text(json.dumps({"port": 1}))          # the recipe default, taken on this box
+    (rt / "app-data" / "wizardapps" / "moved").mkdir(parents=True)
+    (rt / "app-data" / "wizardapps" / "moved" / "app.env").write_text(f"APP_PORT={port}\n")
+    (box / "apps.json").write_text(json.dumps(reg))
+    got = {a["id"]: (a["local"], a["prefix"]) for a in aps.declared(box)}
+    local = f"http://127.0.0.1:{port}"
+    assert got == {"messenger": (local, "/messenger"), "search": (local, "/search"), "notes": (local, "/notes"),
+                   "moved": (local, "/moved")}
+    assert "messenger" not in [g["id"] for g in aps.missing(box)]
+    rows, status = aps.listing(box)
+    assert {"messenger:drafts-first"} <= {r["id"] for r in rows}
+    assert aps.set_switch("messenger:drafts-first", True, box)["on"] is True and FakeApp.state["drafts-first"] is True
+
+
+def test_an_app_with_no_known_port_is_still_skipped(box):
+    reg = json.loads((box / "apps.json").read_text())
+    for a in reg["apps"]:
+        if a["id"] == "messenger":
+            a["view"] = {"url": "/messenger/"}
+            a["health"] = "https://box.example/health"
+    (box / "apps.json").write_text(json.dumps(reg))
+    assert aps.declared(box) == []

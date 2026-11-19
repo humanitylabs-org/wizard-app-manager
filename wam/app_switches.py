@@ -16,7 +16,8 @@ The App Manager reads the installed recipe's wizard.md (`<runtipi>/apps/<store>/
 key in the app's registry entry. Apps that declare nothing are skipped; an app added tomorrow appears as soon as it is
 installed or updated with the declaration.
 
-Calls are server-side, on the app's loopback port (its registry `view.local`), with the OWNER's authority: the platform
+Calls are server-side, on the app's loopback port (its registry `view.local`, else the port of its loopback
+view/health/MCP URL or Runtipi config; #802), with the OWNER's authority: the platform
 owner proof (wizard-os spec/OWNER_PROOF.md, `X-Wizard-App-Owner-Proof`, hmac-v1, bound to the app id, method and
 target) signed with the app's proof key, plus the box's own Origin and `X-Wizard-Switch: 1`. So a flip works the same
 from every browser and device, with no app cookie in the browser. The proof key is the edge key the App Manager mints
@@ -88,6 +89,51 @@ def _wizard_md(root: Path, store: str, app_id: str) -> dict:
         return {}
 
 
+LOCAL = re.compile(r"http://127\.0\.0\.1:\d{2,5}(/[a-z0-9][a-z0-9-]{0,62})?/?")
+_PORT = re.compile(r"http://(?:127\.0\.0\.1|localhost|\[::1\]|(?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})(?:/|$)")
+
+
+def _port(url) -> int | None:
+    m = _PORT.match(str(url or ""))
+    return int(m.group(1)) if m and 0 < int(m.group(1)) < 65536 else None
+
+
+def loopback(a: dict, root: Path, store: str) -> str | None:
+    """The app's loopback base URL: its registry `view.local`, else the port of a loopback `view.url`, its `health`
+    or `mcp.url`, else the port Runtipi installed it on (app-data app.env APP_PORT), else its recipe config.json port (#802: a box whose gateway routes (routes.json) turn
+    `view` into a same-origin path like `/wizard-search/` has no `view.local` at all). Only the port is taken from a
+    fallback; the call always goes to 127.0.0.1 on that port."""
+    view = a.get("view") if isinstance(a.get("view"), dict) else {}
+    local = str(view.get("local") or "")
+    if LOCAL.fullmatch(local):
+        return local.rstrip("/")
+    mcp = a.get("mcp") if isinstance(a.get("mcp"), dict) else {}
+    port = next((p for p in map(_port, (view.get("url"), a.get("health"), mcp.get("url"))) if p), None)
+    if port is None:
+        port = _num(_installed_port(root, store, a["id"]))
+    if port is None:
+        try:
+            cfg = json.loads((root / "apps" / store / a["id"] / "config.json").read_text())
+            port = _num(cfg.get("port") if isinstance(cfg, dict) else None)
+        except (OSError, ValueError):
+            port = None
+    return f"http://127.0.0.1:{port}" if port else None
+
+
+def _num(raw) -> int | None:
+    return int(raw) if isinstance(raw, (int, str)) and str(raw).isdigit() and 0 < int(raw) < 65536 else None
+
+
+def _installed_port(root: Path, store: str, app_id: str):
+    """The port Runtipi installed the app on (APP_PORT in its app-data app.env); it differs from the recipe default
+    when the install moved the app off an occupied port (cli.install free_port)."""
+    from .runtipi import read_env
+    try:
+        return read_env(root / "app-data" / store / app_id / "app.env").get("APP_PORT")
+    except (OSError, ValueError):
+        return None
+
+
 def declared(home=None) -> list[dict]:
     """Installed apps that declare a switch endpoint: [{id, name, path, local}]."""
     h = _home(home)
@@ -105,9 +151,9 @@ def declared(home=None) -> list[dict]:
             store = "wizardapps"
         path = parse(_wizard_md(root, store, a["id"]).get("switches")) or parse(a.get("switches"))
         view = a.get("view") or {}
-        local = str(view.get("local") or "")
         prefix = str(view.get("url") or "")
-        if not path or not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}(/[a-z0-9][a-z0-9-]{0,62})?/?", local):
+        local = loopback(a, root, store) if path else None
+        if not path or not local:
             continue
         out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80], "path": path, "local": local.rstrip("/"),
                     "prefix": prefix.rstrip("/") if re.fullmatch(r"/[a-z0-9][a-z0-9-]{0,62}/?", prefix) else ""})
