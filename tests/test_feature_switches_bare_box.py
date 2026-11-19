@@ -187,3 +187,26 @@ def test_proof_file_named_by_the_running_service_process(tmp_path, monkeypatch):
 
 
 LISTENER = fs._listener_proof_file
+
+
+def test_default_port_held_by_another_user_is_never_trusted(bare_box, service, monkeypatch):
+    """#798 Codex P1: answering like an Agent Service is not enough; the default-port listener must be this user's,
+    or wam would hand the owner's look.json and owner proof to whoever bound the port."""
+    _private(bare_box / fs.OWNER_PROOF_FILE, PROOF)
+    assert fs._own_listener(service) is True                 # the fake runs in this test process
+    monkeypatch.setattr(fs, "_euid", lambda: os.geteuid() + 4242)
+    assert fs._own_listener(service) is False
+    assert fs.service_origin(bare_box) is None
+    with pytest.raises(fs.SwitchError):
+        fs.listing(bare_box, app_rows=([], []))
+    assert FakeService.seen == []                            # nothing, proof or not, was sent there
+
+
+def test_finding_the_service_and_reading_pages_share_one_timeout(bare_box, service, monkeypatch):
+    """#798 Codex P2: is_on(timeout=2) on a hot path never waits 2 s for discovery plus 2 s for Pages."""
+    seen = {}
+    clock = iter([100.0, 101.5])
+    monkeypatch.setattr(fs.time, "monotonic", lambda: next(clock, 101.5))
+    monkeypatch.setattr(fs, "_looks_like_service", lambda origin, timeout=2: seen.setdefault("probe", timeout) or True)
+    p = fs._pages(bare_box, 2)
+    assert seen["probe"] == 2 and abs(p.timeout - 0.5) < 1e-6

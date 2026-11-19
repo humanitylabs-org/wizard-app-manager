@@ -106,9 +106,10 @@ def _looks_like_service(origin: str, timeout: float = 2) -> bool:
     return ok
 
 
-def service_origin(home: Path | None = None) -> str | None:
+def service_origin(home: Path | None = None, timeout: float = 2) -> str | None:
     """Loopback origin of this box's Agent Service: alongside.json / apps.json (updates.service_origin), else
-    WIZARD_AGENT_SERVICE_ORIGIN, else its default port 127.0.0.1:8923 when an Agent Service answers there (#726)."""
+    WIZARD_AGENT_SERVICE_ORIGIN, else its default port 127.0.0.1:8923 when a process of this user listens there and
+    answers like an Agent Service (#726, #797). `timeout`: seconds for that health probe."""
     from .updates import service_origin as registered
     got = registered(home)
     if got:
@@ -116,8 +117,10 @@ def service_origin(home: Path | None = None) -> str | None:
     env = (os.environ.get(SERVICE_ORIGIN_ENV) or "").strip().rstrip("/")
     if LOOPBACK.fullmatch(env):
         return env
+    # The default port is only trusted when THIS user's process listens on it (checked every call, never cached):
+    # an answer on /wizard/health proves nothing, and wam sends the owner's look.json and owner proof there (#798).
     default = f"http://127.0.0.1:{DEFAULT_SERVICE_PORT}"
-    return default if _looks_like_service(default) else None
+    return default if _own_listener(DEFAULT_SERVICE_PORT) and _looks_like_service(default, timeout) else None
 
 
 def _read_secret(path, private: bool) -> str:
@@ -140,27 +143,43 @@ def _read_secret(path, private: bool) -> str:
     return value if 32 <= len(value) <= 4096 else ""
 
 
-def _listener_proof_file(port: int) -> str | None:
-    """WIZARD_OWNER_PROOF_FILE of the process listening on loopback `port`, only when it runs as this user (its
-    /proc environment is readable by us alone then; another user's process is never looked at)."""
+def _euid() -> int:
+    return os.geteuid()
+
+
+def _own_listen_sockets(port: int) -> set[str]:
+    """`socket:[inode]` names of the listening TCP sockets on `port` that belong to this user."""
     inodes = set()
     for table in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            rows = open(table).read().splitlines()[1:]
+            with open(table) as f:
+                rows = f.read().splitlines()[1:]
         except OSError:
             continue
         for r in rows:
             p = r.split()
             try:
-                if len(p) > 9 and p[3] == "0A" and int(p[1].rsplit(":", 1)[1], 16) == port and int(p[7]) == os.geteuid():
+                if len(p) > 9 and p[3] == "0A" and int(p[1].rsplit(":", 1)[1], 16) == port and int(p[7]) == _euid():
                     inodes.add(f"socket:[{p[9]}]")
             except ValueError:
                 continue
+    return inodes
+
+
+def _own_listener(port: int) -> bool:
+    """Whether a process of this user (not another user, not an app's published port) listens on loopback `port`."""
+    return bool(_own_listen_sockets(port))
+
+
+def _listener_proof_file(port: int) -> str | None:
+    """WIZARD_OWNER_PROOF_FILE of the process listening on loopback `port`, only when it runs as this user (its
+    /proc environment is readable by us alone then; another user's process is never looked at)."""
+    inodes = _own_listen_sockets(port)
     if not inodes:
         return None
     for pid in (d for d in os.listdir("/proc") if d.isdigit()):
         try:
-            if os.stat(f"/proc/{pid}").st_uid != os.geteuid():
+            if os.stat(f"/proc/{pid}").st_uid != _euid():
                 continue
             fds = os.listdir(f"/proc/{pid}/fd")
             if not any(os.readlink(f"/proc/{pid}/fd/{fd}") in inodes for fd in fds):
@@ -299,8 +318,11 @@ def _refuse_unreadable(doc) -> None:
 
 
 def _pages(home: Path | None, timeout: float = 10) -> Pages:
-    origin = service_origin(home)
-    return Pages(origin, timeout, proof=lambda: owner_proof(home, origin))
+    """Finding the Service and the Pages request share one `timeout` budget (a hot-path caller passes 2 s)."""
+    start = time.monotonic()
+    origin = service_origin(home, min(2.0, timeout))
+    left = max(0.2, timeout - (time.monotonic() - start))
+    return Pages(origin, left, proof=lambda: owner_proof(home, origin))
 
 
 def _tweaks(doc: dict) -> dict:
