@@ -452,7 +452,8 @@ if mode == "begin":
     sys.exit(0)
 if mode == "end":
     st, rc = load(), int(sys.argv[4])
-    st["tailscale_login_url"] = st.get("tailscale_login_url") if rc else None
+    # A finished box-only install keeps a still-pending Tailscale sign-in link (wizard-app-manager#808).
+    st["tailscale_login_url"] = st.get("tailscale_login_url") if rc or st.get("login_pending") else None
     st["state"] = "done" if rc == 0 else "failed"
     st["exit_code"] = rc
     st["failure_reason"] = None
@@ -523,6 +524,9 @@ def handle(line):
     elif s.startswith("[wizard-os] owner-action-done"):
         st["state"], st["tailscale_login_url"], st["message"] = "running", None, ""
         st["approval_url"], st["notice"], st["owner_url"] = None, None, None
+    elif s.startswith("[wizard-os] login-pending:"):
+        m = url.search(s)
+        st["tailscale_login_url"], st["login_pending"] = (m.group(0), True) if m else (None, False)
     elif s.startswith("[wizard-os] wizard-url:"):
         m = url.search(s)
         st["wizard_url"] = m.group(0) if m else None
@@ -593,6 +597,9 @@ if state in ("running", "needs_owner"):
         print(f"Owner action: {st['message']}")
 elif state == "done":
     print(st.get("message") or "WizardOS is installed.")
+    if st.get("login_pending") and st.get("tailscale_login_url"):
+        print("Owner action: Open this link to connect your Wizard to your Tailscale:")
+        print(st["tailscale_login_url"])
     if st.get("wizard_url"):
         print("Your private Wizard link (open it on a device signed in to your Tailscale):")
         print(st["wizard_url"])

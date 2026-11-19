@@ -36,7 +36,12 @@ def sandbox(tmp_path):
 case "$1" in
 status)
   st="$(cat "$STATE_FILE")"; url=""
-  if [ "$st" = NeedsLogin ] && [ -f "$STATE_FILE.up" ]; then url="https://login.tailscale.com/a/${LINK_ID:-abc123}"; fi
+  if [ "$st" = NeedsLogin ] && [ -f "$STATE_FILE.up" ]; then
+    # LINK_AFTER: the daemon gets the link from Tailscale a few seconds after `up` starts, like the real one.
+    if [ -z "${LINK_AFTER:-}" ] || [ $(( $(date +%s) - $(cat "$STATE_FILE.up") )) -ge "$LINK_AFTER" ]; then
+      url="https://login.tailscale.com/a/${LINK_ID:-abc123}"
+    fi
+  fi
   certs='["box.tail1.ts.net"]'; [ "${CERTS:-on}" = on ] || [ -f "$STATE_FILE.certs" ] || certs=null
   printf '{"BackendState":"%s","AuthURL":"%s","CurrentTailnet":{"MagicDNSEnabled":%s},"CertDomains":%s}\\n' \\
     "$st" "$url" "${MAGICDNS:-true}" "$certs" ;;
@@ -61,7 +66,7 @@ up)
     echo "  tailscale up $2 ${PRESERVE_FLAGS:---accept-dns=false --accept-routes --hostname=fixture}"
     exit 1
   fi
-  touch "$STATE_FILE.up"
+  date +%s > "$STATE_FILE.up"
   echo "To authenticate, visit:"
   echo "login link from mock"
   if [ "${UP_STATE:-NeedsLogin}" = "Running" ]; then echo Running > "$STATE_FILE"; exit 0; fi
@@ -299,3 +304,29 @@ def test_an_approved_login_is_waited_for_while_the_daemon_is_still_starting(sand
     assert sum(line.startswith("tailscale up") for line in log.read_text().splitlines()) == 1
     assert "not connected yet" not in p.stdout
     assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "Running"
+
+
+def test_short_wait_still_shows_a_link_that_comes_a_few_seconds_late(sandbox):
+    """wizard-app-manager#808: a fresh install waits 1 s for Tailscale, but the daemon needs a few seconds to get the
+    sign-in link. The install printed "Open the sign-in link below" and no link; now it waits for the link (never for
+    the sign-in) and keeps it for the status after the install ends."""
+    _, _, home, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, timeout=30, WIZARD_TAILSCALE_WAIT="1", LINK_AFTER="4", LOGIN_AFTER="60")
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.splitlines()
+    link = "https://login.tailscale.com/a/abc123"
+    assert "Open the sign-in link below" in p.stdout
+    assert f"[wizard-os] owner-action: Open this link to connect your Wizard to your Tailscale: {link}" in out
+    assert f"[wizard-os] login-pending: {link}" in out
+    assert out.index("[wizard-os] owner-action-done") < out.index(f"[wizard-os] login-pending: {link}")
+    assert json.loads((home / ".wizard-os/private-access.json").read_text())["state"] == "NeedsLogin"
+
+
+def test_link_wait_is_bounded_when_no_link_ever_comes(sandbox):
+    _, _, _, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, timeout=30, WIZARD_TAILSCALE_WAIT="1", WIZARD_TAILSCALE_LINK_WAIT="3", LINK_AFTER="999",
+            LOGIN_AFTER="60")
+    assert p.returncode == 0, p.stderr
+    assert "login-pending" not in p.stdout and "Later: sudo tailscale up" in p.stdout
