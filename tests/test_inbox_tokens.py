@@ -92,7 +92,7 @@ def test_mail_and_messenger_each_get_their_own_token_the_service_accepts(box):
     assert len(mail) == 43 and len(msg) == 43 and mail != msg
     assert user_env(box, "wizard-mail") == {"MAIL_AGENT_INBOX_TOKEN": mail}
     assert user_env(box, "messenger") == {"MESSENGER_AGENT_INBOX_TOKEN": msg}
-    assert not (box.root / "user-config" / "wizardapps" / "wizard-notes").exists()
+    assert not (box.root / "user-config" / "wizardapps" / "wizard-notes").exists()   # only the lock file beside it
     assert ("wizard-mail", 0o600, 1000, 1001) in box.files.writes   # owned by the Service's user, private
     p = box.root / "user-config" / "wizardapps" / "wizard-mail" / "app.env"
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
@@ -143,7 +143,7 @@ def test_nothing_happens_before_the_service_has_a_data_folder(tmp_path):
     (root / "apps" / "wizardapps" / "wizard-mail" / "docker-compose.yml").write_text(MAIL)
     r = it.sync_app(root, "wizard-mail", files=LocalFiles())
     assert r["skipped"].startswith("no Agent Service")
-    assert not (root / "user-config").exists()
+    assert not (root / "user-config" / "wizardapps" / "wizard-mail").exists()
 
 
 def test_an_update_uses_the_recipe_it_is_about_to_apply(box):
@@ -188,3 +188,15 @@ def test_write_registry_and_update_call_the_hooks():
     assert "inbox_tokens.sync_registry(c, rt, reg)" in src
     assert src.count('inbox_tokens.before_start(c, app, prefer="store")') == 2   # app_update + bulk passthrough
     assert 'inbox_tokens.before_start(c, app_id, prefer="store")' in src            # install
+
+
+def test_concurrent_first_syncs_hand_out_one_token(box):
+    """Codex P1: two registry writers syncing one app at once must agree on one token."""
+    import threading
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(it.sync_app(box.root, "messenger", files=LocalFiles(
+        {str(box.os_home): (1000, 1001)})))) for _ in range(6)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sorted(r["token"] for r in out) == ["created"] + ["kept"] * 5
+    assert user_env(box, "messenger")["MESSENGER_AGENT_INBOX_TOKEN"] == (box.tokens / "messenger").read_text().strip()

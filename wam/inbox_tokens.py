@@ -93,7 +93,21 @@ def _write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str], sto
 def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str = "installed", files=None,
              mint=lambda: secrets.token_urlsafe(32)) -> dict:
     """Give one installed app its inbox token. Returns {"vars": [...], "token": "kept|created|adopted",
-    "changed": bool (its user-config app.env changed)} or {"skipped": reason}. Never prints the token."""
+    "changed": bool (its user-config app.env changed)} or {"skipped": reason}. Never prints the token.
+    One sync at a time per box: registry writers run concurrently (API, watchers, installer), and two first-time
+    syncs must never mint different tokens for one app (the Service would accept one, the app send the other)."""
+    import fcntl
+    lock = Path(runtipi_root) / "user-config" / store / ".wam-inbox-tokens.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            return _sync_app(runtipi_root, app_id, store=store, prefer=prefer, files=files, mint=mint)
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _sync_app(runtipi_root: Path, app_id: str, *, store: str, prefer: str, files, mint) -> dict:
     if not APP_ID.fullmatch(app_id or ""):
         return {"skipped": "not an app id the Agent Service accepts"}
     names = token_vars(recipe_text(runtipi_root, app_id, store, prefer))
