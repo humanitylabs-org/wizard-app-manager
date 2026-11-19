@@ -2171,7 +2171,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
             return self._feature_switches(method)
-        if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (switch wizard/app-updates-list)
+        if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (on for everyone, wizard-ux#1191)
             return self._app_updates(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
             if method != "GET":
@@ -2472,7 +2472,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._json(e.code, {"error": str(e)})
 
     def _app_updates(self, method: str) -> None:
-        """App updates for Settings, behind the off-by-default switch wizard/app-updates-list (404 while it is off).
+        """App updates for Settings > About & updates > Apps (wizard-ux#1191; on for everyone, no switch).
         GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped, notes = one-line
         What's new per app, running = the app updates in progress now, #733). POST {"mode": "auto"|
         "ask"}, {"hold": id}, {"unhold": id}, or {"action": "apply"} with an optional "app": id (Update now / Retry)
@@ -2480,8 +2480,6 @@ class StoreHandler(BaseHTTPRequestHandler):
         that run instead (200 {"started": false, "queued": [ids]}, #764). _go already checked the owner (and Origin for POST)."""
         from . import app_updates as au, store_install as si
         c = self.cfg
-        if not au.switch_on(c.home):
-            return self._json(404, {"error": "not found"})
         if method == "GET":
             try:
                 return self._json(200, au.owner_status(c))

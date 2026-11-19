@@ -1,6 +1,6 @@
 """Settings > About & updates > Apps (wizard-ux#1191): the owner-only `_app-updates` route on the store listener.
 
-Off by default: while the feature switch wizard/app-updates-list is off the route answers 404 and changes nothing.
+On for everyone (its switch wizard/app-updates-list was removed): the route answers whatever look.json says.
 """
 import io
 import json
@@ -73,13 +73,12 @@ def test_start_detached_can_name_one_app():
     assert seen[-1][-2:] == ["app-updates", "--apply"]
 
 
-def _route(tmp_path, monkeypatch, on):
+def _route(tmp_path, monkeypatch):
     from wam import cli, store_install as si
     monkeypatch.setattr(au, "_release_managed", lambda: set())
     monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "owner@example.com")
     monkeypatch.setattr(si, "served_origins", lambda host: {"https://box.ts.net:8444"})
-    monkeypatch.setattr(au, "switch_on", lambda home=None: on[0])
     calls = []
     monkeypatch.setattr(au, "start_detached", lambda runner=None, only=None: calls.append(("apply", only))
                         or {"started": True})
@@ -103,18 +102,18 @@ def _route(tmp_path, monkeypatch, on):
     return call, calls, c
 
 
-def test_route_is_404_and_inert_while_the_switch_is_off(tmp_path, monkeypatch):
-    on = [False]
-    call, calls, c = _route(tmp_path, monkeypatch, on)
-    assert call("GET")[0] == 404
-    assert call("POST", {"action": "apply"})[0] == 404
-    assert call("POST", {"hold": "movies"})[0] == 404
-    assert calls == [] and not (c.home / au.STATE).exists()
+def test_route_answers_with_every_feature_switch_off(tmp_path, monkeypatch):
+    # wizard-ux#1191 switch-default: the Apps list is on for everyone, so the route never waits on a switch.
+    from wam import feature_switches as fs
+    monkeypatch.setattr(fs, "is_on", lambda tid, home=None: False)
+    call, calls, c = _route(tmp_path, monkeypatch)
+    assert call("GET")[0] == 200
+    assert call("POST", {"hold": "movies"}) == (200, {"holds": ["movies"]})
+    assert not hasattr(au, "switch_on") and not hasattr(au, "SWITCH")
 
 
 def test_route_owner_only_and_actions(tmp_path, monkeypatch):
-    on = [True]
-    call, calls, c = _route(tmp_path, monkeypatch, on)
+    call, calls, c = _route(tmp_path, monkeypatch)
     code, b = call("GET")
     assert code == 200 and [r["id"] for r in b["due"]] == ["messenger", "movies", "notes"] and b["failed"] == {}
     assert call("GET", **{"Tailscale-User-Login": "intruder@example.com"})[0] == 403
@@ -135,20 +134,13 @@ def test_route_owner_only_and_actions(tmp_path, monkeypatch):
 
 
 def test_route_says_plainly_when_runtipi_cant_be_read(tmp_path, monkeypatch):
-    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    call, calls, c = _route(tmp_path, monkeypatch)
 
     def boom(*a, **k):
         raise ConnectionRefusedError("/".join(["", "home", "someone", "secret"]))
     monkeypatch.setattr(au, "owner_status", boom)
     code, b = call("GET")
     assert code == 503 and "someone" not in b["error"]
-
-
-def test_switch_reads_the_shared_feature_switch(monkeypatch):
-    from wam import feature_switches as fs
-    seen = []
-    monkeypatch.setattr(fs, "is_on", lambda tid, home=None: seen.append(tid) or False)
-    assert au.switch_on() is False and seen == ["wizard/app-updates-list"]
 
 
 def test_gateway_admits_the_app_updates_route():
