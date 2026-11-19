@@ -40,8 +40,24 @@ YML
   # A private temp dir, never a fixed /tmp name: a leftover /tmp/runtipi-setup.sh owned by another user (root, from
   # an earlier install) can't be overwritten in sticky /tmp, and curl then fails with exit 23 before Runtipi exists.
   SETUP_DIR="$(mktemp -d)"
-  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh"
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --env-file "$ENVF")
+  # A pinned Runtipi version (wizard-app-manager#808): without --version the setup script asks api.github.com for the
+  # latest one without a token (60 calls an hour per IP). When that limit is used up it gets nothing back, exits 1
+  # after printing only "Installing runtipi..." and the whole install failed with no reason. With a version it never
+  # calls the API; the download itself comes from github.com releases, which that limit does not cover.
+  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-v4.12.0}"
+  base_failed() {
+    rm -rf "$ENVF" "$SETUP_DIR"
+    echo "WizardOS install failed: the Runtipi base ($RUNTIPI_BASE_VERSION) did not install: $1." >&2
+    echo "Some host setup (Tailscale, Docker) may already be done. Run the same install command again: it picks up from here; if it repeats, the lines above show why." >&2
+    exit 1
+  }
+  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh" \
+    || base_failed "its setup script could not be downloaded from setup.runtipi.io (no network, or the site is down)"
+  rc=0
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --version "$RUNTIPI_BASE_VERSION" \
+    --env-file "$ENVF") || rc=$?
+  [ "$rc" -eq 0 ] || base_failed "its setup script stopped with exit code $rc"
+  [ -f "$RUNTIPI_ROOT/.env" ] || base_failed "its setup script finished but left no $RUNTIPI_ROOT/.env"
   rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"

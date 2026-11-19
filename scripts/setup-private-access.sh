@@ -83,6 +83,10 @@ if [ "$current" = "NeedsLogin" ]; then
   echo "Use the same Tailscale account on your phone or laptop. No shared team account is used."
   out="$(mktemp)"
   deadline=$(( $(date +%s) + wait_s ))
+  # The line above promises a link, so a short wait (1 s for a fresh install) still waits for the link itself: the
+  # daemon needs a few seconds to get it from Tailscale (wizard-app-manager#808: the install said "Open the sign-in
+  # link below" and showed none). Bounded, and it never waits for the sign-in itself.
+  link_deadline=$(( $(date +%s) + ${WIZARD_TAILSCALE_LINK_WAIT:-30} ))
   # `up --timeout` can refuse existing non-default preferences. Replay only the
   # CLI's explicit preservation command as argv, never shell code. `login` is NOT
   # a fallback: it switches to an empty profile and silently resets preferences.
@@ -145,10 +149,19 @@ PY
       echo "[wizard-os] owner-action: Open this link to connect your Wizard to your Tailscale: $link"
       shown="$link"
     fi
-    [ "$(date +%s)" -lt "$deadline" ] || break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      [ -z "$shown" ] && [ "$(date +%s)" -lt "$link_deadline" ] || break
+    fi
     if ! kill -0 "$up_pid" 2>/dev/null; then
       current="$(state)"; [ "$current" = Running ] && break
-      [ "$wait_s" -le 1 ] && break
+      if [ "$wait_s" -le 1 ]; then
+        # A short wait never starts a second `up`, but `up --timeout=1s` can exit before the daemon has the link:
+        # keep reading it from the daemon until the link wait ends (Codex P1). Not when `up` refused to start a
+        # sign-in at all (non-default settings it could not safely replay): no link is coming then.
+        [ ! -f "$out.ok" ] && grep -q 'non-default' "$out" 2>/dev/null && break
+        [ -z "$shown" ] && [ "$(date +%s)" -lt "$link_deadline" ] || break
+        sleep 2; continue
+      fi
       # `up` finished successfully: the login went through. Never start another `up` after that (it can begin a
       # new sign-in and leave the just-approved one looking unfinished); keep polling for Running until the deadline.
       if [ -f "$out.ok" ]; then sleep 2; continue; fi
@@ -165,9 +178,16 @@ PY
   # same link still works later; nothing is reset).
   [ "$current" = Running ] || kill "$up_pid" 2>/dev/null || true
   wait "$up_pid" 2>/dev/null || true
+  current="$(state)"
+  # Still signed out: the daemon keeps the pending sign-in, so its link still works after this script is done. Read it
+  # back from the daemon (or what `up` printed) so the owner always gets it, also when it came too late for the loop.
+  if [ "$current" = NeedsLogin ]; then
+    pending="$(status_field AuthURL)"
+    [ -n "$pending" ] || pending="$(grep -o 'https://login\.tailscale\.com/[^[:space:]]*' "$out" 2>/dev/null | tail -1 || true)"
+    [ -n "$pending" ] || pending="$shown"
+  fi
   rm -f "$out" "$out.ok"
   [ -z "$shown" ] || echo "[wizard-os] owner-action-done"
-  current="$(state)"
   if [ "$current" != "Running" ] && [ "$current" != "NeedsLogin" ]; then
     echo "Tailscale could not connect (state $current). Existing networking was not reset." >&2
     exit 1
@@ -244,6 +264,12 @@ if [ "$current" = "Running" ] && [ "$serve" != on ]; then
   echo "[wizard-os] note: $what is off on your tailnet. Turn on MagicDNS and HTTPS certificates at $ADMIN_DNS, then run the install command again. Until then WizardOS is box-only."
 elif [ "$current" = "Running" ]; then
   echo "Private access: Tailscale connected (existing settings preserved)."
+elif [ -n "${pending:-}" ]; then
+  echo "Private access: Tailscale preinstalled, not connected yet. Open this sign-in link to connect it:"
+  echo "$pending"
+  # Kept in the install status after the install ends (the owner-action above is cleared when this script moves on).
+  echo "[wizard-os] login-pending: $pending"
+  echo "[wizard-os] note: Tailscale is not connected yet, so WizardOS is box-only. Open the Tailscale sign-in link to connect it, then run the install command again."
 else
   echo "Private access: Tailscale preinstalled, not connected yet. Later: sudo tailscale up"
   echo "[wizard-os] note: Tailscale is not connected yet, so WizardOS is box-only. Connect it, then run the install command again."

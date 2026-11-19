@@ -98,6 +98,47 @@ def test_start_returns_at_once_and_status_walks_running_owner_action_done(box, t
     assert not (home / ".wizard-os/install-env").exists(), "the runner's settings file is deleted once read"
 
 
+PENDING = (
+    "echo '==> Installing the App Manager'\n"
+    f"echo '[wizard-os] owner-action: Open this link to connect your Wizard to your Tailscale: {LINK}'\n"
+    "echo '[wizard-os] owner-action-done'\n"
+    f"echo '[wizard-os] login-pending: {LINK}'\n"
+    "echo '[wizard-os] note: Tailscale is not connected yet, so WizardOS is box-only.'\n"
+)
+
+
+def test_box_only_install_keeps_the_pending_tailscale_link(box, tmp_path):
+    """wizard-app-manager#808: a fresh install finishes box-only while Tailscale still waits for the sign-in. The
+    status used to drop the link at the end (tailscale_login_url null while the daemon still had it)."""
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    assert box.run("alice", "start", **_wam(tmp_path, PENDING)).returncode == 0
+    st = _wait(home, {"done", "failed"})
+    assert st["state"] == "done", (home / ".wizard-os/install.log").read_text()
+    assert st["tailscale_login_url"] == LINK and st["login_pending"] is True
+    s = box.run("alice", "status").stdout.splitlines()
+    assert s[0] == "WizardOS install: done"
+    i = s.index("Owner action: Open this link to connect your Wizard to your Tailscale:")
+    assert s[i + 1] == LINK
+
+
+def test_failed_install_status_says_why_and_keeps_the_pending_link(box, tmp_path):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    body = PENDING + ("echo 'WizardOS install failed: the Runtipi base (v4.12.0) did not install: its setup script"
+                      " stopped with exit code 1.' >&2\nexit 1\n")
+    assert box.run("alice", "start", **_wam(tmp_path, body)).returncode == 0
+    st = _wait(home, {"done", "failed"})
+    assert st["state"] == "failed" and st["tailscale_login_url"] == LINK
+    s = box.run("alice", "status").stdout.splitlines()
+    assert "Why: WizardOS install failed: the Runtipi base (v4.12.0) did not install: its setup script stopped with" \
+           " exit code 1." in s
+    i = s.index("Owner action: Open this link to connect your Wizard to your Tailscale:")
+    assert s[i + 1] == LINK
+
+
 ADMIN_DNS = "https://login.tailscale.com/admin/dns"
 HTTPS_STEP = (
     "echo '==> Installing the App Manager'\n"

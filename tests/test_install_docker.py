@@ -54,6 +54,7 @@ case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
     tool("curl", '''printf "curl %s\\n" "$*" >> "$CALLS"
 case "$*" in *setup.runtipi.io*)
   out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+  if [ -n "${SETUP_RC:-}" ]; then printf '#!/bin/bash\\necho Installing runtipi...\\nexit %s\\n' "$SETUP_RC" > "$out"; exit 0; fi
   printf '#!/bin/bash\\nmkdir -p runtipi && echo NGINX_PORT=8480 > runtipi/.env && echo "services: {}" > runtipi/docker-compose.yml\\n' > "$out"
   exit 0;; esac
 [ "${HEALTH:-up}" = up ]
@@ -311,6 +312,9 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     assert not target.startswith("/tmp/runtipi-setup.sh")
     assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
     assert any(l.startswith("sudo bash " + target) for l in log)
+    # wizard-app-manager#808: a pinned version, so the setup never asks api.github.com (anonymous rate limit).
+    setup = next(l for l in log if l.startswith("sudo bash " + target))
+    assert " --version v4." in setup and "--version latest" not in setup, setup
     assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
     assert (root / ".env").is_file()
     assert not Path(target).parent.exists(), "the private setup dir is removed afterwards"
@@ -326,3 +330,16 @@ def test_fresh_install_sets_up_the_store_routes_after_links(tmp_path):
     names = [line.split()[3] for line in log]
     assert "store-data" in names, names
     assert names.index("links") < names.index("store-data") < names.index("troubleshooter")
+
+
+def test_a_failed_runtipi_base_says_why_and_stops(tmp_path):
+    """wizard-app-manager#808: the base's setup exited 1 after only "Installing runtipi..." and the install went on to
+    end install-failed with no reason. It now stops at once with one plain line naming the base and the exit code."""
+    def no_base(home):
+        (home / "runtipi/.env").unlink()
+        (home / "runtipi/docker-compose.yml").unlink()
+    p, home, root, calls, outcome = sandbox(tmp_path, before=no_base, SETUP_RC="1")
+    assert p.returncode == 1
+    assert "WizardOS install failed: the Runtipi base (v4." in p.stderr
+    assert "stopped with exit code 1" in p.stderr
+    assert "wam -m wam bootstrap" not in calls.read_text(), "nothing past the base runs"
