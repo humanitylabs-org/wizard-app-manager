@@ -610,6 +610,11 @@ elif state in ("stopped", "interrupted"):
     print("The install stopped before it finished (the runner is gone, e.g. the box restarted). Run the start command again to retry.")
 else:
     print(st.get("message") or "WizardOS did not finish installing.")
+    if st.get("failure_reason"):
+        print(f"Why: {st['failure_reason']}")
+    if st.get("login_pending") and st.get("tailscale_login_url"):
+        print("Owner action: Open this link to connect your Wizard to your Tailscale:")
+        print(st["tailscale_login_url"])
 PY
   if [ "$state" = failed ] || [ "$state" = stopped ] || [ "$state" = interrupted ]; then
     echo "Last 20 lines of $INSTALL_LOG:"

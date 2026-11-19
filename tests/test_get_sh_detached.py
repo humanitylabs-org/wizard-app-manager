@@ -123,6 +123,22 @@ def test_box_only_install_keeps_the_pending_tailscale_link(box, tmp_path):
     assert s[i + 1] == LINK
 
 
+def test_failed_install_status_says_why_and_keeps_the_pending_link(box, tmp_path):
+    box.add_user("alice", 1001)
+    box.hermes("alice")
+    home = box.users["alice"][1]
+    body = PENDING + ("echo 'WizardOS install failed: the Runtipi base (v4.12.0) did not install: its setup script"
+                      " stopped with exit code 1.' >&2\nexit 1\n")
+    assert box.run("alice", "start", **_wam(tmp_path, body)).returncode == 0
+    st = _wait(home, {"done", "failed"})
+    assert st["state"] == "failed" and st["tailscale_login_url"] == LINK
+    s = box.run("alice", "status").stdout.splitlines()
+    assert "Why: WizardOS install failed: the Runtipi base (v4.12.0) did not install: its setup script stopped with" \
+           " exit code 1." in s
+    i = s.index("Owner action: Open this link to connect your Wizard to your Tailscale:")
+    assert s[i + 1] == LINK
+
+
 ADMIN_DNS = "https://login.tailscale.com/admin/dns"
 HTTPS_STEP = (
     "echo '==> Installing the App Manager'\n"
