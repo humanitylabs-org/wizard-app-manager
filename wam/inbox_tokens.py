@@ -97,6 +97,12 @@ def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str
     One sync at a time per box: registry writers run concurrently (API, watchers, installer), and two first-time
     syncs must never mint different tokens for one app (the Service would accept one, the app send the other)."""
     import fcntl
+    if not APP_ID.fullmatch(app_id or ""):
+        return {"skipped": "not an app id the Agent Service accepts"}
+    if not token_vars(recipe_text(runtipi_root, app_id, store, prefer)):
+        return {"skipped": "its recipe takes no agent inbox token"}   # nothing written for any other app
+    if service_home(runtipi_root, store) is None:
+        return {"skipped": "no Agent Service data folder on this box yet"}
     lock = Path(runtipi_root) / "user-config" / store / ".wam-inbox-tokens.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a") as fh:

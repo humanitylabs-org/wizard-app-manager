@@ -92,7 +92,7 @@ def test_mail_and_messenger_each_get_their_own_token_the_service_accepts(box):
     assert len(mail) == 43 and len(msg) == 43 and mail != msg
     assert user_env(box, "wizard-mail") == {"MAIL_AGENT_INBOX_TOKEN": mail}
     assert user_env(box, "messenger") == {"MESSENGER_AGENT_INBOX_TOKEN": msg}
-    assert not (box.root / "user-config" / "wizardapps" / "wizard-notes").exists()   # only the lock file beside it
+    assert not (box.root / "user-config" / "wizardapps" / "wizard-notes").exists()
     assert ("wizard-mail", 0o600, 1000, 1001) in box.files.writes   # owned by the Service's user, private
     p = box.root / "user-config" / "wizardapps" / "wizard-mail" / "app.env"
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
@@ -143,7 +143,7 @@ def test_nothing_happens_before_the_service_has_a_data_folder(tmp_path):
     (root / "apps" / "wizardapps" / "wizard-mail" / "docker-compose.yml").write_text(MAIL)
     r = it.sync_app(root, "wizard-mail", files=LocalFiles())
     assert r["skipped"].startswith("no Agent Service")
-    assert not (root / "user-config" / "wizardapps" / "wizard-mail").exists()
+    assert not (root / "user-config").exists()
 
 
 def test_an_update_uses_the_recipe_it_is_about_to_apply(box):
