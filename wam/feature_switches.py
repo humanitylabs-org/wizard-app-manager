@@ -35,7 +35,10 @@ answered.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -44,6 +47,19 @@ STORE_PATH = "_feature-switches"     # under /wizard-os-home/store-install/ (Sto
 ID = re.compile(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*")
 ISSUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}#\d{1,7}")
 LOOK = "/wizard/v1/pages/wizard-look/look.json"
+# A box whose Agent Service is not a Runtipi app (a systemd service beside Hermes, behind the private gateway; #726)
+# has no apps.json row for it or for the shell it serves. Then: WIZARD_AGENT_SERVICE_ORIGIN, else the Agent Service's
+# default loopback port when it answers like one. Its shell is the same process (`/wizard-os-home/...`).
+SERVICE_ORIGIN_ENV = "WIZARD_AGENT_SERVICE_ORIGIN"
+DEFAULT_SERVICE_PORT = 8923
+LOOPBACK = re.compile(r"http://127\.0\.0\.1:\d{1,5}")
+# With an owner proof configured, the Agent Service treats a loopback caller without it as anonymous (403
+# owner_required on Pages). wam sends the same secret the trusted front proxy sends, read per call, never cached:
+# WIZARD_OWNER_PROOF_FILE in wam's own environment, else <wizard home>/owner-proof/agent-service-proof, else the
+# WIZARD_OWNER_PROOF_FILE of the Agent Service process itself when it runs as this user.
+OWNER_PROOF_HEADER = "X-Wizard-Owner-Proof"
+OWNER_PROOF_ENV = "WIZARD_OWNER_PROOF_FILE"
+OWNER_PROOF_FILE = "owner-proof/agent-service-proof"
 
 
 class SwitchError(RuntimeError):
@@ -60,7 +76,8 @@ def _home(home: Path | None) -> Path:
 # --- what exists and what is on ----------------------------------------------------------------------------------
 
 def shell_origin(home: Path | None = None) -> str | None:
-    """Loopback origin of this box's Wizard UX shell (its registry health URL)."""
+    """Loopback origin of this box's Wizard UX shell (its registry health URL). A box without a wizard-ux row
+    serves the shell from the Agent Service process itself (#726), so that origin is used instead."""
     try:
         for a in json.loads((_home(home) / "apps.json").read_text()).get("apps") or []:
             health = str(a.get("health") or "")
@@ -68,7 +85,115 @@ def shell_origin(home: Path | None = None) -> str | None:
                 return health.rsplit("/", 1)[0]
     except (OSError, ValueError, AttributeError):
         pass
+    return service_origin(home)
+
+
+_probe_cache: dict = {}
+
+
+def _looks_like_service(origin: str, timeout: float = 2) -> bool:
+    """Whether an Agent Service answers on this loopback origin (its /wizard/health shape), cached for a minute."""
+    hit = _probe_cache.get(origin)
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1]
+    try:
+        with urllib.request.urlopen(f"{origin}/wizard/health", timeout=timeout) as r:  # noqa: S310 - loopback
+            j = json.loads(r.read(65536) or b"{}")
+        ok = isinstance(j, dict) and j.get("status") == "ok" and "upstream_reachable" in j
+    except (OSError, ValueError, urllib.error.URLError):
+        ok = False
+    _probe_cache[origin] = (time.monotonic(), ok)
+    return ok
+
+
+def service_origin(home: Path | None = None) -> str | None:
+    """Loopback origin of this box's Agent Service: alongside.json / apps.json (updates.service_origin), else
+    WIZARD_AGENT_SERVICE_ORIGIN, else its default port 127.0.0.1:8923 when an Agent Service answers there (#726)."""
+    from .updates import service_origin as registered
+    got = registered(home)
+    if got:
+        return got
+    env = (os.environ.get(SERVICE_ORIGIN_ENV) or "").strip().rstrip("/")
+    if LOOPBACK.fullmatch(env):
+        return env
+    default = f"http://127.0.0.1:{DEFAULT_SERVICE_PORT}"
+    return default if _looks_like_service(default) else None
+
+
+def _read_secret(path, private: bool) -> str:
+    """A >= 32-character secret from a regular file (never a symlink). `private`: also our own file, 0600."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+    except (OSError, TypeError, ValueError):
+        return ""
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            return ""
+        if private and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077):
+            return ""
+        value = os.read(fd, 4097).decode("utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+    finally:
+        os.close(fd)
+    return value if 32 <= len(value) <= 4096 else ""
+
+
+def _listener_proof_file(port: int) -> str | None:
+    """WIZARD_OWNER_PROOF_FILE of the process listening on loopback `port`, only when it runs as this user (its
+    /proc environment is readable by us alone then; another user's process is never looked at)."""
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = open(table).read().splitlines()[1:]
+        except OSError:
+            continue
+        for r in rows:
+            p = r.split()
+            try:
+                if len(p) > 9 and p[3] == "0A" and int(p[1].rsplit(":", 1)[1], 16) == port and int(p[7]) == os.geteuid():
+                    inodes.add(f"socket:[{p[9]}]")
+            except ValueError:
+                continue
+    if not inodes:
+        return None
+    for pid in (d for d in os.listdir("/proc") if d.isdigit()):
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != os.geteuid():
+                continue
+            fds = os.listdir(f"/proc/{pid}/fd")
+            if not any(os.readlink(f"/proc/{pid}/fd/{fd}") in inodes for fd in fds):
+                continue
+            env = open(f"/proc/{pid}/environ", "rb").read(1 << 20).split(b"\0")
+        except OSError:
+            continue
+        for kv in env:
+            k, _, v = kv.partition(b"=")
+            if k == OWNER_PROOF_ENV.encode() and v:
+                return v.decode("utf-8", "replace")
+        return None
     return None
+
+
+def owner_proof(home: Path | None, origin: str | None) -> str:
+    """The Agent Service owner proof for a loopback call to `origin`, '' when this box has none (then the Service
+    is not strict and needs none). Read on every call; never logged or returned to a client."""
+    if not origin or not LOOPBACK.fullmatch(origin):
+        return ""
+    env = os.environ.get(OWNER_PROOF_ENV)
+    if env:
+        got = _read_secret(env, private=False)
+        if got:
+            return got
+    got = _read_secret(_home(home) / OWNER_PROOF_FILE, private=True)
+    if got:
+        return got
+    try:
+        path = _listener_proof_file(int(origin.rsplit(":", 1)[1]))
+    except (OSError, ValueError):
+        path = None
+    return _read_secret(path, private=False) if path else ""
 
 
 def _get(url: str, timeout: float = 8):
@@ -81,7 +206,7 @@ def catalog(home: Path | None = None, fetch=_get) -> list[dict]:
     """The feature switches the running shell ships: catalog tweaks minus built-ins and views."""
     origin = shell_origin(home)
     if not origin:
-        raise SwitchError("can't find this Wizard's shell (wizard-ux) in apps.json", 503)
+        raise SwitchError("can't find this Wizard's shell (no wizard-ux in apps.json and no Agent Service)", 503)
     base = f"{origin}/wizard-os-home/tweaks"
     try:
         cat = fetch(f"{base}/catalog.json")
@@ -107,16 +232,19 @@ def catalog(home: Path | None = None, fetch=_get) -> list[dict]:
 class Pages:
     """look.json through the Agent Service Pages file API on loopback (the shell's own path, the same history)."""
 
-    def __init__(self, origin: str | None, timeout: float = 10):
+    def __init__(self, origin: str | None, timeout: float = 10, proof=None):
         if not origin:
             raise SwitchError("can't reach the Agent Service (Pages)", 503)
         self.origin = origin
         self.timeout = timeout
+        self.proof = proof or (lambda: "")      # owner proof, read per request (#726, #797)
 
     def _req(self, method: str, body: dict | None = None):
         data = json.dumps(body).encode() if body is not None else None
+        proof = self.proof()
         r = urllib.request.Request(self.origin + LOOK, data=data, method=method,
                                    headers={"Accept": "application/json",
+                                            **({OWNER_PROOF_HEADER: proof} if proof else {}),
                                             **({"Content-Type": "application/json"} if data else {})})
         try:
             with urllib.request.urlopen(r, timeout=self.timeout) as resp:
@@ -171,8 +299,8 @@ def _refuse_unreadable(doc) -> None:
 
 
 def _pages(home: Path | None, timeout: float = 10) -> Pages:
-    from .updates import service_origin
-    return Pages(service_origin(home), timeout)
+    origin = service_origin(home)
+    return Pages(origin, timeout, proof=lambda: owner_proof(home, origin))
 
 
 def _tweaks(doc: dict) -> dict:
