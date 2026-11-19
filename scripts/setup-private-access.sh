@@ -154,7 +154,14 @@ PY
     fi
     if ! kill -0 "$up_pid" 2>/dev/null; then
       current="$(state)"; [ "$current" = Running ] && break
-      [ "$wait_s" -le 1 ] && break
+      if [ "$wait_s" -le 1 ]; then
+        # A short wait never starts a second `up`, but `up --timeout=1s` can exit before the daemon has the link:
+        # keep reading it from the daemon until the link wait ends (Codex P1). Not when `up` refused to start a
+        # sign-in at all (non-default settings it could not safely replay): no link is coming then.
+        [ ! -f "$out.ok" ] && grep -q 'non-default' "$out" 2>/dev/null && break
+        [ -z "$shown" ] && [ "$(date +%s)" -lt "$link_deadline" ] || break
+        sleep 2; continue
+      fi
       # `up` finished successfully: the login went through. Never start another `up` after that (it can begin a
       # new sign-in and leave the just-approved one looking unfinished); keep polling for Running until the deadline.
       if [ -f "$out.ok" ]; then sleep 2; continue; fi

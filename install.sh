@@ -48,7 +48,7 @@ YML
   base_failed() {
     rm -rf "$ENVF" "$SETUP_DIR"
     echo "WizardOS install failed: the Runtipi base ($RUNTIPI_BASE_VERSION) did not install: $1." >&2
-    echo "Nothing else was changed yet. Run the same install command again; if it repeats, the lines above show why." >&2
+    echo "Some host setup (Tailscale, Docker) may already be done. Run the same install command again: it picks up from here; if it repeats, the lines above show why." >&2
     exit 1
   }
   curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh" \

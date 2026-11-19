@@ -330,3 +330,14 @@ def test_link_wait_is_bounded_when_no_link_ever_comes(sandbox):
             LOGIN_AFTER="60")
     assert p.returncode == 0, p.stderr
     assert "login-pending" not in p.stdout and "Later: sudo tailscale up" in p.stdout
+
+
+def test_short_wait_reads_the_link_from_the_daemon_after_up_already_exited(sandbox):
+    """Codex P1 on #809: `up --timeout=1s` can exit before the daemon has the link; keep reading AuthURL (no second
+    `up`) until the link wait ends."""
+    _, log, _, state, _ = sandbox
+    state.write_text("NeedsLogin")
+    p = run(sandbox, timeout=30, WIZARD_TAILSCALE_WAIT="1", LINK_AFTER="4")   # the mock `up` exits 1 at once
+    assert p.returncode == 0, p.stderr
+    assert "[wizard-os] login-pending: https://login.tailscale.com/a/abc123" in p.stdout.splitlines()
+    assert sum(line.startswith("tailscale up ") for line in log.read_text().splitlines()) == 1
