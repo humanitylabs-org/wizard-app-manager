@@ -317,14 +317,6 @@ def status(c=None, installed: list[dict] | None = None) -> dict:
 
 # ---------------------------------------------------------------- Settings > About & updates (wizard-ux#1191)
 
-SWITCH = "wizard/app-updates-list"   # the same off-by-default switch as the Apps list in Settings
-
-
-def switch_on(home: Path | None = None) -> bool:
-    from . import feature_switches
-    return feature_switches.is_on(SWITCH, home)
-
-
 WHATS_NEW_MAX = 140                  # one line, like wizard.md `summary`
 _APP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 

@@ -101,7 +101,7 @@ def test_store_jobs_installing_are_listed_and_an_app_update_run_wins(tmp_path, m
 
 
 def test_route_returns_running(tmp_path, monkeypatch):
-    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    call, calls, c = _route(tmp_path, monkeypatch)
     code, b = call("GET")
     assert code == 200 and b["running"] == []
     lock = _hold_lock(c.home)

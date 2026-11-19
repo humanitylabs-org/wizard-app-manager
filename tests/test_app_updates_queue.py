@@ -121,7 +121,7 @@ def test_the_running_update_takes_a_request_made_during_it(tmp_path, monkeypatch
 
 
 def test_route_queues_during_a_run_and_lists_it(tmp_path, monkeypatch):
-    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    call, calls, c = _route(tmp_path, monkeypatch)
     assert call("POST", {"action": "apply", "app": "movies"})[0] == 200 and calls[-1] == ("apply", ["movies"])
     run = _hold_run(c.home)
     try:
@@ -180,7 +180,7 @@ def test_a_dry_run_is_not_a_run_requests_wait_for(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- the Tracker contract (#764 follow-up)
 
 def test_update_all_during_a_run_queues_the_apps_due_now(tmp_path, monkeypatch):
-    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    call, calls, c = _route(tmp_path, monkeypatch)
     run = _hold_run(c.home)
     try:
         code, b = call("POST", {"action": "apply"})
@@ -219,7 +219,7 @@ def test_a_full_queue_answers_only_what_it_kept(tmp_path, monkeypatch):
 
 
 def test_route_takes_up_to_100_ids_in_one_body(tmp_path, monkeypatch):
-    call, calls, c = _route(tmp_path, monkeypatch, [True])
+    call, calls, c = _route(tmp_path, monkeypatch)
     full = ["a" * 60 + f"{i:03}" for i in range(au.QUEUE_MAX)]
     assert call("POST", {"action": "apply", "apps": full}) == (200, {"started": True}) and calls[-1] == ("apply", full)
     assert call("POST", {"action": "apply", "apps": full + ["b"]})[0] == 400
