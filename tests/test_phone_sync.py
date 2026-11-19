@@ -83,7 +83,7 @@ def _lp(b):
     return struct.pack('<I', len(b)) + b
 
 
-def build_apk(seed='wizardos-test', *, cert_seed=None, schemes=('v2', 'v3'), payload=b'classes.dex bytes'):
+def build_apk(seed='wizardos-test', *, cert_seed=None, schemes=('v2', 'v3'), payload=b'classes.dex bytes', outer_sdk=None):
     """A small APK signed with key `seed`; cert_seed puts another key's certificate in the signed data."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w') as z:
@@ -101,7 +101,7 @@ def build_apk(seed='wizardos-test', *, cert_seed=None, schemes=('v2', 'v3'), pay
         pid = {'v2': 0x7109871a, 'v3': 0xf05368c0}[scheme]
         sdk = struct.pack('<II', 24, 0x7fffffff) if scheme == 'v3' else b''
         signed = _lp(_lp(struct.pack('<I', 0x0103) + _lp(content))) + _lp(_lp(cert)) + sdk + _lp(b'')
-        signer = _lp(signed) + sdk + _lp(_lp(struct.pack('<I', 0x0103) + _lp(_sign(key, signed)))) + _lp(_key(cert_seed or seed)[4])
+        signer = _lp(signed) + ((outer_sdk if outer_sdk is not None else sdk) if scheme == 'v3' else b'') + _lp(_lp(struct.pack('<I', 0x0103) + _lp(_sign(key, signed)))) + _lp(_key(cert_seed or seed)[4])
         value = _lp(_lp(signer))
         pairs += struct.pack('<QI', len(value) + 4, pid) + value
     size = len(pairs) + 8 + 16
@@ -445,6 +445,7 @@ def test_v2_only_apk_is_accepted(mirror):
     pytest.param(lambda: build_apk('attacker', cert_seed='wizardos-test'), id='copied-cert-forged-signature'),
     pytest.param(lambda: build_apk(schemes=()), id='no-v2-v3-signature'),
     pytest.param(lambda: build_apk().replace(b'classes.dex bytes', b'classes.dex evil!'), id='edited-after-signing'),
+    pytest.param(lambda: build_apk(outer_sdk=struct.pack('<II', 9, 0x7fffffff)), id='v3-unsigned-sdk-range-changed'),
 ])
 def test_apk_signed_by_another_key_is_refused(mirror, apk):
     # Correct sha256, size and the pinned `signer` field: only the APK's own signing block tells them apart.

@@ -182,12 +182,16 @@ def _content_digest(f, hasher, sections):
 def _signer(scheme, raw):
     """(signed data, digests, first certificate, signatures, public key) of one v2/v3 signer."""
     signed, off = _lp(raw, 0)
+    digests, off2 = _lp(signed, 0)
+    certs, off2 = _lp(signed, off2)
     if scheme != 'v2':
-        off += 8  # minSdkVersion, maxSdkVersion
+        # The outer minSdkVersion/maxSdkVersion are not signed; Android refuses the signer unless they equal the
+        # signed copies (AOSP ApkSignatureSchemeV3Verifier), so a box must too (Codex P2 on WAM#790).
+        if off + 8 > len(raw) or off2 + 8 > len(signed) or raw[off:off + 8] != signed[off2:off2 + 8]:
+            raise SignatureError(f'{scheme} signer SDK range does not match its signed data')
+        off += 8
     sigs, off = _lp(raw, off)
     key, _ = _lp(raw, off)
-    digests, off2 = _lp(signed, 0)
-    certs, _ = _lp(signed, off2)
     certs = _seq(certs)
     if not certs:
         raise SignatureError('signer has no certificate')
