@@ -40,9 +40,12 @@ class RuntipiError(RuntimeError):
 
 
 class Runtipi:
-    def __init__(self, base: str, secret: str):
+    def __init__(self, base: str, secret: str, fallback: str | None = None):
         self.base = base.rstrip("/")
         self.secret = secret
+        # JWT_SECRET when `secret` is Runtipi 4.12's CLI key (switch wizard/runtipi-cli-key, WAM#839): a 401 with the
+        # key is retried once with it, so a key rotated since it was read never locks wam out while the fork accepts both.
+        self.fallback = fallback if fallback and fallback != secret else None
 
     @classmethod
     def from_install(cls, root: Path) -> "Runtipi":
@@ -51,7 +54,9 @@ class Runtipi:
         port = env.get("NGINX_PORT") or "80"
         if not env.get("JWT_SECRET"):
             raise RuntipiError(f"JWT_SECRET missing in {root / '.env'}")
-        return cls(f"http://{host}:{port}/api", env["JWT_SECRET"])
+        from .runtipi_key import secret
+        key = secret(root, env["JWT_SECRET"])
+        return cls(f"http://{host}:{port}/api", key, env["JWT_SECRET"])
 
     def ensure_operator(self, cred_file: Path) -> bool:
         """A fresh Runtipi has no operator, so CLI tokens map to nobody (401). Create one, once.
@@ -82,15 +87,21 @@ class Runtipi:
 
     def req(self, method: str, path: str, body: dict | None = None, timeout: int = 60):
         data = json.dumps(body).encode() if body is not None else None
-        r = urllib.request.Request(f"{self.base}{path}", data=data, method=method)
-        r.add_header("Authorization", f"Bearer {cli_token(self.secret)}")
-        if data is not None:
-            r.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(r, timeout=timeout) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as e:
-            raise RuntipiError(f"{method} {path} -> {e.code}: {e.read()[:400]!r}") from None
+        for secret in (self.secret, self.fallback):
+            if secret is None:
+                continue
+            r = urllib.request.Request(f"{self.base}{path}", data=data, method=method)
+            r.add_header("Authorization", f"Bearer {cli_token(secret)}")
+            if data is not None:
+                r.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(r, timeout=timeout) as resp:
+                    raw = resp.read()
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and secret is self.secret and self.fallback:
+                    continue
+                raise RuntipiError(f"{method} {path} -> {e.code}: {e.read()[:400]!r}") from None
         return json.loads(raw) if raw else {}
 
     # stores
