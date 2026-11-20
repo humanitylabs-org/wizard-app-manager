@@ -1,6 +1,6 @@
 # Wizard App Manager
 
-Installs, runs, updates and backs up the apps on a Wizard. It is [Runtipi](https://github.com/runtipi/runtipi) v4.10.2 (GPL-3.0) with one part replaced: **the App Store reads the [Wizard App Index](https://www.aiwizards.com/wizard-apps) live** instead of a cloned catalog. Nothing is downloaded until you open, install or update an app, except the small curated Setup recommendation image cache described below; the store still scales to any number of apps.
+Installs, runs, updates and backs up the apps on a Wizard. It is [Runtipi](https://github.com/runtipi/runtipi) v4.12.0 (GPL-3.0) with one part replaced: **the App Store reads the [Wizard App Index](https://www.aiwizards.com/wizard-apps) live** instead of a cloned catalog. Nothing is downloaded until you open, install or update an app, except the small curated Setup recommendation image cache described below; the store still scales to any number of apps.
 
 The interface here is temporary. It exists so the system can be seen and used now; the long-term interface is Wizard UX, part of WizardOS.
 
@@ -119,7 +119,7 @@ checker as other Store apps; no second app index or parallel install system is i
 ## Building
 
 ```bash
-docker build --build-arg LOCAL=true --build-arg TIPI_VERSION=v4.10.2-wizard.N -t ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.N .
+docker build --build-arg LOCAL=true --build-arg TIPI_VERSION=v4.12.0-wizard.N -t ghcr.io/humanitylabs-org/wizard-app-manager:v4.12.0-wizard.N .
 ```
 
 Runtipi's original README and agent notes are kept as `README.runtipi.md` and `AGENTS.runtipi.md`. License: GPL-3.0 (inherited).

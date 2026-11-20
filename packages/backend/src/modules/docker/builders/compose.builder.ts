@@ -78,20 +78,47 @@ const normalizePorts = (ports: unknown) => {
   return [];
 };
 
+const publishesAppTcpPort = (ports: string[] | undefined, internalPort: string | number) => {
+  const mapping = `\${APP_PORT}:${internalPort}`;
+
+  return (ports ?? []).some((port) => {
+    const [binding = '', protocol = 'tcp'] = port.split('/');
+    if (protocol !== 'tcp') return false;
+
+    return binding === mapping || binding.endsWith(`:${mapping}`);
+  });
+};
+
 type NormalizedComposeService = DynamicComposeSchemaYaml['services'][string] & {
   networks: { [key: string]: { gw_priority?: number } };
   ports: string[];
   labels: Record<string, string | number | boolean>;
 };
 
-export function servicesForArchitecture(input: DynamicComposeSchemaYaml, architecture?: string) {
-  const services = JSON.parse(JSON.stringify(input.services)) as DynamicComposeSchemaYaml['services'];
-  const override = input['x-runtipi']?.overrides?.find((o: { architecture: string }) => o.architecture === architecture);
-  for (const [name, service] of Object.entries(override?.services ?? {})) {
-    services[name] = services[name] ? deepmerge(services[name], service, { arrayMerge: (_target: unknown[], source: unknown[]) => source }) : service;
+export const mergeArchitectureOverrides = (input: DynamicComposeSchemaYaml, architecture?: string) => {
+  const inputCopy = JSON.parse(JSON.stringify(input)) as DynamicComposeSchemaYaml;
+
+  if (!architecture || !inputCopy['x-runtipi']?.overrides) {
+    return inputCopy;
   }
-  return services;
-}
+
+  const architectureOverrides = inputCopy['x-runtipi'].overrides.find((override) => override.architecture === architecture);
+  if (!architectureOverrides) {
+    return inputCopy;
+  }
+
+  for (const [serviceName, overrideService] of Object.entries(architectureOverrides.services)) {
+    const existingService = inputCopy.services[serviceName];
+    if (existingService) {
+      const arrayMode = { arrayMerge: (_target: unknown[], source: unknown[]) => source };
+      inputCopy.services[serviceName] = deepmerge(existingService, overrideService, arrayMode);
+    } else {
+      inputCopy.services[serviceName] = overrideService;
+    }
+  }
+
+  return inputCopy;
+};
 
 export class DockerComposeBuilder {
   private buildService = (
@@ -102,10 +129,13 @@ export class DockerComposeBuilder {
   ) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
-    const serviceCopy = { ...service };
-    serviceCopy.networks = normalizeNetworks(serviceCopy.networks);
-    serviceCopy.ports = normalizePorts(serviceCopy.ports);
-    serviceCopy.labels = normalizeLabels(serviceCopy.labels);
+    const serviceCopy = {
+      ...service,
+      networks: normalizeNetworks(service.networks),
+      ports: normalizePorts(service.ports),
+      labels: normalizeLabels(service.labels),
+      restart: service.restart || 'unless-stopped',
+    };
     if (appStoreId === 'wizardapps') {
       // Routing and exposure are owner settings, never recipe-supplied control labels.
       serviceCopy.labels = Object.fromEntries(Object.entries(serviceCopy.labels).filter(([key]) => !key.toLowerCase().startsWith('traefik.')));
@@ -131,10 +161,7 @@ export class DockerComposeBuilder {
     }
 
     if (xruntipiParams.is_main) {
-      // Wizard: an app that already maps its main port (e.g. 127.0.0.1:${APP_PORT}:<port>, box-only) keeps that
-      // mapping; "Open port" must not add a second one on every interface.
-      const alreadyMapped = (serviceCopy.ports ?? []).some((p) => String(p).split('/')[0]?.split(':').pop() === String(xruntipiParams.internal_port));
-      if (form.openPort && xruntipiParams.internal_port && !alreadyMapped) {
+      if (form.openPort && xruntipiParams.internal_port && !publishesAppTcpPort(serviceCopy.ports, xruntipiParams.internal_port)) {
         serviceCopy.ports = serviceCopy.ports || [];
         serviceCopy.ports.push(`\${APP_PORT}:${xruntipiParams.internal_port}`);
       }
@@ -158,10 +185,6 @@ export class DockerComposeBuilder {
 
     serviceCopy.labels = { ...serviceCopy.labels, 'runtipi.managed': 'true', 'runtipi.appurn': appUrn };
 
-    if (!service.restart) {
-      serviceCopy.restart = 'unless-stopped';
-    }
-
     return serviceCopy as NormalizedComposeService;
   };
 
@@ -169,9 +192,7 @@ export class DockerComposeBuilder {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const appId = `${appName}-${appStoreId}`;
 
-    const inputCopy = JSON.parse(JSON.stringify(input)) as DynamicComposeSchemaYaml;
-
-    inputCopy.services = servicesForArchitecture(inputCopy, architecture);
+    const inputCopy = mergeArchitectureOverrides(input, architecture);
 
     const services = Object.values(inputCopy.services).filter(Boolean);
     const hasMultipleServices = services.length > 1;

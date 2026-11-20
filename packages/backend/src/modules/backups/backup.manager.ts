@@ -2,24 +2,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { pLimit, sanitizeFilename } from '@/common/helpers/file-helpers';
-import { ArchiveService, type ArchiveEntry } from '@/core/archive/archive.service';
+import { ArchiveService } from '@/core/archive/archive.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
+import { Effect } from 'effect';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { SOURCE_LIMIT_BYTES, sourceDir } from '../app-stores/packaging';
+import { AppsRepository } from '../apps/apps.repository';
+import { BackupArchive, migrationMetadataFilename } from './backup-archive';
+import { BackupResources, backupStep, requireFilesystemSuccess, runBackupEffect } from './backup-resources';
+import { RestoreTransaction } from './restore-transaction';
+import { DockerService } from '../docker/docker.service';
+import type { AppJobContext } from '../app-lifecycle/services/app-job.service';
+
+export class BackupRecoveryError extends Error {}
+
+export type MigrationBackupState = {
+  version: 1;
+  initialized: boolean;
+  migrationIds: string[];
+};
 
 @Injectable()
-export class BackupManager {
+export class BackupManager implements OnModuleInit {
+  private readonly archiveFiles: BackupArchive;
+  private readonly resources: BackupResources;
+
   constructor(
     private readonly archiveManager: ArchiveService,
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly appFilesManager: AppFilesManager,
-  ) {}
+    private readonly appsRepository: AppsRepository,
+    private readonly docker: DockerService,
+  ) {
+    this.archiveFiles = new BackupArchive(filesystem, logger);
+    this.resources = new BackupResources(filesystem, logger);
+  }
 
   private getBackupPaths(appUrn: AppUrn) {
     const { dataDir } = this.config.get('directories');
@@ -54,164 +77,304 @@ export class BackupManager {
     };
   }
 
-  public backupApp = async (appUrn: AppUrn) => {
-    const { appName, appStoreId, backupDir, userConfigDir } = this.getBackupPaths(appUrn);
-    const backupName = `${appName}-${appStoreId}-${Date.now()}`;
+  private getStagingPaths() {
+    const { dataDir } = this.config.get('directories');
 
-    const tempDir = await this.filesystem.createTempDirectory(appUrn);
+    return {
+      snapshotRoot: '/tmp/runtipi-backup-staging',
+      archiveRoot: path.join(dataDir, 'backups', '.staging'),
+    };
+  }
 
-    if (!tempDir) {
-      throw new Error('Failed to create temp directory');
+  async onModuleInit() {
+    const { snapshotRoot, archiveRoot } = this.getStagingPaths();
+    await this.cleanupStaging(snapshotRoot);
+
+    if (await this.filesystem.isDirectory(path.dirname(archiveRoot))) {
+      await this.cleanupStaging(archiveRoot);
     }
+  }
 
-    this.logger.info('Copying files to backup location...');
-
-    await this.filesystem.createDirectory(tempDir);
-
-    const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
-
-    await this.filesystem.copyDirectory(appDataDir, path.join(tempDir, 'app-data'), {
-      recursive: true,
-      filter: (src) => src !== path.join(appDataDir, 'backups') && !src.startsWith(`${path.join(appDataDir, 'backups')}${path.sep}`),
-    });
-
-    await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
-
-    // Source/build code lives beside per-app data and is pruned on update.
-    // Include the installed pin's context so an offline restore can build/start it.
-    const commit = (await this.filesystem.readTextFile(path.join(appInstalledDir, '.wizard-commit')))?.trim();
-    if (commit && /^[0-9a-f]{40}$/.test(commit)) {
-      const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
-      if (await this.filesystem.isDirectory(context)) {
-        const validateSourceEntry = await this.validateBackupSource(context);
-        const archivedSource = path.join(tempDir, 'app-source');
-        // cp otherwise preserves links (and may rewrite relative targets as absolute
-        // source paths). Archive only independent bytes, never source-bound links.
-        if (!(await this.filesystem.copyDirectory(context, archivedSource, { dereference: true, filter: validateSourceEntry }))) {
-          throw new Error('Failed to include installed source context in backup');
-        }
-        await this.validateRestoreDirectory(archivedSource, { allowSymlinks: false, rejectHardLinks: true });
+  private async cleanupStaging(stagingPath: string) {
+    try {
+      if ((await fs.promises.lstat(stagingPath)).isSymbolicLink()) {
+        await fs.promises.unlink(stagingPath);
+        return;
       }
+
+      await fs.promises.rm(stagingPath, { recursive: true, force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      this.logger.warn(`Failed to clean backup staging path ${stagingPath}:`, error);
     }
+  }
 
-    if (await this.filesystem.isDirectory(userConfigDir)) {
-      this.logger.info('Including user configuration in backup...');
-      await this.filesystem.copyDirectory(userConfigDir, path.join(tempDir, 'user-config'));
-    }
-
-    this.logger.info('Creating archive...');
-
-    // Create the archive
-    const { stdout, stderr } = await this.archiveManager.createTarGz(tempDir, `${path.join(tempDir, backupName)}.tar.gz`);
-    this.logger.debug('--- archiveManager.createTarGz ---');
-    this.logger.debug('stderr:', stderr);
-    this.logger.debug('stdout:', stdout);
-
-    this.logger.info('Moving archive to backup directory...', backupDir);
-
-    // Move the archive to the backup directory
-    await this.filesystem.createDirectory(backupDir);
-    await this.filesystem.copyFile(`${path.join(tempDir, backupName)}.tar.gz`, path.join(backupDir, `${backupName}.tar.gz`));
-
-    // Remove the temp backup folder
-    await this.filesystem.removeDirectory(tempDir);
-
-    this.logger.info('Backup completed!');
-  };
-
-  public restoreApp = async (appUrn: AppUrn, filename: string) => {
-    const restoreDir = await this.filesystem.createTempDirectory(appUrn);
-
-    if (!restoreDir) {
-      throw new Error('Failed to create temp directory');
-    }
-
-    const { backupDir, backupPath: archive } = this.getBackupFilePath(appUrn, filename);
-    const { userConfigDir } = this.getBackupPaths(appUrn);
-
-    if (!archive.startsWith(backupDir)) {
-      throw new Error('Invalid backup file path');
-    }
-
-    this.logger.info('Restoring app from backup...');
-
-    // Verify the app has a backup
-    if (!(await this.filesystem.isFile(archive))) {
-      throw new Error('The backup file does not exist');
-    }
-
-    // Unzip the archive
-    await this.filesystem.createDirectory(restoreDir);
+  public async backupApp(appUrn: AppUrn, wasRunning = false, context?: AppJobContext) {
+    const filename = await this.createBackup(appUrn, wasRunning, context);
 
     try {
-      this.validateRestoreArchiveEntries(await this.archiveManager.listTarGz(archive));
-
-      this.logger.info('Extracting archive...');
-      const { stderr, stdout } = await this.archiveManager.extractTarGz(archive, restoreDir);
-      this.logger.debug('--- archiveManager.extractTarGz ---');
-      this.logger.debug('stderr:', stderr);
-      this.logger.debug('stdout:', stdout);
-
-      const runValidationFsOperation = pLimit(16);
-
-      await this.validateRestoreDirectory(path.join(restoreDir, 'app-data'), { allowSymlinks: true }, undefined, runValidationFsOperation);
-      await this.validateRestoreDirectory(
-        path.join(restoreDir, 'app'),
-        { allowSymlinks: true, rejectHardLinks: true },
-        undefined,
-        runValidationFsOperation,
-      );
-      await this.validateRestoreDirectory(
-        path.join(restoreDir, 'user-config'),
-        {
-          allowSymlinks: false,
-          optional: true,
-          rejectHardLinks: true,
-        },
-        undefined,
-        runValidationFsOperation,
-      );
-
-      const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
-
-      const archivedSource = path.join(restoreDir, 'app-source');
-      await this.validateRestoreDirectory(
-        archivedSource,
-        { allowSymlinks: false, optional: true, rejectHardLinks: true },
-        undefined,
-        runValidationFsOperation,
-      );
-      if (await this.filesystem.isDirectory(archivedSource)) {
-        const commit = (await this.filesystem.readTextFile(path.join(restoreDir, 'app', '.wizard-commit')))?.trim();
-        if (!commit || !/^[0-9a-f]{40}$/.test(commit)) {
-          throw new Error('Backup source context has no valid installed commit');
-        }
-        const { appName, appStoreId } = extractAppUrn(appUrn);
-        const context = sourceDir(this.config.get('directories').appDataDir, appStoreId, appName, commit);
-        // Fail before replacing app/data if the saved code cannot be recovered.
-        await this.restoreSourceContext(archivedSource, context);
-      }
-
-      // Remove old data directories
-      await this.filesystem.removeDirectory(appDataDir);
-      await this.filesystem.removeDirectory(appInstalledDir);
-      await this.filesystem.removeDirectory(userConfigDir);
-
-      await this.filesystem.createDirectory(appDataDir);
-      await this.filesystem.createDirectory(appInstalledDir);
-      await this.filesystem.createDirectory(userConfigDir);
-
-      // Copy data from the backup folder
-      await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir);
-      await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir);
-
-      if (await this.filesystem.isDirectory(path.join(restoreDir, 'user-config'))) {
-        await this.filesystem.copyDirectory(path.join(restoreDir, 'user-config'), userConfigDir);
-      }
-    } finally {
-      await this.filesystem.removeDirectory(restoreDir);
+      const app = await this.appsRepository.getAppByUrn(appUrn);
+      const maxBackups = app?.maxBackups ?? this.config.get('userSettings').maxBackups;
+      await this.cleanupOldBackups(appUrn, maxBackups);
+    } catch (error) {
+      this.logger.warn(`Failed to clean old backups for ${appUrn}:`, error);
     }
-  };
+
+    return filename;
+  }
+
+  public async createBackup(appUrn: AppUrn, wasRunning = false, context?: AppJobContext) {
+    context?.signal.throwIfAborted();
+    await this.reconcileRestore(appUrn);
+
+    const { appName, appStoreId, backupDir, userConfigDir } = this.getBackupPaths(appUrn);
+    const { snapshotRoot, archiveRoot } = this.getStagingPaths();
+    const backupFilename = `${appName}-${appStoreId}-${Date.now()}.tar.gz`;
+    const manager = this;
+
+    await Promise.all([snapshotRoot, archiveRoot].map((directory) => fs.promises.mkdir(directory, { recursive: true })));
+
+    return runBackupEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const temporaryDirectory = yield* manager.resources.temporaryDirectory(path.join(snapshotRoot, 'snapshot-'));
+          const contentDirectory = path.join(temporaryDirectory, 'content');
+          const archivePath = path.join(temporaryDirectory, backupFilename);
+
+          yield* backupStep(async () => {
+            await requireFilesystemSuccess(manager.filesystem.createDirectory(contentDirectory), 'Failed to create temporary backup directory');
+
+            context?.signal.throwIfAborted();
+            let snapshotError: unknown;
+
+            try {
+              context?.progress('stopping');
+              await manager.docker.composeApp(appUrn, 'stop');
+              context?.progress('copying');
+              const { appDataDir, appInstalledDir } = manager.appFilesManager.getAppPaths(appUrn);
+              const copyFilter = () => {
+                context?.signal.throwIfAborted();
+                return true;
+              };
+
+              await manager.archiveFiles.stageBackupDirectory(
+                appDataDir,
+                path.join(contentDirectory, 'app-data'),
+                'app data',
+                // Wizard: only the app's own top-level backups folder, never an app folder that is merely named backups.
+                (source) => copyFilter() && source !== path.join(appDataDir, 'backups'),
+              );
+
+              await manager.archiveFiles.stageBackupDirectory(appInstalledDir, path.join(contentDirectory, 'app'), 'app files', copyFilter);
+
+              // Wizard: source/build code lives beside per-app data and is pruned on update.
+              // Include the installed pin's context so an offline restore can build/start it.
+              const commit = (await manager.filesystem.readTextFile(path.join(appInstalledDir, '.wizard-commit')))?.trim();
+              if (commit && /^[0-9a-f]{40}$/.test(commit)) {
+                const sourceContext = sourceDir(manager.config.get('directories').appDataDir, appStoreId, appName, commit);
+                if (await manager.filesystem.isDirectory(sourceContext)) {
+                  const validateSourceEntry = await manager.validateBackupSource(sourceContext);
+                  const archivedSource = path.join(contentDirectory, 'app-source');
+                  // cp otherwise preserves links (and may rewrite relative targets as absolute
+                  // source paths). Archive only independent bytes, never source-bound links.
+                  if (!(await manager.filesystem.copyDirectory(sourceContext, archivedSource, { dereference: true, filter: validateSourceEntry }))) {
+                    throw new Error('Failed to include installed source context in backup');
+                  }
+                  await manager.archiveFiles.validateRestoreDirectory(archivedSource, { allowSymlinks: false, rejectHardLinks: true });
+                }
+              }
+              if (await manager.filesystem.isDirectory(userConfigDir)) {
+                await manager.archiveFiles.stageBackupDirectory(
+                  userConfigDir,
+                  path.join(contentDirectory, 'user-config'),
+                  'user configuration',
+                  copyFilter,
+                );
+              }
+
+              const state = await manager.appsRepository.getMigrationState(appUrn);
+              await requireFilesystemSuccess(
+                manager.filesystem.writeJsonFile(path.join(contentDirectory, migrationMetadataFilename), { version: 1, ...state }),
+                'Failed to write backup migration metadata',
+              );
+            } catch (error) {
+              snapshotError = error;
+            }
+
+            if (wasRunning) {
+              try {
+                await manager.docker.composeApp(appUrn, 'up --detach --remove-orphans');
+              } catch (error) {
+                const original = snapshotError instanceof Error ? `${snapshotError.message}. ` : '';
+                const message = error instanceof Error ? error.message : String(error);
+                throw new BackupRecoveryError(`${original}Failed to restart the app: ${message}`, { cause: error });
+              }
+            }
+
+            if (snapshotError) throw snapshotError;
+            context?.signal.throwIfAborted();
+
+            for (const name of ['app-data', 'app', 'user-config']) {
+              await manager.archiveFiles.validateRestoreDirectory(path.join(contentDirectory, name), {
+                allowSymlinks: true,
+                rejectHardLinks: true,
+                optional: name === 'user-config',
+              });
+            }
+
+            context?.progress('archiving');
+            await manager.archiveManager.createTarGz(contentDirectory, archivePath, context?.signal);
+            manager.archiveFiles.validateRestoreArchiveEntries(await manager.archiveManager.listTarGz(archivePath));
+            await requireFilesystemSuccess(manager.filesystem.createDirectory(backupDir), 'Failed to create backup directory');
+          });
+
+          const privateDirectory = yield* manager.resources.temporaryDirectory(path.join(archiveRoot, '.runtipi-backup-'));
+          const privateArchive = path.join(privateDirectory, backupFilename);
+          yield* backupStep(() =>
+            requireFilesystemSuccess(manager.filesystem.copyFile(archivePath, privateArchive), 'Failed to copy backup archive'),
+          );
+          yield* backupStep(async () => {
+            context?.disableCancellation();
+            context?.progress('saving');
+            await manager.publishStagedBackup(privateArchive, path.join(backupDir, backupFilename));
+          });
+
+          manager.logger.info('Backup completed!');
+          return backupFilename;
+        }),
+      ),
+    );
+  }
+
+  private async publishStagedBackup(privateBackupPath: string, backupPath: string) {
+    try {
+      await fs.promises.link(privateBackupPath, backupPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error('A backup with this filename already exists');
+      }
+      throw error;
+    }
+  }
+
+  public async restoreApp(appUrn: AppUrn, filename: string): Promise<MigrationBackupState | null> {
+    await this.reconcileRestore(appUrn);
+    const manager = this;
+
+    return runBackupEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const restoreParentDir = yield* manager.resources.temporaryDirectory('/tmp/runtipi-restore-');
+          const restoreDir = path.join(restoreParentDir, 'extracted');
+
+          return yield* backupStep(async () => {
+            let migrationState: MigrationBackupState | null = null;
+
+            const { backupPath: archive } = manager.getBackupFilePath(appUrn, filename);
+            const { userConfigDir } = manager.getBackupPaths(appUrn);
+
+            manager.logger.info('Restoring app from backup...');
+
+            const restoreDirectoryCreated = await manager.filesystem.createDirectory(restoreDir);
+
+            if (!restoreDirectoryCreated) {
+              throw new Error('Failed to create temporary restore directory');
+            }
+
+            const restoreArchive = path.join(restoreParentDir, '.runtipi-restore-archive.tar.gz');
+            await manager.archiveFiles.copyRestoreArchive(archive, restoreArchive);
+
+            manager.archiveFiles.validateRestoreArchiveEntries(await manager.archiveManager.listTarGz(restoreArchive));
+
+            manager.logger.info('Extracting archive...');
+            const { stderr, stdout } = await manager.archiveManager.extractTarGz(restoreArchive, restoreDir);
+            manager.logger.debug('--- archiveManager.extractTarGz ---');
+            manager.logger.debug('stderr:', stderr);
+            manager.logger.debug('stdout:', stdout);
+
+            const runValidationFsOperation = pLimit(16);
+
+            await manager.archiveFiles.validateRestoreDirectory(path.join(restoreDir, 'app-data'), { allowSymlinks: true }, runValidationFsOperation);
+
+            await manager.archiveFiles.validateRestoreDirectory(
+              path.join(restoreDir, 'app'),
+              { allowSymlinks: true, rejectHardLinks: true },
+              runValidationFsOperation,
+            );
+
+            const migrationMetadataPath = path.join(restoreDir, migrationMetadataFilename);
+            if (await manager.filesystem.isFile(migrationMetadataPath)) {
+              const metadata = await manager.filesystem.readJsonFile(migrationMetadataPath);
+              if (!manager.isMigrationBackupState(metadata)) {
+                throw new Error('Backup migration metadata is invalid');
+              }
+              migrationState = metadata;
+            }
+
+            await manager.archiveFiles.validateRestoreDirectory(
+              path.join(restoreDir, 'user-config'),
+              {
+                allowSymlinks: true,
+                optional: true,
+                rejectHardLinks: true,
+              },
+              runValidationFsOperation,
+            );
+
+            const { appInstalledDir, appDataDir } = manager.appFilesManager.getAppPaths(appUrn);
+
+            // Wizard: the installed pin's source context (see createBackup).
+            const archivedSource = path.join(restoreDir, 'app-source');
+            await manager.archiveFiles.validateRestoreDirectory(
+              archivedSource,
+              { allowSymlinks: false, optional: true, rejectHardLinks: true },
+              runValidationFsOperation,
+            );
+            if (await manager.filesystem.isDirectory(archivedSource)) {
+              const commit = (await manager.filesystem.readTextFile(path.join(restoreDir, 'app', '.wizard-commit')))?.trim();
+              if (!commit || !/^[0-9a-f]{40}$/.test(commit)) {
+                throw new Error('Backup source context has no valid installed commit');
+              }
+              const { appName, appStoreId } = extractAppUrn(appUrn);
+              const sourceContext = sourceDir(manager.config.get('directories').appDataDir, appStoreId, appName, commit);
+              // Fail before replacing app/data if the saved code cannot be recovered.
+              await manager.restoreSourceContext(archivedSource, sourceContext);
+            }
+
+            const restoredUserConfigDir = path.join(restoreDir, 'user-config');
+            const userConfigExists = await manager.filesystem.isDirectory(restoredUserConfigDir);
+            const userConfigSource = userConfigExists ? restoredUserConfigDir : null;
+
+            const targetState = migrationState ?? { initialized: false, migrationIds: [] };
+            const safe = (directory: string) => manager.filesystem.getSafeFilePath(directory);
+            await manager.restoreTransaction(appUrn).restore(
+              [
+                { source: path.join(restoreDir, 'app-data'), destination: safe(appDataDir), error: 'Failed to copy restored app data' },
+                { source: path.join(restoreDir, 'app'), destination: safe(appInstalledDir), error: 'Failed to copy restored app files' },
+                { source: userConfigSource, destination: safe(userConfigDir), error: 'Failed to copy restored user configuration' },
+              ],
+              targetState,
+            );
+
+            return migrationState;
+          });
+        }),
+      ),
+    );
+  }
+
+  public async reconcileRestore(appUrn: AppUrn) {
+    await this.restoreTransaction(appUrn).reconcile();
+  }
+
+  private restoreTransaction(appUrn: AppUrn) {
+    const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
+    const { userConfigDir } = this.getBackupPaths(appUrn);
+
+    // Wizard: confine the live directories to Runtipi's own folders before any filesystem call (CodeQL path-injection).
+    const safe = (directory: string) => this.filesystem.getSafeFilePath(directory);
+    return new RestoreTransaction(appUrn, [safe(appDataDir), safe(appInstalledDir), safe(userConfigDir)], this.filesystem, this.appsRepository, this.logger);
+  }
 
   // This admission is only for a local source checkout. Restore archives still
   // reject every link before extraction. Resolve the full chain, not just the
@@ -311,127 +474,28 @@ export class BackupManager {
     }
   }
 
-  private validateRestoreArchiveEntries(entries: ArchiveEntry[]) {
-    for (const entry of entries) {
-      if (entry.type !== '-' && entry.type !== 'd') {
-        throw new Error('Backup contains unsupported file types');
-      }
-
-      const entryPath = this.normalizeArchiveEntryPath(entry.path);
-
-      if (entryPath === '.') {
-        continue;
-      }
-
-      const rootName = entryPath.split('/')[0];
-
-      if (!rootName) {
-        throw new Error('Backup contains unsupported file types');
-      }
-    }
-  }
-
-  private normalizeArchiveEntryPath(entryPath: string) {
-    if (path.posix.isAbsolute(entryPath)) {
-      throw new Error('Backup contains unsupported file types');
-    }
-
-    const normalizedPath = path.posix.normalize(entryPath.replace(/^(\.\/)+/, ''));
-
-    if (normalizedPath === '..' || normalizedPath.startsWith('../')) {
-      throw new Error('Backup contains unsupported file types');
-    }
-
-    return normalizedPath;
-  }
-
-  private async validateRestoreDirectory(
-    directory: string,
-    options: { allowSymlinks: boolean; optional?: boolean; rejectHardLinks?: boolean },
-    rootDirectory = directory,
-    runFsOperation = pLimit(16),
-  ) {
-    const directoryStats = await runFsOperation(() => fs.promises.lstat(directory)).catch((error: NodeJS.ErrnoException) => {
-      if (options.optional && error.code === 'ENOENT') {
-        return null;
-      }
-
-      throw error;
-    });
-
-    if (!directoryStats) {
-      return;
-    }
-
-    if (!directoryStats.isDirectory()) {
-      throw new Error('Backup contains unsupported file types');
-    }
-
-    const entries = await runFsOperation(() => fs.promises.readdir(directory, { withFileTypes: true }));
-    const rootPath = path.resolve(rootDirectory);
-    let nextEntryIndex = 0;
-
-    const workers = Array.from({ length: Math.min(16, entries.length) }, async () => {
-      while (nextEntryIndex < entries.length) {
-        const entry = entries[nextEntryIndex];
-        nextEntryIndex += 1;
-
-        if (!entry) {
-          continue;
-        }
-
-        const entryPath = path.join(directory, entry.name);
-
-        if (entry.isSymbolicLink()) {
-          if (!options.allowSymlinks) {
-            throw new Error('Backup contains unsupported file types');
-          }
-
-          const linkTarget = await runFsOperation(() => fs.promises.readlink(entryPath));
-          const resolvedTarget = path.resolve(path.dirname(entryPath), linkTarget);
-
-          if (!this.isPathInsideOrEqual(rootPath, resolvedTarget)) {
-            throw new Error('Backup contains unsupported file types');
-          }
-
-          continue;
-        }
-
-        if (entry.isDirectory()) {
-          await this.validateRestoreDirectory(entryPath, options, rootDirectory, runFsOperation);
-          continue;
-        }
-
-        if (entry.isFile()) {
-          if (options.rejectHardLinks) {
-            const stats = await runFsOperation(() => fs.promises.lstat(entryPath));
-
-            if (stats.nlink > 1) {
-              throw new Error('Backup contains unsupported file types');
-            }
-          }
-
-          continue;
-        }
-
-        throw new Error('Backup contains unsupported file types');
-      }
-    });
-
-    await Promise.all(workers);
-  }
-
   private isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
     const relativePath = path.relative(parentPath, childPath);
 
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
   }
 
-  /**
-   * Delete a backup file
-   * @param appUrn - The app id
-   * @param filename - The filename of the backup
-   */
+  private isMigrationBackupState(value: unknown): value is MigrationBackupState {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const metadata = value as Record<string, unknown>;
+    if (!Array.isArray(metadata.migrationIds)) {
+      return false;
+    }
+
+    const migrationIds = metadata.migrationIds;
+    const validMigrationIds = migrationIds.every((migrationId) => typeof migrationId === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(migrationId));
+    const uniqueMigrationIds = validMigrationIds && new Set(migrationIds).size === migrationIds.length;
+    return metadata.version === 1 && typeof metadata.initialized === 'boolean' && uniqueMigrationIds;
+  }
+
   public async deleteBackup(appUrn: AppUrn, filename: string) {
     const { backupPath } = this.getBackupFilePath(appUrn, filename);
 
@@ -440,11 +504,6 @@ export class BackupManager {
     }
   }
 
-  /**
-   * Clean up old backups based on retention policy
-   * @param appUrn - The app id
-   * @param maxBackups - Maximum number of backups to keep (0 means no limit)
-   */
   public async cleanupOldBackups(appUrn: AppUrn, maxBackups: number) {
     if (!maxBackups) {
       return;
@@ -465,21 +524,12 @@ export class BackupManager {
     this.logger.info(`Cleanup completed for ${appUrn}`);
   }
 
-  /**
-   * Delete all backups for an app
-   * @param appUrn - The app id
-   */
   public async deleteAppBackupsByUrn(appUrn: AppUrn): Promise<void> {
     const backups = await this.listBackupsByAppId(appUrn);
 
     await Promise.all(backups.map((backup) => this.deleteBackup(appUrn, backup.id)));
   }
 
-  /**
-   * List the backups for an app
-   * @param appUrn - The app id
-   * @returns The list of backups
-   */
   public async listBackupsByAppId(appUrn: AppUrn) {
     const { backupDir: backupsDir } = this.getBackupPaths(appUrn);
 
@@ -492,6 +542,10 @@ export class BackupManager {
 
       const backups = await Promise.all(
         list.map(async (backup) => {
+          if (sanitizeFilename(backup) !== backup || !backup.endsWith('.tar.gz') || backup.startsWith('.')) {
+            return null;
+          }
+
           const backupPath = path.join(backupsDir, backup);
 
           if (!(await this.filesystem.isFile(backupPath))) {
@@ -510,12 +564,6 @@ export class BackupManager {
     }
   }
 
-  /**
-   * Get the file path for a backup
-   * @param appUrn - The app id
-   * @param filename - The filename of the backup
-   * @returns The backup file path
-   */
   public async getBackupPath(appUrn: AppUrn, filename: string): Promise<string> {
     const { backupPath } = this.getBackupFilePath(appUrn, filename);
 
@@ -526,25 +574,22 @@ export class BackupManager {
     return backupPath;
   }
 
-  /**
-   * Upload a backup file
-   * @param appUrn - The app id
-   * @param filename - The filename of the backup
-   * @param fileBuffer - The file buffer
-   */
   public async uploadBackup(appUrn: AppUrn, filename: string, fileBuffer: Buffer): Promise<void> {
     const { backupDir, backupPath, sanitizedFilename } = this.getBackupFilePath(appUrn, filename);
+    await requireFilesystemSuccess(this.filesystem.createDirectory(backupDir), 'Failed to create backup directory');
+    const manager = this;
 
-    // Create backup directory if it doesn't exist
-    await this.filesystem.createDirectory(backupDir);
+    await runBackupEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const privateDirectory = yield* manager.resources.temporaryDirectory(path.join(backupDir, '.runtipi-backup-'));
+          const privateBackupPath = path.join(privateDirectory, sanitizedFilename);
 
-    // Check if file already exists
-    if (await this.filesystem.pathExists(backupPath)) {
-      throw new Error('A backup with this filename already exists');
-    }
-
-    // Write the file
-    await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
+          yield* backupStep(() => fs.promises.writeFile(privateBackupPath, fileBuffer, { flag: 'wx', mode: 0o600 }));
+          yield* backupStep(() => manager.publishStagedBackup(privateBackupPath, backupPath));
+        }),
+      ),
+    );
 
     this.logger.info(`Backup uploaded successfully: ${sanitizedFilename}`);
   }

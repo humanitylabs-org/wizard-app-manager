@@ -56,7 +56,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: v
-        run: echo "tag=v4.10.2-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=v4.12.0-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v6
         with:
@@ -68,7 +68,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/humanitylabs-org/wizard-app-manager
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=Wizard App Manager (Runtipi v4.10.2 with an index-backed App Store)
+            org.opencontainers.image.description=Wizard App Manager (Runtipi v4.12.0 with an index-backed App Store)
             org.opencontainers.image.licenses=GPL-3.0
           outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
@@ -99,7 +99,7 @@ jobs:
         with:
           fetch-depth: 0
       - id: v
-        run: echo "tag=v4.10.2-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=v4.12.0-wizard.$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
