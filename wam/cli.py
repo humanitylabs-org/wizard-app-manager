@@ -1277,12 +1277,6 @@ def browser_boundary_cmd(c: Config, args) -> int:
         if res["changed"] and not args.no_restart:
             res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
                               {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
-        if value == "1" and not args.dry_run:
-            # WAM#836: Welcome offers Tinfoil first on a private-first box; cache its image now, in the background,
-            # so Connect Tinfoil doesn't wait for a ~300 MB download. Never installs it; never fails this command.
-            from . import recommended
-            if recommended.spawn_private_first(c):
-                res["prefetch"] = "started"
         res["next"] = "restart the App Manager (wam serve) so its own routes follow"
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0

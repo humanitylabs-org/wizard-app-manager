@@ -14,6 +14,11 @@ REAL_SPAWN = rec.spawn_private_first   # conftest stubs it for every other test 
 IMAGE = 'ghcr.io/example/connector:1@sha256:' + 'b' * 64
 
 
+@pytest.fixture(autouse=True)
+def _plain_docker(monkeypatch):
+    monkeypatch.setattr(rec, 'docker_argv', lambda: ['docker'])
+
+
 def cfg(tmp_path):
     return SimpleNamespace(home=tmp_path, index='https://index.example')
 
@@ -270,3 +275,28 @@ def test_defaults_list_tinfoil_for_private_first_and_bootstrap_still_skips_it():
     row = json.loads(slots.DEFAULTS_FILE.read_text())['private_first_prefetch']['apps']
     assert row == [{'app': 'wizard-tinfoil', 'repo': 'humanitylabs-org/wizard-tinfoil'}]
     assert 'wizard-tinfoil' not in slots.to_install({})
+
+
+def test_sudo_docker_fallback_is_used_for_the_download(tmp_path, monkeypatch):
+    # install.sh falls back to sudo docker when the user isn't in the docker group yet; so does the download (Codex P2).
+    tinfoil_indexed(monkeypatch)
+    private_first(tmp_path, '1')
+    monkeypatch.setattr(rec, 'docker_argv', lambda: ['sudo', '-n', 'docker'])
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=1 if 'inspect' in argv else 0)
+    assert rec.prefetch_private_first(cfg(tmp_path), runner=run, fetch=tinfoil_recipe)['apps'][0]['state'] == 'cached'
+    assert calls[0] == ['sudo', '-n', 'docker', 'image', 'inspect', IMAGE]
+    assert calls[1][-5:] == ['sudo', '-n', 'docker', 'pull', IMAGE]
+
+
+def test_browser_boundary_on_does_not_touch_the_private_first_download(tmp_path, monkeypatch):
+    from wam import browser_boundary as bb
+    monkeypatch.setattr(bb, 'set_box', lambda *a, **k: {'value': True, 'changed': []}, raising=False)
+    monkeypatch.setattr(rec, 'spawn_private_first', lambda c: (_ for _ in ()).throw(AssertionError('spawned')))
+    monkeypatch.setattr(cli, '_alongside_apps', lambda c, rt: {})
+    c = SimpleNamespace(home=tmp_path, runtipi_root=tmp_path / 'rt',
+                        runtipi=lambda: (_ for _ in ()).throw(OSError('no runtipi')))
+    for action in ('on', 'off'):
+        assert cli.browser_boundary_cmd(c, SimpleNamespace(action=action, dry_run=False, no_restart=True, json=True)) == 0

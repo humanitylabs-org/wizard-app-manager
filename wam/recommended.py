@@ -87,7 +87,13 @@ def recipe_images(selection, fetch=None):
     return images
 
 
-def _pull(c, d, runner, fetch) -> dict:
+def docker_argv() -> list[str]:
+    """`docker`, or `sudo -n docker` where the user can't reach Docker yet (install.sh's own fallback; WAM#836)."""
+    from .network import docker_cmd
+    return docker_cmd()
+
+
+def _pull(c, d, runner, fetch, docker) -> dict:
     """Cache one app's indexed images (never install it). A row: cached (with commit/images) or unavailable."""
     row = {"id": d["app"], "state": "unavailable"}
     try:
@@ -98,9 +104,9 @@ def _pull(c, d, runner, fetch) -> dict:
             "operation": "install"})
         images = recipe_images(selection, fetch)
         for image in images:
-            if runner(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode == 0:
+            if runner([*docker, "image", "inspect", image], capture_output=True, timeout=30).returncode == 0:
                 continue
-            argv = ["nice", "-n", "19", "docker", "pull", image]
+            argv = ["nice", "-n", "19", *docker, "pull", image]
             if shutil.which("ionice"):
                 argv = ["ionice", "-c", "3", *argv]
             runner(argv, capture_output=True, timeout=900, check=True)
@@ -120,7 +126,8 @@ def _run(c, apps, name, runner=None, fetch=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"state": "running"}
-        rows = [_pull(c, d, runner, fetch) for d in apps]
+        docker = docker_argv() if apps else []
+        rows = [_pull(c, d, runner, fetch, docker) for d in apps]
         result = {"state": "finished", "apps": rows}
         tmp = c.home / f"{name}.json.new"
         tmp.write_text(json.dumps(result) + "\n")
