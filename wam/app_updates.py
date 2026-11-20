@@ -584,6 +584,150 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
             **({} if ok else {"error": f"rollback left the app {status} on version {after.get('version')}"})}
 
 
+# ---------------------------------------------------------------- Store Update / Start (#857)
+# The Store's (and the Tracker's) Update and Start used to trust Runtipi's status alone. Runtipi says `running` while
+# a container sits in Docker's Restarting state, so a version the nightly run had caught and rolled back was installed
+# again by a Store tap and reported `installed`, and a Start of a crashing app said Started. Both now get the same
+# check as the nightly updater; a Store update that fails it is rolled back from the backup the update just made.
+
+def _recipe_version(folder: Path) -> tuple[int | None, str | None]:
+    """(tipi_version, version name) of a recipe folder's config.json; (None, None) when unreadable."""
+    try:
+        cfg = json.loads((Path(folder) / "config.json").read_text())
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(cfg, dict):
+        return None, None
+    try:
+        tipi = int(cfg.get("tipi_version"))
+    except (TypeError, ValueError):
+        tipi = None
+    name = cfg.get("version")
+    return tipi, (str(name) if name not in (None, "") else None)
+
+
+def failed_recently(home: Path | None, app_id: str, to: int | None) -> dict | None:
+    """The app-updates.json `failed` record when version `to` of the app failed its check lately (same rule as the
+    nightly run's `failed` skip), else None."""
+    rec = _failed(home).get(app_id)
+    if to is None or not rec or rec.get("to") != to:
+        return None
+    return rec if time.time() - float(rec.get("at") or 0) < RETRY_DAYS * 86400 else None
+
+
+def store_refusal(c, app_id: str, force: bool = False) -> str | None:
+    """Why a Store update of the app to its prepared store recipe must not run: that exact version failed the check
+    after an update lately and was rolled back (nightly or Store). None when it may run, or the owner forces it."""
+    from . import cli
+    if force:
+        return None
+    to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
+    rec = failed_recently(c.home, app_id, to)
+    if not rec:
+        return None
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(float(rec.get("at") or 0)))
+    reason = f" ({rec['reason']})" if rec.get("reason") else ""
+    return (f"{name} {to_name or 'this version'} failed its check after an update on {when}{reason} and was rolled "
+            f"back, so it waits for a newer version. Update anyway only if you know it was fixed.")
+
+
+def _record_failed(home: Path | None, app_id: str, to: int | None, problem: str) -> None:
+    if to is None:
+        return
+    fails = _failed(home)
+    fails[app_id] = {"to": to, "at": int(time.time()), "reason": problem[:300]}
+    _write(home, failed=fails)
+
+
+def _clear_failed(home: Path | None, app_id: str) -> None:
+    fails = _failed(home)
+    if app_id in fails:
+        fails.pop(app_id)
+        _write(home, failed=fails)
+
+
+def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, probe_seconds: float = PROBE_SECONDS,
+                 sleep=time.sleep, containers=None, probe=None, endpoint=None, roll=None) -> dict:
+    """Run a Store update (`update()` -> app_update's result) and check the app the way the nightly run does
+    (`verify`): it comes back as it was, its version moved, no container restarts, no fewer containers run, its
+    health URL / MCP endpoint answers. On a failed check it is rolled back from the backup the update made, the
+    version is recorded in app-updates.json `failed` (the nightly run then skips it too), and the result carries an
+    `error` naming what happened, e.g. "Photos 0.4.0 keeps crashing (a container keeps restarting); kept 0.3.1".
+    A SystemExit from update() (owner gate, a setting only the owner can give: nothing changed) passes through."""
+    from . import cli
+    containers = containers or _containers
+    probe = probe or _probe
+    endpoint = endpoint or _endpoint
+    roll = roll or rollback
+    urn = f"{app_id}:{cli.STORE}"
+    try:
+        rt = c.runtipi()
+        row = ((rt.app(urn) or {}).get("app") or {})
+    except Exception:  # noqa: BLE001 - Runtipi unreadable: the update itself will say so
+        rt, row = None, {}
+    if rt is None or not row:
+        return update()   # nothing to compare against; app_update refuses an app that is not installed
+    try:
+        have = int(row.get("version") or 0)
+    except (TypeError, ValueError):
+        have = 0
+    to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
+    _, from_name = _recipe_version(Path(c.runtipi_root) / "apps" / cli.STORE / app_id)
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    status = row.get("status")
+    before = {"id": app_id, "name": name, "from": have, "to": to if to is not None else have, "status": status,
+              "running": containers(urn).count("running"),
+              "endpoint_ok": baseline(c, rt, app_id, status, endpoint=endpoint, probe=probe)}
+    started_ms = int(time.time() * 1000)
+    try:
+        res = update()
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001 - it may have half-applied: check and roll back like the nightly run
+        res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+    problem = verify(c, rt, urn, app_id, res, before, settle=settle, probe_seconds=probe_seconds, sleep=sleep,
+                     containers=containers, probe=probe, endpoint=endpoint)
+    if problem is None:
+        _clear_failed(c.home, app_id)
+        return res
+    _record_failed(c.home, app_id, to, problem)
+    what = f"{name} {to_name or 'update'} " + ("keeps crashing" if "restarting" in problem else "did not work")
+    try:
+        unchanged = int(res.get("version") or 0) == have and res.get("status") == status
+    except (TypeError, ValueError):
+        unchanged = False
+    if unchanged:   # the update never applied: the previous version still runs, nothing to restore
+        return {**res, "error": f"{what} ({problem}); {from_name or 'the previous version'} still runs",
+                "rolled_back": False}
+    print(f"{app_id}: {problem}; rolling back", file=sys.stderr, flush=True)
+    try:
+        rb = roll(c, rt, urn, started_ms, before)
+    except Exception as e:  # noqa: BLE001
+        rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    if rb.get("rolled_back"):
+        err = f"{what} ({problem}); kept {from_name or 'the previous version'}"
+    else:
+        err = f"{what} ({problem}), and rolling it back did not work: {rb.get('error')}"
+    return {**res, "status": rb.get("status", res.get("status")), "error": err[:400],
+            "rolled_back": bool(rb.get("rolled_back")), "rollback": rb}
+
+
+def check_started(c, app_id: str, *, settle: float = SETTLE_SECONDS, sleep=time.sleep, containers=None) -> str | None:
+    """After a Store Start that Runtipi reports `running`: None when the app stays up, else why it does not (the
+    container half of `verify`; there is no before-start endpoint baseline, so its health URL is not judged)."""
+    from . import cli
+    containers = containers or _containers
+    sleep(settle)
+    states = containers(f"{app_id}:{cli.STORE}")
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    if "restarting" in states:
+        return f"{name} keeps crashing after it starts (a container keeps restarting)"
+    if states and "running" not in states:
+        return f"{name} stopped again right after it started"
+    return None
+
+
 # ---------------------------------------------------------------- apply
 
 def reconcile_settings(c, rt, app_id: str) -> list[str]:
