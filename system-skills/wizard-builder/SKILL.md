@@ -57,10 +57,10 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
    `wizard-builder/bin/wam verify <source>` there by path.
 5. **If it passes, install and hand over.** Install through the installation's App Manager lifecycle with its
    authenticated same-origin route (for a local proof, `wam install-local <source> --run`), open it in Wizard at
-   `?open=<app-id>`, and give the owner the link. The owner
-   using it is the final check; fix what he reports in the app and ship the fix the same way.
+   `?open=<app-id>`, and give the owner the link. Fix what he
+   reports in the app and ship the fix the same way. Finally ask: "is there a component here other apps could share?"
 6. **Stop rule.** Five failed `wam verify` runs in total ends the loop: stop and report what works, what fails (the
-   last receipt) and the one decision or fix needed. Do not build a harness to investigate.
+   last receipt) and the one decision or fix needed.
 
 ## Every app serves Try it switches (Miguel, 11 Nov 2026)
 Every app ships the switch contract from its first PR (wizard-os `docs/APP_SWITCHES.md`): `switches:` in `wizard.md`
