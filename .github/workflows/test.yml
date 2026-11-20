@@ -39,7 +39,7 @@ jobs:
         run: |
           python tools/sync_wizard_style.py --check
           python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
-      - run: python -m pytest -q
+      - run: python -m pytest -q --durations=200
       - uses: actions/setup-node@v4
         with: {node-version: "22"}
       - run: node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs
