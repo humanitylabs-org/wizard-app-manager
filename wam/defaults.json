@@ -4,6 +4,12 @@
     "about": "Capabilities (not system spots) that a consumer reads from every installed provider at once, like a multi spot: a front end that `uses:` one is linked to each provider's network, not only the owner's active one, and several providers are not a collision. Health reads every wearable connector this way.",
     "ids": ["health-data"]
   },
+  "private_first_prefetch": {
+    "about": "Apps whose images are cached in the background once a box records private first (WIZARD_PRIVATE_FIRST=1 / `wam private-first on`, WAM#836), because Welcome offers them first. Never installed or started here; Welcome's Connect still installs them.",
+    "apps": [
+      {"app": "wizard-tinfoil", "repo": "humanitylabs-org/wizard-tinfoil"}
+    ]
+  },
   "slots": {
     "chats": {
       "name": "Chats",

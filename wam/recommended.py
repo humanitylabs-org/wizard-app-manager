@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import urllib.request
 from pathlib import Path
@@ -86,48 +87,116 @@ def recipe_images(selection, fetch=None):
     return images
 
 
+def docker_argv() -> list[str]:
+    """`docker`, or `sudo -n docker` where the user can't reach Docker yet (install.sh's own fallback; WAM#836)."""
+    from .network import docker_cmd
+    return docker_cmd()
+
+
+def _pull(c, d, runner, fetch, docker) -> dict:
+    """Cache one app's indexed images (never install it). A row: cached (with commit/images) or unavailable."""
+    row = {"id": d["app"], "state": "unavailable"}
+    try:
+        entry = index.resolve(c.index, d["repo"])
+        selection = store_selection.resolve(c, d["app"], {
+            "source": "standard", "repo": d["repo"],
+            "commit": entry.get("commit") or entry.get("install", {}).get("commit") or "",
+            "operation": "install"})
+        images = recipe_images(selection, fetch)
+        for image in images:
+            if runner([*docker, "image", "inspect", image], capture_output=True, timeout=30).returncode == 0:
+                continue
+            argv = ["nice", "-n", "19", *docker, "pull", image]
+            if shutil.which("ionice"):
+                argv = ["ionice", "-c", "3", *argv]
+            runner(argv, capture_output=True, timeout=900, check=True)
+        row.update(state="cached", commit=selection["commit"], images=images)
+    except (ValueError, RuntimeError, OSError, subprocess.SubprocessError, yaml.YAMLError):
+        # No raw subprocess output/credentials in browser-visible status.
+        row["error"] = "Image download unavailable; installation can retry normally."
+    return row
+
+
+def _run(c, apps, name, runner=None, fetch=None):
+    """Pull `apps` one after another under <home>/<name>.lock and record the result in <home>/<name>.json."""
+    runner = runner or subprocess.run
+    c.home.mkdir(parents=True, exist_ok=True)
+    with (c.home / f"{name}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"state": "running"}
+        docker = docker_argv() if apps else []
+        rows = [_pull(c, d, runner, fetch, docker) for d in apps]
+        result = {"state": "finished", "apps": rows}
+        tmp = c.home / f"{name}.json.new"
+        tmp.write_text(json.dumps(result) + "\n")
+        tmp.replace(c.home / f"{name}.json")
+        return result
+
+
 def prefetch(c, runner=None, fetch=None):
     """Sequential best-effort idle-class pulls, with cross-process exclusion.
 
     nice/ionice lower the CLI's priority, not Docker daemon network bandwidth.
     Do not claim a network throttle; downloads never block setup or installation.
     """
-    runner = runner or subprocess.run
-    c.home.mkdir(parents=True, exist_ok=True)
-    with (c.home / "prefetch.lock").open("a") as lock:
+    return _run(c, [d for d in catalog() if d.get("prefetch")], "prefetch", runner, fetch)
+
+
+# Private first (WAM#836): a box installed with WIZARD_PRIVATE_FIRST=1 offers Tinfoil first in Welcome, so its
+# image is cached in the background as soon as the choice is recorded, instead of on the owner's Connect tap.
+PRIVATE_FIRST = "prefetch-private-first"
+
+
+def private_first_apps(c) -> list[dict]:
+    """defaults.json `private_first_prefetch.apps` when the box's recorded private-first choice is on, minus apps
+    already installed. Empty (nothing to do) on every other box."""
+    from . import private_first
+    if private_first.choice(c.home) != "1":
+        return []
+    rows = (json.loads(slots.DEFAULTS_FILE.read_text()).get("private_first_prefetch") or {}).get("apps") or []
+    try:
+        installed = {a["id"] for a in json.loads((c.home / "apps.json").read_text()).get("apps", [])}
+    except (OSError, ValueError, KeyError, TypeError):
+        installed = set()
+    return [dict(d) for d in rows if d.get("app") and d.get("repo") and d["app"] not in installed]
+
+
+def prefetch_private_first(c, runner=None, fetch=None):
+    """`wam prefetch --private-first`: cache the private-first apps' images; never installs or starts them."""
+    apps = private_first_apps(c)
+    if not apps:
+        return {"state": "skipped", "apps": []}
+    return _run(c, apps, PRIVATE_FIRST, runner, fetch)
+
+
+def private_first_done(c) -> bool:
+    try:
+        r = json.loads((c.home / f"{PRIVATE_FIRST}.json").read_text())
+        return r.get("state") == "finished" and all(a.get("state") == "cached" for a in r.get("apps", []))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def spawn_private_first(c, popen=None):
+    """Start `wam prefetch --private-first` detached (its own session), so `wam private-first on` in the installer
+    returns at once and the download outlives it. Best effort: a failure here only means the download waits for the
+    App Manager service's next start (resume) or the owner's Connect tap."""
+    if not private_first_apps(c):
+        return None
+    popen = popen or subprocess.Popen
+    try:
+        c.home.mkdir(parents=True, exist_ok=True)
+        log = (c.home / f"{PRIVATE_FIRST}.log").open("a")
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"state": "running"}
-        rows = []
-        for d in catalog():
-            if not d.get("prefetch"):
-                continue
-            row = {"id": d["app"], "state": "unavailable"}
-            try:
-                entry = index.resolve(c.index, d["repo"])
-                selection = store_selection.resolve(c, d["app"], {
-                    "source": "standard", "repo": d["repo"],
-                    "commit": entry.get("commit") or entry.get("install", {}).get("commit") or "",
-                    "operation": "install"})
-                images = recipe_images(selection, fetch)
-                for image in images:
-                    if runner(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode == 0:
-                        continue
-                    argv = ["nice", "-n", "19", "docker", "pull", image]
-                    if shutil.which("ionice"):
-                        argv = ["ionice", "-c", "3", *argv]
-                    runner(argv, capture_output=True, timeout=900, check=True)
-                row.update(state="cached", commit=selection["commit"], images=images)
-            except (ValueError, RuntimeError, OSError, subprocess.SubprocessError, yaml.YAMLError):
-                # No raw subprocess output/credentials in browser-visible status.
-                row["error"] = "Image download unavailable; installation can retry normally."
-            rows.append(row)
-        result = {"state": "finished", "apps": rows}
-        tmp = c.home / "prefetch.json.new"
-        tmp.write_text(json.dumps(result) + "\n")
-        tmp.replace(c.home / "prefetch.json")
-        return result
+            popen([sys.executable, "-m", "wam", "prefetch", "--private-first"], cwd=str(Path(__file__).resolve().parent.parent),
+                  stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        finally:
+            log.close()
+        return "started"
+    except OSError:
+        return None
 
 
 _start_lock = threading.Lock()
@@ -154,3 +223,6 @@ def start(c):
 def resume(c):
     if (c.home / "prefetch-requested").exists() and not (c.home / "prefetch.json").exists():
         start(c)
+    # Private first (WAM#836): every App Manager start finishes a download that was cut off (reboot, pull error).
+    if private_first_apps(c) and not private_first_done(c):
+        threading.Thread(target=prefetch_private_first, args=(c,), daemon=True, name="wam-prefetch-private-first").start()

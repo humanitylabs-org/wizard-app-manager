@@ -94,6 +94,7 @@ wam backup schedule set --s3 https://<account>.r2.cloudflarestorage.com/<bucket>
 
 The file format, what travels and what stays, and every command: [docs/BACKUP.md](docs/BACKUP.md).
 | `wam prefetch` | Cache recommended Docker images only; never install apps or create containers |
+| `wam prefetch --private-first` | On a private-first box, cache the Tinfoil image Welcome offers first (WAM#836); started on its own by `wam private-first on` and at App Manager start |
 
 ### Recommended connectors (on demand)
 

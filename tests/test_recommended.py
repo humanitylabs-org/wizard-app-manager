@@ -10,7 +10,13 @@ import pytest
 from wam import cli, index, recommended as rec, slots, store_install
 
 SHA = 'a' * 40
+REAL_SPAWN = rec.spawn_private_first   # conftest stubs it for every other test (WAM#836)
 IMAGE = 'ghcr.io/example/connector:1@sha256:' + 'b' * 64
+
+
+@pytest.fixture(autouse=True)
+def _plain_docker(monkeypatch):
+    monkeypatch.setattr(rec, 'docker_argv', lambda: ['docker'])
 
 
 def cfg(tmp_path):
@@ -167,3 +173,130 @@ def test_store_recommendations_preserve_owner_and_origin_checks(tmp_path, monkey
         assert starts == [c]
     finally:
         server.shutdown(); server.server_close(); t.join()
+
+
+# Private first pre-download (WAM#836): Tinfoil's image is cached before the owner taps Connect Tinfoil.
+TINFOIL_SHA = 'c' * 40
+
+
+def tinfoil_indexed(monkeypatch):
+    def resolve(base, repo):
+        assert repo == 'humanitylabs-org/wizard-tinfoil'
+        return {'id': 'wizard-tinfoil', 'repo': repo, 'install': {'commit': TINFOIL_SHA}}
+    monkeypatch.setattr(index, 'resolve', resolve)
+    monkeypatch.setattr(rec.store_selection, 'resolve',
+                        lambda c, app, body: body.update(entry={}) or body)
+
+
+def tinfoil_recipe(url):
+    assert url.startswith('https://raw.githubusercontent.com/humanitylabs-org/wizard-tinfoil/' + TINFOIL_SHA + '/')
+    return f'services:\n  wizard-tinfoil:\n    image: {IMAGE}\n'
+
+
+def private_first(tmp_path, value):
+    from wam import private_first as pf
+    pf.record(tmp_path, value)
+
+
+def test_private_first_box_caches_tinfoil_and_installs_nothing(tmp_path, monkeypatch):
+    tinfoil_indexed(monkeypatch)
+    private_first(tmp_path, '1')
+    (tmp_path / 'apps.json').write_text('{"apps":[]}')
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=1 if 'inspect' in argv else 0)
+    result = rec.prefetch_private_first(cfg(tmp_path), runner=run, fetch=tinfoil_recipe)
+    assert result['state'] == 'finished'
+    assert [(a['id'], a['state']) for a in result['apps']] == [('wizard-tinfoil', 'cached')]
+    assert [a[-3:] for a in calls if 'pull' in a] == [['docker', 'pull', IMAGE]]
+    assert all('pull' in a or a[:3] == ['docker', 'image', 'inspect'] for a in calls)   # no install, no run
+    assert (tmp_path / 'apps.json').read_text() == '{"apps":[]}'
+    assert rec.private_first_done(cfg(tmp_path))
+
+
+@pytest.mark.parametrize('value', [None, '0'])
+def test_other_boxes_download_nothing(tmp_path, monkeypatch, value):
+    tinfoil_indexed(monkeypatch)
+    private_first(tmp_path, value)
+    def run(argv, **kw):
+        raise AssertionError('no docker call on a box that is not private first')
+    assert rec.prefetch_private_first(cfg(tmp_path), runner=run, fetch=tinfoil_recipe) == {'state': 'skipped', 'apps': []}
+    assert REAL_SPAWN(cfg(tmp_path), popen=run) is None
+
+
+def test_installed_tinfoil_is_not_downloaded_again(tmp_path, monkeypatch):
+    private_first(tmp_path, '1')
+    (tmp_path / 'apps.json').write_text('{"apps":[{"id":"wizard-tinfoil"}]}')
+    assert rec.private_first_apps(cfg(tmp_path)) == []
+
+
+def test_private_first_on_starts_the_download_detached(tmp_path, monkeypatch):
+    private_first(tmp_path, '1')
+    seen = {}
+    def popen(argv, **kw):
+        seen.update(argv=argv, **kw)
+    assert REAL_SPAWN(cfg(tmp_path), popen=popen) == 'started'
+    assert seen['argv'][1:] == ['-m', 'wam', 'prefetch', '--private-first']
+    assert seen['start_new_session'] is True
+    assert (rec.Path(seen['cwd']) / 'wam' / 'recommended.py').is_file()
+
+
+def test_private_first_cmd_on_spawns_the_prefetch(tmp_path, monkeypatch):
+    from wam import private_first as pf
+    monkeypatch.setattr(pf, 'set_box', lambda home, root, store, ids, value, dry_run=False:
+                        (pf.record(home, value), {'value': value, 'changed': [], 'dry_run': dry_run})[1])
+    c = SimpleNamespace(home=tmp_path, index='https://index.example', runtipi_root=tmp_path / 'rt',
+                        runtipi=lambda: (_ for _ in ()).throw(OSError('no runtipi')))
+    monkeypatch.setattr(cli, '_alongside_apps', lambda c, rt: {})
+    started = []
+    monkeypatch.setattr(rec, 'spawn_private_first', lambda c: started.append(c) or 'started')
+    args = SimpleNamespace(action='on', dry_run=False, no_restart=True, json=True)
+    assert cli.private_first_cmd(c, args) == 0 and len(started) == 1
+    for action, dry in (('off', False), ('on', True)):
+        cli.private_first_cmd(c, SimpleNamespace(action=action, dry_run=dry, no_restart=True, json=True))
+    assert len(started) == 1
+
+
+def test_service_start_resumes_an_unfinished_download(tmp_path, monkeypatch):
+    private_first(tmp_path, '1')
+    ran = threading.Event()
+    monkeypatch.setattr(rec, 'prefetch_private_first', lambda c: ran.set())
+    rec.resume(cfg(tmp_path))
+    assert ran.wait(2)
+    ran.clear()
+    (tmp_path / 'prefetch-private-first.json').write_text(
+        '{"state":"finished","apps":[{"id":"wizard-tinfoil","state":"cached"}]}')
+    rec.resume(cfg(tmp_path))
+    assert not ran.wait(0.3)
+
+
+def test_defaults_list_tinfoil_for_private_first_and_bootstrap_still_skips_it():
+    row = json.loads(slots.DEFAULTS_FILE.read_text())['private_first_prefetch']['apps']
+    assert row == [{'app': 'wizard-tinfoil', 'repo': 'humanitylabs-org/wizard-tinfoil'}]
+    assert 'wizard-tinfoil' not in slots.to_install({})
+
+
+def test_sudo_docker_fallback_is_used_for_the_download(tmp_path, monkeypatch):
+    # install.sh falls back to sudo docker when the user isn't in the docker group yet; so does the download (Codex P2).
+    tinfoil_indexed(monkeypatch)
+    private_first(tmp_path, '1')
+    monkeypatch.setattr(rec, 'docker_argv', lambda: ['sudo', '-n', 'docker'])
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=1 if 'inspect' in argv else 0)
+    assert rec.prefetch_private_first(cfg(tmp_path), runner=run, fetch=tinfoil_recipe)['apps'][0]['state'] == 'cached'
+    assert calls[0] == ['sudo', '-n', 'docker', 'image', 'inspect', IMAGE]
+    assert calls[1][-5:] == ['sudo', '-n', 'docker', 'pull', IMAGE]
+
+
+def test_browser_boundary_on_does_not_touch_the_private_first_download(tmp_path, monkeypatch):
+    from wam import browser_boundary as bb
+    monkeypatch.setattr(bb, 'set_box', lambda *a, **k: {'value': True, 'changed': []}, raising=False)
+    monkeypatch.setattr(rec, 'spawn_private_first', lambda c: (_ for _ in ()).throw(AssertionError('spawned')))
+    monkeypatch.setattr(cli, '_alongside_apps', lambda c, rt: {})
+    c = SimpleNamespace(home=tmp_path, runtipi_root=tmp_path / 'rt',
+                        runtipi=lambda: (_ for _ in ()).throw(OSError('no runtipi')))
+    for action in ('on', 'off'):
+        assert cli.browser_boundary_cmd(c, SimpleNamespace(action=action, dry_run=False, no_restart=True, json=True)) == 0
