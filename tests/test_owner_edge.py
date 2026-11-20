@@ -140,7 +140,10 @@ def call(e, method="GET", path="/api/status", headers=None, body=b"", extra_line
     if body:
         hs["Content-Length"] = str(len(body))
     lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k, v in hs.items()] + list(extra_lines)
-    s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
+    try:
+        s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # the edge may answer and hang up before reading the request (a refused peer): read that answer
     data = b""
     while True:
         try:
@@ -265,6 +268,13 @@ def test_app_status_caches_and_never_raises(tmp_path):
     assert st("messenger") == "" and len(calls) == 2
     # No Runtipi install at all (no .env): unknown, so the edge keeps the restarting page.
     assert owner_edge.AppStatus(tmp_path / "none", "wizardapps", ttl=0)("messenger") == ""
+
+
+def test_app_status_asks_on_a_box_that_just_booted(tmp_path, monkeypatch):
+    # time.monotonic() is the uptime: seconds after boot it is below the ttl, and a never-asked app must still be asked.
+    monkeypatch.setattr(owner_edge.time, "monotonic", lambda: 1.0)
+    st = owner_edge.AppStatus(tmp_path, "wizardapps", ttl=60, lookup=lambda app_id: "stopped")
+    assert st("messenger") == "stopped"
 
 
 def test_app_status_asks_runtipi_for_the_app_in_the_wizard_store(tmp_path, monkeypatch):

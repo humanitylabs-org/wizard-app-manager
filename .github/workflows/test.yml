@@ -26,8 +26,27 @@ jobs:
         working-directory: packages/backend
       - run: bun x tsc --noEmit
         working-directory: packages/backend
-  test:
+  # The suite runs as parallel shards (#854: one 12-minute job became a few short ones). `test` is the required
+  # check on main, so it stays as the one job that passes only when every shard and check passed.
+  pytest:
+    name: pytest (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pyyaml pytest pyjwt pytest-xdist
+      - run: python -m pytest -q -n 8 --durations=10
+        env:
+          WAM_TEST_SHARD: ${{ matrix.shard }}/4
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,13 +58,22 @@ jobs:
         run: |
           python tools/sync_wizard_style.py --check
           python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
-      - run: python -m pytest -q
       - uses: actions/setup-node@v4
         with: {node-version: "22"}
       - run: node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: '1.4.4'}
       - run: bun test tests/curator-mirrors.test.ts
+  test:
+    needs: [pytest, checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every pytest shard and check passed
+        run: |
+          echo "pytest: ${{ needs.pytest.result }}, checks: ${{ needs.checks.result }}"
+          test "${{ needs.pytest.result }}" = success && test "${{ needs.checks.result }}" = success
   builder-verify:
     # The platform is tested once: every template kind passes the same `wam verify` an owner's agent runs.
     runs-on: ubuntu-latest
