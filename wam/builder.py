@@ -350,6 +350,10 @@ def check_app(root, proposal=False):
             rows.append({'rule': 'switches: Try it contract declared (wizard.app-switches/1)', 'ok': False, 'severity': 'warning',
                          'detail': 'add `switches: {contract: wizard.app-switches/1, path: /api/switches}` to wizard.md and serve '
                                    'GET/POST /api/switches (an empty list is fine); see templates/hello-wizard app/server.py'})
+        comp = root / str((doc.get('runtime') or {}).get('compose') or '')
+        if (doc.get('runtime') or {}).get('compose') and comp.is_file():
+            rows += [{'rule': 'compose: every exec argument fits the Linux limit', 'ok': False, 'severity': 'warning',
+                      'detail': w} for w in wizardmd.compose_arg_warnings(comp.read_text())]
         rows += app_standard.id_rows(doc)
         if proposal:
             rows += app_standard.check(root, doc)
