@@ -475,6 +475,8 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
             st["apps_without_data"] = bk.get("apps_without_data") or []
             for msg in st["apps_without_data"]:
                 log("warning: " + msg)
+            # a leftover copy of an app in a second store is left out, never the whole run (#826)
+            st["skipped_app_copies"] = bk.get("skipped_app_copies") or []
             log(f"snapshot {bk['short_id']}: {human(bk['data_added'] or 0)} new of {human(bk['capture_bytes'] or 0)}")
             st["retention"] = apply_retention(repo, cfg, host)
             log("restic check")
