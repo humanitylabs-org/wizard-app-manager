@@ -346,11 +346,12 @@ export class BackupManager implements OnModuleInit {
             const userConfigSource = userConfigExists ? restoredUserConfigDir : null;
 
             const targetState = migrationState ?? { initialized: false, migrationIds: [] };
+            const safe = (directory: string) => manager.filesystem.getSafeFilePath(directory);
             await manager.restoreTransaction(appUrn).restore(
               [
-                { source: path.join(restoreDir, 'app-data'), destination: appDataDir, error: 'Failed to copy restored app data' },
-                { source: path.join(restoreDir, 'app'), destination: appInstalledDir, error: 'Failed to copy restored app files' },
-                { source: userConfigSource, destination: userConfigDir, error: 'Failed to copy restored user configuration' },
+                { source: path.join(restoreDir, 'app-data'), destination: safe(appDataDir), error: 'Failed to copy restored app data' },
+                { source: path.join(restoreDir, 'app'), destination: safe(appInstalledDir), error: 'Failed to copy restored app files' },
+                { source: userConfigSource, destination: safe(userConfigDir), error: 'Failed to copy restored user configuration' },
               ],
               targetState,
             );
@@ -370,7 +371,9 @@ export class BackupManager implements OnModuleInit {
     const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
     const { userConfigDir } = this.getBackupPaths(appUrn);
 
-    return new RestoreTransaction(appUrn, [appDataDir, appInstalledDir, userConfigDir], this.filesystem, this.appsRepository, this.logger);
+    // Wizard: confine the live directories to Runtipi's own folders before any filesystem call (CodeQL path-injection).
+    const safe = (directory: string) => this.filesystem.getSafeFilePath(directory);
+    return new RestoreTransaction(appUrn, [safe(appDataDir), safe(appInstalledDir), safe(userConfigDir)], this.filesystem, this.appsRepository, this.logger);
   }
 
   // This admission is only for a local source checkout. Restore archives still
