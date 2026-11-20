@@ -974,9 +974,12 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
                            "reason": "moving it to its new name did not work, so it stays as it was"
                            + ("" if res.get("rolled_back", True) else " (needs a look)"),
                            "rollback": res, "step": "move to its new name"})
+    # an app whose move was tried is never updated in place in the same run (#832, Codex P1): a failed move left
+    # it as it was, a move that could not retire the old id finishes on the next run
+    tried = {res.get("from") for res in moves}
+    due = [r for r in due if r["id"] not in tried]
     if renamed:
-        # the new ids, and an old id a move left installed (it is retired on the next run, never updated in place)
-        moved = {r["id"] for r in renamed} | {res.get("from") for res in moves if res.get("renamed")}
+        moved = {r["id"] for r in renamed} | tried
         rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
         if only:   # an update asked for by id still touches only those apps (Codex P1)
             rows = [r for r in rows if r["id"] in only]

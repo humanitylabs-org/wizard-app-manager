@@ -647,3 +647,11 @@ def test_wam_app_update_moves_a_renamed_app(tmp_path, monkeypatch):
     # an app with no rename updates as before; system apps never move on their own
     assert cli.main(["app", "update", "notes"]) == 0 and updated == ["notes"]
     assert cli.rename_instead_of_update(cli.Config(), "wizard-ux") is None and asked == [["telegram"], ["notes"]]
+    # the flag-first form (docs/graceful-restart.md) moves it too, and hands any other app on to Runtipi
+    passed = []
+    monkeypatch.setattr(cli, "runtipi_cli", lambda root, argv: passed.append(argv) or 0)
+    moved.clear()
+    assert cli.main(["app", "update", "--no-backup", "telegram"]) == 0 and moved == [("telegram", "tg-style")]
+    assert passed == []
+    assert cli.main(["app", "update", "--no-backup", "telegram", "notes"]) == 0
+    assert passed == [["app", "update", "--no-backup", "notes"]]

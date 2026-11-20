@@ -2944,11 +2944,20 @@ def main(argv: list[str] | None = None) -> int:
         res = app_lifecycle(Config(), argv[1], argv[2])
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0
+    if argv[:2] == ["app", "update"]:
+        # a renamed app moves to its new id instead (#832), in the plain and the flag-first form
+        targets = [a for a in argv[2:] if not a.startswith("-")]
+        moves = {t: m for t in targets if (m := rename_instead_of_update(Config(), t)) is not None}
+        if moves:
+            for m in moves.values():
+                print(json.dumps(m, indent=2))
+            ok = all(m.get("renamed") for m in moves.values())
+            argv = [a for a in argv if a not in moves]
+            if not [a for a in argv[2:] if not a.startswith("-")]:
+                return 0 if ok else 1
+            rest = main(argv)
+            return rest if ok else 1
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
-        moved = rename_instead_of_update(Config(), argv[2])
-        if moved is not None:
-            print(json.dumps(moved, indent=2))
-            return 0 if moved.get("renamed") else 1
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1

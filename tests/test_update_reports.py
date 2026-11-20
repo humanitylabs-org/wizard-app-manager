@@ -400,3 +400,9 @@ def test_updating_a_renamed_app_by_id_moves_it_instead_of_updating_it_in_place(t
     assert asked == [["telegram"]] and out["renamed"] == [{"id": "tg-style", "name": "TG style"}]
     # an old id the move left installed is never updated in place; the next run retires it
     assert updated == [] and out["updated"] == []
+    # a move that failed (rolled back) leaves telegram as it was: still never updated in place (Codex P1)
+    asked.clear()
+    monkeypatch.setattr(app_rename, "rename_due", lambda c, rt, only=None: asked.append(only) or
+                        [{"from": "telegram", "to": "tg-style", "rolled_back": True, "error": "no answer"}])
+    out = au.apply(C(), only=["telegram"], notify=False, moves=lambda *a, **k: [], reporter=lambda *a, **k: {})
+    assert updated == [] and out["updated"] == [] and [f["id"] for f in out["failed"]] == ["telegram"]
