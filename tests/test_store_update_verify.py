@@ -195,3 +195,26 @@ def test_store_start_uses_the_check_by_default(box, monkeypatch):
     monkeypatch.setattr(au, "check_started", lambda c, a: seen.append(a) or "Photos keeps crashing after it starts")
     code, job = sst.start(box.c, "photos", {})
     assert _wait(job, "starting")["state"] == "failed" and seen == ["photos"]
+
+
+def test_a_start_whose_containers_vanish_fails_but_unreadable_docker_does_not_block(box):
+    def gone(urn):
+        return []
+    assert au.check_started(box.c, "photos", settle=0, sleep=lambda s: None, containers=gone) == \
+        "Photos stopped again right after it started"
+
+    def no_docker(urn):
+        raise RuntimeError("docker ps failed: permission denied")
+    assert au.check_started(box.c, "photos", settle=0, sleep=lambda s: None, containers=no_docker) is None
+
+
+def test_a_nightly_run_never_erases_a_failure_a_store_update_recorded_meanwhile(box):
+    """Codex P2 on #865: the run writes back only the entries it changed, onto the current state."""
+    read = {"music": {"to": 2, "at": 1}}
+    au._write(box.c.home, failed=read)
+    au._record_failed(box.c.home, "photos", 5, "a container keeps restarting")   # a Store update, mid-run
+    after = au._write_failed(box.c.home, read, {}, last={"at": "now"})          # the run cleared music only
+    assert set(after) == {"photos"}
+    state = json.loads((box.c.home / au.STATE).read_text())
+    assert state["failed"]["photos"]["to"] == 5 and state["last"] == {"at": "now"}
+    assert not list(box.c.home.glob("*.tmp"))

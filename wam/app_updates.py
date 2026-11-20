@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +44,7 @@ DEFAULT_MODE = "auto"
 UNIT = "wizard-app-updates"
 STATE = "app-updates.json"
 LOCK = "app-updates.lock"
+STATE_LOCK = "app-updates-state.lock"   # #857: guards read-modify-writes of STATE (not the run lock above)
 RUNNING = "app-updates-running.json"   # #733: the app a run is on now, so pages can say "Updating…" after a reload
 SETTLE_SECONDS = 20          # an app must stay up this long after its update before it counts as working
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
@@ -67,14 +69,48 @@ def _state(home: Path | None) -> dict:
     return s if isinstance(s, dict) else {}
 
 
-def _write(home: Path | None, **changes) -> dict:
-    h = _home(home)
-    h.mkdir(parents=True, exist_ok=True)
+class _StateLock:
+    """Serializes read-modify-writes of app-updates.json (#857: a Store update and an app-update run can both record
+    a failed version). An flock on its own file, held per call; never held while an update runs."""
+    def __init__(self, home: Path | None):
+        self.h = _home(home)
+
+    def __enter__(self):
+        self.h.mkdir(parents=True, exist_ok=True)
+        self.f = open(self.h / STATE_LOCK, "a+")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+
+def _write_unlocked(h: Path, changes: dict) -> dict:
     s = {**_state(h), **changes}
-    tmp = h / (STATE + ".tmp")
+    tmp = h / f"{STATE}.{os.getpid()}.{threading.get_ident()}.tmp"   # concurrent writers never share a temp file
     tmp.write_text(json.dumps(s, indent=1) + "\n")
     tmp.replace(h / STATE)
     return s
+
+
+def _write(home: Path | None, **changes) -> dict:
+    with _StateLock(home) as lk:
+        return _write_unlocked(lk.h, changes)
+
+
+def _write_failed(home: Path | None, base: dict, new: dict, **changes) -> dict:
+    """Write the `failed` entries this caller changed (base -> new) onto the CURRENT state, under the state lock,
+    so a run that read `failed` earlier never erases a record another writer (a Store update, #857) added since."""
+    with _StateLock(home) as lk:
+        cur = _failed(lk.h)
+        for k in set(base) | set(new):
+            if base.get(k) != new.get(k):
+                if k in new:
+                    cur[k] = new[k]
+                else:
+                    cur.pop(k, None)
+        _write_unlocked(lk.h, {**changes, "failed": cur})
+        return cur
 
 
 def mode(home: Path | None = None) -> str:
@@ -633,18 +669,21 @@ def store_refusal(c, app_id: str, force: bool = False) -> str | None:
 
 
 def _record_failed(home: Path | None, app_id: str, to: int | None, problem: str) -> None:
+    """Never raises: a state file that can't be written must not stop the rollback or the report."""
     if to is None:
         return
-    fails = _failed(home)
-    fails[app_id] = {"to": to, "at": int(time.time()), "reason": problem[:300]}
-    _write(home, failed=fails)
+    try:
+        _write_failed(home, {}, {app_id: {"to": to, "at": int(time.time()), "reason": problem[:300]}})
+    except OSError as e:
+        print(f"WARNING: {app_id}: failed version not recorded: {e}", file=sys.stderr)
 
 
 def _clear_failed(home: Path | None, app_id: str) -> None:
-    fails = _failed(home)
-    if app_id in fails:
-        fails.pop(app_id)
-        _write(home, failed=fails)
+    try:
+        if app_id in _failed(home):
+            _write_failed(home, {app_id: _failed(home)[app_id]}, {})
+    except OSError as e:
+        print(f"WARNING: {app_id}: old failure not cleared: {e}", file=sys.stderr)
 
 
 def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, probe_seconds: float = PROBE_SECONDS,
@@ -691,13 +730,13 @@ def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, prob
     if problem is None:
         _clear_failed(c.home, app_id)
         return res
-    _record_failed(c.home, app_id, to, problem)
     what = f"{name} {to_name or 'update'} " + ("keeps crashing" if "restarting" in problem else "did not work")
     try:
         unchanged = int(res.get("version") or 0) == have and res.get("status") == status
     except (TypeError, ValueError):
         unchanged = False
     if unchanged:   # the update never applied: the previous version still runs, nothing to restore
+        _record_failed(c.home, app_id, to, problem)
         return {**res, "error": f"{what} ({problem}); {from_name or 'the previous version'} still runs",
                 "rolled_back": False}
     print(f"{app_id}: {problem}; rolling back", file=sys.stderr, flush=True)
@@ -705,6 +744,7 @@ def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, prob
         rb = roll(c, rt, urn, started_ms, before)
     except Exception as e:  # noqa: BLE001
         rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    _record_failed(c.home, app_id, to, problem)   # after the rollback: recording never delays or blocks it
     if rb.get("rolled_back"):
         err = f"{what} ({problem}); kept {from_name or 'the previous version'}"
     else:
@@ -717,13 +757,17 @@ def check_started(c, app_id: str, *, settle: float = SETTLE_SECONDS, sleep=time.
     """After a Store Start that Runtipi reports `running`: None when the app stays up, else why it does not (the
     container half of `verify`; there is no before-start endpoint baseline, so its health URL is not judged)."""
     from . import cli
-    containers = containers or _containers
     sleep(settle)
-    states = containers(f"{app_id}:{cli.STORE}")
     name = display_name(c.runtipi_root, cli.STORE, app_id)
+    try:
+        states = (containers or cli._app_container_states)(f"{app_id}:{cli.STORE}")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        # Docker itself unreadable from here: Runtipi's `running` is all there is (never fail every Start for it)
+        print(f"WARNING: {app_id}: containers not checked after start: {e}", file=sys.stderr)
+        return None
     if "restarting" in states:
         return f"{name} keeps crashing after it starts (a container keeps restarting)"
-    if states and "running" not in states:
+    if "running" not in states:   # gone, exited or dead: it did not stay up (Codex P2: an empty set never passes)
         return f"{name} stopped again right after it started"
     return None
 
@@ -1132,6 +1176,7 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
                     r["skip"] = None
         due = [r for r in rows if not r["skip"] and r["id"] not in moved]
     fails = _failed(c.home)
+    fails_read = json.loads(json.dumps(fails))   # what this run read: only its own changes are written back (#857)
     for r in due:
         started = int(time.time())
         _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
@@ -1188,7 +1233,7 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
             "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
             "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
     told_needs = _state(c.home).get("needs_told") or {}
-    _write(c.home, failed=fails, last=last)
+    fails = _write_failed(c.home, fails_read, fails, last=last)
     repeat = bool(quiet_repeats and needs and not (done or rolled or failed or renamed)
                   and sorted(last["needs_owner"]) == told_needs.get("ids")
                   and time.time() - float(told_needs.get("at") or 0) < NEEDS_REMIND_SECONDS)
@@ -1202,9 +1247,10 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
     told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
     bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
     if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
+        linked = dict(fails)
         for k, url in bugs.items():
-            fails[k] = {**fails[k], "bug": url}
-        _write(c.home, failed=fails)
+            linked[k] = {**fails[k], "bug": url}
+        fails = _write_failed(c.home, fails, linked)
     msg = _summary(done, rolled, failed, needs, renamed, told)
     if notify and msg and not repeat and _notify(c, *msg) and needs:
         _write(c.home, needs_told={"ids": sorted(last["needs_owner"]), "at": time.time()})
