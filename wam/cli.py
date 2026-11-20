@@ -2625,6 +2625,27 @@ def update_wait_s(c: "Config") -> int:
     return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
 
 
+def rename_instead_of_update(c: "Config", app_id: str) -> dict | None:
+    """`wam app update <old>` for an app its publisher renamed (wizard.md renamed_from, #832): move it to its new id
+    (data, settings, connections; the old app is retired) instead of updating it in place, and finish a move an
+    earlier run left half done. None: no rename is due, update as usual. System apps move only with WizardOS."""
+    from . import app_rename, app_updates
+    app, _, store = app_id.partition(":")
+    if (store and store != STORE) or app in app_updates.SYSTEM_APPS:
+        return None
+    try:
+        rows = [d for d in app_rename.due(c, only=[app]) if d["from"] == app]
+    except Exception as e:  # noqa: BLE001 - a rename check never blocks the update
+        print(f"note: app rename not checked ({str(e)[:120]})", file=sys.stderr)
+        return None
+    if not rows:
+        return None
+    d = rows[0]
+    print(f"{app} is now {d['to']}: moving it to its new id", file=sys.stderr, flush=True)
+    extra = {"repo": d["repo"], "staging": True} if d.get("staging") else {}
+    return app_rename.migrate(c, app, d["to"], **extra)
+
+
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
@@ -2924,6 +2945,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
         return 1 if res.get("error") else 0
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
+        moved = rename_instead_of_update(Config(), argv[2])
+        if moved is not None:
+            print(json.dumps(moved, indent=2))
+            return 0 if moved.get("renamed") else 1
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1
