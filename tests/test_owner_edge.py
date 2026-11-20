@@ -140,7 +140,10 @@ def call(e, method="GET", path="/api/status", headers=None, body=b"", extra_line
     if body:
         hs["Content-Length"] = str(len(body))
     lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k, v in hs.items()] + list(extra_lines)
-    s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
+    try:
+        s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # the edge may answer and hang up before reading the request (a refused peer): read that answer
     data = b""
     while True:
         try:

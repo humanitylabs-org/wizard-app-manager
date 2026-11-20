@@ -20,15 +20,17 @@ A thin fork of Runtipi 4.12.0 (GPL-3.0) plus the Python **`wam`** CLI. App Manag
 Python >=3.10 (`pyproject.toml`; CI uses 3.11), Bun 1.3.0 (CI backend job also uses Node 24; the Python job uses Node 22). Never run `install.sh` or `get.sh` just to develop or test.
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate && pip install pyyaml pytest pyjwt
+python3 -m venv .venv && . .venv/bin/activate && pip install pyyaml pytest pyjwt pytest-xdist
 bun install --frozen-lockfile --ignore-scripts
-# job "test"
+# job "checks"
 python tests/test_portable_paths.py
 python tools/sync_wizard_style.py --check
 python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
-python -m pytest -q
 node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs
 bun test tests/curator-mirrors.test.ts
+# jobs "pytest (1/8)" .. "pytest (8/8)": one shard each (WAM_TEST_SHARD=<i>/8, tests/conftest.py); locally run the whole suite
+python -m pytest -q -n auto
+# job "test" is the required check: it passes only when every pytest shard and "checks" passed
 # job "backend"
 node --test tests/backup-source-safety.test.mjs
 (cd packages/common && bun run build) && (cd packages/backend && bun run test && bun x tsgo --noEmit)
