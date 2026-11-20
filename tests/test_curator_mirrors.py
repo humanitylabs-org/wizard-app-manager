@@ -172,6 +172,39 @@ def test_unlisted_app_default_pinned_as_a_component_keeps_its_manifest(tmp_path)
     assert host_only == set()
 
 
+def _two_listed(tmp_path, pinned_repo):
+    (tmp_path / 'releases').mkdir()
+    (tmp_path / 'wam').mkdir()
+    for channel in ['stable', 'latest']:
+        (tmp_path / 'releases' / channel).write_text('1.0')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({'default_apps': {
+        'browser': {'app': 'browser', 'repo': pinned_repo, 'commit': 'a'*40}}}))
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {'browser': {'app': 'browser'}}}))
+    return [{'repo': 'owner/browser', 'id': 'browser', 'install': {'commit': 'b'*40}},
+            {'repo': 'fork/browser', 'id': 'browser', 'install': {'commit': 'c'*40}}]
+
+
+def test_collect_picks_the_release_pinned_repo_when_the_index_lists_an_id_twice(tmp_path):
+    """#846: the browser id is listed from two repos; the slot names no repo, the releases pin one."""
+    catalog = _two_listed(tmp_path, 'owner/browser')
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, catalog)
+    assert pins == [('owner/browser', 'a'*40), ('owner/browser', 'b'*40)]
+    assert unpublished == []
+
+
+def test_collect_keeps_the_release_pin_when_its_repo_is_no_longer_listed(tmp_path):
+    catalog = _two_listed(tmp_path, 'gone/browser')
+    pins, images, unpublished = mirror_defaults.collect(tmp_path, catalog)
+    assert pins == [('gone/browser', 'a'*40)]
+
+
+def test_collect_still_refuses_two_listings_nothing_disambiguates(tmp_path):
+    catalog = _two_listed(tmp_path, 'owner/browser')
+    (tmp_path / 'releases/1.0.json').write_text(json.dumps({'default_apps': {}}))
+    with pytest.raises(ValueError, match='ambiguous default browser'):
+        mirror_defaults.collect(tmp_path, catalog)
+
+
 def test_collect_still_refuses_an_unpinned_default(tmp_path):
     (tmp_path / 'releases').mkdir()
     (tmp_path / 'wam').mkdir()
