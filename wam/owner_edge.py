@@ -97,9 +97,10 @@ class AppStatus:
 
     def __call__(self, app_id: str) -> str:
         with self._lock:
-            at, val = self._seen.get(app_id, (0.0, ""))
-            if time.monotonic() - at < self.ttl:
-                return val
+            # A never-asked app is always looked up (a 0.0 default looked fresh while the clock, uptime, was < ttl).
+            seen = self._seen.get(app_id)
+            if seen is not None and time.monotonic() - seen[0] < self.ttl:
+                return seen[1]
         try:
             val = self._lookup(app_id)
         except Exception:      # Runtipi down, slow or unreadable: never fail the request over it

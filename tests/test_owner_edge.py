@@ -270,6 +270,13 @@ def test_app_status_caches_and_never_raises(tmp_path):
     assert owner_edge.AppStatus(tmp_path / "none", "wizardapps", ttl=0)("messenger") == ""
 
 
+def test_app_status_asks_on_a_box_that_just_booted(tmp_path, monkeypatch):
+    # time.monotonic() is the uptime: seconds after boot it is below the ttl, and a never-asked app must still be asked.
+    monkeypatch.setattr(owner_edge.time, "monotonic", lambda: 1.0)
+    st = owner_edge.AppStatus(tmp_path, "wizardapps", ttl=60, lookup=lambda app_id: "stopped")
+    assert st("messenger") == "stopped"
+
+
 def test_app_status_asks_runtipi_for_the_app_in_the_wizard_store(tmp_path, monkeypatch):
     seen = []
     class RT:
