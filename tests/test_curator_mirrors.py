@@ -198,6 +198,15 @@ def test_collect_keeps_the_release_pin_when_its_repo_is_no_longer_listed(tmp_pat
     assert pins == [('gone/browser', 'a'*40)]
 
 
+def test_a_slot_naming_its_repo_never_takes_another_repos_release_pin(tmp_path):
+    """Codex P1 on #847: a slot that names repo A must not be satisfied by a release pin from repo B."""
+    _two_listed(tmp_path, 'other/browser')
+    (tmp_path / 'wam/defaults.json').write_text(json.dumps({'slots': {
+        'browser': {'app': 'browser', 'repo': 'named/browser'}}}))
+    with pytest.raises(ValueError, match='no pinned publication'):
+        mirror_defaults.collect(tmp_path, [])
+
+
 def test_collect_still_refuses_two_listings_nothing_disambiguates(tmp_path):
     catalog = _two_listed(tmp_path, 'owner/browser')
     (tmp_path / 'releases/1.0.json').write_text(json.dumps({'default_apps': {}}))

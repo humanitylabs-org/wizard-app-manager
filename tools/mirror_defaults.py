@@ -73,7 +73,7 @@ def collect(root, catalog, defaults_path=None, host_only=None):
             commit = rec['install']['commit']
             mirrors.source_ref(rec['repo'], commit)
             pins.add((rec['repo'], commit))
-        elif row['app'] in pinned_repos or any(repo == row.get('repo') for repo, sha in pins):
+        elif (not row.get('repo') and row['app'] in pinned_repos) or any(repo == row.get('repo') for repo, sha in pins):
             pass  # an app the channel releases pin in default_apps; its manifest is still read
         elif any(repo == row.get('repo') for repo, sha in components):
             # A default that is neither an index app nor a release default app (host tooling
