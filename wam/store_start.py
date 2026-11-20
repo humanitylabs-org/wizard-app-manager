@@ -61,7 +61,10 @@ def busy(c, app_id: str) -> str | None:
     return status if status in TRANSITIONAL else None
 
 
-def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:
+def start(c, app_id: str, body, lifecycle=None, check=None) -> tuple[int, dict]:
+    """`lifecycle(c, verb, app)` starts it (default cli.app_lifecycle); `check(c, app) -> problem|None` then judges
+    whether it stays up (default app_updates.check_started, #857: Runtipi says `running` while a container
+    restart-loops). Tests that inject `lifecycle` pass their own `check` (or none)."""
     if not ID.fullmatch(app_id or ""):
         return 400, {"error": "bad app id"}
     if body != {}:
@@ -81,6 +84,8 @@ def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:
         return 409, {"error": f"{app_id} is {status}; wait for that to finish, then start it"}
     if lifecycle is None:
         from .cli import app_lifecycle as lifecycle
+        if check is None:
+            from .app_updates import check_started as check
     with _lock:   # re-check both registries and claim in one step
         job = _jobs.get(app_id)
         if job and job["state"] == "starting":
@@ -93,6 +98,10 @@ def start(c, app_id: str, body, lifecycle=None) -> tuple[int, dict]:
         try:
             res = lifecycle(c, "start", app_id)
             ok = res.get("status") == "running" and not res.get("error")
+            if ok and check is not None:
+                problem = check(c, app_id)
+                if problem:   # #857: it started, then keeps crashing: not "Started"
+                    ok, res = False, {**res, "error": problem}
             job.update(state="running" if ok else "failed", status=res.get("status"),
                        **({} if ok else {"error": res.get("error") or f"finished as {res.get('status')}"}))
         except SystemExit as e:

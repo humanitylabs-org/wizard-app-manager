@@ -24,6 +24,12 @@ def resolve(c, app_id, body):
         row = rows[0]
         body = {'source':'standard', 'repo':row.get('repo'),
                 'commit':row.get('commit') or row.get('install', {}).get('commit') or '', 'operation':'install'}
+    force = False
+    if isinstance(body, dict) and 'force' in body:
+        # #857: the owner may update to a version that failed its check lately (it is skipped otherwise)
+        force, body = body['force'], {k: v for k, v in body.items() if k != 'force'}
+        if not isinstance(force, bool):
+            raise ValueError('force must be true or false')
     if not isinstance(body, dict) or set(body) != {'source', 'repo', 'commit', 'operation'}:
         raise ValueError('exact source, repo, commit and operation required; refresh the Store')
     source, repo, commit, operation = (body[k] for k in ('source', 'repo', 'commit', 'operation'))
@@ -63,7 +69,8 @@ def resolve(c, app_id, body):
             test_catalog.check_architecture(entry)
         except RuntimeError as e:
             raise ValueError(str(e)) from None
-    return {'source': source, 'repo': repo, 'commit': pin, 'operation': operation, 'entry': entry}
+    return {'source': source, 'repo': repo, 'commit': pin, 'operation': operation, 'entry': entry,
+            **({'force': True} if force else {})}
 
 
 def _private_to_standard(existing, selection):
@@ -136,6 +143,13 @@ def execute(c, app_id, selection):
                              release=entry if source == 'owner-private' else None,
                              source_pin={'id': app_id, 'repo': selection['repo'], 'commit': selection['commit']} if source in ('standard', 'link') else None)
     folder = c.runtipi_root / 'repos' / cli.STORE / 'apps' / app_id
+    from . import app_updates
+    if selection['operation'] != 'install':
+        # #857: a version that failed its check after an update lately (nightly or Store) is not installed again
+        # by a Store tap, unless the owner forces it. Refused before the pin is written: nothing changes.
+        why = app_updates.store_refusal(c, app_id, bool(selection.get('force')))
+        if why:
+            raise SystemExit(why)
     # The maintained manager respects this owner-local pin instead of replacing it with
     # a later public index response. It is not a remote-catalog field.
     (folder / '.wizard-selection').write_text(json.dumps({'repo': selection['repo'], 'commit': selection['commit']}) + '\n')
@@ -149,8 +163,14 @@ def execute(c, app_id, selection):
                 (folder / '.wizard-selection').unlink(missing_ok=True)
             raise
     else:
-        result = cli.app_update(c, app_id)
+        # #857: checked like the nightly update (no restarting container, endpoint answers); a failed check is
+        # rolled back from the update's own backup and reported, never `installed`
+        result = app_updates.store_update(c, app_id, lambda: cli.app_update(c, app_id))
         cli.write_registry(c)
+        if result.get('error'):
+            if source == 'standard':   # rolled back: a pin to the failed commit would hold back every later release
+                (folder / '.wizard-selection').unlink(missing_ok=True)
+            return result
     installed_dir = c.runtipi_root / 'apps' / cli.STORE / app_id
     actual = json.loads((installed_dir / '.wizard-source').read_text())
     actual_commit = (installed_dir / '.wizard-commit').read_text().strip()
@@ -161,6 +181,5 @@ def execute(c, app_id, selection):
     if source == 'standard':
         # The pin only made the install take this exact index commit; kept, it would stop every later update
         # (wizard-os#614). Hermes, release defaults and private/link/channel selections keep theirs.
-        from . import app_updates
         app_updates.unpin_standard(c.runtipi_root, cli.STORE, app_id)
     return result

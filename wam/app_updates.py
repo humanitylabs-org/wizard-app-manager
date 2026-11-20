@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +44,7 @@ DEFAULT_MODE = "auto"
 UNIT = "wizard-app-updates"
 STATE = "app-updates.json"
 LOCK = "app-updates.lock"
+STATE_LOCK = "app-updates-state.lock"   # #857: guards read-modify-writes of STATE (not the run lock above)
 RUNNING = "app-updates-running.json"   # #733: the app a run is on now, so pages can say "Updating…" after a reload
 SETTLE_SECONDS = 20          # an app must stay up this long after its update before it counts as working
 PROBE_SECONDS = 90           # how long a declared health URL / MCP endpoint may take to answer after the update
@@ -67,14 +69,48 @@ def _state(home: Path | None) -> dict:
     return s if isinstance(s, dict) else {}
 
 
-def _write(home: Path | None, **changes) -> dict:
-    h = _home(home)
-    h.mkdir(parents=True, exist_ok=True)
+class _StateLock:
+    """Serializes read-modify-writes of app-updates.json (#857: a Store update and an app-update run can both record
+    a failed version). An flock on its own file, held per call; never held while an update runs."""
+    def __init__(self, home: Path | None):
+        self.h = _home(home)
+
+    def __enter__(self):
+        self.h.mkdir(parents=True, exist_ok=True)
+        self.f = open(self.h / STATE_LOCK, "a+")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+
+def _write_unlocked(h: Path, changes: dict) -> dict:
     s = {**_state(h), **changes}
-    tmp = h / (STATE + ".tmp")
+    tmp = h / f"{STATE}.{os.getpid()}.{threading.get_ident()}.tmp"   # concurrent writers never share a temp file
     tmp.write_text(json.dumps(s, indent=1) + "\n")
     tmp.replace(h / STATE)
     return s
+
+
+def _write(home: Path | None, **changes) -> dict:
+    with _StateLock(home) as lk:
+        return _write_unlocked(lk.h, changes)
+
+
+def _write_failed(home: Path | None, base: dict, new: dict, **changes) -> dict:
+    """Write the `failed` entries this caller changed (base -> new) onto the CURRENT state, under the state lock,
+    so a run that read `failed` earlier never erases a record another writer (a Store update, #857) added since."""
+    with _StateLock(home) as lk:
+        cur = _failed(lk.h)
+        for k in set(base) | set(new):
+            if base.get(k) != new.get(k):
+                if k in new:
+                    cur[k] = new[k]
+                else:
+                    cur.pop(k, None)
+        _write_unlocked(lk.h, {**changes, "failed": cur})
+        return cur
 
 
 def mode(home: Path | None = None) -> str:
@@ -584,6 +620,158 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
             **({} if ok else {"error": f"rollback left the app {status} on version {after.get('version')}"})}
 
 
+# ---------------------------------------------------------------- Store Update / Start (#857)
+# The Store's (and the Tracker's) Update and Start used to trust Runtipi's status alone. Runtipi says `running` while
+# a container sits in Docker's Restarting state, so a version the nightly run had caught and rolled back was installed
+# again by a Store tap and reported `installed`, and a Start of a crashing app said Started. Both now get the same
+# check as the nightly updater; a Store update that fails it is rolled back from the backup the update just made.
+
+def _recipe_version(folder: Path) -> tuple[int | None, str | None]:
+    """(tipi_version, version name) of a recipe folder's config.json; (None, None) when unreadable."""
+    try:
+        cfg = json.loads((Path(folder) / "config.json").read_text())
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(cfg, dict):
+        return None, None
+    try:
+        tipi = int(cfg.get("tipi_version"))
+    except (TypeError, ValueError):
+        tipi = None
+    name = cfg.get("version")
+    return tipi, (str(name) if name not in (None, "") else None)
+
+
+def failed_recently(home: Path | None, app_id: str, to: int | None) -> dict | None:
+    """The app-updates.json `failed` record when version `to` of the app failed its check lately (same rule as the
+    nightly run's `failed` skip), else None."""
+    rec = _failed(home).get(app_id)
+    if to is None or not rec or rec.get("to") != to:
+        return None
+    return rec if time.time() - float(rec.get("at") or 0) < RETRY_DAYS * 86400 else None
+
+
+def store_refusal(c, app_id: str, force: bool = False) -> str | None:
+    """Why a Store update of the app to its prepared store recipe must not run: that exact version failed the check
+    after an update lately and was rolled back (nightly or Store). None when it may run, or the owner forces it."""
+    from . import cli
+    if force:
+        return None
+    to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
+    rec = failed_recently(c.home, app_id, to)
+    if not rec:
+        return None
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(float(rec.get("at") or 0)))
+    reason = f" ({rec['reason']})" if rec.get("reason") else ""
+    return (f"{name} {to_name or 'this version'} failed its check after an update on {when}{reason} and was rolled "
+            f"back, so it waits for a newer version. Update anyway only if you know it was fixed.")
+
+
+def _record_failed(home: Path | None, app_id: str, to: int | None, problem: str) -> None:
+    """Never raises: a state file that can't be written must not stop the rollback or the report."""
+    if to is None:
+        return
+    try:
+        _write_failed(home, {}, {app_id: {"to": to, "at": int(time.time()), "reason": problem[:300]}})
+    except OSError as e:
+        print(f"WARNING: {app_id}: failed version not recorded: {e}", file=sys.stderr)
+
+
+def _clear_failed(home: Path | None, app_id: str) -> None:
+    try:
+        if app_id in _failed(home):
+            _write_failed(home, {app_id: _failed(home)[app_id]}, {})
+    except OSError as e:
+        print(f"WARNING: {app_id}: old failure not cleared: {e}", file=sys.stderr)
+
+
+def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, probe_seconds: float = PROBE_SECONDS,
+                 sleep=time.sleep, containers=None, probe=None, endpoint=None, roll=None) -> dict:
+    """Run a Store update (`update()` -> app_update's result) and check the app the way the nightly run does
+    (`verify`): it comes back as it was, its version moved, no container restarts, no fewer containers run, its
+    health URL / MCP endpoint answers. On a failed check it is rolled back from the backup the update made, the
+    version is recorded in app-updates.json `failed` (the nightly run then skips it too), and the result carries an
+    `error` naming what happened, e.g. "Photos 0.4.0 keeps crashing (a container keeps restarting); kept 0.3.1".
+    A SystemExit from update() (owner gate, a setting only the owner can give: nothing changed) passes through."""
+    from . import cli
+    containers = containers or _containers
+    probe = probe or _probe
+    endpoint = endpoint or _endpoint
+    roll = roll or rollback
+    urn = f"{app_id}:{cli.STORE}"
+    try:
+        rt = c.runtipi()
+        row = ((rt.app(urn) or {}).get("app") or {})
+    except Exception:  # noqa: BLE001 - Runtipi unreadable: the update itself will say so
+        rt, row = None, {}
+    if rt is None or not row:
+        return update()   # nothing to compare against; app_update refuses an app that is not installed
+    try:
+        have = int(row.get("version") or 0)
+    except (TypeError, ValueError):
+        have = 0
+    to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
+    _, from_name = _recipe_version(Path(c.runtipi_root) / "apps" / cli.STORE / app_id)
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    status = row.get("status")
+    before = {"id": app_id, "name": name, "from": have, "to": to if to is not None else have, "status": status,
+              "running": containers(urn).count("running"),
+              "endpoint_ok": baseline(c, rt, app_id, status, endpoint=endpoint, probe=probe)}
+    started_ms = int(time.time() * 1000)
+    try:
+        res = update()
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001 - it may have half-applied: check and roll back like the nightly run
+        res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+    problem = verify(c, rt, urn, app_id, res, before, settle=settle, probe_seconds=probe_seconds, sleep=sleep,
+                     containers=containers, probe=probe, endpoint=endpoint)
+    if problem is None:
+        _clear_failed(c.home, app_id)
+        return res
+    what = f"{name} {to_name or 'update'} " + ("keeps crashing" if "restarting" in problem else "did not work")
+    try:
+        unchanged = int(res.get("version") or 0) == have and res.get("status") == status
+    except (TypeError, ValueError):
+        unchanged = False
+    if unchanged:   # the update never applied: the previous version still runs, nothing to restore
+        _record_failed(c.home, app_id, to, problem)
+        return {**res, "error": f"{what} ({problem}); {from_name or 'the previous version'} still runs",
+                "rolled_back": False}
+    print(f"{app_id}: {problem}; rolling back", file=sys.stderr, flush=True)
+    try:
+        rb = roll(c, rt, urn, started_ms, before)
+    except Exception as e:  # noqa: BLE001
+        rb = {"rolled_back": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    _record_failed(c.home, app_id, to, problem)   # after the rollback: recording never delays or blocks it
+    if rb.get("rolled_back"):
+        err = f"{what} ({problem}); kept {from_name or 'the previous version'}"
+    else:
+        err = f"{what} ({problem}), and rolling it back did not work: {rb.get('error')}"
+    return {**res, "status": rb.get("status", res.get("status")), "error": err[:400],
+            "rolled_back": bool(rb.get("rolled_back")), "rollback": rb}
+
+
+def check_started(c, app_id: str, *, settle: float = SETTLE_SECONDS, sleep=time.sleep, containers=None) -> str | None:
+    """After a Store Start that Runtipi reports `running`: None when the app stays up, else why it does not (the
+    container half of `verify`; there is no before-start endpoint baseline, so its health URL is not judged)."""
+    from . import cli
+    sleep(settle)
+    name = display_name(c.runtipi_root, cli.STORE, app_id)
+    try:
+        states = (containers or cli._app_container_states)(f"{app_id}:{cli.STORE}")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        # Docker itself unreadable from here: Runtipi's `running` is all there is (never fail every Start for it)
+        print(f"WARNING: {app_id}: containers not checked after start: {e}", file=sys.stderr)
+        return None
+    if "restarting" in states:
+        return f"{name} keeps crashing after it starts (a container keeps restarting)"
+    if "running" not in states:   # gone, exited or dead: it did not stay up (Codex P2: an empty set never passes)
+        return f"{name} stopped again right after it started"
+    return None
+
+
 # ---------------------------------------------------------------- apply
 
 def reconcile_settings(c, rt, app_id: str) -> list[str]:
@@ -988,6 +1176,7 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
                     r["skip"] = None
         due = [r for r in rows if not r["skip"] and r["id"] not in moved]
     fails = _failed(c.home)
+    fails_read = json.loads(json.dumps(fails))   # what this run read: only its own changes are written back (#857)
     for r in due:
         started = int(time.time())
         _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
@@ -1044,7 +1233,7 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
             "updated": [d["id"] for d in done], "rolled_back": [x["id"] for x in rolled],
             "failed": [x["id"] for x in failed], "needs_owner": [x["id"] for x in needs]}
     told_needs = _state(c.home).get("needs_told") or {}
-    _write(c.home, failed=fails, last=last)
+    fails = _write_failed(c.home, fails_read, fails, last=last)
     repeat = bool(quiet_repeats and needs and not (done or rolled or failed or renamed)
                   and sorted(last["needs_owner"]) == told_needs.get("ids")
                   and time.time() - float(told_needs.get("at") or 0) < NEEDS_REMIND_SECONDS)
@@ -1058,9 +1247,10 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
     told = {k for k, v in reports.items() if isinstance(v, dict) and v.get("issue")}
     bugs = {k: reports[k]["issue"] for k in told if k in fails and bug_url(reports[k]["issue"])}
     if bugs:   # Settings links the failed row to the bug the team was told in (wizard-ux#1191)
+        linked = dict(fails)
         for k, url in bugs.items():
-            fails[k] = {**fails[k], "bug": url}
-        _write(c.home, failed=fails)
+            linked[k] = {**fails[k], "bug": url}
+        fails = _write_failed(c.home, fails, linked)
     msg = _summary(done, rolled, failed, needs, renamed, told)
     if notify and msg and not repeat and _notify(c, *msg) and needs:
         _write(c.home, needs_told={"ids": sorted(last["needs_owner"]), "at": time.time()})
