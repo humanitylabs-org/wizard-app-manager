@@ -36,6 +36,7 @@ def collect(root, catalog, defaults_path=None, host_only=None):
     such as the Troubleshooter): source custody only, they have no wizard.md or Compose."""
     pins, images, unpublished = set(), set(), []
     components = set()  # (repo, commit) of channel components, e.g. host-installed Troubleshooter
+    pinned_repos = {}  # app id -> repos the channel releases pin it from (default_apps)
     for channel in ("stable", "latest"):
         version = (root / "releases" / channel).read_text().strip()
         if not version or '/' in version or '..' in version:
@@ -46,6 +47,8 @@ def collect(root, catalog, defaults_path=None, host_only=None):
                 continue
             mirrors.source_ref(row["repo"], row["commit"])
             pins.add((row["repo"], row["commit"]))
+            if row.get("app"):
+                pinned_repos.setdefault(row["app"], set()).add(row["repo"])
         for row in release.get("components", {}).values():
             if isinstance(row, dict) and row.get("repo") and row.get("commit"):
                 components.add((row["repo"], row["commit"]))
@@ -58,6 +61,11 @@ def collect(root, catalog, defaults_path=None, host_only=None):
             continue
         matches = [r for r in catalog if r.get('id') == row['app'] and
                    (not row.get('repo') or row['repo'] == r.get('repo'))]
+        if len(matches) > 1 and not row.get('repo') and row['app'] in pinned_repos:
+            # The index can list one id from two repos (a fork, a moved app). A slot without
+            # its own repo is the one the channel releases pin (#846: browser is listed from
+            # oscarhenrycollins/browser and humanitylabs-org/browser).
+            matches = [r for r in matches if r.get('repo') in pinned_repos[row['app']]]
         if len(matches) > 1:
             raise ValueError(f"ambiguous default {row['app']}")
         if matches:
@@ -65,7 +73,7 @@ def collect(root, catalog, defaults_path=None, host_only=None):
             commit = rec['install']['commit']
             mirrors.source_ref(rec['repo'], commit)
             pins.add((rec['repo'], commit))
-        elif any(repo == row.get('repo') for repo, sha in pins):
+        elif (not row.get('repo') and row['app'] in pinned_repos) or any(repo == row.get('repo') for repo, sha in pins):
             pass  # an app the channel releases pin in default_apps; its manifest is still read
         elif any(repo == row.get('repo') for repo, sha in components):
             # A default that is neither an index app nor a release default app (host tooling
