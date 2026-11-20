@@ -7,6 +7,9 @@ import yaml
 
 from .wizardmd import ARG_ERROR_BYTES, ARG_WARN_BYTES
 
+# Files an inline app may unpack at start (memory + /tmp tmpfs share the container's 128 MB).
+INLINE_UNPACKED_MAX_BYTES = 4_000_000
+
 
 def package_inline(root):
     root = Path(root)
@@ -28,7 +31,13 @@ def package_inline(root):
     if len(code.encode()) > ARG_WARN_BYTES:
         # Linux refuses one exec argument over 128 KiB (wizard-app-manager#858): pack the payload so a growing app
         # keeps starting. Small apps keep the plain form, byte for byte.
-        packed = base64.b64encode(zlib.compress(json.dumps(payload, sort_keys=True).encode(), 9)).decode()
+        raw = json.dumps(payload, sort_keys=True).encode()
+        if len(raw) > INLINE_UNPACKED_MAX_BYTES:
+            # The container unpacks it in memory and onto its /tmp tmpfs under mem_limit 128m: a tiny packed
+            # argument of a huge, repetitive asset would still never start (Codex P2 on wizard-app-manager#862).
+            raise ValueError(f"Inline package unpacks to {round(len(raw) / 1_000_000, 1)} MB; inline apps carry at "
+                             f"most {INLINE_UNPACKED_MAX_BYTES // 1_000_000} MB of files. Ship the files in an image instead.")
+        packed = base64.b64encode(zlib.compress(raw, 9)).decode()
         code = code.replace("import base64,json,pathlib,runpy\n", "import base64,json,pathlib,runpy,zlib\n", 1).replace(
             f"files=json.loads(base64.b64decode('{blob}'))", f"files=json.loads(zlib.decompress(base64.b64decode('{packed}')))", 1)
         if len(code.encode()) > ARG_ERROR_BYTES:
