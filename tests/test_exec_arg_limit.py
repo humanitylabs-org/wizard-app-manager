@@ -105,3 +105,11 @@ def test_package_inline_keeps_small_apps_plain(tmp_path):
     package_inline(root)
     code = yaml.safe_load((root / "runtipi/docker-compose.yml").read_text())["services"]["big-app"]["command"][2]
     assert "zlib" not in code and "files=json.loads(base64.b64decode('" in code
+
+
+def test_package_inline_refuses_a_payload_too_big_to_unpack(tmp_path):
+    """A huge repetitive asset packs into a small argument but would not fit the 128 MB container (Codex P2)."""
+    root = _app(tmp_path, big=5_000_000)
+    with pytest.raises(ValueError, match=r"unpacks to 5\.\d MB; inline apps carry at most 4 MB"):
+        package_inline(root)
+    assert not (root / "runtipi/docker-compose.yml").exists()
