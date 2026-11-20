@@ -12,7 +12,8 @@ import { test } from 'node:test';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const backend = path.join(repo, 'packages/backend');
 const require = createRequire(path.join(backend, 'package.json'));
-const ts = require('typescript');
+// TypeScript 7 (Runtipi 4.12) has no JS transpile API: esbuild (vite's) strips the types the same way.
+const esbuild = require('esbuild');
 const common = require('@runtipi/common/schemas');
 const yaml = require('yaml');
 const logger = { info() {}, debug() {}, error() {}, warn() {} };
@@ -27,6 +28,8 @@ function loadProduction(root) {
     'core/archive/archive.service', 'modules/backups/backup.manager',
     'modules/app-lifecycle/commands/command', 'modules/app-lifecycle/commands/install-app-command',
     'modules/app-lifecycle/commands/update-app-command', 'modules/app-stores/packaging',
+    'modules/app-lifecycle/services/app-config', 'modules/backups/backup-archive', 'modules/backups/backup-resources',
+    'modules/backups/restore-transaction',
     'common/helpers/exec-helpers', 'common/helpers/app-helpers', 'common/helpers/file-helpers',
   ]);
   const load = (name) => {
@@ -35,9 +38,10 @@ function loadProduction(root) {
     const source = process.env.PERMISSION_TEST_BASE_REV
       ? execFileSync('git', ['show', `${process.env.PERMISSION_TEST_BASE_REV}:${path.relative(repo, file)}`], { cwd: repo, encoding: 'utf8' })
       : fs.readFileSync(file, 'utf8');
-    const code = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, experimentalDecorators: true, esModuleInterop: true }, fileName: file,
-    }).outputText;
+    const code = esbuild.transformSync(source, {
+      loader: 'ts', format: 'cjs', target: 'es2022', sourcefile: file,
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+    }).code;
     const mod = { exports: {} };
     cache.set(name, mod);
     const localRequire = (specifier) => {
@@ -89,10 +93,10 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
   await fs.promises.chmod(path.dirname(secret), 0o700);
   await fs.promises.chmod(secret, 0o600);
   const modes = async () => [(await fs.promises.stat(path.dirname(secret))).mode & 0o777, (await fs.promises.stat(secret)).mode & 0o777];
-  const backup = new BackupManager(new ArchiveService(logger), logger, configuration, filesystem, manager);
   const backups = [];
   const backupService = {
     backupApp: async (...args) => { backups.push(await modes()); return backup.backupApp(...args); },
+    createBackup: async (...args) => { backups.push(await modes()); return backup.createBackup(...args); },
     cleanupOldBackups: (...args) => backup.cleanupOldBackups(...args),
   };
   const operations = [];
@@ -107,7 +111,22 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
       return { success: true, stdout: '', stderr: '' };
     },
   };
-  const appHelpers = { generateEnvFile: async () => {} };
+  // Runtipi 4.12: migration state and the restore journal live in the database.
+  let journal;
+  const appsRepository = {
+    getAppByUrn: async () => ({ id: 1, subnet: '10.0.0.0/24', maxBackups: 5 }), updateAppById: async () => {},
+    getMigrationState: async () => ({ initialized: false, migrationIds: [] }),
+    getRestoreJournal: async () => journal,
+    createRestoreJournal: async (_urn, previousState, targetState, directories) => { journal = { phase: 'prepared', previousState, targetState, directories }; },
+    finishRestore: async (_urn, _state, phase) => { journal.phase = phase; },
+    clearRestoreJournal: async () => { journal = undefined; },
+  };
+  const backup = new BackupManager(new ArchiveService(logger), logger, configuration, filesystem, manager, appsRepository, dockerService);
+  const appHelpers = { generateEnvFile: async () => {}, pruneOldSources: async () => {} };
+  const migrations = {
+    baselineCurrentMigrations: async () => {}, prepareMigrations: async () => [], beginMigrationBatch: async () => {},
+    runMigrations: async () => {}, commitMigrations: async () => {}, rollbackMigrations: async () => {},
+  };
   const marketplace = { getSourceDockerComposeYaml: async () => ({ content: compose }), copyAppFromRepoToInstalled: async () => recipe(nextPolicy), copyDataDir: async () => {} };
   const services = new Map([[AppFilesManager, manager], [FilesystemService, filesystem], [BackupManager, backupService]]);
   const named = {
@@ -115,7 +134,9 @@ async function fixture(t, oldPolicy, nextPolicy = oldPolicy) {
     'core/logger/logger.service': ['LoggerService', logger],
     'modules/docker/docker.service': ['DockerService', dockerService],
     'modules/apps/app.helpers': ['AppHelpers', appHelpers],
-    'modules/apps/apps.repository': ['AppsRepository', { getAppByUrn: async () => ({ id: 1, subnet: '10.0.0.0/24', maxBackups: 5 }), updateAppById: async () => {} }],
+    'modules/apps/apps.repository': ['AppsRepository', appsRepository],
+    'modules/app-lifecycle/services/app-validation.service': ['AppValidationService', { validateUpdateConfigSettings: async (_urn, _info, form) => form }],
+    'modules/app-lifecycle/services/app-migration.service': ['AppMigrationService', migrations],
     'modules/marketplace/marketplace.service': ['MarketplaceService', marketplace],
     'modules/env/env.utils': ['EnvUtils', { envStringToMap: () => new Map() }],
     'modules/network/subnet-manager.service': ['SubnetManagerService', { allocateSubnet: async () => '10.0.0.0/24' }],

@@ -42,6 +42,15 @@ export class AppHelpers {
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
+    // App env is docker compose interpolation scope. Seed only public host vars so
+    // core secrets (JWT_SECRET, POSTGRES_*, RABBITMQ_*) stay in Runtipi's own .env.
+    const publicHostEnvKeys = new Set(['LOCAL_DOMAIN', 'TZ', 'INTERNAL_IP']);
+    for (const key of envMap.keys()) {
+      if (!publicHostEnvKeys.has(key)) {
+        envMap.delete(key);
+      }
+    }
+
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Default always present env variables
@@ -53,7 +62,7 @@ export class AppHelpers {
     envMap.set('APP_NAME', appName);
     envMap.set('APP_STORE_ID', appStoreId);
     envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
-    envMap.set('APP_DATA_DIR', path.join(`${userSettings.appDataPath}/app-data`, appStoreId, appName));
+    envMap.set('APP_DATA_DIR', this.appFilesManager.getAppDataHostPath(appUrn));
     envMap.set('APP_IMAGE_TAG', config.version);
     // Packaging (spec/WIZARD_MD.md): source/build apps mount their pinned code from app-data.
     const commit = (await this.filesytem.readTextFile(path.join(this.appFilesManager.getAppPaths(appUrn).appInstalledDir, '.wizard-commit')))?.trim();

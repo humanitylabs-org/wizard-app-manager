@@ -1,6 +1,6 @@
 ARG NODE_VERSION="22.23.5"
-ARG ALPINE_VERSION="3.23"
-ARG BUN_VERSION="1.3.0"
+ARG ALPINE_VERSION="3.24"
+ARG BUN_VERSION="1.4.4"
 
 # The JS build (bun install, frontend, backend bundle) is the same bytes on every architecture, so it always runs
 # on the build machine. Native arm64 bun hangs in "Resolving dependencies" (three bounded attempts, all stuck).
@@ -14,7 +14,8 @@ FROM bun_base AS builder_base
 WORKDIR /deps
 
 ARG TARGETARCH
-ARG DOCKER_COMPOSE_VERSION="v2.40.0"
+# renovate: datasource=github-releases depName=docker/compose
+ARG DOCKER_COMPOSE_VERSION="v2.40.3"
 ENV TARGETARCH=${TARGETARCH}
 
 RUN apk add --no-cache curl python3 make g++ git
@@ -32,7 +33,7 @@ RUN chmod +x docker-binary
 FROM node_base AS runner_base
 
 # WizardStorage drives copy-once migrations and volume aliases through the docker CLI.
-RUN apk add --no-cache curl openssl git docker-cli && docker --version
+RUN apk add --no-cache curl openssl git tar pigz file docker-cli && docker --version
 
 # ---- BUILDER ----
 FROM builder_base AS builder
@@ -76,7 +77,7 @@ ENV NODE_ENV="production"
 
 WORKDIR /app
 
-RUN npm install --no-save --omit=dev argon2 class-transformer
+RUN npm install --no-save --omit=dev argon2@0.45.1 class-transformer@0.5.1
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./

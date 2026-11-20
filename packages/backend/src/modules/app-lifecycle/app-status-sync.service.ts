@@ -4,7 +4,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import type Dockerode from 'dockerode';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/docker.constants';
 import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
@@ -13,6 +13,7 @@ import { type ContainerFacts, statusFromTally, tallyContainers } from './app-sta
 import { transitionalGraceSeconds } from '../queue/lifecycle-timeouts';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { AppJobService } from './services/app-job.service';
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -35,6 +36,7 @@ export class AppStatusSyncService {
     private readonly systemEventsQueue: SystemEventsQueue,
     private readonly configuration: ConfigurationService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    private readonly jobs: AppJobService,
     @Inject(APP_ASYNC_MUTEX) private readonly mutex: AsyncMutex,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
@@ -86,6 +88,11 @@ export class AppStatusSyncService {
 
       for (const app of apps) {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+
+        if (this.jobs.isActive(appUrn)) {
+          skippedCount++;
+          continue;
+        }
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
         if (isTransitional && this.mutex.isLocked(appUrn)) {

@@ -11,6 +11,7 @@ import type Dockerode from 'dockerode';
 import { expect, test, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { InstallAppCommand } from './install-app-command';
+import { AppMigrationService } from '../services/app-migration.service';
 
 const appUrn = 'app:test' as AppUrn;
 
@@ -22,6 +23,7 @@ const createCommand = () => {
   const appHelpers = mock<AppHelpers>();
   const envUtils = mock<EnvUtils>();
   const docker = mock<Dockerode>();
+  const appMigrationService = mock<AppMigrationService>();
 
   const compose = convertLegacyToYaml({
     schemaVersion: 2,
@@ -44,6 +46,7 @@ const createCommand = () => {
     [MarketplaceService, marketplaceService],
     [AppHelpers, appHelpers],
     [EnvUtils, envUtils],
+    [AppMigrationService, appMigrationService],
   ]);
   const moduleRef = { get: (token: unknown) => services.get(token) } as ModuleRef;
   const command = new InstallAppCommand(moduleRef, docker);

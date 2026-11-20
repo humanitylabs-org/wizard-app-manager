@@ -44,6 +44,7 @@ async function bootstrap() {
 
   app = await NestFactory.create<NestExpressApplication>(AppModule, {
     abortOnError: true,
+    forceCloseConnections: true,
     logger: [process.env.LOG_LEVEL as LogLevel, 'error', 'warn', 'fatal'],
   });
 
@@ -55,6 +56,7 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe());
   app.enableCors();
   app.use(cookieParser());
+  app.enableShutdownHooks();
 
   await setupSwagger(app);
 

@@ -13,7 +13,8 @@ import { test } from 'node:test';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const backend = path.join(repo, 'packages/backend');
 const require = createRequire(path.join(backend, 'package.json'));
-const ts = require('typescript');
+// TypeScript 7 (Runtipi 4.12) has no JS transpile API: esbuild (vite's) strips the types the same way.
+const esbuild = require('esbuild');
 const logger = { info() {}, debug() {}, error() {}, warn() {} };
 const urn = 'demo:store';
 const commit = 'a'.repeat(40);
@@ -27,18 +28,17 @@ function loadProduction(root) {
     const source = process.env.BACKUP_TEST_BASE_REV
       ? execFileSync('git', ['show', `${process.env.BACKUP_TEST_BASE_REV}:${path.relative(repo, file)}`], { cwd: repo, encoding: 'utf8' })
       : fs.readFileSync(file, 'utf8');
-    const code = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, experimentalDecorators: true, esModuleInterop: true },
-      fileName: file,
-    }).outputText;
+    const code = esbuild.transformSync(source, {
+      loader: 'ts', format: 'cjs', target: 'es2022', sourcefile: file,
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+    }).code;
     const mod = { exports: {} };
     cache.set(file, mod);
     const localRequire = (name) => {
       if (name === '@nestjs/common') return { Injectable: () => (value) => value };
       if (name === 'yaml') return { parse: unused };
-      if (name === 'arktype') return { type: { errors: class {} } };
       if (name === '@/common/constants') return { DATA_DIR: root, APP_DATA_DIR: root, APP_DIR: root };
-      if (['@/core/config/configuration.service', '@/core/logger/logger.service', '../apps/app-files-manager'].includes(name)) return {};
+      if (['@/core/config/configuration.service', '@/core/logger/logger.service', '../apps/app-files-manager', '../apps/apps.repository', '../docker/docker.service'].includes(name)) return {};
       if (name.startsWith('@/')) return load(path.join(backend, 'src', `${name.slice(2)}.ts`));
       if (name.startsWith('.')) return load(path.resolve(path.dirname(file), `${name}.ts`));
       return require(name);
@@ -73,8 +73,19 @@ async function fixture(t) {
   await write(path.join(appDataDir, 'data.txt'), 'saved data');
   await write(path.join(appInstalledDir, '.wizard-commit'), commit);
   await write(path.join(appInstalledDir, 'docker-compose.yml'), `services:\n  demo:\n    build: ${context}\n`);
-  const manager = new BackupManager(archive, logger, { get: () => ({ dataDir: root, appDataDir: path.join(root, 'app-data') }) }, filesystem,
-    { getAppPaths: () => ({ appDataDir, appInstalledDir }) });
+  // Runtipi 4.12: migration state and the restore journal live in the database; the app is stopped for the copy.
+  let journal;
+  const appsRepository = {
+    getAppByUrn: async () => null,
+    getMigrationState: async () => ({ initialized: false, migrationIds: [] }),
+    getRestoreJournal: async () => journal,
+    createRestoreJournal: async (_urn, previousState, targetState, directories) => { journal = { phase: 'prepared', previousState, targetState, directories }; },
+    finishRestore: async (_urn, _state, phase) => { journal.phase = phase; },
+    clearRestoreJournal: async () => { journal = undefined; },
+  };
+  const docker = { composeApp: async () => ({ success: true, stdout: '', stderr: '' }) };
+  const manager = new BackupManager(archive, logger, { get: (key) => (key === 'userSettings' ? { maxBackups: 0 } : { dataDir: root, appDataDir: path.join(root, 'app-data') }) }, filesystem,
+    { getAppPaths: () => ({ appDataDir, appInstalledDir }) }, appsRepository, docker);
   const backup = async () => {
     await manager.backupApp(urn);
     const files = await fs.promises.readdir(path.join(root, 'backups/store/demo'));

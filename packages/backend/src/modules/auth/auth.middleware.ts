@@ -11,6 +11,20 @@ type ForwardAuthSession = {
   host: string;
 };
 
+/**
+ * Wizard: CLI tokens are signed with the private CLI key (Runtipi 4.12). Until every Wizard tool reads that key, a
+ * token signed with the old JWT_SECRET is still accepted (what Runtipi 4.10 did). WIZARD_LEGACY_CLI_TOKENS=0 turns
+ * the fallback off.
+ */
+export const verifyCliToken = (token: string, cliSecret: string, jwtSecret: string | undefined) => {
+  try {
+    return jsonwebtoken.verify(token, cliSecret, { algorithms: ['HS256'] });
+  } catch (error) {
+    if (process.env.WIZARD_LEGACY_CLI_TOKENS === '0' || !jwtSecret) throw error;
+    return jsonwebtoken.verify(token, jwtSecret, { algorithms: ['HS256'] });
+  }
+};
+
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   constructor(
@@ -82,10 +96,10 @@ export class AuthMiddleware implements NestMiddleware {
         return next();
       }
 
-      const jwtSecret = this.config.get('jwtSecret');
+      const cliSecret = this.config.get('cliSecret');
 
       try {
-        const { sub } = jsonwebtoken.verify(token, jwtSecret) as { sub: string };
+        const { sub } = verifyCliToken(token, cliSecret, this.config.get('jwtSecret')) as { sub: string };
         if (sub === 'cli') {
           const user = await this.userRepository.getFirstOperator();
           req.user = user;

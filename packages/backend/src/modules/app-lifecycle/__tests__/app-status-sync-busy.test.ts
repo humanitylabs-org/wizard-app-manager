@@ -17,6 +17,7 @@ const make = (status: string, minutesAgo: number, mutex: AsyncMutex) => {
     { onEvent: vi.fn() } as never,
     configuration as never,
     docker as never,
+    { isActive: vi.fn(() => false) } as never,
     mutex,
   );
   return { svc, appRepository };

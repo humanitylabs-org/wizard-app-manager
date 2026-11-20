@@ -8,6 +8,10 @@ import type { AppUrn } from '@runtipi/common/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppFilesManager } from '../app-files-manager';
 
+// The permission walker uses node:fs (memfs in the shared setup): run it on the real files too.
+vi.unmock('fs');
+vi.unmock('node:fs');
+
 // Real files (node:fs/promises is not the mocked 'fs'): the permissions come from the real find / chmod.
 const mode = async (p: string) => (await fs.lstat(p)).mode & 0o777;
 

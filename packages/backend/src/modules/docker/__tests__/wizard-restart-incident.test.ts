@@ -77,7 +77,7 @@ beforeEach(async () => {
   }));
   const appsService = mock<AppsService>();
   repository.getAppByUrn.mockResolvedValue({ exposed: false, exposedLocal: false } as never);
-  service = new DockerService(logger, config, files, mock<FilesystemService>(), appsService, repository);
+  service = new DockerService(logger, config, files, mock<FilesystemService>(), appsService, repository, mock<Dockerode>());
   running = new Set([claude, agent, connectors]);
   calls = [];
   // No Docker daemon calls: emulate down/up and track real command ordering.

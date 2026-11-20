@@ -1,19 +1,23 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { WizardStorage } from './wizard-storage';
 import { enforceAppNetworks } from './wizard-networks';
 import { addStopInit } from './wizard-stop-init';
-import { servicesForArchitecture } from './builders/compose.builder';
+import { mergeArchitectureOverrides } from './builders/compose.builder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
+import { effectiveComposeSchema, type EffectiveAppServices } from './compose-config';
 import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
-import { AppFilesManager } from '../apps/app-files-manager';
+import { AppFilesManager, type AppMigration } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { AppsRepository } from '../apps/apps.repository';
+import type Dockerode from 'dockerode';
+import { DOCKERODE } from './docker.constants';
 
 @Injectable()
 export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -49,13 +53,10 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly filesystem: FilesystemService,
     private readonly appsService: AppsService,
     private readonly appsRepository: AppsRepository,
+    @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {}
 
-  /**
-   * Get the base compose args for an app
-   * @param {string} appUrn - App name
-   */
-  public getBaseComposeArgsApp = async (appUrn: AppUrn) => {
+  private async getComposeEnvironment(appUrn: AppUrn) {
     let isCustomConfig = false;
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
@@ -71,6 +72,12 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       args.push('--env-file', userEnvFile.path);
     }
 
+    return { args, isCustomConfig, userConfigEnabled };
+  }
+
+  public getBaseComposeArgsApp = async (appUrn: AppUrn) => {
+    const { args, isCustomConfig: customEnvironment, userConfigEnabled } = await this.getComposeEnvironment(appUrn);
+    let isCustomConfig = customEnvironment;
     args.push('--project-name', appUrn.replace(':', '_'));
 
     const composeFile = await this.appFilesManager.getGeneratedDockerComposeYaml(appUrn);
@@ -134,7 +141,7 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
       if (appUrn.endsWith(':wizardapps') && (app?.exposed === true || app?.exposedLocal === true)) {
         const source = await this.appFilesManager.getSourceDockerComposeYaml(appUrn);
         if (!source.content) throw new Error(`Missing source Compose for published ${appUrn}`);
-        const services = servicesForArchitecture(source.content, this.config.get('architecture'));
+        const { services } = mergeArchitectureOverrides(source.content, this.config.get('architecture'));
         publishedServices = Object.entries(services)
           .filter(
             ([, service]) => service['x-runtipi']?.is_main === true && service['x-runtipi']?.internal_port && service.network_mode === undefined,
@@ -166,39 +173,95 @@ export class DockerService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   private async runComposeApp(appUrn: AppUrn, command: string) {
-    let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
-    args.push(...command.split(' '));
-    args = args.filter(Boolean);
+    const { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
+    return this.runCompose([...args, ...command.split(' ').filter(Boolean)], isCustomConfig);
+  }
 
+  public async composeMigration(appUrn: AppUrn, migration: AppMigration, command: string) {
+    const { args, isCustomConfig } = await this.getComposeEnvironment(appUrn);
+    args.push('--project-name', this.getMigrationProjectName(appUrn), '--file', migration.path);
+
+    return this.runCompose([...args, ...command.split(' ').filter(Boolean)], isCustomConfig, { ...process.env, COMPOSE_PROFILES: '' });
+  }
+
+  private getMigrationProjectName(appUrn: AppUrn) {
+    return `runtipi-migration-${createHash('sha256').update(appUrn).digest('hex').slice(0, 16)}`;
+  }
+
+  public async stopAppMigrations(appUrn: AppUrn) {
+    const filters = { label: [`com.docker.compose.project=${this.getMigrationProjectName(appUrn)}`] };
+    const containers = await this.docker.listContainers({ all: true, filters });
+
+    for (const container of containers) {
+      await this.docker
+        .getContainer(container.Id)
+        .remove({ force: true })
+        .catch((error: { statusCode?: number }) => {
+          if (error.statusCode !== 404) throw error;
+        });
+    }
+
+    try {
+      const networks = await this.docker.listNetworks({ filters });
+      for (const network of networks) {
+        await this.docker
+          .getNetwork(network.Id)
+          .remove()
+          .catch((error: { statusCode?: number }) => {
+            if (error.statusCode !== 404) throw error;
+          });
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to clean migration networks for ${appUrn}:`, error);
+    }
+  }
+
+  private async runCompose(args: string[], isCustomConfig: boolean, environment = process.env) {
     this.logger.info(`Running docker compose with args ${args.join(' ')}`);
 
-    const cmd = spawn('docker-compose', args);
-    const stdout: string[] = [];
-    const stderr: string[] = [];
+    const cmd = spawn('docker-compose', args, { env: environment });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
 
     const exitCode = await new Promise((resolve, reject) => {
-      cmd.once('error', reject);
       cmd.stdout.on('data', (data) => {
-        this.logger.debug(`docker-compose: ${String(data).trim()}`);
-        stdout.push(String(data).trim());
+        if (!args.includes('config')) this.logger.debug(`docker-compose: ${String(data).trim()}`);
+        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+        stdout.push(chunk);
       });
       cmd.stderr.on('data', (data) => {
         this.logger.debug(`docker-compose: ${String(data).trim()}`);
-        stderr.push(String(data).trim());
+        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+        stderr.push(chunk);
       });
       cmd.on('close', resolve);
+      cmd.on('error', reject);
     });
+
+    const stdoutText = Buffer.concat(stdout).toString();
+    const stderrText = Buffer.concat(stderr).toString();
 
     if (exitCode !== 0) {
       this.logger.info(`Docker-compose exited with code ${exitCode}`);
       if (isCustomConfig) {
         this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
       }
-      const error = stderr.pop();
-      throw new Error(error);
+      throw new Error(stderrText.trim());
     }
 
-    return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };
+    return { success: true, stdout: stdoutText, stderr: stderrText };
+  }
+
+  public async getEffectiveAppServices(appUrn: AppUrn): Promise<EffectiveAppServices> {
+    const result = await this.composeApp(appUrn, 'config --format json');
+
+    return effectiveComposeSchema.assert(JSON.parse(result.stdout)).services;
+  }
+
+  public async getEffectiveMigrationServices(appUrn: AppUrn, migration: AppMigration): Promise<EffectiveAppServices> {
+    const result = await this.composeMigration(appUrn, migration, 'config --format json');
+
+    return effectiveComposeSchema.assert(JSON.parse(result.stdout)).services;
   }
 
   public getLogsStream = async (maxLines: number, appUrn?: AppUrn) => {
