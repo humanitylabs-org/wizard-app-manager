@@ -24,6 +24,11 @@ DEFAULTS_FILE = Path(__file__).with_name("defaults.json")
 SPECS = {0.1, 0.2}
 SLOT = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
 NPUB = re.compile(r"npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}")
+# Linux refuses any single exec argument or environment string over MAX_ARG_STRLEN (128 KiB = 131,072 bytes), so a
+# container whose `command` carries a bigger inline program never starts (humanitylabs-org/photos#9). Fail well
+# before the limit and warn earlier still.
+ARG_ERROR_BYTES = 120_000
+ARG_WARN_BYTES = 100_000
 
 
 def front_matter(text: str) -> dict:
@@ -78,6 +83,51 @@ def quote_colons(text: str) -> str:
     return text[:m.start(1)] + fixed + text[m.end(1):]
 
 
+def _exec_strings(name: str, s: dict):
+    """(label, bytes) for every single string the kernel sees as one exec argument or environment entry."""
+    import shlex
+    for key in ("command", "entrypoint"):
+        v = s.get(key)
+        if isinstance(v, str):
+            try:
+                parts = shlex.split(v)
+            except ValueError:
+                parts = [v]
+        elif isinstance(v, list):
+            parts = [str(x) for x in v if x is not None]
+        else:
+            continue
+        for part in parts:
+            yield f"{name} {key} argument", len(part.encode())
+    env = s.get("environment")
+    if isinstance(env, dict):
+        items = list(env.items())
+    elif isinstance(env, list):
+        items = [str(e).partition("=")[::2] for e in env if e is not None]
+    else:
+        items = []
+    for k, v in items:
+        yield f"{name} environment {k}", len(f"{k}={'' if v is None else v}".encode())
+
+
+def _arg_message(label: str, n: int) -> str:
+    return (f"{label} is {round(n / 1000)} KB; Linux refuses one argument over 128 KiB. "
+            "Pack it (zlib+base64 in mcp/inline.py) or ship a file.")
+
+
+def compose_arg_warnings(text: str) -> list[str]:
+    """Single exec strings between ARG_WARN_BYTES and ARG_ERROR_BYTES: still start, but close to the kernel limit."""
+    try:
+        doc = yaml.safe_load(text) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for name, s in ((doc.get("services") or {}) if isinstance(doc, dict) else {}).items():
+        if isinstance(s, dict):
+            out += [_arg_message(label, n) for label, n in _exec_strings(name, s) if ARG_WARN_BYTES < n <= ARG_ERROR_BYTES]
+    return out
+
+
 def compose_risks(text: str) -> list[str]:
     """Host-level access a public, unreviewed app must never ask for (rule 12)."""
     try:
@@ -107,6 +157,7 @@ def compose_risks(text: str) -> list[str]:
                 risks.append(f"{name}: mounts the container runtime socket")
             elif src == "/" or HOST_PATH.match(src):
                 risks.append(f"{name}: mounts host path {src}")
+        risks += [_arg_message(label, n) for label, n in _exec_strings(name, s) if n > ARG_ERROR_BYTES]
     return risks
 
 

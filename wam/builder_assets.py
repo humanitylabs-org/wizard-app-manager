@@ -2,7 +2,10 @@
 import base64
 import json
 from pathlib import Path
+import zlib
 import yaml
+
+from .wizardmd import ARG_ERROR_BYTES, ARG_WARN_BYTES
 
 
 def package_inline(root):
@@ -22,6 +25,15 @@ def package_inline(root):
             "for name,text in files.items():\n"
             " p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\n"
             "runpy.run_path(str(root/'app/server.py'),run_name='__main__')\n")
+    if len(code.encode()) > ARG_WARN_BYTES:
+        # Linux refuses one exec argument over 128 KiB (wizard-app-manager#858): pack the payload so a growing app
+        # keeps starting. Small apps keep the plain form, byte for byte.
+        packed = base64.b64encode(zlib.compress(json.dumps(payload, sort_keys=True).encode(), 9)).decode()
+        code = code.replace("import base64,json,pathlib,runpy\n", "import base64,json,pathlib,runpy,zlib\n", 1).replace(
+            f"files=json.loads(base64.b64decode('{blob}'))", f"files=json.loads(zlib.decompress(base64.b64decode('{packed}')))", 1)
+        if len(code.encode()) > ARG_ERROR_BYTES:
+            raise ValueError(f"Inline package is {round(len(code.encode()) / 1000)} KB even packed; Linux refuses one "
+                             "argument over 128 KiB. Ship the files in an image instead.")
     from .wizardmd import front_matter, quote_colons
     text = (root / 'wizard.md').read_text()
     fixed = quote_colons(text)
