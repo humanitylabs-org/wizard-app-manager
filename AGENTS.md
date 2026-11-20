@@ -9,11 +9,56 @@ Two kinds of agent read this file:
 
 The Wizard App Manager is [Runtipi](https://github.com/runtipi/runtipi) with one part replaced: its App Store reads the Wizard App Index. It is a thin fork (wizard-os DECISIONS #32).
 
-- **Keep the diff from upstream Runtipi small.** Wizard behaviour goes in `wam`, the installer, or the `wizardapps` store module. For running the Runtipi dev server, see `AGENTS.runtipi.md`.
+- **Keep the diff from upstream Runtipi small.** Wizard behaviour goes in `wam`, the installer, or the `wizardapps` store module. New non-Runtipi code goes in another repo: see [What belongs in this repo](#what-belongs-in-this-repo-the-runtipi-boundary). For running the Runtipi dev server, see `AGENTS.runtipi.md`.
 - **Checks:** `python -m pytest -q` and `node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs` must pass. These are the same commands CI runs.
 - **Installer changes:** `get.sh`, `install.sh` and `os.md` are what every new box runs, through `aiwizards.com/os.sh`. A change to the install path needs a run on a clean VM or box, and its result goes in Verified. That covers both a fresh install and an install alongside an existing Hermes.
 - **Releases:** a release is a `release/X.Y.Z` PR that updates `releases/`. A box pulls a release only once it has merged.
 - **Checker rules:** the `wizard.md` checker copy here must match wizard-os `tools/check_wizard_md.py` and the wizard-app-index rules. Change all three together.
+
+## What belongs in this repo (the Runtipi boundary)
+
+This repo is a GPL fork of Runtipi. Every non-Runtipi piece mixed into it makes the next upstream Runtipi merge harder, so the rule is: **the fork stays close to Runtipi, and new non-Runtipi code goes elsewhere.** No code is being moved now; this section stops the pile from growing and makes a later split easy (WAM#851).
+
+**Belongs here:** Runtipi itself, plus the thin Wizard layer that makes it install Wizard apps:
+
+- the `wizardapps` store and other small Runtipi patches under `packages/` (app index, on-demand fetch, ports, queue timeouts, compose rules before an app starts);
+- `wizard.md` checks (the checker copy kept in step with wizard-os and wizard-app-index);
+- `apps.json` / the app registry, and the other files `wam` writes for installed apps;
+- `wam/` (install, update, backup, restore and moves of apps), with its tests and docs.
+
+**Does not belong here:** new OS features, new UI, new skills or agent tooling. Put them in:
+
+- `wizard-os`: installer, release and OS-level behaviour, contracts in `spec/`;
+- `wizard-ux`: anything the owner sees in the shell;
+- `wizard-agent-service`: agent skills, agent tooling, anything the agent runs;
+- its own repo: anything else that stands on its own (an app, a CLI, a template).
+
+If a change needs a new piece here that is not Runtipi or the thin layer above, say why in the PR and add the piece to the list below.
+
+### Current non-Runtipi folders and where they would go
+
+Measured on 20 Nov 2026 against upstream `v4.12.0`. If upstream merges start to hurt, move these first; the target is where each would go.
+
+| Folder / file | Size | What it is | Would move to |
+|---|---|---|---|
+| `wam/` | 106 files, ~37k lines | `wam` CLI: app install/update/backup/restore, registry, release pins | stays (the thin Wizard layer); if it keeps growing, its own Python package repo that this repo installs |
+| `get.sh`, `install.sh`, `os.md`, `scripts/` (11 added files, e.g. `setup-private-access.sh`, `prepare-named-user.sh`) | ~2.9k lines | the WizardOS installer behind `aiwizards.com/os.sh` | wizard-os (or a `wizard-installer` repo) |
+| `wizard-cli/` | 5 files, ~2.4k lines | the `wizard` CLI (a copy of wizard-os `tools/`, see `SOURCE.json`) | wizard-os `tools/` (its upstream) |
+| `wizard-views/` | 10 files, ~5k lines | App Manager views loaded by the shell | wizard-ux |
+| `system-skills/` (`wizard-builder`, `wizard-guide`) | 9 files, ~0.5k lines | skills shipped to every install | wizard-agent-service |
+| `templates/` (`hello-wizard`, `list`) | 32 files, ~3.5k lines | app templates for `wam new` | a template repo (e.g. `hello-wizard`); `wam new` would fetch it |
+| `releases/` | 340 files | mirror of wizard-os `releases/` for boxes | stays a byte-identical mirror, or boxes read wizard-os directly |
+| `tools/` | 6 files | `mirror_defaults.py`, `install_crane.py` (stay, used by `wam`/CI); `sync_wizard_style.py`, `wizard_icons.py` (style: wizard-ux / wizard-os `style/`); `side_branches.py` (wizard-os tools) | as listed |
+| `qa/`, `tests/` (Python and node), `docs/` (Wizard docs) | ~46k lines | checks and docs for the pieces above | move with the code they test or describe |
+| `AGENTS.md`, `CLAUDE.md`, `THIRD_PARTY_NOTICES.md`, `.gitleaks.toml`, `pyproject.toml` | small | repo plumbing | stay |
+
+Upstream's own `README.md` and `AGENTS.md` are kept as `README.runtipi.md` and `AGENTS.runtipi.md`. Upstream's `cli/`, `screenshots/`, `.internal/` and `.gitmodules` are not in the fork.
+
+### Upstream base and divergence
+
+- **Base:** Runtipi `v4.12.0` (upgraded from 4.10.2 in WAM#835; how to move to a new release: `docs/DEVELOPMENT.md`). This repo shares no git history with upstream, so compare against the tag: `git fetch --depth=1 https://github.com/runtipi/runtipi.git tag v4.12.0` then `git diff --shortstat FETCH_HEAD HEAD -- packages`.
+- **Runtipi code itself (`packages/`), 20 Nov 2026:** 109 files differ, +6,521 / -138 lines. Backend 106 files (34 new files, mostly in `modules/docker`, `modules/app-stores`, `modules/app-lifecycle`, `modules/queue`), frontend 2 files, common 1 file. This is the part that makes upstream merges hard: keep it small.
+- **Whole repo:** 969 files differ, +162k / -1.8k lines; almost all of that is the non-Runtipi folders above, which upstream never touches.
 
 ## Portable machine configuration
 
