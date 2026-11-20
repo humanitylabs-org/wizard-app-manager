@@ -14,8 +14,9 @@ DELISTED = {"id": "wizard-mail", "repo": OLD, "listed": False, "install": {"git"
             "last_check": {"failures": [f"renamed to {NEW}"]}}
 
 
-def lookups(old=DELISTED, current=NEW, new=NEW_REC):
-    return {"index_get": lambda r: old if r == OLD else dict(new) if r == NEW else pytest.fail(f"index asked for {r}"),
+def lookups(old=DELISTED, current=NEW, new=NEW_REC, hits=()):
+    return {"search": lambda i: [dict(h) for h in hits] if i == "wizard-mail" else pytest.fail(f"searched {i}"),
+            "index_get": lambda r: old if r == OLD else dict(new) if r == NEW else pytest.fail(f"index asked for {r}"),
             "github": lambda url: {"full_name": current} if url.endswith("/repos/" + OLD.replace("/", "%2F"))
             or url.endswith("/repos/" + OLD) else pytest.fail(url),
             "resolve": lambda r: dict(new) if r == NEW else pytest.fail(f"resolved {r}")}
@@ -80,6 +81,50 @@ def test_never_follows_unless_github_and_the_index_agree_on_the_same_app(box, ca
     before = _files(box)
     assert repo_moves.follow(box, "wizard-mail", want=want, **kw) is None
     assert _files(box) == before
+
+
+STALE = {**DELISTED, "listed": True, "last_check": {"failures": []}}   # the index has not re-checked the old name yet
+
+
+def test_a_move_is_followed_while_the_index_still_lists_the_old_name(box):
+    """#829: oscarhenrycollins/photos moved to humanitylabs-org/photos; the index still listed both under one id."""
+    res = repo_moves.follow(box, "wizard-mail", **lookups(old=STALE, hits=[STALE, NEW_REC]))
+    assert res and res["from"] == OLD and res["to"] == NEW
+    for d, f in _files(box).items():
+        assert f[".wizard-source"]["repo"] == NEW and f[".wizard-selection"]["repo"] == NEW, d
+        assert f["config.json"]["source"] == f"https://github.com/{NEW}", d
+
+
+def test_a_store_selection_of_the_new_repo_follows_even_with_a_stale_old_listing(box):
+    kw = lookups(old=STALE)
+    kw["search"] = lambda i: pytest.fail("the selection names the repo; no search needed")
+    res = repo_moves.follow(box, "wizard-mail", want=NEW, **kw)
+    assert res and res["to"] == NEW
+
+
+@pytest.mark.parametrize("case", ["listed nowhere else", "other repo is another app", "no redirect",
+                                  "redirect elsewhere", "search down"])
+def test_a_still_listed_repo_moves_only_on_githubs_word(box, case):
+    asked = []
+    kw = lookups(old=STALE, hits=[STALE, NEW_REC])
+    github = kw["github"]
+    kw["github"] = lambda url: asked.append(url) or github(url)
+    if case == "listed nowhere else":
+        kw["search"] = lambda i: [dict(STALE)]
+    elif case == "other repo is another app":
+        kw["search"] = lambda i: [dict(STALE), {**NEW_REC, "id": "other"}]
+    elif case == "no redirect":
+        kw["github"] = lambda url: asked.append(url) or {"full_name": OLD}
+    elif case == "redirect elsewhere":
+        kw["github"] = lambda url: asked.append(url) or {"full_name": "humanitylabs-org/other-mail"}
+        kw["resolve"] = lambda r: {**NEW_REC, "repo": r, "id": "other-mail"}
+    elif case == "search down":
+        kw["search"] = lambda i: (_ for _ in ()).throw(OSError("down"))
+    before = _files(box)
+    assert repo_moves.follow(box, "wizard-mail", **kw) is None
+    assert _files(box) == before
+    if case in ("listed nowhere else", "other repo is another app", "search down"):
+        assert asked == []   # no GitHub call for an app nobody else lists
 
 
 @pytest.mark.parametrize("src", [{"repo": OLD, "source": "owner-private", "private": True},
