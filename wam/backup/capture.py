@@ -296,9 +296,13 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         if out.exists():
             raise ExportError(f"{out} already exists")
         out.parent.mkdir(parents=True, exist_ok=True)
-    installed = box.installed()
     rows = box.registry_rows()
-    agents = box.agents(installed)
+    found = box.installed()
+    agents = box.agents(found)
+    # an agent's runtime urn is what its restore looks for, so that copy wins over any other (Codex P1 on #827)
+    installed, leftover_copies = one_copy_per_app(found, rows, prefer={a.urn for a in agents if a.urn})
+    for msg in leftover_copies:
+        log("warning: " + msg)
     agent_urns = {a.urn for a in agents if a.urn}
     files_root = box.files_root()
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
@@ -500,7 +504,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
            "agents": [a["id"] for a in manifest["agents"]], "apps": [a["id"] for a in manifest["apps"]],
            "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20],
            "skipped_in_apps": app_skipped[:50], "skipped_in_apps_count": len(app_skipped),
-           "apps_without_data": apps_without_data}
+           "apps_without_data": apps_without_data, "skipped_app_copies": leftover_copies}
     if bw.changed:
         log(f"note: {len(bw.changed)} files changed while being read (their new size was cut/padded)")
     if bw.skipped:
@@ -510,6 +514,32 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         log(f"note: {len(app_skipped)} entries in app data were left out (sockets, devices, links leaving their "
             "folder): " + ", ".join(app_skipped[:5]))
     return res
+
+
+def one_copy_per_app(installed: dict[str, dict], rows: dict[str, dict],
+                     prefer: set[str] | frozenset = frozenset()) -> tuple[dict[str, dict], list[str]]:
+    """A backup holds one copy of each app id (`apps/<id>/`). When Runtipi lists the same id under two stores (a
+    leftover copy from an old store after the app's store or repo moved, #826), keep the one an agent runs in
+    (`prefer`), else the one the Wizard registry (apps.json) names, else the running one, else the first by urn; the others are left out with a warning instead
+    of failing the whole run on a duplicate bundle entry."""
+    by_id: dict[str, list[str]] = {}
+    for urn in sorted(installed):
+        by_id.setdefault(installed[urn]["id"], []).append(urn)
+    keep, skipped = {}, []
+    for app_id, urns in by_id.items():
+        pick = urns[0]
+        if len(urns) > 1:
+            named = (rows.get(app_id) or {}).get("urn")
+            running = [u for u in urns if installed[u].get("status") == "running"]
+            agent = [u for u in urns if u in prefer]
+            pick = agent[0] if agent else named if named in urns else (running[0] if running else urns[0])
+            for u in urns:
+                if u != pick:
+                    skipped.append(f"{app_id}: left out the copy in store {installed[u]['store']} ({u}); "
+                                   f"backed up the installed one, {pick}. Uninstall or remove the leftover copy "
+                                   "if you no longer need it")
+        keep[pick] = installed[pick]
+    return keep, skipped
 
 
 def _files_skip(rel: str, is_dir: bool) -> bool:
