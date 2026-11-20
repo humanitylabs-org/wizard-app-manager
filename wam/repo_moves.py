@@ -8,7 +8,8 @@ source check, and the rename check, so the app silently stops updating.
 
 `follow()` fixes the record when, and only when, all of this holds:
   - the recorded repo is a public Standard source (never owner-private, local or link installs);
-  - the index no longer lists the recorded repo;
+  - the index no longer lists the recorded repo, or still lists it but also lists the same app id under another
+    repo (a stale listing of the old name, #829), or a Store selection / release pin names the new repo;
   - GitHub's redirect for the recorded repo (GET /repos/<old> answers 301) names the new repo;
   - both owners are first-party (the same publisher rule as installs, `index.allowed`);
   - the index lists the new repo and it publishes the SAME app id.
@@ -57,8 +58,20 @@ def _same(a, b) -> bool:
     return isinstance(a, str) and isinstance(b, str) and a.lower() == b.lower()
 
 
+def _listed_elsewhere(c, app_id: str, repo: str, search=None) -> bool:
+    """True when the index lists the same app id under a repo other than `repo` (the hint that `repo` may have
+    moved while its old listing is still there, #829). False when it can't tell."""
+    from . import index
+    try:
+        hits = (search or (lambda i: index.search(c.index, id=i)))(app_id)
+    except Exception:  # noqa: BLE001 - the index being down never moves anything
+        return False
+    return any(isinstance(h, dict) and h.get("id") == app_id and isinstance(h.get("repo"), str)
+               and not _same(h["repo"], repo) for h in hits or [])
+
+
 def target(c, app_id: str, repo: str, *, want: str | None = None, index_get=None, resolve=None,
-           github=None) -> dict | None:
+           github=None, search=None) -> dict | None:
     """The index record of the repo `repo` moved to, when that repo publishes the same app id `app_id`; else None.
     `want`: only follow to that repo (a Store selection or a release pin names the repo it expects)."""
     from . import index
@@ -71,8 +84,13 @@ def target(c, app_id: str, repo: str, *, want: str | None = None, index_get=None
         old = get(repo)
     except Exception:  # noqa: BLE001 - the index being down never moves anything
         return None
-    if not isinstance(old, dict) or (old.get("listed", True) and old.get("install")):
-        return None   # still listed under the recorded name: nothing moved
+    if not isinstance(old, dict):
+        return None
+    if old.get("listed", True) and old.get("install") and want is None and \
+            not _listed_elsewhere(c, app_id, repo, search):
+        return None   # still listed under the recorded name and nowhere else: nothing moved (no GitHub call)
+    # Still listed but another repo publishes this id (or a caller names the repo it expects): the old listing may
+    # just be stale (#829, the index re-checks weekly). GitHub's redirect below is what decides.
     new = current_name(repo, github)
     if not new or _same(new, repo) or (want is not None and not _same(new, want)):
         return None

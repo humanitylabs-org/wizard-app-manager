@@ -99,7 +99,7 @@ const frontMatter = (text: string): Record<string, unknown> => {
 const body = (text: string) => text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
 
 export class WizardIndexStore extends AppStoreFilesManager {
-  private lastCheck = new Map<string, { at: number; rec: IndexRecord | null }>();
+  private lastCheck = new Map<string, { at: number; hits: IndexRecord[] }>();
   private inflight = new Map<string, Promise<void>>();
 
   get indexUrl() {
@@ -145,26 +145,44 @@ export class WizardIndexStore extends AppStoreFilesManager {
     };
   }
 
-  /** The record the index lists for this id right now (cached briefly). Null if it is no longer listed. */
+  /** The record the index lists for this id right now (cached briefly). Null if it is no longer listed.
+   *  When several repos publish the id (a moved repo whose old name is still listed, wizard-app-manager#829),
+   *  the one this box's copy came from wins (`.wizard-source`), so an installed app never switches repo by
+   *  index order and follows a recorded move; with no recorded copy the index's first hit is used. */
   private async lookup(appName: string, fresh = false): Promise<IndexRecord | null> {
     const hit = this.lastCheck.get(appName);
-    if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) return hit.rec;
+    let hits: IndexRecord[] | null = null;
+    if (!fresh && hit && Date.now() - hit.at < CHECK_TTL) hits = hit.hits;
+    else {
+      try {
+        const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
+        hits = res.apps.filter((a) => a.id === appName && allowedPublisher(a));
+        this.lastCheck.set(appName, { at: Date.now(), hits });
+      } catch (e) {
+        this.logger.warn(`Wizard index lookup for ${appName} failed: ${String(e)}`);
+        hits = hit?.hits ?? [];
+      }
+    }
+    const recorded = await this.recordedRepo(appName);
+    const listed = (recorded ? hits.find((a) => String(a.repo).toLowerCase() === recorded) : undefined) ?? hits[0] ?? null;
+    return listed && appName === 'hermes-agent'
+      ? {
+          ...listed,
+          repo: hermesRecipe.repo,
+          install: { ...listed.install, git: `https://github.com/${hermesRecipe.repo}`, commit: hermesRecipe.commit },
+        }
+      : listed;
+  }
+
+  /** The repo (lowercase) the prepared copy of this app came from, or null. */
+  private async recordedRepo(appName: string): Promise<string | null> {
     try {
-      const res = await this.get<IndexSearch>(`/v1/search?${new URLSearchParams({ id: appName, limit: '5' })}`);
-      const listed = res.apps.find((a) => a.id === appName && allowedPublisher(a)) ?? null;
-      const rec =
-        listed && appName === 'hermes-agent'
-          ? {
-              ...listed,
-              repo: hermesRecipe.repo,
-              install: { ...listed.install, git: `https://github.com/${hermesRecipe.repo}`, commit: hermesRecipe.commit },
-            }
-          : listed;
-      this.lastCheck.set(appName, { at: Date.now(), rec });
-      return rec;
-    } catch (e) {
-      this.logger.warn(`Wizard index lookup for ${appName} failed: ${String(e)}`);
-      return hit?.rec ?? null;
+      const f = path.join(this.getAppStoreFolder(), appName, '.wizard-source');
+      if (!(await this.filesystem.isFile(f))) return null;
+      const repo = JSON.parse((await this.filesystem.readTextFile(f)) ?? '{}')?.repo;
+      return typeof repo === 'string' && repo ? repo.toLowerCase() : null;
+    } catch {
+      return null;
     }
   }
 
