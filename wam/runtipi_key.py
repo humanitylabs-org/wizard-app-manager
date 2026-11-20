@@ -11,7 +11,8 @@ Off by default: feature switch `wizard/runtipi-cli-key` (For testers). With it o
     backend older than 4.12) or it can't be read right now, wam signs with JWT_SECRET as before;
   - wam keeps a private copy in `<wizard home>/runtipi-cli-key` (0600, this user only) so the wizard-ux loopback
     tools (tools/store-data-origin.mjs, system-resources.mjs, home-resources-origin.mjs) sign with the same key.
-    Those tools use the copy when it holds a valid key and JWT_SECRET otherwise.
+    Those tools use the copy when it holds a valid key and JWT_SECRET otherwise. Whenever wam can't read the key it
+    removes the copy, so the tools never keep signing with a key the backend no longer has.
 With it off, wam signs with JWT_SECRET and removes that copy, so the shell's tools go back to JWT_SECRET too.
 """
 from __future__ import annotations
@@ -101,10 +102,10 @@ def secret(root: Path, jwt_secret: str, home: Path | None = None, *, on=None, re
     key = None
     if (on or switch_on)(home):
         key = (read or container_key)()
-        if key:
-            _write_copy(path, key)
-    else:
-        _drop_copy(path)
+    if key:
+        _write_copy(path, key)
+    else:                               # off, a backend without the key, or unreadable now: the shell's tools follow
+        _drop_copy(path)                # wam back to JWT_SECRET (a stale copy would 401 forever; Codex P2)
     with _lock:
         _cache[ck] = (t, key or "")
     return key or jwt_secret

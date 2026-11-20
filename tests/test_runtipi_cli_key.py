@@ -59,7 +59,10 @@ def test_on_signs_with_the_container_key_and_keeps_a_private_copy(tmp_path, monk
     assert copy.stat().st_mode & 0o777 == 0o600
 
 
-def test_on_with_an_older_backend_falls_back_to_jwt_secret(tmp_path, monkeypatch):
+def test_on_with_an_older_backend_falls_back_to_jwt_secret_and_drops_a_stale_copy(tmp_path, monkeypatch):
+    copy = runtipi_key.key_path()
+    copy.parent.mkdir(parents=True)
+    copy.write_text(KEY)
     monkeypatch.setattr(runtipi_key, "switch_on", lambda home=None: True)
     monkeypatch.setattr(runtipi_key, "container_key", lambda *a, **k: None)
     rt = Runtipi.from_install(_root(tmp_path))
