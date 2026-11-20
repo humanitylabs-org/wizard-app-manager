@@ -1277,6 +1277,12 @@ def browser_boundary_cmd(c: Config, args) -> int:
         if res["changed"] and not args.no_restart:
             res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
                               {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
+        if value == "1" and not args.dry_run:
+            # WAM#836: Welcome offers Tinfoil first on a private-first box; cache its image now, in the background,
+            # so Connect Tinfoil doesn't wait for a ~300 MB download. Never installs it; never fails this command.
+            from . import recommended
+            if recommended.spawn_private_first(c):
+                res["prefetch"] = "started"
         res["next"] = "restart the App Manager (wam serve) so its own routes follow"
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
@@ -1304,6 +1310,12 @@ def private_first_cmd(c: Config, args) -> int:
         if res["changed"] and not args.no_restart and not args.dry_run:
             res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
                               {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
+        if value == "1" and not args.dry_run:
+            # WAM#836: Welcome offers Tinfoil first on a private-first box; cache its image now, in the background,
+            # so Connect Tinfoil doesn't wait for a ~300 MB download. Never installs it; never fails this command.
+            from . import recommended
+            if recommended.spawn_private_first(c):
+                res["prefetch"] = "started"
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
 
@@ -2992,7 +3004,9 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("standard", help="which installed apps differ from what the Store ships (private images, "
                         "box-only overrides) and why"); st.add_argument("--json", action="store_true")
     sub.add_parser("serve")
-    sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
+    pre = sub.add_parser("prefetch", help="cache recommended images only; never install or start apps")
+    pre.add_argument("--private-first", action="store_true",
+                     help="cache the apps a private-first box offers first (Tinfoil) instead (WAM#836)")
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
@@ -3232,7 +3246,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(bootstrap(c), indent=2))
         elif args.cmd == "prefetch":
             from . import recommended
-            print(json.dumps(recommended.prefetch(c), indent=2))
+            print(json.dumps(recommended.prefetch_private_first(c) if args.private_first else recommended.prefetch(c),
+                             indent=2))
         elif args.cmd == "recover":
             print(json.dumps(recover(c, args.running), indent=2))
         elif args.cmd == "shell-split":

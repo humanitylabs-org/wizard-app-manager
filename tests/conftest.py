@@ -66,6 +66,14 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_private_first_download(monkeypatch):
+    """`wam private-first on` starts a detached `wam prefetch --private-first` (WAM#836); a test never does.
+    tests/test_recommended.py keeps its own reference to the real function to test it with a fake Popen."""
+    from wam import recommended
+    monkeypatch.setattr(recommended, "spawn_private_first", lambda c, popen=None: None)
+
+
+@pytest.fixture(autouse=True)
 def _nothing_running(request, monkeypatch):
     """Update decisions see an idle box unless a test says otherwise: the running-work inventory (wam/work.py)
     would otherwise read this machine's own Hermes (~/.hermes), which is busy while a developer's Hermes runs.
