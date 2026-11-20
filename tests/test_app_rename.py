@@ -518,7 +518,7 @@ def test_rename_due_moves_a_staging_copy_from_the_released_repo(tmp_path, monkey
              "name": "Search", "staging": True},
             {"from": "notes-next", "to": "notes", "repo": "humanitylabs-org/notes", "name": "Notes"}]
     seen, moved = [], []
-    monkeypatch.setattr(ar, "due", lambda c_, rt_, nightly=False: seen.append(nightly) or rows)
+    monkeypatch.setattr(ar, "due", lambda c_, rt_, nightly=False, **k: seen.append(nightly) or rows)
     monkeypatch.setattr(ar, "migrate", lambda c_, old, new, repo=None, staging=False:
                         moved.append((old, new, repo, staging)) or {"renamed": True})
     ar.rename_due(c, rt)
@@ -532,7 +532,7 @@ def test_rename_due_moves_a_staging_copy_from_the_released_repo(tmp_path, monkey
 
 def test_migrate_without_a_new_id_takes_the_staging_claims_repo(box, monkeypatch):
     c, rt, fs, installs = box
-    monkeypatch.setattr(ar, "due", lambda c_, rt_: [{"from": "cinequeue", "to": "movies", "repo": "humanitylabs-org/movies",
+    monkeypatch.setattr(ar, "due", lambda c_, rt_, **k: [{"from": "cinequeue", "to": "movies", "repo": "humanitylabs-org/movies",
                                                      "name": "Movies", "staging": True}])
     asked = []
     real = ar._new_record
@@ -554,3 +554,104 @@ def test_drop_image_pins_keeps_everything_else():
             "x-wizard-networks:\n  image: keep\n")
     assert ar.drop_image_pins(text) == ("services:\n  wizard-search:\n    environment:\n      A: '1'\n"
                                         "  other:\n    ports: ['1:1']\nx-wizard-networks:\n  image: keep\n")
+
+
+# ---------------------------------------------------------------- a move left half done (#832, telegram -> tg-style)
+
+def _leave_old_installed(box, monkeypatch):
+    """A move whose uninstall of the old app never went through: the new app runs, the old one stays stopped."""
+    c, rt, fs, installs = box
+    monkeypatch.setattr(ar, "UNINSTALL_WAITS", (0, 0))
+    real = rt.uninstall
+    rt.uninstall = lambda urn: (_ for _ in ()).throw(RuntimeError("runtipi queue busy"))
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert res.get("renamed") is True and "was not removed" in res["warning"], res
+    assert rt.apps["cinequeue"]["status"] == "stopped" and rt.apps["movies"]["status"] == "running"
+    assert fs.read("/data/app-data/wizardapps/cinequeue/data/movies.json")   # its data is back in place
+    installed = c.runtipi_root / "apps" / "wizardapps" / "movies"
+    installed.mkdir(parents=True)
+    (installed / "wizard.md").write_text("---\nid: movies\nname: Movies\nrenamed_from: [cinequeue]\n---\n")
+    rt.uninstall = real
+    return c, rt, fs, installs
+
+
+def test_the_old_app_is_asked_to_go_twice(box, monkeypatch):
+    c, rt, fs, installs = box
+    monkeypatch.setattr(ar, "UNINSTALL_WAITS", (0, 0))
+    tries = []
+    real = rt.uninstall
+
+    def flaky(urn):
+        tries.append(urn)
+        if len(tries) == 1:
+            raise RuntimeError("runtipi queue busy")
+        real(urn)
+    rt.uninstall = flaky
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert res.get("renamed") is True and "warning" not in res, res
+    assert len(tries) == 2 and "cinequeue" not in rt.apps
+
+
+def test_a_half_done_move_is_due_and_finished(box, monkeypatch):
+    c, rt, fs, installs = _leave_old_installed(box, monkeypatch)
+    recs = {"humanitylabs-org/cinequeue": {"id": "movies", "manifest": {"id": "movies", "renamed_from": ["cinequeue"]}}}
+    got = ar.due(c, rt, fetch=lambda repo: recs[repo])
+    assert got == [{"from": "cinequeue", "to": "movies", "repo": None, "name": "Movies", "finish": True}]
+    assert ar.due(c, rt, fetch=lambda repo: recs[repo], only=["notes"]) == []
+    snap = dict(fs.files)
+    assert ar.migrate(c, "cinequeue", dry_run=True)["finish"] is True and fs.files == snap and "cinequeue" in rt.apps
+    n = len(installs)
+    res = ar.migrate(c, "cinequeue", settle=0, probe_seconds=0)
+    assert res.get("renamed") is True and res.get("finished") is True and "warning" not in res, res
+    assert "cinequeue" not in rt.apps and rt.apps["movies"]["status"] == "running" and len(installs) == n
+    # the old data is kept under a dated name, the new app's copy is untouched
+    assert fs.read(res["old_data"] + "/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert fs.read("/data/app-data/wizardapps/movies/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert ar.due(c, rt, fetch=lambda repo: recs[repo]) == []
+
+
+def test_a_half_done_move_is_finished_when_asked_with_both_ids(box, monkeypatch):
+    c, rt, fs, installs = _leave_old_installed(box, monkeypatch)
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert res.get("finished") is True and "cinequeue" not in rt.apps, res
+
+
+def test_two_apps_are_left_alone_without_this_boxs_move_record(box, monkeypatch):
+    c, rt, fs, installs = _leave_old_installed(box, monkeypatch)
+    fetch = lambda repo: {"id": "movies", "manifest": {"id": "movies", "renamed_from": ["cinequeue"]}}  # noqa: E731
+    # the owner started the old app again: never retired behind their back
+    rt.apps["cinequeue"]["status"] = "running"
+    assert ar.due(c, rt, fetch=fetch) == []
+    rt.apps["cinequeue"]["status"] = "stopped"
+    # a move that was rolled back, or none at all (both installed by hand): nothing proves the data was copied
+    for d in (c.home / "renames").iterdir():
+        (d / "result.json").write_text(json.dumps({"rolled_back": True}))
+    assert ar.due(c, rt, fetch=fetch) == []
+    assert ar.migrate(c, "cinequeue", "movies")["error"] == "movies is already installed"
+    assert "cinequeue" in rt.apps
+
+
+def test_wam_app_update_moves_a_renamed_app(tmp_path, monkeypatch):
+    from wam import cli
+    asked, moved = [], []
+    monkeypatch.setattr(ar, "due", lambda c_, rt=None, only=None, **k: asked.append(only) or (
+        [{"from": "telegram", "to": "tg-style", "repo": "humanitylabs-org/tg-style", "name": "TG style"}]
+        if only == ["telegram"] else []))
+    monkeypatch.setattr(ar, "migrate", lambda c_, old, new, **k: moved.append((old, new)) or
+                        {"renamed": True, "from": old, "to": new})
+    updated = []
+    monkeypatch.setattr(cli, "app_update", lambda c_, app, **k: updated.append(app) or {"status": "running"})
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
+    assert cli.main(["app", "update", "telegram"]) == 0
+    assert moved == [("telegram", "tg-style")] and updated == []
+    # an app with no rename updates as before; system apps never move on their own
+    assert cli.main(["app", "update", "notes"]) == 0 and updated == ["notes"]
+    assert cli.rename_instead_of_update(cli.Config(), "wizard-ux") is None and asked == [["telegram"], ["notes"]]
+    # the flag-first form (docs/graceful-restart.md) moves it too, and hands any other app on to Runtipi
+    passed = []
+    monkeypatch.setattr(cli, "runtipi_cli", lambda root, argv: passed.append(argv) or 0)
+    moved.clear()
+    assert cli.main(["app", "update", "--no-backup", "telegram"]) == 0 and moved == [("telegram", "tg-style")]
+    assert passed == []
+    assert cli.main(["app", "update", "--no-backup", "telegram", "notes"]) == 0
+    assert passed == [["app", "update", "--no-backup", "notes"]]

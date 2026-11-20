@@ -367,3 +367,42 @@ def test_asking_for_a_staging_copy_by_id_moves_it_to_the_released_app(tmp_path, 
     assert asked == [["search-preview"]] and out["renamed"] == [{"id": "wizard-search", "name": "Search"}]
     # asking for one app never updates the others that happen to be due (Codex P1)
     assert updated == [] and out["updated"] == []
+
+
+def test_updating_a_renamed_app_by_id_moves_it_instead_of_updating_it_in_place(tmp_path, monkeypatch):
+    """#832: `Update` on telegram, whose source now publishes tg-style (renamed_from: [telegram]), must move it to
+    tg-style in one step, not update telegram in place and leave two apps."""
+    from wam import app_rename, cli, updates
+    monkeypatch.setattr(updates, "installing", lambda home: False)
+    row = {"id": "telegram", "name": "Telegram", "from": 21, "to": 23, "to_version": "0.8.23",
+           "status": "running", "skip": None}
+    monkeypatch.setattr(au, "candidates", lambda *a, **k: [dict(row)])
+    updated = []
+    monkeypatch.setattr(cli, "app_update", lambda c, app_id, **k: updated.append(app_id) or {"version": 23})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: None)
+    monkeypatch.setattr(au, "_notify", lambda c, *msg: True)
+    move = {"from": "telegram", "to": "tg-style", "repo": "humanitylabs-org/tg-style", "name": "TG style"}
+    monkeypatch.setattr(app_rename, "due", lambda c, rt, **k: [move] if k.get("only") == ["telegram"] else [])
+    asked = []
+    monkeypatch.setattr(app_rename, "rename_due", lambda c, rt, only=None: asked.append(only) or
+                        [{"renamed": True, "from": "telegram", "to": "tg-style", "name": "TG style",
+                          "warning": "tg-style works, but telegram was not removed"}])
+
+    class C:
+        home = tmp_path
+        runtipi_root = tmp_path
+
+        def runtipi(self):
+            return type("Rt", (), {"installed": lambda self: []})()
+    dry = au.apply(C(), only=["telegram"], dry_run=True, notify=False)
+    assert dry["moves"] == [move] and dry["due"] == []
+    out = au.apply(C(), only=["telegram"], notify=False, moves=lambda *a, **k: [], reporter=lambda *a, **k: {})
+    assert asked == [["telegram"]] and out["renamed"] == [{"id": "tg-style", "name": "TG style"}]
+    # an old id the move left installed is never updated in place; the next run retires it
+    assert updated == [] and out["updated"] == []
+    # a move that failed (rolled back) leaves telegram as it was: still never updated in place (Codex P1)
+    asked.clear()
+    monkeypatch.setattr(app_rename, "rename_due", lambda c, rt, only=None: asked.append(only) or
+                        [{"from": "telegram", "to": "tg-style", "rolled_back": True, "error": "no answer"}])
+    out = au.apply(C(), only=["telegram"], notify=False, moves=lambda *a, **k: [], reporter=lambda *a, **k: {})
+    assert updated == [] and out["updated"] == [] and [f["id"] for f in out["failed"]] == ["telegram"]

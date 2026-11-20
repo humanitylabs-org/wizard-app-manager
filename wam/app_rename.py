@@ -421,8 +421,51 @@ def _claimed_by_release(c, old: str, have: set, fetch, search) -> dict | None:
     return None
 
 
+def _installed_wizard_md(c, app_id: str) -> dict:
+    """The wizard.md of the installed copy (apps/<store>/<id>), never the store's newer recipe."""
+    from . import cli, registry
+    f = Path(c.runtipi_root) / "apps" / cli.STORE / app_id / "wizard.md"
+    try:
+        return registry._front(f.read_text()) if f.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _move_dirs(c, old: str, new: str) -> list[Path]:
+    """The backup folders of earlier moves of `old` to `new` (<wizard-os home>/renames/<old>-to-<new>-<ts>), newest
+    first, that did not end rolled back: proof this box already copied the old app's data to the new id."""
+    out = []
+    for d in sorted((Path(c.home) / "renames").glob(f"{old}-to-{new}-*"), reverse=True):
+        if not (d / "app.json").is_file():
+            continue
+        try:
+            res = json.loads((d / "result.json").read_text()) if (d / "result.json").is_file() else None
+        except (OSError, ValueError):
+            continue
+        if res is None or res.get("renamed") is True:   # interrupted after the copy, or done but the old app stayed
+            out.append(d)
+    return out
+
+
+def _half_done(c, old: str, status: dict) -> dict | None:
+    """A move that installed the new id but left the old app installed and stopped (#832: its uninstall failed or
+    the run was cut off). The new app's installed wizard.md claims the old id and this box's own move record shows the
+    data was copied, so finishing it only retires the old app (its data is kept as <old>.old-<date>)."""
+    if status.get(old) != "stopped":
+        return None   # the owner started the old app again: leave both alone
+    for new in sorted(k for k in status if k and k != old):
+        if status.get(new) not in ("running", "stopped"):
+            continue
+        w = _installed_wizard_md(c, new)
+        if old in renamed_from(w) and _move_dirs(c, old, new):
+            from . import cli
+            return {"from": old, "to": new, "repo": _source(c.runtipi_root, cli.STORE, new).get("repo"),
+                    "name": w.get("name") or new, "finish": True}
+    return None
+
+
 def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly: bool = False,
-        search=None) -> list[dict]:
+        search=None, only: list[str] | None = None) -> list[dict]:
     """Installed apps whose source now publishes them under a new id that names this one in `renamed_from`.
     Public-index apps are checked through their recorded repo's index record (GitHub keeps the old repo name
     redirecting after a repo rename, and the index re-reads it). Private sources are moved with `wam app-rename`.
@@ -434,6 +477,8 @@ def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly:
     rows = installed if installed is not None else rt.installed()
     have = {(r.get("app") or {}).get("appName") for r in rows
             if (r.get("app") or {}).get("appStoreSlug") == cli.STORE}
+    status = {(r.get("app") or {}).get("appName"): (r.get("app") or {}).get("status") for r in rows
+              if (r.get("app") or {}).get("appStoreSlug") == cli.STORE}
     fetch = fetch or (lambda repo: index._get(f"{c.index}/v1/apps/{repo}"))
     search = search or (lambda app_id: index.search(c.index, id=app_id))
     out = []
@@ -441,7 +486,13 @@ def due(c, rt=None, installed: list[dict] | None = None, fetch=None, *, nightly:
     if nightly:
         skip = set(app_updates.holds(c.home)) | set(app_updates.SYSTEM_APPS) | set(app_updates._release_managed())
     for old in sorted(x for x in have if x):
+        if only is not None and old not in only:
+            continue
         if old in skip or (nightly and app_updates._selection_pinned(c.runtipi_root, cli.STORE, old)):
+            continue
+        finish = _half_done(c, old, status)
+        if finish:
+            out.append(finish)
             continue
         src = _source(c.runtipi_root, cli.STORE, old)
         repo = src.get("repo")
@@ -614,16 +665,22 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
     if old not in have:
         return {"error": f"{old} is not installed"}
     if new is None:
-        found = [d for d in due(c, rt) if d["from"] == old]
+        found = [d for d in due(c, rt, only=[old]) if d["from"] == old]
         if not found:
             return {"error": f"{old}: its source does not publish a renamed app (wizard.md renamed_from: [{old}])"}
         new = found[0]["to"]
+        if found[0].get("finish"):
+            return _finish(c, rt, old, new, dry_run=dry_run)
         if found[0].get("staging"):
             staging = True
             repo = repo or found[0]["repo"]   # a staging copy moves to the released app's repo, not its own source
     if not ID.fullmatch(new) or new == old:
         return {"error": f"bad new id {new!r}"}
     if new in have:
+        row_status = {a: ((rt.app(f"{a}:{store}") or {}).get("app") or {}).get("status") for a in (old, new)}
+        half = _half_done(c, old, row_status)
+        if half and half["to"] == new and repo is None:
+            return _finish(c, rt, old, new, dry_run=dry_run)
         return {"error": f"{new} is already installed"}
     old_urn, new_urn = f"{old}:{store}", f"{new}:{store}"
     row = (rt.app(old_urn) or {}).get("app") or {}
@@ -797,9 +854,25 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         return rollback(f"{type(e).__name__}: {e}"[:400] if not isinstance(e, RenameError) else str(e))
 
     # The new app works. Keep the old data under a dated name, then uninstall the old app.
-    keep = f"{po['data']}.old-{time.strftime('%Y%m%d', time.gmtime())}"
     result = {"from": old, "to": new, "name": plan["name"], "renamed": True, "steps": steps, "backup": str(bdir),
               "port": old_port, "data": {"files": before["files"], "bytes": before["bytes"]}}
+    return _retire(c, rt, old, new, result, log, bdir)
+
+
+# Runtipi can be busy (another app's update holds its queue) when the old app's uninstall is asked: ask once more,
+# waiting longer, before leaving the old app beside the new one (#832).
+UNINSTALL_WAITS = (300, 600)
+
+
+def _retire(c, rt, old: str, new: str, result: dict, log, bdir: Path) -> dict:
+    """The last step of a move, once the new app works: keep the old data as <old>.old-<date>, uninstall the old app,
+    point the box's bookkeeping at the new id. Run again by `_finish` when an earlier move stopped here."""
+    from . import cli
+    store = cli.STORE
+    po = _paths(store, old)
+    old_urn = f"{old}:{store}"
+    grants = "/data/state/wizard-grants.json"
+    keep = f"{po['data']}.old-{time.strftime('%Y%m%d', time.gmtime())}"
     try:
         if rt_exists(po["data"]):
             n = 1
@@ -808,17 +881,25 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             keep = keep if n == 1 else f"{keep}.{n}"
             rt_move(po["data"], keep)
             result["old_data"] = keep
-        rt.uninstall(old_urn)
-        st = rt.wait_status(old_urn, {"missing"}, 300)
+        st, err = None, None
+        for wait in UNINSTALL_WAITS:
+            try:
+                rt.uninstall(old_urn)
+                err = None
+            except Exception as e:  # noqa: BLE001 - Runtipi busy or slow to answer: check, then ask once more
+                err = e
+            st = rt.wait_status(old_urn, {"missing"}, wait)
+            if st == "missing":
+                break
         if st != "missing":
-            raise RenameError(f"the old app is {st}")
+            raise RenameError(f"the old app is {st}" + (f" ({type(err).__name__}: {err})" if err else ""))
         log("old app uninstalled")
         # The App Manager's own bookkeeping may have noted the old id again while it was going; point it at the new.
-        g = rt_read(files["grants"])
+        g = rt_read(grants)
         if g is not None:
             fixed = rename_in_grants(json.loads(g), old, new)
             if fixed != json.loads(g):
-                rt_write(files["grants"], (json.dumps(fixed, indent=2) + "\n").encode())
+                rt_write(grants, (json.dumps(fixed, indent=2) + "\n").encode())
     except Exception as e:  # noqa: BLE001 - the new app stays; the old one is left stopped with its data
         if result.get("old_data") and not rt_exists(po["data"]):
             try:
@@ -826,7 +907,8 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
                 result.pop("old_data")
             except Exception:  # noqa: BLE001
                 pass
-        result["warning"] = f"{new} works, but {old} was not removed ({str(e)[:200]}); remove it with `wam uninstall {old}`"
+        result["warning"] = (f"{new} works, but {old} was not removed ({str(e)[:200]}); the next app update tries "
+                             f"again, or remove it with `wam uninstall {old}`")
     try:
         cli.network_step(c, rt)
         cli.write_registry(c, rt)
@@ -834,6 +916,21 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         result.setdefault("warning", f"registry refresh: {str(e)[:160]}")
     (bdir / "result.json").write_text(json.dumps(result, indent=2))
     return result
+
+
+def _finish(c, rt, old: str, new: str, *, dry_run: bool) -> dict:
+    """Finish a move an earlier run left half done (#832): the new app is installed and works, the old one is still
+    installed and stopped. Its data was already copied (the move's own record says so), so only the old app goes."""
+    bdir = _move_dirs(c, old, new)[0]
+    name = _installed_wizard_md(c, new).get("name") or new
+    if dry_run:
+        return {"dry_run": True, "from": old, "to": new, "name": name, "finish": True, "backup": str(bdir)}
+    steps: list[str] = []
+    log = lambda s: (steps.append(s), print(f"rename {old} -> {new}: {s}", file=sys.stderr, flush=True))  # noqa: E731
+    log(f"finishing the move started in {bdir.name}")
+    result = {"from": old, "to": new, "name": name, "renamed": True, "finished": True, "steps": steps,
+              "backup": str(bdir)}
+    return _retire(c, rt, old, new, result, log, bdir)
 
 
 def rename_due(c=None, rt=None, only: list[str] | None = None) -> list[dict]:
@@ -844,7 +941,7 @@ def rename_due(c=None, rt=None, only: list[str] | None = None) -> list[dict]:
     c = c or cli.Config()
     rt = rt or c.runtipi()
     out = []
-    rows = due(c, rt, nightly=not only)
+    rows = due(c, rt, nightly=not only, **({"only": list(only)} if only else {}))
     if only:
         rows = [d for d in rows if d["from"] in only and d["from"] not in app_updates.SYSTEM_APPS]
     for d in rows:

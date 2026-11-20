@@ -941,45 +941,52 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
     due = [r for r in rows if not r["skip"]]
     if dry_run:
         out = {"dry_run": True, "due": due, "skipped": [r for r in rows if r["skip"]], "unknown": unknown}
-        if unknown and not renames:   # say what asking for it would do (a staging copy's move, wizard-os#628)
-            from . import app_rename
+        if only and not renames:   # say what asking for it would do (a staging copy's move, wizard-os#628; a
+            from . import app_rename   # renamed app's move, #832)
             try:
-                moves = [d for d in app_rename.due(c, rt) if d["from"] in unknown]
+                moves = [d for d in app_rename.due(c, rt, only=list(only)) if d["from"] in only]
             except Exception:  # noqa: BLE001 - a dry run never fails on the rename check
                 moves = []
             if moves:
+                gone = {d["from"] for d in moves}
                 out["moves"] = moves
-                out["unknown"] = [x for x in unknown if x not in {d["from"] for d in moves}]
+                out["unknown"] = [x for x in unknown if x not in gone]
+                out["due"] = [r for r in due if r["id"] not in gone]
         return out
     done, rolled, failed, needs = [], [], [], []
     renamed = []
-    if not only or unknown:
-        # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
-        # back on its own; its update, if any, then runs under the new id on the next run. Asked for by id, an
-        # app with no update of its own (a staging copy the released app claims, wizard-os#628) moves too.
-        from . import app_rename
-        try:
-            moves = (renames(c, rt) if renames else app_rename.rename_due(c, rt, only=unknown or None))
-        except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
-            print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
-            moves = []
-        for res in moves:
-            if res.get("renamed"):
-                renamed.append({"id": res["to"], "name": res.get("name") or res["to"]})
-            else:
-                failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
-                               "reason": "moving it to its new name did not work, so it stays as it was"
-                               + ("" if res.get("rolled_back", True) else " (needs a look)"),
-                               "rollback": res, "step": "move to its new name"})
-        if renamed:
-            moved = {r["id"] for r in renamed}
-            rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
-            if only:   # an update asked for by id still touches only those apps (Codex P1)
-                rows = [r for r in rows if r["id"] in only]
-                for r in rows:
-                    if r["skip"] in ("held", "failed", "ignored"):
-                        r["skip"] = None
-            due = [r for r in rows if not r["skip"] and r["id"] not in moved]
+    # An app its publisher renamed (wizard.md renamed_from) moves to its new id first, verified or rolled
+    # back on its own; its update, if any, then runs under the new id on the next run. Asked for by id, an
+    # app with no update of its own (a staging copy the released app claims, wizard-os#628) moves too, and so
+    # does a renamed app that also has an update under its old id (#832: updating it in place, or installing
+    # the new id beside it, left two apps).
+    from . import app_rename
+    try:
+        moves = (renames(c, rt) if renames else app_rename.rename_due(c, rt, only=list(only) if only else None))
+    except Exception as e:  # noqa: BLE001 - a rename check never stops the updates
+        print(f"WARNING: app renames not checked: {e}", file=sys.stderr)
+        moves = []
+    for res in moves:
+        if res.get("renamed"):
+            renamed.append({"id": res["to"], "name": res.get("name") or res["to"]})
+        else:
+            failed.append({"id": res.get("from"), "name": res.get("name") or res.get("from"),
+                           "reason": "moving it to its new name did not work, so it stays as it was"
+                           + ("" if res.get("rolled_back", True) else " (needs a look)"),
+                           "rollback": res, "step": "move to its new name"})
+    # an app whose move was tried is never updated in place in the same run (#832, Codex P1): a failed move left
+    # it as it was, a move that could not retire the old id finishes on the next run
+    tried = {res.get("from") for res in moves}
+    due = [r for r in due if r["id"] not in tried]
+    if renamed:
+        moved = {r["id"] for r in renamed} | tried
+        rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+        if only:   # an update asked for by id still touches only those apps (Codex P1)
+            rows = [r for r in rows if r["id"] in only]
+            for r in rows:
+                if r["skip"] in ("held", "failed", "ignored"):
+                    r["skip"] = None
+        due = [r for r in rows if not r["skip"] and r["id"] not in moved]
     fails = _failed(c.home)
     for r in due:
         started = int(time.time())
