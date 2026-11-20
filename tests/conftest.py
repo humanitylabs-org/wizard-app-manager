@@ -93,3 +93,22 @@ def _os_update_waits_off(monkeypatch):
     monkeypatch.setattr(feature_switches, "is_on",
                         lambda tid, home=None, pages=None, **k: False if tid == "wizard/os-update-waits"
                         else real(tid, home, pages, **k))
+
+
+def pytest_collection_modifyitems(config, items):
+    """CI shards (#854): WAM_TEST_SHARD=<i>/<n> keeps only the tests whose id hashes to shard i, so the test
+    workflow runs the suite as n parallel jobs. Unset (a local run), every test runs."""
+    import os
+    import zlib
+    shard = os.environ.get("WAM_TEST_SHARD", "").strip()
+    if not shard:
+        return
+    i, n = (int(x) for x in shard.split("/"))
+    if not 1 <= i <= n:
+        raise pytest.UsageError(f"WAM_TEST_SHARD={shard}: want <i>/<n> with 1 <= i <= n")
+    keep, drop = [], []
+    for item in items:
+        (keep if zlib.crc32(item.nodeid.encode()) % n == i - 1 else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
