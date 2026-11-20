@@ -29,21 +29,21 @@ jobs:
   # The suite runs as parallel shards (#854: one 12-minute job became a few short ones). `test` is the required
   # check on main, so it stays as the one job that passes only when every shard and check passed.
   pytest:
-    name: pytest (${{ matrix.shard }}/8)
+    name: pytest (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: pip install pyyaml pytest pyjwt pytest-xdist
-      - run: python -m pytest -q -n 4 --durations=10
+      - run: python -m pytest -q -n 8 --durations=10
         env:
-          WAM_TEST_SHARD: ${{ matrix.shard }}/8
+          WAM_TEST_SHARD: ${{ matrix.shard }}/4
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10

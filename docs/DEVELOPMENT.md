@@ -28,7 +28,7 @@ python tools/sync_wizard_style.py --check
 python -m wam.style_check templates/hello-wizard --policy wam/style-policy.json --strict
 node --test tests/runtipi-open.test.mjs tests/connections-map.test.mjs
 bun test tests/curator-mirrors.test.ts
-# jobs "pytest (1/8)" .. "pytest (8/8)": one shard each (WAM_TEST_SHARD=<i>/8, tests/conftest.py); locally run the whole suite
+# jobs "pytest (1/4)" .. "pytest (4/4)": one shard each, 8 xdist workers (WAM_TEST_SHARD=<i>/4, tests/conftest.py); locally run the whole suite
 python -m pytest -q -n auto
 # job "test" is the required check: it passes only when every pytest shard and "checks" passed
 # job "backend"
