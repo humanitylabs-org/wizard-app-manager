@@ -297,10 +297,12 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             raise ExportError(f"{out} already exists")
         out.parent.mkdir(parents=True, exist_ok=True)
     rows = box.registry_rows()
-    installed, leftover_copies = one_copy_per_app(box.installed(), rows)
+    found = box.installed()
+    agents = box.agents(found)
+    # an agent's runtime urn is what its restore looks for, so that copy wins over any other (Codex P1 on #827)
+    installed, leftover_copies = one_copy_per_app(found, rows, prefer={a.urn for a in agents if a.urn})
     for msg in leftover_copies:
         log("warning: " + msg)
-    agents = box.agents(installed)
     agent_urns = {a.urn for a in agents if a.urn}
     files_root = box.files_root()
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
@@ -514,10 +516,11 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     return res
 
 
-def one_copy_per_app(installed: dict[str, dict], rows: dict[str, dict]) -> tuple[dict[str, dict], list[str]]:
+def one_copy_per_app(installed: dict[str, dict], rows: dict[str, dict],
+                     prefer: set[str] | frozenset = frozenset()) -> tuple[dict[str, dict], list[str]]:
     """A backup holds one copy of each app id (`apps/<id>/`). When Runtipi lists the same id under two stores (a
-    leftover copy from an old store after the app's store or repo moved, #826), keep the one the Wizard registry
-    (apps.json) names, else the running one, else the first by urn; the others are left out with a warning instead
+    leftover copy from an old store after the app's store or repo moved, #826), keep the one an agent runs in
+    (`prefer`), else the one the Wizard registry (apps.json) names, else the running one, else the first by urn; the others are left out with a warning instead
     of failing the whole run on a duplicate bundle entry."""
     by_id: dict[str, list[str]] = {}
     for urn in sorted(installed):
@@ -528,7 +531,8 @@ def one_copy_per_app(installed: dict[str, dict], rows: dict[str, dict]) -> tuple
         if len(urns) > 1:
             named = (rows.get(app_id) or {}).get("urn")
             running = [u for u in urns if installed[u].get("status") == "running"]
-            pick = named if named in urns else (running[0] if running else urns[0])
+            agent = [u for u in urns if u in prefer]
+            pick = agent[0] if agent else named if named in urns else (running[0] if running else urns[0])
             for u in urns:
                 if u != pick:
                     skipped.append(f"{app_id}: left out the copy in store {installed[u]['store']} ({u}); "

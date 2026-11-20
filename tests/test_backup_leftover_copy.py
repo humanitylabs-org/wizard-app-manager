@@ -61,6 +61,24 @@ def test_one_copy_per_app_prefers_the_registry_then_running():
     assert sorted(keep) == ["v:wizardapps", "w:wizardapps"] and len(skipped) == 1 and "v:wizard)" in skipped[0]
     keep, skipped = capture.one_copy_per_app(inst, {})
     assert sorted(keep) == ["v:wizard", "w:wizardapps"] and "v:wizardapps" in skipped[0]
+    # an agent's runtime urn wins over the registry and the running copy
+    keep, _ = capture.one_copy_per_app(inst, {"v": {"id": "v", "urn": "v:wizard"}}, prefer={"v:wizardapps"})
+    assert "v:wizardapps" in keep and "v:wizard" not in keep
+
+
+def test_a_leftover_copy_of_an_agent_app_keeps_the_agents_runtime(world):
+    old = world["old"]
+    rt = old.runtipi
+    for part in ("apps", "app-data"):
+        src = rt / part / "wizardapps" / "agent-research"
+        if src.is_dir():
+            shutil.copytree(src, rt / part / "wizard" / "agent-research")
+    old.rt.add("agent-research:wizard", "running", 1)
+    stream = io.BytesIO()
+    res = capture.export(old.box(), plain_stream=stream)
+    assert res["ok"] and any("agent-research:wizard)" in m for m in res["skipped_app_copies"])
+    m = json.loads(_members(stream.getvalue())["manifest.json"])
+    assert [a["urn"] for a in m["apps"] if a["id"] == "agent-research"] == ["agent-research:wizardapps"]
 
 
 def test_scheduled_stream_survives_a_leftover_copy(world):
