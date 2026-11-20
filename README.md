@@ -25,6 +25,10 @@ your apps (Docker), ports on 127.0.0.1    reach them through Tailscale or a Clou
 | Look | Wizard UX styling built in (`packages/frontend/src/styles/wizard.css`), Wizard branding |
 | Everything else | Unchanged: dashboard, install forms, updates, backups, logs, app networking, settings |
 
+## What belongs here
+
+This repo stays close to Runtipi: Runtipi plus the thin Wizard layer (the `wizardapps` store and app index, `wizard.md` checks, `apps.json`, `wam`). New OS features, UI, skills and agent tooling go to wizard-os, wizard-ux, wizard-agent-service or their own repo. The current non-Runtipi folders, where each would move, and how far the fork has diverged from upstream Runtipi v4.12.0 are listed in [AGENTS.md](AGENTS.md#what-belongs-in-this-repo-the-runtipi-boundary).
+
 ## One-line install
 
 ```
