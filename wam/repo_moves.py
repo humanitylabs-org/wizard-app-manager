@@ -34,24 +34,54 @@ GITHUB_API = "https://api.github.com"
 FOLLOWED_SOURCES = (None, "standard")   # index installs record no source or "standard"
 
 
+def _token() -> str:
+    """The box's GitHub login, when it has one (#914: the anonymous limit is 60 lookups an hour)."""
+    try:
+        from . import private
+        return private.token() or ""
+    except Exception:  # noqa: BLE001 - no login: ask anonymously
+        return ""
+
+
 def _github_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "wizard-app-manager",
-                                               "Accept": "application/vnd.github+json"})
+    headers = {"User-Agent": "wizard-app-manager", "Accept": "application/vnd.github+json"}
+    tok = _token() if url.startswith(GITHUB_API + "/") else ""   # never send the login to another host
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=20) as r:   # urllib follows GitHub's 301 for a moved repo
         return json.load(r)
 
 
-def current_name(repo: str, get=None) -> str | None:
-    """The name GitHub serves `repo` under now (follows a rename or transfer), or None when it can't tell."""
+def github_name(repo: str, get=None) -> tuple[str | None, bool]:
+    """(the name GitHub serves `repo` under now, True) when GitHub answered; (None, False) when the lookup failed
+    (rate limit, network, an odd answer), with a WARNING in the log (#914: it used to fail silently)."""
     if not isinstance(repo, str) or not REPO.fullmatch(repo):
-        return None
+        return None, False
     api = os.environ.get("WAM_GITHUB_API", GITHUB_API).rstrip("/")
     try:
         doc = (get or _github_json)(f"{api}/repos/{urllib.parse.quote(repo)}")
-    except (OSError, ValueError, urllib.error.URLError):
-        return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:   # GitHub answered: no such repo (deleted), so it moved nowhere
+            return None, True
+        print(f"WARNING: GitHub lookup of {repo} failed (HTTP {e.code}); its repo move can't be checked this run",
+              file=sys.stderr)
+        return None, False
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        print(f"WARNING: GitHub lookup of {repo} failed ({type(e).__name__}: {str(e)[:120]}); "
+              "its repo move can't be checked this run", file=sys.stderr)
+        return None, False
     name = doc.get("full_name") if isinstance(doc, dict) else None
-    return name if isinstance(name, str) and REPO.fullmatch(name) else None
+    if not (isinstance(name, str) and REPO.fullmatch(name)):
+        print(f"WARNING: GitHub lookup of {repo} gave no repo name; its repo move can't be checked this run",
+              file=sys.stderr)
+        return None, False
+    return name, True
+
+
+def current_name(repo: str, get=None) -> str | None:
+    """The name GitHub serves `repo` under now (follows a rename or transfer), or None when it can't tell."""
+    return github_name(repo, get)[0]
 
 
 def _same(a, b) -> bool:
@@ -71,9 +101,11 @@ def _listed_elsewhere(c, app_id: str, repo: str, search=None) -> bool:
 
 
 def target(c, app_id: str, repo: str, *, want: str | None = None, index_get=None, resolve=None,
-           github=None, search=None) -> dict | None:
+           github=None, search=None, unchecked: list | None = None) -> dict | None:
     """The index record of the repo `repo` moved to, when that repo publishes the same app id `app_id`; else None.
-    `want`: only follow to that repo (a Store selection or a release pin names the repo it expects)."""
+    `want`: only follow to that repo (a Store selection or a release pin names the repo it expects).
+    `unchecked`: gets `app_id` when the recorded repo may have moved (delisted, or the id is listed under another
+    repo) but GitHub could not be asked; the caller then skips the app's update this run (#914)."""
     from . import index
     if not (isinstance(app_id, str) and ID.fullmatch(app_id) and isinstance(repo, str) and REPO.fullmatch(repo)):
         return None
@@ -91,7 +123,9 @@ def target(c, app_id: str, repo: str, *, want: str | None = None, index_get=None
         return None   # still listed under the recorded name and nowhere else: nothing moved (no GitHub call)
     # Still listed but another repo publishes this id (or a caller names the repo it expects): the old listing may
     # just be stale (#829, the index re-checks weekly). GitHub's redirect below is what decides.
-    new = current_name(repo, github)
+    new, answered = github_name(repo, github)
+    if not answered and unchecked is not None:
+        unchecked.append(app_id)
     if not new or _same(new, repo) or (want is not None and not _same(new, want)):
         return None
     if not index.allowed({"repo": repo}) or not index.allowed({"repo": new}):
@@ -188,7 +222,8 @@ def rewrite(root: Path, store: str, app_id: str, old: str, rec: dict, *, read=_r
     return [rel for rel, _ in done]
 
 
-def follow(c, app_id: str, *, want: str | None = None, read=_read, write=_write, **lookups) -> dict | None:
+def follow(c, app_id: str, *, want: str | None = None, read=_read, write=_write, unchecked: list | None = None,
+           **lookups) -> dict | None:
     """If `app_id`'s recorded repo moved on GitHub to a repo that publishes the same app, record the new name.
     Returns {"id", "from", "to", "changed"} when it moved, else None. Never raises."""
     from . import cli
@@ -202,7 +237,7 @@ def follow(c, app_id: str, *, want: str | None = None, read=_read, write=_write,
         old = src.get("repo")
         if not isinstance(old, str):
             return None
-        rec = target(c, app_id, old, want=want, **lookups)
+        rec = target(c, app_id, old, want=want, unchecked=unchecked, **lookups)
         if not rec:
             return None
         changed = rewrite(c.runtipi_root, cli.STORE, app_id, old, rec, read=read, write=write)

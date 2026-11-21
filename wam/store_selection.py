@@ -179,6 +179,10 @@ def execute(c, app_id, selection):
     if actual.get('source') != source:
         raise ValueError('installed source did not match the selection')
     if source == 'standard':
+        # #914: the selection may name a repo's pre-transfer name (a stale listing): record where GitHub serves it
+        # now, so later updates follow that repo and never the old name's stale (older) listing.
+        from . import repo_moves
+        repo_moves.follow(c, app_id)
         # The pin only made the install take this exact index commit; kept, it would stop every later update
         # (wizard-os#614). Hermes, release defaults and private/link/channel selections keep theirs.
         app_updates.unpin_standard(c.runtipi_root, cli.STORE, app_id)

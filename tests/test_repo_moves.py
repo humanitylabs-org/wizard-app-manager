@@ -145,7 +145,9 @@ def test_current_name_follows_githubs_redirect_and_fails_soft():
 def test_store_selection_of_the_new_repo_is_no_longer_a_conflict(box, monkeypatch):
     """Was: 'installed repository conflict; nothing changed' (store_selection.execute)."""
     monkeypatch.setattr(ss.index, "resolve", lambda index, ref: dict(NEW_REC) if ref == NEW else pytest.fail(ref))
-    monkeypatch.setattr(ss.index, "_get", lambda url: DELISTED if url.endswith("/v1/apps/" + OLD) else pytest.fail(url))
+    monkeypatch.setattr(ss.index, "_get", lambda url: DELISTED if url.endswith("/v1/apps/" + OLD)
+                        else dict(NEW_REC) if url.endswith("/v1/apps/" + NEW) else pytest.fail(url))
+    monkeypatch.setattr(ss.index, "search", lambda i, **f: [dict(NEW_REC)])   # #914 re-check after the update
     monkeypatch.setattr(repo_moves, "_github_json", lambda url: {"full_name": NEW})
     monkeypatch.setattr(cli, "installed_ids", lambda rt: {"wizard-mail"})
     calls = []

@@ -2664,6 +2664,26 @@ def rename_instead_of_update(c: "Config", app_id: str) -> dict | None:
     return app_rename.migrate(c, app, d["to"], **extra)
 
 
+def _older_update(c: "Config", app_id: str) -> tuple[str, str] | None:
+    """(target, installed) version names when updating `app_id` would install a lower version (#914)."""
+    from . import app_updates
+    try:
+        return app_updates.older(c.runtipi_root, STORE, app_id.split(":", 1)[0])
+    except Exception:  # noqa: BLE001 - unreadable recipes: the update itself decides
+        return None
+
+
+def _older_updates(c: "Config", targets: list[str]) -> dict:
+    """{target: (target version, installed version)} for each named Wizard-store app (every one when none is named:
+    the bulk form) whose update would install a lower version (#914)."""
+    if not targets:
+        try:
+            targets = sorted(p.name for p in (Path(c.runtipi_root) / "apps" / STORE).iterdir() if p.is_dir())
+        except OSError:
+            targets = []
+    return {t: low for t in targets if (":" not in t or t.split(":", 1)[1] == STORE) and (low := _older_update(c, t))}
+
+
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
@@ -2995,6 +3015,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if ok else 1
             rest = main(argv)
             return rest if ok else 1
+    if argv[:2] == ["app", "update"]:
+        # #914: never a lower version than the one running, in the plain, flag-first and bulk (--all) forms, unless
+        # asked for with --allow-older (wam's own flag: runtipi-cli never sees it)
+        allow = "--allow-older" in argv
+        argv = [a for a in argv if a != "--allow-older"]
+        if not allow:
+            lows = _older_updates(Config(), [a for a in argv[2:] if not a.startswith("-")])
+            for t, low in lows.items():
+                print(f"{t}: the version an update would install ({low[0]}) is older than the installed {low[1]}; "
+                      "nothing changed. Add --allow-older to go back on purpose.", file=sys.stderr)
+            if lows:
+                return 1
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))

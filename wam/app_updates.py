@@ -301,6 +301,41 @@ def display_name(runtipi_root: Path, store: str, app_id: str) -> str:
     return name.strip() if isinstance(name, str) and name.strip() else app_id
 
 
+# ---------------------------------------------------------------- never a lower version (#914)
+#
+# Runtipi counts any different commit as an update (`tipi_version = max(repo tipi, old tipi + 1)`), so an older
+# commit that wins the index lookup (a moved repo's stale pre-transfer listing: Photos 0.4.1 -> 0.2.0 on 21 Nov)
+# looked like an update. The version NAME (config.json / wizard.md `version`) is what says newer or older.
+
+def version_key(name) -> tuple | None:
+    """A sortable key for a version name, or None when it is not one. The same rule as restores
+    (wam/backup/versions.py): upstream semver, then the Wizard patch level (`2.63.23-wizard1` > `2.63.23`, a plain
+    release is wizard0), and an ordinary pre-release (`1.0.0-rc.1`) sorts before its release."""
+    from .backup import versions
+    return versions.parse(name) if isinstance(name, str) else None
+
+
+def _version_name(folder: Path) -> str | None:
+    """The recipe's version name: wizard.md `version` (authoritative), else config.json `version`."""
+    from .backup import versions
+    try:
+        rel = versions.package_release(Path(folder))
+    except Exception:  # noqa: BLE001 - unreadable recipe: no name
+        return None
+    return (rel or {}).get("version")
+
+
+def older(runtipi_root: Path, store: str, app_id: str) -> tuple[str, str] | None:
+    """(target name, installed name) when the prepared store recipe (what an update would install) has a LOWER
+    version name than the installed app; None when it is newer, equal or either name can't be compared."""
+    target = _version_name(Path(runtipi_root) / "repos" / store / "apps" / app_id)
+    have = _version_name(Path(runtipi_root) / "apps" / store / app_id)
+    kt, kh = version_key(target), version_key(have)
+    if kt is None or kh is None or not kt < kh:
+        return None
+    return target, have
+
+
 def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: Path | None = None,
                release_managed: set[str] | None = None) -> list[dict]:
     """Every installed app of the Wizard store with a newer version, and why it would be skipped (None = due)."""
@@ -327,6 +362,8 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
             skip = "system"            # moves with the WizardOS release
         elif _selection_pinned(runtipi_root, store, app_id):
             skip = "pinned"            # an exact owner-local selection
+        elif older(runtipi_root, store, app_id):
+            skip = "older"             # #914: a lower version than the one running is never installed automatically
         elif app.get("ignoredVersion") is not None and str(app.get("ignoredVersion")) == str(latest):
             skip = "ignored"           # the owner skipped this version in the App Manager
         elif app_id in held:
@@ -698,11 +735,17 @@ def failed_recently(home: Path | None, app_id: str, to: int | None) -> dict | No
 
 
 def store_refusal(c, app_id: str, force: bool = False) -> str | None:
-    """Why a Store update of the app to its prepared store recipe must not run: that exact version failed the check
-    after an update lately and was rolled back (nightly or Store). None when it may run, or the owner forces it."""
+    """Why a Store update of the app to its prepared store recipe must not run: it is a lower version than the one
+    installed (#914), or that exact version failed the check after an update lately and was rolled back (nightly or
+    Store). None when it may run, or the owner forces it."""
     from . import cli
     if force:
         return None
+    low = older(c.runtipi_root, cli.STORE, app_id)
+    if low:   # #914: never a lower version than the one running, unless the owner forces it
+        name = display_name(c.runtipi_root, cli.STORE, app_id)
+        return (f"{name} {low[0]} is older than the {low[1]} you have, so it is not installed. "
+                f"Choose it anyway only if you really want to go back to {low[0]}.")
     to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
     rec = failed_recently(c.home, app_id, to)
     if not rec:
@@ -1150,6 +1193,15 @@ def queued(home: Path | None = None, runtipi_root: Path | None = None, store: st
     return out
 
 
+def _unchecked_skip(rows: list[dict], unchecked: list[str]) -> list[dict]:
+    """#914: an app whose recorded repo may have moved (the index lists its id under another repo too) but GitHub
+    could not say so this run is not updated from the old name; the next run checks again."""
+    for r in rows:
+        if r["id"] in unchecked and not r["skip"]:
+            r["skip"] = "move-unchecked"
+    return rows
+
+
 def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: bool, renames, reporter, moves,
                   quiet_repeats: bool) -> dict:
     """apply() once its lock is held: one pass over `only` (or every due app)."""
@@ -1157,17 +1209,21 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
     if updates.installing(c.home):
         return {"started": False, "skipped": "installing", "note": "a WizardOS update is running; next window"}
     rt = c.runtipi()
-    repo_moved = []
+    repo_moved, unchecked = [], []
     if not dry_run:
         # An app whose repo moved to a new GitHub name or owner (#578) first records the new name, so its
         # updates (and the rename check below) follow the repo instead of stopping at the delisted old name.
         from . import repo_moves
         try:
             # (and first frees apps a Store Get/Update pinned, so their updates show; wizard-os#614)
-            repo_moved = (moves or repo_moves.follow_all)(c, _installed_unpinned(c, rt), only=only)
+            if moves:
+                repo_moved = moves(c, _installed_unpinned(c, rt), only=only)
+            else:
+                repo_moved = repo_moves.follow_all(c, _installed_unpinned(c, rt), only=only, unchecked=unchecked)
         except Exception as e:  # noqa: BLE001 - a move check never stops the updates
             print(f"WARNING: app repo moves not checked: {e}", file=sys.stderr)
-    rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+    rows = _unchecked_skip(candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home),
+                           unchecked)
     if only:
         unknown = sorted(set(only) - {r["id"] for r in rows})
         rows = [r for r in rows if r["id"] in only]
@@ -1218,7 +1274,8 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
     due = [r for r in due if r["id"] not in tried]
     if renamed:
         moved = {r["id"] for r in renamed} | tried
-        rows = candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root, home=c.home)
+        rows = _unchecked_skip(candidates(rt.installed(), store=cli.STORE, runtipi_root=c.runtipi_root,
+                                          home=c.home), unchecked)
         if only:   # an update asked for by id still touches only those apps (Codex P1)
             rows = [r for r in rows if r["id"] in only]
             for r in rows:
