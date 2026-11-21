@@ -307,38 +307,22 @@ def display_name(runtipi_root: Path, store: str, app_id: str) -> str:
 # commit that wins the index lookup (a moved repo's stale pre-transfer listing: Photos 0.4.1 -> 0.2.0 on 21 Nov)
 # looked like an update. The version NAME (config.json / wizard.md `version`) is what says newer or older.
 
-_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
-
-
 def version_key(name) -> tuple | None:
-    """A sortable key for a semver-ish version name ("0.4.1", "v1.2", "1.0.0-beta.2", "2026.11.20+build");
-    None when it is not one. A pre-release sorts below its release (1.0.0-rc.1 < 1.0.0), as in semver."""
-    if not isinstance(name, str):
-        return None
-    m = _VERSION.fullmatch(name.strip())
-    if not m:
-        return None
-    core = [int(x) for x in m.group(1).split(".")]
-    while len(core) > 1 and core[-1] == 0:   # 1.2 == 1.2.0
-        core.pop()
-    pre = m.group(2)
-    if pre is None:
-        return (tuple(core), 1, ())
-    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
-    return (tuple(core), 0, ids)
+    """A sortable key for a version name, or None when it is not one. The same rule as restores
+    (wam/backup/versions.py): upstream semver, then the Wizard patch level (`2.63.23-wizard1` > `2.63.23`, a plain
+    release is wizard0), and an ordinary pre-release (`1.0.0-rc.1`) sorts before its release."""
+    from .backup import versions
+    return versions.parse(name) if isinstance(name, str) else None
 
 
 def _version_name(folder: Path) -> str | None:
-    """The recipe's version name: config.json `version`, else wizard.md front matter `version`."""
-    _, name = _recipe_version(folder)
-    if name:
-        return name
+    """The recipe's version name: wizard.md `version` (authoritative), else config.json `version`."""
+    from .backup import versions
     try:
-        from . import wizardmd
-        v = wizardmd.front_matter((Path(folder) / "wizard.md").read_text()).get("version")
-    except (OSError, ValueError, Exception):  # noqa: BLE001 - unreadable manifest: no name
+        rel = versions.package_release(Path(folder))
+    except Exception:  # noqa: BLE001 - unreadable recipe: no name
         return None
-    return str(v) if v not in (None, "") else None
+    return (rel or {}).get("version")
 
 
 def older(runtipi_root: Path, store: str, app_id: str) -> tuple[str, str] | None:

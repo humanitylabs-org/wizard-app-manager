@@ -36,7 +36,8 @@ def row(app_id, have, latest):
 @pytest.mark.parametrize("a,b", [("0.2.0", "0.4.1"), ("0.4.1", "0.4.2"), ("1.0.0-rc.1", "1.0.0"),
                                  ("1.0.0-alpha", "1.0.0-alpha.1"), ("1.0.0-alpha.2", "1.0.0-alpha.10"),
                                  ("1.0.0-alpha.beta", "1.0.0-beta"), ("v0.9", "0.10.0"), ("0.4.1+b7", "0.4.2"),
-                                 ("2026.11.9", "2026.11.20")])
+                                 ("2026.11.9", "2026.11.20"), ("2.63.23", "2.63.23-wizard1"),
+                                 ("2.63.23-wizard1", "2.63.23-wizard2"), ("2.63.23-wizard9", "2.63.24")])
 def test_version_names_compare_like_semver(a, b):
     assert au.version_key(a) < au.version_key(b)
     assert not au.version_key(b) < au.version_key(a)
@@ -58,6 +59,16 @@ def test_the_hourly_run_skips_an_older_version_whatever_tipi_version_says(tmp_pa
                                                      runtipi_root=root, home=tmp_path / "home",
                                                      release_managed=set())}
     assert got == {"photos": "older", "money": None}
+
+
+def test_wizard_md_version_wins_over_config_json(tmp_path):
+    """Packages keep the upstream version in config.json and the Wizard patch in wizard.md (Codex P2)."""
+    root = tmp_path / "runtipi"
+    recipe(root / "apps/wizardapps/photos", "2.63.23", 8, wizard_version="2.63.23-wizard2")
+    recipe(root / "repos/wizardapps/apps/photos", "2.63.23", 9, wizard_version="2.63.23-wizard1")
+    assert au.older(root, "wizardapps", "photos") == ("2.63.23-wizard1", "2.63.23-wizard2")
+    recipe(root / "repos/wizardapps/apps/photos", "2.63.23", 9, wizard_version="2.63.23-wizard3")
+    assert au.older(root, "wizardapps", "photos") is None
 
 
 def test_wizard_md_version_counts_when_config_json_has_none(tmp_path):
@@ -106,6 +117,24 @@ def test_wam_app_update_refuses_an_older_version_unless_asked(tmp_path, monkeypa
     assert cli.main(["app", "update", "photos"]) == 1 and calls == []
     assert "older than the installed 0.4.1" in capsys.readouterr().err
     assert cli.main(["app", "update", "photos", "--allow-older"]) == 0 and calls == ["photos"]
+
+
+@pytest.mark.parametrize("argv", [["app", "update", "--no-backup", "photos"], ["app", "update", "--all"],
+                                  ["app", "update", "photos:wizardapps", "--no-backup"]])
+def test_flag_first_and_bulk_updates_refuse_an_older_version_too(tmp_path, monkeypatch, capsys, argv):
+    """Codex P1: these forms go to runtipi-cli, which never passes app_update."""
+    root = tmp_path / "runtipi"
+    recipe(root / "apps/wizardapps/photos", "0.4.1", 8)
+    recipe(root / "repos/wizardapps/apps/photos", "0.2.0", 9, repo=OLD)
+    monkeypatch.setattr(cli, "Config", lambda: SimpleNamespace(runtipi_root=root, home=tmp_path / "home"))
+    monkeypatch.setattr(cli, "rename_instead_of_update", lambda c, t: None)
+    monkeypatch.setattr(cli, "app_update", lambda *a, **k: pytest.fail("app_update ran"))
+    passed = []
+    monkeypatch.setattr(cli, "_graceful_passthrough", lambda a: passed.append(a) or 0)
+    assert cli.main(list(argv)) == 1 and passed == []
+    assert "older than the installed 0.4.1" in capsys.readouterr().err
+    if argv[2] == "--no-backup":   # asked for on purpose: runtipi-cli gets the command without wam's own flag
+        assert cli.main(list(argv) + ["--allow-older"]) == 0 and passed == [list(argv)]
 
 
 # ---------------------------------------------------------------- the move check (#914 points 3 and 4)
