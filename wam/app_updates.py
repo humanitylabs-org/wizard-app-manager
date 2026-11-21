@@ -565,6 +565,39 @@ def baseline(c, rt, app_id: str, status: str | None, *, endpoint=_endpoint, prob
     return probe(ep[0], ep[1], 10) if ep else None
 
 
+def settle_record(c, rt, urn: str, app_id: str, res: dict, before: dict, *, retry=None) -> dict:
+    """#895: an update can finish on the box while Runtipi's record still says the old version. A Runtipi whose
+    update job gives up after its 5-minute queue limit (a big pre-update backup) records the app `stopped` on its
+    old version, while the job goes on and the new version's files and containers end up in place. Without this
+    check the app is reported \"rolled back\" though the new version runs, and it is marked failed.
+
+    When Runtipi records an older version than this update's target, its status has settled (running or stopped),
+    and the installed recipe (apps/<store>/<id>/config.json, which Runtipi replaces with the new one during the
+    update and puts back on its own rollback) already is the target, the record is stale: the update is run once
+    more WITHOUT a backup (the first pass made one; a second full backup would only pile up), which writes the right
+    version. The result carries `stale_record: True` either way, so a record that still does not move is reported
+    as what it is, never as a rollback. Anything else: `res` unchanged."""
+    from . import cli
+    try:
+        row = ((rt.app(urn) or {}).get("app") or {}) if rt is not None else {}
+        recorded = int(row.get("version") if row.get("version") is not None else res.get("version") or 0)
+    except Exception:  # noqa: BLE001 - unreadable: verify reports what it sees
+        return res
+    if recorded >= int(before.get("to") or 0) or row.get("status") not in ("running", "stopped"):
+        return res
+    installed, _ = _recipe_version(Path(c.runtipi_root) / "apps" / cli.STORE / app_id)
+    if installed is None or installed < before["to"]:
+        return res   # the old recipe is installed: the update really did not apply (or was rolled back)
+    print(f"{app_id}: version {installed} is installed but Runtipi still records {recorded}; "
+          "correcting the record (update again, no second backup)", file=sys.stderr, flush=True)
+    try:
+        again = (retry or (lambda: cli.app_update(c, app_id, backup=False)))()
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - reported below as a stale record, never a rollback
+        return {**res, "stale_record": True, "installed_version": installed,
+                "record_error": f"{type(e).__name__}: {e}"[:200]}
+    return {**again, "stale_record": True, "installed_version": installed}
+
+
 def verify(c, rt, urn: str, app_id: str, res: dict, before: dict, *, settle: float = SETTLE_SECONDS,
            probe_seconds: float = PROBE_SECONDS, sleep=time.sleep, containers=_containers, probe=_probe,
            endpoint=_endpoint) -> str | None:
@@ -575,6 +608,10 @@ def verify(c, rt, urn: str, app_id: str, res: dict, before: dict, *, settle: flo
         return f"came back {res.get('status')} (was {before['status']})"
     try:
         if int(res.get("version") or 0) < before["to"]:
+            if res.get("stale_record"):   # #895: the new version is in place; only Runtipi's record lags
+                return (f"version {res.get('installed_version') or before['to']} is installed, but Runtipi still "
+                        f"records version {res.get('version')} and correcting it did not work"
+                        + (f" ({res['record_error']})" if res.get("record_error") else ""))
             return f"still on version {res.get('version')} (expected {before['to']}); the update was rolled back"
     except (TypeError, ValueError):
         return "unknown version after the update"
@@ -687,7 +724,7 @@ def _clear_failed(home: Path | None, app_id: str) -> None:
 
 
 def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, probe_seconds: float = PROBE_SECONDS,
-                 sleep=time.sleep, containers=None, probe=None, endpoint=None, roll=None) -> dict:
+                 sleep=time.sleep, containers=None, probe=None, endpoint=None, roll=None, retry=None) -> dict:
     """Run a Store update (`update()` -> app_update's result) and check the app the way the nightly run does
     (`verify`): it comes back as it was, its version moved, no container restarts, no fewer containers run, its
     health URL / MCP endpoint answers. On a failed check it is rolled back from the backup the update made, the
@@ -725,12 +762,16 @@ def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, prob
         raise
     except Exception as e:  # noqa: BLE001 - it may have half-applied: check and roll back like the nightly run
         res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+    res = settle_record(c, rt, urn, app_id, res, before, retry=retry)   # #895
     problem = verify(c, rt, urn, app_id, res, before, settle=settle, probe_seconds=probe_seconds, sleep=sleep,
                      containers=containers, probe=probe, endpoint=endpoint)
     if problem is None:
         _clear_failed(c.home, app_id)
         return res
     what = f"{name} {to_name or 'update'} " + ("keeps crashing" if "restarting" in problem else "did not work")
+    if res.get("stale_record"):   # #895: the new version runs; restoring the backup would throw away its data
+        _record_failed(c.home, app_id, to, problem)
+        return {**res, "error": f"{what} ({problem})"[:400], "rolled_back": False}
     try:
         unchanged = int(res.get("version") or 0) == have and res.get("status") == status
     except (TypeError, ValueError):
@@ -1199,6 +1240,7 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
             continue
         except Exception as e:  # noqa: BLE001 - one app never stops the others
             res = {"error": f"{type(e).__name__}: {e}"[:300], "status": None}
+        res = settle_record(c, rt, urn, r["id"], res, before)   # #895: new version in place, record stale
         _set_running(h, r, "checking", started)
         problem = verify(c, rt, urn, r["id"], res, before)
         step = "update" if res.get("error") else "check after update"
@@ -1211,6 +1253,9 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
             unchanged = int(res.get("version") or 0) == r["from"] and res.get("status") == before["status"]
         except (TypeError, ValueError):
             unchanged = False
+        if res.get("stale_record"):   # #895: the new version runs; restoring the backup would throw away its data
+            failed.append({**r, "reason": problem, "rollback": None, "step": "record after update"})
+            continue
         if unchanged:   # the update never applied: the previous version still runs, nothing to restore
             failed.append({**r, "reason": problem + " (the previous version still runs)", "rollback": None,
                            "step": step})
